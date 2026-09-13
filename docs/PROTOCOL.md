@@ -13,8 +13,16 @@ are out of scope (HANDOFF.md §1). §11 records where the contract leaves room f
   `walter-modem` / `esp_timer` / a display driver, or a GPIO change. Not decided here. Collected in §12.
 - `UNVERIFIED` = a hardware or vendor-library fact this document assumes but cannot confirm; each
   one names the cheapest experiment that settles it.
-- Power numbers are labelled `(estimate)` or `(TBD — hardware measurement)`. No number in this
-  document is a measured number yet; Phase 4 replaces the estimates with measurements.
+- Power numbers are labelled `(estimate)`, `(vendor)` or `(TBD — hardware measurement)`. `(vendor)`
+  means a figure documented by DPTechnics in the `walter-modem` source; everything else is still an
+  estimate. No number here is a *measured* number yet; Phase 4 replaces the estimates with
+  measurements on hardware.
+- `RESOLVED Phase 4` marks a Phase 1 assumption that was settled by reading
+  `dptechnics/walter-modem` **v1.5.0** at
+  `firmware/managed_components/dptechnics__walter-modem/`. Source line references are against that
+  version; re-check them if the component is upgraded. v1.5.0 rewrote the MQTT API
+  (event-driven receive, `mqttReceive()`, `mqttDidRing()` deprecated) — do not read conclusions
+  drawn against older releases into this document.
 
 ---
 
@@ -257,14 +265,16 @@ keeps the TLS+MQTT session up on eDRX while the ESP32 is in deep sleep; that dev
 ### 5.4 Device publish cadence
 
 Status is published: (a) immediately after MQTT connect, (b) on every mode change, (c) when
-`batt_mv` has moved more than 50 mV since the last publish, and (d) as a heartbeat on the keepalive
-wake, at most **once per 3600 s**.
+`batt_mv` has moved more than 50 mV since the last publish, and (d) as a heartbeat, at most
+**once per 3600 s**.
 
-*(Phase 1 decision — the heartbeat period is set to exactly 2× the MQTT keepalive interval (§6) so
-it is always piggybacked on a wake the device was making anyway. Marginal cost ≈ 0.33 kB of data and
-≈ 0 extra radio sessions. An independent hourly status timer would add ~24 radio wakes/day ≈
-2.4 mAh/day (estimate) against a sleep budget of roughly 20 mAh/day — a ~12 % battery tax for
-nothing.)*
+*(Phase 1 decision — the heartbeat period is 2× the MQTT keepalive interval (§6). Marginal cost
+≈ 0.33 kB of data and ≈ 0 extra radio sessions. An independent hourly status timer would add ~24
+radio wakes/day ≈ 2.4 mAh/day (estimate) — a meaningful tax for nothing. **Phase 4 update:** the
+keepalive wake it used to piggyback on no longer exists (§6.2), so the heartbeat now rides an
+ordinary 5 s poll wake — the ESP32 side is free, and the only cost is the one radio session the
+publish itself needs. Implementation is a counter in RTC memory, not a timer: publish when
+`now - last_status_epoch >= 3600`.)*
 
 Status is **never** published on a plain paging wake or on receipt of a down message.
 
@@ -276,18 +286,19 @@ Status is **never** published on a plain paging wake or on receipt of a down mes
 
 | Parameter | Value | Rationale |
 |---|---|---|
-| MQTT version | **3.1.1** | *(Phase 1 decision — the Sequans in-modem MQTT client is assumed 3.1.1; MQTT 5 features are not relied on anywhere in this document.)* UNVERIFIED: whether `walter-modem` exposes MQTT 5. Experiment: read the component's public header for a version/`sessionExpiry` parameter — 10 minutes, no hardware. |
-| Clean session | **false** | Fixed in spirit by HANDOFF.md's "one persistent session". With `cleanSession=false` and a stable client id, the broker queues QoS 1 `/down` messages while the TCP link is briefly down, so a coverage gap does not lose a message. |
-| TLS | server-authenticated, CA pinned in modem NVM; username/password per device | Free-tier HiveMQ Cloud model. |
+| MQTT version | **3.1.1** | *(Phase 1 decision.)* **RESOLVED Phase 4 by header read**: the library exposes no version, no `sessionExpiry`, and no MQTT 5 property API anywhere. `mqttConnect()` emits `AT+SQNSMQTTCONNECT=0,<host>,<port>,<keepAlive>` (`src/proto/WalterMQTT.cpp:83-95`). 3.1.1 it is. |
+| Clean session | **false** — **NOT SETTABLE from the library** | Fixed in spirit by HANDOFF.md's "one persistent session": with `cleanSession=false` and a stable client id the broker queues QoS 1 `/down` while the TCP link is briefly down. **Phase 4 finding:** neither `mqttConfig()` nor `mqttConnect()` exposes a clean-session flag, so the value is whatever the Sequans MQTT client defaults to. UNVERIFIED, and load-bearing for §4.1 rule 6 and §5.3. Weak evidence against us: `mqttConnect()` *deliberately clears the entire local subscription table* before connecting (`src/proto/WalterMQTT.cpp:87-89`), and the vendor's own `examples/mqtts` re-subscribes from inside the CONNECTED event handler — which is what a library assuming a **clean** session on every connect would look like. Experiment: connect, reset the ESP32 only, and have the relay publish while the device is down — if the queued message arrives on reconnect, the session is persistent. ~20 min on hardware. |
+| LWT | **NOT SETTABLE from the library** | `mqttConfig()` emits `AT+SQNSMQTTCFG=0,"<clientId>"[,"<user>","<pass>"][,<tlsProfileId>]` and stops there (`src/proto/WalterMQTT.cpp:53-75`) — no will topic, message, QoS or retain argument, and grepping the whole of `src/` for `will`/`lastwill` returns nothing. §5.2's LWT contract therefore has no implementation path through the typed API. Fallback: `WalterModem::sendCmd()` (public) can queue a raw `AT+SQNSMQTTCFG=...` carrying the will parameters *before* `mqttConnect()`. UNVERIFIED against the Sequans AT manual. If that fails, the relay must fall back to inferring offline from keepalive expiry and §5.2's LWT becomes advisory. Tracked in §12. |
+| TLS | server-authenticated, CA pinned in modem NVM; username/password per device | Free-tier HiveMQ Cloud model. Provisioning is supported and is exactly the vendor's `examples/mqtts` flow: `tlsWriteCredential(false, 12, ca_pem)` → `tlsConfigProfile(2, WALTER_MODEM_TLS_VALIDATION_CA, WALTER_MODEM_TLS_VERSION_12, 12)` → `mqttConfig(client_id, user, pass, 2)`. Both functions are public (`src/WalterModem.h:4147` and `:4404`; the `public:` block starts at `:4132`). **Slot discipline, from `examples/mqtts/main/mqtts.cpp:249-251`: certificate indices 0–10 and private-key index 1 are reserved for Sequans/BlueCherry — use certificate slot ≥ 11, and TLS profile ≥ 2 (profile 1 is BlueCherry's).** Note this is stricter than the `tlsWriteCredential` doc comment's "10–19"; follow the example. |
 | Reconnect policy | **Only** on detected session loss. Never on a timer (HANDOFF.md §1). Backoff 5 s, 15 s, 60 s, 300 s, then 300 s steady. | Each reconnect costs a full TLS handshake ≈ 5 kB (§7) — reconnects are the largest single term in the data budget. |
 
 ### 6.2 Keepalive
 
 | Parameter | Value |
 |---|---|
-| MQTT keepalive | **1800 s (30 min)** *(Phase 1 decision — see arithmetic below)* |
-| ESP32 RTC-timer wake for keepalive | 1500 s (25 min), i.e. 0.83 × keepalive, **only if** the modem does not PINGREQ autonomously (UNVERIFIED, §8) |
-| Server Keep Alive override | If CONNACK carries one (MQTT 5) or the broker documents a lower cap, the **smaller** value wins and the RTC wake period is recomputed as 0.83 × it |
+| MQTT keepalive | **1800 s (30 min)** *(Phase 1 decision — see arithmetic below)*, passed as the third argument of `mqttConnect(host, port, keepAlive)` |
+| ESP32 RTC-timer wake for keepalive | **None. Removed in Phase 4.** The MQTT client runs *inside* the modem (HANDOFF.md §2) and the library exposes **no ping API at all** — there is no `mqttPing()`, and `keepAlive` is handed to the modem in the `AT+SQNSMQTTCONNECT` command. PINGREQ is therefore the modem's job by construction, not the ESP32's. The old wake source #3 does not exist. |
+| Server Keep Alive override | If the broker documents a lower cap, the **smaller** value wins. Note `WALTER_MODEM_MQTT_MIN_PREF_KEEP_ALIVE` (`src/WalterModem.h:236`, value 20) is still declared but referenced nowhere in v1.5.0, so the library imposes no floor of its own. Whether the modem or broker silently clamps 1800 s is UNVERIFIED. |
 
 Arithmetic behind 1800 s: a PINGREQ/PINGRESP pair costs ~0.18 kB of data (negligible) but requires
 an RRC connection — roughly 3 s at ~120 mA ≈ 0.1 mAh (estimate). At 1800 s that is 48 pings/day
@@ -297,6 +308,9 @@ messages arrive via paging (§6.3), not via the keepalive. Longer than 1800 s ri
 timeout on the TCP flow. `PAGER_MQTT_KEEPALIVE_S` is a compile-time constant so Phase 4 can retune
 it against a measurement.
 
+Note the ~4.8 mAh/day keepalive term is now a **modem-side** cost only: the ESP32 does not wake for
+it, so it is unaffected by the sleep-cycle rewrite in §8.
+
 UNVERIFIED: carrier NAT idle timeout on this SIM. Cheapest experiment: leave the device idle with
 keepalive disabled and log how long before the first publish fails; bisect 5/15/30/60 min. Costs one
 overnight run, no extra hardware.
@@ -305,10 +319,10 @@ overnight run, no extra hardware.
 
 | Parameter | Value | Note |
 |---|---|---|
-| eDRX cycle | **20.48 s** (fixed, HANDOFF.md §1) | 3GPP WB-S1 eDRX value nibble `0010`. UNVERIFIED whether `walter-modem` takes seconds or the raw nibble — check the header signature before writing `net.c`. |
+| eDRX cycle | **20.48 s** (fixed, HANDOFF.md §1) | 3GPP WB-S1 eDRX value nibble `"0010"`. **RESOLVED Phase 4 by source read**: `configEDRX(mode, req_edrx_val, req_ptw)` takes `const char *` and splices both verbatim into `AT+SQNEDRX=<mode>,<actType>,"<req_edrx_val>","<req_ptw>"` (`src/WalterModem.cpp:4757-4774`). They are **raw 4-bit binary nibble strings**, not seconds. Firmware passes the literals `"0010"` / `"0001"`. |
 | PTW (Paging Time Window) | **2.56 s** *(Phase 1 decision — with a 1.28 s idle DRX this gives 2 paging occasions per cycle, i.e. one retry, at ~0.2 mA average; PTW 5.12 s would give 4 occasions and roughly double the paging energy for a redundancy we do not need)* | WB-S1 PTW nibble `0001` |
-| PSM | **disabled in MVP** *(Phase 1 decision — PSM suspends paging entirely, which breaks the ≤30 s sleep-mode delivery target. Revisit only if a scheduled/mailbox mode is added (§11).)* | |
-| Carrier acceptance | The network may grant different eDRX/PTW values than requested. Firmware MUST log the **granted** values and use them for its latency math. | UNVERIFIED per SIM/carrier. Experiment: log the `+CEDRXRDP`-equivalent readback right after attach — free, first bring-up. |
+| PSM | **disabled in MVP** *(Phase 1 decision — PSM suspends paging entirely, which breaks the ≤30 s sleep-mode delivery target. Revisit only if a scheduled/mailbox mode is added (§11).)* | Firmware calls `configPSM(WALTER_MODEM_PSM_DISABLE)` explicitly rather than relying on a default. Two traps if PSM is ever enabled, both still present in v1.5.0: `configPSM()` takes `const char *` for T3412/T3324 but the helpers `durationToTAU()` / `durationToActiveTime()` return a `uint8_t` (`src/WalterModem.h:5681,5699`), so the caller must format the byte as an 8-character binary string itself; and `_convertDuration()` (`src/WalterModem.cpp:4796`) writes `final_base * multiplier` — the *index* into the base-time table — into `actual_duration_seconds` instead of `base_times[final_base] * multiplier`, so the reported actual duration is wrong. Neither affects the MVP. |
+| Carrier acceptance | The network may grant different eDRX/PTW values than requested. Firmware MUST log the **granted** values and use them for its latency math. | UNVERIFIED per SIM/carrier, but **v1.5.0 gives us a first-class API for it** — no log-scraping needed. Register `setNetworkEventHandler()` (`src/WalterModem.h:5924`); on `WALTER_MODEM_NETWORK_EVENT_EDRX_RECEIVED` (`:1348`) the handler receives `WMNetworkEventData.edrx { actType, requestedEdrx[16], nwProvidedEdrx[16], pagingTimeWindow[16] }` (`:2388-2405`), parsed by the library at `src/WalterModem.cpp:1914-1930`. **`nwProvidedEdrx` is the granted value and is the one §6.5's latency math must use.** The same handler's `cereg` branch also carries granted PSM values (`activeTime`, `periodicTau`, `hasPsmInfo`), which is how firmware confirms PSM really is off. Use `configEDRX(WALTER_MODEM_EDRX_ENABLE_WITH_RESULT, …)` (mode `2`) so the modem emits them. |
 
 ### 6.4 How these interact with "one persistent session"
 
@@ -319,20 +333,32 @@ The MQTT session lives **inside the modem** and survives ESP32 deep sleep. There
    ~150 kB/day at 30 wakes/day and would dominate everything else in §7.
 2. eDRX is what makes a 30-minute keepalive compatible with 30-second delivery: the network pages
    the modem within one eDRX cycle (≤20.48 s), independent of the keepalive timer.
-3. The keepalive RTC wake (if needed at all, §8) is the *only* periodic ESP32 wake in sleep mode.
+3. The ESP32 does **not** wake for the keepalive (§6.2). The only periodic ESP32 wake in sleep mode
+   is the **5 s wake-and-drain cycle** of §8 — which exists because the library's incoming-message
+   state does not survive an ESP32 restart, not because the session needs servicing.
 
 ### 6.5 Latency budget check
 
-| Sleep mode (target ~30 s) | Active mode (target < 5 s) |
-|---|---|
-| paging delay ≤ 20.48 s (eDRX cycle) | C-DRX / connected paging ≤ ~0.5 s |
-| RRC connection setup 1–2 s | already connected, 0 s |
-| modem delivers URC, ESP32 wake from deep sleep ~0.3 s | ESP32 light-sleep wake < 10 ms |
-| JSON parse + partial e-paper refresh 0.5–1.5 s | same, 0.5–1.5 s |
-| **worst ≈ 24 s — fits 30 s with ~6 s margin** | **worst ≈ 2 s — fits 5 s** |
+Rewritten in Phase 4: the ESP32 is woken by its own poll timer, not by the modem (§8).
 
-The margin in sleep mode is thin. If the granted eDRX cycle is larger than requested (§6.3), the
-budget breaks; that is why the granted value must be logged, not assumed.
+| Term | Sleep mode (target ~30 s) | Active mode (target < 5 s) |
+|---|---|---|
+| network → modem: paging + RRC setup | ≤ 20.48 s (eDRX cycle) + 1–2 s, but the modem does this **while the ESP32 sleeps**, so only the eDRX term is serial: **≤ 20.48 s** | C-DRX, already RRC-connected: **≤ 0.5 s** |
+| modem → ESP32: URC held off by RTS until the next wake | **≤ T = 5.0 s** | **≤ T = 2.0 s** |
+| light-sleep wake + URC flush + event dispatch (~30 ms, §8.0) + `mqttReceive()` round trip | **0.3 s** | 0.3 s |
+| JSON parse + partial e-paper refresh | 0.5–1.5 s | 0.5–1.5 s |
+| **worst case** | **20.48 + 5.0 + 0.3 + 1.5 = 27.3 s — fits 30 s with 2.7 s margin** | **0.5 + 2.0 + 0.3 + 1.5 = 4.3 s — fits 5 s with 0.7 s margin** |
+
+Both margins are thin, and both are now sensitive to the wake interval `T`, which §8.2 chose for
+energy reasons. Two things break this budget, and firmware MUST log enough to detect either:
+
+1. A granted eDRX cycle larger than the requested 20.48 s (§6.3). At the next standard value,
+   40.96 s, the sleep-mode worst case becomes 47.8 s and **the 30 s target is unreachable** at any
+   wake interval. The response is to lower `T` only if the overshoot is small; otherwise the target
+   itself has to move. v1.5.0 hands the granted value to `setNetworkEventHandler()` directly
+   (§6.3), so this is a one-line assertion at attach, not a log-scraping exercise.
+2. An e-paper refresh slower than 1.5 s. Phase 5 must measure the partial-refresh time and report
+   back here if it exceeds 1.5 s; at `T` = 5 s there is only 2.7 s of slack to spend.
 
 ---
 
@@ -389,9 +415,15 @@ overhead is not a risk to the data constraint. Both profiles also satisfy HANDOF
 "< 10 MB estimated monthly usage". The break-even point is ~4100 fully-acked messages/day.
 
 **The dominant term is reconnects, not messages** — 20 of 58 kB nominal, 120 of 236 kB pessimistic.
-This is the quantitative reason for HANDOFF.md's "never reconnect on a timer". Phase 4 should check
-whether `walter-modem` exposes TLS session resumption (session ticket / session id); if so, a
-resumed handshake costs ~1 kB instead of ~5 kB and cuts the pessimistic day by ~40 %.
+This is the quantitative reason for HANDOFF.md's "never reconnect on a timer". **Phase 4 checked
+whether `walter-modem` exposes TLS session resumption: it does not.** The entire public TLS surface
+in v1.5.0 is `tlsWriteCredential()` (`src/WalterModem.h:4147`) and `tlsConfigProfile()` (`:4404`) —
+profile id, validation level, TLS
+version and three credential slot indices. There is no session-ticket or session-id parameter and no
+resumption getter, so a reconnect is a full ~5 kB handshake every time and the ~40 % saving on the
+pessimistic day is unavailable. This does not threaten the 100 MB cap (the pessimistic day is still
+under 7 MB/month) but it does raise the energy cost of §8.3 (b), where each message would pay a full
+handshake.
 
 **SMS budget: 0 of 100 used.** SMS is out of scope (HANDOFF.md §1). Firmware MUST NOT enable any
 SMS send path, and the relay has no SMS code path. This line exists so a later phase cannot quietly
@@ -401,65 +433,190 @@ introduce one without editing this document.
 
 ## 8. ESP32 wake sources
 
-RTC memory contents are defined in §9. "Survives" below means the field must be valid *before* the
-wake handler runs.
+**Rewritten in Phase 4** against `dptechnics/walter-modem` v1.5.0 (read at
+`firmware/managed_components/dptechnics__walter-modem/`). Phase 1 assumed the modem could wake the
+ESP32 from deep sleep on an incoming MQTT message and designed the whole sleep-mode power story
+around it. The library does not support that, and the cost of the workaround is the single largest
+correction in this document. RTC memory contents are defined in §9.
+
+### 8.0 The library constraint that forces the design
+
+Three facts, each checked in the **v1.5.0** source, not assumed:
+
+1. **Incoming messages are announced only by a live URC, and the announcement carries data you
+   cannot reconstruct.** The modem emits `+SQNSMQTTONMESSAGE:0,"<topic>",<len>,<qos>,<mid>`; the
+   library parses it (`src/WalterModem.cpp:3408-3466`) and pushes a `WalterModemEvent` onto a
+   FreeRTOS queue carrying `{topic, msg_length, qos, mid}`. The application handler then calls
+   `mqttReceive(topic, mid, buf, len)` to fetch the payload — this is the vendor's own pattern in
+   `examples/mqtts/main/mqtts.cpp:383-390`.
+2. **None of that state is in RTC memory.** `_sleepPrepare()` (`src/WalterModem.cpp:4068-4095`)
+   copies PDP contexts, the CoAP context set, the MQTT **topic/subscription** list, sockets and
+   BlueCherry state into RTC — and nothing else. The event queue is an ordinary FreeRTOS queue in
+   regular RAM. v1.5.0 removed the old `_mqttRings[]` array entirely, so there is not even a
+   buffer left to inspect.
+3. **There is no way to ask the modem what it is holding.** `AT+SQNSMQTTRCVMESSAGE` needs the
+   `mid` that only the lost URC carried. The one no-`mid` form of the command is the QoS **0** path,
+   and it is what the deprecated `mqttDidRing()` hardcodes — `mqttDidRing()` is now nothing but
+   `mqttReceive(topic, 0, …)` plus a deprecation warning (`src/proto/WalterMQTT.cpp:174-182`), so it
+   is the wrong call for our QoS 1 `/down` topic. **Firmware MUST NOT use `mqttDidRing()`.**
+
+Consequence, unchanged from the first Phase 4 pass and if anything firmer on v1.5.0: **a `/down`
+message that arrives while the ESP32 is in deep sleep is announced into a powered-down UART and is
+then unreachable through the public API.** Deep sleep does not merely fail to wake us — it loses the
+message, and it loses the `mid` needed to ever ask for it again.
+
+The corollary that shapes the loop: **there is nothing to poll.** Phase 4's first draft described a
+"poll cycle" calling `mqttDidRing()`; on v1.5.0 that is both deprecated and wrong for QoS 1. The
+correct shape is a **wake-and-drain cycle** — the ESP32 wakes, the modem flushes the URC it was
+holding while RTS was deasserted, the library's RX task parses it, the event task dispatches it, the
+handler calls `mqttReceive()`. The ESP32 issues no speculative AT traffic at all. The energy model in
+§8.2 is unaffected: what matters is the length of the awake window and how often it happens, not what
+the ESP32 does inside it.
+
+Two v1.5.0 features that Phase 1 did not know about and that the design should use:
+
+- **A real event system, dispatched from a dedicated task.** `setMQTTEventHandler()`
+  (`src/WalterModem.h:6011`) delivers `WALTER_MODEM_MQTT_EVENT_MESSAGE` / `_CONNECTED` /
+  `_DISCONNECTED` / `_SUBSCRIBED` / `_PUBLISHED` / `_MEMORY_FULL` (`:1368-1375`) from
+  `_eventProcessingTask` (`src/WalterModem.cpp:1595-1626`), **not** from the RX ISR/task. Calling
+  modem APIs from the handler is supported and is what the vendor example does. Note the task
+  polls its queue on a 10 ms tick and adds a further 10 ms settle delay before dispatch, so budget
+  **≥30 ms of awake time** for an event to surface at all.
+- **`+SQNSMQTTMEMORYFULL` → `WALTER_MODEM_MQTT_EVENT_MEMORY_FULL`** (`src/WalterModem.cpp:3398-3405`)
+  tells us the modem's own message buffer overflowed. That is the direct signal that the
+  wake-and-drain cycle is falling behind, and firmware should count it (§8.4 measurement M6).
+
+### 8.1 Wake source table
 
 | # | Wake source | Mechanism | Trigger | Mode | Verified? | RTC state that must survive |
 |---|---|---|---|---|---|---|
-| 1 | Modem URC / RI line | `esp_sleep_enable_ext1_wakeup()` on the modem's ring-indicator or UART RX line | Modem received an MQTT PUBLISH on `/down` and raises a URC | sleep | **UNVERIFIED** (HANDOFF.md §2 "verify on hardware") | `mode`, `session_id`, `seen_ids[16]`, `pending_acks`, msg ring |
-| 2 | Button IO1 | `ext0` wake, active low, RTC GPIO | Short press = mark read / open composer; long press = send reply | sleep (deep) and active (light) | Yes — IO1 is an RTC GPIO per HANDOFF.md §1 | `mode`, `active_until`, msg ring, `pending_acks` |
-| 3 | RTC timer — keepalive | `esp_sleep_enable_timer_wakeup(1500 s)` | Issue MQTT PINGREQ; piggyback status heartbeat every 2nd wake (§5.4) | sleep | Yes (mechanism); **need only exists if** the modem does not self-ping — UNVERIFIED | `keepalive_epoch`, `status_pub_count`, `session_id` |
-| 4 | RTC timer — active-mode exit | `esp_timer` while awake, not a deep-sleep wake | 10 min with no button/keyboard activity → return to sleep mode | active | Yes | `mode`, `active_until` |
-| 5 | LIS3DH INT1 (IO2) | `ext1` | Motion wake | — | **Out of scope for MVP.** Reserved only. | — |
-| 6 | CardKB | — | **Cannot wake the ESP32.** CardKB has no interrupt line to an RTC GPIO; it is polled at 100 ms only while the composer is open (HANDOFF.md §2). A reply always starts with a button press. | active | Yes (by construction) | — |
+| 1 | **Wake-and-drain timer** (primary) | `esp_sleep_enable_timer_wakeup(T)` + `esp_light_sleep_start()`, `T` = 5 s sleep / 2 s active | Wake, reassert RTS, let the modem flush the URC it held, let the library's RX and event tasks dispatch it to the MQTT handler, which calls `mqttReceive(topic, mid, …)`. **No polling call is made** (§8.0). | both | Mechanism yes; the RTS hold-off behaviour is **UNVERIFIED** (§8.3) | Light sleep retains RAM, so *nothing* has to survive — this is the point |
+| 2 | Button IO1 | `esp_sleep_enable_ext0_wakeup(IO1, 0)`, active low, RTC GPIO | Short press = mark read / open composer; long press = send reply | both | Yes — IO1 is an RTC GPIO (HANDOFF.md §1) | `mode`, `active_until`, msg ring, `pending_acks` (deep-sleep path only) |
+| 3 | ~~RTC timer — keepalive~~ | — | **Deleted in Phase 4.** The MQTT client is in the modem and the library exposes no ping API; PINGREQ is the modem's job (§6.2). The status heartbeat rides an ordinary poll wake using a counter in RTC memory. | — | n/a | `status_pub_count` |
+| 4 | RTC timer — active-mode exit | `esp_timer` while awake, not a sleep wake | 10 min with no button/keyboard activity → sleep mode | active | Yes | `mode`, `active_until` |
+| 4b | MQTT event (no sleep involved) | `setMQTTEventHandler()` → `_eventProcessingTask` | `_MESSAGE` short-circuits the wake-and-drain latency while the ESP32 happens to be awake; `_DISCONNECTED` drives F3 recovery; `_MEMORY_FULL` flags a missed drain | both | Yes — v1.5.0 API | none (handler runs while awake) |
+| 5 | ~~Modem URC / RI line into deep sleep~~ | `ext1` on the modem RX line | **Demoted in Phase 4: not supported by the library's public API; not pursued for the MVP.** See §8.3 for why, and for the one variant that could still work if someone wants the battery back. | — | n/a | — |
+| 6 | LIS3DH INT1 (IO2) | `ext1` | Motion wake | — | **Out of scope for MVP.** Reserved only. | — |
+| 7 | CardKB | — | **Cannot wake the ESP32.** No interrupt line to an RTC GPIO; polled at 100 ms only while the composer is open. A reply always starts with a button press. | active | Yes (by construction) | — |
 
-### 8.1 The one experiment that matters
+**The GPIO question from Phase 1 is closed, and the answer is that there was never a question.** The
+modem UART is board-fixed inside the component — RX 14, TX 48, RTS 21, CTS 47, RESET 45
+(`src/WalterModem.cpp:82,87,92,97,102`, Kconfig-overridable but correct for Walter as shipped). None of those
+collide with `firmware/main/pins.h` (1, 2, 8, 9, 10, 11, 12, 15, 16, 17, 18), and `begin()` takes
+only a `uart_port_t`. No pin needs to be added to `pins.h` and **no GPIO reassignment is requested**.
+For the record, GPIO14 and GPIO21 are both RTC-capable on the ESP32-S3 (RTC GPIOs are 0–21), so the
+Phase 1 worry about a bodge wire was unfounded — the blocker is the library API, not the board.
 
-Whether source #1 works determines the whole sleep-mode power story.
+### 8.2 Why light sleep, and why `T` = 5 s — the arithmetic
 
-**Experiment (cheapest first, ~1 hour, no extra hardware):**
-1. Keep the ESP32 awake, modem attached with the MQTT session up. Configure a GPIO interrupt on the
-   candidate modem line(s) and log every edge with a timestamp.
-2. `tools/send.py` a message. Confirm an edge appears at the same moment as the URC on the UART.
-3. If yes: repeat with `esp_light_sleep_start()`, wake on that GPIO, and check
-   `esp_sleep_get_wakeup_cause()`.
-4. If that works: repeat with `esp_deep_sleep_start()` + `ext1`, and confirm the boot count in RTC
-   memory increments and the URC is still retrievable from the modem after the ESP32 reboots.
+(Terminology: `T` is the **wake-and-drain interval**, not a polling interval — see §8.0. The energy
+model is indifferent to that distinction; the latency model in §6.5 is not.)
 
-Step 4 has a second failure mode worth calling out: even if the wake fires, the URC may have been
-lost while the UART peripheral was powered down. If so, the device must re-poll the modem's MQTT
-receive buffer on wake rather than rely on the URC text. Design `net.c` to **poll-on-wake**
-regardless, so correctness does not depend on capturing the URC bytes.
+Vendor figures, from the `WalterModem::sleep()` doc comment (`src/WalterModem.h:4269-4271`) — these
+are **vendor-documented board-level numbers, not this document's estimates**: light sleep **1 mA**,
+deep sleep **9.5 µA**. Assumption attached to both: they describe the board with the modem also
+asleep. Our modem stays attached in eDRX, so the modem paging term is added on top of both and
+cancels out of the comparison below.
 
-**If the line is not routed to an RTC-capable GPIO on the Walter board**, making it work needs a
-bodge wire / pin reassignment → `NEEDS HUMAN DECISION` (HANDOFF.md §7.7 forbids a GPIO change
-without asking).
+Per-wake energy, ESP32 side, at an assumed **40 mA** active draw (ESP32-S3, radio off):
 
-**Fallback if #1 cannot be made to work** (HANDOFF.md §2 mandates documenting this, not silently
-degrading): light sleep in both modes, UART RX as the wake source. Estimated cost: ESP32-S3 light
-sleep with RAM retention and the UART clocked is roughly 0.3–1.0 mA (estimate) versus roughly
-10–100 µA in deep sleep (estimate), so the sleep-mode average would rise from an estimated
-0.6–1.2 mA to roughly 1.2–2.5 mA — a **2×-ish battery-life cut**. Phase 4 must measure both and
-record the delta in `firmware/README.md`, per HANDOFF.md §2.
-
-### 8.2 Sleep-mode current estimate (all `(estimate)`, TBD — hardware measurement)
-
-| Term | Estimate | Assumption |
+| | awake time per cycle | why |
 |---|---|---|
-| Modem eDRX paging | 0.2–0.5 mA | 2 paging occasions per 20.48 s cycle, ~50 ms each at ~50 mA RX, plus warm-up |
-| Modem idle floor | 0.01–0.05 mA | Sequans GM02SP deep-sleep-between-paging |
-| ESP32-S3 deep sleep | 0.01–0.10 mA | RTC slow memory retained; board leakage unknown |
-| Keepalive amortised | ~0.20 mA | 48/day × ~0.1 mAh (§6.2) |
-| Display (powered off via IO15 gate) | ~0 mA | e-paper VCC gated between refreshes |
-| **Sleep-mode total** | **≈ 0.6–1.2 mA → ~15–29 mAh/day** | On a ~1500 mAh LiFePO4 cell: **~50–100 days idle** |
+| Light-sleep cycle | **50 ms** (estimate) | CPU resumes in place. No re-init, and **no AT traffic in the common case** — the ESP32 issues nothing unless a URC actually arrived (§8.0). The floor is set by the library's event task, which ticks at 10 ms and adds a 10 ms settle delay, so ~30 ms is the minimum useful window; 50 ms gives margin for the UART flush. |
+| Deep-sleep cycle | **600 ms** (estimate) | Deep sleep restarts program execution. Bootloader + `app_main` ≈ 300 ms, then `WalterModem::begin()` must re-open the UART, spawn its tasks, run `_sleepWakeup()` — which itself issues a `checkComm()` (`src/WalterModem.cpp:4097-4100`) — and then `configCMEErrorReports()` + `configCEREGReports()`, i.e. at least three AT round trips (`src/WalterModem.cpp:4258-4276`). |
 
-Active mode: 10-minute window, modem RRC-connected with C-DRX plus ESP32 tickless light sleep,
-estimated **15–40 mA → 2.5–6.7 mAh per window**. Six windows/day ≈ 15–40 mAh/day, i.e. active mode
-roughly doubles to triples daily consumption. Phase 4 should measure whether idle-mode eDRX at
-5.12 s also meets the <5 s target; if it does, it is likely several× cheaper than holding RRC. That
-is a measurement to take, **not** a change to HANDOFF.md §2's architecture.
+ESP32-side average current as a function of the poll interval `T`:
 
----
+```
+I_light(T) = 1.0    + 40 x (0.050 / T)  =  1.0    + 2.0 / T   mA
+I_deep(T)  = 0.0095 + 40 x (0.600 / T)  =  0.0095 + 24  / T   mA
+
+crossover:  1.0 + 2/T = 0.0095 + 24/T  ->  0.99 = 22/T  ->  T = 22 s
+```
+
+**Deep sleep only wins above a 22-second wake interval.** §6.5 caps the interval at
+30 − 20.48 − 0.3 − 1.5 = **7.7 s**. The two requirements do not overlap, so light sleep wins, and it
+is not close:
+
+| `T` | `I_light` | `I_deep` | sleep-mode worst-case latency |
+|---|---|---|---|
+| 2 s | 2.00 mA | 12.0 mA | 24.3 s |
+| **5 s** | **1.40 mA** | **4.81 mA** | **27.3 s** |
+| 7 s | 1.29 mA | 3.44 mA | 29.3 s |
+| 22 s | 1.09 mA | 1.10 mA | 44.3 s — **misses the 30 s target** |
+
+`T` = **5 s** is the choice: 1.40 mA against 1.29 mA at 7 s — 0.11 mA, about 2.6 mAh/day, roughly
+0.4 % of a 1500 mAh cell — buys 2.0 s of latency margin on a budget that has only 2.7 s of it. Going
+below 5 s costs real current (2 s costs +0.6 mA, ~14 mAh/day) for latency nobody asked for in sleep
+mode. `PAGER_WAKE_INTERVAL_SLEEP_MS` / `PAGER_WAKE_INTERVAL_ACTIVE_MS` are compile-time constants so
+this can be retuned against a current trace without touching logic.
+
+### 8.3 Deep sleep: why it is not in the MVP, and the one way back
+
+Two variants could make deep sleep safe, and both are blocked on something unverified:
+
+- **(a) Hold RTS deasserted across deep sleep.** RTS is GPIO21, an RTC GPIO, so `rtc_gpio_hold_en()`
+  plus `gpio_deep_sleep_hold_en()` can pin it high while the ESP32 is down. If the Sequans honours
+  CTS and queues its URCs instead of dropping them, the URC is delivered intact after
+  `WalterModem::begin()` releases the hold — which is exactly the trick the library already performs
+  for light sleep (`src/WalterModem.cpp:4413-4450`). This fixes *correctness*, but it does not fix
+  *energy*: the 600 ms re-init per cycle still applies, so the table above still says deep sleep
+  loses at `T` ≤ 7.7 s. **Not worth pursuing at MVP latency.**
+- **(b) `ext1` wake on the modem RX line (GPIO14) + forced redelivery.** Wake on the URC's start
+  bit, accept that the URC bytes are lost, then `mqttDisconnect()` + `mqttConnect()` so the broker
+  redelivers the unacked QoS 1 message while the ESP32 is awake. Energy would be excellent —
+  9.5 µA floor plus roughly 0.107 mAh per message (600 ms boot at 40 mA, plus ~3 s of RRC at
+  ~120 mA for the handshake), so about **12–19 mAh/day** against the 38–50 mAh/day of §8.4, a 2.5–4×
+  win. Data cost is ~5 kB per message (§7.2), ~100 kB/day at 20 messages — irrelevant against the
+  3413 kB/day the SIM allows. **But it is entirely dependent on `cleanSession=false`, which the
+  library cannot set (§6.1).** If the Sequans defaults to a clean session there is no redelivery and
+  the message is simply lost. Do not implement (b) until the §6.1 clean-session experiment has
+  passed. It is the highest-value follow-up in this document.
+
+Note that (a) and (b) are mutually exclusive: holding RTS high stops the modem transmitting, so the
+RX line never toggles and the `ext1` wake never fires.
+
+Phase 4 implements neither. It implements the light-sleep poll cycle, which is correct by
+construction, needs no GPIO change and no unverified modem behaviour, and measures the result.
+
+**HANDOFF.md §2's "do not silently degrade" clause is satisfied by this section.** The degradation
+is real, it is roughly a 2× cut in idle battery life versus the Phase 1 estimate, and its cause is a
+library limitation rather than a hardware one.
+
+### 8.4 Sleep-mode current estimate
+
+Vendor-documented where marked; everything else remains `(estimate)` pending a Phase 4 current trace.
+
+| Term | Value | Assumption |
+|---|---|---|
+| ESP32-S3 light sleep, board level | **1.00 mA** *(vendor)* | `WalterModem::sleep()` doc comment; RAM retained, UART domain powered |
+| Wake-and-drain overhead, `T` = 5 s | 0.40 mA (estimate) | 50 ms awake at 40 mA every 5 s (§8.2) |
+| Modem eDRX paging | 0.2–0.5 mA (estimate) | Unchanged from Phase 1: 2 paging occasions per 20.48 s cycle, ~50 ms each at ~50 mA RX, plus warm-up |
+| Modem idle floor | 0.01–0.05 mA (estimate) | Sequans GM02SP deep-sleep-between-paging |
+| Keepalive, amortised | ~0.20 mA (estimate) | 48 PINGs/day × ~0.1 mAh (§6.2); modem-side only, the ESP32 no longer wakes for it |
+| Display (gated off via IO15) | ~0 mA | e-paper VCC gated between refreshes |
+| **Sleep-mode total** | **≈ 1.8–2.1 mA → 43–50 mAh/day** | On a ~1500 mAh LiFePO4 cell: **~30–35 days idle** |
+
+> **Changed from Phase 1.** The previous estimate was 0.6–1.2 mA → 15–29 mAh/day → ~50–100 days,
+> built on an ESP32 deep-sleep floor of 0.01–0.10 mA. That floor was only reachable with a
+> modem-driven deep-sleep wake, which §8.0 shows the library cannot provide. The honest number is
+> roughly **2× worse**. §8.3 (b) is the path back to something near the original figure.
+
+Active mode, 10-minute window: the ESP32 light-sleeps at `T` = 2 s between drains rather than
+spinning, so its contribution is `I_light(2)` ≈ **2.0 mA**, not the ~35 mA of a busy-wait. The modem
+holding RRC/C-DRX dominates at an estimated 5–15 mA, giving **7–17 mA → 1.2–2.8 mAh per window**.
+Six windows/day ≈ **7–17 mAh/day**, so active mode adds roughly 20–40 % on top of sleep mode rather
+than the 100–200 % Phase 1 projected. Carve-out: while the reply composer is open the CardKB needs
+100 ms polling, so the device stays fully awake for that window — a Phase 5 concern, but budget for
+it here.
+
+Firmware MUST count `WALTER_MODEM_MQTT_EVENT_MEMORY_FULL` events and publish the counter in the
+`/status` heartbeat if it is ever non-zero: it is the only direct evidence that the wake-and-drain
+cycle is losing messages, and it is cheap.
+
+Phase 4 should still measure whether idle-mode eDRX at 5.12 s meets the <5 s target; if it does it
+is likely several× cheaper than holding RRC. That is a measurement to take, **not** a change to
+HANDOFF.md §2's architecture.
 
 ## 9. RTC memory contract
 
@@ -472,19 +629,56 @@ cycle, brownout and EN reset.
 | `boot_count` | 4 B | Diagnostics; distinguishes cold boot from deep-sleep wake |
 | `session_id[11]` | 12 B | §1; regenerated **only** on cold boot |
 | `mode`, `active_until_epoch` | 12 B | Mode state machine |
-| `keepalive_epoch`, `status_pub_count` | 8 B | §5.4, §6.2 |
+| `status_pub_count`, `last_status_epoch` | 8 B | §5.4 heartbeat cadence. Phase 4: `keepalive_epoch` is **deleted** — the ESP32 no longer wakes for the keepalive (§6.2), so there is nothing to track. |
 | `seen_ids[16][12]` + head | 196 B | Dedup ring (§4.1 rule 7) |
 | `pending_acks[8]` (id + state + attempts) | 128 B | Ack retry queue (§4.1 rule 6) |
-| `pending_up[4]` (id + ts + body + attempts) | ~1.4 kB | Unsent student replies (§4.2) |
-| `msg_ring[10]` (Phase 5: id, ts, from, body, flags) | ~3.6 kB | Last 10 messages for the thread view |
-| **Total** | **≈ 5.4 kB of 8 kB** | ~2.6 kB headroom |
+| `pending_up[2]` (id + ts + 48 B snippet + attempts) | ~150 B | Unsent student replies (§4.2) — **shrunk in Phase 4, see below** |
+| `msg_ring[3]` (id, ts, from, 48 B snippet, flags) | ~250 B | Last messages for the thread view — **shrunk in Phase 4, see below** |
+| **Total** | **≈ 1.0 kB of 8 kB** | ~7.2 kB claimed by the `walter-modem` library itself, not by us |
 
-If Phase 5 finds this does not fit, the first lever is truncating the body retained in RTC to 160
-bytes (display-visible portion), which saves ~1.6 kB. **Do not** shrink `seen_ids` — see the
-duplicate-storm cost in §4.1 rule 7.
+**Superseded in Phase 4 — this table's original sizing (`pending_up[4]` at full 320-byte bodies,
+`msg_ring[10]`, ≈5.4 kB total, "~2.6 kB headroom") assumed the library's own RTC footprint was
+1–2 kB. Measured against the real v1.5.0 linker output it is not: `_pdpCtxSetRTC` +
+`_mqttTopicSetRTC` + `_socketCtxSetRTC` + `_coapCtxSetRTC` + `blueCherryRTC` together occupy
+**≈7.0 kB of the 8 kB `rtc_slow_seg`** (confirmed from `build/school_pager.map`: `.rtc.data.0`
+through `.rtc.data.4` under `WalterModem.cpp.obj` sum to 7003 bytes), leaving only **≈1.2 kB**
+for everything in this table — roughly 6× less than assumed. Disabling the unused protocols to
+reclaim that space (this section's own former recommendation) turned out to be a dead end:
+`CONFIG_WALTER_MODEM_ENABLE_SOCKETS=n` (and each of `_HTTP`/`_COAP`/`_BLUECHERRY` individually)
+**fails to build the vendor library itself** — `WalterBlueCherry.cpp` unconditionally references
+socket/HTTP/CoAP state without matching `#if` guards. HANDOFF.md §7.7 forbids patching the
+managed component, so all four stay enabled. `pending_up`/`msg_ring` are therefore sized down to
+a fit that actually links (48-byte truncated body snippet, depth 2/3 instead of 4/10) —
+confirmed by the shipped `pager_rtc_t` = 1016 B, total `.rtc.data` = 8020 B of 8192 B (172 B
+margin). This is a real, load-bearing constraint on Phase 5, not a Phase 4 style choice: msg.c's
+thread view and reply queue must design around a 48-byte on-device snippet and single-digit
+queue depths, not the fuller sizing this table originally specified. If Phase 5 needs more
+headroom, the lever is not "truncate the body" (already done, harder than this table's original
+"160 bytes" suggestion) — it is revisiting whether `msg_ring`/`pending_up` belong in RTC memory
+at all, since the MVP sleep design is light sleep (RAM survives) and RTC residency is now paid
+for at a real premium (§9's three reasons below still apply, but the cost of honoring them is
+now known). **Do not** shrink `seen_ids` — see the duplicate-storm cost in §4.1 rule 7.**
 
 Firmware MUST NOT assume the modem's MQTT session state is mirrored in RTC memory. On every wake it
-re-reads the modem's actual connection state and **polls the modem's MQTT receive buffer** (§8.1).
+re-reads the modem's actual connection state and **polls the modem's MQTT receive buffer** (§8.0).
+
+**Phase 4 note on what RTC memory is now for.** After the §8 rewrite the MVP sleep cycle is *light*
+sleep, which retains ordinary RAM — so on the normal path nothing in this table has to be in RTC
+memory at all. It stays in RTC memory anyway, for three reasons, and firmware-dev should not
+"optimise" it into the heap:
+
+1. It is the only store that survives a watchdog reset, a software reset or a crash. Losing
+   `pending_acks` / `pending_up` to a stray reset means a student's reply silently disappears.
+2. §8.3 (b) may bring deep sleep back once the clean-session question (§6.1) is settled. Keeping the
+   layout as specified means that change is a sleep-call swap, not a data-model rewrite.
+3. The `walter-modem` library already keeps its own RTC-backed state in the same 8 kB
+   (`_pdpCtxSetRTC`, `_coapCtxSetRTC`, `blueCherryRTC`, `_mqttTopicSetRTC`, `_socketCtxSetRTC` —
+   `src/WalterModem.cpp:157-176`). **Measured in Phase 4** (not the 1–2 kB this note originally
+   guessed): **≈7.0 kB**, confirmed from the linker map. Disabling the unused protocols to
+   reclaim it does **not** work — it breaks the vendor library's own compilation (see the table
+   above) — so `sdkconfig.defaults` leaves all four enabled and `modes.c`'s RTC struct is sized to
+   fit the ≈1.2 kB that's actually left. `net.cpp`/`modes.c` log `sizeof()` of the pager RTC
+   struct at boot, per this note's original instruction.
 
 ---
 
@@ -542,30 +736,86 @@ future.
 
 ## 12. Open questions for the human
 
-1. **`NEEDS HUMAN DECISION` — modem wake line GPIO.** If the GM02SP ring-indicator / UART RX line is
-   not already routed to an RTC-capable GPIO on the Walter board, enabling deep-sleep wake on an
-   incoming MQTT message needs a pin reassignment or a bodge wire. HANDOFF.md §7.7 forbids a GPIO
-   change without asking. Impact if declined: the light-sleep fallback in §8.1, roughly halving
-   battery life (estimate). Run the §8.1 experiment before asking — it may turn out to be a non-issue.
-2. **`NEEDS HUMAN DECISION` — broker free-tier limits.** This contract needs, per device: QoS 1 both
-   directions, a retained `/status`, an LWT, `cleanSession=false` with a persistent session that
-   outlives a coverage gap, and a 1800 s keepalive. If the chosen free tier caps session expiry
-   below a useful window, caps keepalive below 1800 s, or limits credentials/connections such that a
-   second device needs a paid plan, that is a paid-service decision. Someone should confirm these
-   five properties on the actual HiveMQ Cloud Serverless free tier before Phase 2 hardens against it.
-3. **Not a decision, but needs an owner:** per-device MQTT credentials and the broker CA must be
-   provisioned to the device at flash time (NVS) and never committed (HANDOFF.md §7.5). No tooling
-   for this exists yet in the repo.
+1. **~~`NEEDS HUMAN DECISION` — modem wake line GPIO.~~ CLOSED in Phase 4 — no decision needed.**
+   The question was whether the modem's ring-indicator / UART RX line is routed to an RTC-capable
+   GPIO, and whether enabling deep-sleep wake needs a bodge wire. It does not: the modem UART is
+   board-fixed inside the component at RX 14 / TX 48 / RTS 21 / CTS 47 / RESET 45
+   (`src/WalterModem.cpp:82,87,92,97,102`), GPIO14 and GPIO21 are both RTC-capable on the ESP32-S3,
+   and nothing collides with `pins.h`. **No GPIO change is requested and none is needed.**
+   What replaced it is not a hardware question but a library one, and it is not a decision for the
+   human either — it is an experiment (item 4 below). See §8.0: the library discards
+   incoming-message state across an ESP32 restart, so deep sleep loses messages regardless of how we
+   wake. The documented consequence is §8.4's revised estimate: **≈1.8–2.1 mA / 43–50 mAh/day, about
+   2× worse than Phase 1's 0.6–1.2 mA**, i.e. ~30–35 days of idle life instead of ~50–100.
+
+2. **`NEEDS HUMAN DECISION` — broker free-tier limits.** Unchanged from Phase 1. This contract needs,
+   per device: QoS 1 both directions, a retained `/status`, an LWT, `cleanSession=false` with a
+   persistent session that outlives a coverage gap, and a 1800 s keepalive. If the chosen free tier
+   caps session expiry below a useful window, caps keepalive below 1800 s, or limits
+   credentials/connections such that a second device needs a paid plan, that is a paid-service
+   decision. Phase 4 adds a wrinkle: two of those five properties (LWT, clean session) may be
+   unreachable from the device side regardless of what the broker allows — see item 3.
+
+3. **`NEEDS HUMAN DECISION` — LWT and clean session are not settable from `walter-modem` v1.5.0.**
+   §5.2's LWT contract and §6.1's `cleanSession=false` both assumed an API the library does not
+   expose (`mqttConfig()` stops after the TLS profile id; `mqttConnect()` has no session flag; a grep
+   of `src/` for `will`/`lastwill`/`clean_session` returns nothing). The options, cheapest first:
+   **(a)** send a raw `AT+SQNSMQTTCFG` with the will parameters via the public `sendCmd()` before
+   connecting — free if the Sequans AT manual supports it, needs the manual to confirm;
+   **(b)** upgrade the component if a future release exposes them; **(c)** drop the LWT and have the
+   relay infer offline from keepalive expiry, which costs up to 1800 s of staleness in the parent UI;
+   **(d)** patch the managed component, which HANDOFF.md §7.7's dependency rule argues against.
+   Someone should pick between (a)-(c). MVP default if nobody picks: (a) attempted, (c) as the
+   fallback, and §5.2 is then advisory rather than binding.
+
+4. **Not a decision, but the highest-value experiment in this document.** Settle whether the modem's
+   MQTT session is persistent across an ESP32 restart (§6.1 clean session). If it is, §8.3 (b)
+   becomes implementable and idle battery life goes from ~30–35 days back to roughly 80–120 days.
+   ~20 minutes on hardware. Nobody should redesign anything for it until it has been run.
+
+5. **Not a decision, but needs an owner:** per-device MQTT credentials and the broker CA must be
+   provisioned to the device at flash time and never committed (HANDOFF.md §7.5). The device-side
+   mechanism is settled — `tlsWriteCredential()` into modem NVRAM certificate slot ≥ 11, once per
+   device, persistent across reboots (§6.1) — but no tooling for getting the per-device credentials
+   *to* that call exists in the repo yet. NVS plus a flash-time provisioning step is the obvious
+   shape; nobody owns it.
+
+6. **`NEEDS HUMAN DECISION` — no battery-voltage sense pin.** §5.1's `/status` schema requires
+   `batt_mv`, and HANDOFF.md's hardware table (§1) does not list an ADC-capable GPIO wired to the
+   battery for that purpose. `modes.c` currently publishes a hardcoded 3300 mV placeholder so the
+   payload stays schema-valid; there is no real reading behind it. Adding a sense pin is a GPIO
+   change and HANDOFF.md §7.7 requires asking before making one — this document does not decide it.
+   Options: (a) add a battery-sense GPIO (needs a free ADC-capable pin and, likely, a resistor
+   divider — a hardware change, not just a firmware one); (b) query the modem for a supply-voltage
+   reading if `walter-modem` exposes one (unverified — not checked in Phase 4); (c) ship without a
+   real battery reading for the MVP and treat `batt_mv` as advisory until this is resolved.
+
+> **Retracted in Phase 4 review.** An earlier revision of this section carried a fifth
+> `NEEDS HUMAN DECISION` claiming `tlsWriteCredential()` was private and that application code
+> therefore could not provision a CA, forcing a choice between unauthenticated TLS and a separate
+> provisioning firmware. **That was wrong** — it was read against v1.2.0, where the symbol was
+> briefly private. In v1.5.0 it is public (`src/WalterModem.h:4147`, inside the `public:` block that
+> starts at `:4132`) and is demonstrated in the vendor's own `examples/mqtts`. There is no decision
+> to make: the Phase 1 TLS provisioning flow works as originally specified. The episode is recorded
+> because it is the second time a conclusion in this document turned on a component version — pin
+> the version in `firmware/main/idf_component.yml` and re-read the source after any upgrade.
 
 ### Unverified assumptions tracked in this document
 
-| § | Assumption | Cheapest experiment |
-|---|---|---|
-| 6.1 | `walter-modem` MQTT is 3.1.1, not 5 | Read the component header — 10 min, no hardware |
-| 6.1 | `walter-modem` exposes TLS session resumption | Same header read; worth ~40 % of the pessimistic data budget |
-| 6.2 | Modem issues PINGREQ autonomously (would remove wake source #3 entirely) | Attach, set a short keepalive, hold the ESP32 in deep sleep past it, see if the session survives |
-| 6.2 | Carrier NAT tolerates a 1800 s idle TCP flow | Overnight idle run with keepalive off, bisect the timeout |
-| 6.3 | `walter-modem` eDRX API takes seconds vs. the raw 3GPP nibble | Header read |
-| 6.3 | Carrier grants the requested 20.48 s / 2.56 s | Log the granted values at attach — free, first bring-up |
-| 8 | Modem URC line can wake the ESP32 from deep sleep | §8.1, ~1 hour |
-| 8.2 | All current figures | Phase 4 current-trace measurement; record in `firmware/README.md` |
+| § | Assumption | Status | Cheapest experiment |
+|---|---|---|---|
+| 6.1 | `walter-modem` MQTT is 3.1.1, not 5 | **RESOLVED** — 3.1.1; no version/property API exists | — |
+| 6.1 | `walter-modem` exposes TLS session resumption | **RESOLVED — it does not.** Costs the ~40 % saving on the pessimistic data budget (§7.3) | — |
+| 6.1 | A CA can be provisioned from application code | **RESOLVED — yes**, `tlsWriteCredential()` is public in v1.5.0; cert slot ≥ 11, TLS profile ≥ 2 | — |
+| 6.1 | The modem's MQTT session is `cleanSession=false` | **OPEN, load-bearing.** Not settable, so it is whatever the Sequans defaults to — and `mqttConnect()` clearing the subscription table hints at "clean" | §12 item 4, ~20 min on hardware |
+| 6.1 | An LWT can be registered | **OPEN** — no typed API | Raw `AT+SQNSMQTTCFG` with will parameters via `sendCmd()`; check the Sequans AT manual first, 30 min, no hardware |
+| 6.2 | Modem issues PINGREQ autonomously | **RESOLVED by construction** — there is no ping API, so it must; the ESP32 keepalive wake is deleted | — |
+| 6.2 | 1800 s keepalive is not silently clamped by modem or broker | OPEN | Read the granted value from the broker's connection view, or idle past 1800 s and see if the session survives |
+| 6.2 | Carrier NAT tolerates a 1800 s idle TCP flow | OPEN | Overnight idle run with keepalive off, bisect the timeout |
+| 6.3 | eDRX API takes seconds vs. the raw 3GPP nibble | **RESOLVED** — raw 4-bit binary nibble strings, spliced verbatim into `AT+SQNEDRX` | — |
+| 6.3 | The granted eDRX/PTW values are readable | **RESOLVED — yes**, `setNetworkEventHandler()` → `WALTER_MODEM_NETWORK_EVENT_EDRX_RECEIVED` → `data.edrx.nwProvidedEdrx` | — |
+| 6.3 | Carrier grants the requested 20.48 s / 2.56 s | OPEN, and §6.5 breaks if it grants 40.96 s | Assert on `nwProvidedEdrx` at attach — free, first bring-up |
+| 8 | Modem URC can wake the ESP32 from deep sleep with the message still retrievable | **RESOLVED — it cannot**, via the public API. §8.0. This is the correction that drives §8.4 | — |
+| 8.3 | Sequans queues URCs rather than dropping them when CTS is deasserted | **OPEN, and the whole MVP sleep design rests on it** | Awake ESP32, drive RTS high manually, send a message, wait 30 s, drop RTS, see whether the URC arrives |
+| 8.4 | All current figures except the two vendor ones | OPEN | Phase 4 current-trace measurement; record in `firmware/README.md` |
+| 8.4 | ESP32 draws ~40 mA awake and ~50 ms per wake-and-drain cycle | OPEN — the overhead term (0.40 mA of 1.8–2.1 mA) rests entirely on this, and the 50 ms floor is set by the library event task's 10 ms tick + 10 ms settle | Toggle a GPIO around the awake window and read the duty cycle on a scope; a current trace gives both numbers at once |
