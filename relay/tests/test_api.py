@@ -174,3 +174,22 @@ def test_get_messages_since_filters(client: TestClient):
 def test_get_status_404_when_never_seen(client: TestClient):
     resp = client.get("/api/devices/pgr-9999/status", headers=auth_headers())
     assert resp.status_code == 404
+
+
+# ---- static parent page ----
+
+
+def test_root_serves_parent_page(client: TestClient):
+    resp = client.get("/")
+    assert resp.status_code == 200
+    assert "text/html" in resp.headers["content-type"]
+    assert "Pager Parent Console" in resp.text
+    # No auth required to load the shell -- it can't do anything without a
+    # token/device id entered client-side, and the API routes underneath it
+    # are still bearer-gated.
+    assert resp.status_code != 401
+
+
+def test_root_page_does_not_shadow_api_routes(client: TestClient):
+    resp = client.get("/api/devices/pgr-0001/status")
+    assert resp.status_code == 401  # auth still enforced, not swallowed by the static mount

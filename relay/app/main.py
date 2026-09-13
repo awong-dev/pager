@@ -11,10 +11,12 @@ import secrets
 import time
 from collections.abc import Callable
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.config import Settings
@@ -35,6 +37,12 @@ logger = logging.getLogger("relay.api")
 bearer_scheme = HTTPBearer(auto_error=False)
 
 MAX_ID_GENERATION_ATTEMPTS = 10
+
+# relay/static/index.html — the single-file parent MVP page (HANDOFF.md §2,
+# §3 repo layout). Resolved relative to this file so it works both from a
+# checkout (`relay/app/main.py` -> `relay/static`) and from the Docker image
+# (see Dockerfile, which copies `static/` alongside `app/`).
+STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 
 
 class SendMessageRequest(BaseModel):
@@ -197,6 +205,13 @@ def create_app(
             ts=status.ts,
             fw=status.fw,
         )
+
+    # Mounted last so it never shadows the /api/* routes above: Starlette
+    # matches routes in registration order, and a Mount("/") only catches
+    # what no earlier explicit route claimed. Serves relay/static/index.html
+    # (the parent MVP page, HANDOFF.md §2) at "/" and its own path.
+    if STATIC_DIR.is_dir():
+        app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
 
     return app
 
