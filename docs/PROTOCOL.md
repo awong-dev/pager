@@ -82,7 +82,7 @@ Base envelope (from HANDOFF.md §2, plus `v`):
 | `id` | string | **yes** | `^[a-z0-9_]{3,16}$` | Message id (§1). On an ack, this is the **down message's** id. |
 | `ts` | int | **yes** | 0 or 1×10⁹…2×10⁹ | Unix epoch **seconds, UTC**. Set by the publisher. |
 | `from` | string | yes on content messages, **absent** on acks | `parent` \| `student` \| `system`, ≤16 chars | Author. |
-| `body` | string | yes on content messages, **absent** on acks | ≤ **160 Unicode code points** (fixed) **and** ≤ **320 UTF-8 bytes** *(Phase 1 decision — the code-point cap alone allows 640 bytes; the byte cap lets firmware size static buffers and the RTC ring at §9)* | Message text. |
+| `body` | string | yes on content messages, **absent** on acks | ≤ **160 Unicode code points** (fixed) **and** ≤ **320 UTF-8 bytes** *(Phase 1 decision — the code-point cap alone allows 640 bytes; the byte cap lets firmware size static buffers, and §9.4 turns it into the 161-byte RTC mirror by way of the ASCII-only CardKB)* | Message text. |
 | `ack` | string \| null | yes; `null` on content messages | `shown` \| `read` | Ack state being reported. |
 
 Additional rules:
@@ -184,7 +184,8 @@ state. States are **monotonic** — a message never moves backwards.
 6. **Device-side ack durability.** An ack that could not be published (no session, PUBACK missing)
    is kept in an RTC-memory pending list (§9) and retried on the next wake, up to **3 attempts**,
    then dropped. Re-publish on device `online` (§5.3) covers the dropped case.
-7. **Device-side dedup.** The device keeps the last **16** received message ids in RTC memory. A
+7. **Device-side dedup.** The device keeps the last **16** received message ids in RTC memory,
+   stored as a 32-bit digest per id rather than the literal string (§9.3). A
    duplicate delivery is **re-acked** (relay is idempotent) but MUST NOT re-render, re-alert or
    re-enter active mode. *(Phase 1 decision — prevents a QoS 1 redelivery storm after a reconnect
    from costing a full active-mode window per duplicate, which is the single most expensive
@@ -197,7 +198,9 @@ device** *(Phase 1 decision — an ack-of-reply would cost one extra down messag
 radio wake per reply for information the device already has from its own PUBACK; the parent page is
 the endpoint that matters)*.
 
-Device-side only, in RTC memory:
+Device-side only, in RTC memory: a **2-entry** queue holding the reply body at full fidelity
+(§9.3, §9.4). A reply is never truncated to fit; the composer refuses input past 160 bytes
+instead.
 
 ```
 compose --> pending --(modem PUBACK)--> done            (entry freed)
@@ -255,9 +258,10 @@ keeps the TLS+MQTT session up on eDRX while the ESP32 is in deep sleep; that dev
   common case; this covers session loss.
   - Order: oldest first.
   - Selection: state in (`queued`, `sent`), age < 24 h.
-  - Cap: **at most 10 messages per online edge** *(Phase 1 decision — matches the device's 10-entry
-    RTC ring from HANDOFF.md §5 Phase 5, and bounds the reconnect burst to ~8 kB / ~1 active-mode
-    window; older unacked messages are left for the `expired` sweep)*.
+  - Cap: **at most 10 messages per online edge** *(Phase 1 decision — matches the device's
+    10-entry thread ring, which Phase 5 moved from RTC memory to ordinary RAM (§9.5) but kept at
+    depth 10 precisely so this cap still lines up; bounds the reconnect burst to ~8 kB / ~1
+    active-mode window. Older unacked messages are left for the `expired` sweep)*.
   - Re-publish reuses the **same `id`** so device dedup (§4.1 rule 7) suppresses double-rendering.
 - The relay MUST NOT publish anything to `/down` on a timer for liveness. There is no application
   ping. MQTT keepalive is the only liveness mechanism (§6).
@@ -358,7 +362,10 @@ energy reasons. Two things break this budget, and firmware MUST log enough to de
    itself has to move. v1.5.0 hands the granted value to `setNetworkEventHandler()` directly
    (§6.3), so this is a one-line assertion at attach, not a log-scraping exercise.
 2. An e-paper refresh slower than 1.5 s. Phase 5 must measure the partial-refresh time and report
-   back here if it exceeds 1.5 s; at `T` = 5 s there is only 2.7 s of slack to spend.
+   back here if it exceeds 1.5 s; at `T` = 5 s there is only 2.7 s of slack to spend. Phase 5 uses a
+   custom in-tree SSD1680 driver (`ui.c`) doing a mode-2 differential partial refresh, budgeted at
+   0.3-0.8 s; the `shown` ack is published only after BUSY deasserts (§4), so this term is serial
+   with the latency above and is **measurement M7**.
 
 ---
 
@@ -618,68 +625,132 @@ Phase 4 should still measure whether idle-mode eDRX at 5.12 s meets the <5 s tar
 is likely several× cheaper than holding RRC. That is a measurement to take, **not** a change to
 HANDOFF.md §2's architecture.
 
-## 9. RTC memory contract
+## 9. Storage contract: RTC memory vs. ordinary RAM
 
-ESP32-S3 RTC slow memory is **8 kB total**. Contents survive deep sleep; they are lost on power
-cycle, brownout and EN reset.
+**Rewritten in Phase 5.** Phase 1 put the whole message store in RTC memory. Phase 4 measured that
+this does not fit (the vendor library takes 7003 of the 8192 bytes) and shipped a stopgap that
+linked but truncated every body to 48 bytes. Phase 5 resolves it by **splitting the store**: RTC
+memory holds only what must survive a reset to keep §4's delivery guarantees honest; the bodies and
+the thread history live in ordinary static RAM, which the MVP's light-sleep cycle (§8) retains.
 
-| Field | Size | Purpose |
+### 9.1 The measured budget
+
+ESP32-S3 RTC slow memory is **8192 B** (`rtc_slow_seg`, `0x50000000`, length `0x2000`). All figures
+below are read from `firmware/build/school_pager.map` after a clean
+`idf.py set-target esp32s3 && idf.py build` on `espressif/idf:release-v5.2`, re-confirmed in Phase 5:
+
+| Consumer | Bytes | Map symbol |
 |---|---|---|
-| `magic` + `crc32` | 8 B | Validity check. On mismatch, treat as cold boot: regenerate `session_id`, clear everything. |
-| `boot_count` | 4 B | Diagnostics; distinguishes cold boot from deep-sleep wake |
-| `session_id[11]` | 12 B | §1; regenerated **only** on cold boot |
-| `mode`, `active_until_epoch` | 12 B | Mode state machine |
-| `status_pub_count`, `last_status_epoch` | 8 B | §5.4 heartbeat cadence. Phase 4: `keepalive_epoch` is **deleted** — the ESP32 no longer wakes for the keepalive (§6.2), so there is nothing to track. |
-| `seen_ids[16][12]` + head | 196 B | Dedup ring (§4.1 rule 7) |
-| `pending_acks[8]` (id + state + attempts) | 128 B | Ack retry queue (§4.1 rule 6) |
-| `pending_up[2]` (id + ts + 48 B snippet + attempts) | ~150 B | Unsent student replies (§4.2) — **shrunk in Phase 4, see below** |
-| `msg_ring[3]` (id, ts, from, 48 B snippet, flags) | ~250 B | Last messages for the thread view — **shrunk in Phase 4, see below** |
-| **Total** | **≈ 1.0 kB of 8 kB** | ~7.2 kB claimed by the `walter-modem` library itself, not by us |
+| `walter-modem` v1.5.0 (`_pdpCtxSetRTC`, `_mqttTopicSetRTC`, `_socketCtxSetRTC`, `_coapCtxSetRTC`, `blueCherryRTC`) | **7003** | `.rtc.data.0-.4` under `WalterModem.cpp.obj` (`0xc80 + 0x910 + 0x3c0 + 0x208 + 0x3`) |
+| IDF/linker remainder | 5 | `_rtc_slow_length` (`0x1f58`) minus `.rtc.data` (`0x1f54`) |
+| **Available to the pager** | **1184** | `0x2000 - 0x1f58 + sizeof(g_rtc)` |
 
-**Superseded in Phase 4 — this table's original sizing (`pending_up[4]` at full 320-byte bodies,
-`msg_ring[10]`, ≈5.4 kB total, "~2.6 kB headroom") assumed the library's own RTC footprint was
-1–2 kB. Measured against the real v1.5.0 linker output it is not: `_pdpCtxSetRTC` +
-`_mqttTopicSetRTC` + `_socketCtxSetRTC` + `_coapCtxSetRTC` + `blueCherryRTC` together occupy
-**≈7.0 kB of the 8 kB `rtc_slow_seg`** (confirmed from `build/school_pager.map`: `.rtc.data.0`
-through `.rtc.data.4` under `WalterModem.cpp.obj` sum to 7003 bytes), leaving only **≈1.2 kB**
-for everything in this table — roughly 6× less than assumed. Disabling the unused protocols to
-reclaim that space (this section's own former recommendation) turned out to be a dead end:
-`CONFIG_WALTER_MODEM_ENABLE_SOCKETS=n` (and each of `_HTTP`/`_COAP`/`_BLUECHERRY` individually)
-**fails to build the vendor library itself** — `WalterBlueCherry.cpp` unconditionally references
-socket/HTTP/CoAP state without matching `#if` guards. HANDOFF.md §7.7 forbids patching the
-managed component, so all four stay enabled. `pending_up`/`msg_ring` are therefore sized down to
-a fit that actually links (48-byte truncated body snippet, depth 2/3 instead of 4/10) —
-confirmed by the shipped `pager_rtc_t` = 1016 B, total `.rtc.data` = 8020 B of 8192 B (172 B
-margin). This is a real, load-bearing constraint on Phase 5, not a Phase 4 style choice: msg.c's
-thread view and reply queue must design around a 48-byte on-device snippet and single-digit
-queue depths, not the fuller sizing this table originally specified. If Phase 5 needs more
-headroom, the lever is not "truncate the body" (already done, harder than this table's original
-"160 bytes" suggestion) — it is revisiting whether `msg_ring`/`pending_up` belong in RTC memory
-at all, since the MVP sleep design is light sleep (RAM survives) and RTC residency is now paid
-for at a real premium (§9's three reasons below still apply, but the cost of honoring them is
-now known). **Do not** shrink `seen_ids` — see the duplicate-storm cost in §4.1 rule 7.**
+Reclaiming the library's 7003 B is not an option: `CONFIG_WALTER_MODEM_ENABLE_SOCKETS`/`_HTTP`/
+`_COAP`/`_BLUECHERRY` each **fail to build the vendor library itself** (unguarded references in
+`WalterBlueCherry.cpp` and `_dispatchEvent()`), and HANDOFF.md §7.7 forbids patching a managed
+component. See `sdkconfig.defaults` for the full finding.
 
-Firmware MUST NOT assume the modem's MQTT session state is mirrored in RTC memory. On every wake it
-re-reads the modem's actual connection state and **polls the modem's MQTT receive buffer** (§8.0).
+### 9.2 The split, and the rule that decides it
 
-**Phase 4 note on what RTC memory is now for.** After the §8 rewrite the MVP sleep cycle is *light*
-sleep, which retains ordinary RAM — so on the normal path nothing in this table has to be in RTC
-memory at all. It stays in RTC memory anyway, for three reasons, and firmware-dev should not
-"optimise" it into the heap:
+> **Rule.** A datum lives in RTC memory if losing it to a reset would make the relay's view of
+> delivery *wrong* — i.e. the relay believes a message was delivered or a reply was sent when the
+> student will never see it / never sent it. Everything else lives in RAM.
 
-1. It is the only store that survives a watchdog reset, a software reset or a crash. Losing
-   `pending_acks` / `pending_up` to a stray reset means a student's reply silently disappears.
-2. §8.3 (b) may bring deep sleep back once the clean-session question (§6.1) is settled. Keeping the
-   layout as specified means that change is a sleep-call swap, not a data-model rewrite.
-3. The `walter-modem` library already keeps its own RTC-backed state in the same 8 kB
-   (`_pdpCtxSetRTC`, `_coapCtxSetRTC`, `blueCherryRTC`, `_mqttTopicSetRTC`, `_socketCtxSetRTC` —
-   `src/WalterModem.cpp:157-176`). **Measured in Phase 4** (not the 1–2 kB this note originally
-   guessed): **≈7.0 kB**, confirmed from the linker map. Disabling the unused protocols to
-   reclaim it does **not** work — it breaks the vendor library's own compilation (see the table
-   above) — so `sdkconfig.defaults` leaves all four enabled and `modes.c`'s RTC struct is sized to
-   fit the ≈1.2 kB that's actually left. `net.cpp`/`modes.c` log `sizeof()` of the pager RTC
-   struct at boot, per this note's original instruction.
+Under that rule three things are RTC-resident: the **dedup digest ring** (§4.1 rule 7 — without it a
+post-reset redelivery storm costs a full active-mode window per duplicate), the **pending ack queue**
+(§4.1 rule 6), and the **pending reply queue** (§4.2). One more is RTC-resident by judgement rather
+than by rule: the **newest unread down message**, because §5.3 only re-publishes messages in state
+`queued`/`sent` — a message already acked `shown` but not yet `read` is unrecoverable from the relay,
+so losing it means the student never sees "pickup at 3:15" and nobody finds out.
 
+### 9.3 RTC-resident layout (`pager_rtc_t`, owned by `modes.c`)
+
+| Field | Bytes | Purpose |
+|---|---|---|
+| `magic` + `crc32` | 8 | Validity check. On mismatch, treat as cold boot: regenerate `session_id`, clear everything. **Bump the layout digit in `magic` whenever this table changes** — the Phase 4 layout is not compatible with this one. |
+| `boot_count` | 4 | Diagnostics; distinguishes cold boot from reset recovery |
+| `session_id[12]` | 12 | §1; regenerated **only** on cold boot |
+| `mode`, `active_until_epoch` | 16 | Mode state machine |
+| `status_pub_count`, `last_status_epoch` | 16 | §5.4 heartbeat cadence |
+| `mqtt_memfull_count`, `oversize_drop_count`, `modem_resets`, `last_modem_reset_us`, `attach_fail_cycles`, `wake_cycle_count` | 32 | §8.4 M6, §3.4, F4/F1 counters |
+| `msg.seen_ids[16]` (`uint32_t`) + `seen_head` | 68 | Dedup ring (§4.1 rule 7) — **a 32-bit digest of the id, not the id string.** Message ids carry 32 bits of entropy by construction (§1), so the digest is the id's own randomness; 16 entries collide with probability ≈3×10⁻⁸, and the only consequence of a collision is one suppressed render. Costs 68 B where the literal strings cost 276 B. `id_hash == 0` means "empty slot"; a real digest of 0 is stored as 1. |
+| `msg.pending_acks[8]` (`id[17]`, `state`, `attempts`) | 152 | Ack retry queue (§4.1 rule 6). Ids are stored in full — the ack has to put the real id on the wire. |
+| `msg.pending_up[2]` (`created_epoch`, `id[17]`, `body[161]`, `body_len`, `attempts`, `in_use`) | 384 | Unsent student replies (§4.2), **full fidelity, never truncated** — see §9.4 |
+| `msg.unread[1]` (`ts`, `id[17]`, `from[17]`, `body[161]`, `body_len`, `flags`, `in_use`) | 208 | Newest down message acked `shown` but not yet `read` (§9.2) |
+| `msg.dedup_hits`, `msg.malformed_drops`, `msg.reply_failed` | 12 | Diagnostics for the `/status` heartbeat |
+| **Total** | **≈ 920 of 1184** | ~264 B headroom, against Phase 4's 168 B |
+
+`modes.c` remains the sole owner of the struct, its single `magic`/`crc32` pair and `rtc_save()`
+(§11's "one transition funnel" discipline applies to RTC writes too). `msg.c` receives a typed
+pointer to the nested `msg` sub-struct and calls back into `modes.c` to re-CRC. `modes_boot()` MUST
+log `sizeof(pager_rtc_t)` at boot and MUST `_Static_assert(sizeof(pager_rtc_t) <= 1184)`.
+
+### 9.4 Why 161 bytes is full fidelity for a reply, and lossy only for a parent message
+
+§3.1 caps a body at 160 Unicode code points **and** 320 UTF-8 bytes. 320 is the worst case for
+non-ASCII text; 161 B (160 + NUL) is the exact requirement for ASCII.
+
+- **`pending_up` (student reply):** the only input device is the CardKB (HANDOFF.md §1), which emits
+  one byte per keypress and has no IME. A composed reply is ASCII by construction, so 160 bytes is
+  160 characters and nothing is ever lost. The composer MUST therefore **refuse input past 160
+  bytes** rather than truncate at send time; `msg_queue_reply()` MUST reject a longer body with an
+  error, never truncate. A truncated reply on the wire would be a silent correctness failure and is
+  the one case this design refuses to accept.
+- **`unread` (parent message):** a parent typing on a browser can emit up to 320 UTF-8 bytes. The RTC
+  mirror is truncated at a **UTF-8 code-point boundary** to ≤160 bytes and flagged
+  `MSG_F_TRUNCATED`. This is lossy only on the reset path: in normal operation the UI renders from
+  the RAM copy, which holds the full 320 bytes. After a reset the student sees the message with a
+  trailing ellipsis rather than not seeing it at all.
+
+### 9.5 RAM-resident store (`msg.c`, ordinary `.bss`)
+
+| Field | Bytes | Purpose |
+|---|---|---|
+| `s_thread[10]` — `msg_t` = `ts`, `id[17]`, `from[17]`, `body[321]`, `body_len`, `dir`, `ack_state`, `flags`, `in_use` | 3760 | Thread history, both directions, full 320-byte bodies. **10 entries**, matching HANDOFF.md §5 and §5.3's 10-per-online-edge re-publish cap. |
+| `s_composer[161]` + cursor/length | 168 | In-progress reply text (§9.4) |
+| `ui.c` frame buffers: new plane + shadow (old) plane, 16 B/row × 296 rows each | 9472 | SSD1680 differential partial refresh needs both planes; see §9.6 |
+
+≈ 13.4 kB of the ESP32-S3's ~512 kB SRAM. RAM is not the scarce resource here and firmware-dev
+should not optimise this; the scarce resource is the 1184 B above.
+
+### 9.6 What survives what
+
+| Event | RTC struct | `.bss` (thread, composer, frame buffers) | Modem TLS+MQTT session |
+|---|---|---|---|
+| Light-sleep wake (every 2 s / 5 s — the everyday case, §8) | survives | **survives** | survives |
+| `esp_restart()`, watchdog reset, panic/crash | survives | **lost** | survives (modem is never power-gated, §6.4) |
+| Brownout, EN reset, battery removal, first power-on | **lost** (CRC fails → cold boot) | lost | lost |
+
+Concretely, after a **crash or watchdog reset**: pending acks and pending replies are retried
+normally, dedup still suppresses redeliveries, and the newest unread message is re-rendered from
+`msg.unread[0]` with a truncation ellipsis if the parent used non-ASCII. What is lost is the
+**scrollback** — the thread view drops from up to 10 messages to 1, and `ui.c` MUST say so rather
+than pretend (render an explicit "earlier messages lost (restart)" line). Older *unread* messages
+beyond the newest one are also lost; this is the one accepted gap and it is bounded by how many
+messages arrive unread inside one crash window.
+
+After a **cold boot** the RTC struct is invalid, so `session_id` is regenerated, which §5.3 turns
+into a session change at the relay and therefore a re-publish of everything still `queued`/`sent`.
+Dedup is empty at that point, so those messages render normally. Cold boot is the *better*-recovered
+case of the two.
+
+> **Optional follow-up, not adopted in the MVP (relay-side change, needs an owner).** Widening
+> §5.3's re-publish selection from `state in (queued, sent)` to
+> `state in (queued, sent, shown) AND age < 2 h` on a **session change only** would let the relay
+> recover *all* unread messages after a cold boot, not just the ones that never reached `shown`, and
+> would make `msg.unread[]` redundant rather than merely shallow. It costs nothing in the common
+> case (dedup suppresses re-render when RTC survived; a session change only happens on cold boot).
+> Not done in Phase 5 because it changes Phase 2 relay code and §5.3's contract. Raised in §12.
+
+### 9.7 Standing rules
+
+- Firmware MUST NOT assume the modem's MQTT session state is mirrored in RTC memory. On every wake
+  it re-reads the modem's actual connection state and drains the URC the modem was holding (§8.0).
+- **Do not shrink `seen_ids`** below 16 entries — see the duplicate-storm cost in §4.1 rule 7.
+- Keeping this layout in RTC rather than moving all of it to RAM still buys the two things §8.3(b)
+  needs: if the clean-session experiment (§12 item 4) passes and deep sleep returns, the durability
+  half of the store already has the right shape and the change is a sleep-call swap, not a data-model
+  rewrite.
 ---
 
 ## 10. Path to CBOR (documented, not designed)
@@ -790,6 +861,17 @@ future.
    reading if `walter-modem` exposes one (unverified — not checked in Phase 4); (c) ship without a
    real battery reading for the MVP and treat `batt_mv` as advisory until this is resolved.
 
+7. **`NEEDS HUMAN DECISION` — should the relay re-publish `shown`-but-unread messages on a session
+   change?** Phase 5's §9.6 note. Today a down message that reached `shown` and then died in a
+   crash is unrecoverable: §5.3 only re-publishes `queued`/`sent`, and the device only keeps the
+   **newest** unread message in RTC memory (`msg.unread[1]`, 208 B — a second slot does not fit in
+   the 1184 B §9.1 measures). Widening §5.3's selection to
+   `state in (queued, sent, shown) AND age < 2 h`, **on a session change only**, closes the gap for
+   free: dedup suppresses re-render whenever RTC survived, and a session change only happens on a
+   cold boot, when dedup is empty anyway. It is a Phase 2 relay change plus a §5.3 edit, so Phase 5
+   did not make it unilaterally. If nobody picks this up, the documented behaviour stands: **a
+   crash can lose all but the most recent unread message.**
+
 > **Retracted in Phase 4 review.** An earlier revision of this section carried a fifth
 > `NEEDS HUMAN DECISION` claiming `tlsWriteCredential()` was private and that application code
 > therefore could not provision a CA, forcing a choice between unauthenticated TLS and a separate
@@ -818,4 +900,6 @@ future.
 | 8 | Modem URC can wake the ESP32 from deep sleep with the message still retrievable | **RESOLVED — it cannot**, via the public API. §8.0. This is the correction that drives §8.4 | — |
 | 8.3 | Sequans queues URCs rather than dropping them when CTS is deasserted | **OPEN, and the whole MVP sleep design rests on it** | Awake ESP32, drive RTS high manually, send a message, wait 30 s, drop RTS, see whether the URC arrives |
 | 8.4 | All current figures except the two vendor ones | OPEN | Phase 4 current-trace measurement; record in `firmware/README.md` |
+| 6.5 | SSD1680 partial refresh completes in <1.5 s at room temperature | **OPEN (M7)** — §6.5 breaks if it does not; only 2.7 s of slack at `T`=5 s | Toggle a GPIO around `ui_refresh()`, scope the pulse width; also log `esp_timer` deltas around the BUSY wait |
+| 9.4 | The M5Stack CardKB emits one ASCII byte per keypress (no multi-byte sequences) | **OPEN, load-bearing for §9.4** — if it can emit >0x7F, a 160-byte RTC reply slot is no longer 160 characters | Poll 0x5F over I2C, dump every non-zero byte for a full pass over the keyboard incl. Fn/sym combos; 15 min on hardware |
 | 8.4 | ESP32 draws ~40 mA awake and ~50 ms per wake-and-drain cycle | OPEN — the overhead term (0.40 mA of 1.8–2.1 mA) rests entirely on this, and the 50 ms floor is set by the library event task's 10 ms tick + 10 ms settle | Toggle a GPIO around the awake window and read the duty cycle on a scope; a current trace gives both numbers at once |
