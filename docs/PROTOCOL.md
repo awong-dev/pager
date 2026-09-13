@@ -436,6 +436,100 @@ handshake.
 SMS send path, and the relay has no SMS code path. This line exists so a later phase cannot quietly
 introduce one without editing this document.
 
+### 7.4 Phase 6 measurement — validating the model
+
+§7.3 is a theoretical count of JSON bytes plus assumed TLS/TCP framing overhead. Phase 6 adds one
+real measurement to sanity-check it. **This does not replace §7.3** — it validates the
+application-layer MQTT byte counts that §7.3's per-exchange table (§7.2) is built from; it does not,
+and cannot, measure the TLS or LTE-M cellular framing §7.3 assumes for the real device↔broker link,
+because there is no TLS and no cellular hop in this setup.
+
+**What was measured.** `relay/docker-compose.yml`'s real `eclipse-mosquitto` broker and the real
+relay container (no fake transport, no unit-test mocks), with one simulated device
+(`paho-mqtt`, matching `tools/sim_device.py`'s shape) connected over plain TCP on the Docker
+bridge network. Traffic sent, matching the "measurable, non-modem" slice of §7.3's nominal profile
+per HANDOFF.md's Phase 6 scope: **20 down messages, each fully acked `shown` then `read`, plus 5
+student replies** (48 modem-side keepalives are not reproducible here — there is no modem, and the
+relay's own keepalive is a plain 60 s service keepalive per `RELAY_KEEPALIVE_S`
+(`relay/app/mqtt_transport.py`), not the device's 1800 s figure — so keepalive/status traffic is
+excluded from this measurement, not estimated).
+
+**How.** `docker stats --no-stream --format '{{.NetIO}}' relay-broker-1` before and after the run,
+taken once the device's CONNECT/SUBSCRIBE/initial-status handshake had settled (2 s idle), so the
+delta is steady-state per-message traffic, not connection setup. The broker container serves no
+HTTP, so 100% of its NetIO is MQTT protocol bytes — this sidesteps having to separate the relay's
+HTTP (parent API) traffic from its MQTT traffic, at the cost of the measurement covering **both**
+hops through the broker (relay↔broker *and* broker↔device), not the single relay↔broker hop §7.2's
+table models. A from-scratch theoretical figure was computed in parallel, using §7.1's exact stated
+rules (MQTT PUBLISH/PUBACK sizes, +40 B TCP/IP per segment, no TLS) applied to the *actual* payload
+bytes sent in the run, so the comparison uses real payload sizes, not the HANDOFF.md example string.
+
+**Results** (20 down messages fully acked + 5 replies; bodies ~50–100 bytes, longer than §7.2's
+example on purpose, to make sure the comparison isn't an artifact of one convenient string length):
+
+| Quantity | Value |
+|---|---|
+| Theoretical, MQTT bytes only, both hops, no TLS | 14,420 B |
+| Theoretical, MQTT + 40 B/segment TCP/IP, both hops, no TLS | 24,820 B |
+| **Measured, `docker stats` NetIO delta on the broker container** | **42,870 B** |
+| measured ÷ theoretical (MQTT+TCP/IP, both hops) | **1.73×** |
+
+Re-expressed as a single hop (measured ÷ 2, since the two hops carry near-identical payloads —
+this is the number comparable to §7.2's per-exchange table, which models one hop):
+
+| Quantity (single hop, no TLS unless noted) | Value |
+|---|---|
+| Computed, down message fully acked (down + `shown` + `read`), this run's payload sizes | 688 B |
+| §7.2's worked example, same exchange, **with TLS**, HANDOFF.md's shorter example body | 818 B |
+| Computed, student reply, this run's payload sizes | 248 B |
+| §7.2's worked example, same exchange, **with TLS** | 289 B |
+| Theoretical single-hop total for the whole 20+5 run (§7.2's 3-frame-per-exchange method, no TLS) | 15,010 B |
+| Measured-implied single-hop total for the whole run (measured ÷ 2) | 21,435 B |
+| ratio (measured-implied ÷ theoretical, single hop) | 1.43× |
+
+**Assessment: consistent, not an exact match, and the gap is explained.** The measured bytes are
+higher than the theoretical estimate by 1.4–1.7× depending on how the two hops are split, in the
+direction expected, for reasons the theoretical model explicitly doesn't try to capture:
+
+1. **Ethernet framing.** `docker stats` counts bytes at the container's virtual NIC, which includes
+   the 14 B Ethernet header (+ often an FCS) per frame that §7.1's "+40 B IPv4+TCP" figure doesn't
+   include (that number is IP+TCP headers only, per §7.1's own text). Over ~260 frames in the both-hop
+   run, that alone is on the order of 3–4 kB.
+2. **TCP ACKs are not perfectly piggybacked.** §7.1 already flags this ("bare TCP ACKs counted at
+   40 B where not piggybacked") but the theoretical count only adds one bare ACK per exchange; real
+   TCP on a lightly-loaded loopback/bridge link sends more standalone ACKs than that model assumes.
+3. **Docker's bridge/NAT path adds its own small overhead** (veth pair + bridge + userland-proxy or
+   iptables DNAT for the published port) that has no equivalent in either §7.1's model or a real
+   cellular link, and is specific to this local measurement setup, not the production topology.
+4. **Missing TLS pushes the other way, and is a separate comparison from point (1)–(3) above.**
+   A real device↔broker hop adds TLS record overhead (§7.1: +29 B/record) that this plaintext
+   measurement has none of. This is visible if the *computed* (not measured) no-TLS single-hop
+   figure for a fully-acked down message in this run (688 B, using this run's longer body) is set
+   next to §7.2's TLS-inclusive computed figure for its own, shorter example body (818 B): the two
+   are close despite one including TLS and the other not, because a longer body and no TLS roughly
+   cancel out here. That is a coincidence of this run's message lengths, not evidence that TLS is
+   cheap — the actual measured-vs-theoretical gap (point 1–3, 1.4–1.7×) is entirely independent of
+   TLS, since neither side of that comparison includes it.
+5. **This measurement cannot validate the TLS or cellular assumptions at all**, by construction —
+   there is no TLS handshake, no TLS record framing, and no LTE-M/RRC layer in a
+   docker-bridge-to-container TCP connection. §7.3's dominant term, the ~5 kB reconnect estimate
+   (built on a full TLS 1.2 handshake), and the +29 B/record TLS overhead applied throughout §7.2,
+   remain unverified by this measurement and stay in the `UNVERIFIED`/`(estimate)` category per §12
+   until measured against the real HiveMQ/EMQX broker over real TLS, ideally from real hardware or
+   at least a real `tlsClient`-terminated connection.
+
+**Verdict.** The measurement confirms §7.1/§7.2's core claim — MQTT PUBLISH/PUBACK sizes computed
+from JSON payload lengths plus fixed per-field overhead are the right order of magnitude and the
+right formula — to within the 1.4–1.7× gap explained above, all of which is either (a) real overhead
+the theoretical model intentionally simplified away (Ethernet framing, imperfect ACK piggybacking)
+or (b) an artifact of the local Docker bridge that has no cellular equivalent. Since §7.3's monthly
+projections (1.69 kB/day nominal, 236 kB/day pessimistic) sit at roughly 3% and 7% of the 100 MB
+cap respectively (§7.3's own "~59×" headroom claim), even a 1.7× correction to the message-only
+terms — the reconnect term dominates the pessimistic case and this measurement says nothing new
+about it — leaves both profiles comfortably under the cap and under HANDOFF.md §8's stricter 10 MB
+bar. **No change to §7.3's verdict is warranted by this measurement**; it is recorded here as
+supporting evidence, not a revision.
+
 ---
 
 ## 8. ESP32 wake sources

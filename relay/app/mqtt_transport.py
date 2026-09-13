@@ -27,6 +27,24 @@ RECONNECT_MAX_DELAY_S = 300
 RELAY_KEEPALIVE_S = 60
 
 
+def _reason_code_to_int(reason_code: object) -> int:
+    """Normalize a paho v2 callback's reason/return code to a plain int.
+
+    paho-mqtt 2.x's VERSION2 callback API passes a `paho.mqtt.reasoncodes.
+    ReasonCode` instance (not a plain int) for connect/disconnect reason
+    codes. `ReasonCode` has no `__int__`, so `int(reason_code)` raises
+    `TypeError`; since that happens inside paho's own callback dispatch
+    (the `loop_start()` background thread), an uncaught exception there
+    kills the thread and the relay never reconnects again. `ReasonCode.value`
+    holds the actual numeric code. Plain ints (e.g. from tests or future
+    paho versions) and `None` are also accepted defensively.
+    """
+    if reason_code is None:
+        return 0
+    value = getattr(reason_code, "value", reason_code)
+    return int(value)
+
+
 class PahoTransport:
     def __init__(
         self,
@@ -103,8 +121,15 @@ class PahoTransport:
     def _handle_disconnect(
         self, client, userdata, disconnect_flags, reason_code, properties
     ) -> None:
+        # paho 2.x's v2 callback API passes a `ReasonCode` object here, not a
+        # plain int -- `ReasonCode` has no `__int__`, so `int(reason_code)`
+        # raises TypeError. That's uncaught inside paho's own callback
+        # dispatch (loop_start()'s thread), which silently kills the
+        # background MQTT thread and the relay never reconnects again.
+        # `.value` is the actual numeric reason code on both `ReasonCode` and
+        # plain ints (via getattr fallback below).
         if self._on_disconnect_cb:
-            self._on_disconnect_cb(int(reason_code) if reason_code is not None else 0)
+            self._on_disconnect_cb(_reason_code_to_int(reason_code))
 
     def _handle_message(self, client, userdata, msg) -> None:
         if self._on_message_cb:

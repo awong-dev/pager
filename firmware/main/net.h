@@ -122,6 +122,15 @@ void net_get_mqtt_status(net_mqtt_status_t *out);
  * on a backoff/recovery action for the edge it just read. */
 void net_ack_disconnect_edge(void);
 
+/* True while net.cpp's MQTT event handler is inside an AT transaction
+ * (mqttReceive()) or the app message callback. modes_run() MUST NOT
+ * light-sleep while this is true: net_sleep() forces RTS high, and doing
+ * that mid-response is the difference between PROTOCOL.md §8.3/M5 costing
+ * latency and it costing the message. Racy by construction (a plain flag,
+ * checked on the caller's task); it narrows the window from "every
+ * incoming message" to a few microseconds, it does not close it. */
+bool net_modem_busy(void);
+
 /* Drain-and-reset delta counters, for folding into modes.c's RTC-resident
  * cumulative counters once per wake cycle. net.c only owns the
  * since-last-drain delta; modes.c owns the value that survives a reset. */

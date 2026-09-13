@@ -342,7 +342,18 @@ static void on_incoming_message(const char *topic, const char *body, uint16_t le
     msg_ingest_t r = msg_ingest_down(body, len, &out);
 
     switch (r) {
-    case MSG_INGEST_NEW:
+    case MSG_INGEST_NEW: {
+        // Phase 6 fix: copy the id BEFORE rendering. `out` points into
+        // msg.c's s_thread ring, which thread_insert_locked() memmoves on
+        // every insert; a reply submitted from modes_run()'s task (Enter /
+        // long-press -> msg_queue_reply()) while this render is in flight
+        // would shift s_thread[0] and make out->id the reply's "u_..." id,
+        // acking a message the relay has never heard of (§4.1 rule 3) and
+        // leaving the real down message un-acked forever.
+        char id[MSG_ID_MAX] = "";
+        if (out) {
+            strncpy(id, out->id, sizeof(id) - 1);
+        }
         set_mode(PAGER_MODE_ACTIVE, MODE_REASON_INCOMING_MSG);
         // §4: the shown ack is queued only after the render call returns,
         // which (ui_render_message_pane -> ... -> disp_wait_busy()) blocks
@@ -350,10 +361,11 @@ static void on_incoming_message(const char *topic, const char *body, uint16_t le
         // completes, never before". The actual /up publish happens later,
         // asynchronously, from msg_pump().
         ui_render_message_pane();
-        if (out) {
-            msg_mark_shown(out->id);
+        if (id[0] != '\0') {
+            msg_mark_shown(id);
         }
         break;
+    }
 
     case MSG_INGEST_DUPLICATE: {
         // §4.1 rule 7: re-ack only, MUST NOT re-render/re-alert/re-enter
@@ -682,7 +694,14 @@ void modes_run(void)
         // composer is open (existing carve-out) OR the button FSM is not
         // IDLE (new carve-out - a held button must not re-enter a level-
         // triggered light sleep it would just immediately exit again).
-        bool skip_sleep = ui_composer_is_open() || button_fsm_active();
+        // Phase 6: net_modem_busy() joins the carve-out. The MQTT event
+        // handler runs at priority 4 against this task's priority 1, so it
+        // hands the CPU back here every time it blocks; without this term
+        // net_sleep() deasserts RTS in the middle of the modem's response
+        // to mqttReceive() (see net.h). Costs ~1.5s of 40mA busy-polling
+        // per incoming message (~0.02 mAh, ~0.4 mAh/day at 20 msgs/day,
+        // estimate) and buys back a per-message message-loss window.
+        bool skip_sleep = ui_composer_is_open() || button_fsm_active() || net_modem_busy();
         if (!skip_sleep) {
             net_sleep(interval_ms);
             // L4/F7: the event task ticks at 10ms + settles for 10ms; give

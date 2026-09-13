@@ -113,6 +113,11 @@ static volatile bool s_disconnect_edge = false;
 static volatile int s_last_rc = 0;
 static volatile net_mqtt_rc_class_t s_last_class = NET_MQTT_RC_NONE;
 
+static volatile bool s_handler_busy = false; // true while the MQTT event
+                                             // handler is inside an AT
+                                             // transaction or the app
+                                             // callback (Phase 6 interlock)
+
 static volatile uint32_t s_memfull_count = 0;
 static volatile uint32_t s_oversize_count = 0;
 
@@ -175,9 +180,14 @@ static void pager_mqtt_event_handler(WMMQTTEventType event, const WMMQTTEventDat
         // L3: mqttConnect() frees the ENTIRE local topic table before
         // connecting and nothing auto-resubscribes. Must resubscribe on
         // every connect, from here, exactly like the vendor's examples/mqtts.
+        // Same Phase 6 interlock as the MESSAGE case below: this is an AT
+        // transaction issued from the event task, so modes_run() must not
+        // light-sleep (and deassert RTS) underneath it.
+        s_handler_busy = true;
         if (!WalterModem::mqttSubscribe(s_down_topic, 1)) {
             ESP_LOGI(TAG, "mqttSubscribe() call could not be queued");
         }
+        s_handler_busy = false;
         break;
 
     case WALTER_MODEM_MQTT_EVENT_SUBSCRIBED:
@@ -205,6 +215,18 @@ static void pager_mqtt_event_handler(WMMQTTEventType event, const WMMQTTEventDat
         break;
 
     case WALTER_MODEM_MQTT_EVENT_MESSAGE:
+        // Phase 6 interlock: net_sleep() runs on modes_run()'s task, which
+        // is priority 1 against this task's priority 4, so it gets
+        // scheduled every time this handler blocks (mqttReceive()'s AT
+        // round trip, ui.c's 10ms disp_wait_busy() poll). Without this
+        // flag modes_run() can enter esp_light_sleep_start() - and force
+        // RTS high - in the middle of the modem's response to
+        // mqttReceive(), i.e. mid-payload rather than at an idle moment.
+        // That turns PROTOCOL.md §8.3's "does the Sequans queue or drop
+        // when CTS is deasserted" (M5, still UNVERIFIED) from a latency
+        // question into a message-loss one. modes_run() ORs
+        // net_modem_busy() into its skip_sleep condition.
+        s_handler_busy = true;
         if (data->msg_length > PAGER_MAX_PAYLOAD) {
             // F6: oversize payload. Log, count, do not ack/render, but still
             // drain it with a scratch read so it doesn't wedge the modem's
@@ -213,18 +235,21 @@ static void pager_mqtt_event_handler(WMMQTTEventType event, const WMMQTTEventDat
             ESP_LOGI(TAG, "oversize MQTT message dropped: %u bytes > %u cap",
                      (unsigned) data->msg_length, (unsigned) PAGER_MAX_PAYLOAD);
             WalterModem::mqttReceive(data->topic, data->mid, s_mqtt_rx_buf, sizeof(s_mqtt_rx_buf));
+            s_handler_busy = false;
             break;
         }
 
         // L1/L2: never mqttDidRing(). Fetch by the real mid from this event.
         if (!WalterModem::mqttReceive(data->topic, data->mid, s_mqtt_rx_buf, data->msg_length)) {
             ESP_LOGI(TAG, "mqttReceive() failed for mid=%d", data->mid);
+            s_handler_busy = false;
             break;
         }
 
         if (s_msg_cb) {
             s_msg_cb(data->topic, (const char *) s_mqtt_rx_buf, data->msg_length);
         }
+        s_handler_busy = false;
         break;
 
     case WALTER_MODEM_MQTT_EVENT_DISCONNECTED:
@@ -512,6 +537,11 @@ extern "C" void net_get_mqtt_status(net_mqtt_status_t *out)
 extern "C" void net_ack_disconnect_edge(void)
 {
     s_disconnect_edge = false;
+}
+
+extern "C" bool net_modem_busy(void)
+{
+    return s_handler_busy;
 }
 
 extern "C" uint32_t net_take_memfull_delta(void)

@@ -1,0 +1,43 @@
+name: CI
+
+# HANDOFF.md §8 definition of done: "send.py -> sim_device.py round-trip
+# passes in CI." Keep this workflow simple: install the relay's Python
+# deps, run its unit tests, then run the real docker-compose end-to-end
+# test (tools/e2e_test.py). No paid services, no secrets -- the harmless
+# local-dev defaults from relay/.env.example are all this needs, and
+# tools/e2e_test.py generates and writes its own relay/.env for the
+# duration of the e2e run.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Installs relay/pyproject.toml's runtime deps (fastapi, uvicorn,
+      # paho-mqtt, pydantic) plus its [dev] extra (pytest, httpx). The same
+      # interpreter is reused below for tools/e2e_test.py and, via
+      # sys.executable, for tools/sim_device.py -- all three need
+      # paho-mqtt, and this is the one place that installs it.
+      - name: Install relay dependencies
+        run: pip install -e "./relay[dev]"
+
+      - name: Run relay unit tests
+        working-directory: relay
+        run: pytest -v
+
+      # ubuntu-latest ships Docker and the Compose v2 plugin already;
+      # nothing else to set up. tools/e2e_test.py brings up
+      # relay/docker-compose.yml itself and tears it down (down -v) on
+      # both success and failure, so no manual cleanup step is needed here.
+      - name: Run end-to-end test against the real docker-compose stack
+        run: python3 tools/e2e_test.py
