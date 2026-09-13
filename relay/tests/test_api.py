@@ -1,0 +1,176 @@
+"""HTTP API tests: bearer auth, POST validation/publish, GET thread/status."""
+
+from __future__ import annotations
+
+from collections.abc import Iterator
+
+import pytest
+from fastapi.testclient import TestClient
+
+from app.config import Settings
+from app.main import create_app
+from app.mqtt_gateway import MqttGateway
+from app.store import Store
+from tests.fake_transport import FakeTransport
+
+TOKEN = "test-token-123"
+
+
+@pytest.fixture
+def client(tmp_path) -> Iterator[TestClient]:
+    settings = Settings(
+        relay_token=TOKEN,
+        mqtt_host="unused",
+        mqtt_port=1883,
+        mqtt_username=None,
+        mqtt_password=None,
+        db_path=str(tmp_path / "relay.db"),
+    )
+    fake_transport = FakeTransport()
+
+    def gateway_factory(store: Store) -> MqttGateway:
+        return MqttGateway(store, fake_transport)
+
+    app = create_app(settings=settings, gateway_factory=gateway_factory)
+    with TestClient(app) as c:
+        c.fake_transport = fake_transport  # type: ignore[attr-defined]
+        yield c
+
+
+def auth_headers(token: str = TOKEN) -> dict[str, str]:
+    return {"Authorization": f"Bearer {token}"}
+
+
+# ---- auth ----
+
+
+def test_missing_token_is_401(client: TestClient):
+    resp = client.get("/api/devices/pgr-0001/status")
+    assert resp.status_code == 401
+
+
+def test_wrong_token_is_401(client: TestClient):
+    resp = client.get("/api/devices/pgr-0001/status", headers=auth_headers("wrong"))
+    assert resp.status_code == 401
+
+
+def test_correct_token_is_authorized(client: TestClient):
+    resp = client.get("/api/devices/pgr-0001/status", headers=auth_headers())
+    assert resp.status_code == 404  # authorized, just no status seen yet
+
+
+# ---- POST /messages ----
+
+
+def test_send_message_publishes_and_returns_queued_then_sent_state(client: TestClient):
+    resp = client.post(
+        "/api/devices/pgr-0001/messages",
+        json={"body": "Pickup at 3:15 by the gym"},
+        headers=auth_headers(),
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["id"].startswith("m_")
+    assert len(data["id"]) == 10
+    assert data["state"] == "queued"
+
+    fake_transport: FakeTransport = client.fake_transport  # type: ignore[attr-defined]
+    assert len(fake_transport.published) == 1
+    assert fake_transport.published[0].topic == "pager/pgr-0001/down"
+
+    fake_transport.ack_last()
+
+    thread = client.get("/api/devices/pgr-0001/messages", headers=auth_headers()).json()
+    assert len(thread) == 1
+    assert thread[0]["state"] == "sent"
+
+
+def test_send_message_requires_auth(client: TestClient):
+    resp = client.post(
+        "/api/devices/pgr-0001/messages", json={"body": "hi"}
+    )
+    assert resp.status_code == 401
+
+
+def test_send_message_rejects_invalid_device_id(client: TestClient):
+    resp = client.post(
+        "/api/devices/BAD ID/messages", json={"body": "hi"}, headers=auth_headers()
+    )
+    assert resp.status_code == 400
+
+
+def test_send_message_strips_control_chars(client: TestClient):
+    resp = client.post(
+        "/api/devices/pgr-0001/messages",
+        json={"body": "hi\x01\x02 there\x7f"},
+        headers=auth_headers(),
+    )
+    assert resp.status_code == 200
+    fake_transport: FakeTransport = client.fake_transport  # type: ignore[attr-defined]
+    assert b"hi there" in fake_transport.published[-1].payload
+
+
+def test_send_message_rejects_empty_after_stripping(client: TestClient):
+    resp = client.post(
+        "/api/devices/pgr-0001/messages",
+        json={"body": "\x01\x02\x03"},
+        headers=auth_headers(),
+    )
+    assert resp.status_code == 400
+
+
+def test_send_message_rejects_over_160_codepoints(client: TestClient):
+    resp = client.post(
+        "/api/devices/pgr-0001/messages",
+        json={"body": "a" * 161},
+        headers=auth_headers(),
+    )
+    assert resp.status_code == 400
+
+
+def test_send_message_rejects_over_320_utf8_bytes(client: TestClient):
+    # Each of these is 1 codepoint but 3 UTF-8 bytes -> 120 chars = 360 bytes,
+    # under the 160-codepoint cap but over the 320-byte cap.
+    body = "☃" * 120
+    resp = client.post(
+        "/api/devices/pgr-0001/messages",
+        json={"body": body},
+        headers=auth_headers(),
+    )
+    assert resp.status_code == 400
+
+
+# ---- GET /messages ----
+
+
+def test_get_messages_empty_thread(client: TestClient):
+    resp = client.get("/api/devices/pgr-0001/messages", headers=auth_headers())
+    assert resp.status_code == 200
+    assert resp.json() == []
+
+
+def test_get_messages_since_filters(client: TestClient):
+    import time
+
+    client.post(
+        "/api/devices/pgr-0001/messages", json={"body": "first"}, headers=auth_headers()
+    )
+    cutoff = int(time.time())
+    time.sleep(1.1)  # guarantee the second message's created_at > cutoff
+    client.post(
+        "/api/devices/pgr-0001/messages", json={"body": "second"}, headers=auth_headers()
+    )
+
+    resp = client.get(
+        f"/api/devices/pgr-0001/messages?since={cutoff}", headers=auth_headers()
+    )
+    bodies = [m["body"] for m in resp.json()]
+    assert bodies == ["second"]
+
+
+# ---- GET /status ----
+
+
+def test_get_status_404_when_never_seen(client: TestClient):
+    resp = client.get("/api/devices/pgr-9999/status", headers=auth_headers())
+    assert resp.status_code == 404
