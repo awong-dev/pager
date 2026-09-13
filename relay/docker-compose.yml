@@ -1,0 +1,27 @@
+# For local development only — do not use in production
+
+version: "3.8"
+
+services:
+  broker:
+    image: eclipse-mosquitto:2
+    ports:
+      - "1883:1883"
+    volumes:
+      - ./mosquitto.conf:/mosquitto/config/mosquitto.conf
+    networks:
+      - pager-net
+
+  relay:
+    build: .
+    depends_on:
+      - broker
+    env_file: .env
+    ports:
+      - "8000:8000"
+    networks:
+      - pager-net
+
+networks:
+  pager-net:
+    driver: bridge

@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+*.egg-info/
+
+# Environment files
+.env
+# (but NOT .env.example)
+
+# ESP-IDF
+firmware/build/
+firmware/sdkconfig
+firmware/managed_components/
+firmware/dependencies.lock
+
+# macOS
+.DS_Store
+
+# Editor
+.vscode/
+.idea/
+
+# Claude Code session runtime state
+.claude/scheduled_tasks.lock
