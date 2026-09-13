@@ -206,19 +206,47 @@ static int64_t approx_epoch(void)
 // Status (/status) publishing - PROTOCOL.md §5.
 // ---------------------------------------------------------------------------
 
+// PROTOCOL.md §5.1: batt_mv must be in [2000, 4500] when state:"online".
+#define PAGER_BATT_MV_MIN 2000
+#define PAGER_BATT_MV_MAX 4500
+
+// Last known-good battery reading, so a single failed AT command doesn't
+// block a /status publish. Plain static (not RTC_DATA_ATTR): this design
+// never deep sleeps, only light sleeps, and light sleep retains ordinary
+// RAM (same reasoning net.cpp's own module-static state uses). Resets to
+// the fallback below only on a real reboot.
+static int s_last_batt_mv = 0; // 0 = no good reading yet this boot
+
 static bool build_status_json(char *out, size_t out_size, const char *state)
 {
     int64_t ts = approx_epoch();
     const char *mode_str = (g_rtc.mode == (uint8_t) PAGER_MODE_ACTIVE) ? "active" : "sleep";
-    // batt_mv: no ADC pin is defined in pins.h for battery sense (out of
-    // scope for this phase - see the final report's NEEDS HUMAN DECISION
-    // note). Placeholder mid-range LiFePO4 value so the payload is at least
-    // schema-valid; PENDING_HW for a real reading.
-    const int batt_mv_placeholder = 3300;
+    // batt_mv: no ADC pin is defined in pins.h for battery sense, but that
+    // is no longer needed - PROTOCOL.md §12 item 6 (resolved) has net.cpp
+    // reading the modem's own AT+SQNVMON supply-rail voltage instead, which
+    // is believed (not yet hardware-confirmed, see §12's unverified-
+    // assumptions table) to track the battery directly. Fall back to the
+    // last known-good reading on a failed/out-of-range AT round trip, and
+    // only to a fixed placeholder if no good reading has ever been taken
+    // this boot - either way this must never block or fail the publish.
+    int batt_mv;
+    if (!net_get_battery_mv(&batt_mv) || batt_mv < PAGER_BATT_MV_MIN ||
+        batt_mv > PAGER_BATT_MV_MAX) {
+        if (s_last_batt_mv != 0) {
+            batt_mv = s_last_batt_mv;
+        } else {
+            // Last-resort fallback only: a fixed mid-range LiFePO4 value,
+            // not a measurement. Only hit before the first successful
+            // reading this boot (e.g. modem not yet responsive).
+            batt_mv = 3300;
+        }
+    } else {
+        s_last_batt_mv = batt_mv;
+    }
     int n = snprintf(out, out_size,
                       "{\"v\":1,\"state\":\"%s\",\"mode\":\"%s\",\"batt_mv\":%d,"
                       "\"session\":\"%s\",\"ts\":%lld,\"fw\":\"%s\"}",
-                      state, mode_str, batt_mv_placeholder, g_rtc.session_id, (long long) ts,
+                      state, mode_str, batt_mv, g_rtc.session_id, (long long) ts,
                       PAGER_FW_VERSION);
     return n > 0 && (size_t) n < out_size;
 }

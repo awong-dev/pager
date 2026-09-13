@@ -327,6 +327,20 @@ extern "C" bool net_init(void)
         ESP_LOGI(TAG, "configEDRX() failed - continuing without a granted eDRX confirmation");
     }
 
+    // PROTOCOL.md §12 item 6: periodic voltage monitor, ACTIVE mode only
+    // (no autonomous shutdown/sleep side effects - modes.c owns all power
+    // decisions). Threshold 30 (3.0V) is a sane LiFePO4 low-battery mark;
+    // ACTIVE mode never acts on it, it is just recorded alongside the
+    // reading. Non-fatal: battery reporting is a nice-to-have, not
+    // load-bearing for message delivery, same pattern as configEDRX() above.
+    // Power effect: one AT command now, plus one AT round trip per
+    // net_get_battery_mv() call later; no RRC of its own either time.
+    if (!WalterModem::configVoltageMonitor(WALTER_MODEM_VOLTAGE_MONITOR_MODE_ACTIVE, 30, 30)) {
+        ESP_LOGI(TAG, "configVoltageMonitor() failed - continuing without voltage monitoring");
+    } else {
+        ESP_LOGI(TAG, "voltage monitor configured (ACTIVE, threshold=3.0V, period=30s)");
+    }
+
     // PSM explicitly disabled (PROTOCOL.md §6.3): PSM would suspend paging
     // entirely, which breaks the <=30s sleep-mode delivery target.
     if (!WalterModem::configPSM(WALTER_MODEM_PSM_DISABLE)) {
@@ -519,6 +533,24 @@ extern "C" bool net_get_clock(int64_t *epoch_s)
     int64_t elapsed_s = (esp_timer_get_time() - s_clock_epoch_us) / 1000000;
     if (epoch_s) {
         *epoch_s = s_clock_epoch + elapsed_s;
+    }
+    return true;
+}
+
+extern "C" bool net_get_battery_mv(int *batt_mv)
+{
+    // Power effect: one AT round trip ("AT+SQNVMON?" / "+SQNVMON: ..."), no
+    // RRC of its own - same class as net_check(). Requires
+    // configVoltageMonitor() to have been called once already (net_init()).
+    WalterModemRsp rsp = {};
+    if (!WalterModem::getVoltage(&rsp)) {
+        return false;
+    }
+    if (rsp.type != WALTER_MODEM_RSP_DATA_TYPE_VOLTAGE) {
+        return false;
+    }
+    if (batt_mv) {
+        *batt_mv = (int) rsp.data.voltage.voltage * 100; // tenths-of-a-volt -> mV
     }
     return true;
 }

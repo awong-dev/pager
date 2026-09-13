@@ -112,6 +112,18 @@ bool net_recover_modem(void);
  * forever rather than add an SNTP path. */
 bool net_get_clock(int64_t *epoch_s);
 
+/* Battery voltage in millivolts, via WalterModem::getVoltage() ->
+ * AT+SQNVMON? (PROTOCOL.md §12 item 6: the GM02SP's own supply-rail
+ * reading, believed but not yet hardware-confirmed to track the battery
+ * cell directly rather than a fixed regulated rail — see §12's
+ * unverified-assumptions table). net_init() must have already called
+ * WalterModem::configVoltageMonitor() once; this just re-reads the current
+ * value. Returns false (and leaves *batt_mv unchanged) if the AT command
+ * fails — the caller must supply its own fallback, this function does not
+ * cache a last-known-good value itself.
+ * Power effect: one AT round trip, no RRC — same class as net_check(). */
+bool net_get_battery_mv(int *batt_mv);
+
 /* Read-only snapshot of MQTT connection state for modes.c's F1/F3 backoff
  * state machine. Does NOT clear disconnect_edge — call
  * net_ack_disconnect_edge() once you have actually acted on it. */

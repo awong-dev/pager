@@ -945,15 +945,35 @@ future.
    *to* that call exists in the repo yet. NVS plus a flash-time provisioning step is the obvious
    shape; nobody owns it.
 
-6. **`NEEDS HUMAN DECISION` — no battery-voltage sense pin.** §5.1's `/status` schema requires
-   `batt_mv`, and HANDOFF.md's hardware table (§1) does not list an ADC-capable GPIO wired to the
-   battery for that purpose. `modes.c` currently publishes a hardcoded 3300 mV placeholder so the
-   payload stays schema-valid; there is no real reading behind it. Adding a sense pin is a GPIO
-   change and HANDOFF.md §7.7 requires asking before making one — this document does not decide it.
-   Options: (a) add a battery-sense GPIO (needs a free ADC-capable pin and, likely, a resistor
-   divider — a hardware change, not just a firmware one); (b) query the modem for a supply-voltage
-   reading if `walter-modem` exposes one (unverified — not checked in Phase 4); (c) ship without a
-   real battery reading for the MVP and treat `batt_mv` as advisory until this is resolved.
+6. **Resolved post-MVP-review — no dedicated battery-voltage sense pin, but option (b) exists and
+   is now wired in.** §5.1's `/status` schema requires `batt_mv`, and HANDOFF.md's hardware table
+   (§1) does not list an ADC-capable GPIO wired to the battery for that purpose — option (a), a
+   dedicated sense pin + resistor divider, would still need a GPIO change and a human decision per
+   HANDOFF.md §7.7, and is **not** pursued.
+
+   Instead: `walter-modem` v1.5.0 exposes `configVoltageMonitor()` / `getVoltage()`, mapping to the
+   Sequans-specific `AT+SQNVMON` command, which reports the GM02SP modem's own supply-rail voltage
+   in tenths of a volt (confirmed directly in `src/WalterModem.h`/`.cpp` — not merely assumed from
+   documentation). Whether that rail tracks the *battery* rather than a fixed regulated rail was
+   checked against Walter's public hardware schematics
+   (`https://github.com/QuickSpot/walter-hardware`), not just guessed:
+   - the GM02SP's power pins sit on a net explicitly named `VBAT`, distinct from Walter's own
+     `+3V3`/`+1V8` regulated rails, and that net is not sourced anywhere inside Walter's onboard
+     Power Management block (which only produces `+3V3`/`+1V8`);
+   - Walter's onboard regulator (`TPS6208833`) is a **buck-boost**, which only makes sense if `VIN`
+     is expected to sometimes sit *below* 3.3V — i.e. a single Li-ion/LiFePO4 cell directly, not
+     only a fixed 5V USB input;
+   - DPTechnics' own official reference battery design in the same repo (`walter-feels`) wires its
+     battery charger IC's `VBAT` output — the real, live cell voltage — **directly into Walter's
+     `VIN` pin**, with no additional regulation in between.
+
+   Taken together this is strong (not certain — Walter's own internal PCB routing from `VIN` to the
+   GM02SP's `VBAT` pins is not published, only inferred by elimination) evidence that `getVoltage()`
+   tracks real battery voltage on a battery-powered Walter build, not a fixed 3.3V rail. `net.cpp`
+   now calls it and reports the result as `batt_mv`; §12's unverified-assumptions table below
+   carries the one open item this rests on. **`UNVERIFIED`, cheap to confirm**: on first hardware
+   bring-up, compare `getVoltage()`'s reported value against a multimeter reading of the actual
+   battery — 5 minutes, no code change either way.
 
 7. **`NEEDS HUMAN DECISION` — should the relay re-publish `shown`-but-unread messages on a session
    change?** Phase 5's §9.6 note. Today a down message that reached `shown` and then died in a
@@ -997,3 +1017,4 @@ future.
 | 6.5 | SSD1680 partial refresh completes in <1.5 s at room temperature | **OPEN (M7)** — §6.5 breaks if it does not; only 2.7 s of slack at `T`=5 s | Toggle a GPIO around `ui_refresh()`, scope the pulse width; also log `esp_timer` deltas around the BUSY wait |
 | 9.4 | The M5Stack CardKB emits one ASCII byte per keypress (no multi-byte sequences) | **OPEN, load-bearing for §9.4** — if it can emit >0x7F, a 160-byte RTC reply slot is no longer 160 characters | Poll 0x5F over I2C, dump every non-zero byte for a full pass over the keyboard incl. Fn/sym combos; 15 min on hardware |
 | 8.4 | ESP32 draws ~40 mA awake and ~50 ms per wake-and-drain cycle | OPEN — the overhead term (0.40 mA of 1.8–2.1 mA) rests entirely on this, and the 50 ms floor is set by the library event task's 10 ms tick + 10 ms settle | Toggle a GPIO around the awake window and read the duty cycle on a scope; a current trace gives both numbers at once |
+| 12.6 | `getVoltage()`/`AT+SQNVMON` reports real battery voltage, not a fixed regulated rail | **OPEN, cheap to confirm** — inferred from Walter's public schematics (§12 item 6), not from Walter's own unpublished internal routing | Compare `getVoltage()`'s reported `batt_mv` against a multimeter reading of the actual battery on first hardware bring-up; 5 min, no code change either way |
