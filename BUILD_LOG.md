@@ -206,3 +206,60 @@ implementation to subagents, log every phase here.
 **Done when:** commit `v2 phase 2b`. ✅
 
 ---
+
+## Phase 3 — Routing, core backends, first e2e (2026-09-15)
+
+- `backend-dev` built the routing engine and the first two delivery backends:
+  `relay/app/routing.py` (`send()` per `SERVER_PLAN.md` §5.2 — recipient resolution including
+  device default and broadcast, per-recipient allow-list check with drop+log+system-reply on
+  denial, one Firestore transaction per recipient reusing Phase 2b's `create_message`, then
+  inline in-request delivery), the `Backend` protocol and `pager.py`/`webapp.py` adapters
+  (`relay/app/backends/`), `tasks.py` (inline mode only), `jobs.py` (`tick()`, now with a
+  5-attempt delivery failure cutoff — see below), `routers/{conversations,me,internal}.py`, and
+  the first cut of `tools/pager_client.py` (device side over real MQTT, server side over the
+  Firestore-backed API) and `tools/e2e_v2.py` (scenarios 1-4: `bootstrap`, `text_roundtrip`,
+  `allowlist`, `republish`).
+- `server-architect`'s review found and fixed two high-severity bugs directly:
+  - **A revoked device's up-messages silently fell through to legacy SQLite-era storage** instead
+    of being dropped — revocation was cosmetic, not enforced, on the ingest path.
+  - **The `system` "unknown recipient" reply minted a fresh id on every call**, so a QoS-1
+    redelivery of the same offending up-message produced a second down message with a different
+    id — exactly the redelivery-storm failure mode PROTOCOL.md §4.1 rule 7's id-keyed dedup ring
+    exists to prevent. Now the reply id is deterministic (derived from the offending message),
+    so a redelivery reuses the same id and the device's own dedup suppresses the re-render.
+- `backend-dev` closed two schema/behavior gaps flagged by the same review, before commit:
+  - **`originBackendId` was storing a backend *kind*** (`"pager"`/`"webapp"`), not a real
+    per-user backend document id — unrecoverable once Phase 7 gives a user two backends of the
+    same kind (two phones) and needs to know which one a reply arrived through. Split into
+    `originBackendKind` (always set) and `originBackendId` (real id; `null` until Phase 7 has one
+    to pass). Fan-out exclusion now prefers an id match, falling back to the kind-based self-loop
+    guard that pager/webapp still use (unchanged behavior for both today). A `(build finding)`
+    note was added to `SERVER_PLAN.md` §3 recording this as the definitive schema.
+  - **Delivery `attempts`/`error` were never written**, and a backend's `DeliverResult` was
+    discarded — so a permanently-failing pager delivery (e.g. dead broker credentials) retried
+    forever with no failure state, on every `tick()` and every online-edge event, for 24h.
+    Added `record_delivery_attempt()`: 5 failed attempts → `'failed'`, transactionally, and the
+    device is removed from `pendingDeviceIds` so it stops being retried.
+  - Two smaller fixes: `conversations/{convKey}.unread` only ever incremented — `mark_read` now
+    clears it for the reading user in the same transaction as the read ack. `mark_read`'s
+    `{alias}` URL path segment was accepted but never actually checked against the message's
+    `convKey` (authorization was correct via `recipientUid` alone, but the alias was decorative) —
+    now validated, 404 on mismatch.
+- **`retry_queued` (legacy collection) vs. `jobs.tick()` (v2 collection)** — confirmed by the
+  review to operate on genuinely disjoint storage (`legacyMessages` vs. `messages`/
+  `pendingDeviceIds`), so keeping both is correct, not redundant. Both are retired together in
+  Phase 6 when the legacy endpoints go.
+- **`(deploy blocker, tracked for Phase 9)`**: EMQX still provisions no device-level MQTT
+  credentials or ACLs locally — only the rule-engine forwarding and the relay's own webhook key.
+  `POST /api/admin/devices` mints and returns a credential, but nothing pushes it (or PROTOCOL.md
+  §2's three ACL rules) into the broker, so a minted device credential currently authenticates
+  nothing against the local EMQX. Not a regression — MQTT auth wasn't enforced in the MVP either
+  — but must be closed before a real deployment; add to Phase 9's runbook checklist alongside the
+  EMQX Cloud Serverless account verification.
+- Tests: `relay/tests` — **207 passed**. `tools/e2e_v2.py` — **scenarios 1-4 ALL PASSED**
+  (`bootstrap`, `text_roundtrip`, `allowlist`, `republish`, including the "broker API down →
+  queued → tick delivers" leg) against the full compose stack.
+
+**Done when:** commit `v2 phase 3`. ✅
+
+---
