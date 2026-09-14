@@ -22,6 +22,8 @@ punch list.
 | Path | What it is |
 |---|---|
 | `docs/PROTOCOL.md` | Authoritative wire contract — topics, message schema, ack state machine, power/latency budget. Code must conform to this, not the reverse. |
+| `docs/SERVER_PLAN.md` | Plan for the v2 server stack: user registry, allow-lists, location, multi-backend delivery (web app / SMS / Google Chat), Next.js+MUI web app on Firebase (Firestore, Auth, FCM, Hosting), scale-to-zero Cloud Run relay behind the broker's rule engine, all via Terraform, and the Python MQTT test client. Not started. |
+| `HANDOFF_V2.md` | Execution brief for building the v2 server stack unattended on Sonnet: rules, phases, model policy, kickoff command (`docs/kickoff-v2.md`). |
 | `HANDOFF.md` | Original build brief + phase-by-phase history + current status. |
 | `relay/` | FastAPI relay + MQTT gateway + parent web page. See `relay/README.md` to run it locally. |
 | `firmware/` | ESP-IDF firmware for the Walter (ESP32-S3 + Sequans GM02SP) device. See `firmware/README.md` for build instructions, hardware measurement checklist, and known residual risks. |
