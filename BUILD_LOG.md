@@ -589,3 +589,151 @@ related ones, all fixed by `backend-dev` before commit:
 **Done when:** commit `v2 phase 7`. ✅
 
 ---
+
+## Phase 8 — Hardening (2026-09-15)
+
+**This is the last content phase.** Phases 0-9 are now all committed on branch `v2`.
+
+- `backend-dev` built, per server-architect's Phase 7 bundled punch list: real OIDC ID-token
+  verification for `/internal/tick` and `/internal/sweep` (`app/auth.py`'s
+  `verify_internal_oidc_token`, reusing Phase 7's `google-auth` JWT pattern — signature via
+  Google's certs, audience checked against `OIDC_AUDIENCE`, email checked against an
+  `OIDC_ALLOWED_EMAILS` allow-list, not just "any valid Google identity"; `DEV_MODE` keeps its
+  local-dev bypass, never set by Terraform); Firestore-backed, transactionally-atomic fixed-window
+  rate limiting on `POST /api/me/backends` (Phase 7's M3 finding — real SMS cost per call),
+  every `/api/admin/*` write route, and a per-IP cap on the two inbound webhooks; a
+  `jobs.sweep()` pass for expired `gchatLinkCodes`; `/healthz` now genuinely checks Firestore and
+  broker reachability per `SERVER_PLAN.md` §5.1 instead of a bare 200; structured JSON logging
+  with a request-correlation-id middleware; `firestore.rules` test coverage pinning default-deny
+  on all four server-only lookup collections.
+- `server-architect`'s review fixed two real bugs directly:
+  - **The per-IP webhook rate limiter was keyed on `request.client.host`**, which behind Cloud
+    Run/Hosting is the proxy's own address for every caller — so all inbound Twilio/Chat traffic
+    shared one bucket, making 30 forged requests/minute from anywhere a total, credential-free
+    denial of service against real webhook delivery, running *before* signature verification even
+    got a chance to reject them. Fixed to key on `X-Forwarded-For` with a same-address fallback —
+    correctly reasoned as strictly better even though a forger can still pick their own bucket,
+    since the actual security control (signature/JWT) is unaffected either way.
+  - An `IndexError`-causing 500 (not a clean 401) on a bare `"Bearer "` token with no content on
+    `/internal/*`; the identical bug pattern was found and fixed at `/webhooks/gchat` too (one
+    orchestrator-applied fix, same pattern server-architect had just fixed on `/internal/*`).
+- **The review's most consequential finding is about Phase 9, not Phase 8's own code**:
+  `/internal/*` being fail-closed is correct, but it means **tick and sweep do not run at all in
+  a real deployment** until Terraform actually wires `OIDC_AUDIENCE`/`OIDC_ALLOWED_EMAILS` onto
+  the Cloud Run service. The implementing agent had flagged this as a two-apply Terraform
+  bootstrap problem needing a module dependency restructure; the review **disagreed and is
+  right**: Cloud Run v2's `custom_audiences` lets one shared variable feed both the service's env
+  var and the Scheduler module's OIDC token audience in a single apply, and the scheduler service
+  account's email is deterministic (`pager-scheduler@<project>...`) and needs no module
+  restructure to compute in `envs/prod`. Documented precisely in
+  `infra/modules/schedule/variables.tf` and `infra/README.md` for whoever next touches Terraform
+  for real — **not attempted as a `.tf` edit here**, since `custom_audiences` behavior can't be
+  verified without a real `apply`, which this build never runs. **This is the single most
+  important thing for a human to action before a real deployment** — without it, retries and
+  weekly retention silently never happen.
+- Tests: `relay/tests` — **291 passed**. `tools/e2e_v2.py` — **all 9 scenarios ALL PASSED**,
+  confirming the rate-limit tuning doesn't trip real e2e traffic.
+
+**Done when:** commit `v2 phase 8`. ✅
+
+---
+
+## Final summary (2026-09-15) — the unattended run is complete
+
+Phases 0-9 are all committed, green, on branch `v2`. Nothing pushed, nothing deployed, no cloud
+account created, no money spent, `firmware/` untouched throughout. `docs/PROTOCOL.md` was edited
+only in Phase 1, only by `server-architect`, per the plan's doc-discipline rule; every other
+protocol-adjacent finding was recorded as a `(build finding — …)`/`(v2 decision — …)` note in
+`SERVER_PLAN.md` or this file instead.
+
+**What's built**: protocol v2 (device aliases, `kind`, the `/loc` topic — Phase 1); a request-
+driven serverless transport replacing the always-on MQTT relay, EMQX's rule engine + REST publish
+(Phase 2a); Cloud Firestore + Firebase Auth identity, replacing SQLite (Phase 2b); the routing
+engine and pager/webapp delivery backends (Phase 3); device location tracking with on-demand
+requests and coalescing (Phase 4); real weekly retention, the SMS mock, and the CI switch to
+`e2e_v2.py` (Phase 5); the Next.js web app (Phase 6); SMS (Twilio) and Google Chat delivery
+backends (Phase 7); OIDC-authenticated internal endpoints, rate limiting, structured logging
+(Phase 8); Terraform for the whole GCP/Firebase footprint plus the deploy runbook (Phase 9).
+`tools/pager_client.py` plays both the device and the parent for the full `tools/e2e_v2.py` suite
+(9 scenarios), which supersedes the MVP's `tools/e2e_test.py` (deleted in Phase 5).
+
+### Consolidated punch list for the human (everything logged as PENDING_ACCOUNT / BLOCKED / TODO
+### anywhere above, gathered in one place)
+
+**No `BLOCKED` items exist anywhere in this file.** Every phase reached green.
+
+**PENDING_ACCOUNT (needs a human to open a real account — never attempted here, per the no-
+signups rule):**
+1. **EMQX Cloud Serverless** (Phase 2a) — open the free account; verify the rule engine supports
+   an HTTP action on the Serverless tier, the REST publish API is available on it, and the
+   webhook action's timeout can be set ≥ 15s (a cold Cloud Run relay can take 2-4s to respond).
+   Record findings back into `SERVER_PLAN.md` §9.4.
+2. **Twilio** (Phase 7) — number rental + US A2P 10DLC/toll-free registration, a manual,
+   days-long carrier process, separate from any code here. See `relay/README.md`'s "Message
+   backends" section.
+3. **Google Chat** (Phase 7) — verify the family's Google accounts are on Workspace, not
+   consumer Gmail (`SERVER_PLAN.md` §11 D4); third-party Chat apps are Workspace-only as of the
+   last check. If consumer Gmail, Email (§6.6, not built) is the documented fallback slot.
+
+**Before a real deployment — the single most load-bearing TODO in this list:**
+4. **`/internal/tick` and `/internal/sweep` will not run at all in production** until Terraform
+   wires `OIDC_AUDIENCE`/`OIDC_ALLOWED_EMAILS` onto the Cloud Run service (Phase 8). The fix is
+   known and documented precisely (Cloud Run v2's `custom_audiences`, a single shared variable,
+   one `apply` — not a two-apply bootstrap as first suspected) in
+   `infra/modules/schedule/variables.tf` and `infra/README.md`. Without this, message retries and
+   the weekly retention sweep silently never execute.
+5. **Device MQTT credentials and ACLs are never pushed to any broker** (Phase 3, still true as
+   of Phase 9's Terraform — `broker-gce` doesn't close this either). `POST /api/admin/devices`
+   mints and returns a credential, but nothing provisions it against EMQX, so a minted device
+   credential currently authenticates nothing. Part of the EMQX Cloud console runbook steps in
+   `infra/README.md`.
+
+**Smaller, non-blocking follow-ups (safe to defer, none affect correctness of what's built):**
+6. `tools/sim_device.py`'s replacement, `pager_client.py`, never had a gap here — noted only
+   because Phase 1 flagged it before Phase 4 closed it. No action needed.
+7. Phase 6's two web-app gaps: `firestore.rules` gives non-admin members no server-side way to
+   resolve a contact's alias (worked around client-side; needs a rules change or a contacts
+   endpoint for a cleaner fix); device revoke has a store function but no mounted relay route.
+8. Phase 7's `CloudTasksQueue` is a partial implementation (construction + payload shape only,
+   per its scoped brief) — `POST /internal/task` doesn't exist yet and the existing `enqueue()`
+   call sites pass closures a real out-of-process queue can't serialize. `TASKS_MODE` stays
+   `inline` by default (Terraform-validated, can't be flipped by accident) until this is finished.
+9. `smsVerifyCodes` (Phase 8 review, L3) isn't yet swept on expiry the way `gchatLinkCodes` now
+   is — an abandoned SMS verification attempt accumulates forever. One-line addition to
+   `jobs.sweep()` when someone's next in that file.
+10. `docs/SERVER_PLAN.md` §5.9's index list is slightly behind the indexes Phases 5 and 7 added
+    (`wireIds(createdAt)`, `conversations(lastMessageAt)`) — the doc predates those passes, not a
+    contradiction, but worth a tidy-up pass.
+11. `/healthz` does a live Firestore read + broker HTTP call on every request with no caching
+    (Phase 8 review, L2) — cheap to add a ~10s cache if it ever becomes a load concern.
+
+### Running the full test suite
+
+```bash
+# Relay unit tests (against the Firestore/Auth emulators)
+cd relay
+docker compose up -d firebase && sleep 10
+.venv/bin/pytest -q
+docker compose down -v
+
+# Full end-to-end suite (EMQX + Firestore/Auth + relay + Twilio mock, all 9 scenarios)
+cd relay
+docker compose up -d --build && sleep 5
+python3 tools/e2e_v2.py
+docker compose down -v
+
+# Web app
+cd web
+npm run build && npx tsc --noEmit && npm run lint
+
+# Infra validation (never apply/plan against a real project)
+cd infra
+terraform fmt -check -recursive
+for d in bootstrap envs/prod modules/*; do
+  (cd "$d" && terraform validate -backend=false)
+done
+```
+
+**Last commit on `v2`**: green, re-verified immediately before this entry was written
+(`relay/tests`: 291 passed; `tools/e2e_v2.py`: all 9 scenarios PASSED). Nothing pushed — the
+branch stays local for a human to review, per the kickoff brief.
