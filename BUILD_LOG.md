@@ -76,3 +76,61 @@ implementation to subagents, log every phase here.
 **Done when:** commit `v2 phase 1`. ✅
 
 ---
+
+## Phase 2a — Serverless transport (2026-09-14)
+
+- `backend-dev` replaced the MVP's always-on paho-mqtt relay client with a request-driven design:
+  `relay/app/broker.py` (`BrokerClient` — REST publish over EMQX's `/api/v5/publish`, webhook
+  key verification, webhook body parsing), `relay/app/ingest.py` (ported from the deleted
+  `mqtt_gateway.py`: `handle_up`, `handle_status` incl. online-edge re-publish, `handle_loc` stub
+  for Phase 4), `relay/app/routers/webhooks.py` (`POST /webhooks/mqtt`). No process holds an MQTT
+  connection anymore. `relay/docker-compose.yml` now runs `emqx/emqx:5.8.0` instead of
+  `eclipse-mosquitto`, configured idempotently by `tools/emqx_setup.py` against EMQX's REST
+  management API (connector → HTTP action → rule on `pager/+/{up,status,loc}`; `query_mode: sync`
+  is required — an initial `async` probe left requests permanently "inflight"). Legacy
+  `RELAY_TOKEN` endpoints keep working over SQLite, now publishing via `BrokerClient`.
+- `server-architect` reviewed the diff and fixed two high-severity issues directly:
+  - **H1:** synchronous `httpx` broker calls (up to 10 × 5s in the online-edge republish path)
+    were running inline on the asyncio event loop inside `POST /webhooks/mqtt`, so one slow
+    `/status` webhook could stall every other request the process serves for up to ~50s. Fixed by
+    wrapping the handler dispatch in `run_in_threadpool`.
+  - **H2:** the opportunistic `retry_queued()` retry (see below) could cost up to 10×5s on a
+    plain `GET` when the broker was unreachable — exactly the worst case. Fixed to stop at the
+    first failed publish.
+- `backend-dev` fixed two medium findings from the same review:
+  - **M3:** `webhooks.py`'s blanket `except Exception → 200` could swallow a genuine
+    `sqlite3.OperationalError` on an `/up` insert and silently lose a student reply (up messages
+    have no republish rule per §4.2). Now `OperationalError` re-raises → 500 → broker retries;
+    everything else still gets 200 per §3.4's malformed-payload rule.
+  - **M4:** wire-id dedup was check-then-insert (`id_exists()` then `insert_up_message()`), not
+    atomic — two concurrent at-least-once webhook deliveries of the same id could both pass the
+    check. Now `INSERT ... ON CONFLICT(id) DO NOTHING`, returning whether the insert happened.
+  - **M5 (device-level allow-list enforcement on the ingest path)** is explicitly deferred to
+    Phase 2b's registry gate, where it belongs — not a regression, the MVP had no registry either.
+  - Minor follow-ups noted, not blocking: broker ACLs unimplemented in the dev EMQX compose
+    service (dev-only, PROTOCOL.md §2's ACL bullet is normative for a real deployment); unset
+    `WEBHOOK_KEY` fails closed silently (worth a startup warning); webhook body read is unbounded
+    before the 640B check (low risk behind a proxy).
+- **`Ingest.retry_queued()`** (called from the legacy status-read path) is a narrow, read-time-
+  derived stand-in for one specific gap: a *transient* publish failure (timeout/5xx/DNS blip)
+  while a device stays continuously connected, so no `/status` event ever fires to trigger the
+  existing online-edge republish. (A full broker outage is already covered: the device reconnects
+  with a fresh session, which republishes via the existing `session_changed` path.) **To be
+  deleted once `/internal/tick` (`SERVER_PLAN.md` §5.8) lands** — marked with a
+  `TODO(orchestrator)` at its definition.
+- Tests: `relay/tests` — **115 passed**. `tools/e2e_test.py` — **4/4 scenarios PASS through the
+  real EMQX rule engine**, run twice for stability. `docker compose down -v` after each run.
+- **`PENDING_ACCOUNT: EMQX Cloud Serverless`** — a human needs to open the free account and verify
+  three assumptions before Phase 9 deploys for real (`SERVER_PLAN.md` D2): (1) the rule engine
+  supports an HTTP action on the Serverless tier, (2) the REST publish API is available on the
+  Serverless tier, (3) the webhook action's timeout can be set ≥ 15s (a cold Cloud Run relay can
+  take 2-4s to respond; the local dev config in `relay/emqx/` uses a 10s `request_ttl`, which will
+  need raising for production). Steps: sign up at emqx.com/cloud (free tier, no card required
+  last checked), create a Serverless deployment, replicate the rule/connector/action shape
+  `tools/emqx_setup.py` creates locally, confirm all three points above, and record the findings
+  back into `SERVER_PLAN.md` §9.4 as a `(build finding — …)` note. Not done here per HANDOFF_V2.md
+  §2 rule 2 (no accounts, no signups).
+
+**Done when:** commit `v2 phase 2a`. ✅
+
+---
