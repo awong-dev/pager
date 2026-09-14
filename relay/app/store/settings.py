@@ -12,6 +12,7 @@ from datetime import datetime
 from typing import Literal
 
 from google.api_core.exceptions import AlreadyExists
+from google.cloud.firestore import SERVER_TIMESTAMP
 from pydantic import BaseModel, ConfigDict
 
 from app.db.firestore import get_db
@@ -68,6 +69,17 @@ def get_meta() -> MetaSettings:
     if not snap.exists:
         return MetaSettings()
     return MetaSettings.model_validate(snap.to_dict() or {})
+
+
+def mark_swept() -> None:
+    """`settings/meta.lastSweepAt = now` -- called once at the end of a
+    successful `app.jobs.sweep()` run (docs/SERVER_PLAN.md §3's schema
+    already reserves this field; nothing wrote it before this phase). Uses
+    `set(..., merge=True)` rather than `update()` so this is safe to call
+    even if `settings/meta` doesn't exist yet (a sweep with nothing to do,
+    on a brand-new deployment, must not crash for want of
+    `ensure_meta_initialized()` having run first)."""
+    _settings().document("meta").set({"lastSweepAt": SERVER_TIMESTAMP}, merge=True)
 
 
 def ensure_meta_initialized() -> MetaSettings:

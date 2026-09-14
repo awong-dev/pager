@@ -1,12 +1,15 @@
 name: CI
 
-# HANDOFF.md §8 definition of done: "send.py -> sim_device.py round-trip
-# passes in CI." Keep this workflow simple: install the relay's Python
-# deps, run its unit tests, then run the real docker-compose end-to-end
-# test (tools/e2e_test.py). No paid services, no secrets -- the harmless
-# local-dev defaults from relay/.env.example are all this needs, and
-# tools/e2e_test.py generates and writes its own relay/.env for the
-# duration of the e2e run.
+# docs/SERVER_PLAN.md §8 / Phase 5 ("Client complete, CI switch"): the v2
+# server stack (Firestore + Auth emulators, EMQX's rule engine, a Twilio
+# Messages API mock, the relay itself, DEV_MODE=1) replaces the MVP's
+# mosquitto-only stack -- tools/e2e_v2.py brings up and tears down
+# relay/docker-compose.yml itself (build, health-wait, EMQX rule-engine
+# provisioning via tools/emqx_setup.py), so this workflow just installs the
+# relay's Python deps, runs its unit tests against the emulators, then runs
+# tools/e2e_v2.py. No paid services, no secrets -- the harmless local-dev
+# defaults from relay/.env.example are all this needs, and tools/e2e_v2.py
+# generates and writes its own relay/.env for the duration of the e2e run.
 
 on:
   push:
@@ -24,20 +27,58 @@ jobs:
           python-version: "3.12"
 
       # Installs relay/pyproject.toml's runtime deps (fastapi, uvicorn,
-      # paho-mqtt, pydantic) plus its [dev] extra (pytest, httpx). The same
-      # interpreter is reused below for tools/e2e_test.py and, via
-      # sys.executable, for tools/sim_device.py -- all three need
-      # paho-mqtt, and this is the one place that installs it.
+      # httpx, pydantic, firebase-admin) plus its [dev] extra (pytest,
+      # httpx, paho-mqtt). The same interpreter is reused below for
+      # tools/e2e_v2.py (which imports tools/pager_client.py -- paho-mqtt
+      # for its simulated device, httpx + firebase-admin for its server
+      # driver / whitebox Firestore assertions) -- this is the one place
+      # that installs all of it.
       - name: Install relay dependencies
         run: pip install -e "./relay[dev]"
+
+      # relay/tests/conftest.py needs the Firestore + Auth emulators
+      # reachable on localhost:8080/9099 *before* pytest starts (it fails
+      # the whole session up front otherwise) -- bring up just the
+      # `firebase` service from the same compose file tools/e2e_v2.py uses
+      # below, so both stages exercise identical emulator images.
+      - name: Start Firestore/Auth emulators for unit tests
+        working-directory: relay
+        run: docker compose up -d firebase
+
+      # Both ports, not just Firestore's (8080): the compose healthcheck
+      # only probes 8080, and the two emulators (same `firebase` container)
+      # do not necessarily finish starting at the same moment -- observed
+      # empirically (a bare `curl 8080` succeeding while 9099 still refuses
+      # connections), the same race tools/e2e_v2.py's own
+      # `_auth_emulator_reachable` comment documents. relay/tests/
+      # conftest.py needs both before pytest's session-scoped fixture stops
+      # failing the whole run.
+      - name: Wait for emulators to become healthy
+        run: |
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:8080/ >/dev/null 2>&1 && curl -sf http://localhost:9099/ >/dev/null 2>&1; then
+              echo "Firestore + Auth emulators are up"
+              break
+            fi
+            sleep 2
+          done
+          curl -sf http://localhost:8080/ >/dev/null || { echo "Firestore emulator never became reachable"; exit 1; }
+          curl -sf http://localhost:9099/ >/dev/null || { echo "Auth emulator never became reachable"; exit 1; }
 
       - name: Run relay unit tests
         working-directory: relay
         run: pytest -v
 
+      - name: Stop the unit-test-only emulators (e2e_v2.py brings up its own full stack)
+        working-directory: relay
+        run: docker compose down -v
+
       # ubuntu-latest ships Docker and the Compose v2 plugin already;
-      # nothing else to set up. tools/e2e_test.py brings up
-      # relay/docker-compose.yml itself and tears it down (down -v) on
-      # both success and failure, so no manual cleanup step is needed here.
+      # nothing else to set up. tools/e2e_v2.py brings up
+      # relay/docker-compose.yml itself (relay, EMQX, the Firestore/Auth
+      # emulators, and the Twilio mock), configures EMQX's rule engine, runs
+      # all 9 docs/SERVER_PLAN.md §8 scenarios, and tears it down (down -v)
+      # on both success and failure, so no manual cleanup step is needed
+      # here.
       - name: Run end-to-end test against the real docker-compose stack
-        run: python3 tools/e2e_test.py
+        run: python3 tools/e2e_v2.py

@@ -35,6 +35,8 @@ services:
         condition: service_healthy
       firebase:
         condition: service_healthy
+      twilio-mock:
+        condition: service_started
     env_file: .env
     environment:
       # docs/SERVER_PLAN.md §5.9: emulator-aware (app/db/firestore.py),
@@ -45,6 +47,10 @@ services:
       FIREBASE_AUTH_EMULATOR_HOST: firebase:9099
       GOOGLE_CLOUD_PROJECT: demo-pager
       DEV_MODE: "1"
+      # Phase 5: app/backends/sms_stub.py's TWILIO_BASE_URL override,
+      # pointed at the twilio-mock service on the compose network (see that
+      # service's own comment below).
+      TWILIO_BASE_URL: http://twilio-mock:8010
     ports:
       - "8000:8000"
     networks:
@@ -53,7 +59,7 @@ services:
   # docs/SERVER_PLAN.md §2 decision 3 / §5.9: Firestore is the only store
   # and Firebase Auth is the identity provider -- both run as local
   # emulators (relay/emulator.Dockerfile), the same containers pytest and
-  # tools/e2e_test.py (via the relay) talk to.
+  # tools/e2e_v2.py (via the relay) talk to.
   firebase:
     build:
       context: .
@@ -73,6 +79,18 @@ services:
       interval: 5s
       timeout: 5s
       retries: 30
+    networks:
+      - pager-net
+
+  # Phase 5 (docs/SERVER_PLAN.md §6.4/§8 scenario 7): a Twilio-Messages-API-
+  # shaped test double, never a real dependency -- `app/backends/sms_stub.py`
+  # (and, in Phase 7, the real `sms_twilio.py`) point at it via
+  # TWILIO_BASE_URL. See tools/mocks/twilio_mock.py's module docstring.
+  twilio-mock:
+    build:
+      context: ../tools/mocks
+    ports:
+      - "8010:8010"
     networks:
       - pager-net
 

@@ -124,20 +124,22 @@ access on its own, independent of anything the relay's Python code does
 entirely).
 
 End-to-end integration tests (brings up the real Docker Compose stack —
-EMQX, the Firestore/Auth emulators, and the relay — configures EMQX's rule
-engine, and drives it with real and simulated MQTT devices against the
-legacy `RELAY_TOKEN` endpoints, now Firestore-backed — see
-`tools/e2e_test.py`'s module docstring for the scenarios):
+EMQX, the Firestore/Auth emulators, the relay, and a Twilio Messages API
+mock — configures EMQX's rule engine, and drives it end to end through
+`tools/pager_client.py`'s combined device+server client — see
+`tools/e2e_v2.py`'s module docstring for the scenarios, `docs/SERVER_PLAN.md`
+§8):
 ```bash
-python tools/e2e_test.py
+python tools/e2e_v2.py
 ```
 
 ## CLI Tools
 
-For sending messages and simulating devices:
+For sending messages via the relay API and driving a simulated device +
+server session:
 ```bash
 python tools/send.py --help
-python tools/sim_device.py --help
+python tools/pager_client.py --help
 ```
 
 ## Wire Protocol

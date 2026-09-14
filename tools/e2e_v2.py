@@ -67,6 +67,11 @@ FIREBASE_PROJECT_ID = "demo-pager"
 BROKER_API_KEY = "dev-broker-api-key"
 BROKER_API_SECRET = "dev-broker-api-secret"
 WEBHOOK_KEY = "dev-webhook-key"
+# Phase 5: tools/mocks/twilio_mock.py, published on the host at the same
+# port docker-compose.yml maps it to (relay/docker-compose.yml's
+# `twilio-mock` service); the relay container itself reaches it at
+# http://twilio-mock:8010 (set as TWILIO_BASE_URL in that same file).
+TWILIO_MOCK_URL = "http://localhost:8010"
 # docs/PROTOCOL.md §13.4: 900s (15 min) in production. Shortened for this
 # whole compose run so `scenario_location_on_demand`'s derived-expiry
 # sub-case doesn't wait 15 real minutes -- 10s is comfortably longer than
@@ -178,6 +183,14 @@ def _emqx_reachable() -> bool:
         return False
 
 
+def _twilio_mock_reachable() -> bool:
+    try:
+        resp = httpx.get(f"{TWILIO_MOCK_URL}/healthz", timeout=3.0)
+        return resp.status_code == 200
+    except httpx.HTTPError:
+        return False
+
+
 def _auth_emulator_reachable() -> bool:
     # The compose healthcheck only probes Firestore's port (8080), and
     # `/healthz` only round-trips Firestore too -- neither guarantees the
@@ -203,6 +216,9 @@ def _auth_emulator_reachable() -> bool:
 def start_stack(*, build: bool) -> None:
     write_env_file()
     compose(*(["up", "-d", "--build"] if build else ["up", "-d"]))
+    wait_until(
+        _twilio_mock_reachable, timeout=60, interval=1, description="twilio-mock to become reachable"
+    )
     wait_until(_relay_reachable, timeout=120, interval=1, description="relay to become healthy")
     wait_until(
         _auth_emulator_reachable, timeout=60, interval=1, description="Auth emulator to become reachable"
@@ -217,7 +233,12 @@ def stop_stack() -> None:
 
 
 def dump_logs() -> None:
-    for service, tail in (("relay", "120"), ("emqx", "60"), ("firebase", "40")):
+    for service, tail in (
+        ("relay", "120"),
+        ("emqx", "60"),
+        ("firebase", "40"),
+        ("twilio-mock", "40"),
+    ):
         print(f"\n--- docker compose logs {service} --tail {tail} ---")
         result = compose("logs", service, "--tail", tail, check=False, capture=True)
         print(result.stdout)
@@ -272,11 +293,13 @@ class Oracle:
         _use_relay_store()
         from app.store import locations as locations_store
         from app.store import messages as messages_store
+        from app.store import settings as settings_store
         from app.store import users as users_store
 
         self.messages_store = messages_store
         self.users_store = users_store
         self.locations_store = locations_store
+        self.settings_store = settings_store
 
     def uid_for_alias(self, alias: str) -> str:
         uid = self.users_store.get_uid_for_alias(alias)
@@ -294,6 +317,73 @@ class Oracle:
     def thread(self, alias_a: str, alias_b: str):
         key = self.messages_store.conv_key(self.uid_for_alias(alias_a), self.uid_for_alias(alias_b))
         return self.messages_store.list_thread(key)
+
+
+# --------------------------------------------------------------------------
+# Backdating helpers -- scenario_retention (docs/SERVER_PLAN.md §5.7/§8
+# scenario 8). There is no `pager_client`/relay-API way to "send a fix (or a
+# message) from the past": a real device can only report the current time,
+# and `POST /api/conversations/{alias}/messages` always stamps `createdAt`
+# with `SERVER_TIMESTAMP`. These insert documents directly through the
+# Firestore admin SDK (`app.db.firestore.get_db()`) -- the "Firestore
+# REST/admin path" this phase's brief allows, and the same whitebox access
+# `Oracle` already uses for assertions elsewhere in this file -- with an
+# explicit past `createdAt`, so the retention sweep's cutoff actually has
+# something to bite on without waiting for a real retention window to elapse.
+# --------------------------------------------------------------------------
+
+
+def _backdate_location(device_id: str, *, days_ago: float) -> str:
+    _use_relay_store()
+    from datetime import UTC, datetime, timedelta
+
+    from app.db.firestore import get_db
+
+    ts = int(time.time())
+    doc = {
+        "ts": ts,
+        "fixTs": ts,
+        "lat": 37.0,
+        "lon": -122.0,
+        "accM": 5,
+        "src": "gnss",
+        "cached": False,
+        "reqId": None,
+        "createdAt": datetime.now(UTC) - timedelta(days=days_ago),
+    }
+    _, ref = get_db().collection("devices").document(device_id).collection("locations").add(doc)
+    return ref.id
+
+
+def _backdate_message(sender_uid: str, recipient_uid: str, *, days_ago: float) -> str:
+    _use_relay_store()
+    from datetime import UTC, datetime, timedelta
+
+    from app.db.firestore import get_db
+    from app.ids import new_id
+    from app.store import messages as messages_store
+
+    msg_id = new_id("m_")
+    key = messages_store.conv_key(sender_uid, recipient_uid)
+    doc = {
+        "seq": 1,
+        "convKey": key,
+        "uids": sorted([sender_uid, recipient_uid]),
+        "senderUid": sender_uid,
+        "recipientUid": recipient_uid,
+        "kind": "text",
+        "body": "stale (backdated by tools/e2e_v2.py's scenario_retention)",
+        "loc": None,
+        "wireId": None,
+        "originBackendKind": "webapp",
+        "originBackendId": None,
+        "ts": int(time.time()),
+        "createdAt": datetime.now(UTC) - timedelta(days=days_ago),
+        "deliveries": {},
+        "pendingDeviceIds": [],
+    }
+    get_db().collection("messages").document(msg_id).set(doc)
+    return msg_id
 
 
 # --------------------------------------------------------------------------
@@ -745,6 +835,265 @@ def scenario_location_on_demand() -> None:
     print("location_on_demand: a locate() after expiry starts a fresh loc_req, not a coalesce")
 
 
+def _sms_delivery_state(oracle: Oracle, msg_id: str) -> str | None:
+    msg = oracle.message(msg_id)
+    if msg is None:
+        return None
+    for d in msg.deliveries.values():
+        if d.kind == "sms":
+            return d.state
+    return None
+
+
+def scenario_fanout() -> None:
+    """docs/SERVER_PLAN.md §8 scenario 7: a user with both `webapp` (implicit)
+    and a Phase 5 `sms` stub backend (`app/backends/sms_stub.py`) enabled ->
+    a message fans out to both; the mock (`tools/mocks/twilio_mock.py`)
+    records the sms send; a forced mock failure drives the sms delivery
+    through `/internal/tick`'s retry path (`app/jobs.py`'s Phase 5 addition,
+    see that module's docstring) to `'failed'` after the attempts cap.
+
+    **Origin-backend-exclusion simplification (documented per this phase's
+    brief):** the `sms` stub has no inbound webhook yet (Phase 7 scope --
+    Twilio signature verification, the real link/reply-resolution flow), so
+    there is no HTTP endpoint an "SMS reply" could arrive on in this phase.
+    Per `app/routing.py`'s module docstring, the self-loop guard §5.2 means
+    by "stops an SMS reply from being echoed back to the same phone" only
+    ever fires when the *resolved recipient equals the sender* (see
+    `relay/tests/test_routing.py`'s `test_origin_backend_id_scopes_self_loop_
+    exclusion_to_exact_backend`, which this sub-case mirrors at the
+    integration level) -- so this calls `app.routing.Routing.send()`
+    directly (whitebox, like `Oracle`) with a self-addressed allow edge and
+    `origin_backend_kind='sms'`/`origin_backend_id=<the user's own sms
+    backend id>`, standing in for what a real Phase 7 inbound SMS webhook
+    resolving a reply back to its own sender would pass, and confirms the
+    sms delivery is excluded while webapp (a different kind) still gets one.
+    """
+    oracle = Oracle()
+    admin = pager_client.ServerClient(RELAY_URL, AUTH_URL)
+    admin.login("admin")
+    admin.admin_user_add("fanoutparent", "FanoutParent", email="fanoutparent@example.com", phone=None)
+    admin.admin_user_add(
+        "fanoutstudent", "FanoutStudent", email="fanoutstudent@example.com", phone=None
+    )
+    admin.admin_set_allow("fanoutparent", "fanoutstudent", message=True, locate=True, one_way=False)
+
+    parent = pager_client.ServerClient(RELAY_URL, AUTH_URL)
+    parent.login("fanoutparent")
+    sms_backend = parent.add_backend("sms", {"phone": "+15551234567"})
+
+    student = pager_client.ServerClient(RELAY_URL, AUTH_URL)
+    student.login("fanoutstudent")
+
+    # --- fan-out: webapp + sms both get deliveries ---
+    sent = student.say("fanoutparent", "hi from student")
+    msg_id = sent["id"]
+
+    def _both_delivered() -> bool:
+        msg = oracle.message(msg_id)
+        if msg is None:
+            return False
+        states = {d.kind: d.state for d in msg.deliveries.values()}
+        return states.get("webapp") == "sent" and states.get("sms") == "sent"
+
+    wait_until(
+        _both_delivered, timeout=15, description="webapp and sms deliveries to both reach 'sent'"
+    )
+    sent_sms = httpx.get(f"{TWILIO_MOCK_URL}/_sent", timeout=5.0)
+    sent_sms.raise_for_status()
+    assert any(
+        s["to"] == "+15551234567" and s["body"] == "hi from student" for s in sent_sms.json()
+    ), sent_sms.json()
+    print("fanout: message fanned out to both webapp and sms deliveries; mock recorded the sms send")
+
+    # --- origin-backend exclusion (documented simplification, see docstring above) ---
+    _use_relay_store()
+    from app.routing import Routing as _Routing
+    from tests.fake_transport import FakeBrokerClient as _FakeBroker
+
+    admin.admin_set_allow("fanoutparent", "fanoutparent", message=True, locate=True, one_way=True)
+    loop_routing = _Routing(_FakeBroker())
+    loop_result = loop_routing.send(
+        sender_uid=oracle.uid_for_alias("fanoutparent"),
+        recipient_alias="fanoutparent",
+        kind="text",
+        body="echo via sms",
+        origin_backend_kind="sms",
+        origin_backend_id=sms_backend["id"],
+    )
+    assert len(loop_result.messages) == 1, loop_result
+    loop_kinds = {d.kind for d in loop_result.messages[0].deliveries.values()}
+    assert "sms" not in loop_kinds, loop_kinds
+    assert "webapp" in loop_kinds, loop_kinds
+    print("fanout: sms origin backend excluded on a self-addressed reply; webapp still delivered")
+
+    # --- retry path: mock forced to fail every send until the attempts cap ---
+    fail_resp = httpx.post(f"{TWILIO_MOCK_URL}/_fail_next", json={"times": 10}, timeout=5.0)
+    fail_resp.raise_for_status()
+    sent2 = student.say("fanoutparent", "this sms keeps failing")
+    msg_id_2 = sent2["id"]
+
+    wait_until(
+        lambda: _sms_delivery_state(oracle, msg_id_2) == "queued",
+        timeout=10,
+        description="sms delivery to stay 'queued' after the mock's forced failure",
+    )
+    print("fanout: mock /_fail_next -> sms delivery stayed 'queued' (not 'failed' outright)")
+
+    # `MAX_DELIVERY_ATTEMPTS` (5, app/store/messages.py) -- the inline send
+    # above already counts as attempt 1, so up to 4 more tick()-driven
+    # retries reach the cap (same pattern relay/tests/test_jobs.py's
+    # `test_tick_gives_up_after_five_failed_attempts` uses for pager).
+    for _ in range(5):
+        if _sms_delivery_state(oracle, msg_id_2) == "failed":
+            break
+        tick_resp = admin.api_post("/internal/tick", {})
+        tick_resp.raise_for_status()
+    assert _sms_delivery_state(oracle, msg_id_2) == "failed", _sms_delivery_state(oracle, msg_id_2)
+    print("fanout: sms delivery retried via tick() and reached 'failed' after the attempts cap")
+
+
+def scenario_retention() -> None:
+    """docs/SERVER_PLAN.md §8 scenario 8 / §5.7.
+
+    **Backdating approach** (documented per this phase's brief): see the
+    `_backdate_location`/`_backdate_message` helpers above this file's
+    Scenarios section -- there is no `pager_client`/relay-API way to send a
+    fix or message dated in the past, so these insert documents directly
+    through the Firestore admin SDK (`app.db.firestore.get_db()`) with an
+    explicit past `createdAt`, the "Firestore REST/admin path" this phase's
+    brief allows.
+
+    **Resumability variant tested** (documented per this phase's brief):
+    forcing `POST /internal/sweep`'s single HTTP request to abort partway
+    through isn't something this script can trigger cleanly from outside
+    the relay process without a second-process race with no clean way to
+    synchronise it. Per the brief's fallback ("if you can't cleanly
+    simulate a forced mid-run abort, instead just verify that calling
+    sweep() twice in a row ... is safe and idempotent"), the third sub-case
+    below creates more than one batch's worth of stale messages and calls
+    `sweep` twice in a row, confirming the second call deletes nothing --
+    `relay/tests/test_jobs.py`'s `test_sweep_batches_correctly_with_a_small_
+    sweep_batch`/`test_sweep_is_idempotent_across_two_consecutive_calls`
+    cover the small-`SWEEP_BATCH` multi-iteration boundary itself at the
+    unit level (an in-process `monkeypatch.setenv`, far more reliable than
+    restarting the compose stack's relay container to change its env just
+    for this one sub-case)."""
+    oracle = Oracle()
+    admin = pager_client.ServerClient(RELAY_URL, AUTH_URL)
+    admin.login("admin")
+    parent = pager_client.ServerClient(RELAY_URL, AUTH_URL)
+    parent.login("parent")
+
+    # --- locations: retention.locations=1d, messages untouched ---
+    admin.admin_user_add("retloc", "RetLoc", email="retloc@example.com", phone=None)
+    admin.admin_device_add("pgr-e2e-retloc", "retloc")
+    admin.admin_set_retention(messages="4w", locations="1d")
+
+    fresh_loc_id = _backdate_location("pgr-e2e-retloc", days_ago=0.02)  # ~30 min old
+    stale_loc_id = _backdate_location("pgr-e2e-retloc", days_ago=3)  # well past 1 day
+    fresh_msg_id = parent.say("student", "retention: still here after a locations-only sweep")["id"]
+
+    sweep_resp = admin.api_post("/internal/sweep", {})
+    sweep_resp.raise_for_status()
+    print(f"retention: sweep (locations=1d) -> {sweep_resp.json()}")
+
+    remaining_ids = {f.id for f in oracle.locations_store.list_locations("pgr-e2e-retloc", limit=50)}
+    assert stale_loc_id not in remaining_ids, remaining_ids
+    assert fresh_loc_id in remaining_ids, remaining_ids
+    assert oracle.message(fresh_msg_id) is not None, "messages must be untouched by a locations-only sweep"
+    print("retention: stale location fix swept; fresh fix + messages untouched")
+
+    # --- messages: retention.messages=2w ---
+    admin.admin_set_retention(messages="2w", locations="1d")
+    stale_msg_id = _backdate_message(
+        oracle.uid_for_alias("parent"), oracle.uid_for_alias("student"), days_ago=20
+    )
+    fresh_msg_id_2 = parent.say("student", "retention: fresh message survives a 2-week sweep")["id"]
+
+    sweep_resp2 = admin.api_post("/internal/sweep", {})
+    sweep_resp2.raise_for_status()
+    print(f"retention: sweep (messages=2w) -> {sweep_resp2.json()}")
+
+    assert oracle.message(stale_msg_id) is None, "message older than the 2-week retention must be swept"
+    assert oracle.message(fresh_msg_id_2) is not None
+    print("retention: stale message swept; fresh message untouched")
+
+    # --- idempotency: >1 batch's worth of stale docs, sweep() called twice ---
+    stale_ids = [
+        _backdate_message(oracle.uid_for_alias("parent"), oracle.uid_for_alias("student"), days_ago=20 + i)
+        for i in range(3)
+    ]
+    sweep_resp3 = admin.api_post("/internal/sweep", {})
+    sweep_resp3.raise_for_status()
+    result3 = sweep_resp3.json()
+    sweep_resp4 = admin.api_post("/internal/sweep", {})
+    sweep_resp4.raise_for_status()
+    result4 = sweep_resp4.json()
+    print(f"retention: two sweep() calls in a row -> first {result3}, second {result4}")
+
+    for mid in stale_ids:
+        assert oracle.message(mid) is None
+    assert result3["messagesDeleted"] >= len(stale_ids)
+    assert result4["messagesDeleted"] == 0, "a second sweep() right after the first must be a no-op"
+    print("retention: sweep() is idempotent -- the second call deleted nothing")
+
+
+def scenario_bytes() -> None:
+    """docs/SERVER_PLAN.md §8 scenario 9 -- informational only (no hard
+    assertions beyond "it runs and prints something meaningful"), matching
+    this phase's brief. Connects a device, exercises a representative mix
+    of up/down/status/loc traffic, then prints the same per-topic byte
+    counters `pager_client.py`'s `bytes` command already tracks (Phase 3)
+    next to docs/PROTOCOL.md §7.2's raw-JSON-payload figures for comparison
+    (§7.2's *MQTT bytes* column, before the TLS/TCP framing this local,
+    non-TLS compose stack doesn't add -- the same "payload bytes only" thing
+    `ByteCounter` measures)."""
+    admin = pager_client.ServerClient(RELAY_URL, AUTH_URL)
+    admin.login("admin")
+    admin.admin_user_add("bytesuser", "BytesUser", email="bytesuser@example.com", phone=None)
+    admin.admin_device_add("pgr-e2e-bytes", "bytesuser", default_to_alias="parent")
+    # Two-way (not `one_way=True` like the location scenarios) so the
+    # device's own up-message below lands in the thread instead of tripping
+    # the "unknown recipient"/"not allowed" system-reply path -- this
+    # scenario wants representative traffic sizes, not an allow-list check.
+    admin.admin_set_allow("parent", "bytesuser", message=True, locate=True, one_way=False)
+
+    device = pager_client.DeviceClient("pgr-e2e-bytes", MQTT_HOST, MQTT_PORT, None, None)
+    device.connect()
+    wait_until(lambda: device.connected, timeout=10, description="bytes device to connect")
+
+    parent = pager_client.ServerClient(RELAY_URL, AUTH_URL)
+    parent.login("parent")
+    sent = parent.say("bytesuser", "how are things going today?")
+    wait_until(
+        lambda: any(e.data.get("id") == sent["id"] for e in device.inbox),
+        timeout=10,
+        description="bytes device to receive the down message",
+    )
+    device.publish_ack(sent["id"], "shown")
+    device.publish_ack(sent["id"], "read")
+    device.publish_status(batt_mv=3150, mode="active", rssi=-80)
+    device.loc_now(37.7749, -122.4194, acc=12)
+    device.publish_msg("ok", to="parent")
+
+    time.sleep(0.5)  # let the last up-message land before reading counters
+    device.disconnect()
+
+    published = device.bytes.published
+    received = device.bytes.received
+    assert sum(published.values()) > 0 and sum(received.values()) > 0, "expected some traffic counted"
+
+    print("bytes: per-topic published bytes:", published)
+    print("bytes: per-topic received bytes:", received)
+    print(
+        "bytes: PROTOCOL.md §7.2 reference payload sizes (JSON only, no TLS/TCP -- "
+        "this compose stack has neither) -- /down 'msg' ~99 B, /down 'loc_req' ~78 B, "
+        "/up ack ~51 B, /up reply ~84 B, /status ~117 B, /loc periodic ~160 B, "
+        "/loc answering a loc_req ~160 B"
+    )
+
+
 SCENARIOS: dict[str, Callable[[], None]] = {
     "bootstrap": scenario_bootstrap,
     "text_roundtrip": scenario_text_roundtrip,
@@ -752,6 +1101,9 @@ SCENARIOS: dict[str, Callable[[], None]] = {
     "republish": scenario_republish,
     "location_periodic": scenario_location_periodic,
     "location_on_demand": scenario_location_on_demand,
+    "fanout": scenario_fanout,
+    "retention": scenario_retention,
+    "bytes": scenario_bytes,
 }
 
 

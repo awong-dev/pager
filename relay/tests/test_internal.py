@@ -57,10 +57,23 @@ def test_sweep_not_found_when_dev_mode_off():
         assert resp.status_code == 404
 
 
-def test_sweep_is_a_noop_placeholder(client: TestClient):
+def test_sweep_runs_and_reports_zero_deletions_with_nothing_stale(client: TestClient):
+    """Real retention logic lives in `app/jobs.py` (`tests/test_jobs.py`
+    covers its batching/idempotency/unit-conversion in depth) -- this is
+    just the route wiring: `POST /internal/sweep` calls it and returns its
+    `SweepResult`, which is all zeros when nothing in a fresh emulator is
+    old enough to sweep."""
     resp = client.post("/internal/sweep")
     assert resp.status_code == 200
-    assert resp.json() == {"ok": True}
+    assert resp.json() == {
+        "messagesDeleted": 0,
+        "wireIdsDeleted": 0,
+        "locationsDeleted": 0,
+        "locWireIdsDeleted": 0,
+        "locReqsDeleted": 0,
+        "orphanedWireIdsDeleted": 0,
+        "conversationsDeleted": 0,
+    }
 
 
 def test_tick_retries_queued_pager_deliveries_end_to_end():

@@ -18,18 +18,20 @@ Device-side flags: `--device-id --host --port --username --password`.
 Server-side flags: `--api --auth-url --as <alias>` (`--as` is a convenience
 that runs `login <alias>` before the REPL/subcommand).
 
-Implements docs/SERVER_PLAN.md §8's full command set, Phase 3 (text) plus
-Phase 4 (location, PROTOCOL.md §13):
+Implements docs/SERVER_PLAN.md §8's full command set: Phase 3 (text), Phase 4
+(location, PROTOCOL.md §13), Phase 5 (backends, retention, sweep):
 
   Device: connect, disconnect, crash, inbox, msg, ack, autoack, status, bytes,
           loc <lat> <lon> [acc] | loc auto <period_s> [--walk] |
           loc min <s> | loc fail on|off
-  Server: login, contacts, chat, say, watch, tick, locate <alias>,
+  Server: login, contacts, chat, say, watch, tick, sweep, locate <alias>,
           locations <alias> [n],
-          admin user-add / allow / deny / device-add
+          admin user-add / allow / deny / device-add /
+          settings retention messages=<n><d|w> locations=<n><d|w>,
+          backend add <kind> <json-config>
 
-Supersedes `tools/sim_device.py` conceptually (docs/SERVER_PLAN.md §8) --
-`sim_device.py` itself is not deleted until Phase 5.
+Supersedes `tools/sim_device.py` (docs/SERVER_PLAN.md §8) -- `sim_device.py`
+itself, and `tools/e2e_test.py`, are deleted this phase (5).
 """
 
 from __future__ import annotations
@@ -38,6 +40,7 @@ import argparse
 import cmd
 import json
 import os
+import re
 import shlex
 import sys
 import threading
@@ -65,6 +68,20 @@ def new_id(prefix: str) -> str:
 
 def now_ts() -> int:
     return int(time.time())
+
+
+def parse_retention_shorthand(value: str) -> dict[str, Any]:
+    """`4w` -> `{"n": 4, "unit": "weeks"}`, `10d` -> `{"n": 10, "unit":
+    "days"}` -- docs/SERVER_PLAN.md §8's `admin settings retention
+    messages=4w locations=10d` shorthand, matching §5.7/§3's
+    `{n, unit: 'days'|'weeks'}` setting shape 1:1 so this is the only place
+    that shorthand needs parsing."""
+    m = re.fullmatch(r"(\d+)([dw])", value.strip().lower())
+    if not m:
+        raise ValueError(f"invalid retention shorthand {value!r} (expected e.g. '4w' or '10d')")
+    n = int(m.group(1))
+    unit = "weeks" if m.group(2) == "w" else "days"
+    return {"n": n, "unit": unit}
 
 
 def _fs_value(field: dict[str, Any] | None) -> Any:
@@ -538,6 +555,25 @@ class ServerClient:
         resp.raise_for_status()
         return resp.json()
 
+    def sweep(self) -> dict[str, Any]:
+        """`POST /internal/sweep` -- docs/SERVER_PLAN.md §5.7's retention
+        sweep, `sweep` command per §8."""
+        resp = self.api_post("/internal/sweep", {})
+        resp.raise_for_status()
+        return resp.json()
+
+    def add_backend(self, kind: str, config: dict[str, Any], *, enabled: bool = True) -> dict[str, Any]:
+        """`POST /api/me/backends` for the currently-logged-in user --
+        docs/SERVER_PLAN.md §5.1. Used by `backend add` and by
+        `tools/e2e_v2.py`'s `fanout` scenario to give a user an `sms`
+        backend (`app/backends/sms_stub.py`, Phase 5) without any admin
+        involvement, matching a real user configuring their own backends
+        (§7.4)."""
+        resp = self.api_post("/api/me/backends", {"kind": kind, "config": config, "enabled": enabled})
+        if resp.status_code >= 400:
+            raise RuntimeError(f"add_backend failed: {resp.status_code} {resp.text}")
+        return resp.json()
+
     def locate(self, alias: str) -> dict[str, Any]:
         resp = self.api_post(f"/api/conversations/{alias}/locate", {})
         if resp.status_code >= 400:
@@ -626,6 +662,26 @@ class ServerClient:
             }
             for e in edges
         ]
+
+    def admin_set_retention(
+        self, *, messages: str | None = None, locations: str | None = None
+    ) -> dict[str, Any]:
+        """`admin settings retention messages=<n><d|w> locations=<n><d|w>`
+        (docs/SERVER_PLAN.md §8) -- `PUT /api/admin/settings` replaces both
+        classes at once (§5.1), so this reads the current values back first
+        (`GET /api/admin/settings`) and only overrides the class(es) given,
+        the same "read-then-selectively-override" shape
+        `admin_set_allow`/`admin_deny` use for the allowlist."""
+        current = self.api_get("/api/admin/settings").json()
+        payload = {"messages": current["messages"], "locations": current["locations"]}
+        if messages is not None:
+            payload["messages"] = parse_retention_shorthand(messages)
+        if locations is not None:
+            payload["locations"] = parse_retention_shorthand(locations)
+        resp = self.api_put("/api/admin/settings", payload)
+        if resp.status_code >= 400:
+            raise RuntimeError(f"admin settings retention failed: {resp.status_code} {resp.text}")
+        return resp.json()
 
     # ---- Firestore REST reads (exercises firestore.rules) ----
 
@@ -1004,10 +1060,36 @@ class PagerShell(cmd.Cmd):
     def do_tick(self, arg: str) -> None:
         self._out(self.server.tick())
 
+    def do_sweep(self, arg: str) -> None:
+        self._out(self.server.sweep())
+
+    def do_backend(self, arg: str) -> None:
+        parts = shlex.split(arg)
+        if len(parts) < 1 or parts[0] != "add":
+            print("usage: backend add <kind> <json-config> [--disabled]")
+            return
+        self._backend_add(parts[1:])
+
+    def _backend_add(self, args: list[str]) -> None:
+        parser = argparse.ArgumentParser(prog="backend add", add_help=False)
+        parser.add_argument("kind")
+        parser.add_argument("config", help="JSON object, e.g. '{\"phone\": \"+15551234567\"}'")
+        parser.add_argument("--disabled", action="store_true")
+        try:
+            ns = parser.parse_args(args)
+        except SystemExit:
+            return
+        try:
+            config = json.loads(ns.config)
+        except json.JSONDecodeError as exc:
+            print(f"invalid JSON config: {exc}")
+            return
+        self._out(self.server.add_backend(ns.kind, config, enabled=not ns.disabled))
+
     def do_admin(self, arg: str) -> None:
         parts = shlex.split(arg)
         if not parts:
-            print("usage: admin user-add|device-add|allow|deny ...")
+            print("usage: admin user-add|device-add|allow|deny|settings ...")
             return
         sub, rest = parts[0], parts[1:]
         if sub == "user-add":
@@ -1018,6 +1100,8 @@ class PagerShell(cmd.Cmd):
             self._admin_allow(rest)
         elif sub == "deny":
             self._admin_deny(rest)
+        elif sub == "settings":
+            self._admin_settings(rest)
         else:
             print(f"unknown admin subcommand: {sub}")
 
@@ -1074,6 +1158,26 @@ class PagerShell(cmd.Cmd):
             return
         self.server.admin_deny(args[0], args[1])
         print(f"denied {args[0]} -> {args[1]}")
+
+    def _admin_settings(self, args: list[str]) -> None:
+        if not args or args[0] != "retention":
+            print("usage: admin settings retention messages=<n><d|w> locations=<n><d|w>")
+            return
+        kv: dict[str, str] = {}
+        for item in args[1:]:
+            key, sep, value = item.partition("=")
+            if not sep:
+                print("usage: admin settings retention messages=<n><d|w> locations=<n><d|w>")
+                return
+            kv[key] = value
+        try:
+            result = self.server.admin_set_retention(
+                messages=kv.get("messages"), locations=kv.get("locations")
+            )
+        except ValueError as exc:
+            print(f"invalid retention value: {exc}")
+            return
+        self._out(result)
 
     # ---- misc ----
 

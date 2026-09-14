@@ -33,11 +33,6 @@ def tick(request: Request) -> jobs.TickResult:
 
 
 @router.post("/internal/sweep")
-def sweep(request: Request) -> dict[str, bool]:
+def sweep(request: Request) -> jobs.SweepResult:
     _require_dev_mode(request)
-    # Real retention logic (docs/SERVER_PLAN.md §5.7: count+unit settings,
-    # BulkWriter deletes of messages/wireIds and locations, resumable) is
-    # Phase 5/8 -- this only wires the route's shape so Cloud Scheduler and
-    # `tools/pager_client.py`'s `sweep` command have something to call in
-    # the meantime.
-    return {"ok": True}
+    return jobs.sweep()

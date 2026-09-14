@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from app.backends.base import Backend
 from app.backends.pager import PagerBackend
+from app.backends.sms_stub import SmsStubBackend
 from app.backends.webapp import FCMClient, WebappBackend
 from app.broker import BrokerClient
 
@@ -13,4 +14,8 @@ def build_registry(broker: BrokerClient, *, fcm_client: FCMClient | None = None)
     return {
         "pager": PagerBackend(broker),
         "webapp": WebappBackend(fcm_client),
+        # Phase 5 stub -- see app/backends/sms_stub.py's module docstring
+        # (TODO(orchestrator): replace with the real Twilio adapter in
+        # Phase 7).
+        "sms": SmsStubBackend(),
     }

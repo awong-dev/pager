@@ -235,6 +235,31 @@ class Routing:
         self._deliver_one(msg, bid, delivery, backend_row)
         return True
 
+    def redeliver(self, msg: Message, bid: str) -> bool:
+        """Generic re-invocation of *any* backend's `deliver()` for delivery
+        `bid` on `msg` -- `redeliver_pager`'s non-device-keyed sibling,
+        added this phase (5) alongside the `sms` stub backend
+        (`app/backends/sms_stub.py`) so `/internal/tick`'s retry of queued
+        non-pager deliveries (`app/jobs.py`, docs/SERVER_PLAN.md §5.2's
+        general "any failure ... enqueues a retry" rule, applied to more
+        than just `pager`) has something to call that doesn't need a device
+        id the way `redeliver_pager` does. `redeliver_pager` stays as its
+        own method rather than being rewritten in terms of this one: it is
+        the hot, already-tested online-edge/`/locate` path, and its extra
+        device-id lookup has no equivalent for a kind like `sms` that never
+        populates `pendingDeviceIds`. Returns False if the delivery or its
+        backend row is gone."""
+        delivery = msg.deliveries.get(bid)
+        if delivery is None:
+            return False
+        backend_row = backends_store.get_backend(msg.recipientUid, bid)
+        if backend_row is None:
+            return False
+        if self._registry.get(backend_row.kind) is None:
+            return False
+        self._deliver_one(msg, bid, delivery, backend_row)
+        return True
+
     # ---- create + deliver (§5.2 steps 3-4) ----
 
     def _create_and_deliver(
