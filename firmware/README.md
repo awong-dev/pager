@@ -2,16 +2,29 @@
 
 ESP-IDF 5.x project for the Walter device (ESP32-S3 + Sequans LTE-M modem).
 
+**Status: code-complete (Phases 0-6 of `HANDOFF.md`), builds clean, never run on real hardware.**
+Every timing/current/visual number in this codebase is either vendor-documented or an engineering
+estimate marked `PENDING_HW` — see the measurement checklists and "Residual risks" section below
+before flashing a real device. `docs/PROTOCOL.md` §12 has two still-open protocol decisions
+(broker free-tier verification, LWT/clean-session) that aren't firmware bugs but do affect what
+`net.cpp` can promise.
+
 ## Dependencies
 
 - ESP-IDF 5.x
-- `dptechnics/walter-modem` component
-- Display driver (SSD1680) — TBD in Phase 5
+- `dptechnics/walter-modem` component, pinned to exactly `1.5.0` in `main/idf_component.yml` —
+  do not let this float to a newer version without re-reading the vendor source first; two separate
+  conclusions in `docs/PROTOCOL.md` turned out to depend on which version was actually checked out.
+- Display driver (SSD1680): custom, in-tree (`main/ui.c`) — no external component. See
+  `docs/PROTOCOL.md` §6 for why (the one registry candidate found requires a newer ESP-IDF than
+  this project builds against).
 
 ## Hardware Acceptance Tests
 
 - Sleep-mode current: PENDING_HW
 - Acceptance test (message latency): PENDING_HW
+- Full list of what to check on first hardware bring-up: the measurement checklists below (M1-M15)
+  and the "Residual risks" section's cheapest-experiment column, roughly in priority order.
 
 ## Phase 4 measurement checklist (all PENDING_HW)
 
@@ -228,13 +241,20 @@ active window is not noticed for up to 10 minutes, and the "every 60 wakes" peri
 5 min (sleep) to 2 min (active) to ~1.2 s (R2's stuck button). Prefer a monotonic timestamp.
 Low impact on its own; listed because it interacts with R1 and R2.
 
-### Two `NEEDS HUMAN DECISION` items, re-checked against the final code
-- **§12 item 3 (LWT + clean session not settable): still accurate, and now understated.** Nothing
-  in Phase 5 worked around either; `net.cpp` registers no will and passes no session flag, because
-  the API has neither. Add **retained `/status`** to the same item per R8 — all three would be
-  settled (or not) by the same look at the Sequans AT manual plus the `sendCmd()` fallback.
-- **§12 item 6 (no battery ADC pin): still accurate and unchanged.** `modes.c:217` still publishes
-  a hardcoded `batt_mv = 3300` with the placeholder documented in place; `pins.h` gained no ADC
-  pin, `ui.c` renders no battery figure (its status line shows mode / link / unsent only), and
-  nothing else in Phase 5 consumes `batt_mv`. Option (b) from that item — asking `walter-modem`
-  for a supply reading — is still unchecked and is the only option that needs no hardware change.
+### `NEEDS HUMAN DECISION` items, current as of the last commit
+- **§12 item 3 (LWT + clean session + retained `/status` not settable): still open.** Nothing
+  worked around any of the three; `net.cpp` registers no will and passes no session flag, because
+  the API has neither. All three would be settled (or not) by the same look at the Sequans AT
+  manual plus the `sendCmd()` fallback PROTOCOL.md §12 already proposes.
+- **§12 item 6 (battery voltage): resolved, one experiment remains.** `net.cpp` now reads the
+  modem's own `AT+SQNVMON` supply-rail voltage via `WalterModem::getVoltage()` and reports it as
+  `batt_mv` (`modes.c`'s `build_status_json()`), with a last-known-good fallback so a failed AT
+  round trip never blocks a `/status` publish. This needed no GPIO change — see PROTOCOL.md §12
+  item 6 for the schematic-based reasoning that this rail tracks the battery, not a fixed 3.3V
+  rail. **Still open**: that reasoning is inference from Walter's public schematics, not a
+  confirmed fact about Walter's own unpublished internal routing — compare `getVoltage()`'s reading
+  against a multimeter on first hardware bring-up (5 min, M15 in the checklist above).
+- **§12 item 2 (broker free-tier limits): unchecked.** Nobody has set up a real HiveMQ/EMQX account
+  yet — only local `docker compose` mosquitto has been exercised. Confirm the chosen free tier
+  actually supports QoS 1 both directions, a retained topic, a ~1800s keepalive, and a persistent
+  session before flashing a device against it.

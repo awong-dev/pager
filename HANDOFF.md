@@ -1,5 +1,28 @@
 # Handoff: School Pickup Pager — text message relay (MVP)
 
+> **Status (updated after Phase 6 + follow-ups): MVP is code-complete.** All phases in §5 below are
+> done and committed (`git log --oneline` shows the phase-by-phase history). The relay, protocol
+> doc, device simulator, parent web page, and firmware (network core, UI, message storage) are all
+> implemented and verified as far as possible **without physical hardware** — end-to-end over a
+> real local broker, independently rebuilt from fresh clones, with real bugs found and fixed along
+> the way (see commit messages for specifics, e.g. a relay reconnect bug and several firmware
+> power/correctness bugs). No Walter board has ever been attached to any session that built this.
+>
+> What's actually left is not a coding phase — it's hardware bring-up and a couple of standing
+> decisions:
+> - `firmware/README.md`'s measurement checklist (M1-M15) and "Residual risks" section — what to
+>   check first once a real device exists, ranked by risk to battery life and message latency.
+> - `docs/PROTOCOL.md` §12 — two open decisions (real broker free-tier limits unverified; LWT/
+>   clean-session/retained-status not settable from the vendor library's public API) that need a
+>   human call, not more code.
+> - No tooling exists yet for provisioning per-device MQTT credentials/TLS certs at flash time
+>   (§12 item 5) — needed before a second device can exist.
+>
+> If you're picking this project back up: read `docs/PROTOCOL.md` first (the authoritative wire
+> contract — code must conform to it, not the other way around), then `firmware/README.md`'s
+> residual risks if you're touching firmware, or `relay/README.md` if you're touching the relay.
+> The rest of this document is the original planning brief, kept for the phase-by-phase rationale.
+
 This document is the brief for a Claude Code session acting as **orchestrator**. It describes what to build, how the work is split, and which model runs each step. Read it fully before starting. Do not expand scope beyond what is marked MVP.
 
 ## 1. What we are building
