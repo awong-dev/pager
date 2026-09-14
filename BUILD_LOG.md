@@ -263,3 +263,55 @@ implementation to subagents, log every phase here.
 **Done when:** commit `v2 phase 3`. ✅
 
 ---
+
+## Phase 4 — Location (2026-09-15)
+
+- `backend-dev` built device location tracking: `relay/app/location.py` (`/loc` ingest — dedup on
+  a new `locWireIds` collection, periodic fixes written to `devices/{d}/locations`, on-demand
+  answers fulfil the matching `loc_req` delivery and post a `kind='loc'` thread message to every
+  coalesced requester; `Location.locate()` — a three-way decision: coalesce onto an in-flight
+  request < 15 min old, answer from a cached fix < 60s old, or claim a fresh request; derived
+  15-minute expiry), a new `POST /api/conversations/{alias}/locate` endpoint (requires
+  `allow.locate`), `jobs.tick()` cleanup of stale `locReqs` docs, `tools/pager_client.py`
+  additions (`loc`/`loc auto`/`loc min`/`loc fail` on the device side implementing PROTOCOL.md
+  §13.3's rate limit exactly; `locate`/`locations` on the server side), and `tools/e2e_v2.py`
+  scenarios 5-6 (`location_periodic`, `location_on_demand`), passing alongside 1-4.
+- **Device-targeted delivery decision**: the `loc_req` down message is built directly via
+  `create_message` with a single `pager`-kind delivery, not through `Routing.send()` (whose
+  per-user fan-out would incorrectly also queue it to the device owner's webapp/sms backends) —
+  but the publish step still goes through `Routing.redeliver_pager`, so it gets identical
+  `attempts`/`error`/`failed`/`pendingDeviceIds` bookkeeping to every other pager delivery.
+- **Three bugs found and fixed while building this phase** (new gaps this phase's traffic was
+  the first to exercise, not regressions):
+  - `firestore.rules` threw during Firestore's abstract rule pre-check for `list` (collection
+    query) requests specifically — every prior test only exercised single-document `get`s. Fixed
+    with null-safe field accessors; confirmed non-loosening.
+  - A device lookup needed to filter on `locatableBy array-contains <caller>` instead of
+    `ownerUid`, because Firestore's rules engine can only prove a *list* query safe against the
+    former shape — a genuine security-rules constraint, not a workaround.
+  - `locatableBy` was only recomputed for devices that already existed at the moment an allow
+    edge changed, so setting an edge **before** creating a device (or importing from the MVP's
+    SQLite file) silently and permanently lost the grant. Fixed at both call sites: the admin
+    device-creation API and `import_sqlite.py`.
+- `server-architect`'s review found one high-severity and two medium bugs, all fixed by
+  `backend-dev` before commit:
+  - **S1 (high):** `/loc` dedup and `loc_req` fulfilment were two separate transactions. A crash
+    between them let a QoS-1 redelivery see the dedup marker already present and silently
+    swallow the retry — the fix stayed stored but the requester was never notified, permanently.
+    Folded into one transaction; a forced-failure test confirms a redelivered `/loc` now reaches
+    `'fulfilled'` on retry instead of being silently dropped.
+  - **S2 (medium):** the `locReqs` "claim a fresh slot" path used `set()`, making "at most one
+    in-flight `loc_req` per device" (PROTOCOL.md §13.3 rule 5, normative) an accident of
+    Firestore's read-lock timing rather than an explicit precondition. Now `transaction.create()`
+    + retry-on-conflict, matching every other uniqueness invariant in this codebase.
+  - **S3 (medium):** a permanently-failed `loc_req` left `locReqs` in place forever, so every
+    later `/locate` call coalesced onto a request that could never be answered. Now cleared
+    immediately when the pager delivery reaches `'failed'`.
+- New `locWireIds` collection (a `/loc` payload has no recipient to key `wireIds` against, so it
+  needs its own dedup marker) documented in `SERVER_PLAN.md` §3 — **Phase 8's retention sweep
+  must delete it alongside `locations`**, added to that phase's checklist.
+- Tests: `relay/tests` — **237 passed**. `tools/e2e_v2.py` — **scenarios 1-6 ALL PASSED**.
+
+**Done when:** commit `v2 phase 4`. ✅
+
+---
