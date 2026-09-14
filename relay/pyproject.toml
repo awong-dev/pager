@@ -11,6 +11,11 @@ dependencies = [
     "uvicorn",
     "httpx",
     "pydantic",
+    # docs/SERVER_PLAN.md §2 decision 3 / Phase 2b: Firestore is the only
+    # store and Firebase Auth is the identity provider; firebase-admin
+    # (which bundles google-cloud-firestore) is how the relay talks to both,
+    # emulator-aware via FIRESTORE_EMULATOR_HOST/FIREBASE_AUTH_EMULATOR_HOST.
+    "firebase-admin",
 ]
 
 [project.optional-dependencies]

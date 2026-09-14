@@ -2,45 +2,29 @@
 background thread, no persistent MQTT session, docs/SERVER_PLAN.md §2
 decision 1) -- inbound device traffic arrives on `POST /webhooks/mqtt`
 (app/routers/webhooks.py) and outbound `/down` publishes go through
-`app.broker.BrokerClient`'s REST call. Owns nothing about MQTT wire details
-directly -- it validates/generates ids per PROTOCOL.md §1/§3.1, stores via
-Store, and publishes via Ingest.
+`app.broker.BrokerClient`'s REST call. Firestore is the only store
+(app/db/firestore.py, app/store/*) -- the relay is its only writer
+(docs/SERVER_PLAN.md §2 decision 3).
 """
 
 from __future__ import annotations
 
 import logging
 import os
-import secrets
-import time
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Annotated
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Request
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, Field
 
 from app.broker import BrokerClient
 from app.config import Settings
-from app.ids import new_message_id
+from app.db.firestore import get_db
 from app.ingest import Ingest
-from app.routers import webhooks
-from app.store import MessageRow, Store
-from app.wire import (
-    BODY_MAX_CODEPOINTS,
-    BODY_MAX_UTF8_BYTES,
-    DEVICE_ID_RE,
-    strip_control_chars,
-)
+from app.routers import admin, dev, legacy, webhooks
 
 logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
 logger = logging.getLogger("relay.api")
-
-bearer_scheme = HTTPBearer(auto_error=False)
-
-MAX_ID_GENERATION_ATTEMPTS = 10
 
 # relay/static/index.html — the single-file parent MVP page (HANDOFF.md §2,
 # §3 repo layout). Resolved relative to this file so it works both from a
@@ -49,157 +33,43 @@ MAX_ID_GENERATION_ATTEMPTS = 10
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 
 
-class SendMessageRequest(BaseModel):
-    body: str
-
-
-class MessageOut(BaseModel):
-    model_config = ConfigDict(populate_by_name=True)
-
-    id: str
-    device_id: str
-    direction: str
-    ts: int
-    from_: str | None = Field(default=None, alias="from")
-    body: str | None = None
-    state: str
-    shown_ts: int | None = None
-    read_ts: int | None = None
-
-
-class StatusOut(BaseModel):
-    state: str
-    mode: str | None = None
-    batt_mv: int | None = None
-    rssi: int | None = None
-    session: str | None = None
-    ts: int | None = None
-    fw: str | None = None
-
-
-def _row_to_message_out(row: MessageRow) -> MessageOut:
-    return MessageOut.model_validate(
-        {
-            "id": row.id,
-            "device_id": row.device_id,
-            "direction": row.direction,
-            "ts": row.ts,
-            "from": row.sender,
-            "body": row.body,
-            "state": row.effective_state(),
-            "shown_ts": row.shown_ts,
-            "read_ts": row.read_ts,
-        }
-    )
-
-
-def get_store(request: Request) -> Store:
-    return request.app.state.store
-
-
-def get_ingest(request: Request) -> Ingest:
-    return request.app.state.ingest
-
-
-def require_auth(
-    request: Request,
-    creds: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)] = None,
-) -> None:
-    settings: Settings = request.app.state.settings
-    if creds is None or not secrets.compare_digest(creds.credentials, settings.relay_token):
-        raise HTTPException(status_code=401, detail="invalid or missing bearer token")
-
-
 def create_app(
     settings: Settings | None = None,
-    store: Store | None = None,
     broker_client: BrokerClient | None = None,
 ) -> FastAPI:
-    """Factory so tests can inject an in-memory Store and a fake
-    `BrokerClient` instead of a real broker connection."""
+    """Factory so tests can inject a fake `BrokerClient` instead of a real
+    broker connection. Firestore itself is not injected -- every `app/store/
+    *` module talks to the one process-wide client from
+    `app.db.firestore.get_db()`, which is emulator-aware via
+    `FIRESTORE_EMULATOR_HOST`/`FIREBASE_AUTH_EMULATOR_HOST` (tests point
+    those at the Docker-composed emulators, see relay/tests/conftest.py)."""
 
     settings = settings or Settings.from_env()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         app.state.settings = settings
-        app.state.store = store or Store(settings.db_path)
         app.state.broker = broker_client or BrokerClient(settings)
-        app.state.ingest = Ingest(app.state.store, app.state.broker)
-        try:
-            yield
-        finally:
-            app.state.store.close()
+        app.state.ingest = Ingest(app.state.broker)
+        get_db()  # fail fast at startup if Firestore/Auth are misconfigured
+        yield
 
     app = FastAPI(title="School Pager Relay", lifespan=lifespan)
     app.include_router(webhooks.router)
+    app.include_router(legacy.router)
+    app.include_router(admin.router)
+    app.include_router(dev.router)
 
-    @app.post("/api/devices/{device_id}/messages", dependencies=[Depends(require_auth)])
-    def send_message(
-        device_id: str,
-        req: SendMessageRequest,
-        store: Annotated[Store, Depends(get_store)],
-        ingest: Annotated[Ingest, Depends(get_ingest)],
-    ) -> MessageOut:
-        if not DEVICE_ID_RE.match(device_id):
-            raise HTTPException(status_code=400, detail="invalid device_id")
-
-        # §3.1: strip control chars on ingest, reject if empty or oversize
-        # after stripping.
-        body = strip_control_chars(req.body)
-        if not body:
-            raise HTTPException(
-                status_code=400, detail="body is empty after stripping control characters"
-            )
-        if len(body) > BODY_MAX_CODEPOINTS:
-            raise HTTPException(status_code=400, detail="body exceeds 160 Unicode code points")
-        if len(body.encode("utf-8")) > BODY_MAX_UTF8_BYTES:
-            raise HTTPException(status_code=400, detail="body exceeds 320 UTF-8 bytes")
-
-        ts = int(time.time())
-        msg_id = None
-        for _ in range(MAX_ID_GENERATION_ATTEMPTS):
-            candidate = new_message_id()
-            if not store.id_exists(candidate):
-                msg_id = candidate
-                break
-        if msg_id is None:
-            raise HTTPException(status_code=500, detail="failed to generate a unique message id")
-
-        row = store.create_down_message(msg_id=msg_id, device_id=device_id, ts=ts, body=body)
-        ingest.publish_down(row)
-        return _row_to_message_out(store.get_message(msg_id) or row)
-
-    @app.get("/api/devices/{device_id}/messages", dependencies=[Depends(require_auth)])
-    def get_messages(
-        device_id: str,
-        store: Annotated[Store, Depends(get_store)],
-        ingest: Annotated[Ingest, Depends(get_ingest)],
-        since: int | None = Query(default=None),
-    ) -> list[MessageOut]:
-        # Lazy retry of anything still 'queued' -- see Ingest.retry_queued's
-        # docstring for why this lives here rather than a background timer.
-        ingest.retry_queued(device_id)
-        rows = store.get_thread(device_id, since=since)
-        return [_row_to_message_out(r) for r in rows]
-
-    @app.get("/api/devices/{device_id}/status", dependencies=[Depends(require_auth)])
-    def get_status(
-        device_id: str,
-        store: Annotated[Store, Depends(get_store)],
-    ) -> StatusOut:
-        status = store.get_status(device_id)
-        if status is None:
-            raise HTTPException(status_code=404, detail="no status seen for this device")
-        return StatusOut(
-            state=status.state,
-            mode=status.mode,
-            batt_mv=status.batt_mv,
-            rssi=status.rssi,
-            session=status.session,
-            ts=status.ts,
-            fw=status.fw,
-        )
+    @app.get("/healthz")
+    def healthz() -> dict[str, bool]:
+        # docs/SERVER_PLAN.md §5.1: "200 + firestore reachable + broker API
+        # reachable". Broker reachability is not checked here (a broker
+        # blip must not flip Cloud Run's health probe and cause a
+        # restart-loop of a stateless service that holds no connection to
+        # lose) -- a Firestore round trip is enough to prove the process can
+        # do its job.
+        get_db().collection("settings").document("meta").get()
+        return {"ok": True}
 
     # Mounted last so it never shadows the /api/* or /webhooks/* routes
     # above: Starlette matches routes in registration order, and a Mount("/")

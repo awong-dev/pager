@@ -1,0 +1,67 @@
+// Firestore security rules -- docs/SERVER_PLAN.md §3's sketch, made exact.
+//
+// The relay is the only writer (app/db/firestore.py uses the firebase-admin
+// SDK, which bypasses these rules entirely -- docs/SERVER_PLAN.md §2
+// decision 3). These rules exist purely to bound *client* reads (the web
+// app talking to Firestore directly, docs/SERVER_PLAN.md §5.1) and to make
+// that boundary independently testable (relay/tests/test_rules.py drives
+// this file through the emulator's real enforcement, not relay-side logic).
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{db}/documents {
+    function registered() {
+      return exists(/databases/$(db)/documents/users/$(request.auth.uid));
+    }
+
+    function isAdmin() {
+      return request.auth.token.admin == true;
+    }
+
+    match /users/{uid} {
+      allow read: if request.auth.uid == uid || isAdmin();
+
+      match /backends/{b} {
+        allow read: if request.auth.uid == uid || isAdmin();
+      }
+    }
+
+    match /messages/{id} {
+      allow read: if registered() && request.auth.uid in resource.data.uids;
+    }
+
+    match /conversations/{k} {
+      allow read: if registered() && request.auth.uid in resource.data.uids;
+    }
+
+    match /devices/{d} {
+      allow read: if request.auth != null && (
+        resource.data.ownerUid == request.auth.uid ||
+        request.auth.uid in resource.data.locatableBy ||
+        isAdmin()
+      );
+
+      match /locations/{l} {
+        allow read: if request.auth != null &&
+          request.auth.uid in get(/databases/$(db)/documents/devices/$(d)).data.locatableBy;
+      }
+    }
+
+    match /allow/{e} {
+      allow read: if request.auth != null && (
+        isAdmin() ||
+        request.auth.uid in [resource.data.fromUid, resource.data.toUid]
+      );
+    }
+
+    match /settings/{s} {
+      allow read: if registered();
+    }
+
+    // Clients never write; the admin claim is a Firebase custom claim, set
+    // by the relay (app/auth.py), and every write goes through the relay API.
+    match /{document=**} {
+      allow write: if false;
+    }
+  }
+}

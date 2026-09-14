@@ -11,9 +11,10 @@ message it will never be able to make valid. The one thing that is NOT a
 200 is a bad/missing webhook key: that is an auth failure, not a malformed
 device payload, and the broker config itself should never produce it.
 
-A `sqlite3.OperationalError` (DB locked / disk full / etc.) is also not a
-200: §3.4's 2xx-for-malformed-payload rule only covers payloads the relay
-will never be able to make valid, not genuine relay-side storage failures.
+A Firestore-layer failure (`google.api_core.exceptions.GoogleAPICallError` --
+emulator/service unreachable, deadline exceeded, etc.) is also not a 200:
+§3.4's 2xx-for-malformed-payload rule only covers payloads the relay will
+never be able to make valid, not genuine relay-side storage failures.
 Swallowing those would silently lose an up-message with no republish path
 (§4.2 has no up-message republish rule), so we let it become a 500 instead
 and rely on the broker's rule engine to retry the webhook.
@@ -22,10 +23,10 @@ and rely on the broker's rule engine to retry the webhook.
 from __future__ import annotations
 
 import logging
-import sqlite3
 from collections.abc import Callable
 
 from fastapi import APIRouter, HTTPException, Request, Response
+from google.api_core.exceptions import GoogleAPICallError
 from starlette.concurrency import run_in_threadpool
 
 from app.broker import BrokerClient
@@ -72,17 +73,18 @@ async def mqtt_webhook(request: Request) -> Response:
 
     ingest: Ingest = request.app.state.ingest
     try:
-        # Off the event loop: handlers do blocking work -- sqlite writes and,
+        # Off the event loop: handlers do blocking work -- Firestore writes and,
         # on an online edge (PROTOCOL.md §5.3), up to REPUBLISH_CAP
         # synchronous broker REST publishes at PUBLISH_TIMEOUT_S each. Run
         # inline, one slow /status webhook would stall every other request
         # this process is serving, including other webhooks.
         await run_in_threadpool(handler, ingest, topic, payload)
-    except sqlite3.OperationalError:
-        # A genuine relay-side storage failure (DB locked, disk full, ...),
-        # not a malformed payload -- do NOT return 200, or we permanently
-        # lose this message with no republish path (see module docstring).
-        # Let it propagate to a 500 so the broker's rule engine retries.
+    except GoogleAPICallError:
+        # A genuine relay-side storage failure (Firestore unreachable,
+        # deadline exceeded, ...), not a malformed payload -- do NOT return
+        # 200, or we permanently lose this message with no republish path
+        # (see module docstring). Let it propagate to a 500 so the broker's
+        # rule engine retries.
         logger.exception("store error handling webhook for topic %s", topic)
         raise
     except Exception:

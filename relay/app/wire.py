@@ -192,9 +192,10 @@ class StatusEnvelope(BaseModel):
 
     @model_validator(mode="after")
     def _check_online_fields(self) -> StatusEnvelope:
-        if self.state == "online":
-            if self.mode is None or self.batt_mv is None or self.ts is None:
-                raise ValueError("online status missing a required field")
+        if self.state == "online" and (
+            self.mode is None or self.batt_mv is None or self.ts is None
+        ):
+            raise ValueError("online status missing a required field")
         return self
 
 

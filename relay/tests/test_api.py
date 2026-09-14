@@ -1,4 +1,6 @@
-"""HTTP API tests: bearer auth, POST validation/publish, GET thread/status."""
+"""HTTP API tests: legacy bearer auth, POST validation/publish, GET
+thread/status (docs/SERVER_PLAN.md §5.1's "Legacy (bearer RELAY_TOKEN,
+deleted in Phase 6)" endpoints, now Firestore-backed)."""
 
 from __future__ import annotations
 
@@ -14,16 +16,26 @@ from tests.fake_transport import FakeBrokerClient
 TOKEN = "test-token-123"
 
 
+def make_settings(**overrides: object) -> Settings:
+    defaults = {
+        "relay_token": TOKEN,
+        "broker_api_url": "http://unused.invalid/api/v5",
+        "broker_api_key": None,
+        "broker_api_secret": None,
+        "webhook_key": "test-webhook-key",
+        "db_path": "unused.db",
+        "dev_mode": False,
+        "google_cloud_project": None,
+        "firestore_emulator_host": None,
+        "firebase_auth_emulator_host": None,
+    }
+    defaults.update(overrides)
+    return Settings(**defaults)
+
+
 @pytest.fixture
-def client(tmp_path) -> Iterator[TestClient]:
-    settings = Settings(
-        relay_token=TOKEN,
-        broker_api_url="http://unused.invalid/api/v5",
-        broker_api_key=None,
-        broker_api_secret=None,
-        webhook_key="test-webhook-key",
-        db_path=str(tmp_path / "relay.db"),
-    )
+def client() -> Iterator[TestClient]:
+    settings = make_settings()
     fake_broker = FakeBrokerClient()
 
     app = create_app(settings=settings, broker_client=fake_broker)
@@ -209,3 +221,12 @@ def test_root_serves_parent_page(client: TestClient):
 def test_root_page_does_not_shadow_api_routes(client: TestClient):
     resp = client.get("/api/devices/pgr-0001/status")
     assert resp.status_code == 401  # auth still enforced, not swallowed by the static mount
+
+
+# ---- /healthz ----
+
+
+def test_healthz_ok(client: TestClient):
+    resp = client.get("/healthz")
+    assert resp.status_code == 200
+    assert resp.json() == {"ok": True}

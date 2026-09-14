@@ -1,0 +1,200 @@
+"""`relay/firestore.rules`, tested through the Firestore emulator's own REST
+API with real ID tokens -- not relay-side logic. This is the one place
+`firestore.rules` enforcement is independently verified: everything the
+relay does bypasses these rules entirely (firebase-admin), so a bug in the
+rules file would otherwise go undetected until a real client (the web app)
+tripped over it. docs/SERVER_PLAN.md §5.9 calls this out explicitly:
+"a signed-in, registered user cannot read another pair's messages/{id} or an
+unrelated conversations/{k} ... test this through the emulator's REST API
+with a real ID token".
+
+Firestore's REST API evaluates security rules against the bearer token on
+every call, exactly like the JS/Web SDK a real browser uses -- the Python
+`google-cloud-firestore`/firebase-admin client always uses admin
+credentials, which bypass rules entirely, so it cannot be used here.
+"""
+
+from __future__ import annotations
+
+import os
+
+import httpx
+import pytest
+from firebase_admin import auth as fb_auth
+
+from app.store import allow as allow_store
+from app.store import devices as devices_store
+from app.store import messages as messages_store
+from app.store import users as users_store
+from tests.firebase_test_utils import mint_id_token
+
+FIRESTORE_HOST = os.environ.get("FIRESTORE_EMULATOR_HOST", "localhost:8080")
+PROJECT_ID = os.environ.get("GOOGLE_CLOUD_PROJECT", "demo-pager")
+BASE_URL = f"http://{FIRESTORE_HOST}/v1/projects/{PROJECT_ID}/databases/(default)/documents"
+
+
+def _get(path: str, token: str | None) -> httpx.Response:
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+    return httpx.get(f"{BASE_URL}/{path}", headers=headers, timeout=10.0)
+
+
+def _write(path: str, token: str | None, fields: dict) -> httpx.Response:
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+    # Firestore REST's document body shape: {"fields": {name: {stringValue: ...}}}.
+    # Only used here to prove clients CANNOT write -- values don't matter.
+    body = {"fields": {k: {"stringValue": str(v)} for k, v in fields.items()}}
+    return httpx.patch(f"{BASE_URL}/{path}", headers=headers, json=body, timeout=10.0)
+
+
+@pytest.fixture
+def two_pairs():
+    """u1<->u2 have a message/conversation; u3 is unrelated to both."""
+    for uid, email, alias in (
+        ("u1", "u1@example.com", "alice"),
+        ("u2", "u2@example.com", "bob"),
+        ("u3", "u3@example.com", "carol"),
+    ):
+        fb_auth.create_user(uid=uid, email=email)
+        users_store.create_user(uid=uid, alias=alias, display_name=alias)
+
+    msg = messages_store.create_message(
+        sender_uid="u1", recipient_uid="u2", kind="text", ts=1000, body="hello"
+    )
+    return msg
+
+
+def test_party_can_read_their_own_message(two_pairs):
+    msg = two_pairs
+    token = mint_id_token("u1")
+    resp = _get(f"messages/{msg.id}", token)
+    assert resp.status_code == 200
+
+
+def test_non_party_cannot_read_the_message(two_pairs):
+    msg = two_pairs
+    token = mint_id_token("u3")
+    resp = _get(f"messages/{msg.id}", token)
+    assert resp.status_code == 403
+
+
+def test_unauthenticated_cannot_read_the_message(two_pairs):
+    msg = two_pairs
+    resp = _get(f"messages/{msg.id}", None)
+    assert resp.status_code == 403
+
+
+def test_party_can_read_their_conversation(two_pairs):
+    key = messages_store.conv_key("u1", "u2")
+    token = mint_id_token("u2")
+    resp = _get(f"conversations/{key}", token)
+    assert resp.status_code == 200
+
+
+def test_non_party_cannot_read_an_unrelated_conversation(two_pairs):
+    key = messages_store.conv_key("u1", "u2")
+    token = mint_id_token("u3")
+    resp = _get(f"conversations/{key}", token)
+    assert resp.status_code == 403
+
+
+def test_self_can_read_own_user_doc(two_pairs):
+    token = mint_id_token("u1")
+    resp = _get("users/u1", token)
+    assert resp.status_code == 200
+
+
+def test_other_user_cannot_read_someone_elses_user_doc(two_pairs):
+    token = mint_id_token("u3")
+    resp = _get("users/u1", token)
+    assert resp.status_code == 403
+
+
+def test_unregistered_signed_in_uid_cannot_read_settings(two_pairs):
+    # A real Firebase Auth account, but no users/{uid} doc -- registered()
+    # must fail, same gate app.auth.require_user enforces server-side.
+    fb_auth.create_user(uid="stranger", email="stranger@example.com")
+    token = mint_id_token("stranger")
+    resp = _get("settings/retention", token)
+    assert resp.status_code == 403
+
+
+def test_registered_user_can_read_settings(two_pairs):
+    from app.store import settings as settings_store
+
+    settings_store.set_retention(
+        messages=settings_store.RetentionSetting(n=4, unit="weeks"),
+        locations=settings_store.RetentionSetting(n=1, unit="weeks"),
+    )
+    token = mint_id_token("u1")
+    resp = _get("settings/retention", token)
+    assert resp.status_code == 200
+
+
+def test_device_owner_can_read_their_device(two_pairs):
+    devices_store.create_device(
+        device_id="pgr-rules-1",
+        owner_uid="u2",
+        label="d",
+        mqtt_username="pgr-rules-1",
+        mqtt_password_hash="x",
+    )
+    token = mint_id_token("u2")
+    resp = _get("devices/pgr-rules-1", token)
+    assert resp.status_code == 200
+
+
+def test_non_owner_non_locator_cannot_read_device(two_pairs):
+    devices_store.create_device(
+        device_id="pgr-rules-2",
+        owner_uid="u2",
+        label="d",
+        mqtt_username="pgr-rules-2",
+        mqtt_password_hash="x",
+    )
+    token = mint_id_token("u3")
+    resp = _get("devices/pgr-rules-2", token)
+    assert resp.status_code == 403
+
+
+def test_locatable_by_uid_can_read_device_and_its_locations(two_pairs):
+    devices_store.create_device(
+        device_id="pgr-rules-3",
+        owner_uid="u2",
+        label="d",
+        mqtt_username="pgr-rules-3",
+        mqtt_password_hash="x",
+    )
+    devices_store.set_locatable_by("pgr-rules-3", ["u1"])
+
+    token = mint_id_token("u1")
+    resp = _get("devices/pgr-rules-3", token)
+    assert resp.status_code == 200
+
+    from app.store.locations import LocationFix, add_location
+
+    loc_id = add_location(
+        "pgr-rules-3", LocationFix(ts=1, fixTs=1, lat=1.0, lon=2.0)
+    )
+    resp2 = _get(f"devices/pgr-rules-3/locations/{loc_id}", token)
+    assert resp2.status_code == 200
+
+    other_token = mint_id_token("u3")
+    resp3 = _get(f"devices/pgr-rules-3/locations/{loc_id}", other_token)
+    assert resp3.status_code == 403
+
+
+def test_allow_edge_readable_by_either_party_not_a_third_party(two_pairs):
+    allow_store.set_edge("u1", "u2", message=True, locate=True)
+    token_party = mint_id_token("u2")
+    resp = _get("allow/u1_u2", token_party)
+    assert resp.status_code == 200
+
+    token_other = mint_id_token("u3")
+    resp2 = _get("allow/u1_u2", token_other)
+    assert resp2.status_code == 403
+
+
+def test_clients_cannot_write_anything(two_pairs):
+    token = mint_id_token("u1")
+    resp = _write("users/u1", token, {"displayName": "hacked"})
+    assert resp.status_code == 403

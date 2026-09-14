@@ -28,6 +28,19 @@ class Settings:
     # traffic" (§5.3).
     webhook_key: str
     db_path: str
+    # docs/SERVER_PLAN.md §5.1/§5.3: gates `POST /api/dev/token`, the
+    # DEV_MODE-only custom-token mint used by the test client
+    # (tools/pager_client.py) to sign in without a real email/phone flow.
+    # Never true in a real deployment.
+    dev_mode: bool
+    # google-cloud-firestore / firebase_admin.auth both read
+    # FIRESTORE_EMULATOR_HOST / FIREBASE_AUTH_EMULATOR_HOST directly and
+    # firebase_admin reads GOOGLE_CLOUD_PROJECT itself (app/db/firestore.py)
+    # -- surfaced here too only so `/healthz` and logs can report what the
+    # process thinks it's pointed at.
+    google_cloud_project: str | None
+    firestore_emulator_host: str | None
+    firebase_auth_emulator_host: str | None
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -40,4 +53,8 @@ class Settings:
             broker_api_secret=os.environ.get("BROKER_API_SECRET") or None,
             webhook_key=os.environ.get("WEBHOOK_KEY", ""),
             db_path=os.environ.get("RELAY_DB_PATH", "relay.db"),
+            dev_mode=os.environ.get("DEV_MODE", "") == "1",
+            google_cloud_project=os.environ.get("GOOGLE_CLOUD_PROJECT") or None,
+            firestore_emulator_host=os.environ.get("FIRESTORE_EMULATOR_HOST") or None,
+            firebase_auth_emulator_host=os.environ.get("FIREBASE_AUTH_EMULATOR_HOST") or None,
         )

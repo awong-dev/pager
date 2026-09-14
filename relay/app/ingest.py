@@ -2,12 +2,17 @@
 `POST /webhooks/mqtt` (see app/routers/webhooks.py) instead of a live MQTT
 session. This is what `app/mqtt_gateway.py` did against a `Transport` in the
 MVP; the ack state machine, dedup, and the online-edge republish rule are
-unchanged (docs/PROTOCOL.md §4/§5) -- only the transport underneath changed
-(docs/SERVER_PLAN.md §4.8, §5 `ingest.py`).
+unchanged (docs/PROTOCOL.md §4/§5) -- only the storage engine underneath
+changed (docs/SERVER_PLAN.md §4.8, §5 `ingest.py`): `app/store/legacy.py`'s
+Firestore collections instead of `app/store.py`'s SQLite tables. Full
+uid-addressed routing (`messages/{id}`, allow-list, fan-out) is Phase 3;
+until then, ingest keeps the MVP's device-scoped thread and status shape so
+the legacy endpoints (`app/routers/legacy.py`) keep working unchanged.
 
-No global state: `Ingest` takes a `Store` and a `BrokerClient` at
-construction, so it is dependency-injectable in tests exactly like
-`MqttGateway` was.
+No injected `Store`: `app/store/legacy.py`'s functions talk to the one
+process-wide Firestore client (`app/db/firestore.py`), the same pattern
+every other `app/store/*` module uses. `Ingest` only takes a `BrokerClient`,
+which stays injectable for tests (`tests/fake_transport.FakeBrokerClient`).
 """
 
 from __future__ import annotations
@@ -15,7 +20,8 @@ from __future__ import annotations
 import logging
 
 from app.broker import BrokerClient
-from app.store import MessageRow, Store
+from app.store import legacy as legacy_store
+from app.store.legacy import LegacyMessage
 from app.wire import (
     LocEnvelope,
     StatusEnvelope,
@@ -40,21 +46,20 @@ class Ingest:
     """Owns the relay's reaction to device traffic. Called by the webhook
     router once per inbound event; holds no per-request state itself."""
 
-    def __init__(self, store: Store, broker: BrokerClient) -> None:
-        self._store = store
+    def __init__(self, broker: BrokerClient) -> None:
         self._broker = broker
 
     # ---- outgoing ----
 
-    def publish_down(self, row: MessageRow) -> bool:
+    def publish_down(self, row: LegacyMessage) -> bool:
         """Build and publish a `/down` envelope for `row` via the broker's
         REST API. Marks the row 'sent' on a 2xx; leaves it 'queued'
         otherwise (a later `/internal/tick` retries it, docs/SERVER_PLAN.md
         §5.8 -- not built in this phase)."""
         payload = build_down_payload(msg_id=row.id, ts=row.ts, body=row.body or "", v=row.v)
-        ok = self._broker.publish(f"pager/{row.device_id}/down", payload, qos=1, retain=False)
+        ok = self._broker.publish(f"pager/{row.deviceId}/down", payload, qos=1, retain=False)
         if ok:
-            self._store.mark_sent(row.id)
+            legacy_store.mark_sent(row.id)
         return ok
 
     # ---- /up ----
@@ -81,7 +86,7 @@ class Ingest:
 
     def _handle_ack(self, device_id: str, env: UpEnvelope) -> None:
         assert env.ack is not None
-        row = self._store.get_message(env.id)
+        row = legacy_store.get_message(env.id)
         if row is None:
             # §4.1 rule 3: unknown id -> log + drop, never create a row.
             logger.info("ack for unknown message id=%s from device=%s dropped", env.id, device_id)
@@ -89,17 +94,17 @@ class Ingest:
         if row.direction != "down":
             logger.warning("ack references a non-down message id=%s dropped", env.id)
             return
-        if row.device_id != device_id:
+        if row.deviceId != device_id:
             # §4.1 rule 4: wrong device -> drop + log as a security event.
             logger.warning(
                 "SECURITY wrong-device ack: pager/%s/up acked message %s addressed to device %s",
                 device_id,
                 env.id,
-                row.device_id,
+                row.deviceId,
             )
             return
         ack_ts = resolve_ts(env.ts)
-        result = self._store.apply_ack(env.id, env.ack, ack_ts)
+        result = legacy_store.apply_ack(env.id, env.ack, ack_ts)
         if result == "noop":
             logger.debug(
                 "idempotent ack '%s' for message %s (already %s)", env.ack, env.id, row.state
@@ -107,11 +112,12 @@ class Ingest:
 
     def _handle_up_message(self, device_id: str, env: UpEnvelope) -> None:
         # §4.2: duplicate id (QoS 1 redelivery) -> drop silently. The
-        # existence check and the insert are one atomic statement (see
-        # Store.insert_up_message) rather than a separate `id_exists` check
-        # followed by an insert, so two concurrent at-least-once webhook
-        # deliveries of the same message can't both race past a pre-check.
-        inserted = self._store.insert_up_message(
+        # existence check and the insert are one atomic Firestore
+        # transaction (see app.store.legacy.insert_up_message) rather than a
+        # separate `id_exists` check followed by an insert, so two
+        # concurrent at-least-once webhook deliveries of the same up
+        # message can't both race past a pre-check.
+        inserted = legacy_store.insert_up_message(
             msg_id=env.id,
             device_id=device_id,
             ts=resolve_ts(env.ts),
@@ -138,9 +144,9 @@ class Ingest:
             log_malformed(topic, payload, str(exc))
             return
 
-        previous = self._store.get_status(device_id)
+        previous = legacy_store.get_status(device_id)
         resolved_ts = resolve_ts(env.ts) if env.ts is not None else None
-        self._store.upsert_status(
+        legacy_store.upsert_status(
             device_id,
             state=env.state,
             mode=env.mode,
@@ -175,9 +181,9 @@ class Ingest:
         `handle_status`. It's specifically the case where `publish_down`
         fails but the device's own MQTT session never drops that neither of
         `_republish_unacked`'s two trigger conditions can ever catch.
-        Called from the legacy GET endpoint (app/main.py) -- see
+        Called from the legacy GET endpoint (app/routers/legacy.py) -- see
         `docs/SERVER_PLAN.md` §2 decision 7, "derived at read time"."""
-        for row in self._store.get_queued_down_messages(device_id):
+        for row in legacy_store.get_queued_down_messages(device_id):
             if not self.publish_down(row):
                 # The broker is unreachable (the only reason a publish that
                 # once failed fails again the same way), so stop: this runs
@@ -191,7 +197,7 @@ class Ingest:
                 return
 
     def _republish_unacked(self, device_id: str) -> None:
-        candidates = self._store.get_republish_candidates(device_id)
+        candidates = legacy_store.get_republish_candidates(device_id)
         for row in candidates:
             logger.info("re-publishing unacked message %s to device %s", row.id, device_id)
             self.publish_down(row)

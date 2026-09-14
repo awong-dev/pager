@@ -1,4 +1,5 @@
-"""Tests for app.ingest.Ingest against tests.fake_transport.FakeBrokerClient.
+"""Tests for app.ingest.Ingest against tests.fake_transport.FakeBrokerClient
+and the Firestore emulator (via app.store.legacy).
 
 Covers: send -> publish (sent on a successful broker REST call, queued on a
 failed one), the four down-message states reached in order, out-of-order
@@ -6,11 +7,6 @@ read-without-shown, idempotent repeat acks, unknown-id acks, wrong-device
 acks, malformed payloads (never crashing), duplicate up-message ids, the
 online-edge/session-change republish rule (cap + ordering), and the `/loc`
 stub.
-
-This supersedes tests/test_gateway.py (app.mqtt_gateway is gone,
-docs/SERVER_PLAN.md §2 decision 1) -- same coverage, ported to the
-webhook-shaped ingest functions and a fake BrokerClient instead of a fake
-MQTT transport.
 """
 
 from __future__ import annotations
@@ -19,7 +15,7 @@ import json
 import time
 
 from app.ingest import Ingest
-from app.store import Store
+from app.store import legacy as legacy_store
 from tests.conftest import (
     ack_payload,
     down_topic,
@@ -34,126 +30,118 @@ from tests.conftest import (
 from tests.fake_transport import FakeBrokerClient
 
 
-def test_publish_down_success_transitions_to_sent(
-    store: Store, ingest: Ingest, broker: FakeBrokerClient
-):
-    row = store.create_down_message(
+def test_publish_down_success_transitions_to_sent(ingest: Ingest, broker: FakeBrokerClient):
+    row = legacy_store.create_down_message(
         msg_id="m_aaaaaaaa", device_id="pgr-0001", ts=int(time.time()), body="hi"
     )
     assert row.state == "queued"
 
     ok = ingest.publish_down(row)
     assert ok is True
-    assert store.get_message("m_aaaaaaaa").state == "sent"
+    assert legacy_store.get_message("m_aaaaaaaa").state == "sent"
     assert len(broker.published) == 1
     assert broker.published[0].topic == "pager/pgr-0001/down"
 
 
-def test_publish_down_failure_leaves_queued(
-    store: Store, ingest: Ingest, broker: FakeBrokerClient
-):
-    row = store.create_down_message(
+def test_publish_down_failure_leaves_queued(ingest: Ingest, broker: FakeBrokerClient):
+    row = legacy_store.create_down_message(
         msg_id="m_offline0", device_id="pgr-0001", ts=int(time.time()), body="hi"
     )
     broker.fail_publish = True
 
     ok = ingest.publish_down(row)
     assert ok is False
-    assert store.get_message("m_offline0").state == "queued"
+    assert legacy_store.get_message("m_offline0").state == "queued"
 
 
-def test_full_state_progression_queued_sent_shown_read(
-    store: Store, ingest: Ingest, broker: FakeBrokerClient
-):
+def test_full_state_progression_queued_sent_shown_read(ingest: Ingest, broker: FakeBrokerClient):
     device_id = "pgr-0001"
-    row = store.create_down_message(
+    row = legacy_store.create_down_message(
         msg_id="m_bbbbbbbb", device_id=device_id, ts=int(time.time()), body="hi"
     )
-    assert store.get_message(row.id).state == "queued"
+    assert legacy_store.get_message(row.id).state == "queued"
 
     ingest.publish_down(row)
-    assert store.get_message(row.id).state == "sent"
+    assert legacy_store.get_message(row.id).state == "sent"
 
     ingest.handle_up(up_topic(device_id), ack_payload(row.id, "shown", ts=1_700_000_100))
-    shown_row = store.get_message(row.id)
+    shown_row = legacy_store.get_message(row.id)
     assert shown_row.state == "shown"
-    assert shown_row.shown_ts == 1_700_000_100
+    assert shown_row.shownTs == 1_700_000_100
 
     ingest.handle_up(up_topic(device_id), ack_payload(row.id, "read", ts=1_700_000_200))
-    read_row = store.get_message(row.id)
+    read_row = legacy_store.get_message(row.id)
     assert read_row.state == "read"
-    assert read_row.read_ts == 1_700_000_200
-    assert read_row.shown_ts == 1_700_000_100  # untouched, not backfilled
+    assert read_row.readTs == 1_700_000_200
+    assert read_row.shownTs == 1_700_000_100  # untouched, not backfilled
 
 
 def test_out_of_order_read_without_shown_backfills_shown_ts(
-    store: Store, ingest: Ingest, broker: FakeBrokerClient
+    ingest: Ingest, broker: FakeBrokerClient
 ):
     device_id = "pgr-0001"
-    row = store.create_down_message(
+    row = legacy_store.create_down_message(
         msg_id="m_cccccccc", device_id=device_id, ts=int(time.time()), body="hi"
     )
     ingest.publish_down(row)
 
     ingest.handle_up(up_topic(device_id), ack_payload(row.id, "read", ts=1_700_000_300))
-    updated = store.get_message(row.id)
+    updated = legacy_store.get_message(row.id)
     assert updated.state == "read"
-    assert updated.read_ts == 1_700_000_300
-    assert updated.shown_ts == 1_700_000_300  # backfilled
+    assert updated.readTs == 1_700_000_300
+    assert updated.shownTs == 1_700_000_300  # backfilled
 
     # A late 'shown' arriving after 'read' must be ignored (state stays read,
-    # shown_ts stays backfilled).
+    # shownTs stays backfilled).
     ingest.handle_up(up_topic(device_id), ack_payload(row.id, "shown", ts=1_700_000_999))
-    after = store.get_message(row.id)
+    after = legacy_store.get_message(row.id)
     assert after.state == "read"
-    assert after.shown_ts == 1_700_000_300
+    assert after.shownTs == 1_700_000_300
 
 
-def test_idempotent_repeat_ack_is_noop(store: Store, ingest: Ingest, broker: FakeBrokerClient):
+def test_idempotent_repeat_ack_is_noop(ingest: Ingest, broker: FakeBrokerClient):
     device_id = "pgr-0001"
-    row = store.create_down_message(
+    row = legacy_store.create_down_message(
         msg_id="m_dddddddd", device_id=device_id, ts=int(time.time()), body="hi"
     )
     ingest.publish_down(row)
 
     ingest.handle_up(up_topic(device_id), ack_payload(row.id, "shown", ts=1_700_001_000))
-    first = store.get_message(row.id)
+    first = legacy_store.get_message(row.id)
     assert first.state == "shown"
-    assert first.shown_ts == 1_700_001_000
+    assert first.shownTs == 1_700_001_000
 
     # Repeat the same ack -- must be a no-op (idempotent), not an error, and
-    # must not change shown_ts.
+    # must not change shownTs.
     ingest.handle_up(up_topic(device_id), ack_payload(row.id, "shown", ts=1_700_009_999))
-    second = store.get_message(row.id)
+    second = legacy_store.get_message(row.id)
     assert second.state == "shown"
-    assert second.shown_ts == 1_700_001_000
+    assert second.shownTs == 1_700_001_000
 
 
-def test_unknown_id_ack_dropped_without_creating_row(
-    store: Store, ingest: Ingest, broker: FakeBrokerClient
-):
+def test_unknown_id_ack_dropped_without_creating_row(ingest: Ingest, broker: FakeBrokerClient):
     device_id = "pgr-0001"
     ingest.handle_up(up_topic(device_id), ack_payload("m_ffffffff", "shown"))
-    assert store.get_message("m_ffffffff") is None
+    assert legacy_store.get_message("m_ffffffff") is None
 
 
-def test_wrong_device_ack_dropped(store: Store, ingest: Ingest, broker: FakeBrokerClient):
+def test_wrong_device_ack_dropped(ingest: Ingest, broker: FakeBrokerClient):
     owner_device = "pgr-0001"
     attacker_device = "pgr-0002"
-    row = store.create_down_message(
+    row = legacy_store.create_down_message(
         msg_id="m_eeeeeeee", device_id=owner_device, ts=int(time.time()), body="hi"
     )
     ingest.publish_down(row)
-    assert store.get_message(row.id).state == "sent"
+    assert legacy_store.get_message(row.id).state == "sent"
 
     ingest.handle_up(up_topic(attacker_device), ack_payload(row.id, "shown"))
 
-    unchanged = store.get_message(row.id)
+    unchanged = legacy_store.get_message(row.id)
     assert unchanged.state == "sent"  # not promoted to shown
 
 
 def test_malformed_payloads_logged_and_dropped_without_crashing(
-    store: Store, ingest: Ingest, broker: FakeBrokerClient
+    ingest: Ingest, broker: FakeBrokerClient
 ):
     device_id = "pgr-0001"
 
@@ -181,32 +169,30 @@ def test_malformed_payloads_logged_and_dropped_without_crashing(
     ingest.handle_up("pager/bad", b'{"v":1}')
 
     # None of the above should have created any row.
-    assert store.get_thread(device_id) == []
+    assert legacy_store.get_thread(device_id) == []
 
     # Ingest must still work after all that garbage.
-    row = store.create_down_message(
+    row = legacy_store.create_down_message(
         msg_id="m_aaaaaaaa", device_id=device_id, ts=int(time.time()), body="hi"
     )
     ingest.publish_down(row)
     ingest.handle_up(up_topic(device_id), ack_payload(row.id, "shown"))
-    assert store.get_message(row.id).state == "shown"
+    assert legacy_store.get_message(row.id).state == "shown"
 
 
-def test_duplicate_up_message_id_dropped_silently(
-    store: Store, ingest: Ingest, broker: FakeBrokerClient
-):
+def test_duplicate_up_message_id_dropped_silently(ingest: Ingest, broker: FakeBrokerClient):
     device_id = "pgr-0001"
     payload = up_message_payload("u_11111111", "ok coming")
     ingest.handle_up(up_topic(device_id), payload)
     ingest.handle_up(up_topic(device_id), payload)  # QoS 1 redelivery
 
-    rows = store.get_thread(device_id)
+    rows = legacy_store.get_thread(device_id)
     assert len(rows) == 1
     assert rows[0].id == "u_11111111"
 
 
 def test_republish_on_new_session_respects_cap_and_oldest_first_order(
-    store: Store, ingest: Ingest, broker: FakeBrokerClient
+    ingest: Ingest, broker: FakeBrokerClient
 ):
     device_id = "pgr-0001"
     now = int(time.time())
@@ -215,7 +201,7 @@ def test_republish_on_new_session_respects_cap_and_oldest_first_order(
     ids = []
     for i in range(12):
         msg_id = f"m_{i:08x}"
-        store.create_down_message(
+        legacy_store.create_down_message(
             msg_id=msg_id, device_id=device_id, ts=now, body=f"msg {i}", now=now + i
         )
         ids.append(msg_id)
@@ -231,11 +217,9 @@ def test_republish_on_new_session_respects_cap_and_oldest_first_order(
     assert payload_ids == ids[:10]
 
 
-def test_republish_triggered_by_session_change(
-    store: Store, ingest: Ingest, broker: FakeBrokerClient
-):
+def test_republish_triggered_by_session_change(ingest: Ingest, broker: FakeBrokerClient):
     device_id = "pgr-0001"
-    row = store.create_down_message(
+    row = legacy_store.create_down_message(
         msg_id="m_session1", device_id=device_id, ts=int(time.time()), body="hi"
     )
     ingest.publish_down(row)
@@ -253,10 +237,10 @@ def test_republish_triggered_by_session_change(
 
 
 def test_republish_triggered_by_offline_to_online_edge_same_session(
-    store: Store, ingest: Ingest, broker: FakeBrokerClient
+    ingest: Ingest, broker: FakeBrokerClient
 ):
     device_id = "pgr-0001"
-    row = store.create_down_message(
+    row = legacy_store.create_down_message(
         msg_id="m_offline1", device_id=device_id, ts=int(time.time()), body="hi"
     )
     ingest.publish_down(row)
@@ -273,21 +257,21 @@ def test_republish_triggered_by_offline_to_online_edge_same_session(
 
 
 def test_republish_excludes_already_acked_and_expired_messages(
-    store: Store, ingest: Ingest, broker: FakeBrokerClient
+    ingest: Ingest, broker: FakeBrokerClient
 ):
     device_id = "pgr-0001"
     now = int(time.time())
 
-    acked = store.create_down_message(
+    acked = legacy_store.create_down_message(
         msg_id="m_acked000", device_id=device_id, ts=now, body="acked", now=now
     )
-    store.apply_ack(acked.id, "shown", now)
+    legacy_store.apply_ack(acked.id, "shown", now)
 
-    expired = store.create_down_message(
+    expired = legacy_store.create_down_message(
         msg_id="m_expired0", device_id=device_id, ts=now, body="old", now=now - 90_000
     )
 
-    fresh = store.create_down_message(
+    fresh = legacy_store.create_down_message(
         msg_id="m_fresh000", device_id=device_id, ts=now, body="fresh", now=now
     )
 
@@ -303,17 +287,17 @@ def test_republish_excludes_already_acked_and_expired_messages(
 
 
 def test_retry_queued_publishes_still_queued_messages_only(
-    store: Store, ingest: Ingest, broker: FakeBrokerClient
+    ingest: Ingest, broker: FakeBrokerClient
 ):
     device_id = "pgr-0001"
     broker.fail_publish = True
-    row = store.create_down_message(
+    row = legacy_store.create_down_message(
         msg_id="m_retryq00", device_id=device_id, ts=int(time.time()), body="hi"
     )
     ingest.publish_down(row)
-    assert store.get_message(row.id).state == "queued"
+    assert legacy_store.get_message(row.id).state == "queued"
 
-    already_sent = store.create_down_message(
+    already_sent = legacy_store.create_down_message(
         msg_id="m_alreadys", device_id=device_id, ts=int(time.time()), body="already sent"
     )
     broker.fail_publish = False
@@ -324,15 +308,13 @@ def test_retry_queued_publishes_still_queued_messages_only(
 
     # Only the still-'queued' message is retried -- the already-'sent'
     # message must not be re-published just because someone did a GET.
-    assert store.get_message(row.id).state == "sent"
+    assert legacy_store.get_message(row.id).state == "sent"
     assert len(broker.published) == 1
     assert broker.published[0].topic == down_topic(device_id)
     assert json.loads(broker.published[0].payload)["id"] == row.id
 
 
-def test_retry_queued_is_a_noop_when_nothing_is_queued(
-    store: Store, ingest: Ingest, broker: FakeBrokerClient
-):
+def test_retry_queued_is_a_noop_when_nothing_is_queued(ingest: Ingest, broker: FakeBrokerClient):
     # Must not raise for a device with no messages at all.
     ingest.retry_queued("pgr-9999")
     assert broker.published == []
@@ -341,18 +323,16 @@ def test_retry_queued_is_a_noop_when_nothing_is_queued(
 # ---- /loc stub ----
 
 
-def test_loc_valid_payload_is_a_noop(store: Store, ingest: Ingest, broker: FakeBrokerClient):
+def test_loc_valid_payload_is_a_noop(ingest: Ingest, broker: FakeBrokerClient):
     device_id = "pgr-0001"
     # Must not raise, must not touch the store or publish anything -- real
     # handling is docs/SERVER_PLAN.md §5.6, Phase 4.
     ingest.handle_loc(loc_topic(device_id), loc_payload("l_11111111"))
     assert broker.published == []
-    assert store.get_thread(device_id) == []
+    assert legacy_store.get_thread(device_id) == []
 
 
-def test_loc_malformed_payload_dropped_without_crashing(
-    store: Store, ingest: Ingest, broker: FakeBrokerClient
-):
+def test_loc_malformed_payload_dropped_without_crashing(ingest: Ingest, broker: FakeBrokerClient):
     device_id = "pgr-0001"
     ingest.handle_loc(loc_topic(device_id), b"not json{{{")
     ingest.handle_loc(loc_topic(device_id), b'{"v":1,"id":"l_11111111"}')  # missing loc/req

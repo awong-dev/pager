@@ -5,6 +5,15 @@ __pycache__/
 venv/
 .pytest_cache/
 *.egg-info/
+.ruff_cache/
+
+# Firebase Emulator Suite (relay/, docs/SERVER_PLAN.md §5.9)
+firestore-debug.log
+ui-debug.log
+firebase-debug.log
+pubsub-debug.log
+database-debug.log
+firestore-export-metadata.json
 
 # Environment files
 .env

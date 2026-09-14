@@ -7,15 +7,15 @@ unless the auth itself is wrong" contract (docs/PROTOCOL.md §3.4).
 
 from __future__ import annotations
 
-import sqlite3
 from collections.abc import Iterator
 
 import pytest
 from fastapi.testclient import TestClient
+from google.api_core.exceptions import ServiceUnavailable
 
 from app.config import Settings
 from app.main import create_app
-from app.store import Store
+from app.store import legacy as legacy_store
 from tests.conftest import (
     ack_payload,
     loc_topic,
@@ -29,16 +29,26 @@ TOKEN = "test-token-123"
 WEBHOOK_KEY = "test-webhook-key"
 
 
+def make_settings(**overrides: object) -> Settings:
+    defaults = {
+        "relay_token": TOKEN,
+        "broker_api_url": "http://unused.invalid/api/v5",
+        "broker_api_key": None,
+        "broker_api_secret": None,
+        "webhook_key": WEBHOOK_KEY,
+        "db_path": "unused.db",
+        "dev_mode": False,
+        "google_cloud_project": None,
+        "firestore_emulator_host": None,
+        "firebase_auth_emulator_host": None,
+    }
+    defaults.update(overrides)
+    return Settings(**defaults)
+
+
 @pytest.fixture
-def client(tmp_path) -> Iterator[TestClient]:
-    settings = Settings(
-        relay_token=TOKEN,
-        broker_api_url="http://unused.invalid/api/v5",
-        broker_api_key=None,
-        broker_api_secret=None,
-        webhook_key=WEBHOOK_KEY,
-        db_path=str(tmp_path / "relay.db"),
-    )
+def client() -> Iterator[TestClient]:
+    settings = make_settings()
     fake_broker = FakeBrokerClient(webhook_key=WEBHOOK_KEY)
     app = create_app(settings=settings, broker_client=fake_broker)
     with TestClient(app) as c:
@@ -104,31 +114,20 @@ def test_webhook_unrecognised_topic_is_still_200(client: TestClient):
     assert resp.status_code == 200
 
 
-class _BrokenStore(Store):
-    """A Store whose up-message insert always fails like a locked/full
-    sqlite DB would, for M3's "don't swallow genuine storage errors" test."""
-
-    def insert_up_message(self, **kwargs) -> bool:  # type: ignore[override]
-        raise sqlite3.OperationalError("database is locked")
-
-
-def test_webhook_store_error_on_up_insert_is_500_not_200(tmp_path):
+def test_webhook_store_error_on_up_insert_is_500_not_200(monkeypatch):
     # §3.4's 2xx-for-malformed-payload rule must NOT swallow a genuine
     # relay-side storage failure -- that would silently lose the up-message
     # with no republish path (§4.2 has none). This must surface as a 500 so
     # the broker's rule engine retries the webhook.
-    settings = Settings(
-        relay_token=TOKEN,
-        broker_api_url="http://unused.invalid/api/v5",
-        broker_api_key=None,
-        broker_api_secret=None,
-        webhook_key=WEBHOOK_KEY,
-        db_path=str(tmp_path / "relay.db"),
-    )
+    def _broken_insert(**kwargs):
+        raise ServiceUnavailable("firestore unreachable")
+
+    monkeypatch.setattr(legacy_store, "insert_up_message", _broken_insert)
+
+    settings = make_settings()
     fake_broker = FakeBrokerClient(webhook_key=WEBHOOK_KEY)
-    broken_store = _BrokenStore(str(tmp_path / "relay.db"))
-    app = create_app(settings=settings, store=broken_store, broker_client=fake_broker)
+    app = create_app(settings=settings, broker_client=fake_broker)
+    body = webhook_body(up_topic("pgr-0001"), up_message_payload("u_broken01", "hi"))
     with TestClient(app, raise_server_exceptions=False) as c:
-        body = webhook_body(up_topic("pgr-0001"), up_message_payload("u_broken01", "hi"))
         resp = c.post("/webhooks/mqtt", content=body, headers=webhook_headers(WEBHOOK_KEY))
         assert resp.status_code == 500

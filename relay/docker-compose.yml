@@ -33,9 +33,46 @@ services:
     depends_on:
       emqx:
         condition: service_healthy
+      firebase:
+        condition: service_healthy
     env_file: .env
+    environment:
+      # docs/SERVER_PLAN.md §5.9: emulator-aware (app/db/firestore.py),
+      # pointed at the `firebase` service on the compose network. Overrides
+      # anything conflicting in .env so the compose stack is correct
+      # regardless of what a developer's .env happens to have.
+      FIRESTORE_EMULATOR_HOST: firebase:8080
+      FIREBASE_AUTH_EMULATOR_HOST: firebase:9099
+      GOOGLE_CLOUD_PROJECT: demo-pager
+      DEV_MODE: "1"
     ports:
       - "8000:8000"
+    networks:
+      - pager-net
+
+  # docs/SERVER_PLAN.md §2 decision 3 / §5.9: Firestore is the only store
+  # and Firebase Auth is the identity provider -- both run as local
+  # emulators (relay/emulator.Dockerfile), the same containers pytest and
+  # tools/e2e_test.py (via the relay) talk to.
+  firebase:
+    build:
+      context: .
+      dockerfile: emulator.Dockerfile
+    ports:
+      - "8080:8080" # Firestore emulator
+      - "9099:9099" # Auth emulator
+      - "4000:4000" # Emulator Suite UI
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "require('http').get('http://localhost:8080/', r => process.exit(0)).on('error', () => process.exit(1))",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 30
     networks:
       - pager-net
 

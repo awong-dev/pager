@@ -64,18 +64,70 @@ chicken-and-egg entirely for local dev. **Not a real secret** — never used
 outside `docker-compose.yml`'s local stack. Production (EMQX Cloud
 Serverless) provisions its own key out of band (docs/SERVER_PLAN.md §9.2).
 
+## Firestore + Auth (docs/SERVER_PLAN.md §2 decision 3, §5.9)
+
+Firestore is the only store and Firebase Auth is the identity provider —
+both run as local emulators (`relay/emulator.Dockerfile`: `node:20-bookworm-
+slim` + Eclipse Temurin 21 JRE + `firebase-tools`, since the Emulator Suite
+needs a JRE ≥ 21 and Debian bookworm's own JRE packages only go up to 17).
+`app/db/firestore.py` is emulator-aware via `FIRESTORE_EMULATOR_HOST` /
+`FIREBASE_AUTH_EMULATOR_HOST` — set in `.env.example` (pointed at the
+`firebase` compose service) and hard-set as `environment:` overrides on the
+`relay` service in `docker-compose.yml` so the stack is correct regardless
+of what a developer's `.env` has.
+
+`docker compose up -d --build` now also brings up `firebase` (Firestore on
+`:8080`, Auth on `:9099`, Emulator Suite UI on `:4000`); the `relay`
+container waits for both `emqx` and `firebase` to report healthy before
+starting.
+
+The first admin (`python -m app.bootstrap --admin-email you@example.com`,
+run inside the `relay` container or against the emulators from the host)
+creates a Firebase Auth user + `users/{uid}` doc with `role: 'admin'` + the
+`admin` custom claim — idempotent, safe to re-run.
+
 ## Tests
 
-Unit tests (no Docker required — the broker is a fake `BrokerClient`,
-`tests/fake_transport.py`):
+Unit tests need the Firestore + Auth emulators running (the broker is
+still a fake `BrokerClient`, `tests/fake_transport.py` — no EMQX needed for
+`pytest`). Two ways to get the emulators up:
+
+```bash
+# (a) just the emulators, via Docker Compose (fastest for pytest-only work)
+docker compose up -d firebase
+
+# (b) bare firebase-tools, if you have Node 20+ and a JRE >= 21 locally
+firebase emulators:start --only firestore,auth --project demo-pager
+```
+
+Then, from `relay/`:
 ```bash
 pip install -e ".[dev]"
 pytest
 ```
 
-End-to-end integration tests (brings up the real Docker Compose stack,
-configures EMQX's rule engine, and drives it with real and simulated MQTT
-devices — see `tools/e2e_test.py`'s module docstring for the scenarios):
+`tests/conftest.py` wipes both emulators before every test (Firestore via
+`DELETE /emulator/v1/projects/demo-pager/databases/(default)/documents`,
+Auth via `DELETE /emulator/v1/projects/demo-pager/accounts` — note the path
+is `/emulator/v1/...`, not `/emulation/v1/...`) and fails the whole session
+up front with an actionable message if it can't reach `localhost:8080` /
+`localhost:9099`, rather than letting every test drown in gRPC
+connection-refused tracebacks.
+
+`tests/test_rules.py` is the one place `relay/firestore.rules` itself is
+exercised: it talks to the Firestore emulator's REST API directly with real
+Firebase ID tokens (minted via a custom token + the Auth emulator's
+Identity Toolkit REST endpoint, `tests/firebase_test_utils.py` — the same
+two-step sign-in a real client does), so it proves the rules file enforces
+access on its own, independent of anything the relay's Python code does
+(the relay itself always uses admin credentials, which bypass rules
+entirely).
+
+End-to-end integration tests (brings up the real Docker Compose stack —
+EMQX, the Firestore/Auth emulators, and the relay — configures EMQX's rule
+engine, and drives it with real and simulated MQTT devices against the
+legacy `RELAY_TOKEN` endpoints, now Firestore-backed — see
+`tools/e2e_test.py`'s module docstring for the scenarios):
 ```bash
 python tools/e2e_test.py
 ```
