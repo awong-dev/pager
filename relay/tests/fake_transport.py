@@ -1,17 +1,26 @@
-"""An in-process fake standing in for a paho-mqtt client + broker.
+"""A fake `app.broker.BrokerClient` for tests.
 
-Implements exactly the `app.mqtt_gateway.Transport` protocol, plus a few
-test-only helpers (`ack`, `deliver`, `simulate_reconnect`, ...) to drive the
-gateway's callbacks deterministically without a real socket or broker
-process. `publish()` never auto-acks -- tests call `ack()`/`ack_last()`
-explicitly to simulate the broker's PUBACK, so "state becomes sent on
-PUBACK" is an observable, controllable step rather than something that just
-always happens.
+Records every attempted publish in `published` and never touches a socket.
+Unit tests either call `app.ingest.Ingest.handle_up/handle_status/handle_loc`
+directly with webhook-shaped payloads (see the `up_topic`/`status_topic`
+helpers in tests/conftest.py), or POST through the FastAPI test client's
+`/webhooks/mqtt` using `webhook_body()`/`WEBHOOK_KEY` for the real dispatch
+path -- either way, there is no real broker underneath.
+
+(Kept as `tests/fake_transport.py`, not renamed, even though it no longer
+implements `app.mqtt_gateway.Transport` -- that module is gone; this is now
+the one fake test double for the broker.)
 """
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
+from typing import Any
+
+from app.broker import BrokerClient
+
+WEBHOOK_KEY = "test-webhook-key"
 
 
 @dataclass
@@ -20,73 +29,56 @@ class PublishedMessage:
     payload: bytes
     qos: int
     retain: bool
-    mid: int
 
 
-class FakeTransport:
-    def __init__(self) -> None:
-        self.subscriptions: list[tuple[str, int]] = []
+class FakeBrokerClient:
+    """Drop-in stand-in for `app.broker.BrokerClient`. `publish()` succeeds
+    and records the call unless `fail_publish` is set (simulates the
+    broker's REST API being unreachable -- e.g. an outage, where the caller
+    must leave the message 'queued' rather than raise)."""
+
+    def __init__(self, *, webhook_key: str = WEBHOOK_KEY) -> None:
         self.published: list[PublishedMessage] = []
-        self.connected = False
-        self._next_mid = 1
+        self.fail_publish = False
+        self._webhook_key = webhook_key
 
-        self._on_connect = None
-        self._on_disconnect = None
-        self._on_message = None
-        self._on_publish = None
+    def publish(self, topic: str, payload: bytes, qos: int, retain: bool) -> bool:
+        if self.fail_publish:
+            return False
+        self.published.append(PublishedMessage(topic, payload, qos, retain))
+        return True
 
-    # ---- Transport protocol ----
+    def verify_webhook(self, request: Any) -> bool:
+        # Exercises the exact same header/constant-time-compare contract as
+        # the real BrokerClient, just against this fake's own configured key
+        # rather than Settings.webhook_key.
+        import hmac
 
-    def set_handlers(self, *, on_connect, on_disconnect, on_message, on_publish) -> None:
-        self._on_connect = on_connect
-        self._on_disconnect = on_disconnect
-        self._on_message = on_message
-        self._on_publish = on_publish
+        provided = request.headers.get("X-Relay-Webhook-Key", "")
+        return hmac.compare_digest(provided, self._webhook_key)
 
-    def connect(self) -> None:
-        self.connected = True
-
-    def start(self) -> None:
-        # Simulate the broker's CONNACK arriving right after connect().
-        self.simulate_reconnect(session_present=False)
-
-    def stop(self) -> None:
-        self.connected = False
-
-    def subscribe(self, topic: str, qos: int) -> None:
-        self.subscriptions.append((topic, qos))
-
-    def publish(self, topic: str, payload: bytes, qos: int, retain: bool) -> int:
-        mid = self._next_mid
-        self._next_mid += 1
-        self.published.append(PublishedMessage(topic, payload, qos, retain, mid))
-        return mid
+    @staticmethod
+    def parse_webhook(body: bytes) -> tuple[str, bytes, int] | None:
+        # Real parsing logic (no broker-specific behaviour to fake) -- reuse
+        # it directly rather than duplicating it.
+        return BrokerClient.parse_webhook(body)
 
     # ---- test helpers ----
 
-    def ack(self, mid: int) -> None:
-        """Simulate the broker returning PUBACK for `mid`."""
-        if self._on_publish:
-            self._on_publish(mid)
+    def clear(self) -> None:
+        self.published.clear()
 
-    def ack_last(self) -> None:
-        self.ack(self.published[-1].mid)
 
-    def ack_all_pending(self) -> None:
-        for msg in self.published:
-            self.ack(msg.mid)
+def webhook_event(topic: str, payload: bytes, qos: int = 1) -> dict:
+    """The JSON shape `tools/emqx_setup.py` configures EMQX's HTTP action to
+    POST (see app/broker.py's module docstring): `payload` is a JSON string,
+    not raw bytes/base64."""
+    return {"topic": topic, "payload": payload.decode("utf-8"), "qos": qos}
 
-    def deliver(self, topic: str, payload: bytes) -> None:
-        """Simulate an incoming PUBLISH from the broker (device -> relay)."""
-        if self._on_message:
-            self._on_message(topic, payload)
 
-    def simulate_disconnect(self, rc: int = 1) -> None:
-        self.connected = False
-        if self._on_disconnect:
-            self._on_disconnect(rc)
+def webhook_body(topic: str, payload: bytes, qos: int = 1) -> bytes:
+    return json.dumps(webhook_event(topic, payload, qos)).encode("utf-8")
 
-    def simulate_reconnect(self, session_present: bool = False) -> None:
-        self.connected = True
-        if self._on_connect:
-            self._on_connect(session_present)
+
+def webhook_headers(webhook_key: str = WEBHOOK_KEY) -> dict[str, str]:
+    return {"X-Relay-Webhook-Key": webhook_key}

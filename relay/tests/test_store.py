@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import threading
+
 from app.store import EXPIRY_SECONDS, Store
 
 
@@ -45,3 +47,55 @@ def test_id_exists_and_get_message(store: Store):
     assert store.id_exists("m_aaaaaaaa")
     assert store.get_message("m_aaaaaaaa") is not None
     assert store.get_message("m_missing00") is None
+
+
+def test_insert_up_message_returns_true_then_false_on_duplicate(store: Store):
+    assert (
+        store.insert_up_message(
+            msg_id="u_dup00001", device_id="pgr-0001", ts=1, sender="student", body="hi"
+        )
+        is True
+    )
+    assert (
+        store.insert_up_message(
+            msg_id="u_dup00001", device_id="pgr-0001", ts=2, sender="student", body="again"
+        )
+        is False
+    )
+    rows = store.get_thread("pgr-0001")
+    assert len(rows) == 1
+    assert rows[0].body == "hi"  # the second (duplicate) insert never applied
+
+
+def test_concurrent_insert_up_message_same_id_only_one_succeeds(store: Store):
+    """M4 regression: two concurrent at-least-once webhook deliveries of the
+    same up-message id must not race past a check-then-act dedup check --
+    the insert itself (`INSERT ... ON CONFLICT(id) DO NOTHING`) must be the
+    atomic source of truth. Exactly one of the two calls returns True
+    (inserted), the other False (duplicate), and neither raises."""
+    results: list[bool] = []
+    errors: list[BaseException] = []
+    barrier = threading.Barrier(2)
+
+    def worker() -> None:
+        barrier.wait()
+        try:
+            results.append(
+                store.insert_up_message(
+                    msg_id="u_racecase", device_id="pgr-0001", ts=1, sender="student", body="hi"
+                )
+            )
+        except BaseException as exc:  # noqa: BLE001 -- captured for the assertion below
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert errors == []
+    assert sorted(results) == [False, True]
+    rows = store.get_thread("pgr-0001")
+    assert len(rows) == 1
+    assert rows[0].id == "u_racecase"

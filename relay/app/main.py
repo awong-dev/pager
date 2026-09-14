@@ -1,6 +1,10 @@
-"""FastAPI app: the relay's HTTP surface. Owns nothing about MQTT wire
-details directly -- it validates/generates ids per PROTOCOL.md §1/§3.1,
-stores via Store, and publishes via MqttGateway.
+"""FastAPI app: the relay's HTTP surface. Request-driven end to end (no
+background thread, no persistent MQTT session, docs/SERVER_PLAN.md §2
+decision 1) -- inbound device traffic arrives on `POST /webhooks/mqtt`
+(app/routers/webhooks.py) and outbound `/down` publishes go through
+`app.broker.BrokerClient`'s REST call. Owns nothing about MQTT wire details
+directly -- it validates/generates ids per PROTOCOL.md §1/§3.1, stores via
+Store, and publishes via Ingest.
 """
 
 from __future__ import annotations
@@ -9,7 +13,6 @@ import logging
 import os
 import secrets
 import time
-from collections.abc import Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated
@@ -19,10 +22,11 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.broker import BrokerClient
 from app.config import Settings
 from app.ids import new_message_id
-from app.mqtt_gateway import MqttGateway
-from app.mqtt_transport import PahoTransport
+from app.ingest import Ingest
+from app.routers import webhooks
 from app.store import MessageRow, Store
 from app.wire import (
     BODY_MAX_CODEPOINTS,
@@ -89,15 +93,12 @@ def _row_to_message_out(row: MessageRow) -> MessageOut:
     )
 
 
-GatewayFactory = Callable[[Store], MqttGateway]
-
-
 def get_store(request: Request) -> Store:
     return request.app.state.store
 
 
-def get_gateway(request: Request) -> MqttGateway:
-    return request.app.state.gateway
+def get_ingest(request: Request) -> Ingest:
+    return request.app.state.ingest
 
 
 def require_auth(
@@ -112,10 +113,10 @@ def require_auth(
 def create_app(
     settings: Settings | None = None,
     store: Store | None = None,
-    gateway_factory: GatewayFactory | None = None,
+    broker_client: BrokerClient | None = None,
 ) -> FastAPI:
-    """Factory so tests can inject an in-memory Store and a fake-transport
-    MqttGateway instead of a real broker connection."""
+    """Factory so tests can inject an in-memory Store and a fake
+    `BrokerClient` instead of a real broker connection."""
 
     settings = settings or Settings.from_env()
 
@@ -123,32 +124,22 @@ def create_app(
     async def lifespan(app: FastAPI):
         app.state.settings = settings
         app.state.store = store or Store(settings.db_path)
-        if gateway_factory is not None:
-            app.state.gateway = gateway_factory(app.state.store)
-        else:
-            transport = PahoTransport(
-                client_id="relay-1",
-                host=settings.mqtt_host,
-                port=settings.mqtt_port,
-                username=settings.mqtt_username,
-                password=settings.mqtt_password,
-            )
-            app.state.gateway = MqttGateway(app.state.store, transport)
-        app.state.gateway.start()
+        app.state.broker = broker_client or BrokerClient(settings)
+        app.state.ingest = Ingest(app.state.store, app.state.broker)
         try:
             yield
         finally:
-            app.state.gateway.stop()
             app.state.store.close()
 
     app = FastAPI(title="School Pager Relay", lifespan=lifespan)
+    app.include_router(webhooks.router)
 
     @app.post("/api/devices/{device_id}/messages", dependencies=[Depends(require_auth)])
     def send_message(
         device_id: str,
         req: SendMessageRequest,
         store: Annotated[Store, Depends(get_store)],
-        gateway: Annotated[MqttGateway, Depends(get_gateway)],
+        ingest: Annotated[Ingest, Depends(get_ingest)],
     ) -> MessageOut:
         if not DEVICE_ID_RE.match(device_id):
             raise HTTPException(status_code=400, detail="invalid device_id")
@@ -176,15 +167,19 @@ def create_app(
             raise HTTPException(status_code=500, detail="failed to generate a unique message id")
 
         row = store.create_down_message(msg_id=msg_id, device_id=device_id, ts=ts, body=body)
-        gateway.publish_down(row)
-        return _row_to_message_out(row)
+        ingest.publish_down(row)
+        return _row_to_message_out(store.get_message(msg_id) or row)
 
     @app.get("/api/devices/{device_id}/messages", dependencies=[Depends(require_auth)])
     def get_messages(
         device_id: str,
         store: Annotated[Store, Depends(get_store)],
+        ingest: Annotated[Ingest, Depends(get_ingest)],
         since: int | None = Query(default=None),
     ) -> list[MessageOut]:
+        # Lazy retry of anything still 'queued' -- see Ingest.retry_queued's
+        # docstring for why this lives here rather than a background timer.
+        ingest.retry_queued(device_id)
         rows = store.get_thread(device_id, since=since)
         return [_row_to_message_out(r) for r in rows]
 
@@ -206,10 +201,11 @@ def create_app(
             fw=status.fw,
         )
 
-    # Mounted last so it never shadows the /api/* routes above: Starlette
-    # matches routes in registration order, and a Mount("/") only catches
-    # what no earlier explicit route claimed. Serves relay/static/index.html
-    # (the parent MVP page, HANDOFF.md §2) at "/" and its own path.
+    # Mounted last so it never shadows the /api/* or /webhooks/* routes
+    # above: Starlette matches routes in registration order, and a Mount("/")
+    # only catches what no earlier explicit route claimed. Serves
+    # relay/static/index.html (the parent MVP page, HANDOFF.md §2) at "/"
+    # and its own path.
     if STATIC_DIR.is_dir():
         app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
 

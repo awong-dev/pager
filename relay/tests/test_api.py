@@ -9,9 +9,7 @@ from fastapi.testclient import TestClient
 
 from app.config import Settings
 from app.main import create_app
-from app.mqtt_gateway import MqttGateway
-from app.store import Store
-from tests.fake_transport import FakeTransport
+from tests.fake_transport import FakeBrokerClient
 
 TOKEN = "test-token-123"
 
@@ -20,20 +18,17 @@ TOKEN = "test-token-123"
 def client(tmp_path) -> Iterator[TestClient]:
     settings = Settings(
         relay_token=TOKEN,
-        mqtt_host="unused",
-        mqtt_port=1883,
-        mqtt_username=None,
-        mqtt_password=None,
+        broker_api_url="http://unused.invalid/api/v5",
+        broker_api_key=None,
+        broker_api_secret=None,
+        webhook_key="test-webhook-key",
         db_path=str(tmp_path / "relay.db"),
     )
-    fake_transport = FakeTransport()
+    fake_broker = FakeBrokerClient()
 
-    def gateway_factory(store: Store) -> MqttGateway:
-        return MqttGateway(store, fake_transport)
-
-    app = create_app(settings=settings, gateway_factory=gateway_factory)
+    app = create_app(settings=settings, broker_client=fake_broker)
     with TestClient(app) as c:
-        c.fake_transport = fake_transport  # type: ignore[attr-defined]
+        c.fake_broker = fake_broker  # type: ignore[attr-defined]
         yield c
 
 
@@ -62,7 +57,7 @@ def test_correct_token_is_authorized(client: TestClient):
 # ---- POST /messages ----
 
 
-def test_send_message_publishes_and_returns_queued_then_sent_state(client: TestClient):
+def test_send_message_publishes_and_reaches_sent_state(client: TestClient):
     resp = client.post(
         "/api/devices/pgr-0001/messages",
         json={"body": "Pickup at 3:15 by the gym"},
@@ -72,23 +67,32 @@ def test_send_message_publishes_and_returns_queued_then_sent_state(client: TestC
     data = resp.json()
     assert data["id"].startswith("m_")
     assert len(data["id"]) == 10
-    assert data["state"] == "queued"
+    # BrokerClient.publish() is a synchronous REST call in this design (no
+    # separate PUBACK step) -- a successful publish is 'sent' immediately.
+    assert data["state"] == "sent"
 
-    fake_transport: FakeTransport = client.fake_transport  # type: ignore[attr-defined]
-    assert len(fake_transport.published) == 1
-    assert fake_transport.published[0].topic == "pager/pgr-0001/down"
-
-    fake_transport.ack_last()
+    fake_broker: FakeBrokerClient = client.fake_broker  # type: ignore[attr-defined]
+    assert len(fake_broker.published) == 1
+    assert fake_broker.published[0].topic == "pager/pgr-0001/down"
 
     thread = client.get("/api/devices/pgr-0001/messages", headers=auth_headers()).json()
     assert len(thread) == 1
     assert thread[0]["state"] == "sent"
 
 
-def test_send_message_requires_auth(client: TestClient):
+def test_send_message_stays_queued_when_broker_publish_fails(client: TestClient):
+    fake_broker: FakeBrokerClient = client.fake_broker  # type: ignore[attr-defined]
+    fake_broker.fail_publish = True
+
     resp = client.post(
-        "/api/devices/pgr-0001/messages", json={"body": "hi"}
+        "/api/devices/pgr-0001/messages", json={"body": "hi"}, headers=auth_headers()
     )
+    assert resp.status_code == 200
+    assert resp.json()["state"] == "queued"
+
+
+def test_send_message_requires_auth(client: TestClient):
+    resp = client.post("/api/devices/pgr-0001/messages", json={"body": "hi"})
     assert resp.status_code == 401
 
 
@@ -106,8 +110,8 @@ def test_send_message_strips_control_chars(client: TestClient):
         headers=auth_headers(),
     )
     assert resp.status_code == 200
-    fake_transport: FakeTransport = client.fake_transport  # type: ignore[attr-defined]
-    assert b"hi there" in fake_transport.published[-1].payload
+    fake_broker: FakeBrokerClient = client.fake_broker  # type: ignore[attr-defined]
+    assert b"hi there" in fake_broker.published[-1].payload
 
 
 def test_send_message_rejects_empty_after_stripping(client: TestClient):
@@ -140,6 +144,24 @@ def test_send_message_rejects_over_320_utf8_bytes(client: TestClient):
     assert resp.status_code == 400
 
 
+def test_get_messages_opportunistically_retries_queued_message(client: TestClient):
+    """A stand-in for docs/SERVER_PLAN.md §5.8's `/internal/tick`: a message
+    that stayed 'queued' because the broker publish failed gets retried the
+    next time anyone reads the thread (see Ingest.retry_queued)."""
+    fake_broker: FakeBrokerClient = client.fake_broker  # type: ignore[attr-defined]
+    fake_broker.fail_publish = True
+
+    sent = client.post(
+        "/api/devices/pgr-0001/messages", json={"body": "outage"}, headers=auth_headers()
+    ).json()
+    assert sent["state"] == "queued"
+
+    fake_broker.fail_publish = False
+    thread = client.get("/api/devices/pgr-0001/messages", headers=auth_headers()).json()
+    assert len(thread) == 1
+    assert thread[0]["state"] == "sent"
+
+
 # ---- GET /messages ----
 
 
@@ -152,18 +174,12 @@ def test_get_messages_empty_thread(client: TestClient):
 def test_get_messages_since_filters(client: TestClient):
     import time
 
-    client.post(
-        "/api/devices/pgr-0001/messages", json={"body": "first"}, headers=auth_headers()
-    )
+    client.post("/api/devices/pgr-0001/messages", json={"body": "first"}, headers=auth_headers())
     cutoff = int(time.time())
     time.sleep(1.1)  # guarantee the second message's created_at > cutoff
-    client.post(
-        "/api/devices/pgr-0001/messages", json={"body": "second"}, headers=auth_headers()
-    )
+    client.post("/api/devices/pgr-0001/messages", json={"body": "second"}, headers=auth_headers())
 
-    resp = client.get(
-        f"/api/devices/pgr-0001/messages?since={cutoff}", headers=auth_headers()
-    )
+    resp = client.get(f"/api/devices/pgr-0001/messages?since={cutoff}", headers=auth_headers())
     bodies = [m["body"] for m in resp.json()]
     assert bodies == ["second"]
 

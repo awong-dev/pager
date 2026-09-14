@@ -3,19 +3,36 @@
 version: "3.8"
 
 services:
-  broker:
-    image: eclipse-mosquitto:2
+  # docs/SERVER_PLAN.md §2 decision 2: EMQX OSS locally (same rule engine +
+  # REST publish API as EMQX Cloud Serverless in prod). Pinned to 5.8.0
+  # rather than the "5" tag, which does not exist as a manifest.
+  emqx:
+    image: emqx/emqx:5.8.0
     ports:
-      - "1883:1883"
+      - "1883:1883" # MQTT, for the device (real or simulated)
+      - "18083:18083" # dashboard/management REST API (setup script + relay's REST publish)
     volumes:
-      - ./mosquitto.conf:/mosquitto/config/mosquitto.conf
+      # Pre-seeds a known api_key:api_secret pair (matches relay's
+      # BROKER_API_KEY/BROKER_API_SECRET in .env) so the relay's REST-publish
+      # credential is known up front -- no chicken-and-egg with a
+      # dynamically generated key the relay would need to be told about
+      # after EMQX starts. See relay/README.md.
+      - ./emqx/bootstrap_api_keys.txt:/opt/emqx/data/bootstrap_api_keys.txt:ro
+    environment:
+      EMQX_API_KEY__BOOTSTRAP_FILE: /opt/emqx/data/bootstrap_api_keys.txt
+    healthcheck:
+      test: ["CMD", "/opt/emqx/bin/emqx_ctl", "status"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
     networks:
       - pager-net
 
   relay:
     build: .
     depends_on:
-      - broker
+      emqx:
+        condition: service_healthy
     env_file: .env
     ports:
       - "8000:8000"

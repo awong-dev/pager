@@ -1,29 +1,35 @@
 #!/usr/bin/env python3
 """
-End-to-end integration test for the school pager relay (HANDOFF.md Phase 6).
+End-to-end integration test for the school pager relay (HANDOFF.md Phase 6;
+adapted for the request-driven relay of docs/SERVER_PLAN.md §2 decision 1).
 
-Brings up the *real* docker-compose stack (`relay/docker-compose.yml`: an
-eclipse-mosquitto broker + the relay container -- exactly what a developer
-runs locally with `docker compose up`) and exercises scenarios the relay's
-unit tests cannot reach, because `relay/tests/` talks to an in-process fake
-MQTT transport (`relay/tests/fake_transport.py`), never a real socket:
+Brings up the *real* docker-compose stack (`relay/docker-compose.yml`: EMQX
+5 + the relay container -- exactly what a developer runs locally with
+`docker compose up`), provisions EMQX's rule engine with
+`tools/emqx_setup.py` (broker rule -> `POST /webhooks/mqtt`), and exercises
+scenarios the relay's unit tests cannot reach, because `relay/tests/` talks
+to an in-process fake `BrokerClient` (`relay/tests/fake_transport.py`),
+never a real socket or a real broker rule engine:
 
-  1. a full round trip over a real paho-mqtt wire connection, covering all
-     four ack states (queued/sent/shown/read) plus a student reply,
+  1. a full round trip over a real MQTT wire connection bridged through
+     EMQX's rule engine + webhook, covering all four ack states
+     (queued/sent/shown/read) plus a student reply,
   2. garbage bytes published directly to the real broker on `/up` and
      `/status` by a client that goes around the relay's own code entirely,
-  3. the broker process disappearing and coming back while the relay keeps
-     running,
+  3. the broker process disappearing and coming back while the relay stays
+     up throughout (it holds no connection to lose -- see scenario docstring
+     for what "recovery" means in this architecture),
   4. a message queued for a device that has never connected ("power-on with
      no network coverage yet").
 
 Requires: Docker with the Compose plugin, and `paho-mqtt` importable by the
-interpreter running this script -- the same dependency `relay/pyproject.toml`
-and `tools/sim_device.py` already require. Easiest: run with
-`relay/.venv/bin/python3` if it exists, otherwise `pip install paho-mqtt`
-into whatever interpreter you use to run this file; `tools/sim_device.py` is
-invoked as a subprocess with `sys.executable`, so the same interpreter must
-have paho-mqtt too.
+interpreter running this script -- a dev dependency of `relay/pyproject.toml`
+(devices, real or simulated, still speak real MQTT; only the relay's own
+transport changed) and what `tools/sim_device.py` already requires. Easiest:
+run with `relay/.venv/bin/python3` if it exists, otherwise
+`pip install paho-mqtt` into whatever interpreter you use to run this file;
+`tools/sim_device.py` is invoked as a subprocess with `sys.executable`, so
+the same interpreter must have paho-mqtt too.
 
 Usage:
     python3 tools/e2e_test.py
@@ -61,10 +67,18 @@ RELAY_DIR = REPO_ROOT / "relay"
 COMPOSE_FILE = RELAY_DIR / "docker-compose.yml"
 ENV_PATH = RELAY_DIR / ".env"
 SIM_DEVICE_SCRIPT = REPO_ROOT / "tools" / "sim_device.py"
+EMQX_SETUP_SCRIPT = REPO_ROOT / "tools" / "emqx_setup.py"
 
 RELAY_URL = "http://localhost:8000"
 MQTT_HOST = "localhost"
 MQTT_PORT = 1883
+EMQX_API_URL = "http://localhost:18083"
+# Must match relay/emqx/bootstrap_api_keys.txt (see that file's comment and
+# relay/docker-compose.yml's EMQX_API_KEY__BOOTSTRAP_FILE) -- a fixed,
+# known-up-front credential, not one this script has to discover after the
+# fact.
+BROKER_API_KEY = "dev-broker-api-key"
+BROKER_API_SECRET = "dev-broker-api-secret"
 
 _env_backup: str | None = None
 _scratch_dir: Path | None = None
@@ -186,7 +200,7 @@ def get_container_id(service: str) -> str:
     return result.stdout.strip()
 
 
-def write_env_file(token: str) -> None:
+def write_env_file(token: str, webhook_key: str) -> None:
     global _env_backup
     if ENV_PATH.exists():
         _env_backup = ENV_PATH.read_text()
@@ -194,10 +208,10 @@ def write_env_file(token: str) -> None:
         "\n".join(
             [
                 f"RELAY_TOKEN={token}",
-                "MQTT_BROKER_HOST=broker",
-                "MQTT_BROKER_PORT=1883",
-                "MQTT_USERNAME=",
-                "MQTT_PASSWORD=",
+                "BROKER_API_URL=http://emqx:18083/api/v5",
+                f"BROKER_API_KEY={BROKER_API_KEY}",
+                f"BROKER_API_SECRET={BROKER_API_SECRET}",
+                f"WEBHOOK_KEY={webhook_key}",
                 "",
             ]
         )
@@ -219,24 +233,73 @@ def _probe_relay_http(token: str) -> bool:
         return False
 
 
-def start_fresh_stack(token: str, *, build: bool) -> None:
-    """Bring up a brand-new broker + relay pair for one scenario. Each
-    scenario gets its own stack rather than sharing one for the whole run:
-    a bug that leaves the relay's MQTT connection permanently dead (see
-    scenario 3) must not cascade into false failures in later, unrelated
-    scenarios."""
+def configure_emqx(webhook_key: str) -> None:
+    """Provisions EMQX's rule engine (tools/emqx_setup.py) so device traffic
+    reaches the relay's webhook. Run once per fresh stack -- EMQX's dynamic
+    config persists across a `stop`/`start` of the same container (scenario
+    3), but not across `down -v` + `up` (a new container), which is what
+    every scenario in this file does."""
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(EMQX_SETUP_SCRIPT),
+            "--emqx-url",
+            EMQX_API_URL,
+            "--relay-url",
+            "http://relay:8000",
+            "--webhook-key",
+            webhook_key,
+        ],
+        cwd=str(REPO_ROOT),
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    print(result.stdout, end="")
+    if result.returncode != 0:
+        print(result.stderr, end="", file=sys.stderr)
+        raise AssertionError(f"tools/emqx_setup.py failed (exit {result.returncode})")
+
+
+def start_fresh_stack(token: str, webhook_key: str, *, build: bool) -> None:
+    """Bring up a brand-new EMQX + relay pair for one scenario, and
+    provision EMQX's rule engine to point at it. Each scenario gets its own
+    stack rather than sharing one for the whole run: a bug that leaves the
+    relay unable to reach the broker (see scenario 3) must not cascade into
+    false failures in later, unrelated scenarios.
+
+    EMQX 5's own startup (health check, dashboard/management API) is slower
+    than eclipse-mosquitto's near-instant one, so the timeout here is
+    generous; `docker compose up -d` itself already blocks until EMQX's
+    healthcheck passes (relay `depends_on: emqx: condition: service_healthy`
+    in relay/docker-compose.yml), so by the time `compose(...)` returns
+    EMQX's REST API should already be reachable.
+
+    Order matters here: wait for the relay's own HTTP API *before* running
+    `configure_emqx`, not after. `compose up -d` returning only means the
+    relay *container* has started -- uvicorn inside it can still take a
+    moment to bind its port. Configuring EMQX's connector first (observed
+    empirically) means EMQX's first connection attempt can land in that gap
+    and get `econnrefused`; EMQX only retries a dead resource on its
+    `health_check_interval` (15s default), so a single early race there
+    costs a real 15s and can starve an early-scenario `wait_until` that
+    wasn't sized for it. Waiting for the relay first makes EMQX's first
+    connection attempt land on an already-listening port.
+    """
     args = ["up", "-d", "--build"] if build else ["up", "-d"]
     compose(*args)
     wait_until(
         lambda: _probe_relay_http(token),
-        timeout=60,
+        timeout=90,
         interval=1,
         description="relay HTTP API to come up",
     )
+    configure_emqx(webhook_key)
 
 
 def dump_logs() -> None:
-    for service, tail in (("relay", "80"), ("broker", "30")):
+    for service, tail in (("relay", "80"), ("emqx", "60")):
         print(f"\n--- docker compose logs {service} --tail {tail} ---")
         result = compose("logs", service, "--tail", tail, check=False, capture=True)
         print(result.stdout)
@@ -443,23 +506,20 @@ def scenario_1_full_roundtrip(token: str) -> None:
     try:
         sent = send_message(device_id, token, "Pickup at 3:15 by the gym")
         msg_id = sent["id"]
-        assert sent["state"] == "queued", (
-            f"expected queued right after POST, got {sent}"
+        # v2: BrokerClient.publish() is a synchronous REST call (§4.8), so
+        # 'sent' (the broker accepted the QoS 1 publish -- PROTOCOL.md §4's
+        # state table is explicit this is not "delivered") is already true by the
+        # time POST returns, not a moment later on an async PUBACK as in the
+        # old paho-based relay.
+        assert sent["state"] == "sent", (
+            f"expected 'sent' right after POST (broker REST publish is "
+            f"synchronous now), got {sent}"
         )
 
         down = dev.wait_for_down_message(timeout=15)
         assert down["id"] == msg_id, f"device received wrong id: {down}"
         assert down["body"] == "Pickup at 3:15 by the gym"
         assert down["ack"] is None
-
-        wait_until(
-            lambda: (
-                (m := find_message(device_id, msg_id, token)) is not None
-                and m["state"] == "sent"
-            ),
-            timeout=10,
-            description=f"message {msg_id} to reach state=sent (broker PUBACK)",
-        )
 
         dev.ack(msg_id, "shown")
         wait_until(
@@ -609,6 +669,16 @@ def scenario_2_malformed(token: str) -> None:
 
 
 def scenario_3_broker_outage(token: str) -> None:
+    """Adapted for the request-driven relay (docs/SERVER_PLAN.md §2 decision
+    1): the relay holds no connection to the broker to lose, so "recovery"
+    here does not mean "the relay reconnects" (there is nothing to
+    reconnect) -- it means the relay keeps serving HTTP throughout the
+    outage, a message sent while the broker is unreachable stays 'queued'
+    rather than erroring, and once the broker is back, that message is
+    delivered. Delivery happens via `Ingest.retry_queued`, an
+    opportunistic retry run on every `GET .../messages` (see that method's
+    docstring) -- a lazy-at-read-time stand-in for docs/SERVER_PLAN.md
+    §5.8's `/internal/tick`, which is not built until a later phase."""
     device_id = "e2e-outage-1"
     sim = start_sim_device(device_id)
     try:
@@ -624,7 +694,7 @@ def scenario_3_broker_outage(token: str) -> None:
         # "a message already in flight": sent while broker+device are both up.
         send_message(device_id, token, "in flight before the outage")
 
-        compose("stop", "broker")
+        compose("stop", "emqx")
         time.sleep(2)
 
         status, data = api_get(f"/api/devices/{device_id}/messages", token)
@@ -642,7 +712,7 @@ def scenario_3_broker_outage(token: str) -> None:
             f"got {sent_during_outage}"
         )
 
-        compose("start", "broker")
+        compose("start", "emqx")
 
         try:
             wait_until(
@@ -650,12 +720,13 @@ def scenario_3_broker_outage(token: str) -> None:
                     (m := find_message(device_id, msg_id_b, token)) is not None
                     and m["state"] in ("sent", "shown", "read")
                 ),
-                timeout=45,
+                timeout=60,
                 interval=2,
                 description=(
-                    f"relay to reconnect to the broker on its own and publish "
-                    f"message {msg_id_b} (queued during the outage) -- no relay "
-                    f"restart is expected or permitted here"
+                    f"message {msg_id_b} (queued during the outage) to be retried "
+                    "and published once the broker is back -- no relay restart is "
+                    "expected or permitted here (EMQX's own restart can take a "
+                    "little while to become healthy again)"
                 ),
             )
         except AssertionError as exc:
@@ -663,12 +734,10 @@ def scenario_3_broker_outage(token: str) -> None:
                 "logs", "relay", "--tail", "200", check=False, capture=True
             ).stdout
             hint = ""
-            if "Exception in thread paho-mqtt-client" in logs:
+            if "Traceback" in logs:
                 hint = (
-                    " NOTE: the relay's MQTT background thread crashed with an "
-                    "unhandled exception on disconnect (see relay container logs) "
-                    "and therefore never attempted to reconnect. This looks like a "
-                    "real bug in app/mqtt_transport.py, not a test-timing issue."
+                    " NOTE: the relay logged a traceback (see relay container logs "
+                    "above) -- this looks like a real bug, not a test-timing issue."
                 )
             raise AssertionError(f"{exc}.{hint}") from exc
 
@@ -676,7 +745,8 @@ def scenario_3_broker_outage(token: str) -> None:
         assert relay_cid_before == relay_cid_after, (
             "the relay container was restarted during the outage test "
             f"(before={relay_cid_before!r} after={relay_cid_after!r}); the relay "
-            "is supposed to recover on its own without a restart"
+            "is supposed to keep running throughout (it never held a connection to "
+            "the broker in the first place)"
         )
 
         # A newly sent message must reach the (re-)connected simulated device.
@@ -696,7 +766,7 @@ def scenario_3_broker_outage(token: str) -> None:
         )
     finally:
         stop_sim_device(sim)
-        compose("start", "broker", check=False)
+        compose("start", "emqx", check=False)
 
 
 # --------------------------------------------------------------------------
@@ -705,12 +775,25 @@ def scenario_3_broker_outage(token: str) -> None:
 
 
 def scenario_4_poweron_no_network(token: str) -> None:
+    """docs/PROTOCOL.md §4's state table is explicit that 'sent' means "the
+    broker accepted it" (a 2xx from the REST publish API is the v2
+    equivalent of a PUBACK), **not** "the device received it" -- so a
+    message published while the device has never connected still reaches
+    'sent' immediately (there is no subscriber to reject it, and the
+    broker's REST API has no way to know that). Delivery instead relies on
+    `Ingest.handle_status`'s online-edge rule (docs/PROTOCOL.md §5.3): the
+    device's *first-ever* `/status` has no prior status row
+    (`previous is None`), which counts as a session change, so the
+    still-unacked 'sent' message is re-published the moment the device
+    powers on and reports in."""
     device_id = "e2e-poweron-1"
 
     sent = send_message(device_id, token, "power-on queued test")
     msg_id = sent["id"]
-    assert sent["state"] == "queued", (
-        f"expected a message to a never-connected device to be queued, got {sent}"
+    assert sent["state"] == "sent", (
+        f"expected a message to a never-connected device to reach 'sent' "
+        f"(the broker accepted it; PROTOCOL.md §4 -- it does not mean "
+        f"delivered), got {sent}"
     )
 
     status, _ = api_get(f"/api/devices/{device_id}/status", token)
@@ -728,8 +811,9 @@ def scenario_4_poweron_no_network(token: str) -> None:
             timeout=20,
             interval=1,
             description=(
-                f"message {msg_id} (queued before the device ever connected) to be "
-                "delivered and acked shown once the device powers on"
+                f"message {msg_id} (sent before the device ever connected) to be "
+                "re-published (online-edge rule, first-ever status) and acked shown "
+                "once the device powers on"
             ),
         )
     finally:
@@ -759,17 +843,20 @@ def main() -> None:
     _scratch_dir = Path(tempfile.mkdtemp(prefix="pager-e2e-"))
 
     token = "e2e_" + os.urandom(12).hex()
+    webhook_key = "e2e_wh_" + os.urandom(12).hex()
     results: list[tuple[str, bool, str]] = []
 
     try:
-        write_env_file(token)
+        write_env_file(token, webhook_key)
         for i, (name, fn) in enumerate(SCENARIOS):
             print(f"\n=== SCENARIO: {name} ===")
             _sim_logs.clear()
             try:
                 # Build the image once (first scenario); reuse it after that
-                # -- each scenario still gets its own fresh containers.
-                start_fresh_stack(token, build=(i == 0))
+                # -- each scenario still gets its own fresh containers (and
+                # therefore a fresh EMQX that needs its rule engine
+                # reconfigured every time, see start_fresh_stack).
+                start_fresh_stack(token, webhook_key, build=(i == 0))
                 fn(token)
             except Exception as exc:  # noqa: BLE001 - reported, not swallowed
                 print(f"FAIL: {name}\n  reason: {exc}")

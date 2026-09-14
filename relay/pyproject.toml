@@ -9,12 +9,17 @@ requires-python = ">=3.12"
 dependencies = [
     "fastapi",
     "uvicorn",
-    "paho-mqtt",
+    "httpx",
     "pydantic",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "httpx"]
+# paho-mqtt is no longer a relay runtime dependency (docs/SERVER_PLAN.md §2
+# decision 1: the relay never holds an MQTT connection) -- it stays a dev
+# dependency because tools/e2e_test.py and tools/sim_device.py are simulated
+# *devices* that speak real MQTT to the broker, and they're documented to
+# run from this same venv (relay/.venv/bin/python3).
+dev = ["pytest", "httpx", "paho-mqtt"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["app"]

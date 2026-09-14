@@ -118,17 +118,27 @@ class Store:
         sender: str | None,
         body: str | None,
         now: int | None = None,
-    ) -> None:
+    ) -> bool:
+        """Insert an up-message, atomically no-oping on a duplicate `id`
+        (PROTOCOL.md §4.1 rule 1, §4.2: QoS 1 redelivery must be idempotent).
+        Using `INSERT ... ON CONFLICT DO NOTHING` instead of a separate
+        `id_exists` check + insert closes the race where two concurrent
+        at-least-once webhook deliveries of the same message both pass the
+        existence check before either has inserted. Returns True if a row
+        was inserted, False if `msg_id` already existed (duplicate, no-op).
+        """
         now = now if now is not None else int(time.time())
         with self._lock, self._conn:
-            self._conn.execute(
+            cur = self._conn.execute(
                 """
                 INSERT INTO messages
                     (id, device_id, direction, v, ts, sender, body, state, created_at)
                 VALUES (?, ?, 'up', 1, ?, ?, ?, 'received', ?)
+                ON CONFLICT(id) DO NOTHING
                 """,
                 (msg_id, device_id, ts, sender, body, now),
             )
+        return cur.rowcount > 0
 
     def mark_sent(self, msg_id: str) -> None:
         with self._lock, self._conn:
@@ -210,6 +220,45 @@ class Store:
                 """
                 SELECT * FROM messages
                 WHERE device_id = ? AND direction = 'down' AND state IN ('queued', 'sent')
+                  AND created_at > ?
+                ORDER BY seq ASC
+                LIMIT ?
+                """,
+                (device_id, cutoff, limit),
+            ).fetchall()
+        return [self._row_to_message(r) for r in rows]
+
+    def get_queued_down_messages(
+        self,
+        device_id: str,
+        *,
+        now: int | None = None,
+        max_age: int = EXPIRY_SECONDS,
+        limit: int = REPUBLISH_CAP,
+    ) -> list[MessageRow]:
+        """Down messages whose broker publish never succeeded at all (state
+        strictly 'queued', never reached 'sent') -- oldest first, age < 24h,
+        capped. Narrower than `get_republish_candidates` (which also
+        includes already-'sent'-but-unacked messages, appropriate for the
+        online-edge rule but NOT for this) on purpose: this backs the
+        legacy GET endpoint's opportunistic retry (app/main.py), a stand-in
+        for docs/SERVER_PLAN.md §5.8's `/internal/tick` (not built yet in
+        this phase) for the one case it exists to cover -- a *transient*
+        broker publish failure (timeout, 5xx, DNS blip) when `publish_down`
+        was first attempted, while the device's own connection never
+        dropped (a full outage instead produces a reconnect + fresh session,
+        which already triggers the existing online-edge republish). Reusing
+        `get_republish_candidates` here would re-publish already-delivered-
+        but-unacked messages on every single read, which is not what a
+        passive read should ever do.
+        """
+        now = now if now is not None else int(time.time())
+        cutoff = now - max_age
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT * FROM messages
+                WHERE device_id = ? AND direction = 'down' AND state = 'queued'
                   AND created_at > ?
                 ORDER BY seq ASC
                 LIMIT ?
