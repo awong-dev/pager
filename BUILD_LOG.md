@@ -134,3 +134,75 @@ implementation to subagents, log every phase here.
 **Done when:** commit `v2 phase 2a`. ✅
 
 ---
+
+## Phase 2b — Firestore + identity (2026-09-14/15)
+
+- `backend-dev` replaced the MVP's SQLite store with Cloud Firestore + Firebase Auth, running
+  against local emulators: `relay/emulator.Dockerfile` (`node:20-bookworm-slim` + Eclipse Temurin
+  21 — bookworm's own JDK tops out at 17 and current `firebase-tools` needs a JRE ≥ 21, a
+  necessary empirical correction to the plan's suggested `default-jre-headless`),
+  `relay/app/db/firestore.py` (emulator-aware `firebase-admin` init, `run_transaction` helper),
+  `relay/app/store/{users,devices,backends,allow,messages,locations,settings}.py` implementing
+  `SERVER_PLAN.md` §3's collections field-for-field, `relay/firestore.rules` +
+  `firestore.indexes.json`, `relay/app/auth.py` (`verify_id_token`, the registry gate, admin
+  custom claim), `relay/app/bootstrap.py`, `routers/admin.py` (users, allow-list replace-all incl.
+  `locatableBy` rewrite, devices with a one-time MQTT password), `routers/dev.py`
+  (`POST /api/dev/token`, `DEV_MODE` only), `app/db/import_sqlite.py`. `relay/app/store.py`
+  (SQLite) and its migration are deleted.
+- **`relay/app/store/legacy.py`** adds three collections outside `SERVER_PLAN.md` §3
+  (`legacyMessages`, `legacyStatus`, `legacySettings`) to keep the MVP `RELAY_TOKEN` endpoints
+  working without synthesizing fake users/allow-edges into the real §3 collections.
+  `server-architect` reviewed this and **accepted it as a clean, isolated, temporary measure** —
+  separate collections, separate counter, default-denied by `firestore.rules`, no crossover with
+  the real schema. **Phase 6 must drop all three `legacy*` collections along with the endpoints
+  themselves** — added to that phase's checklist here so it isn't orphaned data.
+- `server-architect` reviewed the transaction code and rules file (required before commit per
+  `HANDOFF_V2.md`) and found/fixed three real bugs directly:
+  - **S1 (high):** `run_transaction`'s outer retry caught only a commit-phase `ValueError`
+    wrapper, but a hot-document contention failure (`Aborted`) can also surface from a
+    **read**-phase call inside the transaction, which propagates uncaught — the retry as written
+    did not cover the failure mode it was built for. Fixed with an explicit `Aborted` handler and
+    a cause-based check instead of string matching.
+  - **S3 (medium):** `legacy.py`'s `mark_sent` was a non-transactional read-then-write — an ack
+    landing between the two could walk delivery state backwards (PROTOCOL.md §4.1 rule 2). Now
+    wrapped in `run_transaction`.
+  - **S4 (low):** `settings/meta` initialization could race `create_message`'s own bootstrap of
+    the same document, clobbering `seqCounter` back to 0 and handing out a duplicate `seq`. Now
+    uses `create()` + catches `AlreadyExists` instead of exists-check-then-`set()`.
+  - Two follow-ups closed by `backend-dev` before commit: **S2**, the retry backoff was tuned
+    from linear/~0.75s total to exponential/full-jitter/~6.3s total — validated at **0 failures
+    across 13 repeated 12-thread concurrent `create_message` bursts** against the real emulator
+    (versus frequent failures before); **S5**, added direct invariant tests
+    (`test_messages.py`, `test_users.py`) for `create_message`'s `wireId` dedup + `seq`
+    monotonicity and `create_user`'s alias uniqueness + rollback-on-conflict, which had no direct
+    test file before this phase existed to establish those exact invariants.
+  - Three low-severity hardening notes recorded for later, not blocking: the admin API accepts
+    either the Firestore `role` field or the Firebase custom claim as proof of admin (rules only
+    honor the claim — should require the claim only); `devices/{d}` read exposes
+    `mqttUsername`/`mqttPasswordHash` to everyone in `locatableBy`, not just the owner (matches
+    the plan's rules sketch as written, but move credentials to a sibling doc before the web app
+    reads devices directly); test-emulator wipe responses aren't checked for failure.
+- `firestore.rules` matched the `SERVER_PLAN.md` §3 sketch line-by-line, with a few defensive
+  `request.auth != null` additions that tighten rather than loosen it. No collection found
+  over-permissive.
+- **`(build finding)`**: the local Firestore emulator's own per-transaction cost under 12-way
+  contention on a single hot document (`settings/meta`) has an empirical worst case of **~20-31s**
+  wall-clock for the last straggler, independent of the retry-backoff tuning (it's the emulator's
+  serialization cost, not our sleep calls). Not a problem yet — `create_message` isn't wired into
+  the live webhook path until Phase 3 — and not expected to matter at the household scale
+  `SERVER_PLAN.md` §9.3 describes (low thousands of ops per *day*, not a 12-way concurrent burst),
+  but worth remembering if Phase 3's `routing.py` puts `create_message` on the synchronous webhook
+  path and a future load test contradicts that assumption.
+- Auth-emulator test cleanup uses `DELETE /emulator/v1/projects/{project}/accounts` (verified
+  empirically; the plan's suggested `/emulation/v1/...` path doesn't exist).
+- Security-rules tests (`tests/test_rules.py`) go through the **Firestore emulator's REST API
+  with real Firebase ID tokens** (minted via custom-token + the Auth emulator's Identity Toolkit
+  exchange), the same path a browser client uses — proving `firestore.rules` enforces on its own,
+  independent of relay-side logic.
+- Tests: `relay/tests` — **164 passed**. `tools/e2e_test.py` — **4/4 scenarios PASS** against the
+  full Firestore-backed stack.
+- See Phase 2a's `PENDING_ACCOUNT: EMQX Cloud Serverless` entry above — unchanged, still open.
+
+**Done when:** commit `v2 phase 2b`. ✅
+
+---
