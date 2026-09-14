@@ -1,5 +1,5 @@
-# Phase 4 investigated disabling the walter-modem protocols this pager MVP
-# never uses (CONFIG_WALTER_MODEM_ENABLE_SOCKETS/_HTTP/_COAP/_BLUECHERRY) to
+# Disabling the walter-modem protocols this pager never uses
+# (CONFIG_WALTER_MODEM_ENABLE_SOCKETS/_HTTP/_COAP/_BLUECHERRY) to
 # reclaim RTC memory and flash. All four symbols exist, but every one of
 # them (individually and together) FAILS TO BUILD against v1.5.0 as checked
 # out here: WalterModem.cpp's _dispatchEvent() unconditionally references
@@ -10,9 +10,8 @@
 # `#if CONFIG_WALTER_MODEM_ENABLE_BLUECHERRY`. Disabling any of these four
 # options breaks the vendor library's own compilation, not just ours.
 #
-# HANDOFF.md §7.7 forbids patching the managed component, so none of these
-# are disabled here. The RTC memory pressure this was meant to relieve is
-# instead addressed by sizing modes.c's own RTC struct to fit the ~7kB the
-# library already consumes in this configuration (see modes_boot()'s
-# sizeof() log). Flagged to the orchestrator as a discrepancy between the
-# Phase 4 spec and the real v1.5.0 source - see the phase report.
+# The managed component is never patched in place (firmware/README.md), so
+# none of these are disabled here. The RTC memory pressure this was meant to
+# relieve is instead addressed by sizing modes.c's own RTC struct to fit the
+# ~7kB the library already consumes in this configuration (see
+# modes_boot()'s sizeof() log).

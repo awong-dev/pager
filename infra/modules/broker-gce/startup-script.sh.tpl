@@ -141,6 +141,6 @@ curl -sf -X POST "http://localhost:18083/api/v5/rules" \
 
 echo "=== pager broker-gce startup complete: $(date -u) ==="
 echo "NOTE: device-level MQTT credentials/ACLs (PROTOCOL.md §2) are still" \
-     "not provisioned by this script -- that gap is tracked in BUILD_LOG.md" \
-     "Phase 3 and closed by the admin API, the same as for EMQX Cloud" \
+     "not provisioned by this script -- device credentials are minted by" \
+     "the admin API and must be added here by hand, the same as for EMQX Cloud" \
      "Serverless. See infra/README.md."

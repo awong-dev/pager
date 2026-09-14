@@ -1,9 +1,8 @@
 """Runtime configuration loaded strictly from environment variables.
 
 See relay/.env.example for the documented set of variables. Nothing here has
-a real secret default -- RELAY_TOKEN and WEBHOOK_KEY default to "" so a
-misconfigured deployment fails closed (every request gets 401) rather than
-open.
+a real secret default -- WEBHOOK_KEY defaults to "" so a misconfigured
+deployment fails closed (every request gets 401) rather than open.
 """
 
 from __future__ import annotations
@@ -14,7 +13,6 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True, slots=True)
 class Settings:
-    relay_token: str
     # docs/SERVER_PLAN.md §2 decision 1 / §4.8: the relay never holds an MQTT
     # connection. Device traffic arrives via POST /webhooks/mqtt (the
     # broker's rule engine); the relay publishes /down via the broker's REST
@@ -27,7 +25,6 @@ class Settings:
     # webhook call (`X-Relay-Webhook-Key`), so nobody else can post "device
     # traffic" (§5.3).
     webhook_key: str
-    db_path: str
     # docs/SERVER_PLAN.md §5.1/§5.3: gates `POST /api/dev/token`, the
     # DEV_MODE-only custom-token mint used by the test client
     # (tools/pager_client.py) to sign in without a real email/phone flow.
@@ -45,14 +42,12 @@ class Settings:
     @classmethod
     def from_env(cls) -> Settings:
         return cls(
-            relay_token=os.environ.get("RELAY_TOKEN", ""),
             broker_api_url=os.environ.get(
                 "BROKER_API_URL", "http://localhost:18083/api/v5"
             ),
             broker_api_key=os.environ.get("BROKER_API_KEY") or None,
             broker_api_secret=os.environ.get("BROKER_API_SECRET") or None,
             webhook_key=os.environ.get("WEBHOOK_KEY", ""),
-            db_path=os.environ.get("RELAY_DB_PATH", "relay.db"),
             dev_mode=os.environ.get("DEV_MODE", "") == "1",
             google_cloud_project=os.environ.get("GOOGLE_CLOUD_PROJECT") or None,
             firestore_emulator_host=os.environ.get("FIRESTORE_EMULATOR_HOST") or None,

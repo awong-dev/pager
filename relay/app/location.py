@@ -11,13 +11,13 @@ Two independent things live here:
    its pager delivery `fulfilled`, deletes `locReqs/{deviceId}`, and posts
    one `kind='loc'` thread message per coalesced requester), **all in the
    same single transaction as the dedup marker and the fix write** (§5.6,
-   and PROTOCOL.md §13.2's "in the same transaction" taken literally: dedup
-   and fulfilment used to be two separate transactions here, which left a
-   window where a crash/timeout between them made a webhook redelivery see
-   the dedup marker already committed and silently swallow the retry,
-   leaving the `loc_req` stuck `sent` forever with no requester ever
-   notified -- `build finding, S1`). A periodic fix (`req: null`) is never a
-   thread message, per §3.2/§5.6 -- only the `locations` collection entry.
+   and PROTOCOL.md §13.2's "in the same transaction" taken literally).
+   Splitting dedup and fulfilment across two transactions leaves a window
+   where a crash or timeout between them makes a webhook redelivery see the
+   dedup marker already committed and silently swallow the retry, leaving
+   the `loc_req` stuck `sent` forever with no requester ever notified. A
+   periodic fix (`req: null`) is never a thread message, per §3.2/§5.6 --
+   only the `locations` collection entry.
 
 2. **`/locate`** (`Location.locate`, called by
    `app/routers/conversations.py`'s `POST /api/conversations/{alias}/locate`):
@@ -28,8 +28,7 @@ Two independent things live here:
    `Routing.redeliver_pager` primitive the online-edge republish and
    `/internal/tick` retries use.
 
-**Schema footnote** (flagged per this phase's brief, same convention as
-`app/routing.py`'s `originBackendKind`/`originBackendId` note): §3's table
+**Schema footnote**: §3's table
 does not list a dedup collection for `/loc` envelopes the way it lists
 `wireIds/{wireId}_{recipientUid}` for up messages. `locWireIds/{id}` below
 is the same *pattern* (a `transaction.create()`-or-`AlreadyExists` dedup
@@ -39,9 +38,9 @@ the two dedup keys are shaped differently (`wireIds` docs are keyed
 `{wireId}_{recipientUid}`; a `/loc` fix has no recipient to key against).
 This is additive to §3, not a change to it.
 
-**`loc_req` is device-targeted, not user-targeted** (per this phase's
-brief, and the reason `Location.locate` does not go through
-`app.routing.Routing.send()`): unlike an ordinary text send, which fans a
+**`loc_req` is device-targeted, not user-targeted** -- which is why
+`Location.locate` does not go through
+`app.routing.Routing.send()`. Unlike an ordinary text send, which fans a
 message out to every enabled backend of the *resolved user*
 (`app/routing.py`'s `send()`), a location request must reach exactly the
 one device being asked about -- fanning it out to the owner's other
@@ -53,9 +52,7 @@ The *inline delivery* step (`BrokerClient.publish` + attempts/error/
 `pendingDeviceIds` bookkeeping) still reuses `Routing.redeliver_pager` --
 the same primitive the online-edge republish and `/internal/tick` retries
 call -- so a `loc_req`'s delivery accounting is identical to every other
-pager delivery's, per this phase's brief ("the delivery must still go
-through `BrokerClient.publish` and update delivery/message state the same
-way other pager deliveries do").
+pager delivery's.
 """
 
 from __future__ import annotations
@@ -154,17 +151,16 @@ def ingest_loc(device_id: str, env: LocEnvelope) -> None:
     when the device answers `err:"no_fix"`/`"disabled"`, in which case there
     is nothing to add to `locations`, only a `loc_req` to resolve, if `req`
     is set) and resolving the matching `loc_req` (`_fulfil_loc_req_in_txn`
-    below), **all in one transaction** -- `build finding, S1`: dedup and
-    fulfilment used to be two separate transactions (a `run_transaction`
-    call here, then a second one in a since-removed `_fulfil_loc_req`
-    helper). If the second one ever failed after the first had already
-    committed -- a Firestore abort, a Cloud Run timeout, a crash -- the
-    webhook returned a 500, EMQX redelivered the QoS-1 `/loc` message, and
-    the dedup check on retry saw the id already recorded and silently
-    swallowed the redelivery: the fix got stored, but the `loc_req`
-    delivery stayed stuck `sent` forever (until the 15-minute derived
-    expiry) and no requester was ever notified. Folding fulfilment into the
-    same transaction as the dedup marker means both commit or neither does,
+    below), **all in one transaction**. Splitting dedup and fulfilment
+    across two transactions is not safe here: if the second failed after
+    the first had already committed -- a Firestore abort, a Cloud Run
+    timeout, a crash -- the webhook would return a 500, EMQX would redeliver
+    the QoS-1 `/loc` message, and the dedup check on retry would see the id
+    already recorded and silently swallow the redelivery. The fix would get
+    stored, but the `loc_req` delivery would stay stuck `sent` (until the
+    15-minute derived expiry) with no requester ever notified. Keeping
+    fulfilment in the same transaction as the dedup marker means both commit
+    or neither does,
     so a webhook redelivery after a partial failure retries the whole thing
     and reaches the same end state a first-try success would have. A
     periodic fix (`req: None`) that dedups clean simply updates
@@ -345,10 +341,10 @@ def _fulfil_loc_req_in_txn(
     delivery `fulfilled`, (c) add one `kind='loc'` message to *each*
     coalesced requester's thread with the device owner -- "coalesced
     requests mean potentially multiple requesters share one `loc_req`...
-    every one of them gets their own `kind='loc'` thread message" (this
-    phase's brief). Called from inside `ingest_loc`'s own transaction
-    (`build finding, S1` -- see `ingest_loc`'s docstring for why this is no
-    longer its own separate `run_transaction` call), stages only writes:
+    every one of them gets their own `kind='loc'` thread message"
+    (§5.6). Called from inside `ingest_loc`'s own transaction (see that
+    function's docstring for why it must not open its own), stages only
+    writes:
     every read it needs was already done, into `plan`, during that
     transaction's read phase."""
     transaction.delete(req_ref)
@@ -417,11 +413,8 @@ def _fulfil_loc_req_in_txn(
 def effective_loc_req_state(msg: Message, delivery_state: str) -> str:
     """PROTOCOL.md §13.4: a `loc_req` delivery still `sent` `loc_req_ttl_s()`
     after the message's `createdAt` is `expired` -- derived at read time,
-    never written anywhere. Mirrors `app/store/legacy.py`'s `LegacyMessage.
-    effective_state` for the MVP model's 24h rule; the v2 model's generic
-    (non-`loc_req`) 24h derived-expiry has no equivalent helper yet (out of
-    this phase's scope) -- this one is deliberately scoped to `loc_req`
-    only, per this phase's brief."""
+    never written anywhere. Scoped to `loc_req` only; the generic
+    (non-`loc_req`) 24h derived expiry has no equivalent helper."""
     if msg.kind != "loc_req" or delivery_state != "sent" or msg.createdAt is None:
         return delivery_state
     if _age_seconds(msg.createdAt) >= loc_req_ttl_s():
@@ -444,7 +437,7 @@ def clear_stale_loc_reqs() -> int:
     own transaction re-reads the doc fresh and makes the same freshness
     decision independently.
 
-    `build finding` (nit): filters server-side (`where('createdAt', '<',
+    Filters server-side (`where('createdAt', '<',
     cutoff)`) rather than streaming the whole collection and filtering in
     Python -- every `locReqs` doc always has `createdAt` set (it is written
     with `SERVER_TIMESTAMP` on every create/supersede in `Location.locate`,
@@ -515,7 +508,7 @@ class Location:
         ts = ts if ts is not None else int(time.time())
         req_ref = _loc_reqs().document(device.id)
         ttl = loc_req_ttl_s()
-        # `build finding` (nit): hoisted out of `_txn` so this lookup goes
+        # Hoisted out of `_txn` so this lookup goes
         # through the ordinary (non-transactional) store API rather than
         # `backends_store.list_backends`'s `.stream()` call running *inside*
         # `run_transaction`'s `fn`, which violates that helper's own
@@ -627,9 +620,9 @@ class Location:
                 # uniqueness claim, so `set()` is correct here.
                 transaction.set(req_ref, req_payload)
             else:
-                # `build finding, S2`: PROTOCOL.md §13.3 rule 5, stated
-                # normatively -- "at most one in-flight loc_req per
-                # device" -- make that an explicit precondition of this
+                # PROTOCOL.md §13.3 rule 5, stated normatively -- "at
+                # most one in-flight loc_req per device" -- is an explicit
+                # precondition of this
                 # write, the same `transaction.create()`-or-`AlreadyExists`
                 # idiom every other uniqueness invariant in this codebase
                 # uses (`wireIds`, `aliases`, this module's own
@@ -659,8 +652,8 @@ class Location:
             msg = messages_store.get_message(request_id)
             assert msg is not None
             self._routing.redeliver_pager(msg, device.id)
-            # `build finding, S3`: PROTOCOL.md §13.3 rule 5's coalescing is
-            # for an *in-flight* request, not a dead one. If that inline
+            # PROTOCOL.md §13.3 rule 5's coalescing is for an *in-flight*
+            # request, not a dead one. If that inline
             # delivery attempt just exhausted `record_delivery_attempt`'s
             # 5-attempt cap and reached 'failed' (e.g. a permanently broken
             # pager backend), leaving `locReqs/{device.id}` in place would

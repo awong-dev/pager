@@ -19,7 +19,7 @@ Swallowing those would silently lose an up-message with no republish path
 (§4.2 has no up-message republish rule), so we let it become a 500 instead
 and rely on the broker's rule engine to retry the webhook.
 
-`(build addition, phase 7)`: `POST /webhooks/twilio/sms` and
+`POST /webhooks/twilio/sms` and
 `POST /webhooks/gchat`, docs/SERVER_PLAN.md §6.4/§6.5. Same
 router-owns-auth-and-dispatch shape as `/webhooks/mqtt` above: each
 endpoint validates its own provider-specific signature/token first (a
@@ -29,17 +29,17 @@ a malformed payload" carve-out) and then dispatches into
 unit-tested verification logic, and `app/backends/resolve.py`'s
 `resolve_reply()` for the shared `@alias`/single-peer recipient rule.
 
-`(build addition, security review)`: **M2** -- the gchat handler rejects
-linking a non-DM space (`space.type != "DM"`) outright, and pins the
-linking message's `sender.name` in `gchatSpaces/{spaceId}` (`app/store/
-backends.py`'s `set_gchat_space`) so every later message in that space is
-checked against it before being treated as coming from the linked user --
-without this, any member of a linked space (not just its original 1:1 DM
-partner) could send as the linked user. **L4** -- the "unlinked number"
-info log below redacts to the last 4 digits (`_redact_phone`) rather than
-logging a full E.164 phone number.
+Two things the gchat handler does for security: it rejects linking a non-DM
+space (`space.type != "DM"`) outright, and it pins the linking message's
+`sender.name` in `gchatSpaces/{spaceId}` (`app/store/backends.py`'s
+`set_gchat_space`) so every later message in that space is checked against
+it before being treated as coming from the linked user -- without this, any
+member of a linked space (not just its original 1:1 DM partner) could send
+as the linked user. Separately, the "unlinked number" info log below
+redacts to the last 4 digits (`_redact_phone`) rather than logging a full
+E.164 phone number.
 
-`(build addition, phase 8 hardening)`: a cheap **per-IP** rate limit on
+There is also a cheap **per-IP** rate limit on
 `POST /webhooks/twilio/sms` and `POST /webhooks/gchat`, checked first, before
 any signature/JWT verification or body parsing -- both endpoints are already
 gated by a real signature/JWT check (Twilio's `X-Twilio-Signature`, Google's
@@ -91,8 +91,7 @@ def _webhook_ip_rate_limit() -> tuple[int, int]:
 
 
 def _client_ip(request: Request) -> str:
-    """`(build fix, phase 8 review)`: the per-IP key must be the *original*
-    caller's IP, not the TCP peer. Every real request to these two endpoints
+    """The per-IP key must be the *original* caller's IP, not the TCP peer. Every real request to these two endpoints
     arrives Twilio/Google -> Firebase Hosting (`web/firebase.json`'s
     `/webhooks/**` rewrite) -> Cloud Run, so `request.client.host` is
     Google's own front-end address, identical for every caller: keying on it
@@ -230,9 +229,9 @@ async def twilio_sms_webhook(request: Request) -> Response:
     uid, bid = match
 
     if len(body) > sms_twilio.SMS_BODY_MAX_CODEPOINTS:
-        # §6.4: rejected with a usage hint, never truncated -- checked here,
-        # before any `routing.send()` call, per this phase's brief ("in the
-        # inbound-webhook handler, not in deliver()").
+        # §6.4: rejected with a usage hint, never truncated -- checked
+        # here in the inbound-webhook handler, before any `routing.send()`
+        # call, rather than in `deliver()`.
         sms_client.send_sms(from_number, sms_twilio.too_long_hint(len(body)))
         return Response(status_code=200)
 
@@ -347,10 +346,10 @@ async def gchat_webhook(request: Request) -> Response:
         )
     uid, bid, linked_sender = match
     if linked_sender is not None and sender_name != linked_sender:
-        # M2: a different member of the (supposedly 1:1) space sent this --
-        # never attribute it to the linked user. `linked_sender is None` is
-        # pre-fix/legacy data with no sender pinned yet -- permissive there
-        # rather than breaking every space linked before this fix.
+        # A different member of the (supposedly 1:1) space sent this --
+        # never attribute it to the linked user. `linked_sender is None`
+        # means a space linked before senders were pinned; permissive there
+        # rather than breaking it.
         logger.warning(
             "SECURITY gchat message from sender %r in space %s does not match linked sender %r "
             "(bid=%s) -- ignored",

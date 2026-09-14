@@ -1,5 +1,4 @@
-"""Structured JSON logging for Cloud Run/Cloud Logging -- docs/SERVER_PLAN.md
-Phase 8 hardening punch list item 6.
+"""Structured JSON logging for Cloud Run/Cloud Logging.
 
 Cloud Logging's structured-log ingestion parses each stdout/stderr line as a
 JSON object and maps a top-level `severity` field

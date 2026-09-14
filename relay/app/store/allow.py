@@ -1,7 +1,7 @@
 """`allow/{fromUid}_{toUid}` -- docs/SERVER_PLAN.md §3, §5.4.
 
-Directed edges with two independent flags. `message` gates `routing.send()`
-(Phase 3); `locate` gates `/locate` and (via `devices.locatableBy`, which
+Directed edges with two independent flags. `message` gates `routing.send()`;
+`locate` gates `/locate` and (via `devices.locatableBy`, which
 this module recomputes) read access to a device's `locations` subcollection
 through `firestore.rules`.
 
@@ -90,7 +90,7 @@ def delete_edge(from_uid: str, to_uid: str) -> None:
 
 def recompute_locatable_by_for_owner(uid: str) -> None:
     """Public wrapper around `_recompute_locatable_by`, for callers outside
-    this module. `(build finding, Phase 4)`: `set_edge`/`delete_edge`/
+    this module. `set_edge`/`delete_edge`/
     `replace_all` only ever recompute `locatableBy` on devices that already
     *exist* at the moment an edge changes (`devices_store.list_devices
     (owner_uid=to_uid)`), so a device created *after* its owner's incoming

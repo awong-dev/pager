@@ -1,4 +1,4 @@
-"""`app/logging_config.py` -- docs/SERVER_PLAN.md Phase 8 hardening punch
+"""`app/logging_config.py` -- punch
 list item 6 (JSON logs with a `severity` field for Cloud Logging, plus a
 per-request correlation id). The correlation-id *middleware* itself is
 exercised end to end by `tests/test_healthz.py`'s `X-Request-Id` tests;

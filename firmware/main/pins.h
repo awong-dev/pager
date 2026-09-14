@@ -1,4 +1,4 @@
-// GPIO numbers are provisional per HANDOFF.md; this is the single source of truth
+// GPIO numbers are provisional (firmware/README.md); this is the single source of truth
 // Never hardcode a pin elsewhere.
 
 #ifndef PINS_H

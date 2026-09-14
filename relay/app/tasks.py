@@ -1,9 +1,9 @@
 """Delivery-retry task queue abstraction -- docs/SERVER_PLAN.md §5's
 `tasks.py` line ("Cloud Tasks enqueue (prod) / inline thread (dev) for
-delivery retries") and `HANDOFF_V2.md` §4's `TASKS_MODE` compose env var.
+delivery retries"), selected by the `TASKS_MODE` env var.
 
-Only `inline` mode is implemented this phase: `InlineTaskQueue.enqueue(fn,
-...)` just calls `fn()` synchronously, right now, in the caller's own
+`inline` is the mode every deployment uses today: `InlineTaskQueue.enqueue(
+fn, ...)` just calls `fn()` synchronously, right now, in the caller's own
 request/tick. There is deliberately no backoff-and-retry loop of its own
 here -- docs/SERVER_PLAN.md §5.2's "backoff 30 s ... 15 min, max 5" describes
 a *real* Cloud Tasks queue's behaviour, which does not exist locally; a task
@@ -13,10 +13,10 @@ that raises inline is logged and dropped, and the next natural trigger
 Kept behind a `TaskQueue` Protocol so a real `CloudTasksQueue` (enqueueing an
 HTTP task at `POST /internal/task`, per docs/SERVER_PLAN.md §5.1) can be
 selected by `TASKS_MODE=cloud_tasks` without changing any caller --
-`app/jobs.py`'s `tick()` is the one caller this phase has, and it only ever
-talks to this module through `build_task_queue()`.
+`app/jobs.py`'s `tick()` is the only caller, and it only ever talks to this
+module through `build_task_queue()`.
 
-**`(build addition, phase 7)` `CloudTasksQueue` and its known gap**: every
+**`CloudTasksQueue` and its known gap**: every
 `enqueue()` call site in this codebase today (`app/jobs.py`'s `tick()`,
 `app/routing.py`'s retry paths) passes an in-process Python closure --
 `lambda: routing.redeliver_pager(msg, device_id)` and similar -- because
@@ -26,11 +26,8 @@ arbitrary closure, only POST a JSON body to a URL
 (`docs/SERVER_PLAN.md`'s own `POST /internal/task`). So `CloudTasksQueue.
 enqueue()` below does **not** attempt to run or serialize `fn` -- it builds
 and creates a Cloud Tasks HTTP task carrying only `name` (the caller's own
-opaque retry-identifier string) targeting `/internal/task`, and that is as
-far as this phase's brief ("write a test that constructs the client and
-confirms it builds the correct task payload/target URL, without actually
-enqueueing anything") asks it to go. **Two things this leaves unfinished,
-flagged rather than silently assumed:**
+opaque retry-identifier string) targeting `/internal/task`. **Two things
+that leaves unfinished:**
 1. `POST /internal/task` itself does not exist yet (`app/routers/
    internal.py` only has `/tick` and `/sweep`) -- there is nowhere for the
    real Cloud Tasks dispatch to land, so `TASKS_MODE=cloud_tasks` is not
@@ -42,10 +39,9 @@ flagged rather than silently assumed:**
    load-bearing needs those call sites to enqueue a structured, replayable
    payload (e.g. `{"kind": "pager-retry", "msgId": ..., "deviceId": ...}`)
    instead of a closure -- a real (if mechanical) refactor of `app/jobs.py`
-   and `app/routing.py`'s retry call sites, out of scope for this phase's
-   narrower "add a real Cloud Tasks client, tested at construction" ask.
-`TASKS_MODE=inline` (unchanged) is unaffected by any of this and stays the
-only mode a real deployment needs until that follow-up lands.
+   and `app/routing.py`'s retry call sites.
+`TASKS_MODE=inline` is unaffected by any of this and stays the only mode a
+real deployment needs until that follow-up lands.
 """
 
 from __future__ import annotations
@@ -114,7 +110,7 @@ def build_task(name: str) -> dict:
     """The `google.cloud.tasks_v2.types.Task`-shaped dict `CloudTasksQueue.
     enqueue()` sends -- factored out so a test can assert on the exact
     payload/target URL without needing a real Cloud Tasks queue to create a
-    task against (per this phase's brief). An HTTP POST task with an OIDC
+    task against. An HTTP POST task with an OIDC
     token (docs/SERVER_PLAN.md §5.1: "`/internal/tick`, `/internal/sweep`,
     `/internal/task` ... OIDC token") -- Cloud Tasks mints and attaches the
     token itself at dispatch time from `oidc_token.service_account_email`,
@@ -166,7 +162,7 @@ class CloudTasksQueue:
 
 def build_task_queue(mode: str | None = None) -> TaskQueue:
     """`mode` defaults to the `TASKS_MODE` env var (itself defaulting to
-    `inline`, matching `relay/docker-compose.yml` / `HANDOFF_V2.md` §4)."""
+    `inline`, matching `relay/docker-compose.yml`)."""
     mode = mode or os.environ.get("TASKS_MODE", "inline")
     if mode == "inline":
         return InlineTaskQueue()

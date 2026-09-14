@@ -1,5 +1,5 @@
 """`app/store/rate_limits.py` and its call sites -- docs/SERVER_PLAN.md Phase
-8 hardening punch list item 2 (server-architect's Phase 7 review): `POST
+rate limits: `POST
 /api/me/backends` (highest priority -- can trigger a real SMS send),
 `/api/admin/*` writes (coarser, defense-in-depth), and a per-IP cap on
 `/webhooks/twilio/sms`/`/webhooks/gchat` (defense-in-depth against a flood
@@ -65,12 +65,10 @@ def test_check_and_increment_resets_after_the_window_elapses():
 
 def make_settings(**overrides: object) -> Settings:
     defaults = {
-        "relay_token": "unused",
         "broker_api_url": "http://unused.invalid/api/v5",
         "broker_api_key": None,
         "broker_api_secret": None,
         "webhook_key": "test-webhook-key",
-        "db_path": "unused.db",
         "dev_mode": True,
         "google_cloud_project": None,
         "firestore_emulator_host": None,
@@ -226,12 +224,10 @@ def _tight_webhook_ip_limit(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def make_webhook_settings(**overrides: object) -> Settings:
     defaults = {
-        "relay_token": "unused",
         "broker_api_url": "http://unused.invalid/api/v5",
         "broker_api_key": None,
         "broker_api_secret": None,
         "webhook_key": "test-webhook-key",
-        "db_path": "unused.db",
         "dev_mode": False,
         "google_cloud_project": None,
         "firestore_emulator_host": None,
@@ -287,7 +283,7 @@ def test_webhook_ip_cap_is_independent_per_endpoint_bucket(webhook_client: TestC
 
 
 def test_webhook_ip_cap_keys_on_x_forwarded_for_not_the_proxy_peer(webhook_client: TestClient):
-    """`(build fix, phase 8 review)`: every real request reaches these routes
+    """Every real request reaches these routes
     through Firebase Hosting -> Cloud Run, so `request.client.host` is one
     shared Google front-end address; keying on it would let one flooder 429
     all legitimate Twilio/Chat traffic. `_client_ip` keys on

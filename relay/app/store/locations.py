@@ -1,8 +1,8 @@
 """`devices/{deviceId}/locations/{autoId}` -- docs/SERVER_PLAN.md §3, §5.6.
 
-Ingest logic (dedup on wireId, `loc_req` fulfilment) is Phase 4; this module
-is just the collection primitive Phase 4's `location.py` will call, plus
-enough read support for the sweep (Phase 8) and admin/tests now.
+Ingest logic (dedup on wireId, `loc_req` fulfilment) lives in
+`app/location.py`; this module is just the collection primitive it calls,
+plus enough read support for the retention sweep and the admin API.
 """
 
 from __future__ import annotations

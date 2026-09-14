@@ -20,10 +20,9 @@ def build_registry(
     return {
         "pager": PagerBackend(broker),
         "webapp": WebappBackend(fcm_client),
-        # Phase 7: real Twilio adapter (docs/SERVER_PLAN.md §6.4) --
-        # replaces the Phase 5 stub (app/backends/sms_stub.py, deleted).
+        # docs/SERVER_PLAN.md §6.4.
         "sms": SmsTwilioBackend(),
-        # Phase 7: real Google Chat adapter (docs/SERVER_PLAN.md §6.5).
+        # docs/SERVER_PLAN.md §6.5.
         # `chat_client` stays `None` (-> `NullChatClient`) in dev/test,
         # same "inject the real client explicitly" pattern `fcm_client`
         # already established.

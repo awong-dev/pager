@@ -12,8 +12,8 @@
  * `POST /devices/{id}/rotate-credentials` exist). This page still offers a
  * Revoke button (calling the endpoint `POST /api/admin/devices/{id}/revoke`
  * this feature needs) so the UI matches §7.2; the resulting 404 is caught
- * and shown inline rather than pretended away. TODO(orchestrator): add that
- * route. See web/README.md.
+ * and shown inline rather than pretended away. Adding that route closes it.
+ * See web/README.md.
  */
 
 import { collection, onSnapshot } from "firebase/firestore";

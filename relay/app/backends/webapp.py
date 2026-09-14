@@ -7,7 +7,7 @@ data message to the recipient's registered tokens. FCM itself is injected
 as a small `FCMClient` protocol so tests (and dev, which has no real FCM
 credentials) can substitute a no-op/fake rather than this module reaching
 for real `firebase_admin.messaging` (docs/SERVER_PLAN.md §5.9: "FCM sends
-go through a stub `messaging` client" -- real wiring is Phase 6).
+go through a stub `messaging` client").
 
 Delivery goes `read` separately, via `POST /api/conversations/{alias}/
 messages/{id}/read` (`app/routers/conversations.py`), when the browser
@@ -49,8 +49,7 @@ class FCMClient(Protocol):
 
 class NullFCMClient:
     """Default FCM client: does nothing. Never touches real Firebase Cloud
-    Messaging -- no credentials for it are configured in dev/test, and
-    real wiring is Phase 6."""
+    Messaging -- no credentials for it are configured in dev/test."""
 
     def send_data(self, tokens: list[str], data: dict[str, str]) -> None:
         return None

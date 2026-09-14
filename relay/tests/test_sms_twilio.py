@@ -69,12 +69,10 @@ def test_verify_twilio_signature_accepts_valid_and_rejects_tampering():
 
 def make_settings(**overrides: object) -> Settings:
     defaults = {
-        "relay_token": "unused",
         "broker_api_url": "http://unused.invalid/api/v5",
         "broker_api_key": None,
         "broker_api_secret": None,
         "webhook_key": WEBHOOK_KEY,
-        "db_path": "unused.db",
         "dev_mode": False,
         "google_cloud_project": None,
         "firestore_emulator_host": None,
@@ -272,7 +270,7 @@ def test_webhook_self_addressed_reply_excludes_sms_origin_backend(client: TestCl
     to the sender's own uid (self-addressed `@alias`) must not re-queue an
     sms delivery to the backend it just arrived on, using the *real*
     `origin_backend_id` this webhook now threads through (not `None`) --
-    docs/SERVER_PLAN.md §3's `(build finding, phase 3 review)`."""
+    docs/SERVER_PLAN.md §3."""
     mom_bid = _link_sms("mom", "mom", "+15551234567")
     allow_store.set_edge("mom", "mom", message=True, locate=True)
 

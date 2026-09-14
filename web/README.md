@@ -91,20 +91,14 @@ config's `rewrites()` only matters to `next dev`.
   `uid:xxxxxxxx` and disables opening them -- use the "Open conversation by
   alias" box instead, which works from a cold start because it only needs
   the alias, not the uid.
-  **TODO(orchestrator)**: either loosen `users/{uid}`'s read rule to
-  `registered()`, or add a `GET /api/me/contacts`-shaped endpoint.
-- **SMS/Google Chat backend verification is not wired up server-side yet**
-  (`relay/app/routers/me.py` has no `POST /api/me/backends/{id}/verify`
-  route, though `docs/SERVER_PLAN.md` §5.1 lists one and the backend classes
-  already have `start_link`/`complete_link`). `/settings/backends` lets you
-  create an sms/gchat backend row and attempts the verify call; today that
-  call 404s and the page says so rather than pretending it worked.
+  The fix is either to loosen `users/{uid}`'s read rule to `registered()`,
+  or to add a `GET /api/me/contacts`-shaped endpoint.
 - **Device revoke has no relay route yet** (`relay/app/store/devices.py` has
   `revoke_device()`, but `relay/app/routers/admin.py` never mounts it --
   only create/list/delete/rotate-credentials exist). `/admin/devices`'
   Revoke button calls the endpoint this feature needs
   (`POST /api/admin/devices/{id}/revoke`) and shows the resulting 404
-  inline. **TODO(orchestrator)**: add that route.
+  inline. Adding that route closes it.
 - **The notifications "test" button is local-only.** There is no relay
   endpoint that sends a real push on demand, so it only proves permission +
   display work in this browser, not the full FCM round trip.
@@ -166,5 +160,4 @@ incognito window) to act as two different people at once where noted.
 13. **Sign out**: confirm "Sign out" returns to `/login` and that navigating
     back to `/chat` redirects to `/login` rather than showing stale data.
 
-`npm run build && npx tsc --noEmit && npm run lint` should all be clean
-before calling this phase done.
+`npm run build && npx tsc --noEmit && npm run lint` should all be clean.

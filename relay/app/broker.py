@@ -86,7 +86,7 @@ class BrokerClient:
         return False
 
     def healthcheck(self) -> bool:
-        """`(build addition, phase 8 hardening)`: `GET {base}/status` --
+        """`GET {base}/status` --
         EMQX's plain-text, unauthenticated liveness endpoint (the same one
         `tools/emqx_setup.py` polls while waiting for the broker container
         to come up, `GET {base_url}/api/v5/status`; `self._base_url` already

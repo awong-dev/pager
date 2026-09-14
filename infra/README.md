@@ -18,7 +18,7 @@ created — this whole layout is Workload Identity Federation, on purpose).
 - `gcloud` CLI, authenticated as a human with Owner (or Project Creator + Billing Account User)
   on whatever GCP org/folder the project will live in.
 - `terraform` >= 1.14 (this tree was built and validated against 1.14.9), `docker`, `node` 20+
-  (for `web/`, once Phase 6 lands), `firebase-tools` (`npx firebase-tools`, no global install
+  (for `web/`), `firebase-tools` (`npx firebase-tools`, no global install
   needed).
 - A GitHub repo (this one) with Actions enabled.
 
@@ -102,10 +102,10 @@ convenient, but make sure the values end up identical on both sides. Generate a 
 yourself (e.g. `openssl rand -hex 32`) — it just needs to match what you configure into the EMQX
 rule engine's HTTP action header in step 10.
 
-`TWILIO_ACCOUNT_SID`/`TWILIO_AUTH_TOKEN`/`TWILIO_FROM_NUMBER` are **not** needed yet — Phase 7
-hasn't landed a real Twilio adapter (see this module's own `secrets/main.tf` comment on why
-`TWILIO_AUTH_TOKEN`'s name is an unverified placeholder). Leave `enable_sms_secrets = false` in
-`terraform.tfvars` until Phase 7 lands and you've added real values for those three.
+`TWILIO_ACCOUNT_SID`/`TWILIO_AUTH_TOKEN`/`TWILIO_FROM_NUMBER` are only needed if you are enabling
+the SMS backend, which needs a real Twilio account and a registered number (see `relay/README.md`).
+Leave `enable_sms_secrets = false` in `terraform.tfvars` until you have real values for all three
+— Cloud Run refuses to create a revision that references a secret with zero versions.
 
 ## 7. Build and push the first relay image by hand
 
@@ -121,17 +121,17 @@ docker push <REGION>-docker.pkg.dev/<PROJECT_ID>/pager/relay:bootstrap
 terraform apply -var relay_image=<REGION>-docker.pkg.dev/<PROJECT_ID>/pager/relay:bootstrap
 ```
 
-This creates the Cloud Run service + the `bootstrap`/`import_sqlite` jobs + their service
+This creates the Cloud Run service + the `bootstrap` job + their service
 account and IAM roles, the Cloud Scheduler `tick`/`sweep` jobs + their OIDC caller identity, and
 the Cloud Tasks queue. Check the `relay_service_url` output — `GET <that URL>/healthz` should
 now return 200 (once a working `BROKER_API_URL` is in `terraform.tfvars`; a placeholder URL
 there just means `/healthz`'s broker-reachability check fails, not that the service is down).
 
 **Known gap, expected at this point**: `/internal/tick` and `/internal/sweep` will **401**.
-Phase 8 added real OIDC verification to `relay/app/routers/internal.py` (signature + `aud` ==
+`relay/app/routers/internal.py` does real OIDC verification (signature + `aud` ==
 `OIDC_AUDIENCE` + caller `email` in `OIDC_ALLOWED_EMAILS`), and it fails closed when those two
-env vars are unset — which they are, because `infra/modules/relay-service` does not set them
-yet. Until it does, the Scheduler `tick`/`sweep` jobs will call a route that 401s, so **no tick
+env vars are unset — which they are, because `infra/modules/relay-service` does not set them.
+Until it does, the Scheduler `tick`/`sweep` jobs will call a route that 401s, so **no tick
 retries and no retention sweep run in this deployment**. See
 `infra/modules/schedule/variables.tf`'s module docstring for the exact one-apply fix (a shared
 `custom_audiences` string for `OIDC_AUDIENCE`, and the deterministic
@@ -146,39 +146,34 @@ Read that workflow's own top-of-file comment for the exact gating mechanism firs
   - `GCP_WORKLOAD_IDENTITY_PROVIDER` = `terraform output -raw ci_deploy_workload_identity_provider` (from `infra/envs/prod`)
   - `GCP_DEPLOY_SERVICE_ACCOUNT` = `terraform output -raw ci_deploy_service_account_email`
 - Repo **variables** (same page, "Variables" tab):
-  - `GCP_PROJECT_ID`, `GCP_REGION`, `BROKER_API_URL`, `IMPORT_DATA_BUCKET_NAME` (same values as
-    `terraform.tfvars`)
+  - `GCP_PROJECT_ID`, `GCP_REGION`, `BROKER_API_URL` (same values as `terraform.tfvars`)
 
 Once both secrets exist, a push to `main` (or a manual `workflow_dispatch` run) builds the relay
 image, pushes it, runs `terraform apply` via WIF, and runs `firebase deploy --only
 hosting,firestore`. The `firebase-deploy` job additionally needs `web/` to have a working
-`npm run build` — **not true yet as of this commit** (Phase 6, `web/`, is running in parallel
-with this phase and had not landed when this runbook was written); until it does, the
-`firebase-deploy` job will fail loudly (deliberately not swallowed) even once secrets exist. That
-is an expected, temporary gap, not a bug in this workflow.
+`npm run build`. If that build breaks, the `firebase-deploy` job fails loudly rather than
+swallowing the error.
 
-Also decide where `firebase.json` lives for `firebase deploy --only hosting,firestore` to work:
-today only `relay/firebase.json` exists (emulator config + `firestore.rules`/`firestore.indexes.json`
-paths, used for local dev). Phase 6's `web/firebase.json` (per `docs/SERVER_PLAN.md` §7.1) needs
-to add the Hosting `public`/rewrite config and should keep pointing at the same
-`relay/firestore.rules`/`relay/firestore.indexes.json` (relative path) rather than duplicating
-them — confirm this when Phase 6 lands; not this phase's file to write.
+On where `firebase.json` lives: the root-level `firebase.json`/`.firebaserc` exist purely for this
+deploy step. Local dev uses `relay/firebase.json` (emulator config +
+`firestore.rules`/`firestore.indexes.json` paths) and `web/firebase.json` (a local Hosting preview)
+independently; both point at the same `relay/firestore.rules` / `relay/firestore.indexes.json`
+rather than duplicating them.
 
-## 10. EMQX Cloud Serverless console setup (the `PENDING_ACCOUNT` from `BUILD_LOG.md` Phase 2a)
+## 10. EMQX Cloud Serverless console setup (needs a real account)
 
 No Terraform provider exists for EMQX Cloud (`docs/SERVER_PLAN.md` §9.4) — this is all
 console/API work, by hand:
 
-1. Sign up at [emqx.com/cloud](https://www.emqx.com/en/cloud) (Serverless tier, free, no card
-   required as of `BUILD_LOG.md` Phase 2a's note — reverify).
-2. Create a Serverless deployment. Verify the three things Phase 2a flagged `UNVERIFIED`
-   (`SERVER_PLAN.md` D2), in order, and **stop and use `infra/modules/broker-gce` instead if any
-   fail**:
+1. Sign up at [emqx.com/cloud](https://www.emqx.com/en/cloud) (Serverless tier, free, and no card
+   was required last time this was checked — reverify).
+2. Create a Serverless deployment. Verify the three assumptions `docs/SERVER_PLAN.md` §10 D2 marks
+   **OPEN**, in order, and **stop and use `infra/modules/broker-gce` instead if any fail**:
    - Rule engine supports an HTTP action on this tier.
    - The REST publish API (`/api/v5/publish`) is available on this tier.
    - The HTTP action's timeout can be set **≥ 15 s** (a cold Cloud Run relay can take 2-4 s to
-     even start responding — `relay/emqx/`'s local dev config uses a 10 s `request_ttl`, which
-     the BUILD_LOG note already flags as too short for production).
+     even start responding — `relay/emqx/`'s local dev config uses a 10 s `request_ttl`, which is
+     too short for production).
 3. Replicate the exact rule/connector/action shape `tools/emqx_setup.py` creates locally
    (`CONNECTOR_NAME = relay_webhook`, `ACTION_NAME = relay_webhook_action`, `RULE_ID =
    pager_to_relay`, topics `pager/+/up`, `pager/+/status`, `pager/+/loc`), pointed at this
@@ -191,16 +186,13 @@ console/API work, by hand:
    `BROKER_API_KEY`/`BROKER_API_SECRET` (step 6) and put the deployment's REST API base URL into
    `terraform.tfvars`'s `broker_api_url`, then `terraform apply` again to update the Cloud Run
    service's env.
-5. Record whatever you found in step 2 back into `docs/SERVER_PLAN.md` §9.4 as a
-   `(build finding — …)` note, per `BUILD_LOG.md` Phase 2a's instruction — this file doesn't do
-   that for you.
-6. **Device credentials and ACLs are still not provisioned anywhere** — this is the gap
-   `BUILD_LOG.md` Phase 3 flagged as `(deploy blocker, tracked for Phase 9)`: `POST
+5. Record whatever you found in step 2 back into `docs/SERVER_PLAN.md` §9.4 and §10 D2 — this
+   file doesn't do that for you.
+6. **Device credentials and ACLs are not provisioned anywhere.** `POST
    /api/admin/devices` mints and returns an MQTT credential, but nothing pushes it (or
    `PROTOCOL.md` §2's three ACL rules) into the broker. If EMQX Cloud Serverless's console/API
-   exposes credential+ACL management, either use it by hand per device for now, or treat wiring
-   the admin API to push automatically as real Phase 8+ backend work (`SERVER_PLAN.md` §5.5
-   already describes the intended shape: "the relay pushes the device credential ... otherwise
+   exposes credential+ACL management, either use it by hand per device, or wire the admin API to
+   push automatically as a backend follow-up (`SERVER_PLAN.md` §5.5 describes the intended shape: "the relay pushes the device credential ... otherwise
    the admin UI shows 'add these to the broker' copy"). Until one of those exists, a device
    created via the admin API cannot actually authenticate to the broker.
 
@@ -216,26 +208,16 @@ gcloud run jobs execute pager-relay-bootstrap \
 safe to rerun. The email is passed at execution time, not baked into Terraform, so it never ends
 up in state or this repo — see `infra/modules/relay-service/main.tf`'s comment on the job.)
 
-## 12. (Optional, once) Import the MVP SQLite database
+## 12. (Optional) Custom domain
 
-```
-gsutil cp relay.db gs://<import_data_bucket_name>/relay.db
-gcloud run jobs execute pager-relay-import-sqlite --region <REGION> --project <PROJECT_ID>
-```
-
-The bucket auto-deletes objects older than 30 days (`infra/modules/relay-service/main.tf`) — this
-is meant to run once, shortly after the bucket is created, not as a standing pipeline.
-
-## 13. (Optional) Custom domain
-
-Set `custom_domain` in `terraform.tfvars` (`docs/SERVER_PLAN.md` §11 D6), `terraform apply`,
+Set `custom_domain` in `terraform.tfvars` (`docs/SERVER_PLAN.md` §10 D6), `terraform apply`,
 then follow the Firebase Hosting console's DNS verification instructions (a TXT record, then an
 A/AAAA or CNAME record) — Terraform cannot prove domain ownership on its own. `wait_dns_verification
 = true` on the `google_firebase_hosting_custom_domain` resource means the `apply` that creates it
 blocks until verification completes, so do the DNS record changes in another terminal/tab while
 it's running, not after.
 
-## 14. If EMQX Cloud Serverless doesn't pan out: the `broker-gce` fallback
+## 13. If EMQX Cloud Serverless doesn't pan out: the `broker-gce` fallback
 
 Only if step 10.2's checks failed. In `terraform.tfvars`:
 
@@ -259,9 +241,9 @@ and the one genuinely non-zero cost line (the external IPv4 address, `docs/SERVE
 Device credentials/ACLs have the same gap noted in step 10.6 — this module provisions the broker
 process, not per-device auth.
 
-## 15. Cold-start measurement (`docs/SERVER_PLAN.md` §9.3, D10) — procedure only, not performed here
+## 14. Cold-start measurement (`docs/SERVER_PLAN.md` §9.3, §10 D10) — procedure, not yet performed
 
-There is no real deployment yet as this phase was built (`HARD RULE`: no `apply` was run), so
+There is no real deployment yet (no `terraform apply` has ever been run against a real project), so
 this is written for a human to follow **after** a real deployment exists, not executed now.
 
 **What to measure**: wall-clock latency of the parent→pager path (`docs/SERVER_PLAN.md`'s
@@ -280,7 +262,7 @@ and, if the active-mode 5 s target is being missed," escalate.
 2. With `tools/pager_client.py` connected as the device (`--device-id ... connect`) and watching
    (`inbox`, or `autoack on`), send one message from the parent side
    (`tools/pager_client.py --api <relay_service_url> --as <parent alias> say <pager alias> "test"`,
-   or the equivalent web app action once Phase 6 lands) and record the wall-clock time from just
+   or the equivalent web app action) and record the wall-clock time from just
    before the `send`/`say` call to the device's `inbox` showing the down message.
 3. Cross-check against Cloud Run's own request log for that request (Cloud Logging, filtered to
    the relay service): the log's `startTime` vs. the timestamp of the *instance* starting (a

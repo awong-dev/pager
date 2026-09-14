@@ -16,17 +16,14 @@ from app.store import users as users_store
 from tests.fake_transport import FakeBrokerClient
 from tests.firebase_test_utils import auth_header, mint_id_token
 
-TOKEN = "test-token-123"
 
 
 def make_settings(**overrides: object) -> Settings:
     defaults = {
-        "relay_token": TOKEN,
         "broker_api_url": "http://unused.invalid/api/v5",
         "broker_api_key": None,
         "broker_api_secret": None,
         "webhook_key": "test-webhook-key",
-        "db_path": "unused.db",
         "dev_mode": True,
         "google_cloud_project": None,
         "firestore_emulator_host": None,

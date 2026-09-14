@@ -2,12 +2,46 @@
 
 ESP-IDF 5.x project for the Walter device (ESP32-S3 + Sequans LTE-M modem).
 
-**Status: code-complete (Phases 0-6 of `HANDOFF.md`), builds clean, never run on real hardware.**
+**Status: code-complete, builds clean, never run on real hardware.**
 Every timing/current/visual number in this codebase is either vendor-documented or an engineering
 estimate marked `PENDING_HW` — see the measurement checklists and "Residual risks" section below
 before flashing a real device. `docs/PROTOCOL.md` §12 has two still-open protocol decisions
 (broker free-tier verification, LWT/clean-session) that aren't firmware bugs but do affect what
 `net.cpp` can promise.
+
+## Hardware
+
+| Part | Role | Interface |
+|---|---|---|
+| Walter module (DPTechnics) | ESP32-S3 + Sequans GM02SP LTE-M modem + GNSS | — |
+| GDEY029T94-FT01 (SSD1680, 296×128) | E-paper display | SPI: SCK IO12, MOSI IO11, CS IO10, DC IO16, RST IO17, BUSY IO18; VCC gated by P-MOSFET on IO15 (active low) |
+| M5Stack CardKB | Keyboard | I2C 0x5F on IO8 (SDA) / IO9 (SCL), polled |
+| LIS3DH breakout | Motion wake (not implemented) | I2C 0x18, INT1 on IO2 |
+| Push button | Wake / open reply | IO1, active low, RTC GPIO |
+| LiFePO4 18650 + LFP charger | Power | VIN 3.0–5.5 V |
+
+GPIO numbers for IO1/IO2/IO11/IO12/IO15 are provisional. All of them live in `main/pins.h` so they
+can change without touching logic.
+
+## Device behaviour contract
+
+These are the project's fixed constraints. `docs/PROTOCOL.md` is authoritative for anything that
+crosses the wire; this section covers the device-local behaviour the protocol doc does not specify.
+
+- **SIM budget**: 100 MB/month data, 100 SMS/month. The device never sends SMS. It keeps one
+  persistent TLS+MQTT session and never reconnects on a timer.
+- **Power**: the device sleeps most of the day. In **sleep mode** the modem uses eDRX (target
+  20.48 s cycle) and the ESP32 light-sleeps; delivery within ~30 s is acceptable. In **active
+  mode** the modem stays connected and messages must show within 5 s.
+- **Modes**: boot in sleep mode. Enter active mode on an incoming message or a button press; leave
+  it after 10 minutes with no button or keyboard activity. The 10-minute timeout runs from mode
+  *entry*, not from the last activity. The CardKB is polled every 100 ms, and only while the reply
+  composer is open.
+- **Display refresh**: partial refresh for the message pane, with a full refresh every 20th
+  partial. 20 is this project's deliberate choice over the panel's more common "~10" guidance.
+- **Message bodies** are at most 160 characters.
+- The managed `walter-modem` component is never patched in place. Anything the vendor API cannot
+  express is either worked around in our own code or documented as a limitation.
 
 ## Dependencies
 
@@ -26,9 +60,9 @@ before flashing a real device. `docs/PROTOCOL.md` §12 has two still-open protoc
 - Full list of what to check on first hardware bring-up: the measurement checklists below (M1-M15)
   and the "Residual risks" section's cheapest-experiment column, roughly in priority order.
 
-## Phase 4 measurement checklist (all PENDING_HW)
+## Measurement checklist: network and power (all PENDING_HW)
 
-No device is attached to any session that produced this checklist. Every line below is a
+No device has been attached. Every line below is a
 number `net.cpp`/`modes.c` either assumes or logs enough to compute, but none has been
 measured. See `docs/PROTOCOL.md` §6.5, §8.2-§8.4 for the arithmetic these numbers feed.
 
@@ -47,18 +81,18 @@ Also unresolved and not measurable without hardware: whether the modem/broker si
 a 1800s MQTT keepalive, and whether the carrier's NAT tolerates a 1800s idle TCP flow
 (PROTOCOL.md §6.2).
 
-## Phase 5 measurement checklist (all PENDING_HW)
+## Measurement checklist: display and input (all PENDING_HW)
 
-Same rule as above: no device is attached to any session that produced this checklist.
+Same rule as above: no device has been attached.
 
 | # | What to measure | Why it matters |
 |---|---|---|
 | M9 | Font legibility on the actual panel | `ui.c`'s 5x7 font is hand-authored for this project (not transcribed from an external font file); it has never been rendered or photographed. Structurally correct (right glyph count/size), but on-glass legibility is completely unverified. |
 | M10 | SSD1680 `0x22` display-update-control-2 values (`0xF7` full, `0xFF` partial) | Carried forward from PROTOCOL.md §6 as "inferred, not verified from the datasheet PDF" — this firmware transcribes them unchanged and adds no independent verification. |
 | M11 | BUSY pin polarity (assumed active-high) | `ui.c`'s `disp_wait_busy()` assumes BUSY=1 means busy, a common but unconfirmed SSD1680 breakout convention for this exact panel. If wrong, every refresh will either return immediately (garbage on screen) or hit the 15s timeout and mark the display dead every boot. |
-| M12 | SSD1680 partial-refresh RAM continuity across a VCC_EN power cycle | `ui.c` deliberately keeps `PAGER_PIN_DISP_VCC_EN` enabled continuously after `ui_init()` rather than gating it off between every refresh (PROTOCOL.md §8.4's "~0 mA between refreshes" assumption), because power-cycling the panel would very likely wipe the controller's internal old/new RAM planes that partial refresh diffs against — this could not be confirmed against a datasheet in this session. Flagged as a `NEEDS HUMAN DECISION` item in the Phase 5 report; the real display-domain current is therefore higher than §8.4's "~0 mA" figure by an unquantified amount until this is measured. |
+| M12 | SSD1680 partial-refresh RAM continuity across a VCC_EN power cycle | `ui.c` deliberately keeps `PAGER_PIN_DISP_VCC_EN` enabled continuously after `ui_init()` rather than gating it off between every refresh (PROTOCOL.md §8.4's "~0 mA between refreshes" assumption), because power-cycling the panel would very likely wipe the controller's internal old/new RAM planes that partial refresh diffs against — this could not be confirmed against a datasheet. The real display-domain current is therefore higher than §8.4's "~0 mA" figure by an unquantified amount until this is measured. |
 | M13 | CardKB byte stream during real typing | Confirms `ui_poll_keys()`'s assumption (0x00=no key, printable ASCII, 0x08=backspace, 0x0D=enter, ignore >=0x80) against real hardware, and separately confirms PROTOCOL.md §9.4's own open assumption that the CardKB never emits multi-byte sequences. |
-| M14 | Partial-refresh timing per the 20-partial/1-full cadence | Confirms HANDOFF.md §5's explicit 20-partial requirement doesn't visibly ghost/degrade the panel before the scheduled full refresh, and feeds PROTOCOL.md §6.5's M7 (partial refresh must complete in <1.5s). |
+| M14 | Partial-refresh timing per the 20-partial/1-full cadence | Confirms the 20-partial cadence (see "Device behaviour contract" above) doesn't visibly ghost/degrade the panel before the scheduled full refresh, and feeds PROTOCOL.md §6.5's M7 (partial refresh must complete in <1.5s). |
 | M15 | `getVoltage()`/`AT+SQNVMON` reading vs. a multimeter across the actual battery | PROTOCOL.md §12 item 6: `net_get_battery_mv()` now publishes a real reading in `/status`'s `batt_mv`, inferred from Walter's public schematics to track `VBAT` rather than a fixed regulated rail, but never confirmed against real hardware. 5-minute check on first bring-up. |
 
 ## Build
@@ -69,9 +103,9 @@ Set up ESP-IDF, then:
 idf.py build
 ```
 
-## Residual risks (Phase 6 final review)
+## Residual risks
 
-`firmware-architect`, Phase 6, against `net.cpp` / `modes.c` / `msg.c` / `ui.c` as committed.
+A design review against `net.cpp` / `modes.c` / `msg.c` / `ui.c` as committed.
 Build verified clean on `espressif/idf:release-v5.2` (`idf.py set-target esp32s3 && idf.py build`,
 exit 0, only the vendor's own Kconfig style warning). `sizeof(pager_rtc_t)` = **928 B** from
 `build/school_pager.map` (`.rtc.data.0` under `libmain.a`), inside the 1184 B ceiling of
@@ -82,7 +116,7 @@ PROTOCOL.md §9.1; the `_Static_assert` at `modes.c:138` is present and passing.
 **Still no hardware has ever been attached.** Everything below is reasoning against source, not
 measurement. Ranked by risk to battery life and message latency.
 
-### Fixed in this review (both rebuilt clean)
+### Already fixed (both rebuilt clean)
 - `net.cpp` + `net.h` + `modes.c`: `net_modem_busy()` interlock. `_eventProcessingTask` is
   priority 4 and `modes_run()` is priority 1, so every time the MQTT event handler blocks
   (`mqttReceive()`'s AT round trip, `ui.c`'s 10 ms `disp_wait_busy()` poll) `modes_run()` is
@@ -99,7 +133,7 @@ measurement. Ranked by risk to battery life and message latency.
 registration state is not HOME/ROAMING. `run_modem_health_check()` (`modes.c:444-474`) treats that
 as "modem unresponsive" and calls `net_recover_modem()` → `WalterModem::reset()` → full re-attach
 → new ~5 kB TLS handshake. A student indoors in a dead zone therefore gets a modem hard reset
-every 10 minutes (the rate limit), each one destroying the persistent session HANDOFF.md §1
+every 10 minutes (the rate limit), each one destroying the persistent session the SIM budget
 requires us to protect. Spec for the fix: `net_check()` should report *comm* only; add a separate
 `net_is_registered()`; F4 resets only on `checkComm()` failure, and a registration loss is simply
 waited out (the modem re-attaches on its own) with a counter in `/status`. Cheapest check: no
@@ -110,9 +144,9 @@ climbing in the serial log.
 `BTN_HELD` (`modes.c:585-589`) only exits when the button is released, and `modes_run()`'s
 `skip_sleep` keeps `net_sleep()` out for as long as the FSM is not IDLE (`modes.c:704`). There is
 no tickless idle in `sdkconfig.defaults`, so that is ~40 mA continuously: a button wedged in a
-backpack flattens a 1500 mAh cell in roughly 1.5 days. (Phase 5 fixed the *worse* version of this
-— a level-triggered ext0 wake spinning `esp_light_sleep_start()` — but the held-button case is
-still a full-power loop.) It also makes the F4 health check fire every ~1.2 s instead of every
+backpack flattens a 1500 mAh cell in roughly 1.5 days. (A worse version of this — a
+level-triggered ext0 wake spinning `esp_light_sleep_start()` — is already fixed; the held-button
+case is still a full-power loop.) It also makes the F4 health check fire every ~1.2 s instead of every
 5 min, because that check counts wake cycles, not time (`modes.c:771-774`). Fix spec: add a
 `BTN_STUCK` state entered after ~5 s in `BTN_HELD`, and a `net_sleep()` variant that arms ext0 on
 level **1** (wake on release) so the device can light-sleep while the button is down.
@@ -169,7 +203,7 @@ If `ui_init()` failed or a BUSY timeout latched `s_display_dead`, `ui_render_mes
 returns immediately (`ui.c:593-595`) and `modes.c` still calls `msg_mark_shown()`. The parent is
 then told the student saw a message that was never rendered — PROTOCOL.md §4 defines `shown` as
 "after the e-paper refresh completes (BUSY deasserted), never before". Running headless is
-correct per HANDOFF.md; lying about `shown` is not. Options, none free: suppress the `shown` ack
+correct; lying about `shown` is not. Options, none free: suppress the `shown` ack
 while headless (the relay then re-publishes forever), or add a `disp` field to `/status` (a schema
 change, so it needs an owner). Decide before a parent relies on the delivered state.
 

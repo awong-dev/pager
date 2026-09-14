@@ -10,7 +10,7 @@ row. Device creation returns the generated MQTT password exactly once and
 stores only its hash (`hashlib.sha256` -- no new dependency, per
 docs/SERVER_PLAN.md §5.5).
 
-`(build addition, phase 8 hardening)`: every **write** route here (not the
+Every **write** route here (not the
 `GET`s -- reads are already the cheapest, least dangerous thing this router
 does) also carries `Depends(require_admin_write_rate_limit)`, a coarser,
 defense-in-depth sibling of `POST /api/me/backends`'s rate limit
@@ -264,7 +264,7 @@ def create_device(req: CreateDeviceRequest) -> CreateDeviceResponse:
     backends_store.create_backend(
         owner_uid, kind="pager", config={"deviceId": req.deviceId}, enabled=True
     )
-    # `(build finding, Phase 4)`: a fresh device always starts at
+    # A fresh device always starts at
     # `locatableBy: []` (`devices_store.create_device`); if the owner
     # already has incoming `locate` edges from an allow-list set up
     # *before* this device existed, this device would otherwise never pick

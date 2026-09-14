@@ -40,7 +40,7 @@ class FakeBrokerClient:
     def __init__(self, *, webhook_key: str = WEBHOOK_KEY) -> None:
         self.published: list[PublishedMessage] = []
         self.fail_publish = False
-        # `(build addition, phase 8 hardening)`: `GET /healthz`'s broker
+        # `GET /healthz`'s broker
         # check -- `test_main.py`/`test_healthz.py`'s "simulate the broker
         # being unreachable" case sets this False; every other test that
         # never touches it gets the real `BrokerClient.healthcheck()`'s

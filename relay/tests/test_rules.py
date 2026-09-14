@@ -193,12 +193,12 @@ def test_locatable_by_uid_can_read_device_and_its_locations(two_pairs):
 
 
 def test_locatable_by_uid_can_list_query_devices_and_their_locations(two_pairs):
-    """`(build finding, Phase 4)`: a Firestore *list* (collection query)
+    """A Firestore *list* (collection query)
     request evaluates `allow read` abstractly, against the query's own
     declared filters alone, before touching any real document -- unlike the
     single-document `get`s the rest of this file exercises. A bare
     `resource.data.locatableBy`/`request.auth.token.admin` field access
-    (present before this phase) throws `PERMISSION_DENIED: Property ...  is
+    throws `PERMISSION_DENIED: Property ...  is
     undefined on object` for *every* `list` query, and even the null-safe
     `.get(key, default)` fix alone still can't make a query filtered only on
     `ownerUid` succeed for a `locatableBy`-only-authorized caller (Firestore
@@ -287,14 +287,13 @@ def test_clients_cannot_write_anything(two_pairs):
 
 
 # ---------------------------------------------------------------------------
-# `(build addition, phase 8 hardening)`: default-deny on the four server-only
-# inbound-lookup collections -- docs/SERVER_PLAN.md §3's phase 7/security-
-# review bullets ("None of the three is client-readable: firestore.rules has
-# no match block for them (default-deny read) ... relay/tests/test_rules.py
-# should pin it so a future broadened rule cannot expose them", plus
-# smsVerifyCodes, added by the phase 7 security review). Pinned here, even
-# for the backend's own owner (the whole point of `smsVerifyCodes` -- H1 --
-# and `phoneIndex`'s write-on-verify-only rule (a) is that the person a claim
+# Default-deny on the four server-only
+# inbound-lookup collections -- docs/SERVER_PLAN.md §3 ("None of the three
+# is client-readable: firestore.rules has no match block for them
+# (default-deny read) ... relay/tests/test_rules.py should pin it so a future
+# broadened rule cannot expose them", plus smsVerifyCodes). Pinned here, even
+# for the backend's own owner: the whole point of `smsVerifyCodes` and of
+# `phoneIndex`'s write-on-verify-only rule is that the person a claim
 # is being verified *against* must not be able to read the verification
 # material or the routing index straight out of Firestore).
 # ---------------------------------------------------------------------------
@@ -348,10 +347,9 @@ def test_sms_verify_codes_is_default_deny(two_pairs):
     backends_store.set_sms_verify_code("bid1", "somehash", int(time.time()) + 600)
 
     # u1 is not even the backend's real owner here -- irrelevant to this
-    # rule (H1's whole point: the *claimant* being verified must never be
-    # able to read this collection at all, regardless of whose backend it
-    # names), but exercised as the "even the backend's own owner" case per
-    # this phase's brief.
+    # rule (the *claimant* being verified must never be able to read this
+    # collection at all, regardless of whose backend it names), but
+    # exercised here as the "even the backend's own owner" case.
     owner_token = mint_id_token("u1")
     resp = _get("smsVerifyCodes/bid1", owner_token)
     assert resp.status_code == 403

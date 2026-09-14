@@ -80,12 +80,11 @@ def require_admin(
 # ---------------------------------------------------------------------------
 # `/internal/*` OIDC verification -- docs/SERVER_PLAN.md §5.1, §9.2
 # ("/internal/* additionally requires a Google OIDC token from the
-# Scheduler/Tasks service account"), Phase 8 hardening punch list item 1.
+# Scheduler/Tasks service account").
 #
 # Reuses the exact `google-auth` verification primitives
 # `app/backends/gchat.py`'s `verify_chat_bearer_token` already established
-# for Google Chat's own bearer token, per this phase's brief ("reuse
-# patterns, don't reinvent") -- the shapes differ only in what's checked
+# for Google Chat's own bearer token -- the shapes differ only in what's checked
 # beyond signature+audience: Chat's token asserts a fixed issuer identity
 # (`chat@system.gserviceaccount.com`); a Scheduler/Cloud Tasks OIDC token
 # instead asserts an arbitrary caller *service account email*, checked here
@@ -113,7 +112,7 @@ def verify_internal_oidc_token(
     or `certs`, a small `{key_id: public_key_pem}` map, when injected for a
     test that signs its own JWT rather than hitting the network, the same
     substitution `verify_chat_bearer_token` accepts); (2) `aud` equals
-    `audience` (`OIDC_AUDIENCE` -- per `HANDOFF_V2.md`'s Phase 8 line and
+    `audience` (`OIDC_AUDIENCE` -- matching
     `infra/modules/schedule/main.tf`'s `oidc_token { audience =
     var.relay_service_url }`, this is the Cloud Run service's own URL, not
     the public-facing Hosting domain `PUBLIC_BASE_URL` holds -- see

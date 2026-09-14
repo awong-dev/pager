@@ -1,25 +1,14 @@
-# SERVER_PLAN.md — v2 server stack: users, backends, location, web app, Firebase + serverless GCP
+# SERVER_PLAN.md — server stack: users, backends, location, web app, Firebase + serverless GCP
 
-> **Status: plan, not yet started.** Written 2026-09-13; revised 2026-09-14 twice — first to
-> replace Cloud SQL with a Firebase store and move retention to a weekly sweep with day/week
-> intervals, then to switch that store to **Cloud Firestore** and to **remove the always-on
-> relay process** entirely. Nothing in this document is implemented. It is the brief for the next
-> set of Claude Code sessions in the same way `HANDOFF.md` was the brief for the MVP: read it
-> fully, do one phase at a time, and keep `docs/PROTOCOL.md` authoritative (any wire change edits
-> that file *first*, then code).
+> **Status: this describes what is built.** It is the design reference for everything on the server
+> side — the data model, the routing engine, the delivery backends, the web app, the test client
+> and the GCP/Terraform layout — and the record of why each piece is shaped the way it is.
 >
-> Relationship to the existing docs:
-> - `HANDOFF.md` §2 fixed the MVP architecture, including *"Relay API … runs as a single
->   long-lived process (needs a persistent MQTT connection)"*. **This plan revises that one
->   sentence** (§2, decision 1): the broker's rule engine now pushes device traffic to the relay
->   over HTTPS and the relay publishes over the broker's REST API, so the relay is a scale-to-zero
->   Cloud Run service. Everything else in `HANDOFF.md` §2 stands. The device side is untouched.
-> - `docs/PROTOCOL.md` §11 reserved `pager/{id}/loc`, the `loc` schema slot and the `system`
->   sender. §4 of this plan spends those reservations. The wire format for the device does not
->   otherwise change; the relay-side sentences in §1/§2/§4/§5.3/§6.1 about a persistent relay
->   session get a short edit (§4.8).
-> - Firmware work implied by this plan is **listed but not scheduled** (§12). The device side of
->   every new feature is exercised by the Python test client (§8) until real firmware catches up.
+> `docs/PROTOCOL.md` stays authoritative for anything the device sees: any wire change edits that
+> file *first*, then the code, and §4 below only explains the server's side of those decisions.
+>
+> Firmware work this design implies is **listed but not scheduled** (§11). The device side of every
+> feature here is exercised by the Python test client (§8) until real firmware catches up.
 
 ---
 
@@ -46,8 +35,8 @@
 | I1 | GCP deployment described in Terraform, **no always-on compute**. | §9 |
 | T1 | Python shell test client speaking MQTT, driving a full end-to-end exercise. | §8 |
 
-**Non-goals for this plan**
-- Firmware changes (listed in §12 so nobody forgets them; scheduled separately once hardware is in hand).
+**Non-goals**
+- Firmware changes (listed in §11 so nobody forgets them; scheduled separately once hardware is in hand).
 - Group chats (more than two humans in one thread). The model in §3 is pairwise; a group is a later
   additive feature and the layout does not preclude it.
 - Message content beyond text + location (no images, no attachments). The pager cannot render them.
@@ -91,13 +80,12 @@
    device publish on `pager/+/up`, `/status`, `/loc` (including broker-generated LWTs) matches a
    rule whose action is an HTTPS POST to the relay; the relay publishes `/down` through the
    broker's REST publish API. The relay therefore only runs while a request is in flight, which
-   is what makes "min instances 0" correct rather than a hack. This is the one revision to
-   `HANDOFF.md` §2. Device firmware, topics, QoS, retained flags and ACLs are unchanged.
-2. **Broker = EMQX Cloud Serverless** (already "acceptable" in `HANDOFF.md` §2) because its free
-   tier includes the rule engine with an HTTP action and the REST publish API; HiveMQ Cloud's free
+   is what makes "min instances 0" correct rather than a hack. Device firmware, topics, QoS,
+   retained flags and ACLs are unchanged by it.
+2. **Broker = EMQX Cloud Serverless**, because its free tier includes the rule engine with an HTTP action and the REST publish API; HiveMQ Cloud's free
    tier has neither. Local dev runs the open-source `emqx/emqx:5` image, which has the same rule
    engine and REST API, so the webhook path is tested end-to-end offline. Both are `UNVERIFIED`
-   items in §11 D2 until a real account is opened.
+   items in §10 D2 until a real account is opened.
 3. **The relay is the only writer to Firestore.** Clients read Firestore directly under
    read-only security rules; every write goes through the relay API, keeping the allow-list,
    dedup and ack state machine in one tested place.
@@ -112,8 +100,8 @@
    operation rather than bytes (our operations are in the low thousands per day, §9.3), it has
    real queries, and delivery state can live *inside* the message document so a thread is one
    query.
-7. **Timers become lazy or scheduled.** Anything the MVP did on a timer inside the relay is
-   either derived at read time (`expired`, like the MVP already does) or driven by a Cloud
+7. **Timers are lazy or scheduled, never in-process.** Anything that would otherwise run on a
+   timer inside the relay is either derived at read time (`expired`) or driven by a Cloud
    Scheduler tick (retry of queued publishes, weekly retention sweep).
 8. **Device addressing uses short lowercase aliases on the wire** (`from`/`to`, ≤16 chars). The
    CardKB can type `@mom hi`; a UID cannot be typed. Aliases are unique per deployment and map to
@@ -164,31 +152,29 @@ settings/meta                  {schemaVersion: 2, lastSweepAt, seqCounter}
 - One message document per (sender, recipient) pair. A device up-message with no `to` and a
   broadcast default becomes N documents sharing `wireId`; dedup is `create()` of the `wireIds`
   document inside the same transaction, which fails if it exists.
-- `(build finding, phase 3 review)` **`originBackendKind` is the origin adapter's *kind*
-  (`'pager'`/`'webapp'`/…); `originBackendId` is the specific `users/{uid}/backends/{bid}`
-  document it arrived through, or `null` when the origin has no such row.** These are two
-  different fields, not one — an earlier draft of this phase stored only a single
-  `originBackendId` field holding a *kind* string, which is unrecoverable once real per-user
-  backend rows exist for a kind a user can have more than one of. `pager`/`webapp` sends pass
-  `originBackendId: null` (a device's pager backend belongs to its owner, not necessarily the
-  sender, and webapp has no row distinct from the user), relying on `originBackendKind` alone for
-  §5.2's self-loop guard. Phase 7's SMS/gchat adapters, where one user can have two backends of
-  the same kind (two phones) and "reply back through the channel it arrived on" must name the
-  exact one, pass a real `originBackendId` — the schema already has the field, so this is not a
-  migration. This is a storage-schema clarification only; nothing here is device-visible
+- **`originBackendKind` is the origin adapter's *kind* (`'pager'`/`'webapp'`/…);
+  `originBackendId` is the specific `users/{uid}/backends/{bid}` document it arrived through, or
+  `null` when the origin has no such row.** Two fields, not one: a single field holding a *kind*
+  string is unrecoverable once real per-user backend rows exist for a kind a user can have more
+  than one of. `pager`/`webapp` sends pass `originBackendId: null` (a device's pager backend
+  belongs to its owner, not necessarily the sender, and webapp has no row distinct from the user),
+  relying on `originBackendKind` alone for §5.2's self-loop guard. The SMS and gchat adapters,
+  where one user can have two backends of the same kind (two phones) and "reply back through the
+  channel it arrived on" must name the exact one, pass a real `originBackendId`. Nothing here is
+  device-visible
   (`PROTOCOL.md` is unaffected). See `relay/app/routing.py`'s module docstring for the full
   reasoning and `relay/tests/test_routing.py` for the id-scoped-exclusion coverage.
 - `pendingDeviceIds` is what the online-edge re-publish queries (`array-contains deviceId`,
   ordered by `createdAt`, limit 10); `locReqs/{deviceId}` being a single document is what makes
   coalescing (§4.6) a transaction rather than a query.
-- `(build finding, phase 4 review)` **`locWireIds/{locId}` is `/loc`'s own dedup marker**
+- **`locWireIds/{locId}` is `/loc`'s own dedup marker**
   (`PROTOCOL.md` §13.2's "dedup on `id` … in the same transaction that stores the fix"), the same
   `transaction.create()`-or-`AlreadyExists` pattern as `wireIds`, kept separate because the two
   keys are shaped differently: a `wireIds` doc is keyed `{wireId}_{recipientUid}` (one up-message
   fans out to N recipients), while a `/loc` envelope has no recipient to key against. Additive to
-  this table; nothing device-visible. §5.7's sweep (Phase 8) must delete these alongside
+  this table; nothing device-visible. §5.7's sweep must delete these alongside
   `locations`, the way it deletes `wireIds` alongside `messages`, or the collection grows forever.
-- `(build finding, phase 7 review)` **Three inbound-lookup collections, additive to this table:**
+- **Three inbound-lookup collections, additive to this table:**
   `phoneIndex/{e164Phone}` → `{uid, bid}`, `gchatSpaces/{spaceId}` → `{uid, bid}`, and
   `gchatLinkCodes/{code}` → `{uid, bid, expiresAt}`. §6.4/§6.5 specify the *behaviour* ("map
   `From` → user by verified phone", "stores the DM `space` name") but not the mechanism; a
@@ -206,11 +192,11 @@ settings/meta                  {schemaVersion: 2, lastSweepAt, seqCounter}
   `match /{document=**} { allow write: if false }` catch-all denies writes, which is the intended
   posture — no rule edit needed, but `relay/tests/test_rules.py` should pin it so a future
   broadened rule cannot expose them. Nothing device-visible; `PROTOCOL.md` is unaffected.
-- `(build finding, phase 7 security review)` **A fourth collection, `smsVerifyCodes/{bid}` →
-  `{codeHash, expiresAt}`, added after the review above found rule (a) alone wasn't enough.** The
-  first Phase 7 pass stored the SMS verification code in `users/{uid}/backends/{bid}.config`,
-  which a user can read for their own uid — so a user claiming a phone number they don't control
-  could read the code straight out of Firestore and verify it without ever receiving the SMS.
+- **A fourth collection, `smsVerifyCodes/{bid}` → `{codeHash, expiresAt}`, because rule (a)
+  alone is not enough.** Storing the SMS verification code in
+  `users/{uid}/backends/{bid}.config` would put it somewhere a user can read for their own uid —
+  so a user claiming a phone number they don't control could read the code straight out of
+  Firestore and verify it without ever receiving the SMS.
   `smsVerifyCodes` holds the (hashed) code server-side instead, with the same default-deny
   posture as the other three lookup collections. This is *not* the same situation as
   `gchatLinkCodes`, which is correctly owner-readable (the user reads their own code to type it
@@ -237,91 +223,80 @@ settings/meta                  {schemaVersion: 2, lastSweepAt, seqCounter}
   match /{document=**}               { allow write: if false; }
   ```
   Clients never write; the `admin` claim is a Firebase custom claim.
-- **MVP import**: a one-off `python -m app.db.import_sqlite relay.db` creates a `parent` user, a
-  `student` user owning the existing device, their backends, and one document per existing message
-  with its ack history folded into `deliveries`. The SQL migration mechanism is retired;
-  `settings/meta.schemaVersion` replaces it.
+- **Schema versioning**: `settings/meta.schemaVersion`. There is no SQL-style migration
+  mechanism; a schema change is a code change plus, if it needs one, a one-off Cloud Run job.
 
 ---
 
-## 4. Wire protocol v2 — edits to `docs/PROTOCOL.md` (Phase 1 does these first)
+## 4. What the wire carries
 
-Every device-facing change is **additive** and relies on §3.1's rule that unknown fields are
-ignored. Byte budgets below are against §3.3's 640-byte hard limit, which does not move.
+`docs/PROTOCOL.md` is authoritative for every byte the device sees; this section records only why
+the server side needs each piece and what it does with it. Everything here is additive to the
+original text-only wire and relies on PROTOCOL.md §3.1's rule that unknown fields are ignored. Byte
+budgets are against §3.3's 640-byte hard limit, which does not move.
 
-### 4.1 `from` on down messages becomes the sender's alias
-Today `wire.py` accepts only `parent|student|system` (`FROM_VALUES`). Change §3.1 to: `from` is
-`^[a-z0-9][a-z0-9_-]{0,15}$` **or** `system`. **Firmware impact: none** — `msg.c` already accepts
-any 1–16 byte string and renders it verbatim (`firmware/main/msg.c:270`). The MVP `parent`
-literal remains a valid alias so the existing device thread keeps rendering.
+### 4.1 `from` is the sender's alias
+`from` is `^[a-z0-9][a-z0-9_-]{0,15}$` **or** the literal `system` (PROTOCOL.md §3.1). A deployment
+has named users rather than one parent and one student, so the alias identifies the sender.
+`msg.c` accepts any 1–16 byte string and renders it verbatim (`firmware/main/msg.c:270`), so this
+costs the firmware nothing.
 
-### 4.2 Down envelope gains optional `kind`
-`kind`: `"msg"` (default when absent) | `"loc_req"`. A `loc_req` has **no `body`**, `ack:null`,
-and `from` = requesting user's alias. The device MUST NOT `shown`/`read`-ack it, MUST NOT render
-it in the thread, and answers on `/loc` (§4.3) with `req` set to the request's `id`.
-Relay-side lifecycle: `queued → sent → fulfilled` (a `/loc` with matching `req` arrived) or
-`expired`, derived at read time, 15 min after creation. Not re-published on an online edge
-(§5.3) — a stale location request is worthless.
-*(Why a field on `/down` rather than a `/cmd` topic: §2 says the device subscribes to exactly one
-topic, and a second subscription on a metered link is the thing that rule exists to prevent.)*
-Cost: `"kind":"loc_req",` = 17 B; no body, so the worst case is far under 640 B.
-**Firmware note:** current firmware treats a bodyless down message as malformed and drops it
-without acking (§3.4). That is the correct behaviour for old firmware — the request simply expires.
+### 4.2 `kind` on the down envelope
+`kind`: `"msg"` (default when absent) | `"loc_req"` (PROTOCOL.md §3.2). A `loc_req` has no `body`,
+`ack:null`, and `from` = the requesting user's alias. The device does not ack or render it; it
+answers on `/loc` with `req` set to the request's `id`. Relay-side lifecycle:
+`queued → sent → fulfilled` (a `/loc` with matching `req` arrived) or `expired`, derived at read
+time 15 minutes after creation. Never re-published on an online edge (§5.3) — a stale location
+request is worthless.
 
-### 4.3 New topic `pager/{device_id}/loc` (device → relay), spends §11's reservation
-QoS **1** when `req` is non-null (an answer someone is waiting on), QoS **0** otherwise.
-Retained **false**. Broker ACL: device may publish it; a broker rule forwards it to the relay.
-```json
-{"v":1,"id":"l_3c9a11f0","ts":1757700000,"loc":{"lat":37.774929,"lon":-122.419416,"acc":14,"fix_ts":1757699991,"src":"gnss"},"req":"m_7f3a2b10","cached":false}
-```
-| Field | Type | Required | Meaning |
-|---|---|---|---|
-| `id` | `l_` + 8 hex | yes | Per §1 id rules; dedup key |
-| `loc` | object \| null | yes | `null` with `err` set when no fix was obtainable |
-| `loc.lat`,`loc.lon` | number, 6 dp | yes | WGS-84 |
-| `loc.acc` | int, metres | no | horizontal accuracy estimate |
-| `loc.fix_ts` | epoch s | yes | when the fix was taken (differs from `ts` when `cached`) |
-| `loc.src` | `gnss`\|`cell` | no | default `gnss` |
-| `req` | id \| null | yes | the `loc_req` this answers; `null` = periodic |
-| `cached` | bool | no (default false) | true when the device's rate limit returned the last fix |
-| `err` | `no_fix`\|`disabled` | only when `loc` is null | |
-~160 B for the example. Periodic at 15 min ≈ 96 × ~0.3 kB ≈ 29 kB/day of cellular data —
-irrelevant against §7.3's cap. **The real cost is GNSS power, not data**; that is §12's problem.
+*Why a field on `/down` rather than a `/cmd` topic:* PROTOCOL.md §2 gives the device exactly one
+subscription, and a second subscription on a metered link is the thing that rule exists to prevent.
 
-### 4.4 Up messages gain optional `to`
-`to`: alias regex as §4.1. Absent → server uses `devices.defaultToUid`, or broadcasts to every
-user the owner is allowed to message. Cost `"to":"<=16>",` = 24 B → §3.3 worst case becomes
-604 B, still under 640. Unknown or disallowed `to` → server drops the message, logs it as a
-security event, and (new) sends a `system` down message `"unknown recipient"` so the student
-gets feedback.
+Firmware that predates `kind` treats a bodyless down message as malformed and drops it without
+acking (PROTOCOL.md §3.4). That is correct for such firmware — the request simply expires.
 
-### 4.5 `/status` gains two optional ints
-`loc_period_s` (device-chosen periodic interval, `0` = off) and `loc_min_s` (device-side minimum
-gap between on-demand fixes). Display only; the server never writes them.
+### 4.3 The `pager/{device_id}/loc` topic
+Device → relay. QoS **1** when `req` is non-null (an answer someone is waiting on), QoS **0**
+otherwise; retained false. Schema and field table: PROTOCOL.md §13.2. The broker ACL lets the
+device publish it and a broker rule forwards it to the relay's webhook.
 
-### 4.6 Device-side rate limit (normative, so firmware and the test client agree)
-- A `loc_req` arriving less than `loc_min_s` (default **120 s**) after the last fix *attempt*
-  answers with the last fix, `cached:true`, immediately and without powering GNSS.
+Periodic at 15 min ≈ 96 × ~0.3 kB ≈ 29 kB/day of cellular data — irrelevant against PROTOCOL.md
+§7.3's cap. **The real cost is GNSS power, not data**; that is §11's problem.
+
+### 4.4 `to` on up messages
+Optional, same alias regex as `from`. Absent → the server uses `devices.defaultToUid`, or
+broadcasts to every user the owner is allowed to message. An unknown or disallowed `to` is dropped,
+logged as a security event, and answered with one `system` down message (`"unknown recipient"`) so
+the student gets feedback rather than silence.
+
+### 4.5 `loc_period_s` and `loc_min_s` on `/status`
+The device-chosen periodic interval (`0` = off) and the device's own minimum gap between on-demand
+fixes. **Display and diagnosis only** — the server never writes them and never assumes a default
+when they are absent.
+
+### 4.6 The location rate limit
+Normative in PROTOCOL.md §13.3 so that firmware and the test client agree. Device side:
+
+- A `loc_req` arriving less than `loc_min_s` (default **120 s**) after the last fix *attempt* is
+  answered from the last fix with `cached:true`, immediately, without powering GNSS.
 - Otherwise the device attempts a fix, bounded by **60 s**, then answers (`err:"no_fix"` on
-  timeout). At most one fix attempt is in flight; a second request during it is answered by the
-  same result.
-- Server side, mirror it: at most one in-flight `loc_req` per device (`locReqs/{deviceId}`); a
-  second recipient's request within the window **attaches to the existing one** (both requesters
-  get the answer) and a request within 60 s of a fulfilled one is answered from `locations` with
-  `cached:true`, without touching the device.
+  timeout). At most one fix attempt is in flight; a second request during it gets the same result.
 
-### 4.7 §7 data budget and §11/§12 edits
-Add a `/loc` line to §7.2/§7.3, strike the `/loc` and `loc` reservations from §11, and add a
-§12 item for the GNSS power cost (§12 of this plan). SMS budget line in §7.3 stays at "0 used":
-the SMS *backend* is server-side Twilio, not the SIM.
+The server mirrors it (§5.6): at most one in-flight `loc_req` per device (`locReqs/{deviceId}`); a
+second requester within the window **attaches to the existing request** so both get the answer, and
+a request within 60 s of a fulfilled one is answered from `locations` with `cached:true`, without
+touching the device at all.
 
-### 4.8 Relay-side transport note (no device impact)
-`PROTOCOL.md` describes the relay as an MQTT client (`relay-1`, persistent session,
-`pager/+/up` subscription, `sent` on PUBACK). Add one paragraph to §2 and adjust §1, §4, §5.3
-and §6.1: the relay's *role* is unchanged but its *transport* is the broker's rule engine
-(HTTPS push of `/up`, `/status`, `/loc`) and REST publish API. `sent` now means "the broker's
-publish API accepted the QoS 1 message", which is the same fact PUBACK reported. The §5.3
-"re-publish on online edge" is triggered by the `/status` webhook. Nothing the device sees changes.
+### 4.7 Budget lines
+PROTOCOL.md §7.2/§7.3 carry a `/loc` line, and §11 of this document tracks the GNSS power cost. The SIM's SMS budget line stays at "0 used": the SMS *backend* is server-side Twilio,
+never the modem.
+
+### 4.8 The relay is not an MQTT client
+The relay's *role* is what PROTOCOL.md describes, but its *transport* is the broker's rule engine
+(HTTPS push of `/up`, `/status`, `/loc`) and the broker's REST publish API — not a persistent MQTT
+session. `sent` means "the broker's publish API accepted the QoS 1 message", which is the same fact
+PUBACK reported. The §5.3 "re-publish on online edge" is triggered by the `/status` webhook.
+Nothing the device sees changes.
 
 ---
 
@@ -335,7 +310,6 @@ relay/app/
   main.py            app factory; mounts routers; /healthz
   config.py          Settings (env only) — grows; see relay/.env.example
   db/firestore.py    firebase-admin init (emulator-aware), typed collection helpers, txn helpers;
-                     import_sqlite.py (one-off MVP import)
   store/             users.py, devices.py, backends.py, allow.py, messages.py, locations.py, settings.py
   wire.py            + kind, to, alias regex, LocEnvelope
   broker.py          BrokerClient: publish(topic, payload, qos, retain) over the broker REST API;
@@ -352,7 +326,7 @@ relay/app/
                      internal.py (tick, sweep, task handler — OIDC-authenticated), dev.py, legacy.py
   notify/            sms.py (Twilio) — used by the sms backend and its link flow
 ```
-Gone versus the MVP: `mqtt_transport.py` (paho), the background thread, the reconnect/backoff
+Deliberately absent: `mqtt_transport.py` (paho), a background thread, the reconnect/backoff
 logic and `RELAY_KEEPALIVE_S`. `fake_transport.py` becomes a fake `BrokerClient` that records
 publishes and lets tests inject webhook payloads.
 
@@ -378,7 +352,6 @@ POST /webhooks/gchat                                   → Google-issued JWT-val
 POST /internal/tick, /internal/sweep, /internal/task   → Cloud Scheduler / Cloud Tasks; OIDC token
 GET  /healthz                                          → 200 + firestore reachable + broker API reachable
 POST /api/dev/token {uid}                              → DEV_MODE=1 only: custom token for the test client
-Legacy (bearer RELAY_TOKEN, deleted in Phase 6): POST/GET /api/devices/{id}/messages
 ```
 
 ### 5.2 Routing engine (`routing.py`)
@@ -394,7 +367,7 @@ send(sender, recipient_alias | None, kind, body, origin_backend, wire_id=None):
      and enqueues a Cloud Tasks retry (backoff 30 s … 15 min, max 5) → 'failed'
 ```
 `origin_backend` above is shorthand for the actual `(origin_backend_kind, origin_backend_id)`
-pair `(build finding, phase 3 review)` — see the `originBackendKind`/`originBackendId` bullet in
+pair — see the `originBackendKind`/`originBackendId` bullet in
 §3 for why the two are stored (and passed) separately. "Excluding origin backend" is what stops an SMS reply from being echoed back to the same phone.
 Step 3 being one transaction is what guarantees a crash never leaves a message without its
 deliveries. Inline delivery in step 4 keeps the parent→pager path at one HTTP hop plus one broker
@@ -530,7 +503,7 @@ Outbound: Messages API, `From` = the deployment's one Twilio number. Link flow: 
 map `From` → user by verified phone; resolve recipient with the rule *if the text starts with
 `@alias ` use it, else if the user has exactly one allowed peer use that, else reply with a usage
 hint by SMS*. Body limit 160 code points applies before `routing.send()`, so a long SMS is
-rejected with a hint, never truncated. **Costs and chores to flag** (§11 D3): number rental, per-
+rejected with a hint, never truncated. **Costs and chores to flag** (§10 D3): number rental, per-
 segment fees, and US A2P 10DLC / toll-free verification, which can take days and is a manual
 registration outside Terraform. (This number is for the *SMS backend*; login-code SMS is sent by
 Firebase Auth and does not need it.)
@@ -540,10 +513,10 @@ Outbound: `spaces.messages.create` with the relay's service account (Chat API en
 Terraform; the Chat app itself is configured in the console — there is no Terraform resource for
 it). Link flow: the user opens a DM with the app and sends `/link 123456`; the inbound webhook
 (`/webhooks/gchat`, Google-signed JWT verified) stores the DM `space` name in the backend config.
-Inbound messages use the same `@alias`/single-peer resolution as SMS. **Caveat to verify before
-Phase 7** (§11 D4): Chat apps require the *user* to be on a Google Workspace account; consumer
-Gmail accounts cannot add third-party Chat apps as of the last time this was checked. If the
-family is on consumer Gmail this backend is dead on arrival and Email (§6.6) should take its slot.
+Inbound messages use the same `@alias`/single-peer resolution as SMS. **Unverified prerequisite**
+(§10 D4): Chat apps require the *user* to be on a Google Workspace account; consumer Gmail accounts
+cannot add third-party Chat apps as of the last time this was checked. If the deployment is on
+consumer Gmail this backend is dead on arrival and Email (§6.6) should take its slot.
 
 ### 6.6 Later backends — what the contract already allows
 - **Email**: outbound via any SMTP or the Firebase "Trigger Email" extension; inbound needs a
@@ -559,7 +532,7 @@ family is on consumer Gmail this backend is dead on arrival and Email (§6.6) sh
 ## 7. Web app (`web/` — Next.js, React, MUI, TypeScript, Firebase JS SDK)
 
 ### 7.1 Stack and build
-- Next.js (App Router, `output: 'export'`), React, MUI (latest major at start of Phase 6; pin it
+- Next.js (App Router, `output: 'export'`), React, MUI (latest major; pin it
   in `package.json`), `@mui/icons-material`, `firebase` (auth, firestore, messaging). No state
   library beyond React context; Firestore listeners are the state. Typecheck with `tsc`, lint
   with `eslint-config-next`.
@@ -617,8 +590,8 @@ single Save.
 - iOS Safari needs the PWA installed to the home screen for push; say so on the settings page.
 
 ### 7.7 Map
-MVP for the location card: lat/lon, accuracy, age, and an "Open in Google Maps / Apple Maps"
-link. A Leaflet + OpenStreetMap tile map is an optional follow-up (§11 D9).
+The location card shows lat/lon, accuracy, age, and an "Open in Google Maps / Apple Maps"
+link. A Leaflet + OpenStreetMap tile map is an optional follow-up (§10 D9).
 
 ---
 
@@ -628,7 +601,7 @@ link. A Leaflet + OpenStreetMap tile map is an optional follow-up (§11 D9).
 the rule-engine bridge is invisible to it) and, optionally, a server driver (HTTP + Firestore), so
 one process can play "the pager" and "the parent" and an e2e run needs nothing else. stdlib `cmd`
 REPL; every command also works as a one-shot subcommand for scripting; `--json` for
-machine-readable output. Supersedes `tools/sim_device.py` (deleted in Phase 5).
+machine-readable output.
 
 **Device side (`--device-id`, `--host/--port/--username/--password`, `--tls`)**
 ```
@@ -683,7 +656,7 @@ with `DEV_MODE=1`, Twilio mock), and runs named scenarios:
    untouched; repeat with `2w` for messages; abort the sweep mid-run (small `SWEEP_BATCH`) and
    re-run to completion.
 9. `bytes`: prints the per-exchange byte counts next to PROTOCOL §7.2's figures (informational).
-Replaces `tools/e2e_test.py` in CI from Phase 5 on.
+This is what CI runs.
 
 ---
 
@@ -713,7 +686,7 @@ relay/firestore.rules, relay/firestore.indexes.json, web/firebase.json   deploye
   request timeout 300 s (the sweep is resumable, §5.7). Public ingress (Hosting rewrites and the
   broker webhook need it); `/internal/*` additionally requires a Google OIDC token from the
   Scheduler/Tasks service account; `/webhooks/mqtt` requires the shared secret. No VPC connector.
-- `google_cloud_run_v2_job` for `bootstrap` and `import_sqlite` (run once by hand).
+- `google_cloud_run_v2_job` for `bootstrap` (run once by hand).
 - `google_cloud_scheduler_job` × 2: `*/5 * * * *` → `/internal/tick`; `0 3 * * 0` (in `TZ`) →
   `/internal/sweep`. `google_cloud_tasks_queue` with max 5 attempts, min backoff 30 s.
 - `google_firestore_database` (native, `nam5` or the region nearest the family),
@@ -780,10 +753,10 @@ dominate at ≈ 60 × 50 × 0.7 kB ≈ 2 MB/day ≈ 60 MB/month, under 1 % of th
 That is 1–2 % of the request allowance and 2–4 % of the CPU allowance. **Cloud Run cost ≈ $0.**
 Cold start on the Python image is the price paid instead of dollars: expect **2–4 s** on the first
 request after an idle gap. The 5-minute tick keeps an instance warm most of the time, and the
-latency-critical parent→pager path is a single request; measure it in Phase 9 and, if the
-active-mode 5 s target is being missed, the remedies are (in order) a smaller image, a lazier
-`firebase-admin` import, and only then `min_instance_count = 1` (≈ $10–22/mo, which this plan
-was designed to avoid).
+latency-critical parent→pager path is a single request; measure it on a real deployment (§9.3) and,
+if the active-mode 5 s target is being missed, the remedies are (in order) a smaller image, a lazier
+`firebase-admin` import, and only then `min_instance_count = 1` (≈ $10–22/mo, which this design
+exists to avoid).
 
 **Monthly bill** (order of magnitude; verify against current pricing):
 
@@ -813,7 +786,7 @@ as before and pins the broker's CA. `PROTOCOL.md` §12 item 2 (free-tier session
 re-asked against EMQX's numbers: 1M session-minutes/month is ≈ 23 devices always connected, and
 QoS 1 / retained / LWT / persistent sessions are all supported.
 
-What must be true, checked in Phase 2 by opening the free account (§11 D2): rule engine with an
+What must be true, and checkable only by opening the free account (§10 D2): rule engine with an
 HTTP action on the Serverless tier; REST publish API on the Serverless tier; webhook retry
 behaviour when the relay is cold (a 2–4 s first-byte delay must not be treated as failure —
 set the action timeout ≥ 15 s). If the Serverless tier lacks any of these, the fallback is the
@@ -839,44 +812,27 @@ already carries, (b) only if the VM turns out too small for EMQX. `PROTOCOL.md` 
 
 ---
 
-## 10. Phases
+## 10. Standing choices, and what is still open
 
-Each phase ends with tests green, docs updated and a commit. Phases 6, 7 and 9 are independent of
-each other once Phase 3 is done and can run in parallel sessions. Sizes are relative.
+These were the open questions this design had to settle. Most are now settled by what is built; the
+three marked **OPEN** need a real account before they can be confirmed.
 
-| # | Phase | Size | Done when |
-|---|---|---|---|
-| 0 | **Housekeeping.** Agents (`backend-dev`, `web-dev`, `infra-dev`, `server-architect`) and this plan are already written (2026-09-14). Remaining: create branch `v2`, create `BUILD_LOG.md`, add a one-paragraph status note at the top of `HANDOFF.md` §2 pointing here for the relay-transport revision, commit. | S | Committed. |
-| 1 | **Protocol v2.** Edit `PROTOCOL.md` per §4 (new §13 "Location", edits to §2/§3/§5/§7/§11/§12, and the §4.8 relay-transport paragraph). Update `wire.py` (alias `from`, `to`, `kind`, `LocEnvelope`), `sim_device.py` to accept `kind`. | S | `test_wire.py` covers every new shape; MVP e2e still passes unchanged. |
-| 2 | **Serverless transport + Firebase foundation.** `broker.py` (REST publish, webhook verify/parse) + `ingest.py` replacing `mqtt_gateway.py`/`mqtt_transport.py`; EMQX OSS in compose with `tools/emqx_setup.py`; Firestore + Auth emulator image and compose service; `db/firestore.py`; store modules over §3; `firestore.rules` + indexes; Firebase Auth verification + admin claim + registry gate; admin API; bootstrap job; `POST /api/dev/token`; `import_sqlite.py`. Legacy endpoints keep working over the new transport. **Open the EMQX Cloud Serverless account and verify D2's three assumptions.** | L | pytest against the emulators and the fake broker: webhook auth, auth gate, admin, allow-list, rules (cross-conversation read denied), import of a seeded MVP DB; MVP e2e passes through EMQX's rule engine locally; D2 findings written into §9.4. |
-| 3 | **Routing + core backends.** `routing.py` with per-recipient transactions; `Backend` protocol; `pager` over `BrokerClient` (acks → delivery transactions, online-edge re-publish from `pendingDeviceIds`); `webapp` (FCM); conversation API; `tasks.py` inline mode + `jobs.tick`; first cut of `pager_client.py` (device + `login/say/chat/watch/tick`); `e2e_v2.py` scenarios 1–4. | L | Scenarios 1–4 pass against compose, including the "broker API down → queued → tick delivers" leg. |
-| 4 | **Location.** `/loc` ingest, `loc_req` lifecycle with `locReqs/{d}` coalescing, `/locate`, `locatableBy`, derived expiry, status fields; client `loc*` commands; scenarios 5–6. | M | Scenarios 5–6 pass; coalescing, cached and expiry paths unit-tested. |
-| 5 | **Client complete + CI switch.** Remaining client commands (`admin *`, `sweep`, `bytes`), scenarios 7–9 with the Twilio mock, `e2e_v2.py` replaces `e2e_test.py` in `ci.yml`; delete `sim_device.py`; `send.py` re-pointed at the new API. `tools/README.md`. | M | CI green on the new suite. |
-| 6 | **Web app.** `web/` per §7 on the Firebase SDK; Hosting config + rewrites; PWA + FCM; retire `relay/static/index.html` and the `RELAY_TOKEN` legacy endpoints. | L | Manual checklist in `web/README.md` walked through against the emulators; `tsc`/eslint clean in CI; scenario 2 additionally asserts an FCM send was attempted for the parent's token (stub). |
-| 7 | **SMS + Google Chat.** Adapters, link flows, webhooks with signature checks, Cloud Tasks retries for real, settings forms. | M | Fixture-based tests; a `PENDING_ACCOUNT` checklist (mirroring firmware's `PENDING_HW`) for what needs real Twilio / Workspace accounts. |
-| 8 | **Retention + hardening.** `jobs.sweep` with day/week units and resumability, settings UI, `/healthz`, structured logs, `security-review` pass over the three webhook authenticators, the auth dependency and the rules file. | M | Scenario 8; review findings closed. |
-| 9 | **Terraform + deploy.** `infra/` per §9; GitHub Actions deploy job (image → Cloud Run, `firebase deploy` for Hosting + rules + indexes); `infra/README.md` runbook (bootstrap, Blaze, secrets, EMQX console setup, first admin, custom domain); **measure cold-start latency on the parent→pager path** and record it in `PROTOCOL.md` §6.5. | M | `terraform plan` clean in CI; one real `apply` produces a reachable `/healthz`, a served web app, a working email-link login, and a message delivered to `pager_client.py` connected to EMQX Cloud. |
-
----
-
-## 11. Decisions for the human (defaults apply if nobody objects)
-
-| # | Question | Default |
+| # | Question | Where it landed |
 |---|---|---|
-| D1 | ~~Cloud Run always-on vs VM~~ **Closed** by this revision: scale-to-zero Cloud Run, ≈ $0. The VM only reappears as the broker fallback in D2. | — |
-| D2 | Broker: EMQX Cloud Serverless (free; rule engine → webhook and REST publish assumed available on that tier, **UNVERIFIED**) vs the open-source options in §9.5. | EMQX Cloud Serverless; verify in Phase 2; §9.5 (a) is the documented fallback. |
-| D3 | SMS backend provider and the US A2P 10DLC / toll-free registration (manual, days, small fee). | Twilio; start registration when Phase 7 starts, not after. |
-| D4 | Are the family's Google accounts on Workspace? If not, Google Chat apps are unavailable. | Verify before Phase 7; swap Email into the slot if not. |
-| D5 | Sign-in methods: email link only, phone only, or both? Phone needs reCAPTCHA on the login page and has a small per-SMS cost past the no-cost allowance. | Both enabled; the login page accepts either. |
-| D6 | Domain name for the web app (Hosting custom domain is free; needed for a nice address and for the broker/Chat/Twilio webhook URLs). | None assumed; the `*.web.app` URL works for everything. |
-| D7 | Retention defaults: 4 weeks messages, 1 week locations, 52-week cap, weekly sweep on Sunday 03:00 local. | As stated. |
-| D8 | Device addressing UX: `@alias` prefix typed on the CardKB vs a recipient picker on the e-paper. | Wire supports both (`to` is optional); firmware decides later. |
-| D9 | Map: link-out only, or an embedded Leaflet/OSM map? | Link-out in Phase 6; map as a follow-up. |
-| D10 | Cold-start tolerance: accept 2–4 s on the first parent→pager send after idle, or pay ≈ $10–22/mo for a warm instance? | Accept; measure in Phase 9; revisit only with a number. |
+| D1 | Cloud Run always-on vs. a VM | Scale-to-zero Cloud Run, ≈ $0. The VM reappears only as the broker fallback in §9.5. |
+| D2 | Broker: EMQX Cloud Serverless vs. the open-source options in §9.5 | EMQX Cloud Serverless. **OPEN** — the free tier's rule-engine HTTP action, REST publish and ≥15 s webhook timeout are assumed but unverified against a real account (§9.4). §9.5 (a) is the documented fallback if any of the three does not hold. |
+| D3 | SMS provider, and US A2P 10DLC / toll-free registration (manual, days, a small fee) | Twilio. **OPEN** — the number rental and 10DLC registration are real-world chores nobody has done; until then `TWILIO_*` stays unset and sms deliveries stay `queued`. |
+| D4 | Are the deployment's Google accounts on Workspace? Chat apps are unavailable on consumer Gmail. | **OPEN** — unverified against a real Workspace console. The adapter is built on the documented contract regardless; Email (§6.6) is the fallback slot if the restriction holds. |
+| D5 | Sign-in methods: email link, phone, or both | Both enabled; the login page accepts either. Phone needs reCAPTCHA and has a small per-SMS cost past the no-cost allowance. |
+| D6 | Custom domain for the web app | None assumed. The `*.web.app` URL works for everything, including the broker/Chat/Twilio webhook URLs. |
+| D7 | Retention defaults | 4 weeks messages, 1 week locations, 52-week cap, weekly sweep Sunday 03:00 local. |
+| D8 | Device addressing UX: `@alias` typed on the CardKB vs. a recipient picker on the e-paper | The wire supports both (`to` is optional); firmware decides. |
+| D9 | Map: link-out or an embedded map | Link-out. A Leaflet + OpenStreetMap tile map is an optional follow-up. |
+| D10 | Cold start: accept 2–4 s on the first parent→pager send after idle, or ≈ $10–22/mo for a warm instance | Accept it. §9.3 has the measurement procedure; revisit only with a real number. |
 
 ---
 
-## 12. Firmware follow-ups created by this plan (not scheduled here)
+## 11. Firmware follow-ups this design creates (not scheduled here)
 
 1. Parse `kind`; treat `loc_req` per §4.2 (no render, no ack, answer on `/loc`).
 2. GNSS: `walter-modem` GNSS fix API, assistance data, fix timeout, publish `/loc` per §4.3,
@@ -893,7 +849,7 @@ each other once Phase 3 is done and can run in parallel sessions. Sizes are rela
 
 ---
 
-## 13. Why the device keeps MQTT — HTTPS polling analysed
+## 12. Why the device keeps MQTT — HTTPS polling analysed
 
 Asked 2026-09-14: *if the pager spoke HTTPS directly to the relay and the broker went away, what
 would it cost in battery and mobile data?* Recorded here so the question is not re-opened without
@@ -926,7 +882,7 @@ polls (there is no URC to catch, so §8's light-sleep constraint disappears).
 | HTTPS poll every 15 min | ≈ 15.5 min | ≈ 14 MB | ≈ 27 mAh | ≈ 55 days |
 | HTTPS poll every 30 min | ≈ 30.5 min | ≈ 7 MB | ≈ 15 mAh | ≈ 100 days |
 
-Caps: SIM 100 MB/month; `HANDOFF.md` §8 definition of done < 10 MB. Active mode is worse: polling
+Caps: SIM 100 MB/month; this project's own bar is < 10 MB. Active mode is worse: polling
 every 2 s through a 10-minute window is ≈ 1.5 MB per window, ≈ 270 MB/month for six windows a day.
 
 ### 13.4 Reading the table honestly
@@ -948,7 +904,7 @@ Use the SIM plan's messaging as the wake-up: a mobile-terminated **SMS** is page
 exactly like an MQTT publish; the device then makes one HTTPS pull (or the SMS *is* the message —
 the §3.1 body limit of 160 code points fits one SMS). Latency stays ≈ 30 s, data ≈ 3 MB/month.
 Costs: an outbound SMS per message from the server side (≈ $5/month at 20 messages/day via
-Twilio), whether `walter-modem` exposes SMS receive (unverified), the `HANDOFF.md` SMS budget of
+Twilio), whether `walter-modem` exposes SMS receive (unverified), the SIM's SMS budget of
 100/month (600 would exceed it), and weaker delivery-state semantics. Kept as a documented
 alternative, not planned.
 

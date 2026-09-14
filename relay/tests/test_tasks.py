@@ -5,8 +5,8 @@ by every `app/jobs.py` test that passes `InlineTaskQueue()` explicitly; this
 file covers the mode switch itself and the new `TASKS_MODE=cloud_tasks`
 path -- construction and the exact task payload/target URL `CloudTasksQueue.
 enqueue()` would create, with the Cloud Tasks client library's own
-`create_task` call mocked at the boundary (per this phase's brief: "without
-actually enqueueing anything"). There is no real Cloud Tasks queue in this
+`create_task` call mocked at the boundary, without actually enqueueing
+anything. There is no real Cloud Tasks queue in this
 environment (or in CI) for `enqueue()` to actually reach.
 """
 

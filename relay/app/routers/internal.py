@@ -1,10 +1,7 @@
 """`/internal/tick`, `/internal/sweep` -- docs/SERVER_PLAN.md §5.1, §5.8,
 §9.2 ("Cloud Scheduler / Cloud Tasks; OIDC token").
 
-`(build addition, phase 8 hardening)`: **real OIDC verification**, closing
-the gap this router's own docstring used to flag ("No OIDC verification yet
--- that is explicitly Phase 8 hardening"). `_require_internal_caller` is the
-one gate both routes share:
+`_require_internal_caller` is the one gate both routes share:
 
 - `Settings.dev_mode` (unchanged local-dev behaviour, `DEV_MODE=1`): bypassed
   entirely, no bearer token needed -- the same "never true in a real
@@ -15,15 +12,10 @@ one gate both routes share:
 - Otherwise: a real Google-signed OIDC ID token is now a **hard
   requirement**, not optional -- `app.auth.verify_internal_oidc_token`
   (reusing `app/backends/gchat.py`'s Google-issued-JWT verification
-  primitives, per this phase's brief) checks signature, `aud` ==
-  `OIDC_AUDIENCE`, and `email` is one of `OIDC_ALLOWED_EMAILS`. A missing or
-  invalid token is now a 401 (a real auth failure, correctly surfaced),
-  **not** the previous 404 -- 404 only ever made sense as "this route
-  doesn't exist without DEV_MODE", which stops being true once these routes
-  have a real, always-reachable auth story for Cloud Scheduler to call.
+  primitives) checks signature, `aud` == `OIDC_AUDIENCE`, and `email` is one
+  of `OIDC_ALLOWED_EMAILS`. A missing or invalid token is a 401.
 
-**Config**: `OIDC_AUDIENCE` -- per `HANDOFF_V2.md`'s Phase 8 line
-("`/internal/*` OIDC verification (audience = service URL...)")) and
+**Config**: `OIDC_AUDIENCE` -- matching
 `infra/modules/schedule/main.tf`'s `oidc_token { audience =
 var.relay_service_url }`, this must be set to the Cloud Run service's own
 URL (`infra/modules/relay-service`'s `service_url` output), **not**
@@ -40,7 +32,7 @@ comma-separated list of caller service-account emails; today that's
 identity) is wired to actually call an `/internal/task` route (not yet
 built -- see `app/tasks.py`'s module docstring's "known gap").
 
-**Flagged discrepancy, not silently fixed**: as of this phase,
+**Known gap**:
 `infra/modules/relay-service/main.tf` does not set `OIDC_AUDIENCE` or
 `OIDC_ALLOWED_EMAILS` as environment variables on the Cloud Run service --
 only `infra/modules/schedule` provisions the caller identity and points its
@@ -48,7 +40,7 @@ own `oidc_token.audience` at `var.relay_service_url`. **Until that is wired,
 every Scheduler invocation of these two routes 401s** (fail-closed, by
 design) -- no tick retries and no retention sweep run in a real deployment.
 
-`(phase 8 review)`: this does **not** need a two-apply bootstrap. Feeding
+Wiring it does **not** need a two-apply bootstrap. Feeding
 the service's own computed `.uri` back into its own `env` block would indeed
 be self-referential, but the audience need not be the run.app URL at all:
 `google_cloud_run_v2_service` accepts `custom_audiences`, so one shared
@@ -60,8 +52,7 @@ the literal `"pager-scheduler"`, so the email is deterministic
 (`pager-scheduler@${project_id}.iam.gserviceaccount.com`) and can be
 computed in `envs/prod` and passed into `relay-service` directly (cleanest:
 hoist the service account into `envs/prod` and pass its email into both
-modules). `TODO(orchestrator)`: Phase 9 infra follow-up -- see
-`infra/modules/schedule/variables.tf`'s module docstring.
+modules). See `infra/modules/schedule/variables.tf`'s module docstring.
 """
 
 from __future__ import annotations

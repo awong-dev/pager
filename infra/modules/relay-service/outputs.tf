@@ -18,11 +18,3 @@ output "service_account_email" {
 output "bootstrap_job_name" {
   value = google_cloud_run_v2_job.bootstrap.name
 }
-
-output "import_sqlite_job_name" {
-  value = google_cloud_run_v2_job.import_sqlite.name
-}
-
-output "import_data_bucket_name" {
-  value = google_storage_bucket.import_data.name
-}

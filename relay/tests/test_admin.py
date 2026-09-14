@@ -17,17 +17,14 @@ from app.store import users as users_store
 from tests.fake_transport import FakeBrokerClient
 from tests.firebase_test_utils import auth_header
 
-TOKEN = "test-token-123"
 
 
 def make_settings(**overrides: object) -> Settings:
     defaults = {
-        "relay_token": TOKEN,
         "broker_api_url": "http://unused.invalid/api/v5",
         "broker_api_key": None,
         "broker_api_secret": None,
         "webhook_key": "test-webhook-key",
-        "db_path": "unused.db",
         "dev_mode": True,
         "google_cloud_project": None,
         "firestore_emulator_host": None,
@@ -182,7 +179,7 @@ def test_create_device_returns_password_once_and_stores_only_a_hash(
 def test_create_device_picks_up_locatable_by_from_a_pre_existing_allow_edge(
     client: TestClient, admin_headers: dict[str, str]
 ):
-    """`(build finding, Phase 4)`: an allow edge with `locate=True` set
+    """An allow edge with `locate=True` set
     *before* the device it names as `toAlias` exists must not be lost --
     `devices_store.create_device` always starts a fresh device at
     `locatableBy: []`, and `set_edge`/`replace_all` only ever recompute

@@ -6,17 +6,10 @@
  * one's own uid); every write goes through `/api/me/backends*`
  * (`relay/app/routers/me.py`).
  *
- * **Server-side verify flow is not live yet**: `docs/SERVER_PLAN.md` §5.1
- * lists `POST /api/me/backends/{id}/verify {code}`, but Phase 3/5 only
- * implemented the backend-CRUD routes in `relay/app/routers/me.py` --
- * `start_link`/`complete_link` exist on the backend classes
- * (`relay/app/backends/{sms_stub,webapp,pager}.py`) but nothing calls them
- * from an HTTP route. This page still lets a user *create* an sms/gchat
- * backend row (so `/admin/allowlist`-style flows and the fan-out logic have
- * something to enable), and attempts the verify call, but shows a clear
- * "not implemented server-side yet" message on the 404 that call gets today
- * rather than pretending it worked. See web/README.md's "known
- * limitations" section.
+ * An `sms` or `gchat` backend is created disabled and unverified; creating
+ * it triggers the adapter's `start_link()` (an SMS with a code, or a Google
+ * Chat link code), and the Verify dialog below posts the code back to
+ * `POST /api/me/backends/{id}/verify`, which enables the row on success.
  */
 
 import {
@@ -131,14 +124,9 @@ function BackendsInner() {
       setVerifyBackendId(null);
       setCode("");
     } catch (err) {
-      if (err instanceof ApiError && err.status === 404) {
-        setVerifyError(
-          "The verify endpoint is not implemented server-side yet (Phase 7) -- the backend row " +
-            "was created but stays unverified. See web/README.md."
-        );
-      } else {
-        setVerifyError(err instanceof ApiError ? String(err.detail ?? err.message) : "Verification failed");
-      }
+      setVerifyError(
+        err instanceof ApiError ? String(err.detail ?? err.message) : "Verification failed"
+      );
     }
   }
 
@@ -224,8 +212,8 @@ function BackendsInner() {
 
       <Box>
         <Alert severity="info">
-          SMS and Google Chat verification are not wired up server-side yet (Phase 7) -- backends
-          can be created here but will stay unverified until then. See web/README.md.
+          SMS and Google Chat backends stay disabled until you verify them. Adding one sends a
+          code; enter it with Verify to enable delivery.
         </Alert>
       </Box>
     </Stack>

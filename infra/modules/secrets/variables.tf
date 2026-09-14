@@ -4,7 +4,7 @@ variable "project_id" {
 }
 
 variable "additional_secret_ids" {
-  description = "Extra Secret Manager secret containers beyond the fixed list in main.tf, e.g. once Phase 7's real gchat/sms adapters land and need something the fixed list didn't anticipate. Empty by default."
+  description = "Extra Secret Manager secret containers beyond the fixed list in main.tf, for anything a future backend needs that the fixed list didn't anticipate. Empty by default."
   type        = list(string)
   default     = []
 }

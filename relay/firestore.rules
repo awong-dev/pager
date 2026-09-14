@@ -16,8 +16,7 @@ service cloud.firestore {
 
     function isAdmin() {
       // `.get('admin', false)`, not a bare `request.auth.token.admin`
-      // (build finding, Phase 4, same root cause as `devices/{d}`'s
-      // `locatableBy` note below): a non-admin caller's token simply has no
+      // (same root cause as `devices/{d}`'s `locatableBy` note below): a non-admin caller's token simply has no
       // `admin` claim at all (`app/auth.py`'s `_set_admin_claim` only ever
       // sets it for actual admins), and Firestore's *abstract* rule
       // pre-check for `list` (collection query) requests -- run once
@@ -26,8 +25,7 @@ service cloud.firestore {
       // bare field access instead of just treating it as falsy. Every
       // `allow read` in this file routes through `isAdmin()`, so this one
       // fix covers all of them; a bare `get` (single-document read, what
-      // every currently-passing test used before Phase 4's `list` queries)
-      // was never affected.
+      // every single-document test exercises) is unaffected either way.
       return request.auth.token.get('admin', false) == true;
     }
 
@@ -49,7 +47,7 @@ service cloud.firestore {
 
     match /devices/{d} {
       // `.get('locatableBy', [])`, not a bare `resource.data.locatableBy`
-      // (build finding, Phase 4): every `devices/{d}` document created by
+      // every `devices/{d}` document created by
       // `app/store/devices.py`'s `create_device` always sets `locatableBy`
       // explicitly, so a `get` (single-document read) never actually hits a
       // missing field. But `list` (collection query -- e.g.

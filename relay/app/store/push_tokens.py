@@ -7,8 +7,8 @@ route but does not draw this collection explicitly -- this is the minimal,
 obvious shape it implies: one doc per token (doc id = the token itself, so
 re-registering the same token from a second tab/device is naturally
 idempotent), storing just enough to drive the retention rule later
-(`errorCount`, bumped by a later phase's FCM send-failure handling; Phase 3
-only reads/writes `createdAt`/adds/removes).
+(`errorCount`, reserved for FCM send-failure handling; nothing writes it
+yet -- this module only reads/writes `createdAt` and adds/removes tokens).
 """
 
 from __future__ import annotations

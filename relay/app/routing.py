@@ -14,53 +14,44 @@ send(sender, recipient_alias | None, kind, body, origin_backend, wire_id=None):
 Two deliberate, minimal shapes not spelled out by that shorthand signature:
 
 - **`origin_backend` is split into `origin_backend_kind` (always given) and
-  `origin_backend_id` (`None` for now)** -- `(build finding, S2a)`: an
-  earlier version of this module took a single `origin_backend` string and
-  stored it verbatim as `messages/{id}.originBackendId`, which is actually a
-  backend *kind* ("pager"/"webapp"), not a specific `users/{uid}/backends/
-  {bid}` document id, contrary to what that field name and §6.1's "adapters
-  ... pass their own backend row as origin" imply. `pager` and `webapp`
-  sends have no real per-*user* backend row standing for "the channel this
-  arrived on" (a device's pager backend belongs to its *owner*, not
-  necessarily the sender; webapp has no row concept distinct from the user
-  at all), so both still pass `origin_backend_id=None`. This matters
-  starting Phase 7 (SMS/gchat): a user with two backends of the same kind
-  (two phones) needs "reply back through the channel it arrived on" to name
-  the *specific* backend, which the kind alone cannot express and which
-  would be an expensive schema migration to bolt on after the fact. The
-  plumbing (this signature, `create_message`'s matching
-  `origin_backend_kind`/`origin_backend_id` params, `messages/{id}
-  .originBackendKind`/`.originBackendId`) is in place now so Phase 7's
-  adapters can pass a real id with no migration. This is a storage-schema
-  clarification only, not a protocol change -- nothing here is
-  device-visible. See `docs/SERVER_PLAN.md` §3/§5.2 for the recorded field
-  shapes.
+  `origin_backend_id` (`None` for `pager`/`webapp`)**. §6.1's "adapters ...
+  pass their own backend row as origin" implies a specific
+  `users/{uid}/backends/{bid}` document id, but `pager` and `webapp` sends
+  have no per-*user* backend row standing for "the channel this arrived on"
+  (a device's pager backend belongs to its *owner*, not necessarily the
+  sender; webapp has no row concept distinct from the user at all), so both
+  pass `origin_backend_id=None` and only the kind is known. It matters for
+  SMS/gchat: a user with two backends of the same kind (two phones) needs
+  "reply back through the channel it arrived on" to name the *specific*
+  backend, which the kind alone cannot express. Carrying both fields
+  (`messages/{id}.originBackendKind`/`.originBackendId`) means an adapter
+  that does know its row can pass a real id. See `docs/SERVER_PLAN.md`
+  §3/§5.2 for the field shapes; nothing here is device-visible.
 
   "Excluding origin backend" (§5.2's closing paragraph) is a **self-loop
   guard**, not a blanket "never deliver this kind to this recipient" rule:
   a backend is excluded from the recipient's fan-out *only when
   `recipient_uid == sender_uid`* -- i.e. only when this particular send
   would otherwise hand the message straight back to the same channel it
-  just arrived on for the same person. Every worked example the spec and
-  this phase's brief give ("stops an SMS reply from being echoed back to
-  the same phone", "doesn't re-queue a pager delivery back to the sender's
-  own device") is phrased around "the same phone"/"the sender's own
-  device" -- i.e. the sender receiving their own message back, not a
-  *different* recipient losing a delivery of a kind they happen to share
-  with the sender. When `origin_backend_id` is given, the guard excludes by
-  that exact id (the precise fix S2a exists for -- a same-kind, different
-  *backend* sibling must never be excluded); when it is `None` (today's
-  pager/webapp callers), it falls back to the kind-based guard below.
+  just arrived on for the same person. Every worked example the spec gives
+  ("stops an SMS reply from being echoed back to the same phone", "doesn't
+  re-queue a pager delivery back to the sender's own device") is phrased
+  around "the same phone"/"the sender's own device" -- i.e. the sender
+  receiving their own message back, not a *different* recipient losing a
+  delivery of a kind they happen to share with the sender. When
+  `origin_backend_id` is given, the guard excludes by that exact id (so a
+  same-kind, different *backend* sibling is never excluded); when it is
+  `None` (the pager/webapp callers), it falls back to the kind-based guard
+  below.
 
-  This kind-based reading was chosen over a literal "exclude every
-  recipient's same-kind backend" reading after that literal reading
-  **empirically broke a Phase 3 deliverable**: a `webapp`-originated send
-  (the ordinary parent<->student case, `origin_backend_kind="webapp"`)
-  would exclude the recipient's own implicit `webapp` backend (same kind),
-  leaving the message with no `webapp` delivery entry at all -- no FCM
-  push, and `POST /api/conversations/{alias}/messages/{id}/read` (§6.3,
-  explicitly required this phase) 404s because there is nothing to mark
-  read. Since `recipient_uid` can never legitimately equal `sender_uid` in
+  This scoping matters: a literal "exclude every recipient's same-kind
+  backend" reading breaks the ordinary case. A `webapp`-originated send (the
+  ordinary parent<->student case, `origin_backend_kind="webapp"`) would
+  exclude the recipient's own implicit `webapp` backend (same kind), leaving
+  the message with no `webapp` delivery entry at all -- no FCM push, and
+  `POST /api/conversations/{alias}/messages/{id}/read` (§6.3) 404s because
+  there is nothing to mark read. Since `recipient_uid` can never
+  legitimately equal `sender_uid` in
   normal operation (alias resolution and the broadcast set both exclude the
   sender), this guard is a no-op in the common case and only bites the
   degenerate/misconfigured case (e.g. a self-referential allow edge, or a
@@ -81,8 +72,8 @@ Two deliberate, minimal shapes not spelled out by that shorthand signature:
   runs for them).
 
 Step 3's per-recipient transaction is `app/store/messages.py`'s
-`create_message`, already built by Phase 2b -- this module supplies the
-allow-list gate and the delivery/pendingDeviceIds construction around it.
+`create_message`; this module supplies the allow-list gate and the
+delivery/pendingDeviceIds construction around it.
 Step 4 (inline delivery) calls straight into `app/backends/*` through the
 kind -> Backend registry (`app/backends/registry.py`); each backend module
 owns its own delivery-state transaction (see `backends/base.py`'s
@@ -228,7 +219,7 @@ class Routing:
             return False
         # Routed through `_deliver_one` (not `backend.deliver()` directly) so
         # a retry's outcome gets the same attempts/error/failed bookkeeping
-        # (S2b) as the initial inline delivery -- otherwise a permanently
+        # as the initial inline delivery -- otherwise a permanently
         # failing pager delivery retried only through this path (tick,
         # online-edge) would never reach `failed` and would be retried
         # forever.
@@ -237,13 +228,12 @@ class Routing:
 
     def redeliver(self, msg: Message, bid: str) -> bool:
         """Generic re-invocation of *any* backend's `deliver()` for delivery
-        `bid` on `msg` -- `redeliver_pager`'s non-device-keyed sibling,
-        added this phase (5) alongside the `sms` stub backend
-        (`app/backends/sms_stub.py`) so `/internal/tick`'s retry of queued
-        non-pager deliveries (`app/jobs.py`, docs/SERVER_PLAN.md §5.2's
-        general "any failure ... enqueues a retry" rule, applied to more
-        than just `pager`) has something to call that doesn't need a device
-        id the way `redeliver_pager` does. `redeliver_pager` stays as its
+        `bid` on `msg` -- `redeliver_pager`'s non-device-keyed sibling, so
+        `/internal/tick`'s retry of queued non-pager deliveries
+        (`app/jobs.py`, docs/SERVER_PLAN.md §5.2's general "any failure ...
+        enqueues a retry" rule, applied to more than just `pager`) has
+        something to call that doesn't need a device id the way
+        `redeliver_pager` does. `redeliver_pager` stays as its
         own method rather than being rewritten in terms of this one: it is
         the hot, already-tested online-edge/`/locate` path, and its extra
         device-id lookup has no equivalent for a kind like `sms` that never
@@ -279,15 +269,15 @@ class Routing:
         # scoped to recipient_uid == sender_uid rather than a blanket
         # same-kind exclusion): in normal operation recipient_uid is never
         # sender_uid, so this never removes a legitimate delivery. When the
-        # caller knows the *specific* origin backend document (Phase 7's
-        # SMS/gchat adapters, which pass a real per-user backend id -- see
+        # caller knows the *specific* origin backend document (the SMS/gchat
+        # adapters, which pass a real per-user backend id -- see
         # this module's docstring on `origin_backend_id`), exclude by that
         # exact id instead of by kind, so a recipient who happens to share a
         # backend *kind* with the sender (e.g. two different phones) never
         # loses a legitimate delivery to this guard. Falls back to the
-        # kind-based guard when no id is given (today's only callers, pager
-        # and webapp, which have no per-user backend row for their own
-        # origin the way SMS/gchat will).
+        # kind-based guard when no id is given (pager and webapp, which have
+        # no per-user backend row for their own origin the way SMS and gchat
+        # do).
         self_loop = recipient_uid == sender_uid
         enabled = [
             b

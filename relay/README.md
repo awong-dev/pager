@@ -15,8 +15,8 @@ publishes go through the broker's REST publish API (`app/broker.py`).
 
 ```bash
 cp .env.example .env
-# Edit .env and set RELAY_TOKEN to a secure value. The other defaults
-# (BROKER_API_KEY/SECRET, WEBHOOK_KEY) already match relay/emqx/ below.
+# The defaults (BROKER_API_KEY/SECRET, WEBHOOK_KEY) already match relay/emqx/
+# below, so this runs as-is for local dev.
 docker compose up -d --build
 python3 ../tools/emqx_setup.py   # one-off: provisions EMQX's rule engine
 ```
@@ -139,10 +139,10 @@ python tools/e2e_v2.py
 are both real adapters against outside services — everything in this repo
 (tests, `tools/e2e_v2.py`, this compose stack) exercises them against a
 mock (`tools/mocks/twilio_mock.py`) or a locally-signed test JWT, never a
-real Twilio/Google account. Two `PENDING_ACCOUNT` items block a real
+real Twilio/Google account. Two account-level chores block a real
 deployment from using them:
 
-- **`PENDING_ACCOUNT: Twilio`** — a human needs to buy a phone number and
+- **Twilio** — a human needs to buy a phone number and
   complete US A2P 10DLC (or toll-free) registration before real SMS can be
   sent from this deployment. This is a manual, **days-long** review process
   run by Twilio/the carriers, separate from any code here — it cannot be
@@ -153,22 +153,19 @@ deployment from using them:
   `X-Twilio-Signature` verification matches the exact webhook URL configured
   in the Twilio console) in the real deployment's environment/Secret
   Manager, and point the Twilio console's inbound-SMS webhook at
-  `{PUBLIC_BASE_URL}/webhooks/twilio/sms`. Not started here per this
-  project's "no signups, no paid services" rule — see `BUILD_LOG.md`'s
-  Phase 7 entry.
-- **`PENDING_ACCOUNT: Google Chat`** — docs/SERVER_PLAN.md §11 D4's caveat,
-  still **not verified**: Google Chat apps can only be installed by accounts
-  on **Google Workspace**, not consumer Gmail. If the family's Google
+  `{PUBLIC_BASE_URL}/webhooks/twilio/sms`. None of this has been done.
+- **Google Chat** — docs/SERVER_PLAN.md §10 D4's prerequisite, still
+  **unverified**: Google Chat apps can only be installed by accounts
+  on **Google Workspace**, not consumer Gmail. If the deployment's Google
   accounts are consumer Gmail, this backend is dead on arrival and Email
   (§6.6, not built) is the documented fallback slot. A human needs to (1)
-  confirm the family's account type, (2) if Workspace, create a Chat app in
+  confirm the account type, (2) if Workspace, create a Chat app in
   the Google Cloud console (Chat API → Configuration), note its **project
   number** as `GCHAT_AUDIENCE`, and point its webhook URL at
   `{PUBLIC_BASE_URL}/webhooks/gchat`, and (3) grant the relay's own service
   account (already provisioned by `infra/`, ADC — no separate secret) the
   `chat.bot` scope / "Chat Bot" role so `spaces.messages.create` outbound
-  sends work. Not started here for the same reason as the Twilio item
-  above.
+  sends work. None of this has been done either.
 
 ## CLI Tools
 

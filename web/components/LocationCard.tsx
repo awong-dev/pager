@@ -8,8 +8,8 @@ import RoomIcon from "@mui/icons-material/Room";
 import { formatRelativeAge } from "@/lib/time";
 
 /** A location fix rendered as lat/lon + accuracy + age + "open in maps"
- * links -- docs/SERVER_PLAN.md §7.7: "MVP for the location card ... an
- * 'Open in Google Maps / Apple Maps' link" (no embedded map this phase). */
+ * links -- docs/SERVER_PLAN.md §7.7: lat/lon, accuracy, age and an
+ * "Open in Google Maps / Apple Maps" link. No embedded map. */
 export default function LocationCard({
   lat,
   lon,

@@ -103,8 +103,7 @@ def create_user(
     # at creation." Not part of the uid/alias transaction above (a backend
     # doc failing to write must not roll back a user that's otherwise fine
     # -- app/routers/me.py's backend listing is written to tolerate its
-    # absence too, matching import_sqlite.py's existing non-transactional
-    # pattern for the same backend).
+    # absence too).
     backends_store.create_backend(uid, kind="webapp", config={}, enabled=True)
 
     fetched = get_user(uid)

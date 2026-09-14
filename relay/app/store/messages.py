@@ -1,7 +1,7 @@
 """`messages/{id}`, `wireIds/{wireId}_{recipientUid}`, `conversations/{convKey}`
 -- docs/SERVER_PLAN.md §3, §5.2.
 
-This module builds the two transactional invariants Phase 3's `routing.py`
+This module builds the two transactional invariants `app/routing.py`
 depends on:
 
 1. **`wireIds` dedup.** A device up-message with no `to` fans out into one
@@ -20,9 +20,9 @@ depends on:
    could otherwise race.
 
 Full routing (allow-list checks, fan-out to enabled backends, adapter
-delivery) is Phase 3; this module only owns the document shapes and the two
-invariants above, plus enough read/update surface for admin and the import
-script.
+delivery) lives in `app/routing.py`; this module only owns the document
+shapes and the two invariants above, plus enough read/update surface for the
+admin API.
 """
 
 from __future__ import annotations
@@ -54,10 +54,9 @@ PREVIEW_MAX_CHARS = 120
 # 'failed' with attempts+1 ... max 5 -> failed".
 MAX_DELIVERY_ATTEMPTS = 5
 # PROTOCOL.md §4: a down message still 'queued'/'sent' 24h after creation is
-# `expired` (derived at read time -- the same rule `app/store/legacy.py`
-# applies). Used here only to bound the online-edge republish / tick
-# candidate queries so a years-old unacked message can't be republished
-# forever; it does not itself write an 'expired' state anywhere.
+# `expired`, derived at read time. Used here only to bound the online-edge
+# republish / tick candidate queries so a years-old unacked message can't be
+# republished forever; it does not itself write an 'expired' state anywhere.
 EXPIRY_SECONDS = 24 * 60 * 60
 
 
@@ -138,19 +137,12 @@ def create_message(
     origin_backend_id: str | None = None,
     deliveries: dict[str, dict] | None = None,
     pending_device_ids: list[str] | None = None,
-    msg_id: str | None = None,
-    created_at: object = SERVER_TIMESTAMP,
 ) -> Message | None:
     """One transaction: dedup on `wireId` (if given), increment
     `settings/meta.seqCounter`, create the message, upsert the conversation
     summary. Returns `None` if `wire_id` was already recorded for this
-    recipient (dedup fired, no document created).
-
-    `msg_id`/`created_at` are override hooks for `app/db/import_sqlite.py`
-    only (it needs to preserve the MVP's original message ids and
-    timestamps); routing.py callers should never pass them and get a fresh
-    id + `SERVER_TIMESTAMP` by default."""
-    msg_id = msg_id or new_id("m_")
+    recipient (dedup fired, no document created)."""
+    msg_id = new_id("m_")
     key = conv_key(sender_uid, recipient_uid)
     uids = sorted([sender_uid, recipient_uid])
     msg_ref = _messages().document(msg_id)
@@ -172,14 +164,14 @@ def create_message(
         if wire_ref is not None:
             # Dedup: raises AlreadyExists (not retried -- that's a real
             # conflict, not transaction contention) if this (wireId,
-            # recipient) pair was already delivered. `createdAt` (Phase 6
-            # M1 fix, build review) lets `app/jobs.py`'s `sweep()` reclaim
-            # this doc on its own schedule rather than only ever as a
-            # side effect of its parent message's delete -- once a future
-            # user-deletion pass (§5.7: "deleting a user removes every
-            # document keyed by their UID") deletes the message directly,
-            # this doc would otherwise be orphaned forever (it carries no
-            # other path back to a `messages` doc once that doc is gone).
+            # recipient) pair was already delivered. `createdAt` lets
+            # `app/jobs.py`'s `sweep()` reclaim this doc on its own schedule
+            # rather than only ever as a side effect of its parent message's
+            # delete -- once a future user-deletion pass (§5.7: "deleting a
+            # user removes every document keyed by their UID") deletes the
+            # message directly, this doc would otherwise be orphaned forever
+            # (it carries no other path back to a `messages` doc once that
+            # doc is gone).
             transaction.create(wire_ref, {"messageId": msg_id, "createdAt": SERVER_TIMESTAMP})
 
         seq = ((meta_snap.get("seqCounter") if meta_snap.exists else 0) or 0) + 1
@@ -205,7 +197,7 @@ def create_message(
                 "originBackendKind": origin_backend_kind,
                 "originBackendId": origin_backend_id,
                 "ts": ts,
-                "createdAt": created_at,
+                "createdAt": SERVER_TIMESTAMP,
                 "deliveries": deliveries or {},
                 "pendingDeviceIds": pending_device_ids or [],
             },
@@ -283,8 +275,7 @@ def list_pending_for_device(
     caller to `state == 'queued'` deliveries only, `/internal/tick`'s retry
     query (§5.8 item 1): `pendingDeviceIds array-contains deviceId`, oldest
     first, capped. `max_age_s` (default 24h, PROTOCOL.md §4) bounds it to
-    non-expired candidates the same way `app/store/legacy.py`'s republish
-    query does; pass `None` to disable the bound."""
+    non-expired candidates; pass `None` to disable the bound."""
     query = _messages().where(filter=FieldFilter("pendingDeviceIds", "array_contains", device_id))
     if max_age_s is not None:
         cutoff = datetime.fromtimestamp(time.time() - max_age_s, tz=UTC)
@@ -299,30 +290,30 @@ def list_pending_for_device(
 def list_recent_queued_by_kind(
     kind: str, *, limit: int = 50, max_age_s: int = EXPIRY_SECONDS
 ) -> list[Message]:
-    """`(build addition, phase 5)`: every message created within
-    `max_age_s` (default 24h, same bound `list_pending_for_device` uses)
-    with at least one `kind`-backend delivery still `queued`, *oldest*
-    `limit` candidates by `createdAt` (ascending -- the same "oldest first"
-    ordering docs/SERVER_PLAN.md §5.8 item 1 specifies for the pager
-    retry). `(review note, phase 5)` the `kind`/`queued` filter runs in
-    Python *after* the `limit`, so a deployment producing more than `limit`
-    messages inside `max_age_s` can leave newer queued deliveries unvisited
-    until the older candidates drain (they drain fast: `attempts` reaches
-    `MAX_DELIVERY_ATTEMPTS` -> `failed` within a few ticks). Acceptable at
-    this project's volume (§9.3); the real fix is Phase 7/8's
-    enqueue-at-send-time Cloud Tasks retry, which needs no scan at all.
-    Unlike `list_pending_for_device`
-    (which queries the indexed `pendingDeviceIds array-contains` field),
-    there is no equivalent indexed array field for "some backend of kind X
-    is still queued" for a generic, non-`pager` kind -- `pendingDeviceIds`
-    is deliberately device-id-keyed, per `app/routing.py`'s "device default"
-    handling, and adding a parallel generic array field is a real schema
-    change docs/SERVER_PLAN.md does not call for. So this filters in Python
-    over a bounded, already-indexed `createdAt` scan (`messages(createdAt)`,
-    the same index the retention sweep uses) instead -- correct, and cheap
-    at this project's household message volume (§9.3), if not as tight as a
-    purpose-built index. Used by `app/jobs.py`'s `tick()` to retry queued
-    non-pager deliveries (today just `sms`, `app/backends/sms_stub.py`)."""
+    """Every message created within `max_age_s` (default 24h, the same bound
+    `list_pending_for_device` uses) with at least one `kind`-backend delivery
+    still `queued`, *oldest* `limit` candidates by `createdAt` (ascending --
+    the same "oldest first" ordering docs/SERVER_PLAN.md §5.8 item 1
+    specifies for the pager retry). Used by `app/jobs.py`'s `tick()` to retry
+    queued non-pager deliveries (today just `sms`).
+
+    Two caveats worth knowing before relying on this at higher volume:
+
+    - The `kind`/`queued` filter runs in Python *after* the `limit`, so a
+      deployment producing more than `limit` messages inside `max_age_s` can
+      leave newer queued deliveries unvisited until the older candidates
+      drain (they drain fast: `attempts` reaches `MAX_DELIVERY_ATTEMPTS` ->
+      `failed` within a few ticks). The real fix is an enqueue-at-send-time
+      Cloud Tasks retry, which needs no scan at all.
+    - Unlike `list_pending_for_device` (which queries the indexed
+      `pendingDeviceIds array-contains` field), there is no equivalent
+      indexed array field for "some backend of kind X is still queued" for a
+      generic, non-`pager` kind -- `pendingDeviceIds` is deliberately
+      device-id-keyed, per `app/routing.py`'s "device default" handling. So
+      this filters in Python over a bounded, already-indexed `createdAt` scan
+      (`messages(createdAt)`, the same index the retention sweep uses)
+      instead -- correct, and cheap at this project's household message
+      volume (§9.3), if not as tight as a purpose-built index."""
     cutoff = datetime.fromtimestamp(time.time() - max_age_s, tz=UTC)
     query = (
         _messages()
@@ -376,8 +367,7 @@ def find_delivery_by_kind(msg: Message, kind: str) -> str | None:
 def mark_delivery_sent_if_queued(msg_id: str, backend_id: str) -> None:
     """`queued` -> `sent`, and *only* `queued` -> `sent` -- transactional
     read-then-write so a concurrent ack landing between the two can never be
-    walked backwards (PROTOCOL.md §4.1 rule 2), mirroring
-    `app/store/legacy.py`'s `mark_sent`."""
+    walked backwards (PROTOCOL.md §4.1 rule 2)."""
     ref = _messages().document(msg_id)
 
     def _txn(transaction: Transaction) -> None:
@@ -401,7 +391,7 @@ def apply_delivery_ack(
     clear_unread_uid: str | None = None,
 ) -> AckResult:
     """The monotonic ack state machine (PROTOCOL.md §4.1 rules 1-3), scoped
-    to one backend's entry in `deliveries` rather than a whole legacy row:
+    to one backend's entry in `deliveries`:
     idempotent on a state already reached, `read` without a prior `shown`
     back-fills `shownTs`, and (on either transition, when `device_id` is
     given) clears it from `pendingDeviceIds` in the same transaction since
@@ -410,17 +400,15 @@ def apply_delivery_ack(
     `app/routers/conversations.py`, passes `None` -- webapp deliveries never
     populate `pendingDeviceIds` in the first place).
 
-    `clear_unread_uid` (S3a `build finding`): when given and this call
-    actually applies a `read` transition (not a `shown` ack, and not a
-    no-op on a message already `read`), zeroes
-    `conversations/{convKey}.unread[clear_unread_uid]` in the *same*
-    transaction as the ack. Without this, `unread` -- incremented on every
-    `create_message` (see that function) -- only ever grew, since nothing
-    cleared it when the recipient actually read a thread.
+    `clear_unread_uid`: when given and this call actually applies a `read`
+    transition (not a `shown` ack, and not a no-op on a message already
+    `read`), zeroes `conversations/{convKey}.unread[clear_unread_uid]` in the
+    *same* transaction as the ack. Without this, `unread` -- incremented on
+    every `create_message` (see that function) -- would only ever grow, since
+    nothing else clears it when the recipient actually reads a thread.
     `app/routers/conversations.py`'s `mark_read` is the only caller that
     passes it (the webapp read-receipt path); `app/ingest.py`'s pager-ack
-    caller leaves it `None`, matching this phase's brief scoping the fix to
-    the webapp mark-read handler."""
+    caller leaves it `None`."""
     ref = _messages().document(msg_id)
 
     def _txn(transaction: Transaction) -> AckResult:

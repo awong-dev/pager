@@ -1,5 +1,5 @@
 """`GET /healthz` -- docs/SERVER_PLAN.md §5.1: "200 + firestore reachable +
-broker API reachable". `(build addition, phase 8 hardening)`: this used to
+broker API reachable".
 check Firestore only; see `app/main.py`'s module-level comment on `healthz`
 for why broker reachability is now also checked, per the doc."""
 
@@ -17,12 +17,10 @@ from tests.fake_transport import FakeBrokerClient
 
 def make_settings(**overrides: object) -> Settings:
     defaults = {
-        "relay_token": "unused",
         "broker_api_url": "http://unused.invalid/api/v5",
         "broker_api_key": None,
         "broker_api_secret": None,
         "webhook_key": "test-webhook-key",
-        "db_path": "unused.db",
         "dev_mode": True,
         "google_cloud_project": None,
         "firestore_emulator_host": None,

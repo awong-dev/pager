@@ -124,9 +124,9 @@ def test_self_loop_excludes_same_kind_delivery(routing: Routing, broker):
 
 def test_origin_backend_id_scopes_self_loop_exclusion_to_exact_backend(routing: Routing, broker):
     """S2a: once a caller knows the *specific* origin backend document (the
-    shape Phase 7's SMS/gchat adapters will pass), the self-loop guard must
+    shape the SMS/gchat adapters pass), the self-loop guard must
     exclude only that exact backend id -- not every backend sharing its
-    kind. A user with two pager devices (two phones, the motivating Phase 7
+    kind. A user with two pager devices (two phones, the motivating
     case) replying to themself over device A must still receive the
     message on device B."""
     _make_user("loopy2", "loopy2")

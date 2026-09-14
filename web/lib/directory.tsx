@@ -13,12 +13,11 @@
  * by *alias*, a plain member's browser has no server-provided way to learn a
  * new contact's alias before ever messaging them.
  *
- * TODO(orchestrator): either loosen `users/{uid}`'s read rule to
- * `registered()` (aliases/display names are not secret -- PROTOCOL.md's own
- * addressing model has devices typing `@alias` in the clear), or add a
+ * The real fix is server-side: either loosen `users/{uid}`'s read rule to
+ * `registered()` (aliases and display names are not secret -- PROTOCOL.md's
+ * own addressing model has devices typing `@alias` in the clear), or add a
  * `GET /api/me/contacts`-shaped endpoint returning `{uid, alias,
- * displayName}` for the caller's conversation/allow-list partners. Filed
- * here rather than guessed around in `relay/`, per this build's brief.
+ * displayName}` for the caller's conversation/allow-list partners.
  *
  * Workaround implemented below (client-only, no relay/rules change):
  * - An **admin** can list the whole `users` collection (`isAdmin()` doesn't

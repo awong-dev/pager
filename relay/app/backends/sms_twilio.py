@@ -1,10 +1,10 @@
-"""`sms` backend -- the real Twilio adapter, docs/SERVER_PLAN.md §6.4.
-Replaces the Phase 5 stub (`app/backends/sms_stub.py`, deleted this phase).
+"""`sms` backend -- the Twilio adapter, docs/SERVER_PLAN.md §6.4.
 
 - **Outbound** (`deliver()`): `app/notify/sms.py`'s `send_sms()`, `From` =
   the deployment's one Twilio number, `To` = `backend.config["phone"]`.
-  Points at `TWILIO_BASE_URL` (unset -> stays `queued`, the same
-  recoverable shape the stub used), so this runs unmodified against
+  Points at `TWILIO_BASE_URL` (unset -> the delivery stays `queued`, a
+  recoverable state the tick retry picks up), so this runs unmodified
+  against
   `tools/mocks/twilio_mock.py` in dev/test and the real Twilio API in prod.
 - **Link flow**: `start_link()` sends a 6-digit code by SMS and stashes a
   *hash* of it (plus its expiry) in the server-only `smsVerifyCodes/{bid}`
@@ -67,10 +67,9 @@ class SmsConfig(BaseModel):
 
 
 def _render_body(msg: Message) -> str:
-    """Outbound rendering -- unchanged from the Phase 5 stub's stand-in:
-    `kind='loc'` (a location answer, §5.6) has no `body`, only `loc`; a
-    short fixed preview stands in for a real "lat,lon" rendering (not this
-    phase's scope)."""
+    """Outbound rendering. `kind='loc'` (a location answer, §5.6) has no
+    `body`, only `loc`; a short fixed preview stands in for a real
+    "lat,lon" rendering."""
     if msg.body:
         return msg.body
     if msg.kind == "loc" and msg.loc is not None:

@@ -450,7 +450,7 @@ def test_effective_loc_req_state_leaves_non_sent_states_alone():
 def test_loc_answer_retry_after_partial_fulfilment_failure_is_not_lost(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """S1 (build finding, HIGH): dedup and fulfilment used to be two
+    """Dedup and fulfilment must not be two
     separate transactions -- a crash partway through the second one left
     the dedup marker committed (from the first) but the `loc_req` never
     resolved, so a webhook redelivery of the *same* `/loc` envelope saw the
@@ -528,7 +528,7 @@ def test_loc_answer_retry_after_partial_fulfilment_failure_is_not_lost(
 
 
 def test_locate_concurrent_claims_produce_exactly_one_loc_req():
-    """S2 (build finding, MEDIUM): the "no existing request" claim path now
+    """The "no existing request" claim path
     uses `transaction.create()` (AlreadyExists on conflict, retried once)
     instead of `set()`, making PROTOCOL.md §13.3 rule 5's "at most one
     in-flight loc_req per device" an explicit precondition rather than an
@@ -589,7 +589,7 @@ def test_locate_concurrent_claims_produce_exactly_one_loc_req():
 def test_locate_permanently_failed_delivery_clears_the_dead_loc_req(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """S3 (build finding, MEDIUM): PROTOCOL.md §13.3 rule 5's coalescing is
+    """PROTOCOL.md §13.3 rule 5's coalescing is
     for an *in-flight* request, not a dead one. If the inline pager
     delivery a fresh claim triggers exhausts `record_delivery_attempt`'s
     attempts cap and reaches 'failed', `locate()` must clear

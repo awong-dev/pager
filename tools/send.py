@@ -2,11 +2,9 @@
 """
 CLI to send a message via the v2 relay API -- docs/SERVER_PLAN.md §5.1.
 
-`POST /api/conversations/{alias}/messages` requires a Firebase ID token, not
-the legacy `RELAY_TOKEN` bearer this script used against the MVP's
-`POST /api/devices/{id}/messages` (deleted in Phase 6, §5.1's "Legacy"
-line). Signing in follows the same dev-mode custom-token pattern
-`tools/pager_client.py`'s `ServerClient.login` already uses: `POST
+`POST /api/conversations/{alias}/messages` requires a Firebase ID token.
+Signing in follows the same dev-mode custom-token pattern
+`tools/pager_client.py`'s `ServerClient.login` uses: `POST
 /api/dev/token` (DEV_MODE=1 only) mints a Firebase custom token for a given
 alias, which is exchanged for a real ID token at the Auth emulator's
 Identity Toolkit REST endpoint -- no real email/phone sign-in flow needed

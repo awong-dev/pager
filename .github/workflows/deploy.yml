@@ -1,6 +1,6 @@
 name: Deploy
 
-# docs/SERVER_PLAN.md §9.2/§10 Phase 9: build -> push to Artifact Registry
+# docs/SERVER_PLAN.md §9.2: build -> push to Artifact Registry
 # -> `terraform apply` (WIF) -> `firebase deploy --only hosting,firestore`.
 #
 # SAFE-TO-MERGE, on purpose, even though this file targets `main`:
@@ -29,7 +29,7 @@ name: Deploy
 # backend (infra/README.md runbook step 2) -- never `-backend=false`,
 # which is a local-only validation flag used by hand during development.
 # NOTE: there is no `terraform validate` job in CI yet (ci.yml covers the
-# relay only); adding one is a Phase 9 follow-up.
+# relay only); adding one is a follow-up.
 
 on:
   push:
@@ -143,8 +143,7 @@ jobs:
             -var "relay_image=${{ needs.build-and-push.outputs.image }}" \
             -var "github_org=${{ github.repository_owner }}" \
             -var "github_repo=${{ github.event.repository.name }}" \
-            -var "broker_api_url=${{ vars.BROKER_API_URL }}" \
-            -var "import_data_bucket_name=${{ vars.IMPORT_DATA_BUCKET_NAME }}"
+            -var "broker_api_url=${{ vars.BROKER_API_URL }}"
         # Every other variable (custom_domain, enable_sms_secrets, time_zone,
         # use_broker_gce, ...) is left at infra/envs/prod/variables.tf's
         # defaults unless also passed as a repo variable above -- add
@@ -167,10 +166,10 @@ jobs:
         with:
           node-version: "20"
 
-      # web/ (Phase 6) provides the Next.js static export this step builds;
-      # relay/firestore.rules + relay/firestore.indexes.json (Phase 2b)
-      # provide the Firestore side. Both are referenced from the root-level
-      # firebase.json/.firebaserc (added in Phase 6's follow-up), which
+      # web/ provides the Next.js static export this step builds;
+      # relay/firestore.rules + relay/firestore.indexes.json provide the
+      # Firestore side. Both are referenced from the root-level
+      # firebase.json/.firebaserc, which
       # exists only for this deploy step -- local dev still uses
       # relay/firebase.json (baked into the emulator image) and
       # web/firebase.json (a local Hosting preview) independently.

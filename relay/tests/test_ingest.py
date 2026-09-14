@@ -2,8 +2,7 @@
 `devices/{id}` docs) -- the drop+system-reply path (PROTOCOL.md §4.2 case 3),
 ack routing (find the right pager delivery, monotonic state), and the
 online-edge republish (`pendingDeviceIds`). This is the only device-traffic
-model since Phase 6 deleted the legacy device-scoped thread
-(`app/store/legacy.py`, `app/routers/legacy.py`); webhook-dispatch plumbing
+model; webhook-dispatch plumbing
 (auth, parsing, topic routing) is covered by tests/test_webhooks.py, and
 `/loc`'s real handling by tests/test_location.py.
 """

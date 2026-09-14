@@ -4,11 +4,10 @@ End-to-end integration suite for the v2 pager relay -- docs/SERVER_PLAN.md
 §8. Brings up the real `relay/docker-compose.yml` stack (EMQX + Firebase
 emulators + relay, `DEV_MODE=1`), imports `tools/pager_client.py` **as a
 library** (one process plays the pager device *and* every human in the
-scenario), and runs the named scenarios below. Phase 3 implemented scenarios
-1-4; this phase (4) adds 5-6 (location: periodic fixes and read permission,
-on-demand `/locate` incl. coalescing/cached-answer/`no_fix`/derived-expiry).
-7-9 (fan-out, retention, byte accounting) are later phases per
-`HANDOFF_V2.md` §5.
+scenario), and runs the named scenarios below: bootstrap, text round-trip,
+allow-list and republish (1-4); location -- periodic fixes and read
+permission, on-demand `/locate` incl. coalescing/cached-answer/`no_fix`/
+derived-expiry (5-6); fan-out, retention and byte accounting (7-9).
 
 Usage:
     python3 tools/e2e_v2.py                 # all scenarios
@@ -18,8 +17,8 @@ Usage:
 Exit code 0 if every requested scenario passes, 1 otherwise. Always tears
 down the compose stack it started.
 
-**What this script found about EMQX device-credential support (Phase 3
-build note, see the final report):** `tools/emqx_setup.py` and
+**Known gap -- EMQX device credentials are not provisioned:**
+`tools/emqx_setup.py` and
 `relay/docker-compose.yml` provision only (a) the rule-engine
 connector/action/rule that forwards `pager/+/{up,status,loc}` to the
 relay's webhook, and (b) the relay's own dashboard/REST API key (the
@@ -32,9 +31,9 @@ but nothing pushes that credential (or the three ACL rules PROTOCOL.md §2
 describes) into EMQX, and the device in this suite connects without
 presenting them at all. This matches `docs/SERVER_PLAN.md` §5.5's own
 hedge ("If the broker's REST API exposes credential and ACL management ...
-otherwise the admin UI shows 'add this to the broker' copy") -- it is not a
-regression introduced here, just an unbuilt piece of Phase 2a/3, recorded
-per this phase's brief rather than silently assumed.
+otherwise the admin UI shows 'add this to the broker' copy"). A real
+deployment must set the credentials and ACLs up in the broker console --
+see `infra/README.md`.
 """
 
 from __future__ import annotations
@@ -68,7 +67,7 @@ FIREBASE_PROJECT_ID = "demo-pager"
 BROKER_API_KEY = "dev-broker-api-key"
 BROKER_API_SECRET = "dev-broker-api-secret"
 WEBHOOK_KEY = "dev-webhook-key"
-# Phase 5: tools/mocks/twilio_mock.py, published on the host at the same
+# tools/mocks/twilio_mock.py, published on the host at the same
 # port docker-compose.yml maps it to (relay/docker-compose.yml's
 # `twilio-mock` service); the relay container itself reaches it at
 # http://twilio-mock:8010 (set as TWILIO_BASE_URL in that same file).
@@ -90,7 +89,7 @@ _env_backup: str | None = None
 
 
 # --------------------------------------------------------------------------
-# compose plumbing (same pattern as tools/e2e_test.py)
+# compose plumbing
 # --------------------------------------------------------------------------
 
 
@@ -125,7 +124,6 @@ def write_env_file() -> None:
     ENV_PATH.write_text(
         "\n".join(
             [
-                "RELAY_TOKEN=unused-in-v2",
                 "BROKER_API_URL=http://emqx:18083/api/v5",
                 f"BROKER_API_KEY={BROKER_API_KEY}",
                 f"BROKER_API_SECRET={BROKER_API_SECRET}",
@@ -326,9 +324,8 @@ class Oracle:
 # message) from the past": a real device can only report the current time,
 # and `POST /api/conversations/{alias}/messages` always stamps `createdAt`
 # with `SERVER_TIMESTAMP`. These insert documents directly through the
-# Firestore admin SDK (`app.db.firestore.get_db()`) -- the "Firestore
-# REST/admin path" this phase's brief allows, and the same whitebox access
-# `Oracle` already uses for assertions elsewhere in this file -- with an
+# Firestore admin SDK (`app.db.firestore.get_db()`) -- the same whitebox
+# access `Oracle` already uses for assertions elsewhere in this file -- with an
 # explicit past `createdAt`, so the retention sweep's cutoff actually has
 # something to bite on without waiting for a real retention window to elapse.
 # --------------------------------------------------------------------------
@@ -643,14 +640,13 @@ def scenario_location_periodic() -> None:
     admin.admin_user_add(
         "locperiodic", "LocPeriodic", email="locperiodic@example.com", phone=None
     )
-    # Device *before* allow-edge (build finding): `devices_store.
-    # create_device` always starts a fresh device's `locatableBy` at `[]`;
+    # Device *before* allow-edge: `devices_store.create_device` always
+    # starts a fresh device's `locatableBy` at `[]`;
     # it is only ever recomputed by a *later* allow-list write
     # (`allow_store.set_edge`/`replace_all`), which itself only touches
     # devices that already exist at the time it runs. Setting the edge
     # before the device exists would silently leave `locatableBy` empty
-    # forever (until the allow-list happens to be rewritten again) -- see
-    # this phase's build report.
+    # forever (until the allow-list happens to be rewritten again).
     admin.admin_device_add("pgr-e2e-locp", "locperiodic", default_to_alias="parent")
     admin.admin_set_allow("parent", "locperiodic", message=True, locate=True, one_way=True)
 
@@ -848,17 +844,15 @@ def _sms_delivery_state(oracle: Oracle, msg_id: str) -> str | None:
 
 def scenario_fanout() -> None:
     """docs/SERVER_PLAN.md §8 scenario 7: a user with both `webapp` (implicit)
-    and a Phase 5 `sms` stub backend (`app/backends/sms_stub.py`) enabled ->
-    a message fans out to both; the mock (`tools/mocks/twilio_mock.py`)
-    records the sms send; a forced mock failure drives the sms delivery
-    through `/internal/tick`'s retry path (`app/jobs.py`'s Phase 5 addition,
-    see that module's docstring) to `'failed'` after the attempts cap.
+    and an `sms` backend enabled -> a message fans out to both; the mock
+    (`tools/mocks/twilio_mock.py`) records the sms send; a forced mock
+    failure drives the sms delivery through `/internal/tick`'s retry path
+    (`app/jobs.py`) to `'failed'` after the attempts cap.
 
-    **Origin-backend-exclusion simplification (documented per this phase's
-    brief):** the `sms` stub has no inbound webhook yet (Phase 7 scope --
-    Twilio signature verification, the real link/reply-resolution flow), so
-    there is no HTTP endpoint an "SMS reply" could arrive on in this phase.
-    Per `app/routing.py`'s module docstring, the self-loop guard §5.2 means
+    **Origin-backend exclusion is exercised whitebox.** Driving it through
+    the real inbound SMS webhook would need a signed Twilio request this
+    suite has no credentials to produce. Per `app/routing.py`'s module
+    docstring, the self-loop guard §5.2 means
     by "stops an SMS reply from being echoed back to the same phone" only
     ever fires when the *resolved recipient equals the sender* (see
     `relay/tests/test_routing.py`'s `test_origin_backend_id_scopes_self_loop_
@@ -866,8 +860,8 @@ def scenario_fanout() -> None:
     integration level) -- so this calls `app.routing.Routing.send()`
     directly (whitebox, like `Oracle`) with a self-addressed allow edge and
     `origin_backend_kind='sms'`/`origin_backend_id=<the user's own sms
-    backend id>`, standing in for what a real Phase 7 inbound SMS webhook
-    resolving a reply back to its own sender would pass, and confirms the
+    backend id>`, standing in for what a real inbound SMS webhook resolving
+    a reply back to its own sender would pass, and confirms the
     sms delivery is excluded while webapp (a different kind) still gets one.
     """
     oracle = Oracle()
@@ -974,21 +968,17 @@ def scenario_fanout() -> None:
 def scenario_retention() -> None:
     """docs/SERVER_PLAN.md §8 scenario 8 / §5.7.
 
-    **Backdating approach** (documented per this phase's brief): see the
+    **Backdating approach**: see the
     `_backdate_location`/`_backdate_message` helpers above this file's
     Scenarios section -- there is no `pager_client`/relay-API way to send a
     fix or message dated in the past, so these insert documents directly
     through the Firestore admin SDK (`app.db.firestore.get_db()`) with an
-    explicit past `createdAt`, the "Firestore REST/admin path" this phase's
-    brief allows.
+    explicit past `createdAt`.
 
-    **Resumability variant tested** (documented per this phase's brief):
-    forcing `POST /internal/sweep`'s single HTTP request to abort partway
-    through isn't something this script can trigger cleanly from outside
-    the relay process without a second-process race with no clean way to
-    synchronise it. Per the brief's fallback ("if you can't cleanly
-    simulate a forced mid-run abort, instead just verify that calling
-    sweep() twice in a row ... is safe and idempotent"), the third sub-case
+    **Resumability variant tested**: forcing `POST /internal/sweep`'s single
+    HTTP request to abort partway through isn't something this script can
+    trigger cleanly from outside the relay process without a second-process
+    race with no clean way to synchronise it. Instead, the third sub-case
     below creates more than one batch's worth of stale messages and calls
     `sweep` twice in a row, confirming the second call deletes nothing --
     `relay/tests/test_jobs.py`'s `test_sweep_batches_correctly_with_a_small_
@@ -1059,11 +1049,11 @@ def scenario_retention() -> None:
 
 def scenario_bytes() -> None:
     """docs/SERVER_PLAN.md §8 scenario 9 -- informational only (no hard
-    assertions beyond "it runs and prints something meaningful"), matching
-    this phase's brief. Connects a device, exercises a representative mix
-    of up/down/status/loc traffic, then prints the same per-topic byte
-    counters `pager_client.py`'s `bytes` command already tracks (Phase 3)
-    next to docs/PROTOCOL.md §7.2's raw-JSON-payload figures for comparison
+    assertions beyond "it runs and prints something meaningful"). Connects
+    a device, exercises a representative mix of up/down/status/loc traffic,
+    then prints the same per-topic byte counters `pager_client.py`'s `bytes`
+    command tracks, next to docs/PROTOCOL.md §7.2's raw-JSON-payload figures
+    for comparison
     (§7.2's *MQTT bytes* column, before the TLS/TCP framing this local,
     non-TLS compose stack doesn't add -- the same "payload bytes only" thing
     `ByteCounter` measures)."""

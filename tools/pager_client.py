@@ -18,8 +18,8 @@ Device-side flags: `--device-id --host --port --username --password`.
 Server-side flags: `--api --auth-url --as <alias>` (`--as` is a convenience
 that runs `login <alias>` before the REPL/subcommand).
 
-Implements docs/SERVER_PLAN.md §8's full command set: Phase 3 (text), Phase 4
-(location, PROTOCOL.md §13), Phase 5 (backends, retention, sweep):
+Implements docs/SERVER_PLAN.md §8's full command set -- text, location
+(PROTOCOL.md §13), backends, retention and sweep:
 
   Device: connect, disconnect, crash, inbox, msg, ack, autoack, status, bytes,
           loc <lat> <lon> [acc] | loc auto <period_s> [--walk] |
@@ -30,8 +30,6 @@ Implements docs/SERVER_PLAN.md §8's full command set: Phase 3 (text), Phase 4
           settings retention messages=<n><d|w> locations=<n><d|w>,
           backend add <kind> <json-config>
 
-Supersedes `tools/sim_device.py` (docs/SERVER_PLAN.md §8) -- `sim_device.py`
-itself, and `tools/e2e_test.py`, are deleted this phase (5).
 """
 
 from __future__ import annotations
@@ -566,12 +564,12 @@ class ServerClient:
         """`POST /api/me/backends` for the currently-logged-in user --
         docs/SERVER_PLAN.md §5.1. Used by `backend add` and by
         `tools/e2e_v2.py`'s `fanout` scenario to give a user an `sms`
-        backend (`app/backends/sms_twilio.py`, Phase 7) without any admin
+        backend (`app/backends/sms_twilio.py`) without any admin
         involvement, matching a real user configuring their own backends
         (§7.4).
 
-        `(build note, security review H2)`: for `kind='sms'`/`'gchat'` the
-        relay now always creates the row `enabled=False` regardless of the
+        Note: for `kind='sms'`/`'gchat'` the
+        relay always creates the row `enabled=False` regardless of the
         `enabled` argument here -- a link/verify-flow backend is not
         trusted to receive real traffic until `verify_backend()` below
         succeeds. Callers that need an immediately-usable sms backend (this
@@ -806,8 +804,8 @@ class ServerClient:
         locate -- exercises `firestore.rules`' `devices/{d}` `locatableBy`
         check the same way `locations()` below exercises the `locations`
         subcollection's. Deliberately filters on `locatableBy array_contains
-        self.uid` rather than `ownerUid == owner_uid`
-        **(build finding, Phase 4)**: Firestore evaluates a security rule
+        self.uid` rather than `ownerUid == owner_uid`:
+        Firestore evaluates a security rule
         for a `list` (collection query) request *abstractly*, against the
         query's own declared filters alone, before ever touching a real
         document -- a query filtered only on `ownerUid` gives the rule
@@ -815,7 +813,7 @@ class ServerClient:
         from, so Firestore denies the *entire query* with `403` even for a
         caller who is genuinely allowed to read the one matching document
         (this is documented, intentional Firestore behaviour for `list`,
-        not a bug in `firestore.rules`; see this phase's build report).
+        not a bug in `firestore.rules`).
         Filtering on `locatableBy array_contains self.uid` instead gives
         Firestore exactly the fact its rule needs to prove the query safe,
         so it *can* stream real results -- which may include devices owned

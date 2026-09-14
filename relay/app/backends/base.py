@@ -12,21 +12,20 @@ class Backend(Protocol):
 ```
 
 Inbound (replies) is not part of this protocol: an adapter that receives
-messages (SMS, Google Chat -- later phases) registers its own webhook
-router and calls `app.routing.Routing.send()` itself, passing its own
-`kind` as `origin_backend_kind` and, once it has one, the specific
-per-user backend row's id as `origin_backend_id` (`(build finding, S2a)`
-docs/SERVER_PLAN.md §3/§5.2 -- `pager`/`webapp` still pass `None`, see
-`app/routing.py`'s module docstring). A new backend is one module here + one line in
-`registry.py` + (later, §7.4) a settings form in the web app -- nothing in
-`routing.py` changes.
+messages (SMS, Google Chat) registers its own webhook router and calls
+`app.routing.Routing.send()` itself, passing its own `kind` as
+`origin_backend_kind` and, once it has one, the specific per-user backend
+row's id as `origin_backend_id` (docs/SERVER_PLAN.md §3/§5.2 --
+`pager`/`webapp` pass `None`, see `app/routing.py`'s module docstring). A
+new backend is one module here + one line in `registry.py` + a settings form
+in the web app (§7.4) -- nothing in `routing.py` changes.
 
 `deliver()` owns its own *success-path* store write (e.g. `messages_store.
 mark_delivery_sent_if_queued`) rather than `routing.py` reaching into
 `deliveries.*` itself for that part -- keeps each adapter's success
 transition self-contained, matching how `pager`/`webapp` are described in
-§6.2/§6.3. `(build finding, S2b)`: the returned `DeliverResult` is not
-purely discarded, though -- `app/routing.py`'s `_deliver_one` (the one
+§6.2/§6.3. The returned `DeliverResult` is not discarded, though --
+`app/routing.py`'s `_deliver_one` (the one
 place that sees every `deliver()` call, success or failure, inline or a
 tick/online-edge retry) applies it through `messages_store.
 record_delivery_attempt` for the attempts/error/max-5→failed bookkeeping
@@ -58,7 +57,7 @@ class LinkStep(BaseModel):
     """What a user's client should do next to finish linking a backend
     (e.g. "enter the code we texted you"). Kept deliberately generic --
     each backend's `config_schema` and its own settings-page form (§7.4)
-    give the field meaning; Phase 3 has no backend that returns one."""
+    give the field meaning."""
 
     model_config = ConfigDict(extra="ignore")
 

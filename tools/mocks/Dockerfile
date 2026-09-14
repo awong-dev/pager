@@ -1,5 +1,5 @@
-# Twilio Messages API mock -- pager v2 Phase 5 (docs/SERVER_PLAN.md §6.4/§8
-# scenario 7). Standalone image (not the relay's own Dockerfile) since this
+# Twilio Messages API mock -- docs/SERVER_PLAN.md §6.4, §8 scenario 7.
+# Standalone image (not the relay's own Dockerfile) since this
 # is a *test double*, never shipped to a real deployment.
 
 FROM python:3.12-slim

@@ -540,7 +540,7 @@ void msg_pump(void)
     // that a PUBACK was observed — net.cpp's PUBLISHED handler does not yet
     // map a mid back to a pending_ack/pending_up entry (its own comment
     // defers that wiring to this file). Treating a successful net_publish()
-    // as "sent" is a known MVP gap, not a silent one; true QoS1 confirmation
+    // as "sent" is a known gap, not a silent one; true QoS1 confirmation
     // is future work requiring net.cpp to route WALTER_MODEM_MQTT_EVENT_
     // PUBLISHED back here by mid.
 

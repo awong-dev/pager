@@ -61,14 +61,9 @@ variable "twilio_base_url" {
 }
 
 variable "enable_sms_secrets" {
-  description = "Wire TWILIO_* secret-sourced env vars into the relay service. Leave false until Phase 7's real Twilio adapter has landed AND infra/README.md's secret-value step has been done for the three Twilio secrets -- Cloud Run refuses to create a revision that references a secret with zero versions (see relay-service/main.tf's comment)."
+  description = "Wire TWILIO_* secret-sourced env vars into the relay service. Leave false until infra/README.md's secret-value step has been done for the three Twilio secrets -- Cloud Run refuses to create a revision that references a secret with zero versions (see relay-service/main.tf's comment)."
   type        = bool
   default     = false
-}
-
-variable "import_data_bucket_name" {
-  description = "Globally-unique GCS bucket name for the one-off import_sqlite job's input file. e.g. \"<project_id>-import-data\"."
-  type        = string
 }
 
 variable "tick_schedule" {

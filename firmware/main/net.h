@@ -5,7 +5,7 @@
  * WalterModem lives behind this header so modes.c / msg.c / ui.c / main.c
  * stay plain C. See docs/PROTOCOL.md §6, §8.
  *
- * Phase 4: implements the network core per the firmware-architect spec.
+ * The network core.
  * modes.c owns the RTC struct and all mode/backoff/retry policy; net.cpp
  * owns nothing that must survive a reset except via the small delta
  * counters below, which modes.c folds into its RTC-resident totals every

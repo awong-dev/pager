@@ -1,12 +1,12 @@
 """`users/{uid}/backends/{bid}` -- docs/SERVER_PLAN.md §3, §6.1.
 
-Fan-out target for routing (Phase 3); this module only owns CRUD. `config`
+Fan-out target for `app/routing.py`; this module only owns CRUD. `config`
 is adapter-specific (§6.1's `config_schema` per kind) and is stored as a
 plain dict here -- validating it against a specific backend's schema is that
 backend module's job, not the store's.
 
-**`(build addition, phase 7)`**: three small top-level lookup collections,
-none named in §3's schema table, added so the sms/gchat inbound webhooks
+Three small top-level lookup collections,
+none named in §3's schema table, exist so the sms/gchat inbound webhooks
 (`app/routers/webhooks.py`, docs/SERVER_PLAN.md §6.4/§6.5) can map "a phone
 number that just texted us" / "a Chat space that just messaged us" / "a
 link code someone just typed into Chat" back to `(uid, bid)` with a single
@@ -35,7 +35,7 @@ entirely, the same "the doc id is the uniqueness/lookup key" trick
   the *sender* is pinned at link time and re-checked on every subsequent
   message, `app/routers/webhooks.py`'s `/webhooks/gchat`).
 
-`(build addition, security review)`: a fourth top-level lookup collection,
+A fourth top-level lookup collection has the
 same posture as the three above (no `firestore.rules` `match` block ->
 default-deny client read):
 
@@ -59,8 +59,7 @@ default-deny client read):
 
 This is additive to §3's table, not a contradiction of it -- the plan
 specifies the *behaviour* ("map `From` -> user by verified phone",
-"stores the DM `space` name") but not the index mechanism; flagged here per
-this phase's brief rather than silently assumed.
+"stores the DM `space` name") but not the index mechanism.
 """
 
 from __future__ import annotations
@@ -160,7 +159,7 @@ def delete_backend(uid: str, bid: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# lookup collections -- see this module's docstring, `(build addition, phase 7)`
+# lookup collections -- see this module's docstring
 # ---------------------------------------------------------------------------
 
 

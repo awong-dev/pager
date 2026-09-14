@@ -44,7 +44,7 @@ def test_create_message_same_wire_id_dedups():
 
 
 def test_create_message_wire_id_doc_carries_created_at():
-    """(build review, phase 6, M1) `wireIds/{wireId}_{recipientUid}` must
+    """`wireIds/{wireId}_{recipientUid}` must
     carry its own `createdAt` so `app/jobs.py`'s `sweep()` can reclaim it
     independently of its parent message's own deletion -- see that
     function's module docstring."""

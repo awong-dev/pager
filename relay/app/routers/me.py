@@ -3,50 +3,43 @@ backends, and FCM push-token registration. Every route requires a
 registered caller (`app.auth.require_user`); there is no admin-only surface
 here (see `app/routers/admin.py` for that).
 
-`(build addition, phase 7)`: `POST /api/me/backends/{id}/verify {code}` --
-listed in §5.1's API surface table since Phase 3 but never implemented
-(Phase 3/5's stub backends had no real link flow to verify against; the web
-app's `/settings/backends` page, Phase 6, already calls it and documents
-the 404 it gets today -- see `web/app/settings/backends/page.tsx`'s module
-docstring). `POST /api/me/backends` also now calls the new backend's
-`start_link()` right after creating it (§6.1: "e.g. send a code") --
-neither of these existed before this phase because neither `sms`'s nor
-`gchat`'s real link flow existed yet.
+`POST /api/me/backends/{id}/verify {code}` completes a backend's link flow
+(§5.1's API surface table). `POST /api/me/backends` calls the new backend's
+`start_link()` right after creating it (§6.1: "e.g. send a code"); only
+`sms` and `gchat` have a real link flow, and `pager`/`webapp` no-op.
 
-`(build addition, security review)`: three fixes to that Phase 7 surface,
-all load-bearing for `phoneIndex`'s "an unverified/unlinked claim can never
-capture another user's inbound traffic" invariant (`app/store/backends.py`'s
-module docstring):
+Three constraints on that surface are load-bearing for `phoneIndex`'s "an
+unverified/unlinked claim can never capture another user's inbound traffic"
+invariant (`app/store/backends.py`'s module docstring):
 
-- **H2** -- `POST /api/me/backends` now forces `enabled=False` at creation
+- `POST /api/me/backends` forces `enabled=False` at creation
   for any kind with a link/verify flow (`sms`, `gchat`), regardless of what
   the request body asked for. `app/routing.py`'s fan-out only ever checks
   `backend.enabled`, never `verifiedAt` (deliberately -- `pager`/`webapp`
   have no verify step at all, so gating fan-out on `verifiedAt` would break
-  them); an sms/gchat backend defaulting to `enabled=True` at creation meant
-  real SMS started going to an unverified, possibly-not-owned phone number
-  on the very next message, with the verify flow never actually exercised.
-  `verify_backend` below still flips `enabled=True` on success, so this is
-  purely "not enabled until proven", not "sms/gchat can never be enabled".
-- **H3** -- `PATCH /api/me/backends/{bid}` clears `phoneIndex` for the old
+  them). An sms/gchat backend defaulting to `enabled=True` at creation
+  would send real SMS to an unverified, possibly-not-owned phone number on
+  the very next message, with the verify flow never actually exercised.
+  `verify_backend` below flips `enabled=True` on success, so this is purely
+  "not enabled until proven", not "sms/gchat can never be enabled".
+- `PATCH /api/me/backends/{bid}` clears `phoneIndex` for the old
   number (and `verifiedAt`) whenever `config.phone` changes, and
   `DELETE /api/me/backends/{bid}` clears `phoneIndex` for the backend's
   current number before deleting the row. Without this, "verify with your
-  own number, then PATCH to a victim's number" bypasses H2 outright (the
-  backend is already `enabled` and now `verifiedAt` from the first,
-  legitimate verification), and a deleted backend leaves a dangling
+  own number, then PATCH to a victim's number" bypasses the rule above
+  outright (the backend is already `enabled` and now `verifiedAt` from the
+  first, legitimate verification), and a deleted backend leaves a dangling
   `phoneIndex` entry that still routes inbound SMS somewhere.
-- **M1** -- both routes normalise `config.phone` to E.164
+- Both routes normalise `config.phone` to E.164
   (`sms_twilio.normalize_e164`) before it is ever stored or used as a
   `phoneIndex` document id; an unnormalised/malformed number both breaks the
   lookup against Twilio's always-E.164 `From` field and, if it contains a
   `/`, would otherwise crash `.document(phone)` with an unhandled 500.
 
-`(build addition, phase 8 hardening)`: **`POST /api/me/backends` is rate
-limited per user** -- server-architect's Phase 7 review flagged this as the
-highest-priority rate limit in the whole relay, since each call can trigger a
-real `start_link()` (a real SMS send, docs/SERVER_PLAN.md §6.4) with no cap
-otherwise. `app/store/rate_limits.py`'s Firestore-backed fixed-window
+**`POST /api/me/backends` is rate limited per user** -- the
+highest-priority rate limit in the relay, since each call can trigger a
+real `start_link()` (a real SMS send, docs/SERVER_PLAN.md §6.4).
+`app/store/rate_limits.py`'s Firestore-backed fixed-window
 counter, keyed `"backends:{uid}"`, `RATE_LIMIT_BACKEND_CREATE_LIMIT` calls
 per `RATE_LIMIT_BACKEND_CREATE_WINDOW_S` seconds (defaults: 10 per hour --
 generous for a real user configuring a couple of backends, tight enough to
@@ -187,8 +180,8 @@ def create_backend(
     # webapp's `start_link` both return None and touch nothing. Best-effort:
     # a `start_link` failure (e.g. Twilio unreachable) must not fail backend
     # *creation* -- the row already exists and can be retried (the web app's
-    # "Verify" dialog has no separate "resend" affordance yet, a known gap,
-    # not this phase's to close).
+    # "Verify" dialog has no separate "resend" affordance yet, a known
+    # gap).
     impl = registry.get(req.kind)
     if impl is not None:
         try:

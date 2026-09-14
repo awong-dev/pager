@@ -1,9 +1,8 @@
 """`app.jobs.tick()`: retries pager deliveries still 'queued', at most 10 per
-device, oldest first -- docs/SERVER_PLAN.md §5.8 item 1 -- plus this phase's
-(5) addition retrying non-pager (`sms`) deliveries still 'queued' (see
-`app/jobs.py`'s module docstring). Uses `app.tasks.InlineTaskQueue` (the
-only mode this phase implements) so retries run synchronously and are
-observable immediately.
+device, oldest first -- docs/SERVER_PLAN.md §5.8 item 1 -- and retries
+non-pager (`sms`) deliveries still 'queued' (see `app/jobs.py`'s module
+docstring). Uses `app.tasks.InlineTaskQueue` so retries run synchronously and
+are observable immediately.
 
 `app.jobs.sweep()` (docs/SERVER_PLAN.md §5.7) is covered further down:
 batching with a small `SWEEP_BATCH`, idempotency across two consecutive
@@ -184,8 +183,7 @@ def test_tick_skips_revoked_devices():
 
 
 # ---------------------------------------------------------------------------
-# tick(): non-pager (sms) retry -- this phase's (5) addition, see
-# app/jobs.py's module docstring
+# tick(): non-pager (sms) retry -- see app/jobs.py's module docstring
 # ---------------------------------------------------------------------------
 
 
@@ -224,7 +222,7 @@ def test_tick_retries_queued_sms_delivery(monkeypatch):
 
 
 def test_tick_caps_non_pager_retries_dispatched_per_call(monkeypatch):
-    """M3 (build review, phase 6): a single `tick()` call must not *dispatch*
+    """A single `tick()` call must not *dispatch*
     more than `jobs.NON_PAGER_RETRY_DISPATCH_LIMIT` (10) non-pager retries,
     even when more than that many are queued and scan-eligible -- mirrors
     §5.8's existing "at most 10 per device" pager cap, for the same reason
@@ -378,9 +376,9 @@ def test_sweep_deletes_messages_and_their_wire_ids_past_retention():
 
 
 def test_sweep_deletes_orphaned_wire_ids_independently_of_their_message():
-    """M1 (build review, phase 6): a `wireIds` doc whose parent `messages`
+    """A `wireIds` doc whose parent `messages`
     doc was deleted through some *other* path (simulating what a future
-    Phase 8 user-deletion pass will do -- delete the message directly,
+    user-deletion pass would do -- delete the message directly,
     without going through this sweep's paired message+wireIds delete) must
     still get reclaimed, once its own `createdAt` is past the messages
     retention cutoff, by the independent `wireIds` sweep pass rather than
@@ -414,7 +412,7 @@ def test_sweep_deletes_orphaned_wire_ids_independently_of_their_message():
 
 
 def test_sweep_deletes_conversations_past_retention():
-    """M2 (build review, phase 6): a `conversations/{convKey}` summary doc
+    """A `conversations/{convKey}` summary doc
     (`lastPreview`, `unread`) must not survive its thread's messages once
     the configured retention period has passed -- swept by `lastMessageAt`
     against the same `retention.messages` cutoff messages themselves use."""
@@ -461,7 +459,7 @@ def test_sweep_batches_correctly_with_a_small_sweep_batch(monkeypatch):
 
 
 def test_sweep_is_idempotent_across_two_consecutive_calls(monkeypatch):
-    """Resumability variant this phase's brief allows when a forced mid-run
+    """Resumability, checked the way it can be when a forced mid-run
     abort can't be cleanly simulated (see `tools/e2e_v2.py`'s
     `scenario_retention` docstring for the integration-level version of this
     same check): with a small `SWEEP_BATCH` and more than one batch's worth
@@ -537,9 +535,9 @@ def test_sweep_leaves_fresh_documents_untouched():
 
 
 def test_sweep_deletes_expired_gchat_link_codes_and_leaves_unexpired_ones(monkeypatch):
-    """`(build addition, phase 8 hardening)`: closes the phase 7 review's
-    finding that `gchatLinkCodes` is never popped/swept when a code is
-    issued but never used. Unlike every other class this module tests,
+    """`gchatLinkCodes` is never popped when a code is issued but never
+    used, so the sweep is the only thing that reclaims it. Unlike every
+    other class this module tests,
     `expiresAt` is a plain Unix-epoch-seconds int (`GChatBackend.
     start_link`'s `LINK_CODE_TTL_S`), not a Firestore `datetime`
     `createdAt`, and the cutoff is "already expired" (now), not a

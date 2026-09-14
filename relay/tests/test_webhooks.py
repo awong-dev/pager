@@ -29,18 +29,15 @@ from tests.conftest import (
 )
 from tests.fake_transport import FakeBrokerClient, webhook_body, webhook_headers
 
-TOKEN = "test-token-123"
 WEBHOOK_KEY = "test-webhook-key"
 
 
 def make_settings(**overrides: object) -> Settings:
     defaults = {
-        "relay_token": TOKEN,
         "broker_api_url": "http://unused.invalid/api/v5",
         "broker_api_key": None,
         "broker_api_secret": None,
         "webhook_key": WEBHOOK_KEY,
-        "db_path": "unused.db",
         "dev_mode": False,
         "google_cloud_project": None,
         "firestore_emulator_host": None,

@@ -1,10 +1,10 @@
 /* msg.h — message storage, dedup, ack state machine, retry pump.
  *
- * Authority: docs/PROTOCOL.md §9 (storage contract, rewritten Phase 5), §4
+ * Authority: docs/PROTOCOL.md §9 (storage contract), §4
  * (ack state machine), §3.1 (body limits), §11 (mode funnel).
  *
  * This module is plain C and does not depend on WalterModem types. It DOES
- * include net.h for two narrow reasons the Phase 5 spec calls out
+ * include net.h for two narrow reasons
  * explicitly: msg_pump() publishes via net_publish(), and building a wire
  * envelope needs net_get_device_id()/net_get_clock(). It never calls any
  * WalterModem API directly.
@@ -26,7 +26,7 @@
  * pending_up "created_epoch" field is stored as a MONOTONIC microsecond
  * value from esp_timer_get_time(), not wall-clock epoch seconds. Using wall
  * clock would reintroduce exactly the "0 means no clock yet" sentinel
- * hazard that Part A bug #1 of this phase's brief identifies and requires
+ * hazard identified in review, which requires
  * fixing elsewhere (docs/PROTOCOL.md §3.5: ts reads 0 with no network
  * clock). The field is only ever used for a relative ">2h old" age check
  * (msg_pump), which a monotonic clock answers correctly always; the wire

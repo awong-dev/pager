@@ -140,12 +140,10 @@ def test_verify_chat_bearer_token_rejects_blank_audience_config():
 
 def make_settings(**overrides: object) -> Settings:
     defaults = {
-        "relay_token": "unused",
         "broker_api_url": "http://unused.invalid/api/v5",
         "broker_api_key": None,
         "broker_api_secret": None,
         "webhook_key": WEBHOOK_KEY,
-        "db_path": "unused.db",
         "dev_mode": False,
         "google_cloud_project": None,
         "firestore_emulator_host": None,
@@ -255,7 +253,7 @@ def test_start_link_stashes_a_user_visible_link_code(client: TestClient):
     """§6.5: the web app's `/settings/backends` page shows the user this
     code -- verified here at the store level (`start_link()`'s config
     write), since the current frontend does not render it yet (see this
-    module's / `app/backends/gchat.py`'s "build note")."""
+    module's / `app/backends/gchat.py`'s own note)."""
     from app.backends.gchat import GChatBackend
     from app.store import users as users_store
 

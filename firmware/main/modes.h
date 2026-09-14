@@ -2,7 +2,7 @@
  *
  * modes.c owns the RTC struct (docs/PROTOCOL.md §9), the single set_mode()
  * transition funnel (§11), the button short/long press state machine
- * (Phase 5 Part C), and the wake-and-drain loop (§8).
+ * the wake-and-drain loop (§8).
  */
 #ifndef MODES_H
 #define MODES_H
@@ -12,7 +12,7 @@
 /* One-time entry point. Call exactly once from app_main(), before
  * modes_run(). Validates/initialises the RTC struct, brings up the modem
  * and MQTT session (net_init()/net_session_up()), initialises msg.c/ui.c,
- * and leaves the device in sleep mode (HANDOFF.md §2: "Boot in sleep
+ * and leaves the device in sleep mode (firmware/README.md: "Boot in sleep
  * mode"). */
 void modes_boot(void);
 

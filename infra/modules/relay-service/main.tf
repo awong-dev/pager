@@ -39,7 +39,7 @@ locals {
     "roles/firebaseauth.admin",           # verify + mint custom tokens, create users, set the `admin` custom claim (§5.3, §5.5)
     "roles/firebasecloudmessaging.admin", # webapp backend's FCM sends (§6.3)
     "roles/secretmanager.secretAccessor", # read the secret *values* this module wires in as env vars below
-    "roles/cloudtasks.enqueuer",          # forward-looking: Phase 8's real CloudTasksQueue (app/tasks.py TASKS_MODE=cloud_tasks) will need this; harmless no-op today since TASKS_MODE stays "inline"
+    "roles/cloudtasks.enqueuer",          # forward-looking: app/tasks.py's CloudTasksQueue (TASKS_MODE=cloud_tasks) needs this; harmless no-op today since TASKS_MODE stays "inline"
     "roles/logging.logWriter",            # a dedicated (non-default) service account needs this explicitly to write Cloud Logging entries
     "roles/monitoring.metricWriter",
   ]
@@ -80,7 +80,7 @@ resource "google_cloud_run_v2_service" "relay" {
   # webhook POST both need to reach this unauthenticated at the Cloud Run
   # layer. /webhooks/mqtt is authenticated by the shared WEBHOOK_KEY header
   # (app-level, not IAM); /internal/* is meant to be OIDC-checked at the
-  # app level by Phase 8 (see infra/modules/schedule's module docstring).
+  # app level (see infra/modules/schedule's module docstring).
   ingress = "INGRESS_TRAFFIC_ALL"
 
   template {
@@ -154,7 +154,7 @@ resource "google_cloud_run_v2_service" "relay" {
       # accidentally set DEV_MODE=1 via a tfvars typo, since that both opens
       # POST /api/dev/token (a token-minting bypass) and is what currently
       # gates /internal/tick and /internal/sweep open (see
-      # infra/modules/schedule's docstring on the Phase 8 OIDC gap).
+      # infra/modules/schedule's docstring on the OIDC wiring gap).
 
       env {
         name = "BROKER_API_KEY"
@@ -249,71 +249,6 @@ resource "google_cloud_run_v2_job" "bootstrap" {
         env {
           name  = "GOOGLE_CLOUD_PROJECT"
           value = var.project_id
-        }
-      }
-    }
-  }
-
-  labels = var.labels
-}
-
-# GCS bucket an operator uploads the MVP relay.db into before running the
-# import job (infra/README.md). Kept tiny and private; ~$0.
-resource "google_storage_bucket" "import_data" {
-  project                     = var.project_id
-  name                        = var.import_data_bucket_name
-  location                    = var.region
-  uniform_bucket_level_access = true
-  public_access_prevention    = "enforced"
-  force_destroy               = true # this bucket only ever holds a disposable one-off import file
-
-  lifecycle_rule {
-    condition {
-      age = 30 # auto-clean the uploaded SQLite file after a month; it's a one-time import artifact, not something to keep paying (near-$0) storage for indefinitely
-    }
-    action {
-      type = "Delete"
-    }
-  }
-}
-
-resource "google_storage_bucket_iam_member" "import_data_reader" {
-  bucket = google_storage_bucket.import_data.name
-  role   = "roles/storage.objectViewer"
-  member = "serviceAccount:${google_service_account.relay.email}"
-}
-
-# `python -m app.db.import_sqlite <path>` (docs/SERVER_PLAN.md §3 "MVP
-# import"). Run once by hand, per infra/README.md -- never on every deploy.
-# The SQLite file is not baked into the image; it's mounted read-only from
-# `google_storage_bucket.import_data` via Cloud Storage FUSE, so an operator
-# only needs `gsutil cp relay.db gs://<bucket>/relay.db` before executing.
-resource "google_cloud_run_v2_job" "import_sqlite" {
-  project  = var.project_id
-  name     = "${var.service_name}-import-sqlite"
-  location = var.region
-
-  template {
-    template {
-      service_account = google_service_account.relay.email
-      max_retries     = 0
-      containers {
-        image   = var.image
-        command = ["python", "-m", "app.db.import_sqlite", "/mnt/import/relay.db"]
-        env {
-          name  = "GOOGLE_CLOUD_PROJECT"
-          value = var.project_id
-        }
-        volume_mounts {
-          name       = "import-data"
-          mount_path = "/mnt/import"
-        }
-      }
-      volumes {
-        name = "import-data"
-        gcs {
-          bucket    = google_storage_bucket.import_data.name
-          read_only = true
         }
       }
     }

@@ -1,7 +1,7 @@
 # infra/modules/schedule -- docs/SERVER_PLAN.md §9.1/§9.2:
 # "Cloud Scheduler jobs (tick, sweep) with OIDC to the relay; Cloud Tasks queue"
 #
-# IMPORTANT, read before wiring this up: as of Phase 8,
+# IMPORTANT, read before wiring this up:
 # relay/app/routers/internal.py DOES verify OIDC tokens -- it checks
 # signature, `aud` == the relay's `OIDC_AUDIENCE` env var, and the caller's
 # `email` against `OIDC_ALLOWED_EMAILS`. A missing/invalid token is a 401

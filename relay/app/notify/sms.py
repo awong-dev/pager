@@ -11,14 +11,12 @@ SDK's base URL to point at this mock").
 
 Every credential/endpoint here is read fresh from the environment on every
 call (`_base_url()`/`_account_sid()`/... -- the same per-call
-`os.environ.get(...)` pattern `app/location.py`'s `loc_req_ttl_s()` and the
-Phase 5 stub this replaces both use), not threaded through `app.config.
-Settings` -- consistent with how the Phase 5 stub (`app/backends/
-sms_stub.py`, now deleted) already established this env-var surface
-(`TWILIO_BASE_URL`/`TWILIO_ACCOUNT_SID`/`TWILIO_FROM_NUMBER`); this phase
-only adds `TWILIO_AUTH_TOKEN`, needed for real HTTP Basic auth against
-Twilio (the mock ignores it, same as it always ignored the account SID) and
-for `app/backends/sms_twilio.py`'s inbound `X-Twilio-Signature` check.
+`os.environ.get(...)` pattern `app/location.py`'s `loc_req_ttl_s()` uses),
+not threaded through `app.config.Settings`. The surface is
+`TWILIO_BASE_URL`/`TWILIO_ACCOUNT_SID`/`TWILIO_FROM_NUMBER`, plus
+`TWILIO_AUTH_TOKEN` for real HTTP Basic auth against Twilio (the mock
+ignores it, as it does the account SID) and for
+`app/backends/sms_twilio.py`'s inbound `X-Twilio-Signature` check.
 """
 
 from __future__ import annotations
@@ -37,9 +35,9 @@ DEFAULT_FROM_NUMBER = "+15005550006"  # Twilio's own "always valid" magic test n
 
 
 def _redact_phone(phone: str) -> str:
-    """`(build addition, phase 8 hardening)`: last-4-digits only, same style
-    as `app/routers/webhooks.py`'s L4 fix -- `to` here is a real, attributed
-    phone number (unlike that module's "unrecognised number" case), which
+    """Last-4-digits only, the same style `app/routers/webhooks.py` uses
+    -- `to` here is a real, attributed phone number (unlike that module's
+    "unrecognised number" case), which
     makes logging it in full even less justified: nothing below needs the
     full number to be actionable, and it is PII best not left sitting in
     plaintext logs."""
@@ -82,8 +80,7 @@ def send_sms(to: str, body: str) -> TwilioSendResult:
     """`POST .../Accounts/{Sid}/Messages.json`, the exact Twilio REST shape
     `tools/mocks/twilio_mock.py` mirrors. Never raises -- a transport error
     or a non-2xx both come back as `TwilioSendResult(ok=False, error=...)`,
-    the same "leave it queued/failed, let the caller decide" contract the
-    Phase 5 stub established."""
+    a "leave it queued/failed, let the caller decide" contract."""
     url = base_url()
     if url is None:
         return TwilioSendResult(ok=False, error="TWILIO_BASE_URL not configured")

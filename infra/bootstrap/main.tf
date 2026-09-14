@@ -24,7 +24,7 @@ locals {
     "cloudresourcemanager.googleapis.com",
     "serviceusage.googleapis.com",
     "cloudbuild.googleapis.com", # optional: CI image builds via Cloud Build instead of local docker
-    "chat.googleapis.com",       # §6.5 gchat backend, Phase 7 — API only, no Terraform resource for the Chat app itself
+    "chat.googleapis.com",       # §6.5 gchat backend — API only, no Terraform resource for the Chat app itself
   ]
 
   broker_gce_apis = var.enable_broker_gce_api ? ["compute.googleapis.com"] : []

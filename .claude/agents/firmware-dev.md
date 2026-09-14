@@ -1,6 +1,6 @@
 ---
 name: firmware-dev
-description: Implements ESP-IDF firmware modules for the pager (net.c, modes.c, ui.c, msg.c, pins.h) from specs in HANDOFF.md, docs/PROTOCOL.md, or firmware-architect designs. Builds with idf.py and reports results. Use for all firmware coding that has a clear spec.
+description: Implements ESP-IDF firmware modules for the pager (net.c, modes.c, ui.c, msg.c, pins.h) from specs in docs/PROTOCOL.md, firmware/README.md, or firmware-architect designs. Builds with idf.py and reports results. Use for all firmware coding that has a clear spec.
 tools: Read, Grep, Glob, Bash, Edit, Write
 model: sonnet
 ---

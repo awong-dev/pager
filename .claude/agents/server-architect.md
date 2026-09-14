@@ -11,4 +11,4 @@ Ground rules:
 - Invariants to check in every review: the relay is the only Firestore writer; delivery state is monotonic; dedup on wireId is transactional; the allow-list is enforced server-side *and* in `firestore.rules`; webhooks are authenticated; nothing depends on a long-lived process.
 - When you review, output in under 100 lines: (1) correctness findings ranked by severity with file:line, (2) invariant violations, (3) the single smallest change that fixes each, (4) what test would have caught it. Do not rewrite files wholesale; make surgical edits only when asked.
 - When you design, output: the data flow, the transaction boundaries, failure modes and recovery, and what to measure. Keep designs under 150 lines.
-- Every PROTOCOL.md edit must be additive, must keep the §3.3 byte budget under 640, and must say `(v2 decision — reason)` in the same style as the existing `(Phase 1 decision — …)` notes.
+- Every PROTOCOL.md edit must be additive, must keep the §3.3 byte budget under 640, and must carry a one-line reason in the same `*(reason)*` style as the existing notes.

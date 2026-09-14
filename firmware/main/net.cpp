@@ -116,7 +116,7 @@ static volatile net_mqtt_rc_class_t s_last_class = NET_MQTT_RC_NONE;
 static volatile bool s_handler_busy = false; // true while the MQTT event
                                              // handler is inside an AT
                                              // transaction or the app
-                                             // callback (Phase 6 interlock)
+                                             // callback (see the RTS interlock below)
 
 static volatile uint32_t s_memfull_count = 0;
 static volatile uint32_t s_oversize_count = 0;
@@ -180,7 +180,7 @@ static void pager_mqtt_event_handler(WMMQTTEventType event, const WMMQTTEventDat
         // L3: mqttConnect() frees the ENTIRE local topic table before
         // connecting and nothing auto-resubscribes. Must resubscribe on
         // every connect, from here, exactly like the vendor's examples/mqtts.
-        // Same Phase 6 interlock as the MESSAGE case below: this is an AT
+        // Same RTS interlock as the MESSAGE case below: this is an AT
         // transaction issued from the event task, so modes_run() must not
         // light-sleep (and deassert RTS) underneath it.
         s_handler_busy = true;
@@ -210,12 +210,12 @@ static void pager_mqtt_event_handler(WMMQTTEventType event, const WMMQTTEventDat
             ESP_LOGD(TAG, "PUBACK mid=%d", data->mid);
         }
         // §4.1 r6 / §4.2: freeing the matching pending_ack/pending_up RTC
-        // entry belongs to msg.c (Phase 5), which is the thing that knows
+        // entry belongs to msg.c, which is the thing that knows
         // which entry a given publish was for. No such entries exist yet.
         break;
 
     case WALTER_MODEM_MQTT_EVENT_MESSAGE:
-        // Phase 6 interlock: net_sleep() runs on modes_run()'s task, which
+        // RTS interlock: net_sleep() runs on modes_run()'s task, which
         // is priority 1 against this task's priority 4, so it gets
         // scheduled every time this handler blocks (mqttReceive()'s AT
         // round trip, ui.c's 10ms disp_wait_busy() poll). Without this

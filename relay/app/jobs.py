@@ -7,42 +7,25 @@ docs/SERVER_PLAN.md §5.7, §5.8.
    2xx) -- at most 10 per device, oldest first, the same cap/ordering as the
    online-edge republish (both come from `messages_store.
    list_pending_for_device`).
-1b. **(Phase 5 addition, beyond §5.8's literal text)** Retry *non-pager*
-   backend deliveries still `queued` -- today just `sms`
-   (`app/backends/sms_stub.py`), the first non-pager adapter that can
-   actually queue/fail. §5.8 item 1 as written only names pager retries
-   (the only backend that existed when it was written); §5.2's general rule
-   ("Any failure ... enqueues a retry ... max 5 -> failed") is not scoped to
-   any one kind, so this closes that gap the smallest way that fits the
-   existing architecture: `messages_store.list_recent_queued_by_kind` scans
-   recently-created messages (bounded, same `createdAt` index the pager
-   query already uses) for a still-`queued` delivery of a given kind, and
-   `Routing.redeliver` (the generic sibling of `redeliver_pager`, which
-   stays for its device-id-keyed fast path) re-invokes that one backend's
-   `deliver()`. `tools/e2e_v2.py`'s `fanout` scenario is what this addition
-   exists to make pass (docs/SERVER_PLAN.md §8 scenario 7's "confirm the sms
-   delivery goes through the retry path ... reaches 'failed' after the
-   attempts cap" has no other mechanism to attach to, since sms deliveries
-   carry no device id and never populate `pendingDeviceIds`). A real
-   per-adapter Cloud Tasks enqueue-at-send-time (rather than this
-   scan-on-tick fallback) is still Phase 7/8 scope, per `app/tasks.py`'s
-   docstring -- this is deliberately the smallest addition that gives the
-   phase's own new backend a working retry path, not a rewrite of the retry
-   architecture.
+1b. Retry *non-pager* backend deliveries still `queued` -- today just `sms`.
+   §5.8 item 1 as written only names pager retries (the only backend that
+   existed when it was written), but §5.2's general rule ("Any failure ...
+   enqueues a retry ... max 5 -> failed") is not scoped to any one kind.
+   `messages_store.list_recent_queued_by_kind` scans recently-created
+   messages (bounded, same `createdAt` index the pager query already uses)
+   for a still-`queued` delivery of a given kind, and `Routing.redeliver`
+   (the generic sibling of `redeliver_pager`, which stays for its
+   device-id-keyed fast path) re-invokes that one backend's `deliver()`.
+   This is the only retry path an sms delivery has: sms deliveries carry no
+   device id and never populate `pendingDeviceIds`. A per-adapter Cloud
+   Tasks enqueue-at-send-time (rather than this scan-on-tick fallback)
+   remains the better long-term shape -- see `app/tasks.py`'s docstring.
 2. Clear `locReqs/{d}` documents older than `app.location.loc_req_ttl_s()`
-   (Phase 4, PROTOCOL.md §13.4) -- `app.location.clear_stale_loc_reqs`.
+   (PROTOCOL.md §13.4) -- `app.location.clear_stale_loc_reqs`.
 
-Item 3 (drop push tokens past their error threshold) is Phase 5/8
-(retention) work -- there is nothing yet for it to do (no code increments a
-push token's `errorCount` before a real FCM client exists in Phase 6), so
-it is left out rather than stubbed as a no-op that would need to be
-remembered later.
-
-This is what finally gives `app/store/legacy.py`'s TODO-flagged
-`retry_queued` a real sibling for the v2 model -- see `app/ingest.py`'s
-`retry_queued` docstring for why that method stays rather than being
-deleted (it retries a different, still-live storage model, the legacy
-per-device thread, that `tick()` has no equivalent of).
+Item 3 (drop push tokens past their error threshold) has nothing to do yet:
+no code increments a push token's `errorCount`. Left out rather than stubbed
+as a no-op that would need to be remembered later.
 
 ## `sweep()` (§5.7, weekly via Cloud Scheduler, or `POST /internal/sweep`
    on demand)
@@ -50,28 +33,28 @@ per-device thread, that `tick()` has no equivalent of).
 Retention settings are a count + unit (`{n, unit: 'days'|'weeks'}`,
 `app/store/settings.py`), converted to seconds only here. Six collections
 are swept, each by its own `createdAt` (or, for `conversations`,
-`lastMessageAt`) field against its own class's cutoff (messages/wireIds/
+`lastMessageAt`) field against its own class's cutoff: messages/wireIds/
 conversations use `retention.messages`; locations/locWireIds/locReqs use
-`retention.locations` -- `(build finding, phase 4 review)` flagged that
-`locWireIds` needs sweeping alongside `locations` or it grows unbounded, and
-`locReqs` similarly has no other eventual cleanup once `app.location.
-clear_stale_loc_reqs`'s much shorter 15-minute TTL has already fired):
+`retention.locations`. `locWireIds` needs sweeping alongside `locations` or
+it grows unbounded, and `locReqs` similarly has no other eventual cleanup
+once `app.location.clear_stale_loc_reqs`'s much shorter 15-minute TTL has
+already fired.
 
 - `messages` (+ their `wireIds/{wireId}_{recipientUid}` companion, looked up
   from the message doc's own `wireId`/`recipientUid` fields rather than a
   second query).
-- `wireIds`, independently, by its own `createdAt` (`(build finding, phase 6
-  review)` M1: today every `wireIds` doc is only ever reachable through its
-  parent message's `wireId`/`recipientUid` fields, so a future deletion path
-  that removes the message *without* going through this sweep's paired
-  delete above -- Phase 8's "deleting a user removes every document keyed
-  by their UID" -- would otherwise orphan it permanently. This pass is pure
-  hygiene/bounded-growth, not a dedup-safety fix: an orphaned `wireIds` doc
-  is inert garbage either way, never re-read once its message is gone. Never
-  double-counts against the paired pass above -- a `wireIds` doc shares its
-  parent message's `createdAt` exactly, since both are written in the same
-  transaction, so by the time this pass's query runs, anything the paired
-  pass already deleted this same call is already gone).
+- `wireIds`, independently, by its own `createdAt`. Today every `wireIds`
+  doc is only ever reachable through its parent message's `wireId`/
+  `recipientUid` fields, so a future deletion path that removes the message
+  *without* going through this sweep's paired delete above (§5.7's "deleting
+  a user removes every document keyed by their UID") would otherwise orphan
+  it permanently. This pass is pure hygiene/bounded-growth, not a
+  dedup-safety fix: an orphaned `wireIds` doc is inert garbage either way,
+  never re-read once its message is gone. It never double-counts against the
+  paired pass above -- a `wireIds` doc shares its parent message's
+  `createdAt` exactly, since both are written in the same transaction, so by
+  the time this pass's query runs, anything the paired pass already deleted
+  in the same call is already gone.
 - `locations` (a `COLLECTION_GROUP` query across every `devices/{d}/
   locations` subcollection).
 - `locWireIds` (the `/loc` dedup marker, keyed by the wire envelope's own
@@ -80,16 +63,16 @@ clear_stale_loc_reqs`'s much shorter 15-minute TTL has already fired):
   so it is swept independently by its own `createdAt`).
 - `locReqs` (a longer-lived safety net alongside `clear_stale_loc_reqs`'s
   15-minute TTL).
-- `conversations`, by `lastMessageAt` (`(build finding, phase 6 review)` M2:
-  without this, a `conversations/{convKey}` summary -- `lastPreview`, a
-  truncated message body, and `unread` counts, both readable by either
-  participant per `firestore.rules` -- outlives every message in its thread
-  once the `messages` pass above has swept them all, which is chat content
-  surviving its configured retention period. Uses the same `retention.
-  messages` cutoff messages themselves use, since a conversation summarizes
-  messages rather than having a retention class of its own).
-- `gchatLinkCodes` (`(build finding, phase 7 review, closed phase 8)`):
-  `app/store/backends.py`'s `set_gchat_link_code`/`pop_gchat_link_code` --
+- `conversations`, by `lastMessageAt`. Without this, a
+  `conversations/{convKey}` summary -- `lastPreview`, a truncated message
+  body, and `unread` counts, both readable by either participant per
+  `firestore.rules` -- outlives every message in its thread once the
+  `messages` pass above has swept them all, which is chat content surviving
+  its configured retention period. Uses the same `retention.messages` cutoff
+  messages themselves use, since a conversation summarizes messages rather
+  than having a retention class of its own.
+- `gchatLinkCodes`: `app/store/backends.py`'s `set_gchat_link_code`/
+  `pop_gchat_link_code` --
   a code is popped (read-then-delete) the moment it's used, but one that is
   *never* used (the user never sends `/link CODE`, or mistypes it and gives
   up) sits in Firestore forever with nothing else to clean it up. Unlike
@@ -160,13 +143,13 @@ logger = logging.getLogger("relay.jobs")
 # docs/SERVER_PLAN.md §5.8: "at most 10 per device" for pager retries.
 NON_PAGER_RETRY_KINDS: tuple[str, ...] = ("sms",)
 NON_PAGER_RETRY_SCAN_LIMIT = 50
-# (Phase 6 M3 fix, build review) mirrors §5.8 item 1's own "at most 10 per
-# device" pager-retry cap -- caps how many non-pager retries `tick()`
-# actually *dispatches* (not scans; `NON_PAGER_RETRY_SCAN_LIMIT` above still
-# bounds the read) per call, so a broker-and-Twilio-mock-both-down tick
-# can't approach Cloud Run's request timeout by inline-running up to
-# `NON_PAGER_RETRY_SCAN_LIMIT` * `sms_stub.REQUEST_TIMEOUT_S` (~250s) worth
-# of blocking HTTP calls. Same order of magnitude, same reasoning as §5.8's
+# Mirrors §5.8 item 1's own "at most 10 per device" pager-retry cap -- caps
+# how many non-pager retries `tick()` actually *dispatches* (not scans;
+# `NON_PAGER_RETRY_SCAN_LIMIT` above still bounds the read) per call, so a
+# tick with both the broker and Twilio down can't approach Cloud Run's
+# request timeout by inline-running up to `NON_PAGER_RETRY_SCAN_LIMIT` *
+# `sms_twilio.REQUEST_TIMEOUT_S` (~250s) worth of blocking HTTP calls. Same
+# order of magnitude, same reasoning as §5.8's
 # existing cap; a straggler beyond the cap is just retried on the *next*
 # tick, 5 minutes later -- no different from today's pager cap already
 # working that way.
@@ -329,7 +312,7 @@ def _sweep_by_created_at(
     commit (`_AutoBatch.reserve` below guarantees the pair is never split
     across two commits, so a crash or a Cloud Run timeout between the two is
     never possible -- both commit together or neither does). `created_at_field`
-    (Phase 6 M2 fix) lets `conversations` reuse this same loop against its own
+    lets `conversations` reuse this same loop against its own
     `lastMessageAt` field rather than `createdAt` -- a conversation summary
     has no `createdAt` of its own, only the timestamp of its most recent
     message."""
@@ -445,19 +428,19 @@ def sweep() -> SweepResult:
     loc_reqs_deleted = _sweep_by_created_at(
         lambda: db.collection("locReqs"), loc_cutoff, batch_size
     )
-    # (Phase 6 M1 fix, build review) `wireIds` docs no longer reachable only
-    # as a side effect of deleting their parent `messages` doc (see
-    # `create_message`'s `createdAt` write) -- swept independently, by the
-    # same `retention.messages` cutoff, so a doc orphaned by any other
-    # deletion path (today: none; Phase 8's future user-deletion pass is the
-    # motivating case) still gets reclaimed on its own schedule instead of
-    # growing unbounded. Whatever the message-paired pass above already
+    # `wireIds` docs are not reachable only as a side effect of deleting
+    # their parent `messages` doc (see `create_message`'s `createdAt`
+    # write) -- they are swept independently, by the same
+    # `retention.messages` cutoff, so a doc orphaned by any other deletion
+    # path (today: none; a future user-deletion pass is the motivating case)
+    # still gets reclaimed on its own schedule instead of growing
+    # unbounded. Whatever the message-paired pass above already
     # deleted in *this* call is gone by the time this query runs, so the two
     # counts never double-count the same document.
     orphaned_wire_ids_deleted = _sweep_by_created_at(
         lambda: db.collection("wireIds"), msg_cutoff, batch_size
     )
-    # (Phase 6 M2 fix, build review) `conversations/{convKey}` summary docs
+    # `conversations/{convKey}` summary docs
     # (`lastPreview`, a truncated message body; `unread` counts) otherwise
     # outlive every message in their thread once `messages` above has swept
     # them all -- chat content surviving its configured retention period.
@@ -468,8 +451,7 @@ def sweep() -> SweepResult:
     conversations_deleted = _sweep_by_created_at(
         lambda: db.collection("conversations"), msg_cutoff, batch_size, created_at_field="lastMessageAt"
     )
-    # (Phase 8 hardening, closing the phase 7 review's finding) `gchatLinkCodes`
-    # -- swept by its own `expiresAt` (an int epoch, already-expired cutoff),
+    # `gchatLinkCodes` -- swept by its own `expiresAt` (an int epoch, already-expired cutoff),
     # not a `retention.*` window -- see this module's docstring.
     gchat_link_codes_deleted = _sweep_expired(
         lambda: db.collection("gchatLinkCodes"), int(time.time()), batch_size

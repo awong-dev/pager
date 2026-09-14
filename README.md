@@ -11,21 +11,26 @@ one charge.
 
 ## Status
 
-MVP (text relay only — see `HANDOFF.md` §1 for what's explicitly out of scope) is code-complete:
-relay, protocol, device simulator, parent web page, and firmware are all implemented and verified
-everywhere possible without a physical device. Nothing has run on real hardware yet — that's the
-actual next step, not more code. See `HANDOFF.md`'s status note at the top for the current
-punch list.
+**Server side: built and tested.** The relay, protocol, Firestore data model, routing and
+delivery backends (web app, SMS, Google Chat, the pager itself), location, the Next.js web app,
+the Python test client and the Terraform deployment are all implemented, with unit tests and an
+end-to-end suite running against a real local stack in CI.
+
+**Never deployed, never run on hardware.** Three things need a human before this is a real
+system: a Walter board to flash (see `firmware/README.md`'s measurement checklist and residual
+risks), a GCP project and EMQX Cloud account to deploy into (see `infra/README.md`'s runbook),
+and Twilio / Google Workspace accounts if you want the SMS and Google Chat backends (see
+`relay/README.md`). Nothing about those is code work.
 
 ## Repo map
 
 | Path | What it is |
 |---|---|
-| `docs/PROTOCOL.md` | Authoritative wire contract — topics, message schema, ack state machine, power/latency budget. Code must conform to this, not the reverse. |
-| `docs/SERVER_PLAN.md` | Plan for the v2 server stack: user registry, allow-lists, location, multi-backend delivery (web app / SMS / Google Chat), Next.js+MUI web app on Firebase (Firestore, Auth, FCM, Hosting), scale-to-zero Cloud Run relay behind the broker's rule engine, all via Terraform, and the Python MQTT test client. Not started. |
-| `HANDOFF_V2.md` | Execution brief for building the v2 server stack unattended on Sonnet: rules, phases, model policy, kickoff command (`docs/kickoff-v2.md`). |
-| `HANDOFF.md` | Original build brief + phase-by-phase history + current status. |
-| `relay/` | FastAPI relay + MQTT gateway + parent web page. See `relay/README.md` to run it locally. |
-| `firmware/` | ESP-IDF firmware for the Walter (ESP32-S3 + Sequans GM02SP) device. See `firmware/README.md` for build instructions, hardware measurement checklist, and known residual risks. |
-| `tools/` | `send.py` (send a message via the relay API), `pager_client.py` (v2 test client — simulated device + server driver, `docs/SERVER_PLAN.md` §8), `e2e_v2.py` (v2 end-to-end suite against the real docker-compose stack), `mocks/twilio_mock.py` (Twilio Messages API test double), `emqx_setup.py` (provisions the broker's rule engine for local dev). |
-| `.github/workflows/ci.yml` | Runs the relay's unit tests and the end-to-end suite on push. |
+| `docs/PROTOCOL.md` | Authoritative wire contract — topics, message schema, ack state machine, location, power/latency budget. Code conforms to this, not the reverse. |
+| `docs/SERVER_PLAN.md` | Design reference for the server stack: user registry, allow-lists, location, multi-backend delivery, the web app, Firestore schema and security rules, cost analysis, and the Terraform layout. |
+| `relay/` | FastAPI relay: webhook ingest, routing, delivery backends, admin and conversation APIs, retention. See `relay/README.md` to run it locally. |
+| `web/` | Next.js + MUI web app on Firebase (Auth, Firestore listeners, FCM). See `web/README.md`. |
+| `firmware/` | ESP-IDF firmware for the Walter (ESP32-S3 + Sequans GM02SP) device. See `firmware/README.md` for hardware, build instructions, the measurement checklist, and known residual risks. |
+| `infra/` | Terraform for GCP (Cloud Run, Firestore, Firebase Hosting/Auth, Scheduler, Tasks, Secret Manager, WIF) plus the deployment runbook in `infra/README.md`. |
+| `tools/` | `pager_client.py` (simulated device + server driver), `e2e_v2.py` (end-to-end suite against the real docker-compose stack), `send.py` (send a message from the CLI), `emqx_setup.py` (provisions the broker's rule engine for local dev), `mocks/twilio_mock.py`. |
+| `.github/workflows/` | `ci.yml` runs the relay unit tests and the end-to-end suite on push; `deploy.yml` is the deploy pipeline, inert until a human wires up Workload Identity Federation. |

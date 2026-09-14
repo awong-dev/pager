@@ -17,12 +17,10 @@ from tests.firebase_test_utils import auth_header
 
 def make_settings(**overrides: object) -> Settings:
     defaults = {
-        "relay_token": "unused",
         "broker_api_url": "http://unused.invalid/api/v5",
         "broker_api_key": None,
         "broker_api_secret": None,
         "webhook_key": "test-webhook-key",
-        "db_path": "unused.db",
         "dev_mode": True,
         "google_cloud_project": None,
         "firestore_emulator_host": None,
@@ -128,7 +126,7 @@ def _code_from_sms(sent: list[tuple[str, str]]) -> str:
 def test_create_sms_backend_auto_start_link_sends_code_and_stays_disabled(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ):
-    """`(build addition, phase 7)`: `POST /api/me/backends` now calls the
+    """`POST /api/me/backends` calls the
     new backend's `start_link()` -- for `sms` that texts a verify code.
 
     **H1**: the code is never stored in `config` (readable by the backend's

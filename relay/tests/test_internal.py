@@ -1,6 +1,6 @@
 """`/internal/tick`, `/internal/sweep` -- docs/SERVER_PLAN.md §5.1, §5.8.
 
-`(build addition, phase 8 hardening)`: real OIDC verification
+Real OIDC verification
 (`app/routers/internal.py`, `app.auth.verify_internal_oidc_token`) replaces
 the previous DEV_MODE-only gate. As with `tests/test_gchat.py`'s treatment of
 Google Chat's bearer JWT, there is no real Google-issued OIDC ID token
@@ -82,12 +82,10 @@ def _sign(
 
 def make_settings(**overrides: object) -> Settings:
     defaults = {
-        "relay_token": "unused",
         "broker_api_url": "http://unused.invalid/api/v5",
         "broker_api_key": None,
         "broker_api_secret": None,
         "webhook_key": "test-webhook-key",
-        "db_path": "unused.db",
         "dev_mode": True,
         "google_cloud_project": None,
         "firestore_emulator_host": None,
@@ -105,7 +103,7 @@ def client() -> Iterator[TestClient]:
 
 
 def test_tick_not_found_replaced_by_401_when_dev_mode_off_and_no_token():
-    """`(build note)`: the pre-phase-8 behaviour was a 404 ("this route
+    """An earlier revision answered 404 ("this route
     doesn't exist without DEV_MODE"); that only made sense before these
     routes had a real, always-reachable auth story for Cloud Scheduler to
     call. A missing/invalid token is now correctly a 401 auth failure."""

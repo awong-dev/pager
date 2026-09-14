@@ -1,18 +1,16 @@
 """Business logic for inbound device traffic, arriving over
-`POST /webhooks/mqtt` (see app/routers/webhooks.py) instead of a live MQTT
-session. This is what `app/mqtt_gateway.py` did against a `Transport` in the
-MVP; the ack state machine, dedup, and the online-edge republish rule are
-unchanged (docs/PROTOCOL.md §4/§5) -- only the storage engine underneath
-changed (docs/SERVER_PLAN.md §4.8, §5 `ingest.py`).
+`POST /webhooks/mqtt` (see app/routers/webhooks.py) rather than over a live
+MQTT session the relay holds open: the broker's rule engine posts each
+`pager/+/up`, `/status` and `/loc` message here (docs/SERVER_PLAN.md §4.8,
+§5 `ingest.py`). The ack state machine, dedup, and the online-edge republish
+rule are exactly docs/PROTOCOL.md §4/§5.
 
-**Phase 6 deleted the MVP's device-scoped legacy model** (`app/store/
-legacy.py`, `app/routers/legacy.py`, the `RELAY_TOKEN`-bearer endpoints) --
-every code path here now assumes the uid-addressed model (`docs/SERVER_PLAN.md`
-§3: `messages/{id}`, the allow-list, per-backend `deliveries`), reached
-through `app.routing.Routing`. A `device_id` that is not a registered
+Every code path here assumes the uid-addressed model (docs/SERVER_PLAN.md §3:
+`messages/{id}`, the allow-list, per-backend `deliveries`), reached through
+`app.routing.Routing`. A `device_id` that is not a registered
 `devices/{deviceId}` document (i.e. was never created through
-`POST /api/admin/devices`) has nowhere to route to any more: its traffic is
-logged and dropped, the same class of event as an unknown message id.
+`POST /api/admin/devices`) has nowhere to route to: its traffic is logged and
+dropped, the same class of event as an unknown message id.
 
 No injected `Store`: `app/store/*` talk to the one process-wide Firestore
 client (`app/db/firestore.py`). `Ingest` takes a `BrokerClient` (for the
@@ -131,8 +129,7 @@ class Ingest:
         if device is None:
             # No registered `devices/{device_id}` doc -- e.g. a device id
             # that was never created through `POST /api/admin/devices`.
-            # There is no store for this any more (the legacy device-scoped
-            # thread was deleted in Phase 6), so this is a drop + log, the
+            # There is nowhere to route it, so this is a drop + log, the
             # same security class as an unknown recipient.
             logger.warning("up message %s from unregistered device %s dropped", env.id, device_id)
             return
@@ -146,9 +143,8 @@ class Ingest:
 
     def _handle_v2_up_message(self, device: devices_store.Device, env: UpEnvelope) -> None:
         # `routing.send()` does the allow-list check, the transactional
-        # dedup-by-wireId (covers the same QoS-1/at-least-once redelivery
-        # case as the legacy path's `insert_up_message`), and the fan-out to
-        # the recipient's enabled backends.
+        # dedup-by-wireId (which covers QoS-1 at-least-once redelivery), and
+        # the fan-out to the recipient's enabled backends.
         result = self._routing.send(
             sender_uid=device.ownerUid,
             recipient_alias=env.to,
@@ -199,9 +195,7 @@ class Ingest:
 
         device = devices_store.get_device(device_id)
         if device is None:
-            # No registered device -- nowhere to store status any more
-            # (the legacy per-device status collection was deleted in
-            # Phase 6).
+            # No registered device -- nowhere to store status.
             logger.info("status for unregistered device %s dropped", device_id)
             return
 

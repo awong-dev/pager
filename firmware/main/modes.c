@@ -2,11 +2,11 @@
 // button short/long press state machine.
 //
 // Authority: docs/PROTOCOL.md §4.1 (ack rules), §5.4 (status cadence), §8
-// (wake sources), §9 (RTC memory, rewritten Phase 5), §11 (mode funnel).
+// (wake sources), §9 (RTC memory), §11 (mode funnel).
 //
 // modes.c is the only place that touches the RTC struct and the only place
 // that changes `mode` (funnelled through set_mode(), per §11). It owns the
-// button state machine (Phase 5 Part C) and wires msg.c/ui.c together.
+// button state machine and wires msg.c/ui.c together.
 //
 // All power-effect comments are PENDING_HW.
 
@@ -45,7 +45,7 @@ static const char *TAG = "modes";
 #define PAGER_WAKE_INTERVAL_SLEEP_MS 5000u  // T=5s sleep mode, PROTOCOL.md §8.2
 #define PAGER_WAKE_INTERVAL_ACTIVE_MS 2000u // T=2s active mode
 #define PAGER_POST_WAKE_YIELD_MS 50u        // >=30ms floor (L4); 50ms per §8.2's own margin
-#define PAGER_ACTIVE_IDLE_TIMEOUT_S (10 * 60) // 10 min, HANDOFF.md §2
+#define PAGER_ACTIVE_IDLE_TIMEOUT_S (10 * 60) // 10 min, firmware/README.md
 #define PAGER_STATUS_HEARTBEAT_S 3600u         // §5.4(d)
 #define PAGER_CHECKCOMM_EVERY_N_WAKES 60u      // F4: ~5 min at T=5s
 #define PAGER_MODEM_RESET_MIN_INTERVAL_US ((int64_t) 10 * 60 * 1000000) // F4 rate limit
@@ -61,30 +61,26 @@ static const uint32_t k_backoff_s[] = { 5, 15, 60, 300 };
 #define PAGER_BACKOFF_STEPS (sizeof(k_backoff_s) / sizeof(k_backoff_s[0]))
 
 // ---------------------------------------------------------------------------
-// RTC memory contract (PROTOCOL.md §9, rewritten Phase 5). The dedup/ack/
-// reply/unread state now lives in msg_rtc_t (msg.h), embedded here as a
+// RTC memory contract (PROTOCOL.md §9). The dedup/ack/
+// reply/unread state lives in msg_rtc_t (msg.h), embedded here as a
 // nested `msg` field; modes.c remains the sole owner of the enclosing
 // struct, its magic/crc32 pair and rtc_save() (§9.3), and hands msg.c a
 // typed pointer plus lock/unlock/save callbacks via msg_bind_rtc().
 //
-// Phase 4 shipped a 48-byte-snippet stopgap here (PAGER_RTC_SNIPPET_BYTES /
-// PAGER_MSG_RING_MAX / PAGER_PENDING_UP_MAX) because the measured 7003-byte
-// walter-modem RTC footprint (see sdkconfig.defaults) left only ~1184 of
-// the 8192-byte RTC_SLOW region for this struct — far short of PROTOCOL.md
-// §9's original full-body sizing. Phase 5's storage-contract rewrite (§9.3)
-// resolves that by keeping full bodies out of RTC entirely (they live in
-// msg.c's RAM-resident s_thread, §9.5) and only mirroring the single
-// newest-unread message plus small id-only queues in RTC. That whole
-// stopgap approach is superseded; nothing from it survives below.
+// The measured 7003-byte walter-modem RTC footprint (see
+// sdkconfig.defaults) leaves only ~1184 of the 8192-byte RTC_SLOW region
+// for this struct, far short of what storing full message bodies here would
+// need. §9.3 resolves that by keeping full bodies out of RTC entirely (they
+// live in msg.c's RAM-resident s_thread, §9.5) and only mirroring the
+// single newest-unread message plus small id-only queues in RTC.
 // ---------------------------------------------------------------------------
 
 #define PAGER_ID_MAX_LEN 17 // 16 chars + NUL, PROTOCOL.md §1/§3.1
 
 // magic encodes both validity and a layout version tag (per CLAUDE.md's RTC
-// convention: "a version tag and a CRC"). Bumped from Phase 4's layout
-// (0x50475231): the msg_rtc_t sub-struct below is binary-incompatible with
-// Phase 4's pending_acks/pending_up/msg_ring arrays, and a stale-but-CRC-
-// valid struct read across that change would otherwise decode as garbage.
+// convention: "a version tag and a CRC"). Bump it on any layout change: a
+// stale-but-CRC-valid struct read across an incompatible change would
+// otherwise decode as garbage.
 #define PAGER_RTC_MAGIC 0x50475232u // "PGR" + layout version 2
 
 typedef enum {
@@ -107,9 +103,9 @@ typedef struct {
     char session_id[12]; // "s_" + 8 hex + NUL, PROTOCOL.md §1
 
     uint8_t mode; // pager_mode_t
-    // Part A bug #1 fix: this is a MONOTONIC deadline (esp_timer_get_time()
-    // microseconds), not wall-clock epoch seconds. The Phase 4 version
-    // compared against approx_epoch(), which reads 0 until the network
+    // This is a MONOTONIC deadline (esp_timer_get_time()
+    // microseconds), not wall-clock epoch seconds. Comparing against
+    // approx_epoch() would not work: it reads 0 until the network
     // clock arrives (§3.5) — combined with the "!=0" guard on the exit
     // check, that meant a device with no clock yet never left active mode
     // (stuck at 7-17mA instead of 1.8-2.1mA), and then the window could
@@ -312,11 +308,10 @@ static void set_mode(pager_mode_t new_mode, pager_mode_reason_t reason)
         g_rtc.mode = (uint8_t) new_mode;
     }
     if (new_mode == PAGER_MODE_ACTIVE) {
-        // Part A bug #2 fix: refresh the deadline on every call while
-        // active, not only on the sleep->active edge (Phase 4's early
-        // return on "mode unchanged" meant 10 minutes was measured from
-        // mode *entry*, not from the last activity - HANDOFF.md §2 requires
-        // the latter). modes_note_activity() below is the lightweight path
+        // Refresh the deadline on every call while active, not only on the
+        // sleep->active edge: an early return on "mode unchanged" would
+        // measure the 10 minutes from mode *entry* rather than from the
+        // last activity, and firmware/README.md requires the latter. modes_note_activity() below is the lightweight path
         // for this; set_mode() also refreshes it here so a fresh incoming
         // message or button press extends the window even though it also
         // happens to already be active.
@@ -371,7 +366,7 @@ static void on_incoming_message(const char *topic, const char *body, uint16_t le
 
     switch (r) {
     case MSG_INGEST_NEW: {
-        // Phase 6 fix: copy the id BEFORE rendering. `out` points into
+        // Copy the id BEFORE rendering. `out` points into
         // msg.c's s_thread ring, which thread_insert_locked() memmoves on
         // every insert; a reply submitted from modes_run()'s task (Enter /
         // long-press -> msg_queue_reply()) while this render is in flight
@@ -502,12 +497,11 @@ static void run_modem_health_check(void)
 }
 
 // ---------------------------------------------------------------------------
-// Part C: button short/long press state machine. Replaces Phase 4's
-// handle_button_wake(), which could not distinguish short from long press
-// and, worse, used a LEVEL wake (esp_sleep_enable_ext0_wakeup(..., 0)):
-// esp_light_sleep_start() returns immediately for as long as the button is
-// held, so a held button busy-looped the wake-and-drain cycle at ~40mA -
-// roughly a day and a half to drain the cell. modes_run() now skips
+// Button short/long press state machine. Note the hazard it exists to
+// avoid: a LEVEL wake (esp_sleep_enable_ext0_wakeup(..., 0)) makes
+// esp_light_sleep_start() return immediately for as long as the button is
+// held, so a held button busy-loops the wake-and-drain cycle at ~40mA -
+// roughly a day and a half to drain the cell. modes_run() skips
 // net_sleep() entirely whenever this FSM is not IDLE (same pattern as the
 // composer-open carve-out), which both fixes that battery bug and gives the
 // FSM the frequent polling it needs to measure press duration.
@@ -588,7 +582,7 @@ static void button_fsm_step(int level, int64_t now_us)
                 s_btn_state = BTN_DOWN;
                 s_btn_t0_us = now_us;
                 s_btn_debounce_start_us = 0;
-                // HANDOFF.md §2: button press enters active mode.
+                // firmware/README.md: button press enters active mode.
                 set_mode(PAGER_MODE_ACTIVE, MODE_REASON_BUTTON);
             }
         } else {
@@ -675,7 +669,7 @@ void modes_boot(void)
     }
 
     rtc_lock();
-    g_rtc.mode = (uint8_t) PAGER_MODE_SLEEP; // HANDOFF.md §2: boot in sleep mode
+    g_rtc.mode = (uint8_t) PAGER_MODE_SLEEP; // firmware/README.md: boot in sleep mode
     rtc_save();
     rtc_unlock();
 
@@ -718,11 +712,10 @@ void modes_run(void)
                      (unsigned) oversize_delta);
         }
 
-        // Part A bug #3 fix / Part C: skip net_sleep() entirely whenever the
-        // composer is open (existing carve-out) OR the button FSM is not
-        // IDLE (new carve-out - a held button must not re-enter a level-
-        // triggered light sleep it would just immediately exit again).
-        // Phase 6: net_modem_busy() joins the carve-out. The MQTT event
+        // Skip net_sleep() entirely whenever the composer is open, OR the
+        // button FSM is not IDLE (a held button must not re-enter a level-
+        // triggered light sleep it would just immediately exit again), OR
+        // net_modem_busy(). On that last one: the MQTT event
         // handler runs at priority 4 against this task's priority 1, so it
         // hands the CPU back here every time it blocks; without this term
         // net_sleep() deasserts RTS in the middle of the modem's response
@@ -738,7 +731,7 @@ void modes_run(void)
             vTaskDelay(pdMS_TO_TICKS(PAGER_POST_WAKE_YIELD_MS));
             assert(PAGER_POST_WAKE_YIELD_MS >= 30); // F7, debug builds only
         } else if (ui_composer_is_open()) {
-            vTaskDelay(pdMS_TO_TICKS(100)); // HANDOFF.md §2: CardKB polled at 100ms
+            vTaskDelay(pdMS_TO_TICKS(100)); // firmware/README.md: CardKB polled at 100ms
         } else {
             vTaskDelay(pdMS_TO_TICKS(PAGER_BTN_POLL_MS)); // button FSM debounce/timing granularity
         }

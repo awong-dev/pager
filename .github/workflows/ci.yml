@@ -1,9 +1,8 @@
 name: CI
 
-# docs/SERVER_PLAN.md §8 / Phase 5 ("Client complete, CI switch"): the v2
-# server stack (Firestore + Auth emulators, EMQX's rule engine, a Twilio
-# Messages API mock, the relay itself, DEV_MODE=1) replaces the MVP's
-# mosquitto-only stack -- tools/e2e_v2.py brings up and tears down
+# docs/SERVER_PLAN.md §8: the full server stack (Firestore + Auth
+# emulators, EMQX's rule engine, a Twilio Messages API mock, the relay
+# itself, DEV_MODE=1) -- tools/e2e_v2.py brings up and tears down
 # relay/docker-compose.yml itself (build, health-wait, EMQX rule-engine
 # provisioning via tools/emqx_setup.py), so this workflow just installs the
 # relay's Python deps, runs its unit tests against the emulators, then runs

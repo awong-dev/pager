@@ -52,10 +52,9 @@ variable "webhook_key_secret_id" {
   type = string
 }
 
-# Optional: only wired into the service's env if non-null, because the sms
-# backend does not need to exist for the relay to run (Phase 7 hasn't
-# landed -- docs/SERVER_PLAN.md §6.4 -- and relay/app/backends/sms_stub.py
-# already treats "not configured" as a soft no-op, not a crash).
+# Optional: only wired into the service's env if non-null. A deployment
+# with no Twilio account still runs -- relay/app/notify/sms.py treats "not
+# configured" as a soft no-op (the delivery stays queued), not a crash.
 variable "twilio_account_sid_secret_id" {
   type    = string
   default = null
@@ -72,18 +71,18 @@ variable "twilio_from_number_secret_id" {
 }
 
 variable "twilio_base_url" {
-  description = "relay/app/backends/sms_stub.py's TWILIO_BASE_URL override -- ONLY meaningful for pointing at the local Twilio mock (tools/mocks/twilio_mock.py). Leave empty in prod once Phase 7's real adapter lands and talks to Twilio's own api.twilio.com by default; kept as a variable only so a staging deployment against the mock is possible without editing this module."
+  description = "relay/app/notify/sms.py's TWILIO_BASE_URL override -- ONLY meaningful for pointing at the local Twilio mock (tools/mocks/twilio_mock.py). Leave empty in prod so the adapter talks to Twilio's own api.twilio.com; kept as a variable only so a staging deployment against the mock is possible without editing this module."
   type        = string
   default     = ""
 }
 
 variable "tasks_mode" {
-  description = "relay/app/tasks.py's TASKS_MODE. Only \"inline\" is implemented today -- anything else makes app/tasks.py raise NotImplementedError at the first delivery retry. Do not set this to \"cloud_tasks\" until Phase 8 lands a real CloudTasksQueue; the variable exists so that flip is a tfvars change, not a module edit."
+  description = "relay/app/tasks.py's TASKS_MODE. Only \"inline\" is usable end-to-end today; \"cloud_tasks\" builds tasks but has nowhere to dispatch them yet (see that module's docstring's known-gap section). The variable exists so the eventual flip is a tfvars change, not a module edit."
   type        = string
   default     = "inline"
   validation {
     condition     = var.tasks_mode == "inline"
-    error_message = "relay/app/tasks.py only implements TASKS_MODE=inline as of Phase 9; see that module's docstring."
+    error_message = "relay/app/tasks.py only supports TASKS_MODE=inline end-to-end; see that module's docstring."
   }
 }
 
@@ -112,11 +111,6 @@ variable "min_instance_count" {
 variable "max_instance_count" {
   type    = number
   default = 2
-}
-
-variable "import_data_bucket_name" {
-  description = "GCS bucket an operator uploads the MVP relay.db SQLite file into before running the import_sqlite job by hand (infra/README.md runbook). Mounted read-only into that job via Cloud Storage FUSE. Must already exist or be created by this module (see main.tf) -- either way it costs ~$0 (one small file, deleted after the one-off import)."
-  type        = string
 }
 
 variable "labels" {

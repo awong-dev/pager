@@ -1,14 +1,12 @@
 #!/usr/bin/env python3
-"""A tiny stand-in for Twilio's Messages API -- pager v2 Phase 5,
-docs/SERVER_PLAN.md §6.4/§8 scenario 7.
+"""A tiny stand-in for Twilio's Messages API -- docs/SERVER_PLAN.md §6.4,
+§8 scenario 7.
 
-Exists so `relay/app/backends/sms_stub.py` (this phase's stub) and, later,
-Phase 7's real `backends/sms_twilio.py` adapter can both be pointed at a
+Exists so `relay/app/backends/sms_twilio.py` can be pointed at a
 `TWILIO_BASE_URL` override and exercise a full outbound-send round trip
 without a real Twilio account, a real phone number, or any network access.
 
-**Endpoint shape chosen (documented per this phase's brief -- "your
-choice"):** `POST /2010-04-01/Accounts/{AccountSid}/Messages.json`, the
+**Endpoint shape:** `POST /2010-04-01/Accounts/{AccountSid}/Messages.json`, the
 *exact* path Twilio's own REST API uses for creating a message resource
 (https://www.twilio.com/docs/sms/api/message-resource#create-a-message-
 resource), accepting the same `application/x-www-form-urlencoded` body
@@ -16,17 +14,14 @@ resource), accepting the same `application/x-www-form-urlencoded` body
 SID : auth token) exactly as Twilio's client would send it -- ignored here
 (any credentials are accepted; this mock is not testing Twilio's own
 authentication). Mirroring Twilio's real path/shape means a real
-`sms_twilio.py` adapter built directly against the `twilio` Python SDK in
-Phase 7 needs only to override the SDK's base URL (`TWILIO_BASE_URL`) to
-point at this mock in tests/dev, with no change to its request-building
-code -- exactly the property this phase's brief asks for. `POST /messages`
-was considered (a shorter, made-up path) and rejected: it would work for
-this phase's httpx-based stub but would force Phase 7's *real* adapter to
-special-case test/dev mode in its request path, defeating the point of a
-"drop-in" mock.
+`sms_twilio.py` adapter built directly against the `twilio` Python SDK
+needs only to override the SDK's base URL (`TWILIO_BASE_URL`) to point at
+this mock in tests/dev, with no change to its request-building code. `POST
+/messages` was considered (a shorter, made-up path) and rejected: it would
+force the real adapter to special-case test/dev mode in its request path,
+defeating the point of a "drop-in" mock.
 
-**Failure simulation (documented per this phase's brief -- "your choice"):**
-`POST /_fail_next` (optional JSON body `{"times": <int>}`, default 1) makes
+**Failure simulation:** `POST /_fail_next` (optional JSON body `{"times": <int>}`, default 1) makes
 the next `<times>` calls to the Messages-create endpoint fail with a
 500-ish, Twilio-shaped error body
 (https://www.twilio.com/docs/api/errors) instead of succeeding, then reverts
@@ -59,7 +54,7 @@ from typing import Any
 from fastapi import FastAPI, Request, Response
 from pydantic import BaseModel
 
-app = FastAPI(title="Twilio Messages API mock (pager v2 Phase 5)")
+app = FastAPI(title="Twilio Messages API mock")
 
 
 @dataclass

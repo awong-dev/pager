@@ -2,7 +2,7 @@
  *
  * Authority: docs/PROTOCOL.md §6 (SSD1680 command sequence, refresh cadence),
  * §9.5 (frame buffer sizing), §9.4 (composer 160-byte limit, ASCII-only
- * CardKB assumption). HANDOFF.md §5 (20-partial-refresh cadence).
+ * CardKB assumption). firmware/README.md (20-partial-refresh cadence).
  *
  * No third-party display component: firmware-architect rejected
  * cleishm/idfxx_epaper_ssd1680 (idf: '>=5.5' in its manifest vs. this
@@ -76,7 +76,7 @@ void ui_show_toast(const char *text);
 /* Opens the reply composer (clears msg.c's composer buffer) and draws the
  * initial composer screen (follows the normal partial/full cadence — only
  * ui_init() and ui_composer_close() are specified to force a full refresh).
- * reply_to_id is accepted but unused in the MVP (no threaded replies). */
+ * reply_to_id is accepted but unused (no threaded replies). */
 void ui_composer_open(const char *reply_to_id);
 
 /* Closes the composer. `sent` is cosmetic (caller has already called

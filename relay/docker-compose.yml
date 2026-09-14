@@ -47,8 +47,7 @@ services:
       FIREBASE_AUTH_EMULATOR_HOST: firebase:9099
       GOOGLE_CLOUD_PROJECT: demo-pager
       DEV_MODE: "1"
-      # Phase 7: app/backends/sms_twilio.py's (app/notify/sms.py's)
-      # TWILIO_BASE_URL override, pointed at the twilio-mock service on the
+      # app/notify/sms.py's TWILIO_BASE_URL override, pointed at the twilio-mock service on the
       # compose network (see that service's own comment below). No
       # PUBLIC_BASE_URL/TWILIO_AUTH_TOKEN/GCHAT_AUDIENCE here -- this compose
       # stack exercises outbound sms only (tools/e2e_v2.py's `fanout`
@@ -58,7 +57,7 @@ services:
       # configured with a value that would only be correct for a real
       # deployment.
       TWILIO_BASE_URL: http://twilio-mock:8010
-      # Phase 8 hardening: rate limits (app/store/rate_limits.py) default to
+      # Rate limits (app/store/rate_limits.py) default to
       # real, meaningfully-bounded production values (relay/.env.example) --
       # too tight for tools/e2e_v2.py's full 9-scenario run, which makes 30+
       # admin writes and several backend-creation calls against one shared
@@ -99,10 +98,9 @@ services:
     networks:
       - pager-net
 
-  # Phase 5 (docs/SERVER_PLAN.md §6.4/§8 scenario 7): a Twilio-Messages-API-
-  # shaped test double, never a real dependency -- `app/backends/sms_stub.py`
-  # (and, in Phase 7, the real `sms_twilio.py`) point at it via
-  # TWILIO_BASE_URL. See tools/mocks/twilio_mock.py's module docstring.
+  # docs/SERVER_PLAN.md §6.4, §8 scenario 7: a Twilio-Messages-API-shaped
+  # test double, never a real dependency -- `app/notify/sms.py` points at it
+  # via TWILIO_BASE_URL. See tools/mocks/twilio_mock.py's module docstring.
   twilio-mock:
     build:
       context: ../tools/mocks

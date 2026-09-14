@@ -1,5 +1,4 @@
-"""Firestore-backed rate limiting -- docs/SERVER_PLAN.md Phase 8 hardening
-punch list item 2 (server-architect's Phase 7 review).
+"""Firestore-backed rate limiting.
 
 A fixed-window counter keyed by an arbitrary caller-chosen string
 (`"backends:{uid}"`, `"admin:{uid}"`, `"webhook_ip:sms:{ip}"`, ...), stored at

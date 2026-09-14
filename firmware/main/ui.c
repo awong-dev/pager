@@ -4,7 +4,7 @@
 // values 0xF7/0xFF are called out there as "inferred, not verified from the
 // datasheet PDF"; carried forward here unchanged, same caveat), §9.5 (frame
 // buffer sizing), §9.4 (composer limit / ASCII CardKB assumption).
-// HANDOFF.md §5 (every-20th-partial full refresh, this project's explicit
+// firmware/README.md (every-20th-partial full refresh, this project's explicit
 // requirement over the component author's "~10" suggestion).
 //
 // All timing/current/visual claims here are PENDING_HW.
@@ -41,7 +41,7 @@ static const char *TAG = "ui";
 #define SCREEN_W FB_ROWS  // 296 — landscape width, screen x maps to native row
 #define SCREEN_H (FB_ROW_BYTES * 8) // 128 — landscape height, screen y maps to native column
 
-#define PAGER_UI_PARTIAL_FULL_EVERY 20 // HANDOFF.md §5, explicit override of "~10"
+#define PAGER_UI_PARTIAL_FULL_EVERY 20 // firmware/README.md, explicit override of "~10"
 #define PAGER_UI_BUSY_TIMEOUT_US (15 * 1000000)
 #define PAGER_COMPOSER_IDLE_TIMEOUT_US ((int64_t) 60 * 1000000)
 

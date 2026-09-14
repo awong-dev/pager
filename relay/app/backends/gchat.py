@@ -11,7 +11,7 @@
 - **Link flow is inbound-message-driven, not outbound-code-driven**
   (§6.5): `start_link()` still fits the `Backend` protocol's "e.g. send a
   code" shape, but the code is *shown to the user on the web app*
-  (`/settings/backends`, Phase 6) rather than sent anywhere -- the user
+  (`/settings/backends`) rather than sent anywhere -- the user
   types it back at the app themselves, as `/link <code>` in a Chat DM.
   `complete_link()` is therefore never the real completion path (it always
   returns `False`; kept only for `Backend`-protocol conformance) -- the
@@ -28,13 +28,11 @@
   Twilio. `@alias`/single-peer resolution is `app/backends/resolve.py`'s
   `resolve_reply()`, shared with `sms_twilio.py`.
 
-**Caveat this phase's brief asked to verify (§11 D4), NOT verified**: Chat
-apps require the installing Google account to be on Google Workspace, not
-consumer Gmail -- this sandbox has no way to confirm that against a real
-Google Workspace console (see this phase's build report / `BUILD_LOG.md`'s
-`PENDING_ACCOUNT` entry). The adapter is built regardless, on the
-documented contract; if the caveat holds for the real family deployment,
-Email (§6.6) is the documented fallback slot, not built here.
+**Unverified prerequisite**: Chat apps are documented to require the
+installing Google account to be on Google Workspace, not consumer Gmail.
+That has not been confirmed against a real Workspace console. The adapter is
+built on the documented contract regardless; if the restriction does hold
+for a given deployment, Email (§6.6) is the fallback slot, not built here.
 """
 
 from __future__ import annotations
@@ -104,7 +102,7 @@ def verify_chat_bearer_token(
     JWT with a locally generated key. Left `None` (the real/prod path)
     fetches Google's published certs over HTTPS via
     `google.oauth2.id_token.verify_token` -- the `google-auth` library's
-    own standard JWT verification helper, per this phase's brief."""
+    own standard JWT verification helper."""
     if not audience:
         raise ValueError("no GCHAT_AUDIENCE configured for this deployment")
     # L2: a small clock-skew tolerance -- both verification call sites
@@ -215,11 +213,9 @@ class GChatBackend:
         # not just the `gchatLinkCodes` index above -- §6.5 says the web
         # app's `/settings/backends` page *shows the user this code*, and
         # `config` is the one place the page's existing Firestore listener
-        # already reads. `(build note, phase 7)`: the page itself
-        # (`web/app/settings/backends/page.tsx`, Phase 6) does not render
-        # `config.linkCode` for a gchat row yet -- the data is available,
-        # displaying it is a small follow-up flagged in this phase's report,
-        # not done here (out of a server-side phase's scope).
+        # already reads. Note that `web/app/settings/backends/page.tsx`
+        # does not render `config.linkCode` for a gchat row yet -- the data
+        # is available, displaying it is a small UI follow-up.
         backends_store.update_backend(
             user.uid,
             backend.id,

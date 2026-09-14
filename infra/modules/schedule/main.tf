@@ -1,5 +1,5 @@
 # Dedicated identity for Cloud Scheduler's OIDC-authenticated calls into the
-# relay's /internal/* routes. See variables.tf's module docstring: Phase 8
+# relay's /internal/* routes. See variables.tf's module docstring:
 # is what makes the relay actually check this identity; this module only
 # provisions it.
 resource "google_service_account" "scheduler" {
@@ -12,7 +12,7 @@ resource "google_service_account" "scheduler" {
 # strictly required for the call to succeed today (the service also grants
 # allUsers roles/run.invoker in relay-service/main.tf, since Hosting
 # rewrites and the broker webhook need unauthenticated access at the Cloud
-# Run layer), but this is the binding Phase 8's app-level OIDC check will
+# Run layer), but this is the binding the app-level OIDC check will
 # rely on having a real, auditable identity behind the token it verifies --
 # keep it even though it's currently redundant with the public binding.
 resource "google_cloud_run_v2_service_iam_member" "scheduler_invoker" {
@@ -78,8 +78,8 @@ resource "google_cloud_scheduler_job" "sweep" {
 
 # docs/SERVER_PLAN.md §5.2/§9.2: "backoff 30 s ... 15 min, max 5" for
 # delivery retries. Not yet enqueued into by relay/app/tasks.py (TASKS_MODE
-# stays "inline" until Phase 8 -- see relay-service/variables.tf) but
-# provisioned now so Phase 8's CloudTasksQueue has a real queue to target
+# stays "inline" -- see relay-service/variables.tf) but
+# provisioned now so app/tasks.py's CloudTasksQueue has a real queue to target
 # without another Terraform module needing to be written then.
 resource "google_cloud_tasks_queue" "delivery_retries" {
   project  = var.project_id

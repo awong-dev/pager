@@ -53,8 +53,7 @@ def send_message(
     routing: Annotated[Routing, Depends(get_routing)],
 ) -> SendMessageResponse:
     # §3.1: strip control chars on ingest from the parent API, reject if
-    # empty or oversize after stripping -- same rule `routers/legacy.py`
-    # applies to the MVP send endpoint.
+    # empty or oversize after stripping.
     body = strip_control_chars(req.body)
     if not body:
         raise HTTPException(
@@ -98,12 +97,12 @@ def mark_read(
         # from "exists but isn't yours".
         raise HTTPException(status_code=404, detail="no such message")
 
-    # S3b `build finding`: the `recipientUid` check above is the actual
-    # authz (correct and sufficient on its own), but until this check the
-    # `{alias}` path segment was otherwise ignored -- any alias 200'd
-    # regardless of whether it named this message's conversation at all.
-    # Verify it does, 404ing (same status/detail as "message not found") if
-    # not, so a mismatched alias can't silently succeed.
+    # The `recipientUid` check above is the actual authz (correct and
+    # sufficient on its own), but on its own it leaves the `{alias}` path
+    # segment unchecked -- any alias would 200 regardless of whether it
+    # named this message's conversation. Verify it does, 404ing (same
+    # status/detail as "message not found") if not, so a mismatched alias
+    # can't silently succeed.
     peer_uid = users_store.get_uid_for_alias(alias)
     if peer_uid is None or msg.convKey != messages_store.conv_key(authed.uid, peer_uid):
         raise HTTPException(status_code=404, detail="no such message")
@@ -112,10 +111,10 @@ def mark_read(
     if bid is None:
         raise HTTPException(status_code=404, detail="no webapp delivery for this message")
 
-    # S3a `build finding`: clear this conversation's unread count for the
-    # reader in the same transaction as the ack -- see
-    # `messages_store.apply_delivery_ack`'s docstring; previously `unread`
-    # only ever incremented (`create_message`) and nothing ever cleared it.
+    # Clear this conversation's unread count for the reader in the same
+    # transaction as the ack -- see `messages_store.apply_delivery_ack`'s
+    # docstring. This is the only thing that clears `unread`;
+    # `create_message` only ever increments it.
     messages_store.apply_delivery_ack(
         msg.id, bid, None, "read", int(time.time()), clear_unread_uid=authed.uid
     )
@@ -141,7 +140,7 @@ class LocateResponse(BaseModel):
     # (docs/SERVER_PLAN.md §5.6: "answer directly from that cached fix ...
     # no wire message, no locReqs doc created"). This is an intentional
     # extension of §5.1's API sketch ("202 {request_id}"), which predates
-    # §5.6's cached-answer detail -- see this phase's build report.
+    # §5.6's cached-answer detail.
     requestId: str | None = None
     cached: bool = False
     fix: LocateFixOut | None = None
@@ -161,13 +160,12 @@ def locate(
     if edge is None or not edge.locate:
         raise HTTPException(status_code=403, detail="not allowed to locate this user")
 
-    # docs/SERVER_PLAN.md's brief models one pager device per user as the
-    # common case; this phase's documented simplification for the (in
-    # principle possible) multi-device case: pick the lowest device id
-    # (lexicographic) among the target's non-revoked devices, deterministic
-    # but otherwise arbitrary -- a later phase would need a way for the
-    # caller to name *which* device a `/locate` call means. See this
-    # phase's build report.
+    # docs/SERVER_PLAN.md models one pager device per user as the common
+    # case. For the (in principle possible) multi-device case: pick the
+    # lowest device id (lexicographic) among the target's non-revoked
+    # devices -- deterministic but otherwise arbitrary. Supporting it
+    # properly would need a way for the caller to name *which* device a
+    # `/locate` call means.
     candidates = [
         d for d in devices_store.list_devices(owner_uid=target_uid) if d.revokedAt is None
     ]
