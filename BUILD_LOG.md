@@ -315,3 +315,58 @@ implementation to subagents, log every phase here.
 **Done when:** commit `v2 phase 4`. ✅
 
 ---
+
+## Phase 5 — Client complete, CI switch (2026-09-15)
+
+**This closes out the mandatory, sequential Phases 0-5.** Phases 6, 7 and 9 can now run in
+parallel per `HANDOFF_V2.md` §5.
+
+- `backend-dev` built `tools/mocks/twilio_mock.py` (records outbound SMS, can be told to fail),
+  `relay/app/backends/sms_stub.py` (a deliberately marked Phase 5 stand-in for Phase 7's real
+  Twilio adapter — no credentials, no signature verification, `TODO(orchestrator)`-marked in
+  three places so it can't be mistaken for the real thing), a real `jobs.sweep()` implementing
+  `SERVER_PLAN.md` §5.7 (retention `{n, unit}` settings converted to seconds only in the sweeper;
+  batched deletes across `messages`+`wireIds`, a `locations` collection-group sweep,
+  `locWireIds`, `locReqs`, and — after review — `wireIds`' own independent pass and
+  `conversations`), the remaining `pager_client.py` commands, `e2e_v2.py` scenarios 7-9
+  (`fanout`, `retention`, `bytes` — **all 9 scenarios now pass**), a CI switch from
+  `e2e_test.py` to `e2e_v2.py`, and `tools/send.py` re-pointed at the new API.
+- **`(build finding)`**: while switching CI, `backend-dev` found and fixed a pre-existing bug —
+  `.github/workflows/ci.yml` never actually started the Firestore/Auth emulators before running
+  `pytest`, which has required them since Phase 2b. Fixed with a bounded poll on both ports
+  (8080 and 9099 — Firestore's answers before Auth's) followed by a hard failure if either
+  doesn't come up, not a bare `sleep`.
+- `server-architect`'s review found and fixed one high-severity bug directly: the sweep's
+  write-batch loop could split a message from its `wireIds` companion across two separate batch
+  commits, so an interruption between them — the exact failure mode retention's resumability
+  requirement (§5.7) exists to survive — permanently orphaned the `wireIds` doc. Fixed by
+  reserving both writes as one unit before either is staged.
+- Three medium follow-ups closed by `backend-dev` before commit:
+  - **`wireIds` had no independent reclamation path** and would grow unbounded once Phase 8's
+    user-deletion orphans them from their message (no message left to delete them alongside).
+    Added a `createdAt` field and an independent sweep pass.
+  - **`conversations/{convKey}` summaries were never swept** — `lastPreview` (a truncated
+    message body) and `unread` counts survived their thread's retention period entirely. Added a
+    sweep pass on `lastMessageAt`.
+  - **`jobs.tick()` could block for minutes** if the broker and Twilio-mock were both down
+    simultaneously (up to 50 non-pager retries running inline with no dispatch cap, each with a
+    5s timeout). Capped actual dispatches at 10 per tick, mirroring the existing pager-retry cap.
+- **`tick()` extension beyond §5.8's literal text**: it now also retries non-pager (`sms`)
+  queued deliveries, not just pager ones — justified because sms deliveries carry no device id
+  (so `pendingDeviceIds`-based retry doesn't cover them) and the `fanout` scenario's
+  "retry → `failed` after max attempts" requirement had no other mechanism to attach to. Reuses
+  the existing attempts-capped failure machinery via a new generic `Routing.redeliver()`, and is
+  now bounded by the same 10-per-tick cap as pager retries (see above). Documented at length in
+  `jobs.py`'s module docstring — a deliberately small, scoped addition, not a rewrite of the
+  retry architecture (real Cloud Tasks enqueue-at-send-time stays Phase 7/8).
+- **`(build finding)`**: review noted `docs/SERVER_PLAN.md` §5.9's index list doesn't yet
+  mention the two new indexes (`wireIds(createdAt)`, `conversations(lastMessageAt)`) added for
+  the sweep passes above — the doc predates those passes, not a contradiction, but worth a
+  follow-up pass to keep it the source of truth.
+- Tests: `relay/tests` — **250 passed**. `tools/e2e_v2.py` — **all 9 scenarios ALL PASSED**
+  (`bootstrap`, `text_roundtrip`, `allowlist`, `republish`, `location_periodic`,
+  `location_on_demand`, `fanout`, `retention`, `bytes`).
+
+**Done when:** commit `v2 phase 5`. ✅
+
+---
