@@ -14,17 +14,32 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Request
 from firebase_admin import auth as fb_auth
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
+
+from app.store import users as users_store
 
 router = APIRouter()
 
 
 class DevTokenRequest(BaseModel):
-    uid: str
+    uid: str | None = None
+    # `tools/pager_client.py`'s `login <alias>` has no uid to give (a human
+    # signs in by alias, never a uid) -- this endpoint resolves it
+    # server-side via the same `aliases/{alias}` lookup `routing.py` uses,
+    # rather than inventing a second "resolve alias" endpoint just for the
+    # test client.
+    alias: str | None = None
+
+    @model_validator(mode="after")
+    def _require_one(self) -> DevTokenRequest:
+        if not self.uid and not self.alias:
+            raise ValueError("either uid or alias is required")
+        return self
 
 
 class DevTokenResponse(BaseModel):
     token: str
+    uid: str
 
 
 @router.post("/api/dev/token")
@@ -32,5 +47,11 @@ def mint_dev_token(req: DevTokenRequest, request: Request) -> DevTokenResponse:
     settings = request.app.state.settings
     if not settings.dev_mode:
         raise HTTPException(status_code=404, detail="not found")
-    token = fb_auth.create_custom_token(req.uid)
-    return DevTokenResponse(token=token.decode("utf-8"))
+    uid = req.uid
+    if uid is None:
+        assert req.alias is not None
+        uid = users_store.get_uid_for_alias(req.alias)
+        if uid is None:
+            raise HTTPException(status_code=404, detail=f"unknown alias: {req.alias!r}")
+    token = fb_auth.create_custom_token(uid)
+    return DevTokenResponse(token=token.decode("utf-8"), uid=uid)

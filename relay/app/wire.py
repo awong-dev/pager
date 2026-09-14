@@ -161,6 +161,18 @@ class StatusEnvelope(BaseModel):
     session: str
     ts: int | None = None
     fw: str | None = None
+    # §4.5/§5.1 (v2): display/diagnosis only -- the relay stores whatever the
+    # device reports and never writes them back (the device owns its own
+    # location duty cycle).
+    loc_period_s: int | None = None
+    loc_min_s: int | None = None
+
+    @field_validator("loc_period_s", "loc_min_s")
+    @classmethod
+    def _check_loc_timing(cls, value: int | None) -> int | None:
+        if value is not None and not (0 <= value <= 86400):
+            raise ValueError("loc_period_s/loc_min_s out of range")
+        return value
 
     @field_validator("session")
     @classmethod

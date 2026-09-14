@@ -105,3 +105,23 @@ def test_dev_token_disabled_outside_dev_mode():
     with TestClient(app) as c:
         resp = c.post("/api/dev/token", json={"uid": "whoever"})
         assert resp.status_code == 404
+
+
+def test_dev_token_mint_by_alias(client: TestClient):
+    auth_user = fb_auth.create_user(email="byalias@example.com")
+    users_store.create_user(uid=auth_user.uid, alias="byalias", display_name="By Alias")
+    resp = client.post("/api/dev/token", json={"alias": "byalias"})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["uid"] == auth_user.uid
+    assert "token" in data
+
+
+def test_dev_token_unknown_alias_is_404(client: TestClient):
+    resp = client.post("/api/dev/token", json={"alias": "ghost-alias"})
+    assert resp.status_code == 404
+
+
+def test_dev_token_requires_uid_or_alias(client: TestClient):
+    resp = client.post("/api/dev/token", json={})
+    assert resp.status_code == 422

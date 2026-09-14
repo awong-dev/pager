@@ -23,6 +23,7 @@ from pydantic import BaseModel, ConfigDict
 
 from app.auth import require_admin
 from app.store import allow as allow_store
+from app.store import backends as backends_store
 from app.store import devices as devices_store
 from app.store import settings as settings_store
 from app.store import users as users_store
@@ -215,6 +216,14 @@ def create_device(req: CreateDeviceRequest) -> CreateDeviceResponse:
         mqtt_password_hash=password_hash,
         default_to_uid=default_to_uid,
     )
+    # docs/SERVER_PLAN.md §2 decision 4: "the pager device is modelled as
+    # just another delivery backend of its owner" -- `app/routing.py`'s
+    # fan-out finds a device to publish to by looking at the owner's
+    # `kind='pager'` backends, not the `devices` collection directly, so
+    # creating the device without this would leave it undeliverable.
+    backends_store.create_backend(
+        owner_uid, kind="pager", config={"deviceId": req.deviceId}, enabled=True
+    )
     return CreateDeviceResponse(device=device, mqttUsername=req.deviceId, mqttPassword=password)
 
 
@@ -225,8 +234,12 @@ def list_devices() -> list[Device]:
 
 @router.delete("/devices/{device_id}")
 def delete_device(device_id: str) -> dict[str, bool]:
-    if devices_store.get_device(device_id) is None:
+    device = devices_store.get_device(device_id)
+    if device is None:
         raise HTTPException(status_code=404, detail="no such device")
+    for b in backends_store.list_backends(device.ownerUid):
+        if b.kind == "pager" and b.config.get("deviceId") == device_id:
+            backends_store.delete_backend(device.ownerUid, b.id)
     devices_store.delete_device(device_id)
     return {"ok": True}
 

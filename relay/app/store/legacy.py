@@ -1,8 +1,13 @@
 """Firestore-backed replacement for the MVP's SQLite `app/store.py`, used
 only by the legacy `RELAY_TOKEN` endpoints (`POST/GET /api/devices/{id}/
-messages`, deleted in Phase 6 per docs/SERVER_PLAN.md §5.1) and by
-`app/ingest.py`'s device-status/ack handling until Phase 3's `routing.py`
-replaces both with the uid-addressed `messages/{id}` model.
+messages`, deleted in Phase 6 per docs/SERVER_PLAN.md §5.1) and, for any
+`device_id` that was never registered via `POST /api/admin/devices`, by
+`app/ingest.py`'s fallback device-status/ack handling. Phase 3 adds the real
+uid-addressed `messages/{id}` model (`app/routing.py`) as the *primary* path
+for any device that *is* registered -- see `app/ingest.py`'s module
+docstring for exactly how the two are told apart. This module is not
+replaced; it stays until Phase 6 deletes it and the legacy endpoints
+together.
 
 **Not part of docs/SERVER_PLAN.md §3's schema.** That schema is keyed on
 (senderUid, recipientUid) pairs behind an allow-list, which the legacy

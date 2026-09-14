@@ -17,6 +17,7 @@ from google.cloud.firestore import SERVER_TIMESTAMP, Transaction
 from pydantic import BaseModel, ConfigDict
 
 from app.db.firestore import get_db, run_transaction
+from app.store import backends as backends_store
 
 # Same shape as PROTOCOL.md §3.1's alias regex (from/to on the wire).
 ALIAS_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,15}$")
@@ -97,6 +98,14 @@ def create_user(
         run_transaction(_txn)
     except AlreadyExists as exc:
         raise AliasTaken(f"alias already registered: {alias!r}") from exc
+
+    # docs/SERVER_PLAN.md §6.3: "Every user gets an implicit webapp backend
+    # at creation." Not part of the uid/alias transaction above (a backend
+    # doc failing to write must not roll back a user that's otherwise fine
+    # -- app/routers/me.py's backend listing is written to tolerate its
+    # absence too, matching import_sqlite.py's existing non-transactional
+    # pattern for the same backend).
+    backends_store.create_backend(uid, kind="webapp", config={}, enabled=True)
 
     fetched = get_user(uid)
     assert fetched is not None

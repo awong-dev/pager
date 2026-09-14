@@ -139,7 +139,7 @@ devices/{deviceId}/locations/{autoId}
                                {ts, fixTs, lat, lon, accM, src, cached, reqId|null, createdAt}
 messages/{id}                  {id: 'm_…', seq, convKey, uids: [a, b], senderUid, recipientUid,
                                 kind: 'text'|'loc_req'|'loc', body|null, loc|null, wireId|null,
-                                originBackendId, ts, createdAt,
+                                originBackendKind, originBackendId|null, ts, createdAt,
                                 deliveries: { {bid}: {kind, state: 'queued'|'sent'|'shown'|'read'|
                                                        'fulfilled'|'failed'|'expired',
                                                        attempts, externalId, error, sentTs, shownTs, readTs} },
@@ -163,6 +163,20 @@ settings/meta                  {schemaVersion: 2, lastSweepAt, seqCounter}
 - One message document per (sender, recipient) pair. A device up-message with no `to` and a
   broadcast default becomes N documents sharing `wireId`; dedup is `create()` of the `wireIds`
   document inside the same transaction, which fails if it exists.
+- `(build finding, phase 3 review)` **`originBackendKind` is the origin adapter's *kind*
+  (`'pager'`/`'webapp'`/…); `originBackendId` is the specific `users/{uid}/backends/{bid}`
+  document it arrived through, or `null` when the origin has no such row.** These are two
+  different fields, not one — an earlier draft of this phase stored only a single
+  `originBackendId` field holding a *kind* string, which is unrecoverable once real per-user
+  backend rows exist for a kind a user can have more than one of. `pager`/`webapp` sends pass
+  `originBackendId: null` (a device's pager backend belongs to its owner, not necessarily the
+  sender, and webapp has no row distinct from the user), relying on `originBackendKind` alone for
+  §5.2's self-loop guard. Phase 7's SMS/gchat adapters, where one user can have two backends of
+  the same kind (two phones) and "reply back through the channel it arrived on" must name the
+  exact one, pass a real `originBackendId` — the schema already has the field, so this is not a
+  migration. This is a storage-schema clarification only; nothing here is device-visible
+  (`PROTOCOL.md` is unaffected). See `relay/app/routing.py`'s module docstring for the full
+  reasoning and `relay/tests/test_routing.py` for the id-scoped-exclusion coverage.
 - `pendingDeviceIds` is what the online-edge re-publish queries (`array-contains deviceId`,
   ordered by `createdAt`, limit 10); `locReqs/{deviceId}` being a single document is what makes
   coalescing (§4.6) a transaction rather than a query.
@@ -341,7 +355,9 @@ send(sender, recipient_alias | None, kind, body, origin_backend, wire_id=None):
      sms/gchat → provider call. Any failure leaves the delivery 'queued'/'failed' with attempts+1
      and enqueues a Cloud Tasks retry (backoff 30 s … 15 min, max 5) → 'failed'
 ```
-"Excluding origin backend" is what stops an SMS reply from being echoed back to the same phone.
+`origin_backend` above is shorthand for the actual `(origin_backend_kind, origin_backend_id)`
+pair `(build finding, phase 3 review)` — see the `originBackendKind`/`originBackendId` bullet in
+§3 for why the two are stored (and passed) separately. "Excluding origin backend" is what stops an SMS reply from being echoed back to the same phone.
 Step 3 being one transaction is what guarantees a crash never leaves a message without its
 deliveries. Inline delivery in step 4 keeps the parent→pager path at one HTTP hop plus one broker
 publish — no queue in the latency-critical path.

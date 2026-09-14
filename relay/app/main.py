@@ -21,7 +21,8 @@ from app.broker import BrokerClient
 from app.config import Settings
 from app.db.firestore import get_db
 from app.ingest import Ingest
-from app.routers import admin, dev, legacy, webhooks
+from app.routers import admin, conversations, dev, internal, legacy, me, webhooks
+from app.routing import Routing
 
 logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
 logger = logging.getLogger("relay.api")
@@ -50,7 +51,13 @@ def create_app(
     async def lifespan(app: FastAPI):
         app.state.settings = settings
         app.state.broker = broker_client or BrokerClient(settings)
-        app.state.ingest = Ingest(app.state.broker)
+        # One Routing instance (and, inside it, one backend registry) per
+        # app -- shared by the webhook path (via Ingest) and every API
+        # router that sends a message, so `app/backends/pager.py`'s
+        # `BrokerClient` and `app/backends/webapp.py`'s FCM client are each
+        # constructed exactly once.
+        app.state.routing = Routing(app.state.broker)
+        app.state.ingest = Ingest(app.state.broker, app.state.routing)
         get_db()  # fail fast at startup if Firestore/Auth are misconfigured
         yield
 
@@ -59,6 +66,9 @@ def create_app(
     app.include_router(legacy.router)
     app.include_router(admin.router)
     app.include_router(dev.router)
+    app.include_router(conversations.router)
+    app.include_router(me.router)
+    app.include_router(internal.router)
 
     @app.get("/healthz")
     def healthz() -> dict[str, bool]:

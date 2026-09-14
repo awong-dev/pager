@@ -57,6 +57,19 @@ def list_edges() -> list[AllowEdge]:
     return [AllowEdge.model_validate(snap.to_dict() or {}) for snap in _allow().stream()]
 
 
+def is_message_allowed(from_uid: str, to_uid: str) -> bool:
+    """docs/SERVER_PLAN.md §5.4: `message` gates `routing.send()`."""
+    edge = get_edge(from_uid, to_uid)
+    return edge is not None and edge.message
+
+
+def allowed_recipients(from_uid: str) -> list[str]:
+    """Every `toUid` with `allow/{from_uid}_{toUid}.message == true` --
+    docs/SERVER_PLAN.md §5.2 step 1's broadcast set ("every user the sender
+    is allowed to message")."""
+    return sorted(e.toUid for e in list_edges() if e.fromUid == from_uid and e.message)
+
+
 def set_edge(from_uid: str, to_uid: str, *, message: bool, locate: bool) -> AllowEdge:
     """Upserts a single edge and, if `locate` may have changed, recomputes
     that one recipient's devices' `locatableBy`. Prefer `replace_all` for
