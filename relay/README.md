@@ -133,6 +133,43 @@ mock — configures EMQX's rule engine, and drives it end to end through
 python tools/e2e_v2.py
 ```
 
+## Message backends (docs/SERVER_PLAN.md §6.4/§6.5)
+
+`sms` (`app/backends/sms_twilio.py`) and `gchat` (`app/backends/gchat.py`)
+are both real adapters against outside services — everything in this repo
+(tests, `tools/e2e_v2.py`, this compose stack) exercises them against a
+mock (`tools/mocks/twilio_mock.py`) or a locally-signed test JWT, never a
+real Twilio/Google account. Two `PENDING_ACCOUNT` items block a real
+deployment from using them:
+
+- **`PENDING_ACCOUNT: Twilio`** — a human needs to buy a phone number and
+  complete US A2P 10DLC (or toll-free) registration before real SMS can be
+  sent from this deployment. This is a manual, **days-long** review process
+  run by Twilio/the carriers, separate from any code here — it cannot be
+  scripted or done from this repo. Steps: sign up at twilio.com, buy a
+  number, register an A2P 10DLC brand + campaign (or apply for toll-free
+  verification, faster but still manual), then set `TWILIO_ACCOUNT_SID`,
+  `TWILIO_AUTH_TOKEN`, `TWILIO_FROM_NUMBER`, and `PUBLIC_BASE_URL` (so
+  `X-Twilio-Signature` verification matches the exact webhook URL configured
+  in the Twilio console) in the real deployment's environment/Secret
+  Manager, and point the Twilio console's inbound-SMS webhook at
+  `{PUBLIC_BASE_URL}/webhooks/twilio/sms`. Not started here per this
+  project's "no signups, no paid services" rule — see `BUILD_LOG.md`'s
+  Phase 7 entry.
+- **`PENDING_ACCOUNT: Google Chat`** — docs/SERVER_PLAN.md §11 D4's caveat,
+  still **not verified**: Google Chat apps can only be installed by accounts
+  on **Google Workspace**, not consumer Gmail. If the family's Google
+  accounts are consumer Gmail, this backend is dead on arrival and Email
+  (§6.6, not built) is the documented fallback slot. A human needs to (1)
+  confirm the family's account type, (2) if Workspace, create a Chat app in
+  the Google Cloud console (Chat API → Configuration), note its **project
+  number** as `GCHAT_AUDIENCE`, and point its webhook URL at
+  `{PUBLIC_BASE_URL}/webhooks/gchat`, and (3) grant the relay's own service
+  account (already provisioned by `infra/`, ADC — no separate secret) the
+  `chat.bot` scope / "Chat Bot" role so `spaces.messages.create` outbound
+  sends work. Not started here for the same reason as the Twilio item
+  above.
+
 ## CLI Tools
 
 For sending messages via the relay API and driving a simulated device +

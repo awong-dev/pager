@@ -566,12 +566,28 @@ class ServerClient:
         """`POST /api/me/backends` for the currently-logged-in user --
         docs/SERVER_PLAN.md §5.1. Used by `backend add` and by
         `tools/e2e_v2.py`'s `fanout` scenario to give a user an `sms`
-        backend (`app/backends/sms_stub.py`, Phase 5) without any admin
+        backend (`app/backends/sms_twilio.py`, Phase 7) without any admin
         involvement, matching a real user configuring their own backends
-        (§7.4)."""
+        (§7.4).
+
+        `(build note, security review H2)`: for `kind='sms'`/`'gchat'` the
+        relay now always creates the row `enabled=False` regardless of the
+        `enabled` argument here -- a link/verify-flow backend is not
+        trusted to receive real traffic until `verify_backend()` below
+        succeeds. Callers that need an immediately-usable sms backend (this
+        script's `fanout` scenario) must complete that flow themselves."""
         resp = self.api_post("/api/me/backends", {"kind": kind, "config": config, "enabled": enabled})
         if resp.status_code >= 400:
             raise RuntimeError(f"add_backend failed: {resp.status_code} {resp.text}")
+        return resp.json()
+
+    def verify_backend(self, bid: str, code: str) -> dict[str, Any]:
+        """`POST /api/me/backends/{id}/verify` for the currently-logged-in
+        user -- completes the link/verify flow `add_backend` above starts
+        for `sms`/`gchat` kinds (docs/SERVER_PLAN.md §5.1)."""
+        resp = self.api_post(f"/api/me/backends/{bid}/verify", {"code": code})
+        if resp.status_code >= 400:
+            raise RuntimeError(f"verify_backend failed: {resp.status_code} {resp.text}")
         return resp.json()
 
     def locate(self, alias: str) -> dict[str, Any]:

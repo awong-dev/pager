@@ -16,6 +16,20 @@ dependencies = [
     # (which bundles google-cloud-firestore) is how the relay talks to both,
     # emulator-aware via FIRESTORE_EMULATOR_HOST/FIREBASE_AUTH_EMULATOR_HOST.
     "firebase-admin",
+    # Phase 7 (docs/SERVER_PLAN.md §6.5): already an indirect dependency of
+    # firebase-admin, declared explicitly now that app/backends/gchat.py
+    # imports it directly for Google-issued JWT verification
+    # (google.auth.jwt/crypt) and ADC (google.auth.default) for the outbound
+    # Chat API call.
+    "google-auth",
+    # Phase 7 (docs/SERVER_PLAN.md §5 tasks.py line): app/tasks.py's
+    # CloudTasksQueue (TASKS_MODE=cloud_tasks).
+    "google-cloud-tasks",
+    # Phase 7: `POST /webhooks/twilio/sms` parses Twilio's
+    # application/x-www-form-urlencoded body via Starlette's
+    # `Request.form()`, which requires this package even for non-multipart
+    # forms.
+    "python-multipart",
 ]
 
 [project.optional-dependencies]

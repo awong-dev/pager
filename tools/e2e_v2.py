@@ -42,6 +42,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import re
 import subprocess
 import sys
 import time
@@ -881,6 +882,23 @@ def scenario_fanout() -> None:
     parent = pager_client.ServerClient(RELAY_URL, AUTH_URL)
     parent.login("fanoutparent")
     sms_backend = parent.add_backend("sms", {"phone": "+15551234567"})
+    assert sms_backend["enabled"] is False, sms_backend  # H2: not enabled until verified
+    # `start_link()` already texted a verify code through the twilio mock
+    # (`add_backend`'s call into `POST /api/me/backends` -- see that
+    # handler's docstring) -- pull it back out of the mock's `/_sent` log
+    # (H1: it is deliberately no longer readable off `sms_backend["config"]`)
+    # and complete the verify flow before this scenario can rely on the
+    # backend actually receiving anything.
+    verify_sms = httpx.get(f"{TWILIO_MOCK_URL}/_sent", timeout=5.0)
+    verify_sms.raise_for_status()
+    verify_code_match = None
+    for entry in reversed(verify_sms.json()):
+        if entry["to"] == "+15551234567" and "verification code" in entry["body"]:
+            verify_code_match = re.search(r"\d{6}", entry["body"])
+            break
+    assert verify_code_match is not None, verify_sms.json()
+    verified = parent.verify_backend(sms_backend["id"], verify_code_match.group(0))
+    assert verified["enabled"] is True and verified["verifiedAt"] is not None, verified
 
     student = pager_client.ServerClient(RELAY_URL, AUTH_URL)
     student.login("fanoutstudent")

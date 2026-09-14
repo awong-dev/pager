@@ -456,3 +456,136 @@ parallel per `HANDOFF_V2.md` §5.
 **Done when:** commit `v2 phase 6`. ✅
 
 ---
+
+## Phase 7 — SMS + Google Chat adapters (2026-09-14)
+
+- `sms-gchat-dev` built the real `sms` (`app/backends/sms_twilio.py`) and `gchat`
+  (`app/backends/gchat.py`) adapters per `SERVER_PLAN.md` §6.4/§6.5, replacing Phase 5's
+  `sms_stub.py` (deleted; `registry.py` now points `sms`/`gchat` at the real classes).
+  `app/notify/sms.py` is the one place that builds a Twilio Messages-API request (outbound sends
+  and `start_link`'s verification-code SMS both go through it), matching §5's package layout.
+- **Twilio**: `X-Twilio-Signature` verified for real (HMAC-SHA1 over the exact webhook URL +
+  sorted POST params, Twilio's documented algorithm) — `relay/tests/test_sms_twilio.py`'s
+  `test_compute_twilio_signature_matches_known_fixture` checks the implementation against a
+  signature computed *independently* (a standalone script, not a call into the code under test)
+  and hardcoded as a fixture, not a self-referential mock. `POST /webhooks/twilio/sms` maps
+  `From` → user via a new `phoneIndex/{phone}` lookup (written on verify, not on backend
+  creation, so an unverified phone claim can't steal someone else's inbound texts), resolves the
+  recipient via the shared `@alias`/single-peer rule (`app/backends/resolve.py`, used by both
+  adapters), and rejects (never truncates) a body over 160 code points with an SMS usage hint,
+  checked before `routing.send()` per the brief.
+- **Google Chat**: outbound `spaces.messages.create` uses the relay's own ADC service-account
+  credentials (no shared secret — confirmed matches Phase 9's infra decision, which already
+  created no `GCHAT_*` secret for the same reason); a `ChatClient` Protocol
+  (`NullChatClient`/`GoogleChatClient`) mirrors `webapp.py`'s `FCMClient` pattern so this is
+  testable without real GCP credentials. Inbound `POST /webhooks/gchat` verifies a Google-issued
+  JWT via `google-auth`'s own `google.auth.jwt`/`google.oauth2.id_token` primitives —
+  `relay/tests/test_gchat.py` signs a **real** RS256 JWT with a locally generated RSA keypair
+  (`cryptography`) and verifies it through the real verification code path (only the cert
+  *source* is faked — an injected `{key_id: pem}` map instead of a network fetch of Google's
+  published certs), covering valid-accepted and tampered-signature/wrong-audience/wrong-issuer/
+  expired-all-rejected. The link flow is inbound-message-driven per §6.5 (`start_link()` shows the
+  user a code on the web app; the user sends `/link <code>` in a Chat DM; the webhook matches it
+  via a new `gchatLinkCodes/{code}` lookup and stores the DM `space` name), not the SMS-shaped
+  outbound-code flow — documented as a deliberate difference from the `Backend` protocol's literal
+  "e.g. send a code" phrasing.
+- **`(build addition)`** three small top-level lookup collections not in §3's schema table —
+  `phoneIndex/{phone}`, `gchatLinkCodes/{code}`, `gchatSpaces/{spaceId}` — added so both inbound
+  webhooks can map "who just texted/messaged us" back to `(uid, bid)` with a single `get()`, the
+  same `aliases/{alias}`-style trick §3 already uses for a different lookup. Flagged as additive,
+  not a schema contradiction: §3 specifies the *behaviour* (map `From` → verified phone; store the
+  DM `space`) but not the index mechanism.
+- **`(build addition)`** `POST /api/me/backends/{id}/verify` — listed in §5.1 since Phase 3 but
+  never implemented (Phase 6's web app already called it and documented the 404, per that phase's
+  entry above). Now wired: `POST /api/me/backends` calls the new backend's `start_link()`
+  automatically; `.../verify` calls `complete_link()` and, on success, publishes the verified
+  phone to `phoneIndex`.
+- **`app/tasks.py`**: added `CloudTasksQueue` (`TASKS_MODE=cloud_tasks`) alongside the unchanged
+  `TASKS_MODE=inline` default. **Flagged, not silently worked around**: every existing
+  `enqueue(fn, name=...)` call site (`app/jobs.py`, `app/routing.py`) passes an in-process Python
+  closure, which a real out-of-process Cloud Tasks queue cannot serialize or invoke — only POST a
+  JSON body to a URL. `CloudTasksQueue.enqueue()` therefore builds and creates a real Cloud Tasks
+  HTTP task targeting `/internal/task` carrying only the caller's opaque `name` string, per this
+  phase's narrower brief ("construct the client, confirm the payload/target URL, without
+  enqueueing anything real" — `relay/tests/test_tasks.py` mocks `create_task` at the boundary).
+  Two things this leaves genuinely unfinished: (1) `POST /internal/task` itself does not exist yet
+  (`app/routers/internal.py` still only has `/tick`/`/sweep`); (2) even once it does, `name` alone
+  can't reconstruct "retry this specific delivery" — making `cloud_tasks` mode fully load-bearing
+  needs `app/jobs.py`/`app/routing.py`'s retry call sites reworked to enqueue a structured,
+  replayable payload instead of a closure. Left as a documented follow-up
+  (`app/tasks.py`'s own docstring), not attempted here.
+- `tools/e2e_v2.py`'s `fanout` scenario needed **no code changes** — it already creates its sms
+  backend through `POST /api/me/backends` (now real) and only asserts outbound-delivery/retry
+  behaviour, which is unchanged in shape between the stub and the real adapter. Re-ran against
+  the real adapter and the Twilio mock: **PASSED** (bootstrap + fanout, both scenarios).
+- Verified: `cd relay && .venv/bin/pytest -q` — **242 passed** (up from Phase 6's 209; +33 new:
+  8 sms-webhook, 16 gchat, 9 tasks — see test file list below). `ruff check app tests` clean.
+  `tools/e2e_v2.py bootstrap fanout` — **PASSED** against the real compose stack.
+- New/changed files: `app/notify/{__init__,sms}.py`, `app/backends/{sms_twilio,gchat,resolve}.py`
+  (new), `app/backends/sms_stub.py` (deleted), `app/backends/registry.py`,
+  `app/routers/{webhooks,me}.py`, `app/store/backends.py`, `app/tasks.py`, `app/main.py`,
+  `relay/tests/{test_sms_twilio,test_gchat,test_tasks}.py` (new), `relay/tests/test_jobs.py`
+  (import update only), `relay/.env.example`, `relay/docker-compose.yml` (comment only),
+  `relay/pyproject.toml` (+`google-auth`, `google-cloud-tasks`, `python-multipart`),
+  `relay/README.md`, this entry.
+- **`PENDING_ACCOUNT: Twilio`** and **`PENDING_ACCOUNT: Google Chat`** — see `relay/README.md`'s
+  new "Message backends" section for the full human runbook (number rental + US A2P 10DLC/toll-
+  free registration for Twilio, a days-long manual carrier review; Google Workspace-vs-consumer-
+  Gmail verification + Chat app console setup for gchat, per §11 D4 — if the family turns out to
+  be on consumer Gmail, Email (§6.6, not built) is the documented fallback). Neither started here
+  per this project's no-signups rule.
+
+### server-architect security review — the SMS verification flow was bypassable, now fixed
+
+Before commit, `server-architect` reviewed the two new webhook authenticators with the same
+rigor `/webhooks/mqtt` got in Phase 2a. **The Twilio signature check and the Google Chat JWT
+verification are both correct** (independently recomputed the Twilio fixture in a standalone
+interpreter and confirmed a match; confirmed the Chat JWT path checks signature, audience *and*
+issuer via the real `google-auth` library, not a hand-rolled or bypassed check). But the review
+found the SMS *identity-claiming* flow around those authenticators had three real holes, plus two
+related ones, all fixed by `backend-dev` before commit:
+
+- **H1 (high):** the SMS verification code was stored in `users/{uid}/backends/{bid}.config`,
+  which a user can read for their own uid via the normal Firestore-reads-through-rules path — so
+  a user claiming a phone number they don't control could read the code straight out of Firestore
+  and verify it **without ever receiving the SMS**. Anyone could claim any phone number. Fixed by
+  moving the code to a new server-only `smsVerifyCodes/{bid}` collection (hashed, no
+  `firestore.rules` match block, default-deny). This is not the same situation as `gchatLinkCodes`,
+  which is correctly owner-readable (the user reads their own code to type into the Chat DM) —
+  only the *inbound verification* material needed this fix.
+- **H2 (high):** outbound SMS was sent to **unverified** numbers — `routing.py`'s fan-out only
+  checked `backend.enabled`, and creating a backend defaulted `enabled=True`, so adding an sms
+  backend with any phone number started texting it immediately, verify flow untouched. Fixed by
+  forcing `enabled=False` at creation for backend kinds with a link flow (`sms`, `gchat`);
+  `verify_backend()` already flips it to `True` on success.
+- **H3 (high):** `phoneIndex` was never torn down — `PATCH`ing a verified backend's phone number
+  left the old number's index entry live and didn't clear `verifiedAt` (a second bypass of H2:
+  verify with your own number, then patch to a victim's), and `DELETE` left a stale entry
+  attributing inbound SMS to a dangling backend id. Fixed: `PATCH`/`DELETE` now clear the phone
+  index and `verifiedAt` on a phone change or deletion.
+- **M1 (medium):** `phoneIndex` document ids were unnormalized user input — a mismatch with
+  Twilio's E.164 `From` silently broke the lookup (failed closed, not exploitable, but dead), and
+  a phone string containing `/` would have thrown an unhandled 500 as an illegal Firestore path.
+  Fixed: phone numbers are normalized to E.164 before ever being used as a `phoneIndex` doc id,
+  rejected if they don't validate.
+- **M2 (medium):** any member of a linked Google Chat space could send as the linked user — the
+  webhook mapped `space → (uid, bid)` on receipt and never checked who actually sent the message.
+  Fixed: linking now requires the space be a DM (rejects a group/room), and every subsequent
+  inbound message's sender is checked against who performed the original `/link`.
+  `gchatSpaces` gained a `senderName` field for this; `smsVerifyCodes` and the `senderName`
+  addition are both recorded in `docs/SERVER_PLAN.md` §3 alongside the original three-collection
+  build-finding note.
+- Two low-severity fixes folded in: Google Chat JWT verification now tolerates 30s of clock skew
+  (was 0, risking spurious 401s from sub-second drift between Google's signer and Cloud Run); the
+  webhook handler now redacts an unlinked inbound phone number to its last 4 digits in logs
+  instead of logging it in full. A third low-severity bug (an `hmac.compare_digest` `TypeError`
+  on a non-ASCII forged `X-Twilio-Signature` header, which would have 500'd instead of cleanly
+  401ing) was found and fixed by `server-architect` directly during the review, before the H/M
+  list above was even handed off.
+- Re-verified after all fixes: `relay/tests` — **255 passed**. `tools/e2e_v2.py` — **all 9
+  scenarios PASSED** against the real compose stack (the `fanout` scenario now completes a real
+  SMS verify flow before sending, since H2 made an unverified backend correctly inert).
+
+**Done when:** commit `v2 phase 7`. ✅
+
+---

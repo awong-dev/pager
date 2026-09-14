@@ -47,9 +47,16 @@ services:
       FIREBASE_AUTH_EMULATOR_HOST: firebase:9099
       GOOGLE_CLOUD_PROJECT: demo-pager
       DEV_MODE: "1"
-      # Phase 5: app/backends/sms_stub.py's TWILIO_BASE_URL override,
-      # pointed at the twilio-mock service on the compose network (see that
-      # service's own comment below).
+      # Phase 7: app/backends/sms_twilio.py's (app/notify/sms.py's)
+      # TWILIO_BASE_URL override, pointed at the twilio-mock service on the
+      # compose network (see that service's own comment below). No
+      # PUBLIC_BASE_URL/TWILIO_AUTH_TOKEN/GCHAT_AUDIENCE here -- this compose
+      # stack exercises outbound sms only (tools/e2e_v2.py's `fanout`
+      # scenario); nothing in it POSTs to /webhooks/twilio/sms or
+      # /webhooks/gchat with a real signature/JWT, so those stay unset
+      # (fail-closed, per each module's own docstring) rather than
+      # configured with a value that would only be correct for a real
+      # deployment.
       TWILIO_BASE_URL: http://twilio-mock:8010
     ports:
       - "8000:8000"

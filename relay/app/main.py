@@ -15,6 +15,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from app.backends.registry import build_registry
 from app.broker import BrokerClient
 from app.config import Settings
 from app.db.firestore import get_db
@@ -44,12 +45,19 @@ def create_app(
     async def lifespan(app: FastAPI):
         app.state.settings = settings
         app.state.broker = broker_client or BrokerClient(settings)
-        # One Routing instance (and, inside it, one backend registry) per
-        # app -- shared by the webhook path (via Ingest) and every API
-        # router that sends a message, so `app/backends/pager.py`'s
-        # `BrokerClient` and `app/backends/webapp.py`'s FCM client are each
-        # constructed exactly once.
-        app.state.routing = Routing(app.state.broker)
+        # One backend registry per app, built once here (not inside
+        # `Routing.__init__`'s own default) so `app/routers/me.py` can also
+        # reach it -- `POST /api/me/backends` needs to call a fresh
+        # backend's `start_link()` (docs/SERVER_PLAN.md §6.1: "e.g. send a
+        # code") right after creating it, which is not something
+        # `Routing`'s `send()`-only surface exposes.
+        app.state.backend_registry = build_registry(app.state.broker)
+        # One Routing instance per app -- shared by the webhook path (via
+        # Ingest) and every API router that sends a message, so
+        # `app/backends/pager.py`'s `BrokerClient` and
+        # `app/backends/webapp.py`'s FCM client are each constructed
+        # exactly once.
+        app.state.routing = Routing(app.state.broker, registry=app.state.backend_registry)
         app.state.ingest = Ingest(app.state.broker, app.state.routing)
         # docs/PROTOCOL.md §13 / docs/SERVER_PLAN.md §5.6: shares the same
         # `Routing` instance so a freshly-claimed `loc_req`'s inline

@@ -188,6 +188,36 @@ settings/meta                  {schemaVersion: 2, lastSweepAt, seqCounter}
   fans out to N recipients), while a `/loc` envelope has no recipient to key against. Additive to
   this table; nothing device-visible. §5.7's sweep (Phase 8) must delete these alongside
   `locations`, the way it deletes `wireIds` alongside `messages`, or the collection grows forever.
+- `(build finding, phase 7 review)` **Three inbound-lookup collections, additive to this table:**
+  `phoneIndex/{e164Phone}` → `{uid, bid}`, `gchatSpaces/{spaceId}` → `{uid, bid}`, and
+  `gchatLinkCodes/{code}` → `{uid, bid, expiresAt}`. §6.4/§6.5 specify the *behaviour* ("map
+  `From` → user by verified phone", "stores the DM `space` name") but not the mechanism; a
+  `config.phone` / `config.space` lookup would need a `COLLECTION_GROUP`-scoped index on a nested
+  field, so these use the same "the doc id *is* the lookup key" trick as `aliases/{alias}`. Accepted
+  as-is; three rules they must keep. (a) **Write on verify, never on create** — `phoneIndex` is
+  written by `POST /api/me/backends/{id}/verify` only, so an unverified phone claim can never
+  capture another user's inbound texts. (b) **The index is derived state and must be torn down with
+  its source** — deleting an sms backend, or `PATCH`ing its `config.phone`, has to
+  `clear_phone_index(oldPhone)` and clear `verifiedAt`, or a stale row keeps attributing inbound
+  SMS to a `bid` that no longer exists. (c) **`phoneIndex` doc ids are normalised E.164**
+  (`+15551234567`), matching what Twilio puts in `From`; a raw user-typed string both misses the
+  lookup and can contain a `/`, which is not a legal Firestore document id. None of the three is
+  client-readable: `firestore.rules` has no `match` block for them (default-deny read) and the
+  `match /{document=**} { allow write: if false }` catch-all denies writes, which is the intended
+  posture — no rule edit needed, but `relay/tests/test_rules.py` should pin it so a future
+  broadened rule cannot expose them. Nothing device-visible; `PROTOCOL.md` is unaffected.
+- `(build finding, phase 7 security review)` **A fourth collection, `smsVerifyCodes/{bid}` →
+  `{codeHash, expiresAt}`, added after the review above found rule (a) alone wasn't enough.** The
+  first Phase 7 pass stored the SMS verification code in `users/{uid}/backends/{bid}.config`,
+  which a user can read for their own uid — so a user claiming a phone number they don't control
+  could read the code straight out of Firestore and verify it without ever receiving the SMS.
+  `smsVerifyCodes` holds the (hashed) code server-side instead, with the same default-deny
+  posture as the other three lookup collections. This is *not* the same situation as
+  `gchatLinkCodes`, which is correctly owner-readable (the user reads their own code to type it
+  into the Chat DM) — only inbound *verification* material needs this extra collection. Also:
+  `gchatSpaces` gained a `senderName` field (the identity of whoever sent the `/link` message),
+  checked on every subsequent inbound message in that space so a group/shared space can't let a
+  second person send as the originally-linked user.
 - Indexes: `messages(convKey, seq)`, `messages(pendingDeviceIds array-contains, createdAt)`,
   `messages(createdAt)` for the sweep, `locations(createdAt)` collection-group for the sweep.
   Declared in `relay/firestore.indexes.json`.

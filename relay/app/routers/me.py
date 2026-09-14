@@ -1,22 +1,77 @@
 """`/api/me/*` -- docs/SERVER_PLAN.md §5.1: `GET /api/me`, a user's own
 backends, and FCM push-token registration. Every route requires a
 registered caller (`app.auth.require_user`); there is no admin-only surface
-here (see `app/routers/admin.py` for that)."""
+here (see `app/routers/admin.py` for that).
+
+`(build addition, phase 7)`: `POST /api/me/backends/{id}/verify {code}` --
+listed in §5.1's API surface table since Phase 3 but never implemented
+(Phase 3/5's stub backends had no real link flow to verify against; the web
+app's `/settings/backends` page, Phase 6, already calls it and documents
+the 404 it gets today -- see `web/app/settings/backends/page.tsx`'s module
+docstring). `POST /api/me/backends` also now calls the new backend's
+`start_link()` right after creating it (§6.1: "e.g. send a code") --
+neither of these existed before this phase because neither `sms`'s nor
+`gchat`'s real link flow existed yet.
+
+`(build addition, security review)`: three fixes to that Phase 7 surface,
+all load-bearing for `phoneIndex`'s "an unverified/unlinked claim can never
+capture another user's inbound traffic" invariant (`app/store/backends.py`'s
+module docstring):
+
+- **H2** -- `POST /api/me/backends` now forces `enabled=False` at creation
+  for any kind with a link/verify flow (`sms`, `gchat`), regardless of what
+  the request body asked for. `app/routing.py`'s fan-out only ever checks
+  `backend.enabled`, never `verifiedAt` (deliberately -- `pager`/`webapp`
+  have no verify step at all, so gating fan-out on `verifiedAt` would break
+  them); an sms/gchat backend defaulting to `enabled=True` at creation meant
+  real SMS started going to an unverified, possibly-not-owned phone number
+  on the very next message, with the verify flow never actually exercised.
+  `verify_backend` below still flips `enabled=True` on success, so this is
+  purely "not enabled until proven", not "sms/gchat can never be enabled".
+- **H3** -- `PATCH /api/me/backends/{bid}` clears `phoneIndex` for the old
+  number (and `verifiedAt`) whenever `config.phone` changes, and
+  `DELETE /api/me/backends/{bid}` clears `phoneIndex` for the backend's
+  current number before deleting the row. Without this, "verify with your
+  own number, then PATCH to a victim's number" bypasses H2 outright (the
+  backend is already `enabled` and now `verifiedAt` from the first,
+  legitimate verification), and a deleted backend leaves a dangling
+  `phoneIndex` entry that still routes inbound SMS somewhere.
+- **M1** -- both routes normalise `config.phone` to E.164
+  (`sms_twilio.normalize_e164`) before it is ever stored or used as a
+  `phoneIndex` document id; an unnormalised/malformed number both breaks the
+  lookup against Twilio's always-E.164 `From` field and, if it contains a
+  `/`, would otherwise crash `.document(phone)` with an unhandled 500.
+"""
 
 from __future__ import annotations
 
+import logging
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 from app.auth import AuthedUser, require_user
+from app.backends.base import Backend as BackendImpl
+from app.backends.sms_twilio import normalize_e164
 from app.store import backends as backends_store
 from app.store import push_tokens as push_tokens_store
 from app.store.backends import Backend, BackendKind
 from app.store.users import User
 
+logger = logging.getLogger("relay.routers.me")
+
 router = APIRouter()
+
+# H2: backend kinds with a link/verify flow -- `create_backend` forces
+# `enabled=False` at creation for these regardless of the request body,
+# `verify_backend` is what flips it back to `True` on success. `pager`/
+# `webapp` have no such flow and keep their existing default.
+LINK_FLOW_KINDS: frozenset[str] = frozenset({"sms", "gchat"})
+
+
+def get_backend_registry(request: Request) -> dict[str, BackendImpl]:
+    return request.app.state.backend_registry
 
 
 class MeResponse(BaseModel):
@@ -62,33 +117,143 @@ def list_backends(authed: Annotated[AuthedUser, Depends(require_user)]) -> list[
 
 @router.post("/api/me/backends")
 def create_backend(
-    req: CreateBackendRequest, authed: Annotated[AuthedUser, Depends(require_user)]
+    req: CreateBackendRequest,
+    authed: Annotated[AuthedUser, Depends(require_user)],
+    registry: Annotated[dict[str, BackendImpl], Depends(get_backend_registry)],
 ) -> Backend:
     if req.kind == "pager":
         # Pager backends are provisioned by `POST /api/admin/devices`
         # (docs/SERVER_PLAN.md §5.5) -- a user cannot self-issue one, since
         # its `config.deviceId` has to name a real device this user owns.
         raise HTTPException(status_code=400, detail="pager backends are admin-provisioned")
-    return backends_store.create_backend(
-        authed.uid, kind=req.kind, config=req.config, enabled=req.enabled
+    config = req.config
+    if req.kind == "sms" and config.get("phone"):
+        try:
+            config = {**config, "phone": normalize_e164(str(config["phone"]))}
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from None
+    # H2: never trust the request body's `enabled` for a kind with a link/
+    # verify flow -- see this module's docstring.
+    enabled = False if req.kind in LINK_FLOW_KINDS else req.enabled
+    created = backends_store.create_backend(
+        authed.uid, kind=req.kind, config=config, enabled=enabled
     )
+    # §6.1: "start_link(user, backend) -- e.g. send a code". Only sms/gchat
+    # implement it for real (sms texts a verify code; gchat generates and
+    # stores a link code the user types back at the Chat app) -- pager/
+    # webapp's `start_link` both return None and touch nothing. Best-effort:
+    # a `start_link` failure (e.g. Twilio unreachable) must not fail backend
+    # *creation* -- the row already exists and can be retried (the web app's
+    # "Verify" dialog has no separate "resend" affordance yet, a known gap,
+    # not this phase's to close).
+    impl = registry.get(req.kind)
+    if impl is not None:
+        try:
+            impl.start_link(authed.user, created)
+        except Exception:
+            logger.exception("start_link failed for new %s backend %s", req.kind, created.id)
+    refreshed = backends_store.get_backend(authed.uid, created.id)
+    return refreshed if refreshed is not None else created
+
+
+class VerifyBackendRequest(BaseModel):
+    code: str
+
+
+@router.post("/api/me/backends/{bid}/verify")
+def verify_backend(
+    bid: str,
+    req: VerifyBackendRequest,
+    authed: Annotated[AuthedUser, Depends(require_user)],
+    registry: Annotated[dict[str, BackendImpl], Depends(get_backend_registry)],
+) -> Backend:
+    row = backends_store.get_backend(authed.uid, bid)
+    if row is None:
+        raise HTTPException(status_code=404, detail="no such backend")
+    impl = registry.get(row.kind)
+    if impl is None or not impl.complete_link(row, req.code):
+        raise HTTPException(status_code=400, detail="invalid or expired code")
+    updates: dict[str, object] = {"verified": True, "enabled": True}
+    # sms: publish the now-verified phone to `phoneIndex` (`app/store/
+    # backends.py`'s module docstring) so the inbound Twilio webhook can map
+    # `From` back to this user -- written here, not inside `complete_link`
+    # itself, because `complete_link`'s contract (`backends/base.py`) is a
+    # pure proof-check that doesn't know this backend's owning uid. The
+    # one-time verify code itself (H1) was never in `config` to begin with
+    # (it lives in `smsVerifyCodes`, `app/store/backends.py`) -- clear that
+    # record here, on success, rather than waiting for its TTL.
+    if row.kind == "sms":
+        phone = row.config.get("phone")
+        if phone:
+            try:
+                phone = normalize_e164(str(phone))
+            except ValueError:
+                # Already normalised at creation time (M1) -- this only
+                # trips for a pre-fix row, and a verify that can't produce a
+                # legal phoneIndex doc id should fail loudly, not 500.
+                raise HTTPException(status_code=400, detail="backend has no valid phone") from None
+            backends_store.set_phone_index(phone, authed.uid, bid)
+        backends_store.clear_sms_verify_code(bid)
+    updated = backends_store.update_backend(authed.uid, bid, **updates)
+    return updated
 
 
 @router.patch("/api/me/backends/{bid}")
 def patch_backend(
     bid: str, req: PatchBackendRequest, authed: Annotated[AuthedUser, Depends(require_user)]
 ) -> Backend:
-    if backends_store.get_backend(authed.uid, bid) is None:
+    row = backends_store.get_backend(authed.uid, bid)
+    if row is None:
         raise HTTPException(status_code=404, detail="no such backend")
-    return backends_store.update_backend(authed.uid, bid, config=req.config, enabled=req.enabled)
+
+    config = req.config
+    verified: bool | None = None
+    enabled = req.enabled
+    # H3: an sms backend's `config.phone` is the identity `phoneIndex`
+    # trusts -- rewriting it after verification, without also clearing the
+    # old `phoneIndex` entry, `verifiedAt`, *and* `enabled`, is a second
+    # bypass of H2 ("verify with your own number, then PATCH to a victim's
+    # number" -- if `enabled` stayed `True`, the backend would still pass
+    # `app/routing.py`'s fan-out gate (`enabled` is the *only* thing it
+    # checks, deliberately -- see this router's module docstring) and start
+    # texting the new, never-verified number on the very next message,
+    # exactly what H2 exists to prevent). Requires re-verifying the new
+    # number through `POST .../verify` before it can receive anything again,
+    # same as a freshly created backend.
+    if row.kind == "sms" and config is not None and "phone" in config:
+        new_phone_raw = config.get("phone")
+        old_phone = row.config.get("phone")
+        try:
+            new_phone = normalize_e164(str(new_phone_raw)) if new_phone_raw else None
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from None
+        if new_phone != old_phone:
+            config = {**config, "phone": new_phone} if new_phone else {
+                k: v for k, v in config.items() if k != "phone"
+            }
+            if old_phone:
+                backends_store.clear_phone_index(old_phone)
+            verified = False
+            enabled = False
+    return backends_store.update_backend(
+        authed.uid, bid, config=config, enabled=enabled, verified=verified
+    )
 
 
 @router.delete("/api/me/backends/{bid}")
 def delete_backend(
     bid: str, authed: Annotated[AuthedUser, Depends(require_user)]
 ) -> dict[str, bool]:
-    if backends_store.get_backend(authed.uid, bid) is None:
+    row = backends_store.get_backend(authed.uid, bid)
+    if row is None:
         raise HTTPException(status_code=404, detail="no such backend")
+    # H3: tear down `phoneIndex` alongside its source -- otherwise a deleted
+    # backend leaves a stale entry that still routes inbound SMS to a `bid`
+    # that no longer exists.
+    if row.kind == "sms":
+        phone = row.config.get("phone")
+        if phone:
+            backends_store.clear_phone_index(phone)
     backends_store.delete_backend(authed.uid, bid)
     return {"ok": True}
 

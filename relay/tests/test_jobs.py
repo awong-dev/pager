@@ -25,7 +25,7 @@ import time as _time
 from datetime import UTC, datetime, timedelta
 
 from app import jobs
-from app.backends.sms_stub import SmsStubBackend
+from app.backends.sms_twilio import SmsTwilioBackend
 from app.db.firestore import get_db
 from app.routing import Routing
 from app.store import allow as allow_store
@@ -190,7 +190,7 @@ def test_tick_skips_revoked_devices():
 
 
 def test_tick_retries_queued_sms_delivery(monkeypatch):
-    """No TWILIO_BASE_URL configured -> SmsStubBackend.deliver() leaves the
+    """No TWILIO_BASE_URL configured -> SmsTwilioBackend.deliver() leaves the
     delivery 'queued' (not 'failed' -- see that module's docstring) on the
     inline send; tick() must find and retry it via `Routing.redeliver`, the
     same way it retries a queued pager delivery via `redeliver_pager`."""
@@ -229,7 +229,7 @@ def test_tick_caps_non_pager_retries_dispatched_per_call(monkeypatch):
     even when more than that many are queued and scan-eligible -- mirrors
     §5.8's existing "at most 10 per device" pager cap, for the same reason
     (bound worst-case tick duration: `NON_PAGER_RETRY_SCAN_LIMIT` (50) *
-    `sms_stub.REQUEST_TIMEOUT_S` (5s) could otherwise approach ~250s, close
+    `app/notify/sms.py`'s `REQUEST_TIMEOUT_S` (5s) could otherwise approach ~250s, close
     to Cloud Run's default 300s request timeout, if the broker and the
     Twilio mock were both down at once)."""
     monkeypatch.delenv("TWILIO_BASE_URL", raising=False)
@@ -267,7 +267,7 @@ def test_tick_does_not_retry_sent_sms_delivery(monkeypatch):
         "student2", kind="sms", config={"phone": "+15550000000"}, enabled=True
     )
 
-    class _FakeSmsBackend(SmsStubBackend):
+    class _FakeSmsBackend(SmsTwilioBackend):
         def deliver(self, msg, delivery, backend):  # type: ignore[override]
             messages_store.mark_delivery_sent_if_queued(msg.id, backend.id)
             from app.backends.base import DeliverResult
