@@ -51,6 +51,11 @@ GPIO numbers for IO1/IO2/IO11/IO12/IO15 are provisional; firmware must keep them
 
 ## 2. Architecture (fixed — do not redesign)
 
+> **Note (v2 revision):** The relay-transport approach described below (an always-on process holding a persistent MQTT connection) has been revised by `docs/SERVER_PLAN.md` §2.
+> The v2 design uses a scale-to-zero Cloud Run relay fed by the broker's rule engine over HTTPS instead.
+> See `HANDOFF_V2.md` for the full v2 build brief.
+> The rest of this section and §3–8 still accurately describe the MVP device architecture and are otherwise unchanged.
+
 ```
 Parent (browser/CLI) --HTTPS--> Relay API --MQTT publish--> Broker --MQTT--> Device
 Device --MQTT publish--> Broker --MQTT--> Relay API --stores/serves--> Parent
