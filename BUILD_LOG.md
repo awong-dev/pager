@@ -370,3 +370,89 @@ parallel per `HANDOFF_V2.md` §5.
 **Done when:** commit `v2 phase 5`. ✅
 
 ---
+
+**Phases 6 and 9 ran in parallel from here**, per `HANDOFF_V2.md` §5's explicit permission —
+`web/` and `infra/` are disjoint directories with no shared trust boundary.
+
+## Phase 9 — Terraform + runbook (2026-09-15)
+
+- `infra-dev` built `infra/` per `SERVER_PLAN.md` §9.1-9.2: `bootstrap/` (one-off project APIs +
+  GCS state bucket), `modules/{firebase,relay-service,schedule,secrets,ci-deploy,broker-gce}`,
+  `envs/prod` wiring them together. Cloud Run matches §9.2 exactly (min 0 max 2,
+  `startup_cpu_boost`, concurrency 20, timeout 300s) with `min_instance_count=0` enforced by a
+  Terraform **validation block**, not just documentation. Scheduler jobs (tick/5min, sweep
+  weekly) and the Cloud Tasks queue match the plan's retry description. Secret Manager creates
+  empty containers only. `broker-gce` is the optional EMQX-on-GCE fallback (§9.5a), off by
+  default, mirroring `tools/emqx_setup.py`'s exact rule/connector/action shape.
+- **`.github/workflows/deploy.yml`** is gated so it cannot reach a real cloud account today:
+  push-to-main/`workflow_dispatch` only (no `pull_request`, so a fork can't trigger it), every
+  cloud-touching job additionally requires two deploy secrets that don't exist in this repo yet,
+  and even a fully-secreted `terraform init` would still fail on a placeholder state-bucket name
+  until a human runs `bootstrap/` by hand.
+- `infra/README.md` is the human runbook: project creation, Blaze billing, EMQX Cloud console
+  steps (cross-referencing Phase 2a's `PENDING_ACCOUNT` note and Phase 3's device-credential/ACL
+  gap), first admin, and the Phase 9 cold-start measurement procedure.
+- `server-architect`'s review **verified the safety claims empirically** rather than trusting the
+  description (parsed the workflow YAML directly, confirmed via `gh api` that no deploy secrets
+  exist in this repo, ran `terraform fmt -check`/`validate -backend=false` locally) and fixed one
+  real issue directly: the gate job interpolated `${{ secrets.* }}` straight into a shell script —
+  a known GitHub Actions injection pattern (a secret value could alter the script, not just its
+  data) — moved to an `env:` block.
+- Follow-ups recorded, none blocking (nothing here can reach a cloud account without a human
+  first running `ci-deploy` and `bootstrap` by hand): the WIF trust policy scopes to the repo but
+  not specifically to the `main` branch (matters only once the deploy SA exists for real); the
+  Hosting deploy step had no `firebase.json` to find at all (closed in Phase 6, see below);
+  `npx firebase-tools@latest` was unpinned (also closed in Phase 6).
+- No `GCHAT_*` secret was created — Google Chat's outbound call uses the relay's own service
+  account (ADC) and inbound verifies a Google-signed JWT, so there is no shared secret to store;
+  documented in place as a deliberate deviation from §9.2's listing.
+- `terraform fmt -check` and `terraform validate -backend=false`: clean in every module,
+  `infra/bootstrap/`, and `infra/envs/prod/`. **No `terraform apply` or `plan` run against a real
+  project; no cloud account created.**
+
+**Done when:** commit `v2 phase 9`. ✅
+
+---
+
+## Phase 6 — Web app (2026-09-15)
+
+- `web-dev` built `web/` per `SERVER_PLAN.md` §7: Next.js (App Router, static export), MUI,
+  Firebase JS SDK against the emulators. All routes from §7.2: `/login` (email-link + phone
+  code), `/chat`, `/chat/[alias]` (delivery-state chips per backend, a location card with
+  open-in-maps, "Request location"), `/settings/{backends,notifications}`,
+  `/admin/{users,allowlist,devices,settings}`. `firebase-messaging-sw.js` for background push;
+  foreground notifications gated on tab visibility. Admin routes are hidden client-side based on
+  `/api/me`'s server-verified role — not a security boundary in themselves; `require_admin` and
+  `firestore.rules` are, and are unchanged.
+- **Deleted `relay/static/index.html`, its mount, and the legacy `RELAY_TOKEN` endpoints**
+  (`routers/legacy.py`, `store/legacy.py`, their three Firestore collections, their tests) per
+  `HANDOFF_V2.md`'s sequencing for this phase — nothing since Phase 3 depended on them. This
+  required a genuine rewrite of `ingest.py`, which had run the legacy and v2 device-traffic
+  models side by side since Phase 2a; only the uid-addressed v2 model remains, with traffic from
+  an unregistered device now logged and dropped rather than falling through to a second store.
+- **`(cross-phase fix)`**: found that Phase 9's `deploy.yml` had no `firebase.json` to find at
+  all — Hosting config lived in `web/firebase.json`, Firestore config in `relay/firebase.json`,
+  and the deploy step ran from the repo root with neither. Added a root-level `firebase.json` +
+  `.firebaserc` that references both by relative path (`web/out` for hosting,
+  `relay/firestore.rules`/`indexes.json` for Firestore), without touching either local-dev
+  config (`relay/firebase.json` is baked into the emulator image; `web/firebase.json` is a local
+  Hosting preview — neither needs to know about the other). Also pinned `firebase-tools` to a
+  major version in the deploy step instead of floating `@latest`, closing a Phase 9 follow-up.
+- Two gaps found and **documented rather than silently worked around**:
+  - `firestore.rules` gives a non-admin member no server-side way to resolve a conversation
+    partner's alias, needed for the contact list and to open a thread at all. Worked around
+    entirely client-side (admins get the full directory; members bootstrap per-contact on first
+    send, cached locally) — flagged as needing either a rules change or a contacts endpoint.
+  - `POST /api/me/backends/{id}/verify` and device revoke have no mounted relay route yet (the
+    store function exists, unmounted since Phase 2b/3). The UI surfaces the resulting 404 rather
+    than pretending success.
+  - Both noted in `web/README.md` for a human to pick up.
+- No embedded map (§7.7 explicitly defers this to a follow-up) — link-out only, as specified.
+- Verified: `npm run build` / `tsc --noEmit` / `next lint` clean. `relay/tests` — **209 passed**
+  after the legacy deletion (fewer than Phase 5's 250 — the deleted legacy tests accounted for
+  the difference, not a regression). `tools/e2e_v2.py` — **all 9 scenarios PASSED** after the
+  deletion.
+
+**Done when:** commit `v2 phase 6`. ✅
+
+---
