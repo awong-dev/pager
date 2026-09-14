@@ -33,6 +33,25 @@ def _locations(device_id: str):
     return get_db().collection("devices").document(device_id).collection("locations")
 
 
+def locations_collection(device_id: str):
+    """Public (unlike `_locations`) because `app/location.py` needs the raw
+    collection reference itself -- to build a query it reads *inside its
+    own* Firestore transaction (`Location.locate`'s <60s cached-fix check,
+    docs/PROTOCOL.md §13.3 rule 6) and to pre-allocate a doc ref for a fix
+    it writes *inside its own* dedup transaction (`ingest_loc`, §13.2) --
+    neither of which this module's own non-transactional `add_location` can
+    do."""
+    return _locations(device_id)
+
+
+def new_location_ref(device_id: str):
+    """A fresh, unwritten doc ref (client-generated id, no round trip) in
+    `devices/{device_id}/locations` -- for `app/location.py`'s `ingest_loc`,
+    which needs to stage the fix write inside the same transaction as its
+    `/loc` dedup marker (docs/PROTOCOL.md §13.2)."""
+    return _locations(device_id).document()
+
+
 def add_location(device_id: str, fix: LocationFix) -> str:
     from google.cloud.firestore import SERVER_TIMESTAMP
 

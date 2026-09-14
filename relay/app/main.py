@@ -21,6 +21,7 @@ from app.broker import BrokerClient
 from app.config import Settings
 from app.db.firestore import get_db
 from app.ingest import Ingest
+from app.location import Location
 from app.routers import admin, conversations, dev, internal, legacy, me, webhooks
 from app.routing import Routing
 
@@ -58,6 +59,11 @@ def create_app(
         # constructed exactly once.
         app.state.routing = Routing(app.state.broker)
         app.state.ingest = Ingest(app.state.broker, app.state.routing)
+        # docs/PROTOCOL.md §13 / docs/SERVER_PLAN.md §5.6: shares the same
+        # `Routing` instance so a freshly-claimed `loc_req`'s inline
+        # delivery (`Routing.redeliver_pager`) goes through the one backend
+        # registry the app constructed.
+        app.state.location = Location(app.state.routing)
         get_db()  # fail fast at startup if Firestore/Auth are misconfigured
         yield
 

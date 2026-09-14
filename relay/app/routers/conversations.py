@@ -14,7 +14,10 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 from app.auth import AuthedUser, require_user
+from app.location import Location, NoLocatableDevice
 from app.routing import Routing
+from app.store import allow as allow_store
+from app.store import devices as devices_store
 from app.store import messages as messages_store
 from app.store import users as users_store
 from app.wire import (
@@ -36,6 +39,10 @@ class SendMessageResponse(BaseModel):
 
 def get_routing(request: Request) -> Routing:
     return request.app.state.routing
+
+
+def get_location(request: Request) -> Location:
+    return request.app.state.location
 
 
 @router.post("/{alias}/messages", status_code=201)
@@ -113,3 +120,73 @@ def mark_read(
         msg.id, bid, None, "read", int(time.time()), clear_unread_uid=authed.uid
     )
     return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# /locate -- docs/SERVER_PLAN.md §5.1, §5.6; docs/PROTOCOL.md §13.3 rules 5-7
+# ---------------------------------------------------------------------------
+
+
+class LocateFixOut(BaseModel):
+    lat: float
+    lon: float
+    accM: int | None = None
+    fixTs: int
+    src: str = "gnss"
+
+
+class LocateResponse(BaseModel):
+    # `requestId` is the in-flight (fresh or coalesced) `loc_req` message id
+    # -- None on the `cached` path, where no `loc_req` was ever created
+    # (docs/SERVER_PLAN.md §5.6: "answer directly from that cached fix ...
+    # no wire message, no locReqs doc created"). This is an intentional
+    # extension of §5.1's API sketch ("202 {request_id}"), which predates
+    # §5.6's cached-answer detail -- see this phase's build report.
+    requestId: str | None = None
+    cached: bool = False
+    fix: LocateFixOut | None = None
+
+
+@router.post("/{alias}/locate", status_code=202)
+def locate(
+    alias: str,
+    authed: Annotated[AuthedUser, Depends(require_user)],
+    location: Annotated[Location, Depends(get_location)],
+) -> LocateResponse:
+    target_uid = users_store.get_uid_for_alias(alias)
+    if target_uid is None:
+        raise HTTPException(status_code=404, detail="unknown recipient")
+
+    edge = allow_store.get_edge(authed.uid, target_uid)
+    if edge is None or not edge.locate:
+        raise HTTPException(status_code=403, detail="not allowed to locate this user")
+
+    # docs/SERVER_PLAN.md's brief models one pager device per user as the
+    # common case; this phase's documented simplification for the (in
+    # principle possible) multi-device case: pick the lowest device id
+    # (lexicographic) among the target's non-revoked devices, deterministic
+    # but otherwise arbitrary -- a later phase would need a way for the
+    # caller to name *which* device a `/locate` call means. See this
+    # phase's build report.
+    candidates = [
+        d for d in devices_store.list_devices(owner_uid=target_uid) if d.revokedAt is None
+    ]
+    if not candidates:
+        raise HTTPException(status_code=409, detail="no locatable device")
+    device = min(candidates, key=lambda d: d.id)
+
+    try:
+        outcome = location.locate(requester_uid=authed.uid, device=device)
+    except NoLocatableDevice:
+        raise HTTPException(status_code=409, detail="no locatable device") from None
+
+    fix_out = None
+    if outcome.fix is not None:
+        fix_out = LocateFixOut(
+            lat=outcome.fix.lat,
+            lon=outcome.fix.lon,
+            accM=outcome.fix.accM,
+            fixTs=outcome.fix.fixTs,
+            src=outcome.fix.src,
+        )
+    return LocateResponse(requestId=outcome.request_id, cached=outcome.cached, fix=fix_out)

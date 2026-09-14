@@ -109,6 +109,17 @@ def import_sqlite(db_path: str, *, now: int | None = None) -> dict[str, int]:
             )
             devices_created += 1
 
+    if devices_created:
+        # Same ordering gap `app/routers/admin.py`'s `POST /api/admin/devices`
+        # closes (`(build finding, Phase 4)`): the `locate` edges above were
+        # written *before* these devices existed, and `set_edge` only ever
+        # recomputes `locatableBy` on devices that exist at the moment the
+        # edge changes -- without this, every imported device would stay at
+        # `locatableBy: []` and the parent could not read its `locations`
+        # through `firestore.rules`. See
+        # `app.store.allow.recompute_locatable_by_for_owner`'s docstring.
+        allow_store.recompute_locatable_by_for_owner(student_uid)
+
     messages_imported = 0
     for row in message_rows:
         created_at = datetime.fromtimestamp(row["created_at"], tz=UTC)

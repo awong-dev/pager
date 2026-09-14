@@ -179,6 +179,48 @@ def test_create_device_returns_password_once_and_stores_only_a_hash(
     assert device.mqttPasswordHash == hashlib.sha256(password.encode("utf-8")).hexdigest()
 
 
+def test_create_device_picks_up_locatable_by_from_a_pre_existing_allow_edge(
+    client: TestClient, admin_headers: dict[str, str]
+):
+    """`(build finding, Phase 4)`: an allow edge with `locate=True` set
+    *before* the device it names as `toAlias` exists must not be lost --
+    `devices_store.create_device` always starts a fresh device at
+    `locatableBy: []`, and `set_edge`/`replace_all` only ever recompute
+    `locatableBy` on devices that already exist at the moment an edge
+    changes, so without `POST /api/admin/devices` recomputing it once more
+    right after creation, this device would stay `locatableBy: []` forever
+    (see `app.store.allow.recompute_locatable_by_for_owner`'s docstring)."""
+    for alias in ("mom3", "kid3"):
+        client.post(
+            "/api/admin/users",
+            json={"alias": alias, "displayName": alias, "email": f"{alias}@example.com"},
+            headers=admin_headers,
+        )
+    mom_uid = users_store.get_uid_for_alias("mom3")
+
+    # Allow edge set up *before* the device exists.
+    resp = client.put(
+        "/api/admin/allowlist",
+        json={
+            "entries": [
+                {"fromAlias": "mom3", "toAlias": "kid3", "message": True, "locate": True},
+            ]
+        },
+        headers=admin_headers,
+    )
+    assert resp.status_code == 200, resp.text
+
+    resp2 = client.post(
+        "/api/admin/devices",
+        json={"deviceId": "pgr-5005", "ownerAlias": "kid3", "label": "kid device"},
+        headers=admin_headers,
+    )
+    assert resp2.status_code == 200, resp2.text
+
+    device = devices_store.get_device("pgr-5005")
+    assert device.locatableBy == [mom_uid]
+
+
 def test_create_device_unknown_owner_alias_is_400(client: TestClient, admin_headers: dict[str, str]):
     resp = client.post(
         "/api/admin/devices",

@@ -18,11 +18,14 @@ Device-side flags: `--device-id --host --port --username --password`.
 Server-side flags: `--api --auth-url --as <alias>` (`--as` is a convenience
 that runs `login <alias>` before the REPL/subcommand).
 
-This first cut implements docs/SERVER_PLAN.md §8's Phase 3 command set
-(everything up to, but not including, location -- Phase 4) exactly:
+Implements docs/SERVER_PLAN.md §8's full command set, Phase 3 (text) plus
+Phase 4 (location, PROTOCOL.md §13):
 
-  Device: connect, disconnect, crash, inbox, msg, ack, autoack, status, bytes
-  Server: login, contacts, chat, say, watch, tick,
+  Device: connect, disconnect, crash, inbox, msg, ack, autoack, status, bytes,
+          loc <lat> <lon> [acc] | loc auto <period_s> [--walk] |
+          loc min <s> | loc fail on|off
+  Server: login, contacts, chat, say, watch, tick, locate <alias>,
+          locations <alias> [n],
           admin user-add / allow / deny / device-add
 
 Supersedes `tools/sim_device.py` conceptually (docs/SERVER_PLAN.md §8) --
@@ -37,6 +40,7 @@ import json
 import os
 import shlex
 import sys
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -61,6 +65,27 @@ def new_id(prefix: str) -> str:
 
 def now_ts() -> int:
     return int(time.time())
+
+
+def _fs_value(field: dict[str, Any] | None) -> Any:
+    """Unwraps one Firestore REST API typed field value
+    (`{"doubleValue": 1.0}`, `{"integerValue": "3"}`, `{"booleanValue":
+    true}`, `{"stringValue": "x"}`, `{"nullValue": None}`) into a plain
+    Python value -- just enough of the wire shape for `locations()` below,
+    not a general-purpose decoder."""
+    if not field:
+        return None
+    if "doubleValue" in field:
+        return field["doubleValue"]
+    if "integerValue" in field:
+        return int(field["integerValue"])
+    if "booleanValue" in field:
+        return field["booleanValue"]
+    if "stringValue" in field:
+        return field["stringValue"]
+    if "nullValue" in field:
+        return None
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -106,6 +131,37 @@ class DeviceClient:
         self._client: mqtt.Client | None = None
         self._loc_period_s = 0
         self._loc_min_s = 120
+        # docs/PROTOCOL.md §13.3 -- device-side location state. `_lat`/`_lon`
+        # is the device's current position (what the next fix attempt
+        # reports); `_last_fix` is the last *successful* fix (what a
+        # rate-limited `loc_req` answers from, cached); `_last_attempt_ts`
+        # is the last fix *attempt* (successful or not -- rule 1's window
+        # runs from the attempt, not the success, "so a device in a
+        # basement cannot be made to retry continuously").
+        self._lat = 37.7749
+        self._lon = -122.4194
+        self._loc_acc: int | None = None
+        self._loc_fail = False
+        self._last_fix: dict[str, Any] | None = None
+        self._last_attempt_ts: float | None = None
+        # Rule 3: "at most one fix attempt is in flight" -- this simulator's
+        # attempts are instantaneous (no real GNSS to wait on), so the lock
+        # only needs to serialise concurrent MQTT-thread callbacks (an
+        # `auto` timer firing at the same moment a `loc_req` arrives); it
+        # still gives every caller "the same result" per rule 3 because
+        # there is never a window where two attempts are actually racing.
+        self._loc_lock = threading.Lock()
+        self._loc_walk = False
+        self._auto_stop: threading.Event | None = None
+        self._auto_thread: threading.Thread | None = None
+        # Not part of PROTOCOL.md §13.3's normative command set -- a test-
+        # only knob (`tools/e2e_v2.py` sets it directly, no REPL command)
+        # standing in for the real seconds a GNSS attempt takes (rule 2
+        # bounds it at 60s). This simulator otherwise answers a `loc_req`
+        # instantaneously, which makes a coalescing test a flaky race
+        # against two separate HTTP round trips instead of a deterministic
+        # check of the relay's own behaviour; see `_handle_loc_req`.
+        self.loc_answer_delay_s: float = 0.0
 
     @property
     def down_topic(self) -> str:
@@ -118,6 +174,10 @@ class DeviceClient:
     @property
     def status_topic(self) -> str:
         return f"pager/{self.device_id}/status"
+
+    @property
+    def loc_topic(self) -> str:
+        return f"pager/{self.device_id}/loc"
 
     def _build_client(self) -> mqtt.Client:
         client = mqtt.Client(
@@ -152,6 +212,7 @@ class DeviceClient:
             print("warning: connect timed out waiting for CONNACK", file=sys.stderr)
 
     def disconnect(self) -> None:
+        self.loc_stop_auto()
         if self._client is not None:
             self._client.loop_stop()
             self._client.disconnect()
@@ -183,8 +244,9 @@ class DeviceClient:
         kind = data.get("kind", "msg")
         print(f"<- [{kind}] {data}")
         if kind == "loc_req":
-            # PROTOCOL.md §3.2: MUST NOT ack, MUST NOT render -- Phase 4
-            # answers on /loc; this client has no /loc support yet.
+            # PROTOCOL.md §3.2: MUST NOT ack, MUST NOT render -- answered on
+            # /loc instead, subject to §13.3's device-side rate limit.
+            self._handle_loc_req(data.get("id"))
             return
         msg_id = data.get("id")
         if not msg_id:
@@ -236,6 +298,149 @@ class DeviceClient:
         self._publish(self.up_topic, obj, qos=1)
         print(f"-> sent u-message {msg_id}{' to ' + to if to else ''}: {body!r}")
         return msg_id
+
+    # ---- location (PROTOCOL.md §13) ----
+
+    def _take_fix(self) -> dict[str, Any] | None:
+        """One fix attempt: `None` (no fix) iff `loc fail on`, otherwise the
+        device's current position. Always records the attempt in
+        `_last_fix`/`_last_attempt_ts` is the caller's job (both the
+        periodic and on-demand paths need to update `_last_attempt_ts` at
+        the moment of the *attempt*, per §13.3 rule 1, not just on
+        success)."""
+        if self._loc_fail:
+            return None
+        fix: dict[str, Any] = {"lat": self._lat, "lon": self._lon, "fix_ts": now_ts(), "src": "gnss"}
+        if self._loc_acc is not None:
+            fix["acc"] = self._loc_acc
+        self._last_fix = fix
+        return fix
+
+    def publish_loc(
+        self, *, req: str | None, loc: dict[str, Any] | None, cached: bool, err: str | None = None
+    ) -> str:
+        loc_id = new_id("l_")
+        obj: dict[str, Any] = {"v": 1, "id": loc_id, "ts": now_ts(), "loc": loc, "req": req}
+        if cached:
+            obj["cached"] = True
+        if err:
+            obj["err"] = err
+        # PROTOCOL.md §2: QoS 1 when `req` is non-null (an answer someone is
+        # waiting on), QoS 0 otherwise (an unsolicited periodic fix).
+        qos = 1 if req is not None else 0
+        self._publish(self.loc_topic, obj, qos=qos)
+        print(f"-> loc {loc_id} req={req} cached={cached} err={err} loc={loc}")
+        return loc_id
+
+    def loc_now(self, lat: float, lon: float, acc: int | None = None) -> None:
+        """`loc <lat> <lon> [acc]`: one periodic fix (`req:null`) right now
+        at the given position -- also updates the device's current position
+        for future fixes (`loc auto`, a rate-limited `loc_req` answer)."""
+        with self._loc_lock:
+            self._lat, self._lon, self._loc_acc = lat, lon, acc
+            fix = self._take_fix()
+            self._last_attempt_ts = time.time()
+        if fix is None:
+            self.publish_loc(req=None, loc=None, cached=False, err="no_fix")
+        else:
+            self.publish_loc(req=None, loc=fix, cached=False)
+
+    def loc_auto(self, period_s: int, walk: bool = False) -> None:
+        """`loc auto <period_s> [--walk]`: periodic fixes (`req:null`) every
+        `period_s` seconds until `loc_stop_auto()`/`disconnect()`/`crash()`.
+        `--walk` drifts the position ~1 m/s northward between fixes (1
+        degree of latitude is ~111km, so `period_s` seconds of drift is
+        `period_s / 111_000` degrees)."""
+        self.loc_stop_auto()
+        self._loc_period_s = period_s
+        self._loc_walk = walk
+        if period_s <= 0:
+            return
+        self._auto_stop = threading.Event()
+        stop_event = self._auto_stop
+
+        def _loop() -> None:
+            while not stop_event.wait(period_s):
+                with self._loc_lock:
+                    if self._loc_walk:
+                        self._lat += period_s / 111_000.0
+                    fix = self._take_fix()
+                    self._last_attempt_ts = time.time()
+                if fix is None:
+                    self.publish_loc(req=None, loc=None, cached=False, err="no_fix")
+                else:
+                    self.publish_loc(req=None, loc=fix, cached=False)
+
+        self._auto_thread = threading.Thread(target=_loop, daemon=True)
+        self._auto_thread.start()
+
+    def loc_stop_auto(self) -> None:
+        self._loc_period_s = 0
+        if self._auto_stop is not None:
+            self._auto_stop.set()
+        if self._auto_thread is not None:
+            self._auto_thread.join(timeout=2.0)
+        self._auto_thread = None
+        self._auto_stop = None
+
+    def loc_set_min(self, seconds: int) -> None:
+        """`loc min <s>`: the device's own minimum gap between on-demand fix
+        *attempts* (PROTOCOL.md §13.3 rule 1), default 120s -- reported in
+        `/status` as `loc_min_s`."""
+        self._loc_min_s = seconds
+
+    def loc_set_fail(self, on: bool) -> None:
+        """`loc fail on|off`: simulate no-fix -- every attempt while this is
+        on answers `err:"no_fix"` instead of a real fix (§13.2)."""
+        self._loc_fail = on
+
+    def _handle_loc_req(self, req_id: str | None) -> None:
+        """PROTOCOL.md §13.3 rules 1-3, normative: answers a `loc_req` down
+        message on `/loc`, subject to the device's own rate limit."""
+        if not req_id:
+            return
+        with self._loc_lock:
+            now = time.time()
+            if (
+                self._last_attempt_ts is not None
+                and (now - self._last_attempt_ts) < self._loc_min_s
+                and self._last_fix is not None
+            ):
+                # Rule 1: less than loc_min_s since the last *attempt* ->
+                # answer immediately from the last fix, cached:true, without
+                # powering GNSS. (If there is no last fix at all yet -- this
+                # device has never obtained one -- there is nothing to
+                # answer from, so fall through to a real attempt instead;
+                # PROTOCOL.md does not address this bootstrap case
+                # explicitly.)
+                fix = self._last_fix
+                cached = True
+            else:
+                # Rule 2: attempt a fix (this simulator's attempts are
+                # instantaneous; a real device bounds this at 60s). Rule 3:
+                # the lock above already serialises concurrent attempts, so
+                # every `loc_req` processed here reflects the one attempt's
+                # result.
+                fix = self._take_fix()
+                self._last_attempt_ts = now
+                cached = False
+
+        def _answer(delay_s: float) -> None:
+            if delay_s > 0:
+                time.sleep(delay_s)
+            if fix is None:
+                self.publish_loc(req=req_id, loc=None, cached=False, err="no_fix")
+            else:
+                self.publish_loc(req=req_id, loc=fix, cached=cached)
+
+        # `loc_answer_delay_s` only stands in for real GNSS acquisition time
+        # (rule 2's "attempt a fix"); the cached path (rule 1) never powers
+        # GNSS at all and always answers immediately, delay or not.
+        delay_s = self.loc_answer_delay_s if not cached else 0.0
+        if delay_s > 0:
+            threading.Thread(target=_answer, args=(delay_s,), daemon=True).start()
+        else:
+            _answer(0.0)
 
 
 # ---------------------------------------------------------------------------
@@ -333,6 +538,12 @@ class ServerClient:
         resp.raise_for_status()
         return resp.json()
 
+    def locate(self, alias: str) -> dict[str, Any]:
+        resp = self.api_post(f"/api/conversations/{alias}/locate", {})
+        if resp.status_code >= 400:
+            raise RuntimeError(f"locate failed: {resp.status_code} {resp.text}")
+        return resp.json()
+
     # ---- admin ----
 
     def admin_user_add(
@@ -426,6 +637,15 @@ class ServerClient:
             f"{self.firestore_base}:runQuery", json=body, headers=self._headers()
         )
 
+    def firestore_run_query_at(self, parent_path: str, body: dict[str, Any]) -> httpx.Response:
+        """Same as `firestore_run_query`, but scoped to a subcollection
+        query rooted at `parent_path` (e.g. `devices/{deviceId}`) instead of
+        the database root -- what `locations()` needs to query
+        `devices/{deviceId}/locations`."""
+        return self._http.post(
+            f"{self.firestore_base}/{parent_path}:runQuery", json=body, headers=self._headers()
+        )
+
     def contacts(self) -> list[str]:
         """Best-effort: reads `allow/{self}_*` via a structured query (the
         rule permits it: either party of an edge may read it), then tries to
@@ -509,6 +729,96 @@ class ServerClient:
         # lookup at all.
         return alias
 
+    def _device_id_for_owner(self, owner_uid: str) -> str | None:
+        """Resolves a device id owned by `owner_uid` that *this caller* may
+        locate -- exercises `firestore.rules`' `devices/{d}` `locatableBy`
+        check the same way `locations()` below exercises the `locations`
+        subcollection's. Deliberately filters on `locatableBy array_contains
+        self.uid` rather than `ownerUid == owner_uid`
+        **(build finding, Phase 4)**: Firestore evaluates a security rule
+        for a `list` (collection query) request *abstractly*, against the
+        query's own declared filters alone, before ever touching a real
+        document -- a query filtered only on `ownerUid` gives the rule
+        nothing to statically prove the `locatableBy`/`isAdmin()` disjuncts
+        from, so Firestore denies the *entire query* with `403` even for a
+        caller who is genuinely allowed to read the one matching document
+        (this is documented, intentional Firestore behaviour for `list`,
+        not a bug in `firestore.rules`; see this phase's build report).
+        Filtering on `locatableBy array_contains self.uid` instead gives
+        Firestore exactly the fact its rule needs to prove the query safe,
+        so it *can* stream real results -- which may include devices owned
+        by users other than `owner_uid` (every device this caller may
+        locate at all), so the match on `owner_uid` happens client-side
+        below rather than in the query."""
+        query = {
+            "structuredQuery": {
+                "from": [{"collectionId": "devices"}],
+                "where": {
+                    "fieldFilter": {
+                        "field": {"fieldPath": "locatableBy"},
+                        "op": "ARRAY_CONTAINS",
+                        "value": {"stringValue": self.uid},
+                    }
+                },
+            }
+        }
+        resp = self.firestore_run_query(query)
+        resp.raise_for_status()
+        for row in resp.json():
+            doc = row.get("document")
+            if not doc:
+                continue
+            fields = doc["fields"]
+            if fields.get("ownerUid", {}).get("stringValue") == owner_uid:
+                return doc["name"].rsplit("/", 1)[-1]
+        return None
+
+    def locations(self, alias: str, n: int = 20) -> list[dict[str, Any]]:
+        """`locations <alias>`: the target's `n` most recent
+        `devices/{deviceId}/locations` fixes, newest first -- read straight
+        from Firestore (no relay API endpoint for this, per
+        docs/SERVER_PLAN.md §5.1: "reads the web app can do straight from
+        Firestore ... have no API endpoint"), which is what exercises
+        `firestore.rules`' `locatableBy` check: a caller without `locate`
+        permission either can't resolve a device id at all (see
+        `_device_id_for_owner`) or, if it already knows one, gets a 403 on
+        the subcollection query."""
+        peer_uid = self._resolve_alias_best_effort(alias)
+        device_id = self._device_id_for_owner(peer_uid)
+        if device_id is None:
+            raise RuntimeError(
+                f"no device found for {alias!r} (either it has none, or this caller is not "
+                "permitted to see it -- firestore.rules filtered it out)"
+            )
+        query = {
+            "structuredQuery": {
+                "from": [{"collectionId": "locations"}],
+                "orderBy": [{"field": {"fieldPath": "createdAt"}, "direction": "DESCENDING"}],
+                "limit": n,
+            }
+        }
+        resp = self.firestore_run_query_at(f"devices/{device_id}", query)
+        if resp.status_code == 403:
+            raise RuntimeError(f"locations({alias!r}) denied by firestore.rules (403)")
+        resp.raise_for_status()
+        out = []
+        for row in resp.json():
+            doc = row.get("document")
+            if not doc:
+                continue
+            fields = doc["fields"]
+            out.append(
+                {
+                    "id": doc["name"].rsplit("/", 1)[-1],
+                    "lat": _fs_value(fields.get("lat")),
+                    "lon": _fs_value(fields.get("lon")),
+                    "accM": _fs_value(fields.get("accM")),
+                    "fixTs": _fs_value(fields.get("fixTs")),
+                    "cached": _fs_value(fields.get("cached")),
+                }
+            )
+        return out
+
 
 # ---------------------------------------------------------------------------
 # The combined shell
@@ -589,6 +899,46 @@ class PagerShell(cmd.Cmd):
     def do_bytes(self, arg: str) -> None:
         self._out({"published": self.device.bytes.published, "received": self.device.bytes.received})
 
+    def do_loc(self, arg: str) -> None:
+        parts = shlex.split(arg)
+        if not parts:
+            print(
+                "usage: loc <lat> <lon> [acc] | loc auto <period_s> [--walk] | "
+                "loc min <s> | loc fail on|off"
+            )
+            return
+        if parts[0] == "auto":
+            parser = argparse.ArgumentParser(prog="loc auto", add_help=False)
+            parser.add_argument("period_s", type=int)
+            parser.add_argument("--walk", action="store_true")
+            try:
+                ns = parser.parse_args(parts[1:])
+            except SystemExit:
+                return
+            self.device.loc_auto(ns.period_s, ns.walk)
+            print(f"loc auto: period={ns.period_s}s walk={ns.walk}")
+        elif parts[0] == "min":
+            if len(parts) != 2:
+                print("usage: loc min <s>")
+                return
+            self.device.loc_set_min(int(parts[1]))
+            print(f"loc min = {parts[1]}s")
+        elif parts[0] == "fail":
+            if len(parts) != 2 or parts[1] not in ("on", "off"):
+                print("usage: loc fail on|off")
+                return
+            self.device.loc_set_fail(parts[1] == "on")
+            print(f"loc fail = {parts[1]}")
+        else:
+            try:
+                lat = float(parts[0])
+                lon = float(parts[1])
+                acc = int(parts[2]) if len(parts) > 2 else None
+            except (ValueError, IndexError):
+                print("usage: loc <lat> <lon> [acc]")
+                return
+            self.device.loc_now(lat, lon, acc)
+
     # ---- server commands ----
 
     def do_login(self, arg: str) -> None:
@@ -617,6 +967,22 @@ class PagerShell(cmd.Cmd):
             return
         alias, text = parts[0], " ".join(parts[1:])
         self._out(self.server.say(alias, text))
+
+    def do_locate(self, arg: str) -> None:
+        alias = arg.strip()
+        if not alias:
+            print("usage: locate <alias>")
+            return
+        self._out(self.server.locate(alias))
+
+    def do_locations(self, arg: str) -> None:
+        parts = arg.split()
+        if not parts:
+            print("usage: locations <alias> [n]")
+            return
+        alias = parts[0]
+        n = int(parts[1]) if len(parts) > 1 else 20
+        self._out(self.server.locations(alias, n))
 
     def do_watch(self, arg: str) -> None:
         alias = arg.strip()

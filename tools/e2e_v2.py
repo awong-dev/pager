@@ -4,13 +4,16 @@ End-to-end integration suite for the v2 pager relay -- docs/SERVER_PLAN.md
 §8. Brings up the real `relay/docker-compose.yml` stack (EMQX + Firebase
 emulators + relay, `DEV_MODE=1`), imports `tools/pager_client.py` **as a
 library** (one process plays the pager device *and* every human in the
-scenario), and runs the named scenarios below. This phase (3) implements
-scenarios 1-4; 5-9 (location, fan-out, retention, byte accounting) are later
-phases per `HANDOFF_V2.md` §5.
+scenario), and runs the named scenarios below. Phase 3 implemented scenarios
+1-4; this phase (4) adds 5-6 (location: periodic fixes and read permission,
+on-demand `/locate` incl. coalescing/cached-answer/`no_fix`/derived-expiry).
+7-9 (fan-out, retention, byte accounting) are later phases per
+`HANDOFF_V2.md` §5.
 
 Usage:
-    python3 tools/e2e_v2.py                 # all of scenarios 1-4
+    python3 tools/e2e_v2.py                 # all scenarios
     python3 tools/e2e_v2.py bootstrap allowlist
+    python3 tools/e2e_v2.py location_periodic location_on_demand
 
 Exit code 0 if every requested scenario passes, 1 otherwise. Always tears
 down the compose stack it started.
@@ -64,6 +67,13 @@ FIREBASE_PROJECT_ID = "demo-pager"
 BROKER_API_KEY = "dev-broker-api-key"
 BROKER_API_SECRET = "dev-broker-api-secret"
 WEBHOOK_KEY = "dev-webhook-key"
+# docs/PROTOCOL.md §13.4: 900s (15 min) in production. Shortened for this
+# whole compose run so `scenario_location_on_demand`'s derived-expiry
+# sub-case doesn't wait 15 real minutes -- 10s is comfortably longer than
+# every other sub-case's own timing (the coalescing sub-case's 3s
+# artificial answer delay included), so it doesn't make any *other*
+# scenario's loc_req go stale before it's answered.
+LOC_REQ_TTL_S = 10
 
 sys.path.insert(0, str(TOOLS_DIR))
 sys.path.insert(0, str(RELAY_DIR))
@@ -114,6 +124,7 @@ def write_env_file() -> None:
                 f"BROKER_API_KEY={BROKER_API_KEY}",
                 f"BROKER_API_SECRET={BROKER_API_SECRET}",
                 f"WEBHOOK_KEY={WEBHOOK_KEY}",
+                f"LOC_REQ_TTL_S={LOC_REQ_TTL_S}",
                 "",
             ]
         )
@@ -259,16 +270,23 @@ class Oracle:
 
     def __init__(self) -> None:
         _use_relay_store()
+        from app.store import locations as locations_store
         from app.store import messages as messages_store
         from app.store import users as users_store
 
         self.messages_store = messages_store
         self.users_store = users_store
+        self.locations_store = locations_store
 
     def uid_for_alias(self, alias: str) -> str:
         uid = self.users_store.get_uid_for_alias(alias)
         assert uid is not None, f"no such alias: {alias!r}"
         return uid
+
+    def loc_req_exists(self, device_id: str) -> bool:
+        from app.db.firestore import get_db
+
+        return get_db().collection("locReqs").document(device_id).get().exists
 
     def message(self, msg_id: str):
         return self.messages_store.get_message(msg_id)
@@ -520,11 +538,220 @@ def scenario_republish() -> None:
     print("republish: /internal/tick delivered the previously-queued message")
 
 
+def scenario_location_periodic() -> None:
+    """`loc auto 5` -> `devices/{d}/locations` fills over a few cycles
+    (verified both whitebox, via `Oracle`, and through the API a real
+    parent uses, `pager_client.ServerClient.locations`); periodic fixes
+    never create a thread message (PROTOCOL.md §3.2); a user without
+    `locate` permission cannot read them -- denied by `firestore.rules`'
+    `locatableBy` check (§5.6), surfaced here as `locations()` finding no
+    device it's allowed to see."""
+    oracle = Oracle()
+    admin = pager_client.ServerClient(RELAY_URL, AUTH_URL)
+    admin.login("admin")
+    admin.admin_user_add(
+        "locperiodic", "LocPeriodic", email="locperiodic@example.com", phone=None
+    )
+    # Device *before* allow-edge (build finding): `devices_store.
+    # create_device` always starts a fresh device's `locatableBy` at `[]`;
+    # it is only ever recomputed by a *later* allow-list write
+    # (`allow_store.set_edge`/`replace_all`), which itself only touches
+    # devices that already exist at the time it runs. Setting the edge
+    # before the device exists would silently leave `locatableBy` empty
+    # forever (until the allow-list happens to be rewritten again) -- see
+    # this phase's build report.
+    admin.admin_device_add("pgr-e2e-locp", "locperiodic", default_to_alias="parent")
+    admin.admin_set_allow("parent", "locperiodic", message=True, locate=True, one_way=True)
+
+    device = pager_client.DeviceClient("pgr-e2e-locp", MQTT_HOST, MQTT_PORT, None, None)
+    device.connect()
+    wait_until(lambda: device.connected, timeout=10, description="loc-periodic device to connect")
+
+    device.loc_auto(5)
+    wait_until(
+        lambda: len(oracle.locations_store.list_locations("pgr-e2e-locp")) >= 2,
+        timeout=25,
+        description="at least 2 periodic fixes to land in devices/{d}/locations",
+    )
+    device.loc_stop_auto()
+    fixes = oracle.locations_store.list_locations("pgr-e2e-locp")
+    print(f"location_periodic: {len(fixes)} periodic fixes landed in devices/{{d}}/locations")
+
+    conv = oracle.messages_store.get_conversation(
+        oracle.messages_store.conv_key(
+            oracle.uid_for_alias("parent"), oracle.uid_for_alias("locperiodic")
+        )
+    )
+    assert conv is None, "periodic fixes must never create a thread message (PROTOCOL.md §3.2)"
+
+    parent = pager_client.ServerClient(RELAY_URL, AUTH_URL)
+    parent.login("parent")
+    via_api = parent.locations("locperiodic")
+    assert len(via_api) >= 2, via_api
+    print("location_periodic: a user with locate permission reads locations via Firestore REST")
+
+    admin.admin_user_add(
+        "locoutsider", "LocOutsider", email="locoutsider@example.com", phone=None
+    )
+    outsider = pager_client.ServerClient(RELAY_URL, AUTH_URL)
+    outsider.login("locoutsider")
+    try:
+        outsider.locations("locperiodic")
+        raise AssertionError("expected locations() to be denied for a non-locate user")
+    except RuntimeError as exc:
+        print(f"location_periodic: user without locate permission denied: {exc}")
+
+    device.disconnect()
+
+
+def scenario_location_on_demand() -> None:
+    """`locate` -> device answers with a real fix, and the request is
+    fulfilled; a second `locate` within 60s is answered `cached:true` with
+    no new wire message; two different requesters' `locate` calls within
+    the coalescing window attach to the same `loc_req`, and both eventually
+    get a `kind='loc'` thread message once the device answers; `loc fail
+    on` -> the device answers `err:"no_fix"` and the relay still resolves
+    the request to `fulfilled` (not stuck, not a crash); derived expiry,
+    using the compose stack's shortened `LOC_REQ_TTL_S`, plus a `tick()`
+    call, confirms a stale `locReqs` doc is cleared and a subsequent
+    `/locate` starts fresh instead of coalescing onto the dead one."""
+    oracle = Oracle()
+    admin = pager_client.ServerClient(RELAY_URL, AUTH_URL)
+    admin.login("admin")
+    parent = pager_client.ServerClient(RELAY_URL, AUTH_URL)
+    parent.login("parent")
+
+    # --- a real fix, then a <60s cached re-ask ---
+    # Device before allow-edge in every sub-case below -- see
+    # scenario_location_periodic's comment on the same ordering.
+    admin.admin_user_add("locdemo1", "LocDemo1", email="locdemo1@example.com", phone=None)
+    admin.admin_device_add("pgr-e2e-locd1", "locdemo1", default_to_alias="parent")
+    admin.admin_set_allow("parent", "locdemo1", message=True, locate=True, one_way=True)
+    device1 = pager_client.DeviceClient("pgr-e2e-locd1", MQTT_HOST, MQTT_PORT, None, None)
+    device1.connect()
+    wait_until(lambda: device1.connected, timeout=10, description="locdemo1 device to connect")
+
+    outcome1 = parent.locate("locdemo1")
+    assert outcome1["requestId"], outcome1
+    assert outcome1["cached"] is False, outcome1
+
+    def _fulfilled() -> bool:
+        msg = oracle.message(outcome1["requestId"])
+        if msg is None:
+            return False
+        return any(d.kind == "pager" and d.state == "fulfilled" for d in msg.deliveries.values())
+
+    wait_until(_fulfilled, timeout=10, description="loc_req to be fulfilled by the device's answer")
+    print("location_on_demand: locate -> device answered, loc_req fulfilled")
+
+    loc_req_count_before = sum(1 for e in device1.inbox if e.data.get("kind") == "loc_req")
+    outcome2 = parent.locate("locdemo1")
+    assert outcome2["cached"] is True, outcome2
+    assert outcome2["requestId"] is None, outcome2
+    loc_req_count_after = sum(1 for e in device1.inbox if e.data.get("kind") == "loc_req")
+    assert loc_req_count_after == loc_req_count_before, "cached answer must not re-ask the device"
+    print("location_on_demand: second locate() within 60s answered cached:true, no new wire message")
+    device1.disconnect()
+
+    # --- coalescing: two requesters, one live loc_req ---
+    admin.admin_user_add("locdemo2", "LocDemo2", email="locdemo2@example.com", phone=None)
+    admin.admin_user_add(
+        "locrequester2", "LocRequester2", email="locrequester2@example.com", phone=None
+    )
+    admin.admin_device_add("pgr-e2e-locd2", "locdemo2", default_to_alias="parent")
+    admin.admin_set_allow("parent", "locdemo2", message=True, locate=True, one_way=True)
+    admin.admin_set_allow("locrequester2", "locdemo2", message=True, locate=True, one_way=True)
+    device2 = pager_client.DeviceClient("pgr-e2e-locd2", MQTT_HOST, MQTT_PORT, None, None)
+    # A real device takes real time to attempt a fix (PROTOCOL.md §13.3
+    # rule 2 bounds it at 60s); this simulator otherwise answers instantly,
+    # which would make the coalescing window below a flaky race against two
+    # separate HTTP round trips. A few real seconds of delay makes the test
+    # deterministic without changing any relay-side behaviour under test.
+    device2.loc_answer_delay_s = 3.0
+    device2.connect()
+    wait_until(lambda: device2.connected, timeout=10, description="locdemo2 device to connect")
+
+    requester2 = pager_client.ServerClient(RELAY_URL, AUTH_URL)
+    requester2.login("locrequester2")
+
+    outcomeA = parent.locate("locdemo2")
+    outcomeB = requester2.locate("locdemo2")
+    assert outcomeA["requestId"] == outcomeB["requestId"], (outcomeA, outcomeB)
+    print("location_on_demand: two requesters coalesced onto the same loc_req")
+
+    def _both_notified() -> bool:
+        mom_thread = oracle.thread("parent", "locdemo2")
+        req_thread = oracle.thread("locrequester2", "locdemo2")
+        return any(m.kind == "loc" for m in mom_thread) and any(
+            m.kind == "loc" for m in req_thread
+        )
+
+    wait_until(
+        _both_notified,
+        timeout=15,
+        description="both coalesced requesters to get a kind='loc' message",
+    )
+    print("location_on_demand: both coalesced requesters received their own kind='loc' message")
+    device2.disconnect()
+
+    # --- loc fail on -> no_fix, still resolves the request ---
+    admin.admin_user_add("locdemo3", "LocDemo3", email="locdemo3@example.com", phone=None)
+    admin.admin_device_add("pgr-e2e-locd3", "locdemo3", default_to_alias="parent")
+    admin.admin_set_allow("parent", "locdemo3", message=True, locate=True, one_way=True)
+    device3 = pager_client.DeviceClient("pgr-e2e-locd3", MQTT_HOST, MQTT_PORT, None, None)
+    device3.connect()
+    wait_until(lambda: device3.connected, timeout=10, description="locdemo3 device to connect")
+    device3.loc_set_fail(True)
+
+    outcome3 = parent.locate("locdemo3")
+
+    def _no_fix_fulfilled() -> bool:
+        msg = oracle.message(outcome3["requestId"])
+        if msg is None:
+            return False
+        return any(d.kind == "pager" and d.state == "fulfilled" for d in msg.deliveries.values())
+
+    wait_until(_no_fix_fulfilled, timeout=10, description="no_fix answer to still fulfil the request")
+    thread3 = oracle.thread("parent", "locdemo3")
+    loc_msgs3 = [m for m in thread3 if m.kind == "loc"]
+    assert len(loc_msgs3) == 1 and loc_msgs3[0].loc == {"err": "no_fix"}, loc_msgs3
+    print("location_on_demand: loc fail on -> err:no_fix, request resolved to fulfilled (not stuck)")
+    device3.disconnect()
+
+    # --- derived expiry: shortened LOC_REQ_TTL_S + tick() ---
+    admin.admin_user_add("locdemo4", "LocDemo4", email="locdemo4@example.com", phone=None)
+    admin.admin_device_add("pgr-e2e-locd4", "locdemo4", default_to_alias="parent")
+    admin.admin_set_allow("parent", "locdemo4", message=True, locate=True, one_way=True)
+    # Deliberately never connected: PROTOCOL.md §5.3 excludes loc_req from
+    # the online-edge republish ("a stale location request is worthless"),
+    # so this request can never be answered -- exactly the
+    # guaranteed-to-go-stale shape this sub-case needs.
+
+    expiring = parent.locate("locdemo4")
+    coalesced = parent.locate("locdemo4")
+    assert coalesced["requestId"] == expiring["requestId"], "still within the TTL -> must coalesce"
+
+    print(f"location_on_demand: waiting {LOC_REQ_TTL_S + 3}s for the loc_req to go stale...")
+    time.sleep(LOC_REQ_TTL_S + 3)
+    tick_resp = admin.api_post("/internal/tick", {})
+    tick_resp.raise_for_status()
+    tick_json = tick_resp.json()
+    assert tick_json.get("locReqsCleared", 0) >= 1, tick_json
+    assert not oracle.loc_req_exists("pgr-e2e-locd4")
+    print(f"location_on_demand: tick() cleared the stale locReqs row -- {tick_json}")
+
+    fresh = parent.locate("locdemo4")
+    assert fresh["requestId"] != expiring["requestId"], "must not coalesce onto the expired request"
+    print("location_on_demand: a locate() after expiry starts a fresh loc_req, not a coalesce")
+
+
 SCENARIOS: dict[str, Callable[[], None]] = {
     "bootstrap": scenario_bootstrap,
     "text_roundtrip": scenario_text_roundtrip,
     "allowlist": scenario_allowlist,
     "republish": scenario_republish,
+    "location_periodic": scenario_location_periodic,
+    "location_on_demand": scenario_location_on_demand,
 }
 
 

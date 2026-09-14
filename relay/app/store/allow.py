@@ -88,6 +88,23 @@ def delete_edge(from_uid: str, to_uid: str) -> None:
     _recompute_locatable_by(to_uid)
 
 
+def recompute_locatable_by_for_owner(uid: str) -> None:
+    """Public wrapper around `_recompute_locatable_by`, for callers outside
+    this module. `(build finding, Phase 4)`: `set_edge`/`delete_edge`/
+    `replace_all` only ever recompute `locatableBy` on devices that already
+    *exist* at the moment an edge changes (`devices_store.list_devices
+    (owner_uid=to_uid)`), so a device created *after* its owner's incoming
+    `locate` edges were set would otherwise start, and silently stay, at
+    `locatableBy: []` -- undetectable by a `get` on that single document
+    (which nobody was denied), but exactly what breaks a `list`
+    (collection query) that depends on it (`tools/pager_client.py`'s
+    `ServerClient.locations()`, docs/PROTOCOL.md §13 / SERVER_PLAN.md §5.6).
+    `app/routers/admin.py`'s `POST /api/admin/devices` calls this
+    immediately after creating a device, closing that gap without changing
+    `set_edge`/`delete_edge`/`replace_all` at all."""
+    _recompute_locatable_by(uid)
+
+
 def _recompute_locatable_by(to_uid: str) -> None:
     """`locatableBy` on every device owned by `to_uid` = every `fromUid`
     with `allow/{fromUid}_{to_uid}.locate == true` -- denormalised onto the

@@ -46,6 +46,12 @@ def _write(path: str, token: str | None, fields: dict) -> httpx.Response:
     return httpx.patch(f"{BASE_URL}/{path}", headers=headers, json=body, timeout=10.0)
 
 
+def _run_query(parent_path: str, token: str | None, body: dict) -> httpx.Response:
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+    base = f"{BASE_URL}/{parent_path}" if parent_path else BASE_URL
+    return httpx.post(f"{base}:runQuery", headers=headers, json=body, timeout=10.0)
+
+
 @pytest.fixture
 def two_pairs():
     """u1<->u2 have a message/conversation; u3 is unrelated to both."""
@@ -181,6 +187,83 @@ def test_locatable_by_uid_can_read_device_and_its_locations(two_pairs):
     other_token = mint_id_token("u3")
     resp3 = _get(f"devices/pgr-rules-3/locations/{loc_id}", other_token)
     assert resp3.status_code == 403
+
+
+def test_locatable_by_uid_can_list_query_devices_and_their_locations(two_pairs):
+    """`(build finding, Phase 4)`: a Firestore *list* (collection query)
+    request evaluates `allow read` abstractly, against the query's own
+    declared filters alone, before touching any real document -- unlike the
+    single-document `get`s the rest of this file exercises. A bare
+    `resource.data.locatableBy`/`request.auth.token.admin` field access
+    (present before this phase) throws `PERMISSION_DENIED: Property ...  is
+    undefined on object` for *every* `list` query, and even the null-safe
+    `.get(key, default)` fix alone still can't make a query filtered only on
+    `ownerUid` succeed for a `locatableBy`-only-authorized caller (Firestore
+    can't statically prove the rule from that filter). This is
+    `tools/pager_client.py`'s `ServerClient.locations()` path
+    (`_device_id_for_owner` filters on `locatableBy array_contains
+    <caller>`, which Firestore *can* verify) -- exercised here directly
+    against the emulator's real rule enforcement, the same as every other
+    test in this file."""
+    devices_store.create_device(
+        device_id="pgr-rules-4",
+        owner_uid="u2",
+        label="d",
+        mqtt_username="pgr-rules-4",
+        mqtt_password_hash="x",
+    )
+    devices_store.set_locatable_by("pgr-rules-4", ["u1"])
+    from app.store.locations import LocationFix, add_location
+
+    add_location("pgr-rules-4", LocationFix(ts=1, fixTs=1, lat=1.0, lon=2.0))
+
+    token = mint_id_token("u1")
+    devices_query = {
+        "structuredQuery": {
+            "from": [{"collectionId": "devices"}],
+            "where": {
+                "fieldFilter": {
+                    "field": {"fieldPath": "locatableBy"},
+                    "op": "ARRAY_CONTAINS",
+                    "value": {"stringValue": "u1"},
+                }
+            },
+        }
+    }
+    resp = _run_query("", token, devices_query)
+    assert resp.status_code == 200, resp.text
+    names = [row["document"]["name"] for row in resp.json() if "document" in row]
+    assert any(n.endswith("/devices/pgr-rules-4") for n in names)
+
+    locations_query = {
+        "structuredQuery": {
+            "from": [{"collectionId": "locations"}],
+            "orderBy": [{"field": {"fieldPath": "createdAt"}, "direction": "DESCENDING"}],
+        }
+    }
+    resp2 = _run_query("devices/pgr-rules-4", token, locations_query)
+    assert resp2.status_code == 200, resp2.text
+    assert len([row for row in resp2.json() if "document" in row]) == 1
+
+    # A caller with no locatableBy entry gets an empty (not an error) result
+    # for the devices-list query -- the array-contains filter itself
+    # excludes it, matching PROTOCOL/SERVER_PLAN's "not permitted" outcome.
+    other_token = mint_id_token("u3")
+    other_query = {
+        "structuredQuery": {
+            "from": [{"collectionId": "devices"}],
+            "where": {
+                "fieldFilter": {
+                    "field": {"fieldPath": "locatableBy"},
+                    "op": "ARRAY_CONTAINS",
+                    "value": {"stringValue": "u3"},
+                }
+            },
+        }
+    }
+    resp3 = _run_query("", other_token, other_query)
+    assert resp3.status_code == 200, resp3.text
+    assert [row for row in resp3.json() if "document" in row] == []
 
 
 def test_allow_edge_readable_by_either_party_not_a_third_party(two_pairs):

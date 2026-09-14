@@ -12,6 +12,8 @@ from firebase_admin import auth as fb_auth
 from app.config import Settings
 from app.main import create_app
 from app.store import allow as allow_store
+from app.store import backends as backends_store
+from app.store import devices as devices_store
 from app.store import messages as messages_store
 from app.store import users as users_store
 from tests.fake_transport import FakeBrokerClient
@@ -188,3 +190,74 @@ def test_mark_read_by_non_recipient_is_404(client: TestClient):
         f"/api/conversations/kid6/messages/{msg_id}/read", headers=stranger_headers
     )
     assert read_resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# POST /api/conversations/{alias}/locate -- docs/SERVER_PLAN.md §5.1, §5.6
+# ---------------------------------------------------------------------------
+
+
+def _make_pager_device(device_id: str, owner_uid: str):
+    devices_store.create_device(
+        device_id=device_id,
+        owner_uid=owner_uid,
+        label="d",
+        mqtt_username=device_id,
+        mqtt_password_hash="x",
+    )
+    backends_store.create_backend(
+        owner_uid, kind="pager", config={"deviceId": device_id}, enabled=True
+    )
+
+
+def test_locate_success_returns_202_with_request_id(client: TestClient):
+    mom_headers = _make_user("mom7", "mom7")
+    _make_user("kid7", "kid7")
+    allow_store.set_edge("mom7", "kid7", message=True, locate=True)
+    _make_pager_device("pgr-conv-1", "kid7")
+
+    resp = client.post("/api/conversations/kid7/locate", headers=mom_headers)
+    assert resp.status_code == 202, resp.text
+    body = resp.json()
+    assert body["requestId"]
+    assert body["cached"] is False
+
+
+def test_locate_unknown_alias_is_404(client: TestClient):
+    mom_headers = _make_user("mom8", "mom8")
+    resp = client.post("/api/conversations/nobody/locate", headers=mom_headers)
+    assert resp.status_code == 404
+
+
+def test_locate_without_locate_permission_is_403(client: TestClient):
+    mom_headers = _make_user("mom9", "mom9")
+    _make_user("kid9", "kid9")
+    # message allowed, locate explicitly denied.
+    allow_store.set_edge("mom9", "kid9", message=True, locate=False)
+    _make_pager_device("pgr-conv-2", "kid9")
+
+    resp = client.post("/api/conversations/kid9/locate", headers=mom_headers)
+    assert resp.status_code == 403
+
+
+def test_locate_no_allow_edge_at_all_is_403(client: TestClient):
+    mom_headers = _make_user("mom10", "mom10")
+    _make_user("kid10", "kid10")
+
+    resp = client.post("/api/conversations/kid10/locate", headers=mom_headers)
+    assert resp.status_code == 403
+
+
+def test_locate_target_with_no_device_is_409(client: TestClient):
+    mom_headers = _make_user("mom11", "mom11")
+    _make_user("kid11", "kid11")
+    allow_store.set_edge("mom11", "kid11", message=True, locate=True)
+    # kid11 owns no device at all.
+
+    resp = client.post("/api/conversations/kid11/locate", headers=mom_headers)
+    assert resp.status_code == 409
+
+
+def test_locate_requires_auth(client: TestClient):
+    resp = client.post("/api/conversations/kid7/locate")
+    assert resp.status_code == 401

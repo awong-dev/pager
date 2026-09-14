@@ -145,6 +145,7 @@ messages/{id}                  {id: 'm_…', seq, convKey, uids: [a, b], senderU
                                                        attempts, externalId, error, sentTs, shownTs, readTs} },
                                 pendingDeviceIds: [deviceId…] }      derived: pager deliveries still queued/sent
 wireIds/{wireId}_{recipientUid} {messageId}                            QoS 1 dedup (PROTOCOL §4.2)
+locWireIds/{locId}             {deviceId, createdAt}                  /loc dedup (PROTOCOL §13.2)
 locReqs/{deviceId}             {messageId, requesterUids: [uid…], createdAt}   the one in-flight request
 conversations/{convKey}        {uids, lastMessageAt, lastPreview, unread: {uid: n}}   list-view summary
 settings/retention             {messages: {n: 4, unit: 'weeks'}, locations: {n: 1, unit: 'weeks'}}
@@ -180,6 +181,13 @@ settings/meta                  {schemaVersion: 2, lastSweepAt, seqCounter}
 - `pendingDeviceIds` is what the online-edge re-publish queries (`array-contains deviceId`,
   ordered by `createdAt`, limit 10); `locReqs/{deviceId}` being a single document is what makes
   coalescing (§4.6) a transaction rather than a query.
+- `(build finding, phase 4 review)` **`locWireIds/{locId}` is `/loc`'s own dedup marker**
+  (`PROTOCOL.md` §13.2's "dedup on `id` … in the same transaction that stores the fix"), the same
+  `transaction.create()`-or-`AlreadyExists` pattern as `wireIds`, kept separate because the two
+  keys are shaped differently: a `wireIds` doc is keyed `{wireId}_{recipientUid}` (one up-message
+  fans out to N recipients), while a `/loc` envelope has no recipient to key against. Additive to
+  this table; nothing device-visible. §5.7's sweep (Phase 8) must delete these alongside
+  `locations`, the way it deletes `wireIds` alongside `messages`, or the collection grows forever.
 - Indexes: `messages(convKey, seq)`, `messages(pendingDeviceIds array-contains, createdAt)`,
   `messages(createdAt)` for the sweep, `locations(createdAt)` collection-group for the sweep.
   Declared in `relay/firestore.indexes.json`.

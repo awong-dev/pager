@@ -40,6 +40,7 @@ import logging
 import time
 from typing import Literal
 
+from app import location
 from app.broker import BrokerClient
 from app.routing import Routing
 from app.store import devices as devices_store
@@ -360,10 +361,13 @@ class Ingest:
     # ---- /loc ----
 
     def handle_loc(self, topic: str, payload: bytes) -> None:
-        """Stub: validate and log per docs/PROTOCOL.md §13.2. Real handling
-        (dedup, `devices/{d}/locations`, `loc_req` fulfilment) is
-        docs/SERVER_PLAN.md §5.6, Phase 4 -- this only exists so `/loc`
-        webhooks don't 404 or crash in the meantime."""
+        """Validate per docs/PROTOCOL.md §13.2, then hand off to
+        `app.location.ingest_loc` for the real handling (dedup,
+        `devices/{d}/locations`, `loc_req` fulfilment -- SERVER_PLAN.md
+        §5.6). No `Routing` needed here: unlike `_handle_v2_up_message`,
+        `ingest_loc` never originates a new delivery -- it only resolves an
+        *existing* `loc_req`'s delivery to `fulfilled`, which is a plain
+        Firestore transaction, not a broker publish."""
         device_id = _device_id_from_topic(topic, "loc")
         if device_id is None:
             logger.warning("loc webhook for unrecognised topic %s dropped", topic)
@@ -377,11 +381,4 @@ class Ingest:
         except Exception as exc:  # noqa: BLE001 -- pydantic.ValidationError, narrowly caught above
             log_malformed(topic, payload, str(exc))
             return
-        logger.info(
-            "loc from device=%s id=%s req=%s cached=%s err=%s (stub, no-op until Phase 4)",
-            device_id,
-            env.id,
-            env.req,
-            env.cached,
-            env.err,
-        )
+        location.ingest_loc(device_id, env)

@@ -227,6 +227,27 @@ def create_message(
     return fetched
 
 
+def messages_ref(msg_id: str):
+    """Public (unlike `_messages`) because `app/location.py` builds its own
+    multi-document Firestore transactions on top of this collection's shape
+    (docs/PROTOCOL.md §13.4's `loc_req` fulfilment -- one transaction across
+    `locReqs/{deviceId}`, the `loc_req` message and one `kind='loc'` message
+    per coalesced requester -- can't be built out of `create_message`, which
+    opens its own separate transaction and Firestore transactions cannot
+    nest)."""
+    return _messages().document(msg_id)
+
+
+def conversation_ref(key: str):
+    """See `messages_ref`'s docstring -- same reason."""
+    return _conversations().document(key)
+
+
+def meta_ref():
+    """See `messages_ref`'s docstring -- same reason."""
+    return _meta_ref()
+
+
 def get_message(msg_id: str) -> Message | None:
     snap = _messages().document(msg_id).get()
     if not snap.exists:

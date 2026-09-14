@@ -15,7 +15,20 @@ service cloud.firestore {
     }
 
     function isAdmin() {
-      return request.auth.token.admin == true;
+      // `.get('admin', false)`, not a bare `request.auth.token.admin`
+      // (build finding, Phase 4, same root cause as `devices/{d}`'s
+      // `locatableBy` note below): a non-admin caller's token simply has no
+      // `admin` claim at all (`app/auth.py`'s `_set_admin_claim` only ever
+      // sets it for actual admins), and Firestore's *abstract* rule
+      // pre-check for `list` (collection query) requests -- run once
+      // against the query's shape, before any real document -- throws
+      // `PERMISSION_DENIED: Property admin is undefined on object` on a
+      // bare field access instead of just treating it as falsy. Every
+      // `allow read` in this file routes through `isAdmin()`, so this one
+      // fix covers all of them; a bare `get` (single-document read, what
+      // every currently-passing test used before Phase 4's `list` queries)
+      // was never affected.
+      return request.auth.token.get('admin', false) == true;
     }
 
     match /users/{uid} {
@@ -35,15 +48,31 @@ service cloud.firestore {
     }
 
     match /devices/{d} {
+      // `.get('locatableBy', [])`, not a bare `resource.data.locatableBy`
+      // (build finding, Phase 4): every `devices/{d}` document created by
+      // `app/store/devices.py`'s `create_device` always sets `locatableBy`
+      // explicitly, so a `get` (single-document read) never actually hits a
+      // missing field. But `list` (collection query -- e.g.
+      // `tools/pager_client.py`'s `locations()`, which queries `devices`
+      // filtered by `ownerUid` to resolve an alias to a device id)
+      // evaluates this rule in an additional, *abstract* pre-check against
+      // the query's own filter shape before touching real documents, and
+      // that abstract check has no `locatableBy` value to offer -- a bare
+      // `resource.data.locatableBy` access throws `PERMISSION_DENIED:
+      // Property locatableBy is undefined on object` for every `list`
+      // query, even ones a real client is fully allowed to run and that
+      // return zero matches. The null-safe accessor sidesteps the abstract
+      // check without changing what any `get` ever returned.
       allow read: if request.auth != null && (
         resource.data.ownerUid == request.auth.uid ||
-        request.auth.uid in resource.data.locatableBy ||
+        request.auth.uid in resource.data.get('locatableBy', []) ||
         isAdmin()
       );
 
       match /locations/{l} {
         allow read: if request.auth != null &&
-          request.auth.uid in get(/databases/$(db)/documents/devices/$(d)).data.locatableBy;
+          request.auth.uid in
+            get(/databases/$(db)/documents/devices/$(d)).data.get('locatableBy', []);
       }
     }
 

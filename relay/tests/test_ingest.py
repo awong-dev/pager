@@ -5,8 +5,13 @@ Covers: send -> publish (sent on a successful broker REST call, queued on a
 failed one), the four down-message states reached in order, out-of-order
 read-without-shown, idempotent repeat acks, unknown-id acks, wrong-device
 acks, malformed payloads (never crashing), duplicate up-message ids, the
-online-edge/session-change republish rule (cap + ordering), and the `/loc`
-stub.
+online-edge/session-change republish rule (cap + ordering), and `/loc`
+ingest's dispatch through `app.ingest.Ingest.handle_loc` (the real handling
+-- dedup, `loc_req` coalescing/fulfilment, derived expiry -- is unit-tested
+directly against `app.location` in tests/test_location.py; this file only
+checks the webhook-dispatch plumbing: a periodic fix for an unregistered
+device is stored without touching the legacy thread or publishing anything,
+and a malformed `/loc` payload never crashes).
 """
 
 from __future__ import annotations
@@ -16,6 +21,7 @@ import time
 
 from app.ingest import Ingest
 from app.store import legacy as legacy_store
+from app.store import locations as locations_store
 from tests.conftest import (
     ack_payload,
     down_topic,
@@ -320,16 +326,23 @@ def test_retry_queued_is_a_noop_when_nothing_is_queued(ingest: Ingest, broker: F
     assert broker.published == []
 
 
-# ---- /loc stub ----
+# ---- /loc dispatch (real handling: tests/test_location.py) ----
 
 
-def test_loc_valid_payload_is_a_noop(ingest: Ingest, broker: FakeBrokerClient):
+def test_loc_valid_periodic_fix_is_stored_and_publishes_nothing(
+    ingest: Ingest, broker: FakeBrokerClient
+):
     device_id = "pgr-0001"
-    # Must not raise, must not touch the store or publish anything -- real
-    # handling is docs/SERVER_PLAN.md §5.6, Phase 4.
+    # A periodic fix (req:null, the default `loc_payload` shape) is stored
+    # in `devices/{d}/locations` -- it never touches the legacy per-device
+    # thread and never triggers a `/down` publish (PROTOCOL.md §3.2: not a
+    # thread entry).
     ingest.handle_loc(loc_topic(device_id), loc_payload("l_11111111"))
     assert broker.published == []
     assert legacy_store.get_thread(device_id) == []
+    fixes = locations_store.list_locations(device_id)
+    assert len(fixes) == 1
+    assert fixes[0].reqId is None
 
 
 def test_loc_malformed_payload_dropped_without_crashing(ingest: Ingest, broker: FakeBrokerClient):

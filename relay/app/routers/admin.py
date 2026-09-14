@@ -224,6 +224,16 @@ def create_device(req: CreateDeviceRequest) -> CreateDeviceResponse:
     backends_store.create_backend(
         owner_uid, kind="pager", config={"deviceId": req.deviceId}, enabled=True
     )
+    # `(build finding, Phase 4)`: a fresh device always starts at
+    # `locatableBy: []` (`devices_store.create_device`); if the owner
+    # already has incoming `locate` edges from an allow-list set up
+    # *before* this device existed, this device would otherwise never pick
+    # them up (`allow_store.set_edge`/`replace_all` only recompute
+    # `locatableBy` on devices that exist when an edge changes). See
+    # `allow_store.recompute_locatable_by_for_owner`'s docstring.
+    allow_store.recompute_locatable_by_for_owner(owner_uid)
+    device = devices_store.get_device(req.deviceId)
+    assert device is not None
     return CreateDeviceResponse(device=device, mqttUsername=req.deviceId, mqttPassword=password)
 
 
