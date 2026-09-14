@@ -1,0 +1,35 @@
+# Copy to terraform.tfvars and fill in real values. NEVER commit
+# terraform.tfvars (it is .gitignore'd -- see infra/README.md). This file
+# itself must never contain a real secret value; nothing here is
+# security-sensitive by design (Secret Manager *values* are added
+# out-of-band with `gcloud secrets versions add`, never through Terraform).
+
+project_id  = "my-pager-project"
+region      = "us-central1"
+github_org  = "my-github-org"
+github_repo = "pager"
+
+# Artifact Registry image CI will override this per deploy, but a value is
+# still required for a bare `terraform apply` (e.g. the first manual apply,
+# before CI exists) -- point it at a real pushed tag, or a placeholder that
+# will 404 until one exists (Cloud Run job/service creation succeeds either
+# way; only serving traffic needs a real image).
+relay_image = "us-central1-docker.pkg.dev/my-pager-project/pager/relay:latest"
+
+# EMQX Cloud Serverless's REST API base URL, from its console after signup
+# (docs/SERVER_PLAN.md §9.4; infra/README.md's runbook step covers this).
+broker_api_url = "https://<your-deployment>.emqxsl.com:8443/api/v5"
+
+# Must be a globally-unique GCS bucket name.
+import_data_bucket_name = "my-pager-project-import-data"
+
+# Optional overrides (defaults shown):
+# firestore_location     = "nam5"
+# custom_domain          = ""
+# enable_phone_auth      = true
+# enable_email_link_auth = true
+# enable_sms_secrets     = false   # flip once Phase 7 lands AND the three Twilio secret values are set
+# time_zone              = "America/Los_Angeles"
+# use_broker_gce         = false   # EMQX Cloud Serverless is the default plan (D2)
+# broker_domain          = ""      # required if use_broker_gce = true
+# letsencrypt_email      = ""      # required if use_broker_gce = true

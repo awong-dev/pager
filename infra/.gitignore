@@ -1,0 +1,22 @@
+# Terraform local cache / plan artifacts -- never committed.
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Real variable values. Only terraform.tfvars.example is committed.
+terraform.tfvars
+*.auto.tfvars
+*.auto.tfvars.json
+
+# infra/bootstrap and infra/envs/prod are root modules -- their lock files
+# ARE committed (pin exact provider versions for reproducible applies).
+# infra/modules/* lock files are not committed; those directories are only
+# ever used as child modules of envs/prod, whose lock file is what governs
+# a real apply.

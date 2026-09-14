@@ -1,17 +1,9 @@
-"""Tests for app.ingest.Ingest against tests.fake_transport.FakeBrokerClient
-and the Firestore emulator (via app.store.legacy).
-
-Covers: send -> publish (sent on a successful broker REST call, queued on a
-failed one), the four down-message states reached in order, out-of-order
-read-without-shown, idempotent repeat acks, unknown-id acks, wrong-device
-acks, malformed payloads (never crashing), duplicate up-message ids, the
-online-edge/session-change republish rule (cap + ordering), and `/loc`
-ingest's dispatch through `app.ingest.Ingest.handle_loc` (the real handling
--- dedup, `loc_req` coalescing/fulfilment, derived expiry -- is unit-tested
-directly against `app.location` in tests/test_location.py; this file only
-checks the webhook-dispatch plumbing: a periodic fix for an unregistered
-device is stored without touching the legacy thread or publishing anything,
-and a malformed `/loc` payload never crashes).
+"""`app.ingest.Ingest` against the v2 uid-addressed model (registered
+`devices/{id}` docs) -- the drop+system-reply path (PROTOCOL.md §4.2 case 3),
+v2 ack routing (find the right pager delivery, monotonic state), and the v2
+online-edge republish (`pendingDeviceIds`). The legacy-model behaviour this
+same class implements is already covered by tests/test_ingest.py; this file
+only exercises the *new* branch (`devices/{device_id}` registered).
 """
 
 from __future__ import annotations
@@ -20,14 +12,14 @@ import json
 import time
 
 from app.ingest import Ingest
-from app.store import legacy as legacy_store
-from app.store import locations as locations_store
+from app.routing import Routing
+from app.store import allow as allow_store
+from app.store import backends as backends_store
+from app.store import devices as devices_store
+from app.store import messages as messages_store
+from app.store import users as users_store
 from tests.conftest import (
     ack_payload,
-    down_topic,
-    loc_payload,
-    loc_topic,
-    offline_status_payload,
     online_status_payload,
     status_topic,
     up_message_payload,
@@ -36,317 +28,203 @@ from tests.conftest import (
 from tests.fake_transport import FakeBrokerClient
 
 
-def test_publish_down_success_transitions_to_sent(ingest: Ingest, broker: FakeBrokerClient):
-    row = legacy_store.create_down_message(
-        msg_id="m_aaaaaaaa", device_id="pgr-0001", ts=int(time.time()), body="hi"
-    )
-    assert row.state == "queued"
+def _make_user(uid: str, alias: str) -> None:
+    users_store.create_user(uid=uid, alias=alias, display_name=alias)
 
-    ok = ingest.publish_down(row)
-    assert ok is True
-    assert legacy_store.get_message("m_aaaaaaaa").state == "sent"
+
+def _make_pager_device(device_id: str, owner_uid: str, *, default_to_uid: str | None = None):
+    devices_store.create_device(
+        device_id=device_id,
+        owner_uid=owner_uid,
+        label="d",
+        mqtt_username=device_id,
+        mqtt_password_hash="x",
+        default_to_uid=default_to_uid,
+    )
+    backends_store.create_backend(
+        owner_uid, kind="pager", config={"deviceId": device_id}, enabled=True
+    )
+
+
+def _ingest() -> tuple[Ingest, FakeBrokerClient]:
+    broker = FakeBrokerClient()
+    routing = Routing(broker)
+    return Ingest(broker, routing), broker
+
+
+# ---- drop + system reply (PROTOCOL.md §4.2 case 3) ----
+
+
+def test_unknown_to_alias_gets_one_system_reply_and_is_not_stored():
+    _make_user("student", "student")
+    _make_pager_device("pgr-v2-1", "student")
+
+    ingest, broker = _ingest()
+    ingest.handle_up(
+        up_topic("pgr-v2-1"),
+        json.dumps(
+            {
+                "v": 1,
+                "id": "u_unknown1",
+                "ts": int(time.time()),
+                "from": "student",
+                "to": "stranger",
+                "body": "hi",
+                "ack": None,
+            }
+        ).encode("utf-8"),
+    )
+
     assert len(broker.published) == 1
-    assert broker.published[0].topic == "pager/pgr-0001/down"
+    sent = json.loads(broker.published[0].payload)
+    assert sent["from"] == "system"
+    assert sent["body"] == "unknown recipient"
+
+    # The dropped up-message was never stored as a message doc for anyone.
+    key = messages_store.conv_key("student", "stranger")
+    assert messages_store.get_conversation(key) is None
 
 
-def test_publish_down_failure_leaves_queued(ingest: Ingest, broker: FakeBrokerClient):
-    row = legacy_store.create_down_message(
-        msg_id="m_offline0", device_id="pgr-0001", ts=int(time.time()), body="hi"
-    )
-    broker.fail_publish = True
+def test_disallowed_to_alias_gets_system_reply_and_security_drop():
+    _make_user("student", "student")
+    _make_user("stranger2", "stranger2")
+    _make_pager_device("pgr-v2-2", "student")
+    # Deliberately no allow edge student->stranger2.
 
-    ok = ingest.publish_down(row)
-    assert ok is False
-    assert legacy_store.get_message("m_offline0").state == "queued"
-
-
-def test_full_state_progression_queued_sent_shown_read(ingest: Ingest, broker: FakeBrokerClient):
-    device_id = "pgr-0001"
-    row = legacy_store.create_down_message(
-        msg_id="m_bbbbbbbb", device_id=device_id, ts=int(time.time()), body="hi"
-    )
-    assert legacy_store.get_message(row.id).state == "queued"
-
-    ingest.publish_down(row)
-    assert legacy_store.get_message(row.id).state == "sent"
-
-    ingest.handle_up(up_topic(device_id), ack_payload(row.id, "shown", ts=1_700_000_100))
-    shown_row = legacy_store.get_message(row.id)
-    assert shown_row.state == "shown"
-    assert shown_row.shownTs == 1_700_000_100
-
-    ingest.handle_up(up_topic(device_id), ack_payload(row.id, "read", ts=1_700_000_200))
-    read_row = legacy_store.get_message(row.id)
-    assert read_row.state == "read"
-    assert read_row.readTs == 1_700_000_200
-    assert read_row.shownTs == 1_700_000_100  # untouched, not backfilled
-
-
-def test_out_of_order_read_without_shown_backfills_shown_ts(
-    ingest: Ingest, broker: FakeBrokerClient
-):
-    device_id = "pgr-0001"
-    row = legacy_store.create_down_message(
-        msg_id="m_cccccccc", device_id=device_id, ts=int(time.time()), body="hi"
-    )
-    ingest.publish_down(row)
-
-    ingest.handle_up(up_topic(device_id), ack_payload(row.id, "read", ts=1_700_000_300))
-    updated = legacy_store.get_message(row.id)
-    assert updated.state == "read"
-    assert updated.readTs == 1_700_000_300
-    assert updated.shownTs == 1_700_000_300  # backfilled
-
-    # A late 'shown' arriving after 'read' must be ignored (state stays read,
-    # shownTs stays backfilled).
-    ingest.handle_up(up_topic(device_id), ack_payload(row.id, "shown", ts=1_700_000_999))
-    after = legacy_store.get_message(row.id)
-    assert after.state == "read"
-    assert after.shownTs == 1_700_000_300
-
-
-def test_idempotent_repeat_ack_is_noop(ingest: Ingest, broker: FakeBrokerClient):
-    device_id = "pgr-0001"
-    row = legacy_store.create_down_message(
-        msg_id="m_dddddddd", device_id=device_id, ts=int(time.time()), body="hi"
-    )
-    ingest.publish_down(row)
-
-    ingest.handle_up(up_topic(device_id), ack_payload(row.id, "shown", ts=1_700_001_000))
-    first = legacy_store.get_message(row.id)
-    assert first.state == "shown"
-    assert first.shownTs == 1_700_001_000
-
-    # Repeat the same ack -- must be a no-op (idempotent), not an error, and
-    # must not change shownTs.
-    ingest.handle_up(up_topic(device_id), ack_payload(row.id, "shown", ts=1_700_009_999))
-    second = legacy_store.get_message(row.id)
-    assert second.state == "shown"
-    assert second.shownTs == 1_700_001_000
-
-
-def test_unknown_id_ack_dropped_without_creating_row(ingest: Ingest, broker: FakeBrokerClient):
-    device_id = "pgr-0001"
-    ingest.handle_up(up_topic(device_id), ack_payload("m_ffffffff", "shown"))
-    assert legacy_store.get_message("m_ffffffff") is None
-
-
-def test_wrong_device_ack_dropped(ingest: Ingest, broker: FakeBrokerClient):
-    owner_device = "pgr-0001"
-    attacker_device = "pgr-0002"
-    row = legacy_store.create_down_message(
-        msg_id="m_eeeeeeee", device_id=owner_device, ts=int(time.time()), body="hi"
-    )
-    ingest.publish_down(row)
-    assert legacy_store.get_message(row.id).state == "sent"
-
-    ingest.handle_up(up_topic(attacker_device), ack_payload(row.id, "shown"))
-
-    unchanged = legacy_store.get_message(row.id)
-    assert unchanged.state == "sent"  # not promoted to shown
-
-
-def test_malformed_payloads_logged_and_dropped_without_crashing(
-    ingest: Ingest, broker: FakeBrokerClient
-):
-    device_id = "pgr-0001"
-
-    # not valid JSON
-    ingest.handle_up(up_topic(device_id), b"not json{{{")
-    # too large (> 640 bytes hard cap)
+    ingest, broker = _ingest()
     ingest.handle_up(
-        up_topic(device_id),
-        b'{"v":1,"id":"m_aaaaaaaa","ts":1700000000,"from":"student","body":"'
-        + b"x" * 700
-        + b'","ack":null}',
+        up_topic("pgr-v2-2"),
+        json.dumps(
+            {
+                "v": 1,
+                "id": "u_unknown2",
+                "ts": int(time.time()),
+                "from": "student",
+                "to": "stranger2",
+                "body": "hi",
+                "ack": None,
+            }
+        ).encode("utf-8"),
     )
-    # missing required fields (no ts, no ack)
-    ingest.handle_up(up_topic(device_id), b'{"id":"m_aaaaaaaa"}')
-    # both ack and body set -> malformed per §3.2
-    ingest.handle_up(
-        up_topic(device_id),
-        b'{"v":1,"id":"m_aaaaaaaa","ts":1700000000,"ack":"shown","body":"nope"}',
-    )
-    # not a JSON object (array)
-    ingest.handle_up(up_topic(device_id), b"[1,2,3]")
-    # invalid UTF-8
-    ingest.handle_up(up_topic(device_id), b"\xff\xfe\x00\x01")
-    # unrecognised topic shape
-    ingest.handle_up("pager/bad", b'{"v":1}')
-
-    # None of the above should have created any row.
-    assert legacy_store.get_thread(device_id) == []
-
-    # Ingest must still work after all that garbage.
-    row = legacy_store.create_down_message(
-        msg_id="m_aaaaaaaa", device_id=device_id, ts=int(time.time()), body="hi"
-    )
-    ingest.publish_down(row)
-    ingest.handle_up(up_topic(device_id), ack_payload(row.id, "shown"))
-    assert legacy_store.get_message(row.id).state == "shown"
+    assert len(broker.published) == 1
+    sent = json.loads(broker.published[0].payload)
+    assert sent["from"] == "system"
+    assert sent["body"] == "unknown recipient"
 
 
-def test_duplicate_up_message_id_dropped_silently(ingest: Ingest, broker: FakeBrokerClient):
-    device_id = "pgr-0001"
-    payload = up_message_payload("u_11111111", "ok coming")
-    ingest.handle_up(up_topic(device_id), payload)
-    ingest.handle_up(up_topic(device_id), payload)  # QoS 1 redelivery
+def test_no_to_and_no_allowed_contacts_gets_no_system_reply():
+    # §4.2 case 1 (no `to`) has no error path -- an empty broadcast set is
+    # silently a no-op, never a system reply.
+    _make_user("student", "student")
+    _make_pager_device("pgr-v2-3", "student")
 
-    rows = legacy_store.get_thread(device_id)
-    assert len(rows) == 1
-    assert rows[0].id == "u_11111111"
-
-
-def test_republish_on_new_session_respects_cap_and_oldest_first_order(
-    ingest: Ingest, broker: FakeBrokerClient
-):
-    device_id = "pgr-0001"
-    now = int(time.time())
-
-    # 12 unacked messages, oldest first by creation order.
-    ids = []
-    for i in range(12):
-        msg_id = f"m_{i:08x}"
-        legacy_store.create_down_message(
-            msg_id=msg_id, device_id=device_id, ts=now, body=f"msg {i}", now=now + i
-        )
-        ids.append(msg_id)
-
-    broker.clear()
-    ingest.handle_status(status_topic(device_id), online_status_payload("s_00000001"))
-
-    assert len(broker.published) == 10  # capped
-    assert all(p.topic == down_topic(device_id) for p in broker.published)
-
-    # oldest-first: first 10 of the 12 created ids, in order.
-    payload_ids = [json.loads(p.payload)["id"] for p in broker.published]
-    assert payload_ids == ids[:10]
-
-
-def test_republish_triggered_by_session_change(ingest: Ingest, broker: FakeBrokerClient):
-    device_id = "pgr-0001"
-    row = legacy_store.create_down_message(
-        msg_id="m_session1", device_id=device_id, ts=int(time.time()), body="hi"
-    )
-    ingest.publish_down(row)
-
-    ingest.handle_status(status_topic(device_id), online_status_payload("s_00000001"))
-    broker.clear()
-
-    # Same session again -> no republish.
-    ingest.handle_status(status_topic(device_id), online_status_payload("s_00000001"))
+    ingest, broker = _ingest()
+    ingest.handle_up(up_topic("pgr-v2-3"), up_message_payload("u_broadcast0", "hi"))
     assert broker.published == []
 
-    # New session -> republish of the still-unacked message.
-    ingest.handle_status(status_topic(device_id), online_status_payload("s_00000002"))
+
+# ---- v2 ack routing ----
+
+
+def test_v2_ack_updates_the_right_pager_delivery():
+    _make_user("mom", "mom")
+    _make_user("student", "student")
+    allow_store.set_edge("mom", "student", message=True, locate=True)
+    _make_pager_device("pgr-v2-4", "student")
+
+    ingest, broker = _ingest()
+    routing = ingest._routing
+    result = routing.send(
+        sender_uid="mom",
+        recipient_alias="student",
+        kind="text",
+        body="hi",
+        origin_backend_kind="webapp",
+    )
+    msg = result.messages[0]
     assert len(broker.published) == 1
 
+    ingest.handle_up(up_topic("pgr-v2-4"), ack_payload(msg.id, "shown", ts=1_700_000_100))
+    refreshed = messages_store.get_message(msg.id)
+    pager_bid = next(bid for bid, d in refreshed.deliveries.items() if d.kind == "pager")
+    assert refreshed.deliveries[pager_bid].state == "shown"
+    assert refreshed.deliveries[pager_bid].shownTs == 1_700_000_100
+    # Acked -> no longer pending.
+    assert "pgr-v2-4" not in refreshed.pendingDeviceIds
 
-def test_republish_triggered_by_offline_to_online_edge_same_session(
-    ingest: Ingest, broker: FakeBrokerClient
-):
-    device_id = "pgr-0001"
-    row = legacy_store.create_down_message(
-        msg_id="m_offline1", device_id=device_id, ts=int(time.time()), body="hi"
+
+def test_v2_ack_wrong_device_is_dropped():
+    _make_user("mom", "mom")
+    _make_user("student", "student")
+    allow_store.set_edge("mom", "student", message=True, locate=True)
+    _make_pager_device("pgr-v2-5a", "student")
+    _make_pager_device("pgr-v2-5b", "mom")  # unrelated device owned by someone else
+
+    ingest, _broker = _ingest()
+    routing = ingest._routing
+    result = routing.send(
+        sender_uid="mom",
+        recipient_alias="student",
+        kind="text",
+        body="hi",
+        origin_backend_kind="webapp",
     )
-    ingest.publish_down(row)
+    msg = result.messages[0]
 
-    ingest.handle_status(status_topic(device_id), online_status_payload("s_00000001"))
-    broker.clear()
-
-    ingest.handle_status(status_topic(device_id), offline_status_payload("s_00000001"))
-    assert broker.published == []  # bare offline never republishes
-
-    # Same session, but an offline->online edge -> republish.
-    ingest.handle_status(status_topic(device_id), online_status_payload("s_00000001"))
-    assert len(broker.published) == 1
+    ingest.handle_up(up_topic("pgr-v2-5b"), ack_payload(msg.id, "shown"))
+    refreshed = messages_store.get_message(msg.id)
+    pager_bid = next(bid for bid, d in refreshed.deliveries.items() if d.kind == "pager")
+    assert refreshed.deliveries[pager_bid].state == "sent"  # unchanged
 
 
-def test_republish_excludes_already_acked_and_expired_messages(
-    ingest: Ingest, broker: FakeBrokerClient
-):
-    device_id = "pgr-0001"
-    now = int(time.time())
+def test_v2_ack_idempotent_repeat_is_noop():
+    _make_user("mom", "mom")
+    _make_user("student", "student")
+    allow_store.set_edge("mom", "student", message=True, locate=True)
+    _make_pager_device("pgr-v2-6", "student")
 
-    acked = legacy_store.create_down_message(
-        msg_id="m_acked000", device_id=device_id, ts=now, body="acked", now=now
-    )
-    legacy_store.apply_ack(acked.id, "shown", now)
+    ingest, _broker = _ingest()
+    routing = ingest._routing
+    msg = routing.send(
+        sender_uid="mom",
+        recipient_alias="student",
+        kind="text",
+        body="hi",
+        origin_backend_kind="webapp",
+    ).messages[0]
 
-    expired = legacy_store.create_down_message(
-        msg_id="m_expired0", device_id=device_id, ts=now, body="old", now=now - 90_000
-    )
-
-    fresh = legacy_store.create_down_message(
-        msg_id="m_fresh000", device_id=device_id, ts=now, body="fresh", now=now
-    )
-
-    ingest.handle_status(status_topic(device_id), online_status_payload("s_00000001"))
-
-    payload_ids = {json.loads(p.payload)["id"] for p in broker.published}
-    assert payload_ids == {fresh.id}
-    assert acked.id not in payload_ids
-    assert expired.id not in payload_ids
+    ingest.handle_up(up_topic("pgr-v2-6"), ack_payload(msg.id, "shown", ts=1_700_001_000))
+    ingest.handle_up(up_topic("pgr-v2-6"), ack_payload(msg.id, "shown", ts=1_700_009_999))
+    refreshed = messages_store.get_message(msg.id)
+    pager_bid = next(bid for bid, d in refreshed.deliveries.items() if d.kind == "pager")
+    assert refreshed.deliveries[pager_bid].shownTs == 1_700_001_000
 
 
-# ---- retry_queued (the lazy-at-read-time /internal/tick stand-in) ----
+# ---- v2 online-edge republish ----
 
 
-def test_retry_queued_publishes_still_queued_messages_only(
-    ingest: Ingest, broker: FakeBrokerClient
-):
-    device_id = "pgr-0001"
+def test_v2_republish_on_session_change_resends_still_pending():
+    _make_user("mom", "mom")
+    _make_user("student", "student")
+    allow_store.set_edge("mom", "student", message=True, locate=True)
+    _make_pager_device("pgr-v2-7", "student")
+
+    broker = FakeBrokerClient()
     broker.fail_publish = True
-    row = legacy_store.create_down_message(
-        msg_id="m_retryq00", device_id=device_id, ts=int(time.time()), body="hi"
-    )
-    ingest.publish_down(row)
-    assert legacy_store.get_message(row.id).state == "queued"
+    routing = Routing(broker)
+    ingest = Ingest(broker, routing)
 
-    already_sent = legacy_store.create_down_message(
-        msg_id="m_alreadys", device_id=device_id, ts=int(time.time()), body="already sent"
+    result = routing.send(
+        sender_uid="mom",
+        recipient_alias="student",
+        kind="text",
+        body="hi",
+        origin_backend_kind="webapp",
     )
+    msg = result.messages[0]
+    assert broker.published == []  # publish failed -> stayed queued
+
     broker.fail_publish = False
-    ingest.publish_down(already_sent)
-    broker.clear()
-
-    ingest.retry_queued(device_id)
-
-    # Only the still-'queued' message is retried -- the already-'sent'
-    # message must not be re-published just because someone did a GET.
-    assert legacy_store.get_message(row.id).state == "sent"
+    ingest.handle_status(status_topic("pgr-v2-7"), online_status_payload("s_00000001"))
     assert len(broker.published) == 1
-    assert broker.published[0].topic == down_topic(device_id)
-    assert json.loads(broker.published[0].payload)["id"] == row.id
-
-
-def test_retry_queued_is_a_noop_when_nothing_is_queued(ingest: Ingest, broker: FakeBrokerClient):
-    # Must not raise for a device with no messages at all.
-    ingest.retry_queued("pgr-9999")
-    assert broker.published == []
-
-
-# ---- /loc dispatch (real handling: tests/test_location.py) ----
-
-
-def test_loc_valid_periodic_fix_is_stored_and_publishes_nothing(
-    ingest: Ingest, broker: FakeBrokerClient
-):
-    device_id = "pgr-0001"
-    # A periodic fix (req:null, the default `loc_payload` shape) is stored
-    # in `devices/{d}/locations` -- it never touches the legacy per-device
-    # thread and never triggers a `/down` publish (PROTOCOL.md §3.2: not a
-    # thread entry).
-    ingest.handle_loc(loc_topic(device_id), loc_payload("l_11111111"))
-    assert broker.published == []
-    assert legacy_store.get_thread(device_id) == []
-    fixes = locations_store.list_locations(device_id)
-    assert len(fixes) == 1
-    assert fixes[0].reqId is None
-
-
-def test_loc_malformed_payload_dropped_without_crashing(ingest: Ingest, broker: FakeBrokerClient):
-    device_id = "pgr-0001"
-    ingest.handle_loc(loc_topic(device_id), b"not json{{{")
-    ingest.handle_loc(loc_topic(device_id), b'{"v":1,"id":"l_11111111"}')  # missing loc/req
-    assert broker.published == []
+    assert json.loads(broker.published[0].payload)["id"] == msg.id

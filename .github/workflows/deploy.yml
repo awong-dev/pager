@@ -1,0 +1,188 @@
+name: Deploy
+
+# docs/SERVER_PLAN.md §9.2/§10 Phase 9: build -> push to Artifact Registry
+# -> `terraform apply` (WIF) -> `firebase deploy --only hosting,firestore`.
+#
+# SAFE-TO-MERGE, on purpose, even though this file targets `main`:
+#
+#   Every job below is gated on `secrets.GCP_WORKLOAD_IDENTITY_PROVIDER` and
+#   `secrets.GCP_DEPLOY_SERVICE_ACCOUNT` being non-empty (checked with
+#   `if:` conditions on the jobs themselves, GitHub Actions' documented
+#   pattern for referencing secrets outside of `env:`/`with:` -- an unset
+#   secret evaluates to `''`). Those two secrets do not exist in this repo
+#   today; they only start existing once a human runs
+#   infra/modules/ci-deploy (by hand, from a real GCP project -- never from
+#   CI itself, since CI can't create its own trust boundary) and adds the
+#   resulting values to the repo's Actions secrets, per infra/README.md's
+#   runbook. Until that happens, every job here is skipped -- GitHub shows
+#   the run as "skipped", not "failed", and nothing calls gcloud, terraform
+#   against a real backend, or firebase. Merging this file to `main` today
+#   is a no-op.
+#
+#   Belt-and-suspenders: the workflow only listens on `push` to `main`
+#   (never `pull_request` -- a fork PR can never trigger a deploy attempt)
+#   plus `workflow_dispatch` for a deliberate manual run once secrets exist.
+#
+# Once real: this still only ever builds+applies from `main`, uses
+# Workload Identity Federation (no long-lived JSON key ever touches
+# GitHub), and `terraform apply` runs against infra/envs/prod's real GCS
+# backend (infra/README.md runbook step 2) -- never `-backend=false`,
+# which is a local-only validation flag used by hand during development.
+# NOTE: there is no `terraform validate` job in CI yet (ci.yml covers the
+# relay only); adding one is a Phase 9 follow-up.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+# Least-privilege OIDC token for google-github-actions/auth's WIF exchange.
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+  GCP_REGION: ${{ vars.GCP_REGION || 'us-central1' }}
+  TF_VERSION: "1.14.9" # pinned to match infra/*/versions.tf's required_version floor; bump deliberately, not opportunistically
+
+jobs:
+  # This job's own steps do nothing but report whether the real deploy jobs
+  # below will run -- makes a skipped deploy legible in the Actions UI
+  # instead of just silently vanishing.
+  gate:
+    runs-on: ubuntu-latest
+    outputs:
+      ready: ${{ steps.check.outputs.ready }}
+    steps:
+      - id: check
+        # Secrets are passed via `env:` rather than interpolated straight into
+        # the shell: `${{ }}` substitution happens before the script is parsed,
+        # so a value containing a quote or newline would otherwise change the
+        # script's meaning rather than just its data.
+        env:
+          WIF_PROVIDER: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          DEPLOY_SA: ${{ secrets.GCP_DEPLOY_SERVICE_ACCOUNT }}
+        run: |
+          if [ -n "$WIF_PROVIDER" ] && [ -n "$DEPLOY_SA" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::GCP_WORKLOAD_IDENTITY_PROVIDER and/or GCP_DEPLOY_SERVICE_ACCOUNT repo secrets are not set -- deploy is a no-op until infra/README.md's WIF runbook step is done by hand. This is expected, not an error."
+          fi
+
+  build-and-push:
+    needs: gate
+    if: needs.gate.outputs.ready == 'true' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.image.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_DEPLOY_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker "${{ env.GCP_REGION }}-docker.pkg.dev" --quiet
+
+      - id: image
+        run: |
+          IMAGE="${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT_ID }}/pager/relay:${{ github.sha }}"
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+
+      # relay/Dockerfile is the only build artifact this workflow produces.
+      # Tag pruning to the last 3 (SERVER_PLAN.md §9.2) is an Artifact
+      # Registry KEEP cleanup policy (infra/modules/relay-service), not a
+      # step here -- see that module's comment.
+      - name: Build relay image
+        working-directory: relay
+        run: docker build -t "${{ steps.image.outputs.image }}" .
+
+      - name: Push relay image
+        run: docker push "${{ steps.image.outputs.image }}"
+
+  terraform-apply:
+    needs: [gate, build-and-push]
+    if: needs.gate.outputs.ready == 'true' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_DEPLOY_SERVICE_ACCOUNT }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      # Real backend -- infra/envs/prod/versions.tf's `backend "gcs"` block
+      # must already point at infra/bootstrap's real state bucket (a human
+      # edits that bucket name in once, per infra/README.md; it is not
+      # templated here because the backend block cannot itself take
+      # variables at init time for anything beyond what `-backend-config`
+      # overrides, and this workflow deliberately does not carry a project-
+      # specific bucket name as a repo secret just to avoid one manual edit).
+      - name: terraform init
+        working-directory: infra/envs/prod
+        run: terraform init -input=false
+
+      - name: terraform apply
+        working-directory: infra/envs/prod
+        run: |
+          terraform apply -auto-approve -input=false \
+            -var "project_id=${{ env.GCP_PROJECT_ID }}" \
+            -var "region=${{ env.GCP_REGION }}" \
+            -var "relay_image=${{ needs.build-and-push.outputs.image }}" \
+            -var "github_org=${{ github.repository_owner }}" \
+            -var "github_repo=${{ github.event.repository.name }}" \
+            -var "broker_api_url=${{ vars.BROKER_API_URL }}" \
+            -var "import_data_bucket_name=${{ vars.IMPORT_DATA_BUCKET_NAME }}"
+        # Every other variable (custom_domain, enable_sms_secrets, time_zone,
+        # use_broker_gce, ...) is left at infra/envs/prod/variables.tf's
+        # defaults unless also passed as a repo variable above -- add
+        # `-var "x=${{ vars.X }}"` lines here as real deployment needs grow,
+        # matching infra/envs/prod/terraform.tfvars.example.
+
+  firebase-deploy:
+    needs: [gate, terraform-apply]
+    if: needs.gate.outputs.ready == 'true' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_DEPLOY_SERVICE_ACCOUNT }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # web/out is built by Phase 6's own CI step (not this workflow's job
+      # -- kept separate so a relay-only deploy doesn't require a Node
+      # toolchain run every time). This job assumes web/out already exists
+      # from an earlier step/artifact in the real pipeline once Phase 6
+      # lands; until then (web/ has no build yet as of this Phase 9 commit)
+      # this step is expected to fail loudly rather than deploy an empty
+      # site, which is why it is not wrapped in `|| true`.
+      - name: Build web app
+        working-directory: web
+        run: |
+          npm ci
+          npm run build
+
+      - name: firebase deploy (hosting + firestore rules/indexes)
+        run: |
+          npx firebase-tools@latest deploy \
+            --only hosting,firestore \
+            --project "${{ env.GCP_PROJECT_ID }}" \
+            --non-interactive
