@@ -1,18 +1,35 @@
 # infra/modules/schedule -- docs/SERVER_PLAN.md §9.1/§9.2:
 # "Cloud Scheduler jobs (tick, sweep) with OIDC to the relay; Cloud Tasks queue"
 #
-# IMPORTANT, read before wiring this up: relay/app/routers/internal.py does
-# NOT verify OIDC tokens yet. `/internal/tick` and `/internal/sweep` are
-# currently gated on `Settings.dev_mode` only (404 when DEV_MODE != "1",
-# which infra/modules/relay-service never sets) -- see that router's module
-# docstring: "No OIDC verification yet -- that is explicitly Phase 8
-# hardening". This module provisions the *caller identity* (a dedicated
-# service account, OIDC audience = the relay's URL) that Phase 8's
-# verification code will check against once it exists. Until Phase 8 lands,
-# these Scheduler jobs will call a route that 404s in a real deployment
-# (DEV_MODE unset) -- that is a known, expected gap, not a bug in this
-# module. Re-read this comment before assuming the scheduled jobs "work"
-# end to end.
+# IMPORTANT, read before wiring this up: as of Phase 8,
+# relay/app/routers/internal.py DOES verify OIDC tokens -- it checks
+# signature, `aud` == the relay's `OIDC_AUDIENCE` env var, and the caller's
+# `email` against `OIDC_ALLOWED_EMAILS`. A missing/invalid token is a 401
+# (no longer the pre-Phase-8 404).
+#
+# REMAINING GAP (Terraform side, not app side): infra/modules/relay-service
+# does not set either env var on the Cloud Run service, so /internal/tick and
+# /internal/sweep fail closed with 401 on every Scheduler invocation until
+# they are. Wiring them needs BOTH of:
+#
+#   1. `OIDC_ALLOWED_EMAILS` = this module's scheduler SA email. There is no
+#      real module cycle here: `account_id` below is the literal
+#      "pager-scheduler", so the email is deterministic and can be computed
+#      in infra/envs/prod as
+#      "pager-scheduler@${var.project_id}.iam.gserviceaccount.com" and passed
+#      into relay-service without referencing this module at all (cleanest:
+#      move google_service_account.scheduler up into envs/prod and pass the
+#      email down into both modules).
+#   2. `OIDC_AUDIENCE`. Referencing the service's own computed `.uri` from
+#      inside its own `env` block IS a genuine self-reference, but the
+#      audience does not have to be the run.app URL: set a
+#      `custom_audiences` value on google_cloud_run_v2_service (e.g.
+#      "https://pager-relay") and use that same string for both the
+#      service's OIDC_AUDIENCE env var and `oidc_token.audience` below,
+#      sourced from one shared variable. That resolves in a single apply --
+#      no two-phase bootstrap needed.
+#
+# Do not assume the scheduled jobs "work" end to end until both are done.
 
 variable "project_id" {
   type = string

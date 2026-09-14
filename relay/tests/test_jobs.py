@@ -536,6 +536,32 @@ def test_sweep_leaves_fresh_documents_untouched():
     assert result.locationsDeleted == 0
 
 
+def test_sweep_deletes_expired_gchat_link_codes_and_leaves_unexpired_ones(monkeypatch):
+    """`(build addition, phase 8 hardening)`: closes the phase 7 review's
+    finding that `gchatLinkCodes` is never popped/swept when a code is
+    issued but never used. Unlike every other class this module tests,
+    `expiresAt` is a plain Unix-epoch-seconds int (`GChatBackend.
+    start_link`'s `LINK_CODE_TTL_S`), not a Firestore `datetime`
+    `createdAt`, and the cutoff is "already expired" (now), not a
+    `retention.*` window -- so this does not need `settings_store.
+    set_retention` at all."""
+    now = int(_time.time())
+    backends_store.set_gchat_link_code("expired1", "a", "bid-a", now - 60)
+    backends_store.set_gchat_link_code("stillvalid1", "b", "bid-b", now + 600)
+
+    result = jobs.sweep()
+
+    assert get_db().collection("gchatLinkCodes").document("expired1").get().exists is False
+    assert get_db().collection("gchatLinkCodes").document("stillvalid1").get().exists is True
+    assert result.gchatLinkCodesDeleted == 1
+
+    # §5.7 idempotency, extended to the new pass: a second consecutive sweep
+    # deletes nothing new (and still leaves the unexpired code alone).
+    second = jobs.sweep()
+    assert second.gchatLinkCodesDeleted == 0
+    assert get_db().collection("gchatLinkCodes").document("stillvalid1").get().exists is True
+
+
 def test_sweep_marks_settings_meta_last_swept_at():
     settings_store.set_retention(
         messages=RetentionSetting(n=4, unit="weeks"), locations=RetentionSetting(n=1, unit="weeks")

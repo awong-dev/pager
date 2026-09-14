@@ -88,6 +88,19 @@ clear_stale_loc_reqs`'s much shorter 15-minute TTL has already fired):
   surviving its configured retention period. Uses the same `retention.
   messages` cutoff messages themselves use, since a conversation summarizes
   messages rather than having a retention class of its own).
+- `gchatLinkCodes` (`(build finding, phase 7 review, closed phase 8)`):
+  `app/store/backends.py`'s `set_gchat_link_code`/`pop_gchat_link_code` --
+  a code is popped (read-then-delete) the moment it's used, but one that is
+  *never* used (the user never sends `/link CODE`, or mistypes it and gives
+  up) sits in Firestore forever with nothing else to clean it up. Unlike
+  every collection above, this is **not** swept against a retention-window
+  cutoff (`retention.messages`/`retention.locations`) -- a link code is
+  meant to be short-lived regardless of how long the deployment otherwise
+  keeps data, so it is swept by its own `expiresAt` field (a Unix epoch-
+  seconds int, `GChatBackend.start_link`'s `LINK_CODE_TTL_S`, not a
+  Firestore `datetime` `createdAt`) against "now", via `_sweep_expired`
+  below -- a simpler "already expired" cutoff, not `_sweep_by_created_at`'s
+  retention-window one.
 
 **Mechanics** (§5.7: "`messages where createdAt < cutoff order by createdAt
 limit 500`, ... deletes ... loop until empty"): each collection is swept by
@@ -350,6 +363,42 @@ def _sweep_by_created_at(
     return deleted
 
 
+def _sweep_expired(
+    query_factory, now_epoch_s: int, batch_size: int, *, expires_field: str = "expiresAt"
+) -> int:
+    """Sibling of `_sweep_by_created_at` for collections keyed by their own
+    short-lived Unix-epoch-*seconds* expiry (`gchatLinkCodes/{code}` today,
+    `app/store/backends.py`'s `set_gchat_link_code`) rather than a retention-
+    window cutoff against a Firestore `datetime` `createdAt` -- deletes every
+    doc in `query_factory()` whose `expires_field` is already `< now_epoch_s`.
+    Same page/commit-loop shape (and the same `_AutoBatch` 500-write cap) as
+    `_sweep_by_created_at`, factored out separately only because the field
+    being compared is a plain int, not a Firestore `datetime`, so it needs
+    its own `FieldFilter` value type -- there is no paired companion delete
+    here (unlike `messages`'s `wireIds`), so `on_doc` has no equivalent."""
+    db = get_db()
+    deleted = 0
+    while True:
+        query: Query | CollectionGroup = (
+            query_factory()
+            .where(filter=FieldFilter(expires_field, "<", now_epoch_s))
+            .order_by(expires_field)
+            .limit(batch_size)
+        )
+        docs = list(query.stream())
+        if not docs:
+            break
+        batch = _AutoBatch(db)
+        for snap in docs:
+            batch.reserve(1)
+            batch.delete(snap.reference)
+            deleted += 1
+        batch.commit()
+        if len(docs) < batch_size:
+            break
+    return deleted
+
+
 @dataclass(frozen=True, slots=True)
 class SweepResult:
     messagesDeleted: int
@@ -359,6 +408,7 @@ class SweepResult:
     locReqsDeleted: int
     orphanedWireIdsDeleted: int = 0
     conversationsDeleted: int = 0
+    gchatLinkCodesDeleted: int = 0
 
 
 def sweep() -> SweepResult:
@@ -418,12 +468,18 @@ def sweep() -> SweepResult:
     conversations_deleted = _sweep_by_created_at(
         lambda: db.collection("conversations"), msg_cutoff, batch_size, created_at_field="lastMessageAt"
     )
+    # (Phase 8 hardening, closing the phase 7 review's finding) `gchatLinkCodes`
+    # -- swept by its own `expiresAt` (an int epoch, already-expired cutoff),
+    # not a `retention.*` window -- see this module's docstring.
+    gchat_link_codes_deleted = _sweep_expired(
+        lambda: db.collection("gchatLinkCodes"), int(time.time()), batch_size
+    )
 
     settings_store.mark_swept()
 
     logger.info(
         "sweep complete: messages=%d wireIds=%d locations=%d locWireIds=%d locReqs=%d "
-        "orphanedWireIds=%d conversations=%d",
+        "orphanedWireIds=%d conversations=%d gchatLinkCodes=%d",
         messages_deleted,
         wire_ids_deleted,
         locations_deleted,
@@ -431,6 +487,7 @@ def sweep() -> SweepResult:
         loc_reqs_deleted,
         orphaned_wire_ids_deleted,
         conversations_deleted,
+        gchat_link_codes_deleted,
     )
     return SweepResult(
         messagesDeleted=messages_deleted,
@@ -440,4 +497,5 @@ def sweep() -> SweepResult:
         locReqsDeleted=loc_reqs_deleted,
         orphanedWireIdsDeleted=orphaned_wire_ids_deleted,
         conversationsDeleted=conversations_deleted,
+        gchatLinkCodesDeleted=gchat_link_codes_deleted,
     )

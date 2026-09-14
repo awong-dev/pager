@@ -127,13 +127,16 @@ the Cloud Tasks queue. Check the `relay_service_url` output — `GET <that URL>/
 now return 200 (once a working `BROKER_API_URL` is in `terraform.tfvars`; a placeholder URL
 there just means `/healthz`'s broker-reachability check fails, not that the service is down).
 
-**Known gap, expected at this point**: `/internal/tick` and `/internal/sweep` will 404. That is
-not a misconfiguration — `relay/app/routers/internal.py` gates both routes on `DEV_MODE`, which
-this deployment never sets, and OIDC verification for them is explicitly **Phase 8** work not
-yet written (see `infra/modules/schedule/variables.tf`'s module docstring). The Scheduler jobs
-this module created will therefore "succeed" at calling a route that 404s until Phase 8 adds the
-missing verification code to `relay/app/routers/internal.py` — track that as a real follow-up,
-not something this Terraform can fix on its own.
+**Known gap, expected at this point**: `/internal/tick` and `/internal/sweep` will **401**.
+Phase 8 added real OIDC verification to `relay/app/routers/internal.py` (signature + `aud` ==
+`OIDC_AUDIENCE` + caller `email` in `OIDC_ALLOWED_EMAILS`), and it fails closed when those two
+env vars are unset — which they are, because `infra/modules/relay-service` does not set them
+yet. Until it does, the Scheduler `tick`/`sweep` jobs will call a route that 401s, so **no tick
+retries and no retention sweep run in this deployment**. See
+`infra/modules/schedule/variables.tf`'s module docstring for the exact one-apply fix (a shared
+`custom_audiences` string for `OIDC_AUDIENCE`, and the deterministic
+`pager-scheduler@<project>.iam.gserviceaccount.com` email for `OIDC_ALLOWED_EMAILS`) — track it
+as a real follow-up before relying on scheduled jobs.
 
 ## 9. Wire up GitHub Actions (turns `.github/workflows/deploy.yml` from a no-op into a real pipeline)
 

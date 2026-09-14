@@ -17,12 +17,15 @@ credentials, which bypass rules entirely, so it cannot be used here.
 from __future__ import annotations
 
 import os
+import time
+from urllib.parse import quote
 
 import httpx
 import pytest
 from firebase_admin import auth as fb_auth
 
 from app.store import allow as allow_store
+from app.store import backends as backends_store
 from app.store import devices as devices_store
 from app.store import messages as messages_store
 from app.store import users as users_store
@@ -281,3 +284,80 @@ def test_clients_cannot_write_anything(two_pairs):
     token = mint_id_token("u1")
     resp = _write("users/u1", token, {"displayName": "hacked"})
     assert resp.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# `(build addition, phase 8 hardening)`: default-deny on the four server-only
+# inbound-lookup collections -- docs/SERVER_PLAN.md §3's phase 7/security-
+# review bullets ("None of the three is client-readable: firestore.rules has
+# no match block for them (default-deny read) ... relay/tests/test_rules.py
+# should pin it so a future broadened rule cannot expose them", plus
+# smsVerifyCodes, added by the phase 7 security review). Pinned here, even
+# for the backend's own owner (the whole point of `smsVerifyCodes` -- H1 --
+# and `phoneIndex`'s write-on-verify-only rule (a) is that the person a claim
+# is being verified *against* must not be able to read the verification
+# material or the routing index straight out of Firestore).
+# ---------------------------------------------------------------------------
+
+
+def test_phone_index_is_default_deny(two_pairs):
+    phone = "+15550001111"
+    backends_store.set_phone_index(phone, "u1", "bid1")
+    doc_id = quote(phone, safe="")
+
+    owner_token = mint_id_token("u1")
+    resp = _get(f"phoneIndex/{doc_id}", owner_token)
+    assert resp.status_code == 403
+
+    resp_unauth = _get(f"phoneIndex/{doc_id}", None)
+    assert resp_unauth.status_code == 403
+
+    resp_write = _write(f"phoneIndex/{doc_id}", owner_token, {"uid": "u3", "bid": "bidx"})
+    assert resp_write.status_code == 403
+
+
+def test_gchat_spaces_is_default_deny(two_pairs):
+    backends_store.set_gchat_space("SPACERULES1", "u1", "bid1", "users/111")
+
+    owner_token = mint_id_token("u1")
+    resp = _get("gchatSpaces/SPACERULES1", owner_token)
+    assert resp.status_code == 403
+
+    resp_unauth = _get("gchatSpaces/SPACERULES1", None)
+    assert resp_unauth.status_code == 403
+
+    resp_write = _write("gchatSpaces/SPACERULES1", owner_token, {"uid": "u3"})
+    assert resp_write.status_code == 403
+
+
+def test_gchat_link_codes_is_default_deny(two_pairs):
+    backends_store.set_gchat_link_code("999111", "u1", "bid1", int(time.time()) + 600)
+
+    owner_token = mint_id_token("u1")
+    resp = _get("gchatLinkCodes/999111", owner_token)
+    assert resp.status_code == 403
+
+    resp_unauth = _get("gchatLinkCodes/999111", None)
+    assert resp_unauth.status_code == 403
+
+    resp_write = _write("gchatLinkCodes/999111", owner_token, {"uid": "u3"})
+    assert resp_write.status_code == 403
+
+
+def test_sms_verify_codes_is_default_deny(two_pairs):
+    backends_store.set_sms_verify_code("bid1", "somehash", int(time.time()) + 600)
+
+    # u1 is not even the backend's real owner here -- irrelevant to this
+    # rule (H1's whole point: the *claimant* being verified must never be
+    # able to read this collection at all, regardless of whose backend it
+    # names), but exercised as the "even the backend's own owner" case per
+    # this phase's brief.
+    owner_token = mint_id_token("u1")
+    resp = _get("smsVerifyCodes/bid1", owner_token)
+    assert resp.status_code == 403
+
+    resp_unauth = _get("smsVerifyCodes/bid1", None)
+    assert resp_unauth.status_code == 403
+
+    resp_write = _write("smsVerifyCodes/bid1", owner_token, {"codeHash": "hacked"})
+    assert resp_write.status_code == 403

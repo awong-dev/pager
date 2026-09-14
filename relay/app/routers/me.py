@@ -41,11 +41,25 @@ module docstring):
   `phoneIndex` document id; an unnormalised/malformed number both breaks the
   lookup against Twilio's always-E.164 `From` field and, if it contains a
   `/`, would otherwise crash `.document(phone)` with an unhandled 500.
+
+`(build addition, phase 8 hardening)`: **`POST /api/me/backends` is rate
+limited per user** -- server-architect's Phase 7 review flagged this as the
+highest-priority rate limit in the whole relay, since each call can trigger a
+real `start_link()` (a real SMS send, docs/SERVER_PLAN.md §6.4) with no cap
+otherwise. `app/store/rate_limits.py`'s Firestore-backed fixed-window
+counter, keyed `"backends:{uid}"`, `RATE_LIMIT_BACKEND_CREATE_LIMIT` calls
+per `RATE_LIMIT_BACKEND_CREATE_WINDOW_S` seconds (defaults: 10 per hour --
+generous for a real user configuring a couple of backends, tight enough to
+bound abuse). Read fresh from the environment on every call, the same
+per-call `os.environ.get(...)` pattern this module's siblings already use
+(`app/backends/gchat.py`'s `gchat_audience()`, `app/jobs.py`'s
+`_sweep_batch_size()`) -- not threaded through `app.config.Settings`.
 """
 
 from __future__ import annotations
 
 import logging
+import os
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -56,6 +70,7 @@ from app.backends.base import Backend as BackendImpl
 from app.backends.sms_twilio import normalize_e164
 from app.store import backends as backends_store
 from app.store import push_tokens as push_tokens_store
+from app.store import rate_limits as rate_limits_store
 from app.store.backends import Backend, BackendKind
 from app.store.users import User
 
@@ -68,6 +83,34 @@ router = APIRouter()
 # `verify_backend` is what flips it back to `True` on success. `pager`/
 # `webapp` have no such flow and keep their existing default.
 LINK_FLOW_KINDS: frozenset[str] = frozenset({"sms", "gchat"})
+
+DEFAULT_BACKEND_CREATE_LIMIT = 10
+DEFAULT_BACKEND_CREATE_WINDOW_S = 3600
+
+
+def _backend_create_rate_limit() -> tuple[int, int]:
+    limit = int(os.environ.get("RATE_LIMIT_BACKEND_CREATE_LIMIT", str(DEFAULT_BACKEND_CREATE_LIMIT)))
+    window_s = int(
+        os.environ.get("RATE_LIMIT_BACKEND_CREATE_WINDOW_S", str(DEFAULT_BACKEND_CREATE_WINDOW_S))
+    )
+    return limit, window_s
+
+
+def require_backend_create_rate_limit(
+    authed: Annotated[AuthedUser, Depends(require_user)],
+) -> AuthedUser:
+    """`POST /api/me/backends`-only dependency (a drop-in replacement for a
+    plain `Depends(require_user)` on that one route, since it also returns
+    the `AuthedUser` every other backend route needs) -- see this module's
+    docstring."""
+    limit, window_s = _backend_create_rate_limit()
+    if not rate_limits_store.check_and_increment(
+        f"backends:{authed.uid}", limit=limit, window_s=window_s
+    ):
+        raise HTTPException(
+            status_code=429, detail="too many backend creation attempts; try again later"
+        )
+    return authed
 
 
 def get_backend_registry(request: Request) -> dict[str, BackendImpl]:
@@ -118,7 +161,7 @@ def list_backends(authed: Annotated[AuthedUser, Depends(require_user)]) -> list[
 @router.post("/api/me/backends")
 def create_backend(
     req: CreateBackendRequest,
-    authed: Annotated[AuthedUser, Depends(require_user)],
+    authed: Annotated[AuthedUser, Depends(require_backend_create_rate_limit)],
     registry: Annotated[dict[str, BackendImpl], Depends(get_backend_registry)],
 ) -> Backend:
     if req.kind == "pager":

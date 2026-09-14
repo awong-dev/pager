@@ -36,6 +36,16 @@ DEFAULT_ACCOUNT_SID = "ACdev0000000000000000000000000000"
 DEFAULT_FROM_NUMBER = "+15005550006"  # Twilio's own "always valid" magic test number
 
 
+def _redact_phone(phone: str) -> str:
+    """`(build addition, phase 8 hardening)`: last-4-digits only, same style
+    as `app/routers/webhooks.py`'s L4 fix -- `to` here is a real, attributed
+    phone number (unlike that module's "unrecognised number" case), which
+    makes logging it in full even less justified: nothing below needs the
+    full number to be actionable, and it is PII best not left sitting in
+    plaintext logs."""
+    return f"...{phone[-4:]}" if len(phone) >= 4 else "..."
+
+
 class TwilioSendResult(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -86,7 +96,7 @@ def send_sms(to: str, body: str) -> TwilioSendResult:
             timeout=REQUEST_TIMEOUT_S,
         )
     except httpx.HTTPError as exc:
-        logger.warning("twilio send failed (to=%s): %r", to, exc)
+        logger.warning("twilio send failed (to=%s): %r", _redact_phone(to), exc)
         return TwilioSendResult(ok=False, error=f"sms request failed: {exc}")
 
     if 200 <= resp.status_code < 300:
@@ -98,6 +108,9 @@ def send_sms(to: str, body: str) -> TwilioSendResult:
         return TwilioSendResult(ok=True, sid=sid_out)
 
     logger.warning(
-        "twilio send rejected (to=%s status=%s body=%r)", to, resp.status_code, resp.text[:200]
+        "twilio send rejected (to=%s status=%s body=%r)",
+        _redact_phone(to),
+        resp.status_code,
+        resp.text[:200],
     )
     return TwilioSendResult(ok=False, error=f"twilio returned {resp.status_code}")

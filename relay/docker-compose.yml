@@ -58,6 +58,16 @@ services:
       # configured with a value that would only be correct for a real
       # deployment.
       TWILIO_BASE_URL: http://twilio-mock:8010
+      # Phase 8 hardening: rate limits (app/store/rate_limits.py) default to
+      # real, meaningfully-bounded production values (relay/.env.example) --
+      # too tight for tools/e2e_v2.py's full 9-scenario run, which makes 30+
+      # admin writes and several backend-creation calls against one shared
+      # admin/user identity in normal operation. This compose stack is
+      # local/test-only (DEV_MODE=1 above), so these overrides are safe here
+      # specifically; never set limits this high in a real deployment's .env.
+      RATE_LIMIT_BACKEND_CREATE_LIMIT: "1000"
+      RATE_LIMIT_ADMIN_WRITE_LIMIT: "1000"
+      RATE_LIMIT_WEBHOOK_IP_LIMIT: "1000"
     ports:
       - "8000:8000"
     networks:

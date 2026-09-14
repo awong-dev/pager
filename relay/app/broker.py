@@ -36,6 +36,7 @@ from app.config import Settings
 logger = logging.getLogger("relay.broker")
 
 PUBLISH_TIMEOUT_S = 5.0
+HEALTHCHECK_TIMEOUT_S = 3.0
 WEBHOOK_KEY_HEADER = "X-Relay-Webhook-Key"
 
 
@@ -83,6 +84,23 @@ class BrokerClient:
             resp.text[:200],
         )
         return False
+
+    def healthcheck(self) -> bool:
+        """`(build addition, phase 8 hardening)`: `GET {base}/status` --
+        EMQX's plain-text, unauthenticated liveness endpoint (the same one
+        `tools/emqx_setup.py` polls while waiting for the broker container
+        to come up, `GET {base_url}/api/v5/status`; `self._base_url` already
+        ends in `/api/v5`, per `Settings.broker_api_url`'s own default and
+        docstring). `GET /healthz` (docs/SERVER_PLAN.md §5.1: "200 +
+        firestore reachable + broker API reachable") uses this -- a network
+        failure or a non-2xx both mean "broker unreachable", never an
+        exception the caller has to handle, matching `publish()`'s own
+        never-raises contract."""
+        try:
+            resp = httpx.get(f"{self._base_url}/status", timeout=HEALTHCHECK_TIMEOUT_S)
+        except httpx.HTTPError:
+            return False
+        return 200 <= resp.status_code < 300
 
     def verify_webhook(self, request: Any) -> bool:
         """Constant-time check of the shared-secret header. `request` is a

@@ -38,11 +38,25 @@ without this, any member of a linked space (not just its original 1:1 DM
 partner) could send as the linked user. **L4** -- the "unlinked number"
 info log below redacts to the last 4 digits (`_redact_phone`) rather than
 logging a full E.164 phone number.
+
+`(build addition, phase 8 hardening)`: a cheap **per-IP** rate limit on
+`POST /webhooks/twilio/sms` and `POST /webhooks/gchat`, checked first, before
+any signature/JWT verification or body parsing -- both endpoints are already
+gated by a real signature/JWT check (Twilio's `X-Twilio-Signature`, Google's
+Chat bearer JWT), so this is defense-in-depth against a flood of
+forged-but-cheap-to-generate requests (constructing an invalid signature/JWT
+costs an attacker nothing), not the primary control. Same
+`app/store/rate_limits.py` fixed-window counter `POST /api/me/backends`/
+`/api/admin/*` use, keyed `"webhook_ip:{sms|gchat}:{ip}"`. `RATE_LIMIT_
+WEBHOOK_IP_LIMIT` calls per `RATE_LIMIT_WEBHOOK_IP_WINDOW_S` seconds
+(defaults: 30 per minute) -- read fresh from the environment on every call,
+same as this module's other per-call env lookups.
 """
 
 from __future__ import annotations
 
 import logging
+import os
 import time
 from collections.abc import Callable
 
@@ -58,10 +72,58 @@ from app.ingest import Ingest
 from app.notify import sms as sms_client
 from app.routing import Routing
 from app.store import backends as backends_store
+from app.store import rate_limits as rate_limits_store
 
 logger = logging.getLogger("relay.webhooks")
 
 router = APIRouter()
+
+DEFAULT_WEBHOOK_IP_LIMIT = 30
+DEFAULT_WEBHOOK_IP_WINDOW_S = 60
+
+
+def _webhook_ip_rate_limit() -> tuple[int, int]:
+    limit = int(os.environ.get("RATE_LIMIT_WEBHOOK_IP_LIMIT", str(DEFAULT_WEBHOOK_IP_LIMIT)))
+    window_s = int(
+        os.environ.get("RATE_LIMIT_WEBHOOK_IP_WINDOW_S", str(DEFAULT_WEBHOOK_IP_WINDOW_S))
+    )
+    return limit, window_s
+
+
+def _client_ip(request: Request) -> str:
+    """`(build fix, phase 8 review)`: the per-IP key must be the *original*
+    caller's IP, not the TCP peer. Every real request to these two endpoints
+    arrives Twilio/Google -> Firebase Hosting (`web/firebase.json`'s
+    `/webhooks/**` rewrite) -> Cloud Run, so `request.client.host` is
+    Google's own front-end address, identical for every caller: keying on it
+    collapses all inbound SMS/Chat traffic into a single shared bucket, and
+    an unauthenticated flooder could then 429 real Twilio/Chat deliveries
+    for everyone (uvicorn only trusts `X-Forwarded-For` from
+    `forwarded_allow_ips`, which defaults to 127.0.0.1 and does not match
+    Cloud Run's proxy, so it never populates `request.client` from it).
+
+    Google's front end *appends* to `X-Forwarded-For`, so element 0 is the
+    originating client. A client can forge extra leading entries and thereby
+    pick its own bucket -- accepted deliberately: this cap is explicit
+    defense-in-depth *in front of* each endpoint's real signature/JWT check
+    (see module docstring), so a bypass costs an attacker nothing they did
+    not already have, while the shared-bucket alternative hands them a
+    denial of service against legitimate traffic."""
+    forwarded = request.headers.get("x-forwarded-for", "")
+    if forwarded:
+        first = forwarded.split(",")[0].strip()
+        if first:
+            return first
+    return request.client.host if request.client is not None else "unknown"
+
+
+def _check_webhook_ip_rate_limit(request: Request, bucket: str) -> None:
+    ip = _client_ip(request)
+    limit, window_s = _webhook_ip_rate_limit()
+    if not rate_limits_store.check_and_increment(
+        f"webhook_ip:{bucket}:{ip}", limit=limit, window_s=window_s
+    ):
+        raise HTTPException(status_code=429, detail="too many requests")
 
 TopicHandler = Callable[[Ingest, str, bytes], None]
 
@@ -140,6 +202,7 @@ def _redact_phone(phone: str) -> str:
 
 @router.post("/webhooks/twilio/sms")
 async def twilio_sms_webhook(request: Request) -> Response:
+    _check_webhook_ip_rate_limit(request, "sms")
     form = await request.form()
     # Twilio's params are single-valued (To/From/Body/...); last-value-wins
     # is a no-op for this webhook's real shape but keeps the type a plain
@@ -207,10 +270,17 @@ def _chat_json(body: dict[str, str]) -> Response:
 
 @router.post("/webhooks/gchat")
 async def gchat_webhook(request: Request) -> Response:
+    _check_webhook_ip_rate_limit(request, "gchat")
     auth_header = request.headers.get("authorization", "")
     if not auth_header.lower().startswith("bearer "):
         raise HTTPException(status_code=401, detail="missing bearer token")
-    token = auth_header.split(None, 1)[1].strip()
+    # `partition`, not `split(None, 1)[1]`: a header of exactly `"Bearer "`
+    # (trailing space, empty token) makes `split(None, 1)` return a
+    # single-element list and `[1]` raise IndexError -> an unhandled 500
+    # instead of a clean 401. See app/routers/internal.py's identical fix.
+    token = auth_header.partition(" ")[2].strip()
+    if not token:
+        raise HTTPException(status_code=401, detail="empty bearer token")
     try:
         gchat_backend.verify_chat_bearer_token(token, audience=gchat_backend.gchat_audience())
     except Exception as exc:  # noqa: BLE001 -- verify_chat_bearer_token's own contract: any failure -> 401

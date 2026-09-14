@@ -11,9 +11,11 @@ from __future__ import annotations
 
 import logging
 import os
+import uuid
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 
 from app.backends.registry import build_registry
 from app.broker import BrokerClient
@@ -21,11 +23,19 @@ from app.config import Settings
 from app.db.firestore import get_db
 from app.ingest import Ingest
 from app.location import Location
+from app.logging_config import configure_logging, request_id_var
 from app.routers import admin, conversations, dev, internal, me, webhooks
 from app.routing import Routing
 
-logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
+# docs/SERVER_PLAN.md Phase 8 hardening item 6: JSON logs with a `severity`
+# field, shaped for Cloud Logging's structured-log ingestion --
+# `app/logging_config.py`'s module docstring. Replaces the previous bare
+# `logging.basicConfig(...)` (plain-text lines, no `severity`/correlation id
+# at all).
+configure_logging(os.environ.get("LOG_LEVEL", "INFO"))
 logger = logging.getLogger("relay.api")
+
+REQUEST_ID_HEADER = "X-Request-Id"
 
 
 def create_app(
@@ -68,6 +78,24 @@ def create_app(
         yield
 
     app = FastAPI(title="School Pager Relay", lifespan=lifespan)
+
+    # docs/SERVER_PLAN.md Phase 8 hardening item 6: a per-request correlation
+    # id, threaded through every log line emitted while handling this
+    # request (`app/logging_config.py`'s `request_id_var`) -- the caller's
+    # own `X-Request-Id`, if it sent one (Cloud Run/Hosting/a load balancer
+    # commonly does), else a freshly generated one, echoed back on the
+    # response so a client can correlate its own logs against the relay's.
+    @app.middleware("http")
+    async def _request_id_middleware(request: Request, call_next):
+        request_id = request.headers.get(REQUEST_ID_HEADER) or uuid.uuid4().hex
+        token = request_id_var.set(request_id)
+        try:
+            response = await call_next(request)
+        finally:
+            request_id_var.reset(token)
+        response.headers[REQUEST_ID_HEADER] = request_id
+        return response
+
     app.include_router(webhooks.router)
     app.include_router(admin.router)
     app.include_router(dev.router)
@@ -76,15 +104,36 @@ def create_app(
     app.include_router(internal.router)
 
     @app.get("/healthz")
-    def healthz() -> dict[str, bool]:
+    def healthz() -> JSONResponse:
         # docs/SERVER_PLAN.md §5.1: "200 + firestore reachable + broker API
-        # reachable". Broker reachability is not checked here (a broker
-        # blip must not flip Cloud Run's health probe and cause a
-        # restart-loop of a stateless service that holds no connection to
-        # lose) -- a Firestore round trip is enough to prove the process can
-        # do its job.
-        get_db().collection("settings").document("meta").get()
-        return {"ok": True}
+        # reachable". `(build addition, phase 8 hardening)`: this used to
+        # check Firestore only -- "Broker reachability is not checked here
+        # (a broker blip must not flip Cloud Run's health probe...)" was
+        # this endpoint's previous, deliberate design; §5.1 is explicit that
+        # `/healthz` reports *both*, and nothing in `infra/modules/
+        # relay-service` wires this route as a Cloud Run liveness/startup
+        # probe (no `liveness_probe` block exists there) -- the
+        # restart-loop risk the old comment worried about does not apply to
+        # how this endpoint is actually used (an external uptime check /
+        # manual curl), so this phase follows the doc: both checks, and a
+        # non-200 when either is down, with a body naming which one failed.
+        firestore_ok = True
+        try:
+            get_db().collection("settings").document("meta").get()
+        except Exception:
+            logger.exception("healthz: firestore check failed")
+            firestore_ok = False
+
+        broker_ok = True
+        try:
+            broker_ok = app.state.broker.healthcheck()
+        except Exception:
+            logger.exception("healthz: broker check failed")
+            broker_ok = False
+
+        ok = firestore_ok and broker_ok
+        body = {"ok": ok, "firestore": firestore_ok, "broker": broker_ok}
+        return JSONResponse(status_code=200 if ok else 503, content=body)
 
     return app
 

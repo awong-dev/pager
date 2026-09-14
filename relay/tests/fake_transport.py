@@ -40,6 +40,12 @@ class FakeBrokerClient:
     def __init__(self, *, webhook_key: str = WEBHOOK_KEY) -> None:
         self.published: list[PublishedMessage] = []
         self.fail_publish = False
+        # `(build addition, phase 8 hardening)`: `GET /healthz`'s broker
+        # check -- `test_main.py`/`test_healthz.py`'s "simulate the broker
+        # being unreachable" case sets this False; every other test that
+        # never touches it gets the real `BrokerClient.healthcheck()`'s
+        # "no error = healthy" default.
+        self.healthy = True
         self._webhook_key = webhook_key
 
     def publish(self, topic: str, payload: bytes, qos: int, retain: bool) -> bool:
@@ -47,6 +53,9 @@ class FakeBrokerClient:
             return False
         self.published.append(PublishedMessage(topic, payload, qos, retain))
         return True
+
+    def healthcheck(self) -> bool:
+        return self.healthy
 
     def verify_webhook(self, request: Any) -> bool:
         # Exercises the exact same header/constant-time-compare contract as

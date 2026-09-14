@@ -9,22 +9,36 @@ is never a window where an Auth account exists without a matching registry
 row. Device creation returns the generated MQTT password exactly once and
 stores only its hash (`hashlib.sha256` -- no new dependency, per
 docs/SERVER_PLAN.md §5.5).
+
+`(build addition, phase 8 hardening)`: every **write** route here (not the
+`GET`s -- reads are already the cheapest, least dangerous thing this router
+does) also carries `Depends(require_admin_write_rate_limit)`, a coarser,
+defense-in-depth sibling of `POST /api/me/backends`'s rate limit
+(`app/routers/me.py`): this surface is already admin-claim-gated, so the risk
+here is a compromised/scripted admin session or a buggy admin-UI retry loop
+hammering Firestore, not an anonymous attacker. `app/store/rate_limits.py`'s
+same fixed-window counter, keyed `"admin:{uid}"` (shared across every write
+route below, on purpose -- one admin's overall write rate is what's bounded,
+not each route independently), `RATE_LIMIT_ADMIN_WRITE_LIMIT` calls per
+`RATE_LIMIT_ADMIN_WRITE_WINDOW_S` seconds (defaults: 60 per minute).
 """
 
 from __future__ import annotations
 
 import hashlib
+import os
 import secrets
-from typing import Literal
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from firebase_admin import auth as fb_auth
 from pydantic import BaseModel, ConfigDict
 
-from app.auth import require_admin
+from app.auth import AuthedUser, require_admin
 from app.store import allow as allow_store
 from app.store import backends as backends_store
 from app.store import devices as devices_store
+from app.store import rate_limits as rate_limits_store
 from app.store import settings as settings_store
 from app.store import users as users_store
 from app.store.allow import AllowEdge, EdgeInput
@@ -35,6 +49,32 @@ from app.store.users import User
 router = APIRouter(prefix="/api/admin", dependencies=[Depends(require_admin)])
 
 MQTT_PASSWORD_BYTES = 24
+
+DEFAULT_ADMIN_WRITE_LIMIT = 60
+DEFAULT_ADMIN_WRITE_WINDOW_S = 60
+
+
+def _admin_write_rate_limit() -> tuple[int, int]:
+    limit = int(os.environ.get("RATE_LIMIT_ADMIN_WRITE_LIMIT", str(DEFAULT_ADMIN_WRITE_LIMIT)))
+    window_s = int(
+        os.environ.get("RATE_LIMIT_ADMIN_WRITE_WINDOW_S", str(DEFAULT_ADMIN_WRITE_WINDOW_S))
+    )
+    return limit, window_s
+
+
+def require_admin_write_rate_limit(
+    authed: Annotated[AuthedUser, Depends(require_admin)],
+) -> None:
+    """`Depends(require_admin)` here is the *same* callable the router-level
+    dependency already ran for this request, so FastAPI's per-request
+    dependency cache (the default `use_cache=True`) returns the cached
+    `AuthedUser` rather than re-verifying the bearer token a second time --
+    this dependency only adds the rate-limit check on top."""
+    limit, window_s = _admin_write_rate_limit()
+    if not rate_limits_store.check_and_increment(
+        f"admin:{authed.uid}", limit=limit, window_s=window_s
+    ):
+        raise HTTPException(status_code=429, detail="admin rate limit exceeded; try again later")
 
 
 # ---------------------------------------------------------------------------
@@ -63,7 +103,7 @@ def _set_admin_claim(uid: str, is_admin: bool) -> None:
     fb_auth.set_custom_user_claims(uid, {"admin": True} if is_admin else {})
 
 
-@router.post("/users")
+@router.post("/users", dependencies=[Depends(require_admin_write_rate_limit)])
 def create_user(req: CreateUserRequest) -> User:
     if not req.email and not req.phone:
         raise HTTPException(status_code=400, detail="email or phone is required")
@@ -108,7 +148,7 @@ def list_users() -> list[User]:
     return users_store.list_users()
 
 
-@router.patch("/users/{uid}")
+@router.patch("/users/{uid}", dependencies=[Depends(require_admin_write_rate_limit)])
 def patch_user(uid: str, req: PatchUserRequest) -> User:
     if users_store.get_user(uid) is None:
         raise HTTPException(status_code=404, detail="no such user")
@@ -125,7 +165,7 @@ def patch_user(uid: str, req: PatchUserRequest) -> User:
     return user
 
 
-@router.delete("/users/{uid}")
+@router.delete("/users/{uid}", dependencies=[Depends(require_admin_write_rate_limit)])
 def delete_user(uid: str) -> dict[str, bool]:
     if users_store.get_user(uid) is None:
         raise HTTPException(status_code=404, detail="no such user")
@@ -162,7 +202,7 @@ def _resolve_uid(alias: str) -> str:
     return uid
 
 
-@router.put("/allowlist")
+@router.put("/allowlist", dependencies=[Depends(require_admin_write_rate_limit)])
 def put_allowlist(req: PutAllowlistRequest) -> list[AllowEdge]:
     edges = [
         EdgeInput(
@@ -199,7 +239,7 @@ class CreateDeviceResponse(BaseModel):
     mqttPassword: str  # returned exactly once, per docs/SERVER_PLAN.md §5.5
 
 
-@router.post("/devices")
+@router.post("/devices", dependencies=[Depends(require_admin_write_rate_limit)])
 def create_device(req: CreateDeviceRequest) -> CreateDeviceResponse:
     owner_uid = _resolve_uid(req.ownerAlias)
     default_to_uid = _resolve_uid(req.defaultToAlias) if req.defaultToAlias else None
@@ -242,7 +282,7 @@ def list_devices() -> list[Device]:
     return devices_store.list_devices()
 
 
-@router.delete("/devices/{device_id}")
+@router.delete("/devices/{device_id}", dependencies=[Depends(require_admin_write_rate_limit)])
 def delete_device(device_id: str) -> dict[str, bool]:
     device = devices_store.get_device(device_id)
     if device is None:
@@ -259,7 +299,7 @@ class RotateCredentialsResponse(BaseModel):
     mqttPassword: str
 
 
-@router.post("/devices/{device_id}/rotate-credentials")
+@router.post("/devices/{device_id}/rotate-credentials", dependencies=[Depends(require_admin_write_rate_limit)])
 def rotate_credentials(device_id: str) -> RotateCredentialsResponse:
     device = devices_store.get_device(device_id)
     if device is None:
@@ -280,7 +320,7 @@ class PutSettingsRequest(BaseModel):
     locations: RetentionSetting
 
 
-@router.put("/settings")
+@router.put("/settings", dependencies=[Depends(require_admin_write_rate_limit)])
 def put_settings(req: PutSettingsRequest) -> RetentionSettings:
     return settings_store.set_retention(messages=req.messages, locations=req.locations)
 
