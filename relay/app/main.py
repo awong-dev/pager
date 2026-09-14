@@ -12,27 +12,19 @@ from __future__ import annotations
 import logging
 import os
 from contextlib import asynccontextmanager
-from pathlib import Path
 
 from fastapi import FastAPI
-from fastapi.staticfiles import StaticFiles
 
 from app.broker import BrokerClient
 from app.config import Settings
 from app.db.firestore import get_db
 from app.ingest import Ingest
 from app.location import Location
-from app.routers import admin, conversations, dev, internal, legacy, me, webhooks
+from app.routers import admin, conversations, dev, internal, me, webhooks
 from app.routing import Routing
 
 logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
 logger = logging.getLogger("relay.api")
-
-# relay/static/index.html — the single-file parent MVP page (HANDOFF.md §2,
-# §3 repo layout). Resolved relative to this file so it works both from a
-# checkout (`relay/app/main.py` -> `relay/static`) and from the Docker image
-# (see Dockerfile, which copies `static/` alongside `app/`).
-STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 
 
 def create_app(
@@ -69,7 +61,6 @@ def create_app(
 
     app = FastAPI(title="School Pager Relay", lifespan=lifespan)
     app.include_router(webhooks.router)
-    app.include_router(legacy.router)
     app.include_router(admin.router)
     app.include_router(dev.router)
     app.include_router(conversations.router)
@@ -86,14 +77,6 @@ def create_app(
         # do its job.
         get_db().collection("settings").document("meta").get()
         return {"ok": True}
-
-    # Mounted last so it never shadows the /api/* or /webhooks/* routes
-    # above: Starlette matches routes in registration order, and a Mount("/")
-    # only catches what no earlier explicit route claimed. Serves
-    # relay/static/index.html (the parent MVP page, HANDOFF.md §2) at "/"
-    # and its own path.
-    if STATIC_DIR.is_dir():
-        app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
 
     return app
 

@@ -1,0 +1,39 @@
+{
+  "$comment": "Root-level config for `firebase deploy --only hosting,firestore` from .github/workflows/deploy.yml (SERVER_PLAN.md §9.1/§9.2). Local dev does NOT use this file: relay/firebase.json drives the Firestore/Auth emulators baked into relay/emulator.Dockerfile, and web/firebase.json is for a local Hosting preview of web/out. This file exists only so the two deploy targets (Hosting from web/, Firestore rules/indexes from relay/) can be deployed together with one `firebase deploy` invocation from the repo root, without either local-dev config having to know about the other.",
+  "hosting": {
+    "public": "web/out",
+    "ignore": ["firebase.json", "**/.*", "**/node_modules/**"],
+    "cleanUrls": true,
+    "trailingSlash": false,
+    "rewrites": [
+      {
+        "source": "/api/**",
+        "run": {
+          "serviceId": "pager-relay",
+          "region": "us-central1"
+        }
+      },
+      {
+        "source": "/webhooks/**",
+        "run": {
+          "serviceId": "pager-relay",
+          "region": "us-central1"
+        }
+      },
+      {
+        "source": "/chat/**",
+        "destination": "/chat/_.html"
+      }
+    ],
+    "headers": [
+      {
+        "source": "/firebase-messaging-sw.js",
+        "headers": [{ "key": "Service-Worker-Allowed", "value": "/" }]
+      }
+    ]
+  },
+  "firestore": {
+    "rules": "relay/firestore.rules",
+    "indexes": "relay/firestore.indexes.json"
+  }
+}

@@ -167,13 +167,13 @@ jobs:
         with:
           node-version: "20"
 
-      # web/out is built by Phase 6's own CI step (not this workflow's job
-      # -- kept separate so a relay-only deploy doesn't require a Node
-      # toolchain run every time). This job assumes web/out already exists
-      # from an earlier step/artifact in the real pipeline once Phase 6
-      # lands; until then (web/ has no build yet as of this Phase 9 commit)
-      # this step is expected to fail loudly rather than deploy an empty
-      # site, which is why it is not wrapped in `|| true`.
+      # web/ (Phase 6) provides the Next.js static export this step builds;
+      # relay/firestore.rules + relay/firestore.indexes.json (Phase 2b)
+      # provide the Firestore side. Both are referenced from the root-level
+      # firebase.json/.firebaserc (added in Phase 6's follow-up), which
+      # exists only for this deploy step -- local dev still uses
+      # relay/firebase.json (baked into the emulator image) and
+      # web/firebase.json (a local Hosting preview) independently.
       - name: Build web app
         working-directory: web
         run: |
@@ -182,7 +182,7 @@ jobs:
 
       - name: firebase deploy (hosting + firestore rules/indexes)
         run: |
-          npx firebase-tools@latest deploy \
+          npx firebase-tools@13 deploy \
             --only hosting,firestore \
             --project "${{ env.GCP_PROJECT_ID }}" \
             --non-interactive

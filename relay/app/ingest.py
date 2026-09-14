@@ -5,32 +5,21 @@ MVP; the ack state machine, dedup, and the online-edge republish rule are
 unchanged (docs/PROTOCOL.md §4/§5) -- only the storage engine underneath
 changed (docs/SERVER_PLAN.md §4.8, §5 `ingest.py`).
 
-**Two device-traffic models now live side by side, on purpose** (Phase 3):
-
-- `app/store/legacy.py`'s device-scoped thread (`legacyMessages`,
-  `legacyStatus`) -- kept exactly as Phase 2a/2b left it, so the legacy
-  `RELAY_TOKEN` endpoints (`app/routers/legacy.py`, deleted in Phase 6) and
-  any device id that was never registered via `POST /api/admin/devices`
-  keep working unchanged.
-- The real uid-addressed model (`docs/SERVER_PLAN.md` §3: `messages/{id}`,
-  the allow-list, per-backend `deliveries`), reached through
-  `app.routing.Routing`, for any `device_id` that *is* a registered
-  `devices/{deviceId}` document (i.e. was created through the admin API).
-
-`_handle_up_message`/`_handle_ack` pick a path by checking whether
-`devices/{device_id}` exists -- for an ack this is done implicitly by trying
-`messages/{id}` first and falling back to the legacy collection, since a
-down message's wire `id` is drawn from the same `m_` id space either way and
-there is no cheaper way to tell which store created it than to ask each
-once. Both paths honour PROTOCOL.md §4.1's rules identically; only the
-document shape underneath differs.
+**Phase 6 deleted the MVP's device-scoped legacy model** (`app/store/
+legacy.py`, `app/routers/legacy.py`, the `RELAY_TOKEN`-bearer endpoints) --
+every code path here now assumes the uid-addressed model (`docs/SERVER_PLAN.md`
+§3: `messages/{id}`, the allow-list, per-backend `deliveries`), reached
+through `app.routing.Routing`. A `device_id` that is not a registered
+`devices/{deviceId}` document (i.e. was never created through
+`POST /api/admin/devices`) has nowhere to route to any more: its traffic is
+logged and dropped, the same class of event as an unknown message id.
 
 No injected `Store`: `app/store/*` talk to the one process-wide Firestore
 client (`app/db/firestore.py`). `Ingest` takes a `BrokerClient` (for the
-legacy publish path and the §4.2 `system` reply) and, since it now needs to
-fan a v2 up-message out through the allow-list and backend adapters, an
-`app.routing.Routing` -- both stay injectable for tests
-(`tests/fake_transport.FakeBrokerClient`, a fake/real `Routing`).
+§4.2 `system` reply) and, since it needs to fan an up-message out through the
+allow-list and backend adapters, an `app.routing.Routing` -- both stay
+injectable for tests (`tests/fake_transport.FakeBrokerClient`, a fake/real
+`Routing`).
 """
 
 from __future__ import annotations
@@ -44,9 +33,7 @@ from app import location
 from app.broker import BrokerClient
 from app.routing import Routing
 from app.store import devices as devices_store
-from app.store import legacy as legacy_store
 from app.store import messages as messages_store
-from app.store.legacy import LegacyMessage
 from app.wire import (
     SYSTEM_ALIAS,
     LocEnvelope,
@@ -79,19 +66,6 @@ class Ingest:
         self._broker = broker
         self._routing = routing if routing is not None else Routing(broker)
 
-    # ---- outgoing ----
-
-    def publish_down(self, row: LegacyMessage) -> bool:
-        """Build and publish a `/down` envelope for `row` via the broker's
-        REST API. Marks the row 'sent' on a 2xx; leaves it 'queued'
-        otherwise (a later `/internal/tick` retries it, docs/SERVER_PLAN.md
-        §5.8 -- not built in this phase)."""
-        payload = build_down_payload(msg_id=row.id, ts=row.ts, body=row.body or "", v=row.v)
-        ok = self._broker.publish(f"pager/{row.deviceId}/down", payload, qos=1, retain=False)
-        if ok:
-            legacy_store.mark_sent(row.id)
-        return ok
-
     # ---- /up ----
 
     def handle_up(self, topic: str, payload: bytes) -> None:
@@ -118,37 +92,14 @@ class Ingest:
         assert env.ack is not None and env.ack in ("shown", "read")
         ack_ts = resolve_ts(env.ts)
 
-        # Try the v2 uid-addressed store first -- a down message's wire `id`
-        # is the Firestore `messages/{id}` doc id itself (see
-        # `app/backends/pager.py`'s module docstring), so this is a cheap,
-        # unambiguous existence check, not a guess.
+        # A down message's wire `id` is the Firestore `messages/{id}` doc id
+        # itself (see `app/backends/pager.py`'s module docstring).
         msg = messages_store.get_message(env.id)
-        if msg is not None:
-            self._handle_v2_ack(device_id, msg, env.ack, ack_ts)
-            return
-
-        row = legacy_store.get_message(env.id)
-        if row is None:
+        if msg is None:
             # §4.1 rule 3: unknown id -> log + drop, never create a row.
             logger.info("ack for unknown message id=%s from device=%s dropped", env.id, device_id)
             return
-        if row.direction != "down":
-            logger.warning("ack references a non-down message id=%s dropped", env.id)
-            return
-        if row.deviceId != device_id:
-            # §4.1 rule 4: wrong device -> drop + log as a security event.
-            logger.warning(
-                "SECURITY wrong-device ack: pager/%s/up acked message %s addressed to device %s",
-                device_id,
-                env.id,
-                row.deviceId,
-            )
-            return
-        result = legacy_store.apply_ack(env.id, env.ack, ack_ts)
-        if result == "noop":
-            logger.debug(
-                "idempotent ack '%s' for message %s (already %s)", env.ack, env.id, row.state
-            )
+        self._handle_v2_ack(device_id, msg, env.ack, ack_ts)
 
     def _handle_v2_ack(
         self,
@@ -177,34 +128,21 @@ class Ingest:
 
     def _handle_up_message(self, device_id: str, env: UpEnvelope) -> None:
         device = devices_store.get_device(device_id)
-        if device is not None:
-            if device.revokedAt is not None:
-                # A revoked device is not allowed to inject anything. Falling
-                # through to the legacy store here would silently *downgrade*
-                # it to the un-allow-listed device-scoped thread instead of
-                # dropping it -- same security class as §4.1 rule 4.
-                logger.warning(
-                    "SECURITY up message %s from revoked device %s dropped", env.id, device_id
-                )
-                return
-            self._handle_v2_up_message(device, env)
+        if device is None:
+            # No registered `devices/{device_id}` doc -- e.g. a device id
+            # that was never created through `POST /api/admin/devices`.
+            # There is no store for this any more (the legacy device-scoped
+            # thread was deleted in Phase 6), so this is a drop + log, the
+            # same security class as an unknown recipient.
+            logger.warning("up message %s from unregistered device %s dropped", env.id, device_id)
             return
-
-        # §4.2: duplicate id (QoS 1 redelivery) -> drop silently. The
-        # existence check and the insert are one atomic Firestore
-        # transaction (see app.store.legacy.insert_up_message) rather than a
-        # separate `id_exists` check followed by an insert, so two
-        # concurrent at-least-once webhook deliveries of the same up
-        # message can't both race past a pre-check.
-        inserted = legacy_store.insert_up_message(
-            msg_id=env.id,
-            device_id=device_id,
-            ts=resolve_ts(env.ts),
-            sender=env.from_,
-            body=env.body,
-        )
-        if not inserted:
-            logger.debug("duplicate up message id=%s dropped", env.id)
+        if device.revokedAt is not None:
+            # A revoked device is not allowed to inject anything.
+            logger.warning(
+                "SECURITY up message %s from revoked device %s dropped", env.id, device_id
+            )
+            return
+        self._handle_v2_up_message(device, env)
 
     def _handle_v2_up_message(self, device: devices_store.Device, env: UpEnvelope) -> None:
         # `routing.send()` does the allow-list check, the transactional
@@ -259,103 +197,50 @@ class Ingest:
             log_malformed(topic, payload, str(exc))
             return
 
-        previous = legacy_store.get_status(device_id)
+        device = devices_store.get_device(device_id)
+        if device is None:
+            # No registered device -- nowhere to store status any more
+            # (the legacy per-device status collection was deleted in
+            # Phase 6).
+            logger.info("status for unregistered device %s dropped", device_id)
+            return
+
+        previous_status = device.status
         resolved_ts = resolve_ts(env.ts) if env.ts is not None else None
-        legacy_store.upsert_status(
+        devices_store.update_status(
             device_id,
             state=env.state,
             mode=env.mode,
-            batt_mv=env.batt_mv,
+            battMv=env.batt_mv,
             rssi=env.rssi,
             session=env.session,
             ts=resolved_ts,
             fw=env.fw,
+            locPeriodS=env.loc_period_s,
+            locMinS=env.loc_min_s,
         )
-
-        device = devices_store.get_device(device_id)
-        if device is not None:
-            # docs/SERVER_PLAN.md §3's real `devices/{deviceId}.status` --
-            # kept in lockstep with `legacyStatus` (same envelope, same
-            # webhook call) rather than migrated wholesale, since the legacy
-            # collection is still what `app/routers/legacy.py`'s GET
-            # endpoint reads until Phase 6 deletes it.
-            devices_store.update_status(
-                device_id,
-                state=env.state,
-                mode=env.mode,
-                battMv=env.batt_mv,
-                rssi=env.rssi,
-                session=env.session,
-                ts=resolved_ts,
-                fw=env.fw,
-                locPeriodS=env.loc_period_s,
-                locMinS=env.loc_min_s,
-            )
 
         if env.state != "online":
             # §5.3: bare offline (retained or LWT) -> mark offline, no
             # message state changes, no republish.
             return
 
-        session_changed = previous is None or previous.session != env.session
-        offline_to_online = previous is not None and previous.state == "offline"
+        session_changed = previous_status.session != env.session
+        offline_to_online = previous_status.state == "offline"
         if session_changed or offline_to_online:
             self._republish_unacked(device_id)
-            if device is not None:
-                self._republish_unacked_v2(device_id)
-
-    def retry_queued(self, device_id: str) -> None:
-        """Opportunistically retry **legacy** down messages still 'queued'
-        (their broker publish never got a 2xx) for `device_id`. This is a
-        lazy-at-read-time stand-in, scoped to the legacy device-scoped
-        thread only, for the one gap the online-edge republish leaves: a
-        *transient* publish failure (timeout, 5xx, DNS blip) while the
-        device stays continuously connected. Called from the legacy GET
-        endpoint (app/routers/legacy.py) -- see docs/SERVER_PLAN.md §2
-        decision 7, "derived at read time".
-
-        **Not superseded by `app.jobs.tick()`** (docs/SERVER_PLAN.md §5.8),
-        despite doing the same *kind* of thing: `tick()` retries the v2
-        uid-addressed model's `pendingDeviceIds`/`messages/{id}` deliveries,
-        which the legacy per-device thread has no equivalent of (see
-        `app/store/legacy.py`'s module docstring for why that thread is a
-        separate, intentionally non-migrated collection). The two mechanisms
-        stay side by side until Phase 6 deletes the legacy endpoints and this
-        method along with them."""
-        for row in legacy_store.get_queued_down_messages(device_id):
-            if not self.publish_down(row):
-                # The broker is unreachable (the only reason a publish that
-                # once failed fails again the same way), so stop: this runs
-                # on a *read*, and paying PUBLISH_TIMEOUT_S per remaining
-                # message would turn a routine GET into a multi-tens-of-
-                # seconds request exactly while the broker is down.
-                logger.info(
-                    "retry_queued for device %s stopped early: broker publish still failing",
-                    device_id,
-                )
-                return
 
     def _republish_unacked(self, device_id: str) -> None:
-        candidates = legacy_store.get_republish_candidates(device_id)
-        for row in candidates:
-            logger.info("re-publishing unacked message %s to device %s", row.id, device_id)
-            self.publish_down(row)
-
-    def _republish_unacked_v2(self, device_id: str) -> None:
-        """The v2 counterpart of `_republish_unacked`: PROTOCOL.md §5.3's
-        online-edge re-publish, sourced from `pendingDeviceIds` (oldest
-        first, capped at 10 -- both enforced by
-        `messages_store.list_pending_for_device`) instead of the legacy
-        per-device thread.
+        """PROTOCOL.md §5.3's online-edge re-publish, sourced from
+        `pendingDeviceIds` (oldest first, capped at 10, both enforced by
+        `messages_store.list_pending_for_device`).
 
         §5.3's selection rule also *excludes* `kind:"loc_req"` ("a location
-        request that missed its window is worthless"). No `loc_req` message
-        exists before Phase 4, but the filter belongs with the rule it
-        implements, not with the phase that first makes it observable."""
+        request that missed its window is worthless")."""
         for msg in messages_store.list_pending_for_device(device_id):
             if msg.kind == "loc_req":
                 continue
-            logger.info("re-publishing unacked v2 message %s to device %s", msg.id, device_id)
+            logger.info("re-publishing unacked message %s to device %s", msg.id, device_id)
             self._routing.redeliver_pager(msg, device_id)
 
     # ---- /loc ----

@@ -15,7 +15,11 @@ from google.api_core.exceptions import ServiceUnavailable
 
 from app.config import Settings
 from app.main import create_app
-from app.store import legacy as legacy_store
+from app.store import allow as allow_store
+from app.store import backends as backends_store
+from app.store import devices as devices_store
+from app.store import messages as messages_store
+from app.store import users as users_store
 from tests.conftest import (
     ack_payload,
     loc_topic,
@@ -82,15 +86,21 @@ def test_webhook_up_message_dispatches_and_stores(client: TestClient):
 def test_webhook_status_dispatches(client: TestClient):
     from tests.conftest import online_status_payload
 
+    devices_store.create_device(
+        device_id="pgr-0001",
+        owner_uid="nobody",
+        label="d",
+        mqtt_username="pgr-0001",
+        mqtt_password_hash="x",
+    )
+
     body = webhook_body(status_topic("pgr-0001"), online_status_payload("s_00000001"))
     resp = client.post("/webhooks/mqtt", content=body, headers=webhook_headers(WEBHOOK_KEY))
     assert resp.status_code == 200
 
-    status_resp = client.get(
-        "/api/devices/pgr-0001/status", headers={"Authorization": f"Bearer {TOKEN}"}
-    )
-    assert status_resp.status_code == 200
-    assert status_resp.json()["state"] == "online"
+    device = devices_store.get_device("pgr-0001")
+    assert device is not None
+    assert device.status.state == "online"
 
 
 def test_webhook_loc_dispatches_without_error(client: TestClient):
@@ -114,20 +124,39 @@ def test_webhook_unrecognised_topic_is_still_200(client: TestClient):
     assert resp.status_code == 200
 
 
-def test_webhook_store_error_on_up_insert_is_500_not_200(monkeypatch):
+def test_webhook_store_error_on_up_message_is_500_not_200(monkeypatch):
     # §3.4's 2xx-for-malformed-payload rule must NOT swallow a genuine
     # relay-side storage failure -- that would silently lose the up-message
     # with no republish path (§4.2 has none). This must surface as a 500 so
-    # the broker's rule engine retries the webhook.
-    def _broken_insert(**kwargs):
+    # the broker's rule engine retries the webhook. Needs a registered
+    # device + an allowed recipient so `_handle_v2_up_message` actually
+    # reaches `messages_store.create_message` (an unregistered device is
+    # dropped before any store write happens at all).
+    users_store.create_user(uid="student", alias="student", display_name="Student")
+    users_store.create_user(uid="mom", alias="mom", display_name="Mom")
+    allow_store.set_edge("student", "mom", message=True, locate=True)
+    devices_store.create_device(
+        device_id="pgr-broken",
+        owner_uid="student",
+        label="d",
+        mqtt_username="pgr-broken",
+        mqtt_password_hash="x",
+    )
+    backends_store.create_backend(
+        "student", kind="pager", config={"deviceId": "pgr-broken"}, enabled=True
+    )
+
+    def _broken_create_message(**kwargs):
         raise ServiceUnavailable("firestore unreachable")
 
-    monkeypatch.setattr(legacy_store, "insert_up_message", _broken_insert)
+    monkeypatch.setattr(messages_store, "create_message", _broken_create_message)
 
     settings = make_settings()
     fake_broker = FakeBrokerClient(webhook_key=WEBHOOK_KEY)
     app = create_app(settings=settings, broker_client=fake_broker)
-    body = webhook_body(up_topic("pgr-0001"), up_message_payload("u_broken01", "hi"))
+    body = webhook_body(
+        up_topic("pgr-broken"), up_message_payload("u_broken01", "hi", sender="student")
+    )
     with TestClient(app, raise_server_exceptions=False) as c:
         resp = c.post("/webhooks/mqtt", content=body, headers=webhook_headers(WEBHOOK_KEY))
         assert resp.status_code == 500

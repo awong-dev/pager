@@ -1,9 +1,11 @@
-"""`app.ingest.Ingest` against the v2 uid-addressed model (registered
+"""`app.ingest.Ingest` against the uid-addressed model (registered
 `devices/{id}` docs) -- the drop+system-reply path (PROTOCOL.md §4.2 case 3),
-v2 ack routing (find the right pager delivery, monotonic state), and the v2
-online-edge republish (`pendingDeviceIds`). The legacy-model behaviour this
-same class implements is already covered by tests/test_ingest.py; this file
-only exercises the *new* branch (`devices/{device_id}` registered).
+ack routing (find the right pager delivery, monotonic state), and the
+online-edge republish (`pendingDeviceIds`). This is the only device-traffic
+model since Phase 6 deleted the legacy device-scoped thread
+(`app/store/legacy.py`, `app/routers/legacy.py`); webhook-dispatch plumbing
+(auth, parsing, topic routing) is covered by tests/test_webhooks.py, and
+`/loc`'s real handling by tests/test_location.py.
 """
 
 from __future__ import annotations
