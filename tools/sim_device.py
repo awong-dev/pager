@@ -128,6 +128,12 @@ def main() -> None:
         except (UnicodeDecodeError, json.JSONDecodeError):
             print(f"<- received unparsable payload on {msg.topic}: {msg.payload[:64]!r}")
             return
+        # PROTOCOL.md §3.2 (v2): `kind:"loc_req"` is a location request, not
+        # a thread message. The device MUST NOT ack it and MUST NOT render
+        # it -- just log and drop. Absent `kind` reads as `msg` (§3.1).
+        if data.get("kind", "msg") == "loc_req":
+            print(f"<- {msg.topic}: loc_req (not acked, not rendered): {data}")
+            return
         print(f"<- {msg.topic}: {data}")
         msg_id = data.get("id")
         if msg_id:

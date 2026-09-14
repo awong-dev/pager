@@ -31,8 +31,23 @@ SESSION_RE = re.compile(r"^s_[0-9a-f]{8}$")
 # U+0000-001F and U+007F.
 CONTROL_CHAR_RE = re.compile(r"[\x00-\x1f\x7f]")
 
-FROM_VALUES = {"parent", "student", "system"}
+# §3.1 (v2): `from`/`to` carry an alias, not a fixed enum. `system` matches
+# this regex on its own (six lowercase letters), so the "or the literal
+# `system`" clause in §3.1's table is redundant with the regex, not an
+# additional allowance -- it is written out here anyway to match the
+# protocol's own wording. `system` is a *reserved* alias (§3.1): the relay
+# MUST NOT ever issue it to a real user, but that is a store-layer rule for
+# a later phase, not a wire-shape rule -- wire.py only checks the shape.
+ALIAS_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,15}$")
+SYSTEM_ALIAS = "system"
 ACK_VALUES = {"shown", "read"}
+
+
+def is_valid_alias(value: str) -> bool:
+    """§3.1: `from`/`to` shape check -- the alias regex, or the literal
+    `system` (which already matches the regex; kept explicit per the
+    protocol table's own wording)."""
+    return value == SYSTEM_ALIAS or bool(ALIAS_RE.match(value))
 
 
 def strip_control_chars(text: str) -> str:
@@ -80,6 +95,7 @@ class UpEnvelope(BaseModel):
     id: str
     ts: int
     from_: str | None = Field(default=None, alias="from")
+    to: str | None = None
     body: str | None = None
     ack: str | None = None
 
@@ -96,6 +112,16 @@ class UpEnvelope(BaseModel):
         validate_ts(value)
         return value
 
+    @field_validator("to")
+    @classmethod
+    def _check_to(cls, value: str | None) -> str | None:
+        # §3.1: same alias shape as `from`. Whether an actual `to:"system"`
+        # is routable is a store-layer allow-list decision (§4.2), not a
+        # wire-shape one.
+        if value is not None and not is_valid_alias(value):
+            raise ValueError("invalid 'to' alias format")
+        return value
+
     @model_validator(mode="after")
     def _check_shape(self) -> UpEnvelope:
         if self.ack is not None:
@@ -104,8 +130,12 @@ class UpEnvelope(BaseModel):
             if self.body:
                 # §3.2: non-null ack + non-empty body is malformed.
                 raise ValueError("ack payload must not carry a body")
+            if self.to is not None:
+                # §3.1: `to` is restricted to up content messages; an ack
+                # carrying `to` is malformed.
+                raise ValueError("ack payload must not carry a 'to'")
         else:
-            if self.from_ not in FROM_VALUES:
+            if self.from_ is None or not is_valid_alias(self.from_):
                 raise ValueError("content message requires a valid 'from'")
             if not self.body:
                 raise ValueError("content message requires a non-empty body")
@@ -168,6 +198,64 @@ class StatusEnvelope(BaseModel):
         return self
 
 
+class DownEnvelope(BaseModel):
+    """A payload published on `pager/{device_id}/down` (relay -> device),
+    per §3.1/§3.2. The relay is the only publisher of this shape, but it is
+    modelled here (not just assembled ad hoc in `build_down_payload`) so the
+    shape rules -- `loc_req` has no `body`, `ack` is always `null` -- are
+    checked in one place and are testable independent of the transport."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    v: int = 1
+    id: str
+    ts: int
+    kind: Literal["msg", "loc_req"] = "msg"
+    from_: str | None = Field(default=None, alias="from")
+    body: str | None = None
+    ack: str | None = None
+
+    @field_validator("id")
+    @classmethod
+    def _check_id(cls, value: str) -> str:
+        if not ID_RE.match(value):
+            raise ValueError("invalid id format")
+        return value
+
+    @field_validator("ts")
+    @classmethod
+    def _check_ts(cls, value: int) -> int:
+        validate_ts(value)
+        return value
+
+    @field_validator("from_")
+    @classmethod
+    def _check_from(cls, value: str | None) -> str | None:
+        if value is not None and not is_valid_alias(value):
+            raise ValueError("invalid 'from' alias format")
+        return value
+
+    @model_validator(mode="after")
+    def _check_shape(self) -> DownEnvelope:
+        if self.ack is not None:
+            # §3.2: every down envelope (msg or loc_req) has ack:null.
+            raise ValueError("down envelope must have ack:null")
+        # §3.1: `from` is required on every content message, and every down
+        # envelope (msg or loc_req) is a content message -- acks are
+        # up-only.
+        if self.from_ is None or not is_valid_alias(self.from_):
+            raise ValueError("down envelope requires a valid 'from'")
+        if self.kind == "loc_req":
+            if self.body:
+                # §3.2: a loc_req has no body.
+                raise ValueError("loc_req down envelope must not carry a body")
+        else:
+            if not self.body:
+                raise ValueError("msg down envelope requires a non-empty body")
+            validate_body(self.body)
+        return self
+
+
 def parse_envelope_bytes(raw: bytes) -> dict[str, Any] | None:
     """Size/UTF-8/JSON-object check per §3.3/§3.4. Returns the parsed JSON
     object, or None if the payload is malformed at this coarse level."""
@@ -191,7 +279,98 @@ def log_malformed(topic: str, raw: bytes, reason: str) -> None:
     logger.warning("malformed payload on %s (%s): %r", topic, reason, raw[:64])
 
 
-def build_down_payload(*, msg_id: str, ts: int, body: str, v: int = 1) -> bytes:
-    """Minified UTF-8 JSON, field order v,id,ts,from,body,ack per §3.1."""
-    obj = {"v": v, "id": msg_id, "ts": ts, "from": "parent", "body": body, "ack": None}
+def build_down_payload(
+    *,
+    msg_id: str,
+    ts: int,
+    body: str | None = None,
+    v: int = 1,
+    kind: Literal["msg", "loc_req"] = "msg",
+    from_: str = "parent",
+) -> bytes:
+    """Minified UTF-8 JSON. Field order v,id,ts,kind,from,body,ack per §3.1
+    (publishers SHOULD emit `kind` right after `ts`; `kind` is omitted
+    entirely when it is the default `msg`, per §3.1's "SHOULD omit kind
+    when it is msg"). §3.2: a `loc_req` down envelope has no `body`; a `msg`
+    down envelope, conversely, always requires a real (non-empty) body --
+    `DownEnvelope` rejects an empty body for `kind="msg"`, so building one
+    here would silently produce a payload the device drops as malformed
+    (§3.4)."""
+    if kind != "loc_req" and not body:
+        raise ValueError("msg down payload requires a non-empty body")
+    obj: dict[str, Any] = {"v": v, "id": msg_id, "ts": ts}
+    if kind != "msg":
+        obj["kind"] = kind
+    obj["from"] = from_
+    if kind != "loc_req":
+        obj["body"] = body
+    obj["ack"] = None
     return json.dumps(obj, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+
+
+class LocFix(BaseModel):
+    """`loc` object inside a `/loc` envelope, per §13.2."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    lat: float = Field(ge=-90, le=90)
+    lon: float = Field(ge=-180, le=180)
+    acc: int | None = Field(default=None, ge=0)
+    fix_ts: int
+    src: Literal["gnss", "cell"] = "gnss"
+
+    @field_validator("fix_ts")
+    @classmethod
+    def _check_fix_ts(cls, value: int) -> int:
+        # §13.2: `fix_ts` is the epoch time of the fix itself, not the
+        # envelope's `ts` -- the §3.5 "ts=0 means no network time yet"
+        # convention does not apply here: a real fix always has a real
+        # timestamp, so 0 is rejected outright rather than substituted.
+        if value == 0:
+            raise ValueError("loc.fix_ts must not be 0")
+        validate_ts(value)
+        return value
+
+
+class LocEnvelope(BaseModel):
+    """A payload received on `pager/{device_id}/loc` (device -> relay), per
+    §13.2. `loc` and `req` are required *keys* (the value may be null)."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    v: int = 1
+    id: str
+    ts: int
+    loc: LocFix | None
+    req: str | None
+    cached: bool = False
+    err: Literal["no_fix", "disabled"] | None = None
+
+    @field_validator("id")
+    @classmethod
+    def _check_id(cls, value: str) -> str:
+        if not ID_RE.match(value):
+            raise ValueError("invalid id format")
+        return value
+
+    @field_validator("ts")
+    @classmethod
+    def _check_ts(cls, value: int) -> int:
+        validate_ts(value)
+        return value
+
+    @field_validator("req")
+    @classmethod
+    def _check_req(cls, value: str | None) -> str | None:
+        if value is not None and not ID_RE.match(value):
+            raise ValueError("invalid 'req' id format")
+        return value
+
+    @model_validator(mode="after")
+    def _check_shape(self) -> LocEnvelope:
+        # §13.2: `loc` is null only when `err` is set, and vice versa.
+        if self.loc is None and self.err is None:
+            raise ValueError("loc:null requires err to be set")
+        if self.loc is not None and self.err is not None:
+            raise ValueError("loc and err are mutually exclusive")
+        return self

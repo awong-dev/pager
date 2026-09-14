@@ -1,14 +1,21 @@
-# PROTOCOL.md — School Pickup Pager wire contract (MVP)
+# PROTOCOL.md — School Pickup Pager wire contract (MVP + v2)
 
 **Status:** authoritative. Phase 2–6 (relay, simulator, firmware `net.c`/`modes.c`/`msg.c`, parent UI)
 MUST conform to this document. Per HANDOFF.md §7.6, any topic or schema change edits this file
-*first*, then code.
+*first*, then code. The same rule governs the v2 server stack (`docs/SERVER_PLAN.md`), whose wire
+changes are all in this document.
 
-**Scope:** MVP = text relay only. GPS, geofences, schedule-based mode switching and SMS fallback
-are out of scope (HANDOFF.md §1). §11 records where the contract leaves room for them.
+**Scope:** MVP = text relay only. Geofences, schedule-based mode switching and device-side SMS
+remain out of scope (HANDOFF.md §1); §11 records where the contract leaves room for them.
+**v2 adds two things and nothing else**: named users on the wire (`from` as an alias, optional `to`,
+§3.1) and location (`kind:"loc_req"` on `/down` §3.2, the `/loc` topic §13). Every v2 addition is
+additive — an MVP device that ignores all of it stays conformant, and a v1 payload stays valid.
 
 **Conventions used below**
 - `(Phase 1 decision — see rationale)` = not fixed by HANDOFF.md; decided here, with a one-line reason.
+- `(v2 decision — see rationale)` = the same, for the v2 server stack (`docs/SERVER_PLAN.md` §4).
+  Every one of these is additive to the MVP wire and none of them moves the §3.3 byte limit, changes
+  a QoS or retained flag, or adds a device subscription.
 - `NEEDS HUMAN DECISION` = would require a paid service, a firmware dependency beyond
   `walter-modem` / `esp_timer` / a display driver, or a GPIO change. Not decided here. Collected in §12.
 - `UNVERIFIED` = a hardware or vendor-library fact this document assumes but cannot confirm; each
@@ -32,9 +39,10 @@ are out of scope (HANDOFF.md §1). §11 records where the contract leaves room f
 |---|---|---|---|
 | `device_id` | `^[a-z0-9][a-z0-9-]{2,23}$` | 24 | lowercase; example `pgr-0001` *(Phase 1 decision — bounds max topic length to 37 bytes so device-side topic buffers are static)* |
 | MQTT client id (device) | exactly `device_id` | 24 | *(Phase 1 decision — stable across reboots is required for `cleanSession=false` session resumption; see §6)* |
-| MQTT client id (relay) | `relay-1` | — | *(Phase 1 decision — fixed id so the relay also resumes a persistent session and does not miss `/up` while restarting)* |
-| Message id (relay-originated, down) | `m_` + 8 lowercase hex | 10 | 32 bits of `os.urandom`; UNIQUE in SQLite, regenerate on collision |
+| MQTT client id (relay) | `relay-1` | — | *(Phase 1 decision — fixed id so the relay also resumes a persistent session and does not miss `/up` while restarting.)* *(v2 decision — the relay no longer holds an MQTT session at all; see §2's transport note. The id is retained only for whatever short-lived client the relay or a test harness opens, and nothing on the device depends on it.)* |
+| Message id (relay-originated, down) | `m_` + 8 lowercase hex | 10 | 32 bits of `os.urandom`; UNIQUE in the relay store, regenerate on collision |
 | Message id (device-originated, up) | `u_` + 8 lowercase hex | 10 | from `esp_random()` |
+| Location id (device-originated, `/loc`) | `l_` + 8 lowercase hex | 10 | from `esp_random()` *(v2 decision — a distinct prefix so a `/loc` envelope is identifiable in logs without its topic; it is still just an `id` per the rule below.)* |
 | Session id | `s_` + 8 lowercase hex | 10 | per **cold boot**, not per deep-sleep wake; lives in RTC memory (§9) |
 
 `id` is opaque to every consumer. Validators accept `^[a-z0-9_]{3,16}$` so a future generator can
@@ -51,19 +59,43 @@ Fixed by HANDOFF.md §2. QoS/retained for `/status` and all LWT settings are Pha
 | `pager/{device_id}/down` | relay → device | 1 | **false** (fixed) | relay | device only (`pager/{own_id}/down`) |
 | `pager/{device_id}/up` | device → relay | 1 | **false** *(Phase 1 decision — a retained reply would be redelivered to the relay on every relay reconnect and double-post to the thread)* | device | relay (`pager/+/up`) |
 | `pager/{device_id}/status` | device → relay | **1** *(Phase 1 decision — QoS 0 can silently lose the `online` edge that triggers re-publish of unacked messages)* | **true** (fixed) | device, and broker on LWT | relay (`pager/+/status`) |
+| `pager/{device_id}/loc` | device → relay | **1** when `req` is non-null, **0** otherwise *(v2 decision — an answer to a location request is something a human is waiting on and must not be silently lost; an unsolicited periodic fix is superseded by the next one, so QoS 0 is right and cheaper)* | **false** *(v2 decision — a retained fix would be redelivered to the relay on every relay reconnect and re-post a stale position)* | device | relay (`pager/+/loc`) |
 
 - The device subscribes to **exactly one** topic: `pager/{own_id}/down`, QoS 1. No wildcards on the
   device *(Phase 1 decision — a wildcard subscription on a metered link is an unbounded data risk)*.
-- The relay subscribes to `pager/+/up` and `pager/+/status`, both QoS 1.
-- Broker ACLs: device credentials may publish **only** to `pager/{own_id}/up` and
-  `pager/{own_id}/status`, and subscribe **only** to `pager/{own_id}/down`. The `relay` credential
-  gets the mirror image. Enforced at the broker, not just in code.
-- Reserved-but-unused in MVP: `pager/{device_id}/loc`, `/cfg`, `/evt` (§11). Devices MUST NOT
-  subscribe to them in MVP.
+  This is unchanged in v2: `/loc` is a **publish**, and location requests arrive on `/down` as a
+  `kind` (§3.2), not on a second subscription.
+- The relay receives `pager/+/up`, `pager/+/status` and (v2) `pager/+/loc`. In the MVP it received
+  them as an MQTT subscriber at QoS 1; from v2 the broker pushes them to the relay — see the
+  transport note below.
+- Broker ACLs: device credentials may publish **only** to `pager/{own_id}/up`,
+  `pager/{own_id}/status` and (v2) `pager/{own_id}/loc`, and subscribe **only** to
+  `pager/{own_id}/down`. The `relay` credential gets the mirror image. Enforced at the broker, not
+  just in code.
+- Reserved-but-unused: `pager/{device_id}/cfg`, `/evt` (§11). Devices MUST NOT subscribe to them.
+
+**Relay transport (v2 decision — the relay must not require a long-lived process).** The relay's
+*role* is unchanged: it is the authoritative endpoint for `/up`, `/status` and `/loc`, and the only
+publisher to `/down`. Its *transport* changes. Instead of holding a persistent MQTT session as
+`relay-1`, the relay is reached by the broker's **rule engine**, which matches `pager/+/up`,
+`pager/+/status` and `pager/+/loc` (including broker-generated LWTs) and POSTs each message to an
+authenticated HTTPS endpoint on the relay; the relay publishes `/down` through the broker's **REST
+publish API** at QoS 1, retained false. Consequences, and only these:
+- `sent` (§4) now means *the broker's publish API accepted the QoS 1 message* — the same fact
+  PUBACK reported, reported over a different channel. Every state, rule and timing in §4 is unchanged.
+- The offline→online re-publish of §5.3 is triggered by the `/status` push rather than by a
+  subscriber callback.
+- The push is at-least-once: a broker rule may retry a POST it did not get a 2xx for, so ingest of
+  `/up`, `/status` and `/loc` MUST be idempotent, which it already is — §4.1 rule 1 for acks,
+  §4.2's transactional `id` dedup for up messages, §13.2's for `/loc`. This replaces QoS 1
+  redelivery as the duplicate source; it does not add a new one.
+- Nothing the device sees changes: topics, QoS, retained flags, ACLs, the §3.3 byte limit and the
+  envelope schema are all identical, and a v1 device cannot tell the two transports apart. A relay
+  that still runs as an MQTT subscriber remains conformant; this is a deployment choice.
 
 ---
 
-## 3. Message schema (JSON, MVP)
+## 3. Message schema (JSON)
 
 Payloads are **minified UTF-8 JSON objects**, no BOM, no trailing newline, no whitespace between
 tokens. One JSON object per MQTT payload.
@@ -81,9 +113,11 @@ Base envelope (from HANDOFF.md §2, plus `v`):
 | `v` | int | no (default `1`) | `1` | Schema version. *(Phase 1 decision — a one-key, 6-byte cost that makes §10 migration possible; absent MUST be read as `1` so the HANDOFF.md example stays valid.)* |
 | `id` | string | **yes** | `^[a-z0-9_]{3,16}$` | Message id (§1). On an ack, this is the **down message's** id. |
 | `ts` | int | **yes** | 0 or 1×10⁹…2×10⁹ | Unix epoch **seconds, UTC**. Set by the publisher. |
-| `from` | string | yes on content messages, **absent** on acks | `parent` \| `student` \| `system`, ≤16 chars | Author. |
+| `from` | string | yes on content messages, **absent** on acks | `^[a-z0-9][a-z0-9_-]{0,15}$` **or** the literal `system`, ≤16 chars | Author's **alias**. *(v2 decision — a deployment now has named users rather than one parent and one student, so `from` carries the sender's alias instead of a two-value enum. `parent` and `student` are still valid aliases, so every MVP payload stays valid and an existing device thread keeps rendering. **Firmware impact: none** — `msg.c` already accepts any 1–16 byte string and renders it verbatim.)* |
 | `body` | string | yes on content messages, **absent** on acks | ≤ **160 Unicode code points** (fixed) **and** ≤ **320 UTF-8 bytes** *(Phase 1 decision — the code-point cap alone allows 640 bytes; the byte cap lets firmware size static buffers, and §9.4 turns it into the 161-byte RTC mirror by way of the ASCII-only CardKB)* | Message text. |
 | `ack` | string \| null | yes; `null` on content messages | `shown` \| `read` | Ack state being reported. |
+| `kind` | string | no (default `msg`) | `msg` \| `loc_req`; `/down` only | What the down message *is* (§3.2). Absent MUST be read as `msg`. *(v2 decision — a location request needs a down message the device does not render or ack; a field on `/down` costs 17 bytes, whereas a `/cmd` topic would cost the device a second subscription, which §2 exists to prevent.)* |
+| `to` | string | no; `/up` content messages only | same regex as `from` | Recipient alias chosen by the device. Absent → the relay uses the device's configured default recipient, or broadcasts to every user the owner may message. *(v2 decision — the device can now address one of several users; optional so an MVP device that never sets it keeps working unchanged.)* |
 
 Additional rules:
 - `body` MUST NOT contain Unicode control characters `U+0000`–`U+001F` or `U+007F`. Relay strips
@@ -93,22 +127,66 @@ Additional rules:
 - **Unknown fields MUST be ignored, not rejected.** This is the forward-compatibility rule that
   makes §11 additive.
 - Field order is unspecified; a receiver MUST NOT depend on it. Publishers SHOULD emit
-  `v,id,ts,from,body,ack` in that order to keep logs diffable.
+  `v,id,ts,kind,from,to,body,ack` in that order to keep logs diffable *(v2 decision — the two new
+  keys are slotted into the existing order rather than appended, so an MVP payload is still a
+  prefix-compatible subsequence of a v2 one)*.
+- A publisher SHOULD omit `kind` when it is `msg` and omit `to` when it has no recipient to name;
+  both defaults are defined precisely so the common payload does not grow.
+- `system` matches the alias regex, so it is a **reserved alias**: the relay MUST NOT issue it to a
+  user *(v2 decision — §11's `system` enum headroom is only headroom if nothing else can claim it,
+  and a user able to publish as `system` could forge relay notices)*. A `to` of `system` is an
+  unknown recipient and takes §4.2's drop path. *(v2 decision — the reservation needs a matching
+  inbound rule or it does not achieve what its rationale claims.)* `from:"system"` is **shape-valid
+  on the wire** — wire-format validation checks shape only — but the relay MUST NOT attribute a
+  stored message to `system` on the strength of a device-supplied `from`. Attribution of an `/up`
+  message is the relay's decision from the device→user mapping, never the device's claim; a
+  `from` that disagrees with that mapping is logged as a **security event** (same class as §4.1
+  rule 4's wrong-device ack). This is a relay-side rule; it is deliberately *not* a reason to
+  reject the envelope, so nothing the device sees changes.
 
 ### 3.2 Message kinds
 
 | Kind | Topic | Shape |
 |---|---|---|
-| Down message (parent → student) | `/down` | `{"v":1,"id":"m_7f3a","ts":…,"from":"parent","body":"…","ack":null}` — **99 bytes** for the example above |
+| Down message (sender → device) | `/down` | `{"v":1,"id":"m_7f3a","ts":…,"from":"parent","body":"…","ack":null}` — **99 bytes** for the example above |
+| Location request (v2) | `/down` | `{"v":1,"id":"m_7f3a","ts":…,"kind":"loc_req","from":"mom","ack":null}` — **78 bytes**; no `body` |
 | Ack (device → relay) | `/up` | `{"v":1,"id":"m_7f3a","ts":…,"ack":"shown"}` — **51 bytes**; no `from`, no `body` |
-| Up message (student reply) | `/up` | `{"v":1,"id":"u_91c0","ts":…,"from":"student","body":"ok coming","ack":null}` — **84 bytes** |
+| Up message (device reply) | `/up` | `{"v":1,"id":"u_91c0","ts":…,"from":"student","body":"ok coming","ack":null}` — **84 bytes** |
+| Up message addressed (v2) | `/up` | `{"v":1,"id":"u_91c0","ts":…,"from":"student","to":"mom","body":"ok coming","ack":null}` — **95 bytes** |
+| Location (v2) | `/loc` | §13 |
 
 A receiver distinguishes an ack from a content message by `ack !== null`. A payload with both a
 non-null `ack` and a non-empty `body` is **malformed** (§3.4).
 
+**`kind:"loc_req"` (v2 decision — see §13 for the answer it asks for).** A location request is a
+down message with `kind:"loc_req"`, **no `body`**, `ack:null`, and `from` set to the requesting
+user's alias. It is a request for a fix, not a message:
+
+- The device MUST NOT `shown`- or `read`-ack it, and MUST NOT render it in the message thread. It
+  is not a thread entry and it does not wake active mode. A redelivered `loc_req` (QoS 1 duplicate)
+  MUST NOT cost a second fix: it is suppressed either by the §4.1 rule 7 dedup ring or by the
+  rate limit of §13.3, both of which reach that outcome. There is no ack to re-send.
+- The device answers on `pager/{own_id}/loc` (§13) with `req` set to **this message's `id`**,
+  subject to the device-side rate limit in §13.3.
+- Relay-side lifecycle: `queued → sent → fulfilled` (a `/loc` carrying a matching `req` arrived) or
+  `expired`. Like §4's `expired`, `fulfilled`/`expired` are **derived at read time**; the expiry is
+  **15 minutes** after creation *(v2 decision — a location answer that is a quarter of an hour late
+  answers a question nobody is still asking; it is also short enough that a derived state needs no
+  timer)*.
+- A `loc_req` is **not** re-published on an online edge (§5.3) — a stale location request is
+  worthless, and re-asking is one API call for the requester.
+- **Firmware note:** current firmware treats a body-less down message as malformed and drops it
+  *without acking* (§3.4). That is exactly the right behaviour for a device that predates this
+  field: the request is never answered, it simply expires, and no message state moves backwards.
+  Parsing `kind` is a firmware follow-up, not a prerequisite for the rest of v2.
+
 ### 3.3 Envelope size limit
 
-Worst case, with every field at its maximum and JSON escaping expanding `"` and `\` to two bytes:
+Worst case, with every field at its maximum and JSON escaping expanding `"` and `\` to two bytes.
+**This table is a deliberately conservative per-field ceiling, not a payload that can exist**: it
+sums each field's independent maximum, and several of those maxima are mutually exclusive (§3.2
+makes a non-null `ack` and a non-empty `body` malformed, so lines 6 and 7 never co-occur), while
+the `body` line over-counts — see the achievable figures below the limit.
 
 ```
 {}                                   2
@@ -119,22 +197,72 @@ Worst case, with every field at its maximum and JSON escaping expanding `"` and 
 "body":"<=480 escaped>",           490   (320 UTF-8 bytes, up to 160 of them escaped 1->2)
 "ack":"<=8>"                        16
                                   ----
-                                   580
+                                   580   v1 worst case (MVP fields only)
+
+"to":"<=16>",                       24   v2, /up content messages only
+                                  ----
+                                   604   v2 worst case: a maximal up message carrying `to`
+
+"kind":"loc_req",                   17   v2, /down only; longest value of a closed 2-value enum
+                                  ----
+                                   621   arithmetic ceiling if every v2 field is present at maximum
 ```
 
-**Hard limit: 640 bytes.** Any payload larger than 640 bytes on any topic MUST be dropped
-unparsed by both relay and device *(Phase 1 decision — 580 rounded up with headroom to a size the
-firmware can statically allocate; a fixed limit means the device never mallocs on the RX path)*.
+**Hard limit: 640 bytes — unchanged.** Any payload larger than 640 bytes on any topic MUST be
+dropped unparsed by both relay and device *(Phase 1 decision — 580 rounded up with headroom to a
+size the firmware can statically allocate; a fixed limit means the device never mallocs on the RX
+path)*.
+
+*(v2 decision — the two added fields are sized against the existing limit rather than moving it,
+because the limit is what lets the device statically allocate its RX buffer and any change to it
+would be a firmware flag day.)*
+
+*(v2 decision — the ceiling above is kept as-is, because 640 was derived from it in Phase 1 and
+re-deriving the limit would be a firmware flag day for no gain; but the achievable numbers are
+recorded here, because "604" was being read as a real payload size and it is not one.)* The
+**largest payload that can actually exist is 438 bytes**: a `/up` content message with `id`,
+`from` and `to` all 16 characters and `body` at its cap. The 490-byte `body` line is unreachable
+because §3.1's two caps bind together — a character that escapes 1→2 (`"` or `\`) is one UTF-8
+byte, so 160 of them consume the whole 160-code-point budget and leave nothing to spend the
+remaining 160 UTF-8 bytes on. The maximum a `body` can occupy on the wire is therefore **320
+bytes**, not 480, reached identically by 160 escaped quotes or by 160 two-byte code points.
+Every other v2 shape is smaller: a maximal `/down` `msg` is 414 bytes, a `loc_req` 101 bytes
+(78 in §3.2's example), a maximal §13 `/loc` envelope 188 bytes. Real headroom against the limit
+is **≥ 202 bytes**, and the common shapes have more than 500.
+
+*(v2 decision — the one escaping assumption the limit depends on, stated because it was previously
+implicit.)* Publishers MUST serialise non-ASCII `body` characters as **raw UTF-8, not `\uXXXX`
+escapes**. §3's "minified UTF-8 JSON" already implies this, but the consequence is load-bearing:
+a legal 160-code-point non-ASCII `body` emitted with `\u` escaping is 1078 bytes and would be
+dropped unparsed by every receiver, making §3.1's `body` caps and this limit jointly
+unsatisfiable. The relay and the device both already emit raw UTF-8; this fixes that in writing.
+The 621-byte line is arithmetic only: `kind` appears solely on
+`/down`, where `to` never appears, and the only non-default `kind` is `loc_req`, which carries no
+`body` at all (78 bytes in §3.2's example). §13's `/loc` envelope is ≤ ~200 bytes worst case. Every
+v2 shape therefore has at least 19 bytes of headroom against the stated ceiling, and the common ones have
+more than 500.
 
 ### 3.4 Malformed payload handling
 
 A payload is malformed if it is >640 bytes, not valid UTF-8, not a JSON object, missing `id`/`ts`/
 `ack`, has an out-of-range field, violates a `body` rule, or sets both `ack` and `body`.
 
+*(v2 decision — unknown **values** need the same rule as unknown fields, or the enum additions in
+§3.1 are not additive after all.)* A `kind` the receiver does not recognise is handled exactly like
+`loc_req` is handled by MVP firmware: **do not render, do not ack, count it, drop it.** The message
+then expires at the relay, which is the visible, correct outcome. This is the only place a v2
+receiver may treat a well-formed envelope as undeliverable; it is deliberately the same code path
+as §3.4's malformed handling below.
+
 - **Device:** log, increment a counter, **do not ack**, do not render, do not reboot. The message
   stays `sent` at the relay and the parent UI shows it as undelivered.
-- **Relay:** log with the topic and first 64 bytes, drop. Never crash the MQTT loop on a parse
-  error — one bad payload must not take down the persistent session. Never auto-reply on MQTT.
+- **Relay:** log with the topic and first 64 bytes, drop. Never crash the ingest path on a parse
+  error — one bad payload must not take down the persistent session, and (v2) must not fail the
+  broker's webhook request either: the relay logs it, drops it, and still answers 2xx, or the
+  broker will redeliver the same bad payload forever. Never auto-reply on MQTT. *(v2 exception, and
+  the only one: an up message whose `to` names an unknown or disallowed recipient is answered with
+  one `system` down message — see §4.2. That is a routing failure of a well-formed payload, not a
+  parse failure.)*
 - The relay's HTTP API rejects oversize/invalid bodies with `400` **before** anything is stored, so
   a malformed message never reaches the air interface.
 
@@ -154,8 +282,11 @@ Thread order in the parent UI is the relay's insertion order (SQLite rowid), **n
 state. States are **monotonic** — a message never moves backwards.
 
 ```
-             relay stores          broker PUBACK        device /up ack       device /up ack
+             relay stores        broker accepts       device /up ack       device /up ack
  (HTTP POST) ------------> queued --------------> sent --------------> shown -------------> read
+                                (PUBACK, or 2xx
+                                 from the publish
+                                 API — §2)
                              |                      |
                              |  24 h, no ack        |  24 h, no ack
                              +----------------------+--------> expired  (terminal, relay-only)
@@ -163,8 +294,8 @@ state. States are **monotonic** — a message never moves backwards.
 
 | State | Owner | Entered when | Notes |
 |---|---|---|---|
-| `queued` | relay | row committed to SQLite by `POST /api/devices/{id}/messages` | Also the state of a message whose publish attempt failed (broker down). |
-| `sent` | relay | broker returns **PUBACK** for the QoS 1 `/down` publish | Means *the broker accepted it*, **not** that the device received it. The UI must not say "delivered" here. |
+| `queued` | relay | message committed to the relay's store by the send API | Also the state of a message whose publish attempt failed (broker down). |
+| `sent` | relay | broker returns **PUBACK** for the QoS 1 `/down` publish — (v2) equivalently, the broker's REST publish API accepts the QoS 1 publish with a 2xx | Means *the broker accepted it*, **not** that the device received it. The UI must not say "delivered" here. *(v2 decision — the two are the same fact carried over different transports (§2), so the state machine, its rules and its timings are untouched.)* |
 | `shown` | relay, on device report | device publishes `{"id":…,"ack":"shown"}` on `/up` | Device publishes this **after the e-paper refresh completes** (BUSY deasserted), never before. |
 | `read` | relay, on device report | device publishes `{"id":…,"ack":"read"}` on `/up` | Triggered by a short press of button IO1 while the message is on screen. |
 | `expired` | relay | still `queued` or `sent` 24 h after creation | *(Phase 1 decision — a pickup pager delivering "be at the gym at 3:15" two days late is worse than not delivering it. Extends HANDOFF.md's four states with a terminal, relay-only state; the device never sees or acks it.)* |
@@ -208,9 +339,28 @@ compose --> pending --(modem PUBACK)--> done            (entry freed)
               +--(3 failed attempts, or >2 h old)--> failed  (UI shows "not sent", entry freed)
 ```
 
-Relay-side an up message is simply inserted with `direction='up'` and served by
-`GET /api/devices/{id}/messages`. An up message whose `id` already exists is a duplicate and is
-dropped (QoS 1 redelivery).
+Relay-side an up message is simply inserted with `direction='up'` and served to the reading UI. An
+up message whose `id` already exists is a duplicate and is dropped (QoS 1 redelivery); the dedup
+check on that `id` MUST be part of the same transaction that stores the message, or a QoS 1
+redelivery that races the original posts the thread entry twice.
+
+**Routing an up message's `to` (v2 decision — the allow-list is a server-side rule, so the device
+is never trusted to know who it may talk to).**
+
+1. `to` absent → the relay routes to the device's configured default recipient, or, if it has
+   none, to every user the device's owner is allowed to message. This is the MVP behaviour, so an
+   MVP device keeps working with no change.
+2. `to` present and naming a recipient this device's owner is allowed to message → routed there.
+3. `to` present but naming an unknown alias, or one the allow-list does not permit → the relay
+   **drops the message**, logs it as a **security event** (same class as §4.1 rule 4's wrong-device
+   ack), and sends exactly one `system` down message whose body is `unknown recipient` so the
+   device's user gets feedback instead of silence. The dropped message is not stored and is never
+   delivered to anybody, and the reply is rate-limited to one per offending up message — it is a
+   reply, never an alert loop.
+
+The allow-list decision is made by the relay **and** re-stated in the data store's own access
+rules; neither alone is the enforcement point. Case 3's `system` reply is the single exception to
+§3.4's "never auto-reply on MQTT".
 
 ---
 
@@ -235,6 +385,14 @@ broker-generated LWT.
 | `session` | string | **yes** | `^s_[0-9a-f]{8}$` | Cold-boot session id (§1). Lets the relay tell a reboot from a deep-sleep cycle. |
 | `ts` | int | yes when `online` | epoch s, or 0 | Same rule as §3.5 |
 | `fw` | string | no | ≤16 chars | Firmware version |
+| `loc_period_s` | int | no | 0…86400 | v2. The periodic `/loc` interval **the device has chosen** (§13); `0` = periodic location off. |
+| `loc_min_s` | int | no | 0…86400 | v2. The device's own minimum gap between on-demand fixes (§13.3); default 120. |
+
+*(v2 decision — both fields are **display and diagnosis only**; the relay stores the reported
+values and never writes them back. The device owns its location duty cycle because the cost being
+traded is GNSS power on its battery (§12 item 8), which the server cannot see. Making these
+server-settable would need a `/cfg` topic, which §11 still only reserves.)* They are optional, so
+an MVP `/status` remains valid and a relay MUST treat their absence as "unknown", not as `0`.
 
 ### 5.2 LWT payload (48 bytes)
 
@@ -263,6 +421,12 @@ keeps the TLS+MQTT session up on eDRX while the ESP32 is in deep sleep; that dev
     depth 10 precisely so this cap still lines up; bounds the reconnect burst to ~8 kB / ~1
     active-mode window. Older unacked messages are left for the `expired` sweep)*.
   - Re-publish reuses the **same `id`** so device dedup (§4.1 rule 7) suppresses double-rendering.
+  - **Selection excludes `kind:"loc_req"` (v2 decision — a location request that missed its window
+    is worthless, and re-asking is one API call for the requester).** A `loc_req` that is still
+    `sent` when the device comes back simply expires per §3.2.
+  - *(v2 decision — same rule, new trigger.)* The edge is detected from the `/status` message
+    however it reaches the relay: in v2 that is the broker's `/status` push (§2), not a
+    subscriber callback. Selection, order, cap and the re-used `id` are unchanged.
 - The relay MUST NOT publish anything to `/down` on a timer for liveness. There is no application
   ping. MQTT keepalive is the only liveness mechanism (§6).
 
@@ -295,6 +459,12 @@ Status is **never** published on a plain paging wake or on receipt of a down mes
 | LWT | **NOT SETTABLE from the library** | `mqttConfig()` emits `AT+SQNSMQTTCFG=0,"<clientId>"[,"<user>","<pass>"][,<tlsProfileId>]` and stops there (`src/proto/WalterMQTT.cpp:53-75`) — no will topic, message, QoS or retain argument, and grepping the whole of `src/` for `will`/`lastwill` returns nothing. §5.2's LWT contract therefore has no implementation path through the typed API. Fallback: `WalterModem::sendCmd()` (public) can queue a raw `AT+SQNSMQTTCFG=...` carrying the will parameters *before* `mqttConnect()`. UNVERIFIED against the Sequans AT manual. If that fails, the relay must fall back to inferring offline from keepalive expiry and §5.2's LWT becomes advisory. Tracked in §12. |
 | TLS | server-authenticated, CA pinned in modem NVM; username/password per device | Free-tier HiveMQ Cloud model. Provisioning is supported and is exactly the vendor's `examples/mqtts` flow: `tlsWriteCredential(false, 12, ca_pem)` → `tlsConfigProfile(2, WALTER_MODEM_TLS_VALIDATION_CA, WALTER_MODEM_TLS_VERSION_12, 12)` → `mqttConfig(client_id, user, pass, 2)`. Both functions are public (`src/WalterModem.h:4147` and `:4404`; the `public:` block starts at `:4132`). **Slot discipline, from `examples/mqtts/main/mqtts.cpp:249-251`: certificate indices 0–10 and private-key index 1 are reserved for Sequans/BlueCherry — use certificate slot ≥ 11, and TLS profile ≥ 2 (profile 1 is BlueCherry's).** Note this is stricter than the `tlsWriteCredential` doc comment's "10–19"; follow the example. |
 | Reconnect policy | **Only** on detected session loss. Never on a timer (HANDOFF.md §1). Backoff 5 s, 15 s, 60 s, 300 s, then 300 s steady. | Each reconnect costs a full TLS handshake ≈ 5 kB (§7) — reconnects are the largest single term in the data budget. |
+
+*(v2 decision — scoping note, no behaviour change.)* Every row above describes the **device's**
+session. The relay no longer keeps an MQTT session of its own (§2), so its former persistent
+session, its `relay-1` client id and its reconnect behaviour are not part of this contract; the
+broker-generated LWT of §5.2 still matters, because it is the broker, not the relay, that produces
+it. The broker must therefore still support an LWT and QoS 1 in both directions (§12 item 2).
 
 ### 6.2 Keepalive
 
@@ -393,12 +563,16 @@ energy reasons. Two things break this budget, and firmware MUST log enough to de
 | **down message fully acked (down + shown + read)** | | | | **818 B ≈ 0.82 kB** |
 | `/up` reply PUBLISH (84 B payload) + PUBACK + ack | 107 | 136 | | **289 B ≈ 0.29 kB** |
 | `/status` PUBLISH (117 B payload, topic 21) + PUBACK + ack | 145 | 174 | | **327 B ≈ 0.33 kB** |
+| `/loc` periodic PUBLISH, QoS 0 (160 B payload, topic 18) + TCP ack; no PUBACK (v2) | 182 | 211 | | **291 B ≈ 0.29 kB** |
+| `/loc` answering a `loc_req`, QoS 1 (160 B payload) + PUBACK + ack (v2) | 184 | 213 | | **366 B ≈ 0.37 kB** |
+| one location request served (`/down` `loc_req` 78 B, acked, + QoS 1 `/loc` answer, v2) | | | | **651 B ≈ 0.65 kB** |
 | keepalive PINGREQ + PINGRESP (+ TCP ack) | 4 | 62 | | **182 B ≈ 0.18 kB** |
 | **TLS reconnect** (TCP handshake + full TLS 1.2 handshake with a 2-cert chain + MQTT CONNECT/CONNACK + SUBSCRIBE/SUBACK) | | | | **≈ 5 kB (estimate)** |
 
 ### 7.3 Monthly projection
 
-Nominal school day: 20 down messages, 5 student replies, 4 reconnects.
+Nominal school day: 20 down messages, 5 student replies, 4 reconnects, and (v2) a periodic fix
+every 15 min plus 2 on-demand location requests.
 
 ```
 20 down msgs fully acked  20 x 0.82 kB =  16.4 kB
@@ -407,19 +581,31 @@ Nominal school day: 20 down messages, 5 student replies, 4 reconnects.
 34 status publishes       34 x 0.33 kB =  11.2 kB   (24 heartbeat + ~10 event-driven)
  4 reconnects              4 x 5.00 kB =  20.0 kB
                                         ---------
-                                          57.7 kB/day  ->  1.69 MB / 30 days
+                                          57.7 kB/day  ->  1.69 MB / 30 days   (v1)
+96 periodic /loc @15 min  96 x 0.29 kB =  27.8 kB                              (v2)
+ 2 location requests       2 x 0.65 kB =   1.3 kB                              (v2)
+                                        ---------
+                                          86.8 kB/day  ->  2.60 MB / 30 days   (v2)
 ```
 
-Pessimistic day: 100 down messages, 20 replies, 24 reconnects (bad coverage).
+Pessimistic day: 100 down messages, 20 replies, 24 reconnects (bad coverage), and (v2) a periodic
+fix every 5 min plus 10 on-demand requests.
 
 ```
 100 x 0.82 + 20 x 0.29 + 48 x 0.18 + 60 x 0.33 + 24 x 5.00
-=  82.0 +  5.8 +  8.6 + 19.8 + 120.0  =  236 kB/day  ->  6.92 MB / 30 days
+=  82.0 +  5.8 +  8.6 + 19.8 + 120.0  =  236 kB/day  ->  6.92 MB / 30 days   (v1)
++ 288 x 0.29 + 10 x 0.65 = 83.5 + 6.5  =  326 kB/day  ->  9.79 MB / 30 days   (v2)
 ```
 
-**Verdict.** The 100 MB/month cap allows 3413 kB/day, i.e. ~59× the nominal profile. MQTT+TLS
-overhead is not a risk to the data constraint. Both profiles also satisfy HANDOFF.md §8's stricter
-"< 10 MB estimated monthly usage". The break-even point is ~4100 fully-acked messages/day.
+**Verdict.** The 100 MB/month cap allows 3413 kB/day, i.e. ~39× the v2 nominal profile. MQTT+TLS
+overhead is not a risk to the data constraint. The break-even point is ~4070 fully-acked
+messages/day. *(v2 decision — location is added inside the existing budget, not by raising it.)*
+Both profiles still satisfy HANDOFF.md §8's stricter "< 10 MB estimated monthly usage", but the
+pessimistic v2 profile lands at **9.8 MB**, with essentially no margin, and the term that put it
+there is the 5-minute periodic fix. **A periodic interval below ~5 min breaks HANDOFF.md §8's bar
+on a bad-coverage day** — which is a second, independent reason (after GNSS power, §12 item 8) for
+the interval to be device-chosen and long. `loc_period_s` = 0 returns both profiles to the v1
+figures exactly.
 
 **The dominant term is reconnects, not messages** — 20 of 58 kB nominal, 120 of 236 kB pessimistic.
 This is the quantitative reason for HANDOFF.md's "never reconnect on a timer". **Phase 4 checked
@@ -432,9 +618,16 @@ pessimistic day is unavailable. This does not threaten the 100 MB cap (the pessi
 under 7 MB/month) but it does raise the energy cost of §8.3 (b), where each message would pay a full
 handshake.
 
-**SMS budget: 0 of 100 used.** SMS is out of scope (HANDOFF.md §1). Firmware MUST NOT enable any
-SMS send path, and the relay has no SMS code path. This line exists so a later phase cannot quietly
+**SMS budget: 0 of 100 used.** SMS is out of scope (HANDOFF.md §1) **for the device**. Firmware
+MUST NOT enable any SMS send or receive path. This line exists so a later phase cannot quietly
 introduce one without editing this document.
+
+*(v2 decision — the clarification the v2 SMS backend makes necessary.)* v2 adds SMS as a **server-
+side delivery backend**: the relay hands a message to a third-party SMS provider over HTTPS, from
+the server, to a human's phone. That traffic never touches this SIM, this modem or this budget, and
+a message delivered to a user by SMS is still delivered to the *device* by MQTT exactly as
+specified above. The 100-message SIM allowance stays at **0 used**, and the rule above is unchanged:
+the day anything asks the modem to send an SMS, this document gets edited first.
 
 ### 7.4 Phase 6 measurement — validating the model
 
@@ -855,6 +1048,14 @@ CBOR is **not** implemented in the MVP. The migration principles the MVP must pr
    so each maps 1:1 to a CBOR text key with no renaming, and later to a fixed integer keymap:
    `v=0, id=1, ts=2, from=3, body=4, ack=5`. New fields (§11) MUST also be ≤4 characters and MUST
    claim the next free integer in this table when they are added.
+   *(v2 decision — the v2 fields claim their integers now, while the table is still cheap to
+   extend.)* Envelope keys: `kind=6, to=7`. `/loc` keys (§13): `loc=8, req=9, cached=10, err=11`,
+   and inside the `loc` object a separate sub-keymap `lat=0, lon=1, acc=2, fix_ts=3, src=4`.
+   **Two v2 names break the ≤4-character rule: `cached` (6) and `fix_ts` (6).** They are kept
+   because legibility on a wire nobody has to hand-decode is worth more than two bytes each on a
+   ≤200-byte envelope that is itself under 6 % of the data budget, and because the integer keymap
+   above removes the cost entirely the day CBOR is implemented. The rule still binds for the
+   `/down` and `/up` envelopes, where the device's static buffers live.
 2. **Self-describing framing.** A JSON payload always begins with `0x7B` (`{`); a CBOR map always
    begins with `0xA0`–`0xBF` or `0xBF`. A receiver can therefore dispatch on the **first byte** with
    no negotiation, no new topic and no flag day. *(Phase 1 decision — the alternative, a separate
@@ -877,16 +1078,22 @@ These are reservations only. MVP code MUST NOT implement, subscribe to, or emit 
 **Topic namespace**
 | Reserved topic | Intended use | Notes |
 |---|---|---|
-| `pager/{id}/loc` | GNSS fixes, device → relay | Retained=false, QoS 0 likely (a stale fix is worthless) |
+| ~~`pager/{id}/loc`~~ | ~~GNSS fixes, device → relay~~ | **Spent in v2 — this is now a live topic, specified in §13.** QoS ended up 1-when-answering / 0-when-periodic rather than "QoS 0 likely". |
 | `pager/{id}/cfg` | relay → device config (mode schedule, geofences) | Retained=true so a waking device gets current config with no request |
 | `pager/{id}/evt` | geofence enter/exit, motion, low-battery alerts | Separate from `/up` so the parent thread stays human messages only |
 
-**Schema slots** — reserved field names, not to be reused for anything else: `loc` (lat/lon/acc),
+**Schema slots** — reserved field names, not to be reused for anything else:
+~~`loc` (lat/lon/acc)~~ — **spent in v2, see §13**, along with `kind`, `to`, `req`, `cached`, `err`,
+`loc_period_s` and `loc_min_s`, which are now defined fields and not reservations —
 `prio` (priority / alert level), `exp` (message TTL, would supersede §4's fixed 24 h `expired`
 sweep), `sched` (mode schedule id).
 
 **Enum headroom** — `from` already allows `system`, which is where geofence and low-battery
-notifications will render in the thread without a schema change. `mode` is a string, not a boolean,
+notifications will render in the thread without a schema change; v2 widened the rest of `from` to
+an alias (§3.1), which is an enum removal rather than an addition, but `system` is preserved
+verbatim precisely so this reservation still holds. `kind` is likewise a string enum with exactly
+two defined values, so `/evt`-style kinds can be added to `/down` later under §3.4's
+unknown-`kind`-is-dropped rule. `mode` is a string, not a boolean,
 specifically so `school` / `travel` / `night` can be added later; every consumer MUST treat an
 unknown `mode` value as `sleep` for display purposes rather than erroring.
 
@@ -986,6 +1193,23 @@ future.
    did not make it unilaterally. If nobody picks this up, the documented behaviour stands: **a
    crash can lose all but the most recent unread message.**
 
+8. **`UNVERIFIED`, and it must be measured before the first periodic interval is chosen — GNSS
+   power (v2 decision — §13 deliberately leaves the interval to the device, so this measurement is
+   the thing that actually sets it).** §13 gives the device a periodic fix and an on-demand fix, and
+   §7.3 shows the *data* cost is small (0.29 kB per fix). **The real cost is energy, and it is not
+   estimated anywhere in this document.** A cold GNSS fix on the GM02SP can run for tens of seconds
+   at tens of mA; at §8.4's sleep-mode budget of 43–50 mAh/day, even one 30 s fix at 30 mA is
+   0.25 mAh, so a 15-minute interval would be ≈ 24 mAh/day — **roughly a 50 % increase in idle
+   drain, taking ~30–35 days of idle life to ~20–23**. That arithmetic uses two made-up numbers and
+   is offered only to show the term is not negligible. **Nobody should pick `loc_period_s` until
+   fix time and fix current have been measured on hardware** (assisted vs cold, indoors vs
+   outdoors, and how much of it warm-start assistance data removes); the interval should then be
+   derived from that measurement and the battery budget, not assumed. Cheapest experiment: the same
+   current trace §8.4 already needs, with a GNSS fix triggered inside the window; record fix time,
+   mean current and the resulting mAh per fix in `firmware/README.md` and bring the number back
+   here. This is **why** the interval is device-side and not a server setting (§5.1): the server
+   cannot see the cost it would be spending.
+
 > **Retracted in Phase 4 review.** An earlier revision of this section carried a fifth
 > `NEEDS HUMAN DECISION` claiming `tlsWriteCredential()` was private and that application code
 > therefore could not provision a CA, forcing a choice between unauthenticated TLS and a separate
@@ -1018,3 +1242,111 @@ future.
 | 9.4 | The M5Stack CardKB emits one ASCII byte per keypress (no multi-byte sequences) | **OPEN, load-bearing for §9.4** — if it can emit >0x7F, a 160-byte RTC reply slot is no longer 160 characters | Poll 0x5F over I2C, dump every non-zero byte for a full pass over the keyboard incl. Fn/sym combos; 15 min on hardware |
 | 8.4 | ESP32 draws ~40 mA awake and ~50 ms per wake-and-drain cycle | OPEN — the overhead term (0.40 mA of 1.8–2.1 mA) rests entirely on this, and the 50 ms floor is set by the library event task's 10 ms tick + 10 ms settle | Toggle a GPIO around the awake window and read the duty cycle on a scope; a current trace gives both numbers at once |
 | 12.6 | `getVoltage()`/`AT+SQNVMON` reports real battery voltage, not a fixed regulated rail | **OPEN, cheap to confirm** — inferred from Walter's public schematics (§12 item 6), not from Walter's own unpublished internal routing | Compare `getVoltage()`'s reported `batt_mv` against a multimeter reading of the actual battery on first hardware bring-up; 5 min, no code change either way |
+| 13 | Energy per GNSS fix (time-to-fix and mean current) — **no figure exists**, and §13's periodic interval cannot be chosen without one | **OPEN (§12 item 8), load-bearing for the v2 battery budget** | Trigger a fix inside §8.4's current trace; log time-to-fix cold and warm, mean current, mAh per fix |
+| 13 | `walter-modem` v1.5.0 exposes a usable GNSS fix API with a bounded timeout and assistance data | **OPEN** — assumed by §13, not yet read against the component source the way §6/§8 were | Grep `src/` for the GNSS/GPS API and read it, as Phase 4 did for MQTT; 30 min, no hardware |
+
+---
+
+## 13. Location (v2)
+
+**Added in v2.** Spends the `pager/{id}/loc` topic and the `loc` schema slot that §11 reserved.
+Everything in this section is additive: a device that never publishes `/loc` and never parses
+`kind` (§3.2) is still conformant, it simply has no location feature.
+
+*(v2 decision — location is a separate topic rather than a field on `/up`, because a fix is not a
+thread entry: it has a different lifetime, a different QoS, a different retention class and a
+different read permission from a human message, and folding it into `/up` would put all four of
+those decisions inside one parser.)*
+
+### 13.1 Topic
+
+`pager/{device_id}/loc`, **device → relay**, retained **false**.
+QoS **1** when `req` is non-null, QoS **0** otherwise (§2's table carries the reason).
+Broker ACL: the device credential may **publish** this topic and nothing more; it MUST NOT be
+subscribable by the device. The relay receives it the same way it receives `/up` and `/status` —
+in v2, a broker rule forwards it to the relay's authenticated HTTPS endpoint (§2).
+
+### 13.2 Payload
+
+```json
+{"v":1,"id":"l_3c9a11f0","ts":1757700000,"loc":{"lat":37.774929,"lon":-122.419416,"acc":14,"fix_ts":1757699991,"src":"gnss"},"req":"m_7f3a2b10","cached":false}
+```
+
+| Field | Type | Required | Meaning |
+|---|---|---|---|
+| `v` | int | no (default `1`) | Schema version, as §3.1 |
+| `id` | string | **yes** | `l_` + 8 hex per §1's id rules; the dedup key for this envelope |
+| `ts` | int | **yes** | When the envelope was published; §3.5's clock rule applies |
+| `loc` | object \| null | **yes** | `null` **only** when `err` is set and no fix was obtainable |
+| `loc.lat`, `loc.lon` | number, 6 decimal places | **yes** | WGS-84 degrees. 6 dp ≈ 0.11 m, far below any achievable accuracy, and it bounds the field length |
+| `loc.acc` | int, metres | no | Horizontal accuracy estimate. Absent = unknown, **not** zero |
+| `loc.fix_ts` | int, epoch s | **yes** | When the fix was *taken*. Differs from `ts` whenever `cached` is true; this is the field a UI ages, not `ts` |
+| `loc.src` | `gnss` \| `cell` | no (default `gnss`) | How the position was obtained |
+| `req` | string \| null | **yes** | The `id` of the `loc_req` (§3.2) this answers; `null` = an unsolicited periodic fix |
+| `cached` | bool | no (default `false`) | True when the device's rate limit (§13.3) answered from the last fix instead of powering GNSS |
+| `err` | `no_fix` \| `disabled` | only when `loc` is `null` | `no_fix` = the fix attempt timed out; `disabled` = location is off on the device (`loc_period_s` 0 and the user has disabled on-demand fixes) |
+
+The example is ~160 bytes; the worst case is ≤ ~200 bytes, so §3.3's 640-byte limit applies
+unchanged and is nowhere near binding. A `/loc` payload that violates any rule above is malformed
+and is handled per §3.4 — logged and dropped, never crashing the ingest path.
+
+Relay-side: dedup on `id` exactly as §4.2 dedups an up message, in the same transaction that
+stores the fix. A periodic fix is **not** a thread entry; it updates the device's last-known
+position. A fix answering a `req` additionally resolves that request (§13.4).
+
+### 13.3 Device-side rate limit — **normative**
+
+*(v2 decision — written normatively here, not left to the implementation, so that firmware, the
+Python test client and the relay's mirrored limit agree on one set of numbers. A limit that the
+device and the server disagree about is a limit that produces phantom `expired` requests.)*
+
+1. A `loc_req` arriving **less than `loc_min_s`** (default **120 s**) after the last fix *attempt*
+   is answered **immediately** from the last fix, with `cached:true`, **without powering GNSS**.
+   The window runs from the last *attempt*, not the last success, so a device in a basement cannot
+   be made to retry continuously by a user pressing a button.
+2. Otherwise the device attempts a fix, **bounded by 60 s**, and then answers: the fix if it got
+   one, otherwise `loc:null, err:"no_fix"`. The device always answers a `loc_req` it accepted;
+   silence is reserved for firmware that does not implement `kind` at all (§3.2).
+3. **At most one fix attempt is in flight.** A second `loc_req` arriving during an attempt does not
+   start another one; it is answered by the same result, as a separate `/loc` publish with its own
+   `req`.
+4. `loc_min_s` and the periodic interval `loc_period_s` are reported in `/status` (§5.1) for
+   display. They are the **device's** choices — see §12 item 8 for why.
+
+**The relay mirrors this limit; it does not merely trust it.**
+
+5. At most **one in-flight `loc_req` per device**. A second requester inside the window **attaches
+   to the existing request** rather than creating another: both requesters are answered by the one
+   `/loc` that comes back. This is a transaction on a single per-device record, not a query, so two
+   simultaneous requests cannot both win.
+6. A request arriving **within 60 s of a fulfilled one** is answered from the stored fix with
+   `cached:true`, without any wire traffic to the device at all.
+7. Consequently one `/down` `loc_req` is published per device per 60 s at most, however many
+   people ask. A location request is a privileged, rate-limited operation on someone else's
+   battery: **who may make one is a server-side allow-list decision** — the same mechanism §4.2
+   applies to messages, carrying a separate "may locate" right — enforced in the relay *and* in the
+   store's own access rules, and never on the device. The device answers whatever it is asked;
+   it is not the gate.
+
+### 13.4 Request lifecycle
+
+`queued → sent → fulfilled | expired`, defined in §3.2 and repeated here for the whole picture:
+
+| State | Entered when |
+|---|---|
+| `queued` | the relay stored the `loc_req` |
+| `sent` | the broker accepted the QoS 1 `/down` publish (§4's `sent`, same meaning) |
+| `fulfilled` | a `/loc` arrived whose `req` equals this request's `id` |
+| `expired` | 15 minutes after creation with no matching `/loc` — **derived at read time**, like §4's `expired`; no timer, and nothing depends on a process being alive to run one |
+
+A `loc_req` is never re-published on an online edge (§5.3), and it is never `shown`/`read`-acked
+(§3.2), so `fulfilled` and `expired` are the only terminal states. Delivery state remains
+monotonic: `fulfilled` and `expired` are terminal and a late `/loc` for an already-`expired`
+request is logged and dropped, exactly as §4.1 rule 1 drops a redundant ack.
+
+### 13.5 What the device may publish unsolicited
+
+A periodic fix (`req:null`) is published every `loc_period_s` when that value is non-zero, at
+QoS 0, and is the device's decision alone. §7.3 budgets it and flags the interval below which a
+bad-coverage day breaks HANDOFF.md §8's 10 MB bar. `loc_period_s` = 0 disables periodic location
+entirely and is a valid, fully conformant configuration; on-demand `loc_req` still works.
