@@ -30,7 +30,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
-from app import devauth, devcfg, location, wire
+from app import devauth, devcfg, devsetup, location, wire
 from app.broker import BrokerClient
 from app.routing import Routing
 from app.store import contacts as contacts_store
@@ -154,6 +154,17 @@ def _device_id_from_topic(topic: str, expected_suffix: str) -> str | None:
     if len(parts) != 3 or parts[0] != "pager" or parts[2] != expected_suffix:
         return None
     return parts[1]
+
+
+def _bid_from_boot_up_topic(topic: str) -> str | None:
+    """`pager/boot/{bid}/up` (docs/DEVICE_PLAN.md §3.2, docs/PROTOCOL.md §2)
+    -- one segment longer than the `pager/{device_id}/{suffix}` shape
+    `_device_id_from_topic` parses, since `boot` and `bid` are both static
+    to this one namespace."""
+    parts = topic.split("/")
+    if len(parts) != 4 or parts[0] != "pager" or parts[1] != "boot" or parts[3] != "up":
+        return None
+    return parts[2]
 
 
 class Ingest:
@@ -532,6 +543,20 @@ class Ingest:
             # message state changes, no republish.
             return
 
+        # docs/DEVICE_PLAN.md §3.2 "Relay, on pager/boot/+/up" /
+        # docs/DEVICE_TASKS.md S2b.3: "`provisionState` becomes `provisioned`
+        # when the first signed `/status` from [the device] arrives." Only
+        # `authMode: "hmac"` devices ever have a *signed* `/status` at all --
+        # and reaching this point with `env.state == "online"` for such a
+        # device is only possible via `_verify_and_decode`'s real signature
+        # verification, never its `lwt_exception` carve-out (that one is
+        # shaped exactly `state:"offline"`, so it can never produce
+        # `"online"` here) -- so no separate "was this signed" flag is
+        # needed. A `password`-mode (pre-bootstrap) device never reaches
+        # "provisioned" through this path, same as before this task.
+        if device.authMode == "hmac" and device.provisionState != "provisioned":
+            devices_store.set_provision_state(device_id, "provisioned")
+
         # §5.3's online-edge republish runs *before* the bv-triggered push
         # below, not after: on a device's very first status ever (or any
         # edge that lands in the same request as a bv-triggered push), doing
@@ -605,3 +630,34 @@ class Ingest:
             wire.log_malformed(topic, payload, str(exc))
             return
         location.ingest_loc(device_id, env)
+
+    # ---- pager/boot/{bid}/up ----
+
+    def handle_boot_ack(self, topic: str, payload: bytes) -> None:
+        """docs/DEVICE_PLAN.md §3.2 "Relay, on `pager/boot/+/up`"
+        (docs/DEVICE_TASKS.md S2b.3): the device's bootstrap ack, the CBOR
+        equivalent of `{"v":1,"ok":1}` (`app/wirecbor.KEYMAP`'s `v`=0,
+        `ok`=29). This namespace has no `deviceSecrets` row to verify
+        against -- the bootstrap MQTT credential (`boot-{bid}`/`bpw`, ACL'd
+        by the broker to publish only `pager/boot/{bid}/up`) is itself the
+        authentication, so unlike `/up`/`/status`/`/loc` there is no
+        `_verify_and_decode` step here, just a decode.
+
+        A payload that fails to decode, or does not carry exactly
+        `{v:1, ok:1}`, is dropped and logged (§3.4's malformed-payload
+        rule) -- `devsetup.complete` is only called once the ack itself has
+        been recognised, not on every touch of this topic."""
+        bid = _bid_from_boot_up_topic(topic)
+        if bid is None:
+            logger.warning("boot-ack webhook for unrecognised topic %s dropped", topic)
+            return
+        decoded = wire.decode_envelope_bytes(payload)
+        if decoded is None:
+            wire.log_malformed(topic, payload, "boot ack non-utf8/non-JSON/non-CBOR-object")
+            return
+        data, _encoding = decoded
+        if data.get("v") != 1 or data.get("ok") != 1:
+            wire.log_malformed(topic, payload, "boot ack is not {v:1, ok:1}")
+            return
+        logger.info("boot ack received for bid=%s -- completing bootstrap", bid)
+        devsetup.complete(bid, broker=self._broker)

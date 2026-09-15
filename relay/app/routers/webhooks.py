@@ -140,6 +140,15 @@ def _topic_suffix(topic: str) -> str | None:
     return parts[2]
 
 
+def _is_boot_ack_topic(topic: str) -> bool:
+    """`pager/boot/{bid}/up` (docs/DEVICE_TASKS.md S2b.3, docs/PROTOCOL.md
+    §2) -- one segment longer than the `pager/{device_id}/{suffix}` shape
+    `_topic_suffix` matches, so it needs its own check rather than a
+    `_TOPIC_SUFFIX_HANDLERS` entry."""
+    parts = topic.split("/")
+    return len(parts) == 4 and parts[0] == "pager" and parts[1] == "boot" and parts[3] == "up"
+
+
 @router.post("/webhooks/mqtt")
 async def mqtt_webhook(request: Request) -> Response:
     broker: BrokerClient = request.app.state.broker
@@ -153,8 +162,12 @@ async def mqtt_webhook(request: Request) -> Response:
         return Response(status_code=200)
 
     topic, payload, _qos = parsed
-    suffix = _topic_suffix(topic)
-    handler = _TOPIC_SUFFIX_HANDLERS.get(suffix) if suffix else None
+    handler: TopicHandler | None
+    if _is_boot_ack_topic(topic):
+        handler = lambda ingest, topic, payload: ingest.handle_boot_ack(topic, payload)
+    else:
+        suffix = _topic_suffix(topic)
+        handler = _TOPIC_SUFFIX_HANDLERS.get(suffix) if suffix else None
     if handler is None:
         logger.warning("webhook for unrecognised topic %s dropped", topic)
         return Response(status_code=200)

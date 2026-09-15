@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """Provisions EMQX's rule engine so device traffic on
-`pager/{id}/{up,status,loc}` reaches the relay's `POST /webhooks/mqtt`
-(docs/SERVER_PLAN.md §2 decision 1, §5.1). This is the "OR via
+`pager/{id}/{up,status,loc}` -- and, docs/DEVICE_TASKS.md S2b.3, the
+bootstrap ack `pager/boot/{bid}/up` (docs/DEVICE_PLAN.md §3.2's "one more
+rule-engine match, same webhook, same key") -- reaches the relay's
+`POST /webhooks/mqtt` (docs/SERVER_PLAN.md §2 decision 1, §5.1). This is the
+"OR via
 tools/emqx_setup.py" half of that plan's choice (§2's compose entry) --
 picked over a purely declarative `emqx.conf` because EMQX 5's rule-engine
 connectors/actions/rules are exercised far more reliably through its own
@@ -55,7 +58,10 @@ from typing import Any
 CONNECTOR_NAME = "relay_webhook"
 ACTION_NAME = "relay_webhook_action"
 RULE_ID = "pager_to_relay"
-TOPICS = ["pager/+/up", "pager/+/status", "pager/+/loc"]
+# docs/DEVICE_TASKS.md S2b.3: `pager/boot/+/up` carries the bootstrap ack
+# (`{v:1,ok:1}`, CBOR keys 0/29) -- routed to the same webhook/action as the
+# three device-traffic topics above, per docs/DEVICE_PLAN.md §3.2.
+TOPICS = ["pager/+/up", "pager/+/status", "pager/+/loc", "pager/boot/+/up"]
 
 # docs/PROTOCOL.md §2: "Broker ACLs: device credentials may publish only to
 # ... The `relay` credential gets the mirror image." `-1` mirrors the fixed
