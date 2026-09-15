@@ -101,6 +101,38 @@ config's `rewrites()` only matters to `next dev`.
   the location card is lat/lon/accuracy/age + "open in Google/Apple Maps"
   links only.
 
+## Device provisioning (docs/DEVICE_PLAN.md §3.2)
+
+The **Add device** flow (`/admin/devices` -> click the "Add device" button) walks a
+household admin through creating a new pager:
+
+1. Enter the **Device ID** (e.g. `pgr-0001`), a **Label** (e.g. "Kid's pager"), select the
+   **Owner** (the student who will use it), and optionally a **Default recipient** (where
+   messages go if not explicitly addressed).
+2. Click **Create**. The page generates a one-time **setup code** (40–55 characters), displays
+   it as both text (for typing) and a QR code (for camera scan), and shows a countdown
+   expiring in 10 minutes. The code encodes a device ID, the relay's broker hostname, and a
+   secret bootstrap token.
+3. The device owner or admin types (or scans) this code into a brand-new pager over LTE. The
+   pager decodes it, fetches an encrypted bootstrap bundle from the relay using a key derived
+   from the code, decrypts it, stores the device credentials and relay's root CA certificate,
+   and publishes its first signed status message.
+4. Once the device connects, the setup-code panel's banner flips from "Waiting for the
+   device..." to "`<deviceId>` is online" with no page reload.
+
+**Rotate credentials** (click **Rotate** on an existing device) follows the same flow: a new
+code is issued, the old device credential is revoked at the broker, and the device must fetch
+a fresh bundle. **Revoke** (click **Revoke**) immediately deletes the broker credential so a
+lost or stolen device cannot connect; a new setup code and full provisioning step is needed if
+the device is later recovered or replaced.
+
+**Lock controls** (on the same row): **Auto-lock** (dropdown menu, default 5 min) sends the
+device a policy to automatically lock after N minutes of inactivity; **Clear passcode** (button)
+immediately removes the passcode on the device, unlocking it.
+
+Contact requests and the address book are managed on `/admin/contacts` (see the table in the
+main checklist below, step 12).
+
 ## Manual checklist (walk through against `docker compose up`)
 
 Prerequisites: `docker compose -f relay/docker-compose.yml up -d`,
@@ -129,15 +161,13 @@ incognito window) to act as two different people at once where noted.
    logs `brokerPush: "manual"` for this device (no EMQX admin API in this
    compose stack), confirm the panel instead shows the manual ACL lines to
    enter by hand.
-5a. **Provisioning flips to online** (needs `docs/DEVICE_TASKS.md` T2b.4's
-    `tools/pager_client.py --bootstrap` and S2b.3's `pager/boot/+/up`
-    webhook wiring -- skip this step if those have not landed yet): with the
-    setup-code panel still open, run `tools/pager_client.py --bootstrap
-    "<the code shown>"` (or `tools/e2e_v2.py`'s `setup_code` scenario) to
-    simulate the device's bootstrap fetch and first signed `/status`.
-    Expect the panel's banner to flip from "Waiting for the device to
-    connect..." to "`<deviceId>` is online" with no page reload, and the
-    table's Provisioned column to read `online`.
+5a. **Provisioning flips to online**: with the setup-code panel still open,
+    run `relay/.venv/bin/python tools/e2e_v2.py setup_code` (or
+    `tools/pager_client.py --bootstrap "<the code shown>"`) to simulate the
+    device's bootstrap fetch and first signed `/status`. Expect the panel's
+    banner to flip from "Waiting for the device to connect..." to
+    "`<deviceId>` is online" with no page reload, and the table's
+    Provisioned column to read `online`.
 5b. **Rotate and revoke, on a second throwaway device** (rotating or
     revoking the `student` device here would break its connection for steps
     6-9 below): Add a second device, e.g. owner = mom, id `scratch-1`. Click
@@ -146,34 +176,46 @@ incognito window) to act as two different people at once where noted.
     `issued`. Click Revoke -> confirm the browser confirmation prompt, then
     confirm the table's Revoked column flips to `yes` with no page reload;
     delete `scratch-1` afterwards to keep the table clean for later steps.
-6. **Sign in as a member and send a message**: sign in as `mom` (a second
+6. **Lock controls**: from the same Devices table, adjust the Auto-lock
+   dropdown to a different value and confirm the selection persists; click
+   Clear passcode and confirm the browser confirmation prompt.
+7. **Sign in as a member and send a message**: sign in as `mom` (a second
    browser profile), `/chat` -> "Open conversation by alias" -> `student` ->
    send a message. Expect: the message appears immediately (own
    optimistic-free listener render) with a `webapp: sent` (or similar)
    delivery chip; no pager chip yet if the device has never connected.
-7. **Reply and delivery chips**: use `tools/pager_client.py` (or
-   `tools/e2e_v2.py`'s scenarios) to connect the `student` device and ack
-   the message `shown`/`read`; watch mom's open thread update the delivery
-   chip live within a second or two, with no page reload.
-8. **Unread badge**: with mom's thread closed (back on `/chat`), have the
+8. **Reply and delivery chips**: use `relay/.venv/bin/python tools/e2e_v2.py
+   text_roundtrip` (or individual commands with `tools/pager_client.py`) to
+   connect the `student` device and ack the message `shown`/`read`; watch
+   mom's open thread update the delivery chip live within a second or two,
+   with no page reload.
+9. **Unread badge**: with mom's thread closed (back on `/chat`), have the
    simulated student device send a message to mom (`msg` command). Expect
    `/chat`'s contact list to show an unread badge, and a browser notification
    if `/settings/notifications` was enabled first and the tab isn't focused.
-9. **Request location**: open mom's thread with student -> "Request
-   location" button should be visible (locate was allowed in step 4) ->
-   click it -> confirm a `location requested` marker appears in the thread,
-   and (once the simulated device answers a `loc` fix) a location card with
-   lat/lon and "Open in Google Maps"/"Open in Apple Maps" links.
-10. **Backends**: `/settings/backends` as any member -> Add SMS with a
+10. **Request location**: open mom's thread with student -> "Request
+    location" button should be visible (locate was allowed in step 4) ->
+    click it -> confirm a `location requested` marker appears in the thread,
+    and (once the simulated device answers a `loc` fix) a location card with
+    lat/lon and "Open in Google Maps"/"Open in Apple Maps" links.
+11. **Backends**: `/settings/backends` as any member -> Add SMS with a
     phone number -> confirm the row appears as `unverified` and the verify
     dialog explains the endpoint isn't live yet (see Known limitations).
-11. **Notifications**: `/settings/notifications` -> Enable notifications
+12. **Contact requests and address book** (new in device plan): `/admin/contacts`
+    shows pending requests from all devices. With the student device running
+    (`tools/e2e_v2.py address_book`, or `pager_client.py` REPL `contactreq`
+    command), confirm a pending request appears. Click Approve, select Link
+    to existing (or Create new contact with the phone number), optionally
+    enable Locate. Confirm the device's book syncs (run `pager_client.py`
+    `ack shown` command to simulate acking the book). Confirm a second
+    request to the same contact is rejected as a duplicate.
+13. **Notifications**: `/settings/notifications` -> Enable notifications
     (grant the browser permission prompt) -> Send test notification -> a
     native OS notification should appear.
-12. **Retention settings**: `/admin/settings` -> change messages retention
+14. **Retention settings**: `/admin/settings` -> change messages retention
     to `2 weeks`, save, reload, confirm it persisted; read the weekly-sweep
     note.
-13. **Sign out**: confirm "Sign out" returns to `/login` and that navigating
+15. **Sign out**: confirm "Sign out" returns to `/login` and that navigating
     back to `/chat` redirects to `/login` rather than showing stale data.
 
 `npm run build && npx tsc --noEmit && npm run lint` should all be clean.

@@ -126,15 +126,31 @@ access on its own, independent of anything the relay's Python code does
 (the relay itself always uses admin credentials, which bypass rules
 entirely).
 
+### End-to-end test scenarios
+
 End-to-end integration tests (brings up the real Docker Compose stack —
 EMQX, the Firestore/Auth emulators, the relay, and a Twilio Messages API
 mock — configures EMQX's rule engine, and drives it end to end through
-`tools/pager_client.py`'s combined device+server client — see
-`tools/e2e_v2.py`'s module docstring for the scenarios, `docs/SERVER_PLAN.md`
-§8):
+`tools/pager_client.py`'s combined device+server client):
+
 ```bash
-relay/.venv/bin/python tools/e2e_v2.py   # from the repo root
+relay/.venv/bin/python tools/e2e_v2.py                                       # all 11 scenarios
+relay/.venv/bin/python tools/e2e_v2.py bootstrap text_roundtrip              # named scenarios
+relay/.venv/bin/python tools/e2e_v2.py --wire cbor                           # repeat in CBOR encoding
 ```
+
+Scenarios available (see `tools/e2e_v2.py`'s module docstring for details):
+- **bootstrap**: device provisioning via setup code (docs/DEVICE_PLAN.md §3.2)
+- **text_roundtrip**: text messages and acks round-trip end to end
+- **allowlist**: approving contacts and routing per allow-list
+- **republish**: messages re-deliver on reconnect
+- **location_periodic**: periodic location publishing with TTL sync
+- **location_on_demand**: on-demand location requests with coalescing
+- **fanout**: multi-device and multi-backend message delivery
+- **retention**: per-device retention policy with sweep
+- **bytes**: data budget accounting and SIM constraints
+- **setup_code**: real admin-create → code → bootstrap → provisioned flow
+- **address_book**: device requests contact approval, book/cfg ingest and ack
 
 ## Message backends (docs/SERVER_PLAN.md §6.4/§6.5)
 
