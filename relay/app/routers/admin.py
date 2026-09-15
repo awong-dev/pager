@@ -28,20 +28,25 @@ from __future__ import annotations
 import hashlib
 import os
 import secrets
+from datetime import UTC, datetime, timedelta
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from firebase_admin import auth as fb_auth
 from pydantic import BaseModel, ConfigDict, Field
 
-from app import devcfg
+from app import devcfg, devsetup
 from app.auth import AuthedUser, require_admin
 from app.backends.sms_twilio import normalize_e164
 from app.broker import BrokerClient
+from app.config import Settings
 from app.db.firestore import get_db
+from app.emqx_admin import EmqxAdmin, EmqxResult
+from app.ingest import Ingest
 from app.store import allow as allow_store
 from app.store import backends as backends_store
 from app.store import contacts as contacts_store
+from app.store import device_secrets as device_secrets_store
 from app.store import devices as devices_store
 from app.store import rate_limits as rate_limits_store
 from app.store import settings as settings_store
@@ -76,6 +81,36 @@ def get_broker(request: Request) -> BrokerClient:
     push_book`/`push_cfg`, which publish `/down` directly rather than
     through `app.routing.Routing`."""
     return request.app.state.broker
+
+
+def get_ingest(request: Request) -> Ingest:
+    """`app/main.py` already builds one `Ingest` per app
+    (`app.state.ingest`) for the webhook path (`app/routers/webhooks.py`);
+    reused here (docs/DEVICE_TASKS.md S2.2's rotate-credentials route) so
+    rotating a device's `hmacKey` invalidates the same in-process
+    `Ingest._secret_cache` that verifies its signed envelopes, instead of a
+    second `Ingest` whose cache the webhook path never sees."""
+    return request.app.state.ingest
+
+
+def get_emqx(request: Request) -> EmqxAdmin:
+    """`app/main.py` (outside this task's `Files` list) does not build an
+    `app.state.emqx_admin` the way it does `app.state.broker` -- so this
+    falls back to a fresh `EmqxAdmin(settings)` per request (the same
+    "safe to construct fresh per request, holds no socket" contract
+    `app.emqx_admin.EmqxAdmin`'s own docstring gives) unless a test has set
+    `app.state.emqx_admin` directly on the FastAPI app object after
+    `create_app()` returns -- a plain attribute on Starlette's `State`, not
+    something `main.py` needs to know about -- to inject a fake instead of
+    a real EMQX dependency."""
+    existing = getattr(request.app.state, "emqx_admin", None)
+    if existing is not None:
+        return existing
+    return EmqxAdmin(request.app.state.settings)
+
+
+def get_app_settings(request: Request) -> Settings:
+    return request.app.state.settings
 
 
 def require_admin_write_rate_limit(
@@ -290,22 +325,85 @@ class CreateDeviceRequest(BaseModel):
     defaultToAlias: str | None = None
 
 
-class CreateDeviceResponse(BaseModel):
+class DeviceSetupCodeResponse(BaseModel):
+    """The shared response shape for both `POST /devices` and
+    `POST /devices/{id}/rotate-credentials` (docs/DEVICE_TASKS.md S2.2): the
+    plaintext MQTT password/HMAC key never appear here at all -- they leave
+    the relay exactly once, inside the encrypted bootstrap bundle
+    (`app/devsetup.bundle`) a real device fetches over its own bootstrap
+    MQTT hop (`docs/DEVICE_PLAN.md` §3.2). `setupCode` is what the admin UI
+    shows the person setting the device up; `expiresAt` matches
+    `app/devsetup.EXPIRY_MINUTES` from the same `now` `issue()` used."""
+
     device: Device
-    mqttUsername: str
-    mqttPassword: str  # returned exactly once, per docs/SERVER_PLAN.md §5.5
+    setupCode: str
+    expiresAt: datetime
+    brokerPush: Literal["pushed", "manual"]
+    manualAcl: list[str] | None = None
+
+
+HMAC_KEY_BYTES = 32
+
+
+def _bootstrap_host_and_ca() -> tuple[str, str]:
+    """docs/DEVICE_PLAN.md §3.3: the broker host/CA the bootstrap bundle
+    hands the device belongs in `app.config.Settings` once
+    docs/DEVICE_TASKS.md S2b.2's `ca_resolve.py` exists to actually resolve
+    the CA -- neither `config.py` nor a new module is in this task's
+    `Files` list. Read directly from the environment instead, the same
+    pattern `app/emqx_admin.py`'s own `_broker_manages_auth` already uses
+    for a setting with nowhere else to live yet."""
+    host = os.environ.get("BROKER_HOST", "localhost")
+    ca = os.environ.get("BROKER_CA_PEM", "")
+    return host, ca
+
+
+def _manual_acl_lines(device_id: str) -> list[str]:
+    """Human-readable mirror of `app/emqx_admin.py`'s (module-private)
+    `_device_rules(device_id)` ACL -- that module is outside this task's
+    `Files` list, so this is a small, by-hand-kept-in-sync duplicate for
+    display only (`DeviceSetupCodeResponse.manualAcl`), never fed back into
+    any broker call. Shown whenever the real push did not happen, whether
+    because `BROKER_MANAGES_AUTH=0` (deliberate) or the push itself failed
+    (`EmqxAdmin.ensure_device` returned `"error"`) -- either way, the admin
+    still needs the exact rules to enter by hand."""
+    return [
+        f"publish pager/{device_id}/up",
+        f"publish pager/{device_id}/status",
+        f"publish pager/{device_id}/loc",
+        f"subscribe pager/{device_id}/down",
+    ]
+
+
+def _broker_push_outcome(
+    device_id: str, result: EmqxResult
+) -> tuple[Literal["pushed", "manual"], list[str] | None]:
+    if result == "ok":
+        return "pushed", None
+    return "manual", _manual_acl_lines(device_id)
 
 
 @router.post("/devices", dependencies=[Depends(require_admin_write_rate_limit)])
-def create_device(req: CreateDeviceRequest) -> CreateDeviceResponse:
+def create_device(
+    req: CreateDeviceRequest,
+    broker: Annotated[BrokerClient, Depends(get_broker)],
+    emqx: Annotated[EmqxAdmin, Depends(get_emqx)],
+    settings: Annotated[Settings, Depends(get_app_settings)],
+) -> DeviceSetupCodeResponse:
     owner_uid = _resolve_uid(req.ownerAlias)
     default_to_uid = _resolve_uid(req.defaultToAlias) if req.defaultToAlias else None
     if devices_store.get_device(req.deviceId) is not None:
         raise HTTPException(status_code=409, detail="device already exists")
 
+    # docs/DEVICE_PLAN.md §3.2 step 1: generate the real MQTT password and
+    # HMAC key here -- this is the one moment the plaintext password exists,
+    # since `devices_store.create_device` never stores it (S1.1) and
+    # `device_secrets_store.create` stores only its hash/the raw key.
     password = secrets.token_urlsafe(MQTT_PASSWORD_BYTES)
     password_hash = hashlib.sha256(password.encode("utf-8")).hexdigest()
-    device = devices_store.create_device(
+    hmac_key = secrets.token_bytes(HMAC_KEY_BYTES)
+
+    devices_store.create_device(
         device_id=req.deviceId,
         owner_uid=owner_uid,
         label=req.label,
@@ -313,6 +411,7 @@ def create_device(req: CreateDeviceRequest) -> CreateDeviceResponse:
         mqtt_password_hash=password_hash,
         default_to_uid=default_to_uid,
     )
+    device_secrets_store.create(req.deviceId, hmac_key=hmac_key, mqtt_password_hash=password_hash)
     # docs/SERVER_PLAN.md §2 decision 4: "the pager device is modelled as
     # just another delivery backend of its owner" -- `app/routing.py`'s
     # fan-out finds a device to publish to by looking at the owner's
@@ -329,9 +428,37 @@ def create_device(req: CreateDeviceRequest) -> CreateDeviceResponse:
     # `locatableBy` on devices that exist when an edge changes). See
     # `allow_store.recompute_locatable_by_for_owner`'s docstring.
     allow_store.recompute_locatable_by_for_owner(owner_uid)
+
+    # docs/DEVICE_PLAN.md §3.2 step 2: push the device's real broker
+    # credential + ACL before handing out a setup code that will eventually
+    # let a device connect with it.
+    emqx_result = emqx.ensure_device(req.deviceId, password, req.deviceId)
+    host, ca = _bootstrap_host_and_ca()
+    now = datetime.now(UTC)
+    setup_code = devsetup.issue(
+        req.deviceId,
+        mqtt_password=password,
+        hmac_key=hmac_key,
+        host=host,
+        ca=ca,
+        label=req.label,
+        settings=settings,
+        broker=broker,
+        emqx=emqx,
+        now=now,
+    )
+    expires_at = now + timedelta(minutes=devsetup.EXPIRY_MINUTES)
+
     device = devices_store.get_device(req.deviceId)
     assert device is not None
-    return CreateDeviceResponse(device=device, mqttUsername=req.deviceId, mqttPassword=password)
+    broker_push, manual_acl = _broker_push_outcome(req.deviceId, emqx_result)
+    return DeviceSetupCodeResponse(
+        device=device,
+        setupCode=setup_code,
+        expiresAt=expires_at,
+        brokerPush=broker_push,
+        manualAcl=manual_acl,
+    )
 
 
 @router.get("/devices")
@@ -351,20 +478,88 @@ def delete_device(device_id: str) -> dict[str, bool]:
     return {"ok": True}
 
 
-class RotateCredentialsResponse(BaseModel):
-    mqttUsername: str
-    mqttPassword: str
-
-
-@router.post("/devices/{device_id}/rotate-credentials", dependencies=[Depends(require_admin_write_rate_limit)])
-def rotate_credentials(device_id: str) -> RotateCredentialsResponse:
+@router.post(
+    "/devices/{device_id}/rotate-credentials",
+    dependencies=[Depends(require_admin_write_rate_limit)],
+)
+def rotate_credentials(
+    device_id: str,
+    broker: Annotated[BrokerClient, Depends(get_broker)],
+    emqx: Annotated[EmqxAdmin, Depends(get_emqx)],
+    settings: Annotated[Settings, Depends(get_app_settings)],
+    ingest: Annotated[Ingest, Depends(get_ingest)],
+) -> DeviceSetupCodeResponse:
     device = devices_store.get_device(device_id)
     if device is None:
         raise HTTPException(status_code=404, detail="no such device")
+
     password = secrets.token_urlsafe(MQTT_PASSWORD_BYTES)
     password_hash = hashlib.sha256(password.encode("utf-8")).hexdigest()
-    devices_store.set_mqtt_password_hash(device_id, password_hash)
-    return RotateCredentialsResponse(mqttUsername=device.mqttUsername, mqttPassword=password)
+    hmac_key = secrets.token_bytes(HMAC_KEY_BYTES)
+
+    # docs/DEVICE_PLAN.md §3.5: "old password and key are dead at the
+    # broker and in deviceSecrets before the new code is returned" -- delete
+    # the old broker credential outright (rather than relying on
+    # `ensure_device`'s idempotent password-overwrite alone) before
+    # `deviceSecrets.rotate` replaces the key/hash and zeroes every replay
+    # counter.
+    emqx.delete_user(device.mqttUsername)
+    device_secrets_store.rotate(device_id, hmac_key, password_hash)
+    # docs/DEVICE_PLAN.md §2.6: "cleared on key rotation" -- this alarm and
+    # its failure-time window are about the *old* key, which is now dead.
+    devices_store.clear_auth_alarm(device_id)
+    # S1.3 left this uncalled: without it, `app.ingest.Ingest`'s
+    # in-process `_secret_cache` (docs/DEVICE_PLAN.md §2.6: "cache
+    # in-process; it changes only on rotate") would keep verifying incoming
+    # envelopes against the just-deleted `hmacKey` until the process
+    # happened to restart.
+    ingest.invalidate_secret_cache(device_id)
+    devices_store.set_provision_state(device_id, "issued")
+
+    emqx_result = emqx.ensure_device(device.mqttUsername, password, device_id)
+    host, ca = _bootstrap_host_and_ca()
+    now = datetime.now(UTC)
+    setup_code = devsetup.issue(
+        device_id,
+        mqtt_password=password,
+        hmac_key=hmac_key,
+        host=host,
+        ca=ca,
+        label=device.label,
+        settings=settings,
+        broker=broker,
+        emqx=emqx,
+        now=now,
+    )
+    expires_at = now + timedelta(minutes=devsetup.EXPIRY_MINUTES)
+
+    updated = devices_store.get_device(device_id)
+    assert updated is not None
+    broker_push, manual_acl = _broker_push_outcome(device_id, emqx_result)
+    return DeviceSetupCodeResponse(
+        device=updated,
+        setupCode=setup_code,
+        expiresAt=expires_at,
+        brokerPush=broker_push,
+        manualAcl=manual_acl,
+    )
+
+
+@router.post(
+    "/devices/{device_id}/revoke", dependencies=[Depends(require_admin_write_rate_limit)]
+)
+def revoke_device(
+    device_id: str,
+    emqx: Annotated[EmqxAdmin, Depends(get_emqx)],
+) -> Device:
+    """docs/DEVICE_PLAN.md §3.5: mounts the store function that already
+    existed (`devices_store.revoke_device`) and additionally deletes the
+    broker credential -- "so a stolen device cannot even connect"."""
+    device = devices_store.get_device(device_id)
+    if device is None:
+        raise HTTPException(status_code=404, detail="no such device")
+    emqx.delete_user(device.mqttUsername)
+    return devices_store.revoke_device(device_id)
 
 
 # ---------------------------------------------------------------------------

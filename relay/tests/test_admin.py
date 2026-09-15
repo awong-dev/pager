@@ -5,6 +5,7 @@ every affected device), and settings."""
 from __future__ import annotations
 
 from collections.abc import Iterator
+from dataclasses import dataclass, field
 
 import pytest
 from fastapi.testclient import TestClient
@@ -12,11 +13,11 @@ from firebase_admin import auth as fb_auth
 
 from app.config import Settings
 from app.main import create_app
+from app.store import device_secrets as device_secrets_store
 from app.store import devices as devices_store
 from app.store import users as users_store
 from tests.fake_transport import FakeBrokerClient
 from tests.firebase_test_utils import auth_header
-
 
 
 def make_settings(**overrides: object) -> Settings:
@@ -34,9 +35,44 @@ def make_settings(**overrides: object) -> Settings:
     return Settings(**defaults)
 
 
+@dataclass
+class FakeEmqxAdmin:
+    """Duck-typed stand-in for `app.emqx_admin.EmqxAdmin` -- the real class
+    is real-network-only (its `__init__` needs a reachable EMQX to be
+    useful), and `app/routers/admin.py`'s `get_emqx` dependency falls back
+    to it only when `app.state.emqx_admin` is absent, so this fixture sets
+    that attribute instead (docs/DEVICE_TASKS.md S2.2), the same spirit as
+    `tests/fake_transport.FakeBrokerClient`. Covers all three methods this
+    router and `app.devsetup.issue()` call: `ensure_device` (the router's
+    own step 2 push), `ensure_boot_user` (`issue()`'s bootstrap credential),
+    and `delete_user` (revoke/rotate)."""
+
+    ensured_devices: list[tuple[str, str, str]] = field(default_factory=list)
+    ensured_boot: list[tuple[str, str]] = field(default_factory=list)
+    deleted: list[str] = field(default_factory=list)
+
+    def ensure_device(self, username: str, password: str, device_id: str) -> str:
+        self.ensured_devices.append((username, password, device_id))
+        return "ok"
+
+    def ensure_boot_user(self, bid: str, password: str) -> str:
+        self.ensured_boot.append((bid, password))
+        return "ok"
+
+    def delete_user(self, username: str) -> str:
+        self.deleted.append(username)
+        return "ok"
+
+
 @pytest.fixture
-def client() -> Iterator[TestClient]:
+def fake_emqx() -> FakeEmqxAdmin:
+    return FakeEmqxAdmin()
+
+
+@pytest.fixture
+def client(fake_emqx: FakeEmqxAdmin) -> Iterator[TestClient]:
     app = create_app(settings=make_settings(), broker_client=FakeBrokerClient())
+    app.state.emqx_admin = fake_emqx
     with TestClient(app) as c:
         yield c
 
@@ -147,8 +183,8 @@ def test_delete_user_removes_auth_and_firestore(client: TestClient, admin_header
 # ---- devices ----
 
 
-def test_create_device_returns_password_once_and_stores_only_a_hash(
-    client: TestClient, admin_headers: dict[str, str]
+def test_create_device_returns_a_setup_code_and_stores_only_a_hash(
+    client: TestClient, admin_headers: dict[str, str], fake_emqx: FakeEmqxAdmin
 ):
     owner = client.post(
         "/api/admin/users",
@@ -163,17 +199,33 @@ def test_create_device_returns_password_once_and_stores_only_a_hash(
     )
     assert resp.status_code == 200, resp.text
     data = resp.json()
-    assert data["mqttUsername"] == "pgr-1001"
-    password = data["mqttPassword"]
+    assert data["device"]["mqttUsername"] == "pgr-1001"
+    assert data["device"]["provisionState"] == "issued"
+    assert data["setupCode"]
+    assert data["expiresAt"]
+    assert data["brokerPush"] == "pushed"  # FakeEmqxAdmin.ensure_device always "ok"
+    assert data["manualAcl"] is None
+
+    # docs/DEVICE_PLAN.md §3.2 step 2: the router pushed the device's real
+    # broker credential/ACL itself.
+    assert fake_emqx.ensured_devices == [("pgr-1001", fake_emqx.ensured_devices[0][1], "pgr-1001")]
+    password = fake_emqx.ensured_devices[0][1]
     assert password
 
     device = devices_store.get_device("pgr-1001")
     assert device is not None
     assert device.ownerUid == owner["uid"]
-    assert device.mqttPasswordHash != password  # never stored in the clear
+
+    # The plaintext password is never stored anywhere -- not on `devices/{d}`
+    # (S1.1's migration, mounted by this task) and not in the clear in
+    # `deviceSecrets/{d}` either, only its hash.
     import hashlib
 
-    assert device.mqttPasswordHash == hashlib.sha256(password.encode("utf-8")).hexdigest()
+    secret = device_secrets_store.get("pgr-1001")
+    assert secret is not None
+    assert secret.mqttPasswordHash != password
+    assert secret.mqttPasswordHash == hashlib.sha256(password.encode("utf-8")).hexdigest()
+    assert secret.hmacKey and len(secret.hmacKey) == 32
 
 
 def test_create_device_picks_up_locatable_by_from_a_pre_existing_allow_edge(
@@ -241,6 +293,91 @@ def test_delete_device(client: TestClient, admin_headers: dict[str, str]):
     resp = client.delete("/api/admin/devices/pgr-3003", headers=admin_headers)
     assert resp.status_code == 200
     assert devices_store.get_device("pgr-3003") is None
+
+
+def test_rotate_credentials_returns_new_setup_code_and_invalidates_old_secret(
+    client: TestClient, admin_headers: dict[str, str], fake_emqx: FakeEmqxAdmin
+):
+    client.post(
+        "/api/admin/users",
+        json={"alias": "owner6", "displayName": "Owner6", "email": "owner6@example.com"},
+        headers=admin_headers,
+    )
+    created = client.post(
+        "/api/admin/devices",
+        json={"deviceId": "pgr-6006", "ownerAlias": "owner6", "label": "x"},
+        headers=admin_headers,
+    ).json()
+    old_secret = device_secrets_store.get("pgr-6006")
+    assert old_secret is not None
+
+    # docs/DEVICE_PLAN.md §2.6: an in-process authAlarm the rotation should
+    # clear. `devices_store.record_sig_failure` is the same helper
+    # `app.ingest.Ingest` calls on a real signature failure.
+    for _ in range(devices_store.AUTH_ALARM_THRESHOLD):
+        devices_store.record_sig_failure("pgr-6006")
+    devices_store.set_auth_alarm("pgr-6006", True)
+
+    # Populate `Ingest`'s in-process secret cache with the pre-rotation key,
+    # the same way a real signed envelope would (S1.3's `_get_secret`).
+    ingest = client.app.state.ingest
+    ingest._get_secret("pgr-6006")
+    assert "pgr-6006" in ingest._secret_cache
+
+    resp = client.post(
+        "/api/admin/devices/pgr-6006/rotate-credentials", headers=admin_headers
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["device"]["provisionState"] == "issued"
+    assert data["setupCode"] != created["setupCode"]
+    assert data["brokerPush"] == "pushed"
+
+    # Old broker user deleted, new one pushed under the same username.
+    assert "pgr-6006" in fake_emqx.deleted
+    assert fake_emqx.ensured_devices[-1][0] == "pgr-6006"
+
+    new_secret = device_secrets_store.get("pgr-6006")
+    assert new_secret is not None
+    assert new_secret.hmacKey != old_secret.hmacKey
+    assert new_secret.mqttPasswordHash != old_secret.mqttPasswordHash
+
+    device = devices_store.get_device("pgr-6006")
+    assert device is not None
+    assert device.status.authAlarm is False
+
+    # The stale cache entry for the rotated device's old key is gone.
+    assert "pgr-6006" not in ingest._secret_cache
+
+
+def test_revoke_device_sets_revoked_at_and_deletes_broker_credential(
+    client: TestClient, admin_headers: dict[str, str], fake_emqx: FakeEmqxAdmin
+):
+    client.post(
+        "/api/admin/users",
+        json={"alias": "owner7", "displayName": "Owner7", "email": "owner7@example.com"},
+        headers=admin_headers,
+    )
+    client.post(
+        "/api/admin/devices",
+        json={"deviceId": "pgr-7007", "ownerAlias": "owner7", "label": "x"},
+        headers=admin_headers,
+    )
+
+    resp = client.post("/api/admin/devices/pgr-7007/revoke", headers=admin_headers)
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["revokedAt"] is not None
+
+    device = devices_store.get_device("pgr-7007")
+    assert device is not None
+    assert device.revokedAt is not None
+    assert "pgr-7007" in fake_emqx.deleted
+
+
+def test_revoke_device_unknown_id_is_404(client: TestClient, admin_headers: dict[str, str]):
+    resp = client.post("/api/admin/devices/pgr-ghost/revoke", headers=admin_headers)
+    assert resp.status_code == 404
 
 
 # ---- allowlist replace-all + locatableBy rewrite ----

@@ -50,7 +50,6 @@ class Device(BaseModel):
     ownerUid: str
     label: str
     mqttUsername: str
-    mqttPasswordHash: str
     defaultToUid: str | None = None
     revokedAt: datetime | None = None
     locatableBy: list[str] = []
@@ -66,6 +65,16 @@ class Device(BaseModel):
     # inbound envelope -- the relay answers on `/down` in the same encoding.
     # `None` until the device's first accepted envelope.
     wire: Literal["json", "cbor"] | None = None
+    # docs/DEVICE_PLAN.md §3.2 step 1 / §3.5 (docs/DEVICE_TASKS.md S2.2):
+    # "issued" is written the moment a setup code exists for this device
+    # (`POST /api/admin/devices`, and again on
+    # `POST /api/admin/devices/{id}/rotate-credentials`, since a rotated
+    # device needs a fresh bootstrap fetch too); a later task
+    # (docs/DEVICE_TASKS.md S2b.3, `pager/boot/+/up` handling in
+    # app/ingest.py) flips it to "provisioned" once the first *signed*
+    # `/status` from that device arrives. `None` only for devices created
+    # before this field existed.
+    provisionState: Literal["issued", "provisioned"] | None = None
 
 
 def _devices():
@@ -82,19 +91,33 @@ def create_device(
     default_to_uid: str | None = None,
     auth_mode: Literal["password", "hmac"] = "hmac",
 ) -> Device:
+    """`mqtt_password_hash` is accepted but no longer written anywhere
+    (docs/DEVICE_TASKS.md S2.2, per S1.1's own note that `devices/{d}`
+    should stop storing it): the only place an MQTT credential's hash
+    belongs is `deviceSecrets/{d}` (`app/store/device_secrets.py`'s
+    `create`/`rotate`), which nothing but firebase-admin can ever read
+    (`docs/DEVICE_PLAN.md` §2.6). The parameter itself stays -- and stays
+    required -- purely so the many call sites across this test suite
+    outside S2.2's `Files` list (`tests/test_ingest.py`,
+    `tests/test_webhooks.py`, `tests/test_rules.py`, etc., all of which pass
+    a throwaway `mqtt_password_hash="x"` to build a fixture device) do not
+    need editing for a value they never asserted on in the first place;
+    `POST /api/admin/devices` (`app/routers/admin.py`) is this function's
+    only real caller and passes the true hash to `device_secrets_store.
+    create` instead."""
     ref = _devices().document(device_id)
     ref.set(
         {
             "ownerUid": owner_uid,
             "label": label,
             "mqttUsername": mqtt_username,
-            "mqttPasswordHash": mqtt_password_hash,
             "defaultToUid": default_to_uid,
             "revokedAt": None,
             "locatableBy": [],
             "status": {},
             "authMode": auth_mode,
             "wire": None,
+            "provisionState": "issued",
         }
     )
     fetched = get_device(device_id)
@@ -136,8 +159,14 @@ def set_locatable_by(device_id: str, uids: list[str]) -> None:
     _devices().document(device_id).update({"locatableBy": uids})
 
 
-def set_mqtt_password_hash(device_id: str, password_hash: str) -> None:
-    _devices().document(device_id).update({"mqttPasswordHash": password_hash})
+def set_provision_state(device_id: str, state: Literal["issued", "provisioned"]) -> None:
+    """docs/DEVICE_PLAN.md §3.2/§3.5: written `"issued"` by
+    `POST /api/admin/devices` and again by
+    `POST /api/admin/devices/{id}/rotate-credentials` (a rotated device
+    needs a fresh bootstrap fetch, same as a brand-new one); flipped to
+    `"provisioned"` on the device's first signed `/status` by a later task
+    (docs/DEVICE_TASKS.md S2b.3)."""
+    _devices().document(device_id).set({"provisionState": state}, merge=True)
 
 
 def set_wire(device_id: str, wire: Literal["json", "cbor"]) -> None:
