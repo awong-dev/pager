@@ -179,6 +179,7 @@ static void rtc_lock(void) { xSemaphoreTake(s_rtc_mutex, portMAX_DELAY); }
 static void rtc_unlock(void) { xSemaphoreGive(s_rtc_mutex); }
 
 static bool s_was_mqtt_connected = false;
+static bool s_ui_awake_prev = false; // F6.3: edge-detects input_awake() for ui_wake_status_refresh()
 
 // ---------------------------------------------------------------------------
 // RTC helpers
@@ -303,6 +304,63 @@ static bool cbor_w_int(cbor_w_t *w, uint32_t key, int64_t v)
     return (v < 0) ? cbor_w_nint(w, key, v) : cbor_w_uint(w, key, (uint64_t) v);
 }
 
+// F6.3 (docs/DEVICE_PLAN.md §5.4): factored out of build_status_cbor() so
+// the status bar's UI-wake refresh (ui_wake_status_refresh(), below) shares
+// the exact same fetch-with-fallback logic instead of duplicating it - one
+// AT round trip each, no RRC of its own beyond net_get_battery_mv()/
+// net_get_rssi()'s own documented cost (net.h).
+static int refresh_batt_mv(void)
+{
+    int batt_mv;
+    if (!net_get_battery_mv(&batt_mv) || batt_mv < PAGER_BATT_MV_MIN ||
+        batt_mv > PAGER_BATT_MV_MAX) {
+        batt_mv = (s_last_batt_mv != 0) ? s_last_batt_mv : 3300;
+    } else {
+        s_last_batt_mv = batt_mv;
+    }
+    return batt_mv;
+}
+
+static int refresh_rssi_dbm(void)
+{
+    int rssi_dbm;
+    if (!net_get_rssi(&rssi_dbm)) {
+        rssi_dbm = (s_last_rssi_dbm != PAGER_RSSI_UNSET) ? s_last_rssi_dbm : -113;
+    } else {
+        s_last_rssi_dbm = rssi_dbm;
+    }
+    return rssi_dbm;
+}
+
+// F6.3 (docs/DEVICE_PLAN.md §5.4/§5.7): "Read at every /status publish...
+// and at every UI wake" / "Battery... at every UI wake and hourly" - this
+// is the one new AT round trip per UI wake §5.7 budgets (~100ms at 40mA).
+// Called from modes_run() on the sleep->awake edge of input_awake(). The
+// "hourly" half rides the existing maybe_publish_heartbeat() cadence
+// instead of a second timer (build_status_cbor() below calls the same two
+// refresh_*() functions on every /status publish, including the ~hourly
+// heartbeat) - a separate hourly-only timer would just re-read the same
+// cache for no reason whenever a network clock is available; the one gap
+// this leaves is a device with *both* no UI activity *and* no network
+// clock for a long stretch (heartbeat suppressed, PROTOCOL.md §3.5),
+// accepted as a minor cosmetic staleness rather than a second always-on
+// timer for that edge case.
+static void ui_wake_status_refresh(void)
+{
+    refresh_batt_mv();
+    refresh_rssi_dbm();
+}
+
+// F6.3: status-bar/Device-screen getters (modes.h) - plain cache reads, no
+// AT round trip of their own; see modes.h's own doc comment.
+int modes_get_rssi_dbm(void) { return (s_last_rssi_dbm != PAGER_RSSI_UNSET) ? s_last_rssi_dbm : -113; }
+int modes_get_batt_mv(void) { return (s_last_batt_mv != 0) ? s_last_batt_mv : 3300; }
+const char *modes_get_fw_version(void) { return PAGER_FW_VERSION; }
+const char *modes_get_session_id(void) { return g_rtc.session_id; }
+uint32_t modes_get_memfull_count(void) { return g_rtc.mqtt_memfull_count; }
+uint32_t modes_get_oversize_drop_count(void) { return g_rtc.oversize_drop_count; }
+uint32_t modes_get_modem_resets(void) { return g_rtc.modem_resets; }
+
 // F3.6: builds the CBOR /status envelope (docs/PROTOCOL.md §2.4/§10), adding
 // `rssi` (now published every time, §5.1) and `bv` (book version; always 0
 // until F7.1 tracks the address book), then signs it with auth_sign() when
@@ -314,28 +372,14 @@ static bool build_status_cbor(uint8_t *out, size_t cap, size_t *out_len, const c
     int64_t ts = approx_epoch();
     const char *mode_str = (g_rtc.mode == (uint8_t) PAGER_MODE_ACTIVE) ? "active" : "sleep";
 
-    // batt_mv: see the F1-era comment this replaces — net.cpp's AT+SQNVMON
-    // read, falling back to the last known-good value and finally to a
-    // fixed placeholder, never blocking or failing the publish.
-    int batt_mv;
-    if (!net_get_battery_mv(&batt_mv) || batt_mv < PAGER_BATT_MV_MIN ||
-        batt_mv > PAGER_BATT_MV_MAX) {
-        batt_mv = (s_last_batt_mv != 0) ? s_last_batt_mv : 3300;
-    } else {
-        s_last_batt_mv = batt_mv;
-    }
-
-    // rssi: same last-known-good pattern as batt_mv. net_get_rssi() already
-    // validates the vendor's documented [-113,-51] dBm range (net.cpp), so
-    // -113 (weakest valid reading) is used only before the first successful
-    // reading this boot - a placeholder outside the documented range would
-    // misrepresent a real reading rather than read as "weak signal".
-    int rssi_dbm;
-    if (!net_get_rssi(&rssi_dbm)) {
-        rssi_dbm = (s_last_rssi_dbm != PAGER_RSSI_UNSET) ? s_last_rssi_dbm : -113;
-    } else {
-        s_last_rssi_dbm = rssi_dbm;
-    }
+    // batt_mv/rssi_dbm: F6.3 factored these out into refresh_batt_mv()/
+    // refresh_rssi_dbm() (above) so the status bar's UI-wake refresh could
+    // share the exact fetch-with-fallback logic instead of duplicating it —
+    // net.cpp's AT+SQNVMON/AT+CSQ reads, falling back to the last
+    // known-good value and finally to a fixed placeholder, never blocking
+    // or failing this publish.
+    int batt_mv = refresh_batt_mv();
+    int rssi_dbm = refresh_rssi_dbm();
 
     bool signed_env = (ident_get_flags() & IDENT_FLAG_REQ_SIG) != 0;
     uint32_t nfields = 9; // v,state,mode,batt_mv,rssi,session,ts,fw,bv
@@ -410,6 +454,22 @@ static void publish_status_online(void)
     }
 }
 
+// F6.3 (docs/DEVICE_PLAN.md §5.5): Device screen's "Re-sync address book"
+// bullet — "publishes a /status now (it carries bv), which is the sync
+// trigger." Refuses (returns false, no publish) if the session is not
+// currently connected, same guard set_mode() already applies before
+// calling publish_status_online() on a real mode edge.
+bool modes_publish_status_now(void)
+{
+    net_mqtt_status_t st;
+    net_get_mqtt_status(&st);
+    if (!st.mqtt_connected) {
+        return false;
+    }
+    publish_status_online();
+    return true;
+}
+
 static void maybe_publish_heartbeat(void)
 {
     // §5.4(d): heartbeat rides an ordinary poll wake, at most once per
@@ -473,7 +533,16 @@ static void set_mode(pager_mode_t new_mode, pager_mode_reason_t reason)
     if (st.mqtt_connected) {
         publish_status_online();
     }
-    ui_render_thread(); // status line shows mode; only worth a repaint on a real edge
+    // F6.3: no direct render here any more. README R5's fix funnels every
+    // render through modes_run()'s own task (ui_render(), called once per
+    // wake-and-drain iteration while input_awake()) instead of whichever
+    // task happened to call set_mode() (this function runs on both the
+    // event task, via handle_ingest_result(), and modes_run()'s task, via
+    // the button dispatch below). docs/DEVICE_PLAN.md §5.4's status bar
+    // also dropped the old "active"/"sleep" word entirely, so a mode edge
+    // alone no longer has anything of its own to repaint — whatever event
+    // caused this edge (button, incoming message) already drives its own
+    // render through render_pending/ui_render() below.
 }
 
 void modes_note_activity(void)
@@ -496,6 +565,77 @@ bool modes_is_active(void)
 }
 
 // ---------------------------------------------------------------------------
+// F6.3 (docs/DEVICE_PLAN.md §5.3/§5.4, firmware/README.md R5): the incoming-
+// message render moves off WalterModem's _eventProcessingTask and onto
+// modes_run()'s own task. handle_ingest_result() below (still running on
+// the event task) only records what to render; modes_run() drains it via
+// service_render_pending(), which calls ui_incoming() (only ui.c entry
+// point allowed to render off the render_pending path, since it must run
+// synchronously with the msg_mark_shown() that follows) and marks `shown`
+// strictly after that render returns — closing R5 and R7 together: shown
+// is never claimed before BUSY deasserts, and the event task never blocks
+// on the panel.
+// ---------------------------------------------------------------------------
+typedef struct {
+    bool pending;
+    bool was_asleep;
+    char id[MSG_ID_MAX];
+    char from[MSG_FROM_MAX];
+} render_pending_t;
+
+// RAM-only (not RTC_DATA_ATTR): a cross-task handoff flag, not state that
+// needs to survive a reset — this design never deep sleeps (only light
+// sleeps, which retain ordinary RAM), same reasoning s_was_mqtt_connected
+// above uses. Guarded by s_rtc_mutex (the same "the only cross-task
+// primitive in this design" lock msg.h's own module comment describes).
+static render_pending_t s_render_pending;
+
+static void render_pending_set(const char *id, const char *from, bool was_asleep)
+{
+    rtc_lock();
+    s_render_pending.pending = true;
+    s_render_pending.was_asleep = was_asleep;
+    strncpy(s_render_pending.id, id, sizeof(s_render_pending.id) - 1);
+    s_render_pending.id[sizeof(s_render_pending.id) - 1] = '\0';
+    strncpy(s_render_pending.from, from, sizeof(s_render_pending.from) - 1);
+    s_render_pending.from[sizeof(s_render_pending.from) - 1] = '\0';
+    rtc_unlock();
+}
+
+// Called only from modes_run()'s own task. Copies out and clears the
+// pending flag under the lock, then renders *outside* the lock — ui_incoming()
+// can take tens to hundreds of ms (disp_wait_busy()), and holding
+// s_rtc_mutex across that would block the event task's next ingest (and
+// every other g_rtc access) for no reason; disp.c's own mutex (F6.1,
+// closes README R4) is what actually serialises the panel.
+static void service_render_pending(void)
+{
+    rtc_lock();
+    if (!s_render_pending.pending) {
+        rtc_unlock();
+        return;
+    }
+    render_pending_t p = s_render_pending;
+    s_render_pending.pending = false;
+    rtc_unlock();
+
+    bool displayed = ui_incoming(p.from, p.was_asleep);
+    if (displayed) {
+        // §4: "after the e-paper refresh completes (BUSY deasserted), never
+        // before" - ui_incoming() only returns true once that render has
+        // already happened.
+        msg_mark_shown(p.id);
+    }
+    // displayed == false: §5.5's "incoming while typing/on another screen"
+    // toast-only path - the message stays MSG_ACK_UNSHOWN on purpose.
+    // PROTOCOL.md §4.1 rule 2's "read without a prior shown promotes and
+    // back-fills" is what makes that safe once the student actually opens
+    // the chat later (scr_chat.c calls msg_mark_read() directly there,
+    // never msg_mark_shown() first, for exactly this reason - see its own
+    // comment).
+}
+
+// ---------------------------------------------------------------------------
 // Incoming message hook — wired to msg.c's ingest/dedup/ack state machine.
 // ---------------------------------------------------------------------------
 
@@ -503,26 +643,26 @@ static void handle_ingest_result(msg_ingest_t r, const msg_t *out, uint16_t len)
 {
     switch (r) {
     case MSG_INGEST_NEW: {
-        // Copy the id BEFORE rendering. `out` points into
-        // msg.c's s_thread ring, which thread_insert_locked() memmoves on
-        // every insert; a reply submitted from modes_run()'s task (Enter /
-        // long-press -> msg_queue_reply()) while this render is in flight
-        // would shift s_thread[0] and make out->id the reply's "u_..." id,
-        // acking a message the relay has never heard of (§4.1 rule 3) and
-        // leaving the real down message un-acked forever.
+        // Copy the id/from BEFORE handing off. `out` points into msg.c's
+        // s_thread ring, which thread_insert_locked() memmoves on every
+        // insert; a reply submitted from modes_run()'s task while this is
+        // in flight would shift s_thread[0] and make out->id the reply's
+        // "u_..." id, acking a message the relay has never heard of (§4.1
+        // rule 3) and leaving the real down message un-acked forever.
         char id[MSG_ID_MAX] = "";
+        char from[MSG_FROM_MAX] = "";
         if (out) {
             strncpy(id, out->id, sizeof(id) - 1);
+            strncpy(from, out->from, sizeof(from) - 1);
         }
+        // Captured BEFORE set_mode(ACTIVE, ...) below flips it — this is
+        // the "was the device asleep" input ui_incoming()'s steal-the-
+        // screen policy needs (docs/DEVICE_PLAN.md §5.5). Unlocked read of
+        // g_rtc.mode, same as several other spots in this file already do.
+        bool was_asleep = (g_rtc.mode == (uint8_t) PAGER_MODE_SLEEP);
         set_mode(PAGER_MODE_ACTIVE, MODE_REASON_INCOMING_MSG);
-        // §4: the shown ack is queued only after the render call returns,
-        // which (ui_render_message_pane -> ... -> disp_wait_busy()) blocks
-        // until BUSY deasserts - satisfies "after the e-paper refresh
-        // completes, never before". The actual /up publish happens later,
-        // asynchronously, from msg_pump().
-        ui_render_message_pane();
         if (id[0] != '\0') {
-            msg_mark_shown(id);
+            render_pending_set(id, from, was_asleep);
         }
         break;
     }
@@ -671,48 +811,15 @@ static void run_modem_health_check(void)
 // F6.2 (docs/DEVICE_PLAN.md §5.3): the button GPIO, its short/long/
 // BTN_STUCK FSM, and the debounce/hold timing constants all moved to
 // input.c (firmware/README.md R2's BTN_STUCK fix spec lives there now).
-// This file keeps only the dispatch table below, called from modes_run()'s
-// input-event drain loop - one call per resolved INPUT_EVT_BTN_SHORT/LONG,
-// after modes_note_activity() has already run for that event.
+//
+// F6.3: the button *semantics* (what short/long actually do) moved again,
+// from this file's own button_action_short()/button_action_long() (now
+// removed) into ui_on_button_short()/ui_on_button_long() (ui.c) — those are
+// screen-stack-aware (docs/DEVICE_PLAN.md §5.5: "long = Home from
+// anywhere", short = open the newest unread chat), which this file has no
+// business knowing about any more. modes_run()'s event-drain loop below
+// just forwards the two resolved event types.
 // ---------------------------------------------------------------------------
-
-static void composer_try_submit(void)
-{
-    if (msg_queue_reply(msg_composer_text(), msg_composer_len())) {
-        ui_composer_close(true);
-    } else {
-        ui_show_toast("reply too long or send queue full");
-    }
-}
-
-static void button_action_short(void)
-{
-    if (ui_composer_is_open()) {
-        ui_composer_close(false); // cancel
-        return;
-    }
-    const msg_t *u = msg_newest_unread();
-    if (u) {
-        char id[MSG_ID_MAX];
-        strncpy(id, u->id, sizeof(id) - 1);
-        id[sizeof(id) - 1] = '\0';
-        msg_mark_read(id);
-        ui_render_message_pane();
-    } else {
-        ui_composer_open(NULL);
-    }
-}
-
-static void button_action_long(void)
-{
-    if (ui_composer_is_open()) {
-        composer_try_submit();
-        return;
-    }
-    // Unread-or-not, a long press with the composer closed has nothing to
-    // send yet (composing hasn't started) - Part C's dispatch table.
-    ui_show_toast("nothing to send");
-}
 
 // ---------------------------------------------------------------------------
 // Public entry points
@@ -757,7 +864,7 @@ void modes_boot(void)
     if (!ui_init()) {
         ESP_LOGI(TAG, "display init failed; continuing headless (network/replies/acks unaffected)");
     } else {
-        ui_render_thread();
+        ui_render_boot(); // initial Home screen; disp_init() primes the cadence counter to force a full refresh
     }
 
     net_set_msg_cb(on_incoming_message);
@@ -820,32 +927,32 @@ void modes_run(void)
                      (unsigned) oversize_delta);
         }
 
-        // Skip net_sleep() entirely whenever the composer is open (ui.c's
-        // own CardKB-poll carve-out, unchanged - see ui.c/input.h's F6.2
-        // scope note on why input.c doesn't also read the CardKB while
-        // composing), OR input_button_busy() (a held button must not
-        // re-enter a level-triggered light sleep it would just immediately
-        // exit again), OR input_button_stuck() (same reason, still true
-        // for BTN_STUCK - net_sleep() (net.cpp) arms ext0 wake at level 0,
-        // so it would return immediately over and over for as long as the
-        // button stays down; fixing that needs the net_sleep() ext0-level-1
-        // variant firmware/README.md R2 specifies, which touches net.cpp
-        // and is out of this task's Files list - see input.h's
-        // input_button_stuck() doc comment), OR input_awake()
+        // Skip net_sleep() entirely whenever input_button_busy() (a held
+        // button must not re-enter a level-triggered light sleep it would
+        // just immediately exit again), OR input_button_stuck() (same
+        // reason, still true for BTN_STUCK - net_sleep() (net.cpp) arms
+        // ext0 wake at level 0, so it would return immediately over and
+        // over for as long as the button stays down; fixing that needs the
+        // net_sleep() ext0-level-1 variant firmware/README.md R2 specifies,
+        // which touches net.cpp and is out of this task's Files list - see
+        // input.h's input_button_stuck() doc comment), OR input_awake()
         // (docs/DEVICE_PLAN.md §5.3's 30s UI-awake window, armed by the
-        // last key/button event), OR net_modem_busy(). On that last one:
-        // the MQTT event handler runs at priority 4 against this task's
+        // last key/button event - F6.3 dropped the separate "composer
+        // open" carve-out the pre-F6.3 code had here: every screen's text
+        // entry now keeps this window armed via input_feed_key() on each
+        // keystroke, same as button events already do, so input_awake()
+        // alone covers it), OR net_modem_busy(). On that last one: the
+        // MQTT event handler runs at priority 4 against this task's
         // priority 1, so it hands the CPU back here every time it blocks;
         // without this term net_sleep() deasserts RTS in the middle of the
         // modem's response to mqttReceive() (see net.h). Costs ~1.5s of
         // 40mA busy-polling per incoming message (~0.02 mAh, ~0.4 mAh/day
         // at 20 msgs/day, estimate) and buys back a per-message
         // message-loss window.
-        bool composer_open = ui_composer_is_open();
         bool btn_busy = input_button_busy();
         bool btn_stuck = input_button_stuck();
         bool ui_awake = input_awake();
-        bool skip_sleep = composer_open || btn_busy || btn_stuck || ui_awake || net_modem_busy();
+        bool skip_sleep = btn_busy || btn_stuck || ui_awake || net_modem_busy();
         if (!skip_sleep) {
             net_sleep(interval_ms);
             // L4/F7: the event task ticks at 10ms + settles for 10ms; give
@@ -863,12 +970,24 @@ void modes_run(void)
             // touching net_sleep() (see the skip_sleep comment above).
             vTaskDelay(pdMS_TO_TICKS(PAGER_WAKE_INTERVAL_SLEEP_MS));
         } else {
-            // composer_open or ui_awake: docs/DEVICE_PLAN.md §5.3, CardKB
-            // polled at 100ms, no light-sleep.
+            // ui_awake (or a busy/stuck button): docs/DEVICE_PLAN.md §5.3,
+            // CardKB polled at 100ms, no light-sleep.
             vTaskDelay(pdMS_TO_TICKS(100));
         }
 
         input_poll(); // power effect: one GPIO read (button FSM step) - see input.h
+
+        // F6.3: CardKB read moved to ui.c (ui_poll_keyboard(), see its own
+        // doc comment) - polled here, before the event-drain loop below, so
+        // any key it decodes this same iteration is available to drain
+        // immediately rather than waiting one more iteration. Gated on
+        // input_awake() (not skip_sleep/btn_busy/btn_stuck): there is no
+        // screen to type into unless the UI is awake, and reading I2C while
+        // asleep would cost a transaction for nothing.
+        bool ui_awake_now = input_awake();
+        if (ui_awake_now) {
+            ui_poll_keyboard(); // power effect: one I2C read - see ui.h
+        }
 
         input_event_t ievt;
         while (input_get_event(&ievt)) {
@@ -879,33 +998,48 @@ void modes_run(void)
                 set_mode(PAGER_MODE_ACTIVE, MODE_REASON_BUTTON);
                 break;
             case INPUT_EVT_BTN_SHORT:
-                button_action_short();
+                ui_on_button_short(); // docs/DEVICE_PLAN.md §5.5 (ui.c)
                 break;
             case INPUT_EVT_BTN_LONG:
-                button_action_long();
+                ui_on_button_long();
                 break;
             case INPUT_EVT_KEY:
-                // No non-composer screen consumes raw keys yet (F6.3's
-                // screen stack is what will); nothing to dispatch to today.
-                ESP_LOGD(TAG, "input key event type=%d (no consumer until F6.3)",
-                         (int) ievt.key.type);
+                ui_dispatch_key(ievt.key); // routed to the top screen's on_key() (ui.c)
                 break;
             }
         }
 
-        if (ui_composer_is_open()) {
-            // Freshly re-checked (not the composer_open captured above):
-            // the drain loop just above may have closed the composer
-            // (cancel / submit-via-long-press), and this call must not run
-            // against a just-closed composer.
-            ui_key_t key = ui_poll_keys();
-            if (key.type == UI_KEYTYPE_ENTER) {
-                // §9.4/Part D: Enter alone submits, without also requiring
-                // the button long-press - chosen for CardKB-only
-                // convenience. The button long-press remains a working
-                // alternative submit path for one-handed operation.
-                composer_try_submit();
-            }
+        // F6.3 (docs/DEVICE_PLAN.md §5.4/§5.7): one AT round trip each for
+        // rssi/batt, only on the sleep->awake edge - see
+        // ui_wake_status_refresh()'s own comment for why there is no
+        // separate hourly timer here. The awake->sleep edge is the "UI-awake
+        // window lapses" moment §5.4 defers the cadence's full refresh to
+        // (ui_on_awake_lapse(), ui.c/ui.h's own comment) - the two edges are
+        // detected together since both compare against the same
+        // s_ui_awake_prev.
+        bool ui_awake_edge_in = ui_awake_now && !s_ui_awake_prev;
+        bool ui_awake_edge_out = !ui_awake_now && s_ui_awake_prev;
+        s_ui_awake_prev = ui_awake_now;
+        if (ui_awake_edge_in) {
+            ui_wake_status_refresh();
+        }
+
+        // F6.3/README R5: renders (if a message arrived) on this task, then
+        // marks `shown` - see service_render_pending()'s own comment.
+        service_render_pending();
+
+        if (ui_awake_now) {
+            // The screen stack's own render, reflecting whatever
+            // ui_dispatch_key()/ui_on_button_*() above just did. Always a
+            // partial (never the cadence's full refresh - see ui_render()'s
+            // doc comment) and cheap when nothing changed
+            // (disp_partial_refresh()'s own "no-op if nothing changed"
+            // contract).
+            ui_render();
+        } else if (ui_awake_edge_out) {
+            // docs/DEVICE_PLAN.md §5.4: the moment the UI-awake window
+            // lapses is where a due full refresh is allowed to land.
+            ui_on_awake_lapse();
         }
 
         rtc_lock();

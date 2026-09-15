@@ -1,15 +1,15 @@
-// ui.c — CardKB keyboard input and the thread-view/composer screens.
+// ui.c — the screen stack, status bar, CardKB read (docs/DEVICE_TASKS.md
+// F6.3, docs/DEVICE_PLAN.md §5.4/§5.5). See ui.h's module comment for the
+// full scope note (what's built, what's stubbed, and why).
 //
-// docs/DEVICE_TASKS.md F6.1 moved the SSD1680 transport to disp.c and the
-// framebuffer/text/glyph primitives to gfx.c; this file now only owns the
-// CardKB I2C polling and the two screens it drew before the split (the
-// "real screen-stack rewrite" that replaces these screens with the F6.3
-// stack has not happened yet — see docs/DEVICE_PLAN.md §5.4).
+// Authority: docs/PROTOCOL.md §4 (ack ordering — see ui_incoming()),
+// firmware/README.md R4 (closed: disp.c's own mutex, F6.1) / R5 (closed:
+// modes.c is the only caller of ui_render()/ui_incoming(), both of which
+// only ever run on modes_run()'s task) / R7 (closed: ui_incoming() returns
+// whether it actually displayed the message; modes.c only marks `shown`
+// when it did).
 //
-// Authority: docs/PROTOCOL.md §9.4 (composer limit — now 160 code points/
-// 320 bytes per docs/DEVICE_PLAN.md §5.2, not the old ASCII-160-byte
-// assumption, which §5.2 withdraws). All timing/current/visual claims here
-// are PENDING_HW.
+// All timing/current/visual claims here are PENDING_HW.
 
 #include "ui.h"
 #include "pins.h"
@@ -18,85 +18,369 @@
 #include "net.h"
 #include "disp.h"
 #include "gfx.h"
+#include "ident.h"
 
 #include <string.h>
 #include <stdio.h>
+#include <time.h>
 
 #include "driver/i2c.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "nvs.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
 static const char *TAG = "ui";
 
-#define PAGER_COMPOSER_IDLE_TIMEOUT_US ((int64_t) 60 * 1000000)
-
-static bool s_composer_open = false;
-static int64_t s_composer_last_activity_us = 0;
-static int s_i2c_fail_count = 0;
-
 // ---------------------------------------------------------------------------
-// Layout. Text is drawn at GFX_FONT_NORMAL (12px) throughout — these two
-// screens predate DEVICE_PLAN.md §5.4's status-bar/footer/text-size-setting
-// design, which F6.3 brings in along with the rest of the screen stack.
+// Screen stack
 // ---------------------------------------------------------------------------
 
-static void draw_msg_line(int y, const msg_t *m, bool show_new)
+static const ui_screen_t *s_stack[UI_STACK_DEPTH];
+static int s_depth = 0;
+
+static void fire_enter(const ui_screen_t *scr)
 {
-    const char *who = (m->dir == (uint8_t) MSG_DIR_UP) ? "you" : m->from;
-    int x = gfx_text(0, y, GFX_FONT_NORMAL, who);
-    x = gfx_text(x, y, GFX_FONT_NORMAL, ": ");
-    gfx_text(x, y, GFX_FONT_NORMAL, m->body);
-    if (show_new) {
-        gfx_text(GFX_SCREEN_W - gfx_text_width(GFX_FONT_NORMAL, "NEW"), y, GFX_FONT_NORMAL, "NEW");
+    if (scr && scr->on_event) {
+        scr->on_event(UI_EVT_ENTER);
     }
 }
 
-static void render_thread_frame(void)
+void ui_push(const ui_screen_t *scr)
 {
-    gfx_clear();
-
-    if (msg_history_lost()) {
-        gfx_text(0, 0, GFX_FONT_NORMAL, "earlier messages lost (restart)");
-        gfx_hline(0, GFX_SCREEN_W - 1, 9);
+    if (!scr) {
+        return;
     }
-
-    size_t count = msg_thread_count();
-    const msg_t *newest_unread = msg_newest_unread();
-
-    if (count > 0) {
-        const msg_t *m0 = msg_thread_at(0);
-        bool show_new = (newest_unread != NULL && m0 == newest_unread);
-        draw_msg_line(12, m0, show_new);
-        gfx_hline(0, GFX_SCREEN_W - 1, 21);
-    } else {
-        gfx_text(0, 12, GFX_FONT_NORMAL, "no messages yet");
+    if (s_depth >= UI_STACK_DEPTH) {
+        ESP_LOGI(TAG, "screen stack full (depth %d), dropping push of %s", UI_STACK_DEPTH,
+                 scr->name ? scr->name : "?");
+        return;
     }
+    s_stack[s_depth++] = scr;
+    ESP_LOGI(TAG, "screen: -> %s (depth %d)", scr->name ? scr->name : "?", s_depth);
+    fire_enter(scr);
+}
 
-    for (size_t i = 1; i < count && i <= 2; i++) {
-        draw_msg_line(24 + (int) (i - 1) * 12, msg_thread_at(i), false);
+void ui_pop(void)
+{
+    if (s_depth <= 1) {
+        return; // Home is always the floor
     }
-    gfx_hline(0, GFX_SCREEN_W - 1, 49);
+    s_depth--;
+    const ui_screen_t *top = s_stack[s_depth - 1];
+    ESP_LOGI(TAG, "screen: <- %s (depth %d)", top && top->name ? top->name : "?", s_depth);
+    fire_enter(top);
+}
 
-    char status[64];
-    net_mqtt_status_t st;
-    net_get_mqtt_status(&st);
-    size_t unsent = 0;
-    for (size_t i = 0; i < count; i++) {
+void ui_replace(const ui_screen_t *scr)
+{
+    if (!scr) {
+        return;
+    }
+    if (s_depth == 0) {
+        ui_push(scr);
+        return;
+    }
+    s_stack[s_depth - 1] = scr;
+    ESP_LOGI(TAG, "screen: = %s (depth %d)", scr->name ? scr->name : "?", s_depth);
+    fire_enter(scr);
+}
+
+void ui_go_home(void)
+{
+    s_depth = 0;
+    s_stack[s_depth++] = &g_scr_home;
+    ESP_LOGI(TAG, "screen: -> home (depth 1)");
+    fire_enter(&g_scr_home);
+}
+
+const ui_screen_t *ui_top(void)
+{
+    return (s_depth > 0) ? s_stack[s_depth - 1] : NULL;
+}
+
+// ---------------------------------------------------------------------------
+// Text size setting (docs/DEVICE_PLAN.md §5.2), NVS namespace "ui".
+// ---------------------------------------------------------------------------
+
+#define UI_NVS_NAMESPACE "ui"
+#define UI_NVS_KEY_TEXTSZ "textsz"
+
+static gfx_font_t s_text_size = GFX_FONT_NORMAL;
+
+static void load_text_size(void)
+{
+    nvs_handle_t h;
+    if (nvs_open(UI_NVS_NAMESPACE, NVS_READONLY, &h) != ESP_OK) {
+        return; // never set yet; stays GFX_FONT_NORMAL
+    }
+    uint8_t v = 0;
+    if (nvs_get_u8(h, UI_NVS_KEY_TEXTSZ, &v) == ESP_OK && v <= 1) {
+        s_text_size = (gfx_font_t) v;
+    }
+    nvs_close(h);
+}
+
+gfx_font_t ui_text_size(void) { return s_text_size; }
+
+void ui_toggle_text_size(void)
+{
+    s_text_size = (s_text_size == GFX_FONT_NORMAL) ? GFX_FONT_LARGE : GFX_FONT_NORMAL;
+    // Power effect: one NVS (flash) write, negligible — no modem/sleep-state effect.
+    nvs_handle_t h;
+    if (nvs_open(UI_NVS_NAMESPACE, NVS_READWRITE, &h) != ESP_OK) {
+        ESP_LOGI(TAG, "text size NVS open failed; new size not persisted this boot");
+        return;
+    }
+    nvs_set_u8(h, UI_NVS_KEY_TEXTSZ, (uint8_t) s_text_size);
+    nvs_commit(h);
+    nvs_close(h);
+}
+
+// ---------------------------------------------------------------------------
+// Timestamp formatting helper (docs/DEVICE_PLAN.md §5.5 mockups: "14:02").
+// ---------------------------------------------------------------------------
+
+void ui_format_hhmm(int64_t epoch_s, char *out, size_t out_size)
+{
+    if (epoch_s == 0) {
+        snprintf(out, out_size, "--:--"); // PROTOCOL.md §3.5: no clock yet, never guess
+        return;
+    }
+    time_t t = (time_t) epoch_s;
+    struct tm tmv;
+    gmtime_r(&t, &tmv); // UTC — this codebase has no timezone concept anywhere
+    snprintf(out, out_size, "%02d:%02d", tmv.tm_hour, tmv.tm_min);
+}
+
+// ---------------------------------------------------------------------------
+// Status bar (docs/DEVICE_PLAN.md §5.4). Bucket values are read fresh every
+// call (cheap: msg.c ring scan, net_get_mqtt_status(), ident getters, and
+// modes.c's own cached rssi/batt — see modes_get_rssi_dbm()/
+// modes_get_batt_mv()'s doc comments for who owns the *expensive* AT-call
+// cadence). "Redraw only on bucket change" (§5.4) falls out of disp.c's own
+// diff-against-shadow-plane for free (disp_partial_refresh()'s "no-op if
+// nothing changed" contract) — no separate bucket cache is kept here.
+// ---------------------------------------------------------------------------
+
+static int bars_from_rssi_dbm(int dbm)
+{
+    if (dbm >= -85) return 4;
+    if (dbm >= -95) return 3;
+    if (dbm >= -105) return 2;
+    if (dbm >= -115) return 1;
+    return 0;
+}
+
+static int segs_from_batt_mv(int mv)
+{
+    if (mv >= 3300) return 4;
+    if (mv >= 3250) return 3;
+    if (mv >= 3200) return 2;
+    if (mv >= 3100) return 1;
+    return 0;
+}
+
+// README R6 (open, not fixed by this task — msg_thread_at()/
+// msg_newest_unread() are not in F6.3's Files list): copies fields out
+// promptly per index, same mitigation modes.c's handle_ingest_result()
+// already uses, rather than holding a raw msg_t* across any drawing work.
+static void count_unread_unsent(int *unread, int *unsent)
+{
+    *unread = 0;
+    *unsent = 0;
+    size_t n = msg_thread_count();
+    for (size_t i = 0; i < n; i++) {
         const msg_t *m = msg_thread_at(i);
-        if (m->dir == (uint8_t) MSG_DIR_UP && m->ack_state == MSG_ACK_UP_PENDING) {
-            unsent++;
+        if (!m) {
+            continue;
+        }
+        uint8_t dir = m->dir;
+        uint8_t ack = m->ack_state;
+        if (dir == (uint8_t) MSG_DIR_DOWN && ack != MSG_ACK_READ) {
+            (*unread)++;
+        } else if (dir == (uint8_t) MSG_DIR_UP && ack == MSG_ACK_UP_PENDING) {
+            (*unsent)++;
         }
     }
-    snprintf(status, sizeof(status), "%s sig:%s unsent:%u", modes_is_active() ? "active" : "sleep",
-             st.mqtt_connected ? "ok" : "--", (unsigned) unsent);
-    gfx_text(0, GFX_SCREEN_H - 8, GFX_FONT_NORMAL, status);
+}
+
+static void draw_status_bar(void)
+{
+    int bars = bars_from_rssi_dbm(modes_get_rssi_dbm());
+    gfx_icon(0, 0, (gfx_icon_t) (GFX_ICON_SIGNAL_0 + bars));
+    // Note: §5.4 also specifies a distinct "not registered -> x" bucket
+    // separate from "0 bars"; net_get_rssi() (net.h) exposes only a dBm
+    // reading or failure-with-fallback, no registration-state bit, so that
+    // distinction collapses into "0 bars" here. Fixing it needs a new
+    // net.h entry point, out of this task's Files list.
+
+    net_mqtt_status_t st;
+    net_get_mqtt_status(&st);
+    gfx_icon(16, 0, st.mqtt_connected ? GFX_ICON_LINK_OK : GFX_ICON_LINK_X);
+
+    int unread = 0, unsent = 0;
+    count_unread_unsent(&unread, &unsent);
+
+    char buf[16];
+    snprintf(buf, sizeof(buf), "u%d", unsent);
+    int x = gfx_text(32, 1, GFX_FONT_NORMAL, buf) + 3;
+
+    // "[lock if sig on]" (§5.4) — envelope signing (auth.c/IDENT_FLAG_REQ_SIG),
+    // NOT the device-passcode lock (lock.c/F6.5, not built).
+    if (ident_get_flags() & IDENT_FLAG_REQ_SIG) {
+        gfx_icon(x, 0, GFX_ICON_LOCK);
+    }
+
+    int batt_x = GFX_SCREEN_W - GFX_ICON_W;
+    gfx_icon(batt_x, 0, (gfx_icon_t) (GFX_ICON_BATTERY_0 + segs_from_batt_mv(modes_get_batt_mv())));
+
+    snprintf(buf, sizeof(buf), "new %d", unread);
+    int uw = gfx_text_width(GFX_FONT_NORMAL, buf);
+    gfx_text(batt_x - 4 - uw, 1, GFX_FONT_NORMAL, buf);
+
+    gfx_hline(0, GFX_SCREEN_W - 1, UI_STATUS_H);
 }
 
 // ---------------------------------------------------------------------------
-// Public API
+// Rendering
 // ---------------------------------------------------------------------------
+
+static void paint_frame(void)
+{
+    if (s_depth == 0) {
+        ui_go_home(); // safety net; should not happen after ui_init()
+    }
+    gfx_clear();
+    draw_status_bar();
+    const ui_screen_t *top = ui_top();
+    if (top && top->render) {
+        top->render();
+    }
+}
+
+void ui_render(void)
+{
+    paint_frame();
+    // docs/DEVICE_PLAN.md §5.4: "the full refresh is never taken on the
+    // inbound-message path (README R9): it is deferred to the moment the
+    // UI-awake window lapses." This is the render path modes_run() calls on
+    // every wake-and-drain iteration while input_awake() - i.e. potentially
+    // many times per interactive session (each keystroke/scroll) - so it
+    // ALWAYS does a partial (never consults/advances the 20-partial
+    // cadence counter). ui_on_awake_lapse() below is the one place that
+    // cadence counter is ever consulted outside of ui_init()'s own
+    // boot-time full refresh (modes_boot() calls disp_refresh_cadence()
+    // directly via paint_frame()+ui_render_boot(), not this function).
+    disp_partial_refresh(); // power effect: ~0.3-0.8s, PENDING_HW; no-op if nothing changed
+}
+
+// Called once, from modes_boot(), right after a successful ui_init() — the
+// one call site allowed to consume disp_init()'s "force a full refresh on
+// the first call" priming (disp.h), giving the panel a clean baseline
+// image on power-up rather than diffing partial-refresh rows against a
+// blank shadow plane.
+void ui_render_boot(void)
+{
+    paint_frame();
+    disp_refresh_cadence(); // power effect: ~2-4s (forced full on this first call), PENDING_HW
+}
+
+// Called from modes.c on the input_awake() true->false edge (the UI-awake
+// window lapsing, docs/DEVICE_PLAN.md §5.4). The framebuffer already holds
+// whatever the most recent ui_render() call painted — this does not repaint
+// content, it only lets the 20-partial cadence counter decide partial vs.
+// full and sends whichever is due, so a due full refresh lands here
+// (session just ended) rather than mid-interaction or on the inbound-
+// message path.
+void ui_on_awake_lapse(void)
+{
+    disp_refresh_cadence(); // power effect: ~0.3-0.8s partial, or ~2-4s full (every 20th), PENDING_HW
+}
+
+void ui_dispatch_key(input_key_t key)
+{
+    const ui_screen_t *top = ui_top();
+    if (top && top->on_key) {
+        top->on_key(key);
+    }
+}
+
+void ui_on_button_short(void)
+{
+    // docs/DEVICE_PLAN.md §5.5 (Home's Keys bullet, applies from anywhere):
+    // "if any unread, open the newest unread chat, else stay."
+    const msg_t *u = msg_newest_unread();
+    if (!u) {
+        return;
+    }
+    if (ui_top() != &g_scr_chat) {
+        ui_push(&g_scr_chat);
+    }
+    scr_chat_mark_visible_read(); // user-initiated open: §5.5's general "opening a chat" rule
+}
+
+void ui_on_button_long(void)
+{
+    ui_go_home();
+}
+
+bool ui_incoming(const char *from, bool was_asleep)
+{
+    const ui_screen_t *top = ui_top();
+    bool steal = was_asleep || top == NULL || top == &g_scr_home;
+
+    if (!steal) {
+        char toast[40];
+        snprintf(toast, sizeof(toast), "new: %s", from ? from : "?");
+        ui_show_toast(toast);
+        return false;
+    }
+
+    // §5.5: "the chat for that sender is pushed with the new message at the
+    // bottom, the partial refresh completes, shown is published." No
+    // scr_chat_mark_visible_read() here — see this file's/ui.h's own
+    // comment on why that ack stays `shown`, not `read`, on this path.
+    if (top != &g_scr_chat) {
+        ui_push(&g_scr_chat);
+    }
+    gfx_clear();
+    draw_status_bar();
+    if (g_scr_chat.render) {
+        g_scr_chat.render();
+    }
+    // §5.4: "never taken on the inbound-message path" — bypass the
+    // full-refresh cadence entirely, same as the pre-F6.3 ui.c's
+    // ui_render_message_pane() did.
+    disp_partial_refresh();
+    return true;
+}
+
+void ui_show_toast(const char *text)
+{
+    if (disp_is_dead()) {
+        ESP_LOGI(TAG, "toast (display dead, log only): %s", text);
+        return;
+    }
+    // Overlay just the bottom text row; the next ui_render() overwrites it —
+    // same contract the pre-F6.3 ui.c's ui_show_toast() documented.
+    for (int x = 0; x < GFX_SCREEN_W; x++) {
+        for (int bit = 0; bit < 8; bit++) {
+            gfx_set_pixel(x, GFX_SCREEN_H - 8 + bit, false);
+        }
+    }
+    gfx_text(0, GFX_SCREEN_H - 8, GFX_FONT_NORMAL, text);
+    disp_partial_refresh(); // power effect: ~0.3-0.8s, PENDING_HW
+}
+
+// ---------------------------------------------------------------------------
+// CardKB I2C read (moved here from the pre-F6.3 ui.c — see ui.h's own
+// compatibility note and input.h's F6.2 scope note on why input.c doesn't
+// do this itself).
+// ---------------------------------------------------------------------------
+
+static int s_i2c_fail_count = 0;
 
 static void i2c_kb_init(void)
 {
@@ -112,6 +396,30 @@ static void i2c_kb_init(void)
     i2c_driver_install(I2C_NUM_0, conf.mode, 0, 0, 0);
 }
 
+void ui_poll_keyboard(void)
+{
+    uint8_t byte = 0;
+    esp_err_t err =
+        i2c_master_read_from_device(I2C_NUM_0, PAGER_I2C_ADDR_CARDKB, &byte, 1, pdMS_TO_TICKS(50));
+    if (err != ESP_OK) {
+        s_i2c_fail_count++;
+        if (s_i2c_fail_count == 3) { // log once, then keep trying silently (matches pre-F6.3 tolerance)
+            ESP_LOGI(TAG, "CardKB: 3 consecutive I2C failures");
+        }
+        return;
+    }
+    s_i2c_fail_count = 0;
+
+    if (byte == 0x00) {
+        return;
+    }
+    input_feed_key(byte); // arms the UI-awake window, queues INPUT_EVT_KEY (input.h)
+}
+
+// ---------------------------------------------------------------------------
+// Public init/shutdown
+// ---------------------------------------------------------------------------
+
 bool ui_init(void)
 {
     i2c_kb_init();
@@ -121,155 +429,13 @@ bool ui_init(void)
         ESP_LOGI(TAG, "gfx_init: no/invalid assets partition; every codepoint draws as tofu");
     }
 #endif
+    load_text_size();
+    s_depth = 0;
+    ui_go_home(); // establishes the stack even if disp_init() below fails (headless is not fatal)
     return disp_init(); // power effect: see disp_init()'s own comment
 }
 
 void ui_shutdown(void)
 {
     disp_shutdown(); // power effect: see disp_shutdown()'s own comment
-}
-
-void ui_render_thread(void)
-{
-    if (disp_is_dead()) {
-        return;
-    }
-    render_thread_frame();
-    disp_refresh_cadence(); // power effect: ~0.3-0.8s partial, or ~2-4s every 20th call (full)
-}
-
-void ui_render_message_pane(void)
-{
-    if (disp_is_dead()) {
-        return;
-    }
-    render_thread_frame();
-    disp_partial_refresh(); // power effect: ~0.3-0.8s; forced partial, does not touch the cadence counter
-}
-
-void ui_show_toast(const char *text)
-{
-    if (disp_is_dead()) {
-        ESP_LOGI(TAG, "toast (display dead, log only): %s", text);
-        return;
-    }
-    // Overlay just the status band (bottom 8 rows); next real render
-    // overwrites it.
-    for (int x = 0; x < GFX_SCREEN_W; x++) {
-        for (int bit = 0; bit < 8; bit++) {
-            gfx_set_pixel(x, GFX_SCREEN_H - 8 + bit, false);
-        }
-    }
-    gfx_text(0, GFX_SCREEN_H - 8, GFX_FONT_NORMAL, text);
-    disp_partial_refresh(); // power effect: ~0.3-0.8s
-}
-
-void ui_composer_open(const char *reply_to_id)
-{
-    (void) reply_to_id;
-    msg_composer_reset();
-    s_composer_open = true;
-    s_i2c_fail_count = 0;
-    s_composer_last_activity_us = esp_timer_get_time();
-
-    gfx_clear();
-    gfx_text(0, 0, GFX_FONT_NORMAL, "reply:");
-    gfx_hline(0, GFX_SCREEN_W - 1, 9);
-    gfx_text(0, GFX_SCREEN_H - 8, GFX_FONT_NORMAL, "enter/hold btn=send  tap btn=cancel");
-    disp_refresh_cadence(); // power effect: see disp_refresh_cadence()
-}
-
-static void render_composer_text(void)
-{
-    gfx_clear();
-    gfx_text(0, 0, GFX_FONT_NORMAL, "reply:");
-    gfx_hline(0, GFX_SCREEN_W - 1, 9);
-
-    char lines[8][64];
-    int n = gfx_text_wrap(GFX_FONT_NORMAL, msg_composer_text(), GFX_SCREEN_W, lines, 8);
-    if (n < 0) {
-        n = 8; // still draw the first 8 lines rather than nothing (gfx_text_wrap's contract)
-    }
-    for (int i = 0; i < n; i++) {
-        gfx_text(0, 12 + i * 10, GFX_FONT_NORMAL, lines[i]);
-    }
-
-    char counter[16];
-    snprintf(counter, sizeof(counter), "%u/160", (unsigned) msg_composer_len());
-    gfx_text(0, GFX_SCREEN_H - 8, GFX_FONT_NORMAL, counter);
-}
-
-void ui_composer_close(bool sent)
-{
-    (void) sent;
-    s_composer_open = false;
-    s_i2c_fail_count = 0;
-    if (disp_is_dead()) {
-        return;
-    }
-    render_thread_frame();
-    disp_full_refresh(); // power effect: ~2-4s; ui_init() and composer-close both force a full refresh
-}
-
-bool ui_composer_is_open(void) { return s_composer_open; }
-
-ui_key_t ui_poll_keys(void)
-{
-    if (!s_composer_open) {
-        return UI_KEY_NONE;
-    }
-
-    int64_t now = esp_timer_get_time();
-    if (now - s_composer_last_activity_us > PAGER_COMPOSER_IDLE_TIMEOUT_US) {
-        ESP_LOGI(TAG, "composer idle timeout (60s), auto-closing");
-        ui_show_toast("composer timed out");
-        ui_composer_close(false);
-        return UI_KEY_NONE;
-    }
-
-    uint8_t byte = 0;
-    esp_err_t err = i2c_master_read_from_device(I2C_NUM_0, PAGER_I2C_ADDR_CARDKB, &byte, 1,
-                                                 pdMS_TO_TICKS(50));
-    if (err != ESP_OK) {
-        s_i2c_fail_count++;
-        if (s_i2c_fail_count >= 3) {
-            ESP_LOGI(TAG, "CardKB: 3 consecutive I2C failures, closing composer");
-            ui_show_toast("keyboard not found");
-            ui_composer_close(false);
-            s_i2c_fail_count = 0;
-        }
-        return UI_KEY_NONE;
-    }
-    s_i2c_fail_count = 0;
-
-    if (byte == 0x00) {
-        return UI_KEY_NONE;
-    }
-
-    modes_note_activity(); // Part A bug #2
-    s_composer_last_activity_us = now;
-
-    ui_key_t key = UI_KEY_NONE;
-    if (byte >= 0x20 && byte <= 0x7E) {
-        if (!msg_composer_push_char((char) byte)) {
-            ui_show_toast("reply full (160 chars)");
-            return UI_KEY_NONE;
-        }
-        key.type = UI_KEYTYPE_CHAR;
-        key.ch = (char) byte;
-        render_composer_text();
-        disp_refresh_cadence(); // power effect: see disp_refresh_cadence()
-    } else if (byte == 0x08) {
-        msg_composer_backspace();
-        key.type = UI_KEYTYPE_BACKSPACE;
-        render_composer_text();
-        disp_refresh_cadence(); // power effect: see disp_refresh_cadence()
-    } else if (byte == 0x0D) {
-        key.type = UI_KEYTYPE_ENTER;
-    }
-    // Everything else (>=0x80, other control bytes) is ignored — the CardKB
-    // emits one ASCII byte per press (docs/DEVICE_PLAN.md §5.2: an IME may
-    // sit between keystrokes and the composer in a later task; there is
-    // none yet, so non-ASCII bytes are simply dropped here as before).
-    return key;
 }

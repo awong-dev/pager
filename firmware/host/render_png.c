@@ -221,6 +221,157 @@ static void render_tofu(void)
     gfx_text(0, 40, GFX_FONT_NORMAL, counter);
 }
 
+/* ---------------------------------------------------------------------
+ * docs/DEVICE_TASKS.md F6.3: "Host: render_png.c renders each screen with
+ * fixture data." F6.3's actual screens (scr_home.c/scr_chat.c/scr_device.c/
+ * scr_setup.c) are ESP-IDF/msg.c/modes.c/ident.h-dependent (RTC state, NVS,
+ * the message ring, network getters) and are not built for the host by any
+ * `#ifdef ESP_PLATFORM` split the way gfx.c/input.c/auth.c/setup.c are —
+ * doing that split would be a much larger refactor of modules well outside
+ * this task's Files list. So, consistent with render_latin()/render_cjk()/
+ * etc. above (hand-drawn fixture strings via gfx.c's own primitives, no
+ * dependency on the rest of the firmware), the four functions below draw
+ * a representative mockup of each F6.3 screen directly with hardcoded
+ * fixture data matching docs/DEVICE_PLAN.md §5.5's own mockups, using the
+ * exact same gfx_text()/gfx_icon()/gfx_hline() primitives and the same
+ * UI_STATUS_H=12/UI_BODY_TOP=13 band split ui.c's real status bar uses
+ * (ui.h) — close enough to eyeball the font/layout choices those screens
+ * actually make, without linking code that cannot build on the host.
+ * --------------------------------------------------------------------- */
+
+#define FIXTURE_STATUS_H 12
+#define FIXTURE_BODY_TOP (FIXTURE_STATUS_H + 1)
+
+static void draw_fixture_status_bar(int bars, bool link_ok, int unsent, bool lock_on, int unread,
+                                     int batt_segs)
+{
+    gfx_icon(0, 0, (gfx_icon_t) (GFX_ICON_SIGNAL_0 + bars));
+    gfx_icon(16, 0, link_ok ? GFX_ICON_LINK_OK : GFX_ICON_LINK_X);
+
+    char buf[16];
+    snprintf(buf, sizeof(buf), "u%d", unsent);
+    int x = gfx_text(32, 1, GFX_FONT_NORMAL, buf) + 3;
+    if (lock_on) {
+        gfx_icon(x, 0, GFX_ICON_LOCK);
+    }
+
+    int batt_x = GFX_SCREEN_W - GFX_ICON_W;
+    gfx_icon(batt_x, 0, (gfx_icon_t) (GFX_ICON_BATTERY_0 + batt_segs));
+
+    snprintf(buf, sizeof(buf), "new %d", unread);
+    int uw = gfx_text_width(GFX_FONT_NORMAL, buf);
+    gfx_text(batt_x - 4 - uw, 1, GFX_FONT_NORMAL, buf);
+
+    gfx_hline(0, GFX_SCREEN_W - 1, FIXTURE_STATUS_H);
+}
+
+static void render_screen_home(void)
+{
+    gfx_clear();
+    draw_fixture_status_bar(3, true, 0, true, 1, 3);
+
+    int y = FIXTURE_BODY_TOP + 2;
+    gfx_text(0, y, GFX_FONT_NORMAL, ">");
+    int x = gfx_text(10, y, GFX_FONT_NORMAL, "mom");
+    x = gfx_text(x + 4, y, GFX_FONT_NORMAL, "Pickup at 3:15 by the gym");
+    (void) x;
+    gfx_text(GFX_SCREEN_W - gfx_text_width(GFX_FONT_NORMAL, "14:02 *"), y, GFX_FONT_NORMAL,
+              "14:02 *");
+    y += 12;
+    gfx_hline(0, GFX_SCREEN_W - 1, y);
+    y += 3;
+    gfx_text(10, y, GFX_FONT_NORMAL, "New message (needs address book)");
+    y += 12;
+    gfx_text(10, y, GFX_FONT_NORMAL, "Address book (needs address book)");
+    y += 12;
+    gfx_text(0, y, GFX_FONT_NORMAL, ">");
+    gfx_text(10, y, GFX_FONT_NORMAL, "Device");
+    y += 12;
+    gfx_text(10, y, GFX_FONT_NORMAL, "Lock now (needs passcode lock)");
+
+    gfx_text(0, GFX_SCREEN_H - 9, GFX_FONT_NORMAL, "up/down move  enter open  hold=home");
+}
+
+static void render_screen_chat(void)
+{
+    gfx_clear();
+    draw_fixture_status_bar(4, true, 0, false, 0, 3);
+
+    struct {
+        const char *who, *ts, *body, *tag;
+    } rows[] = {
+        { "mom", "13:58", "where are you?", NULL },
+        { "you", "13:59", "library, coming now", "sent" },
+        { "mom", "14:02", "Pickup at 3:15 by the gym", "NEW" },
+    };
+    int y = FIXTURE_BODY_TOP + 2;
+    for (size_t i = 0; i < sizeof(rows) / sizeof(rows[0]); i++) {
+        int x = gfx_text(0, y, GFX_FONT_NORMAL, rows[i].who);
+        x = gfx_text(x, y, GFX_FONT_NORMAL, " ");
+        x = gfx_text(x, y, GFX_FONT_NORMAL, rows[i].ts);
+        x = gfx_text(x, y, GFX_FONT_NORMAL, " ");
+        gfx_text(x, y, GFX_FONT_NORMAL, rows[i].body);
+        if (rows[i].tag) {
+            int tw = gfx_text_width(GFX_FONT_NORMAL, rows[i].tag);
+            gfx_text(GFX_SCREEN_W - tw, y, GFX_FONT_NORMAL, rows[i].tag);
+        }
+        y += 12;
+    }
+    gfx_hline(0, GFX_SCREEN_W - 1, y);
+    y += 2;
+
+    const char *counter = "9/160";
+    int cw = gfx_text_width(GFX_FONT_NORMAL, counter);
+    int x = gfx_text(0, y, GFX_FONT_NORMAL, "> ok coming_");
+    (void) x;
+    gfx_text(GFX_SCREEN_W - cw, y, GFX_FONT_NORMAL, counter);
+
+    gfx_text(0, GFX_SCREEN_H - 9, GFX_FONT_NORMAL, "enter send  esc back  ^v history");
+}
+
+static void render_screen_device(void)
+{
+    gfx_clear();
+    draw_fixture_status_bar(3, true, 0, true, 0, 3);
+
+    const char *lines[] = {
+        "id pgr-0001  fw 0.2.0",
+        "owner kid1  claimed yes",
+        "broker mqtt.example:8883  sig on",
+        "signal -93 dBm  batt 3280 mV",
+        "session s_3ab91c02  book v- (not synced, needs book.c)",
+        "counters memfull 0  drops 0  resets 0",
+    };
+    int y = FIXTURE_BODY_TOP + 2;
+    for (size_t i = 0; i < sizeof(lines) / sizeof(lines[0]); i++) {
+        gfx_text(0, y, GFX_FONT_NORMAL, lines[i]);
+        y += 12;
+    }
+    gfx_text(0, y, GFX_FONT_NORMAL, ">");
+    gfx_text(10, y, GFX_FONT_NORMAL, "Re-sync address book");
+    y += 12;
+    gfx_text(10, y, GFX_FONT_NORMAL, "Text size: normal");
+
+    gfx_text(0, GFX_SCREEN_H - 9, GFX_FONT_NORMAL, "up/down move  enter select  esc back");
+}
+
+static void render_screen_setup(void)
+{
+    gfx_clear();
+    draw_fixture_status_bar(0, false, 0, false, 0, 4);
+
+    int y = FIXTURE_BODY_TOP + 2;
+    gfx_text(0, y, GFX_FONT_NORMAL, "Setup");
+    y += 16;
+    gfx_text(0, y, GFX_FONT_NORMAL, "type your setup code:");
+    y += 12;
+    gfx_text(0, y, GFX_FONT_NORMAL, "> 4S29B-K7H1P-QX3M @ mqtt.example");
+    y += 16;
+    gfx_text(0, y, GFX_FONT_NORMAL, "network . broker . bundle . done");
+
+    gfx_text(0, GFX_SCREEN_H - 9, GFX_FONT_NORMAL, "enter submit  esc clear/back");
+}
+
 int main(int argc, char **argv)
 {
     const char *assets_path = (argc > 1) ? argv[1] : "../../build/assets.bin";
@@ -241,6 +392,10 @@ int main(int argc, char **argv)
         { "cyrillic", render_cyrillic },
         { "cjk", render_cjk },
         { "tofu", render_tofu },
+        { "screen_home", render_screen_home },
+        { "screen_chat", render_screen_chat },
+        { "screen_device", render_screen_device },
+        { "screen_setup", render_screen_setup },
     };
 
     int status = 0;
