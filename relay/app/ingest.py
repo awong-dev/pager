@@ -25,11 +25,12 @@ from __future__ import annotations
 import hashlib
 import logging
 import time
-from typing import Literal
+from typing import Any, Literal
 
-from app import location
+from app import devauth, location, wire
 from app.broker import BrokerClient
 from app.routing import Routing
+from app.store import device_secrets as device_secrets_store
 from app.store import devices as devices_store
 from app.store import messages as messages_store
 from app.wire import (
@@ -38,8 +39,6 @@ from app.wire import (
     StatusEnvelope,
     UpEnvelope,
     build_down_payload,
-    log_malformed,
-    parse_envelope_bytes,
     resolve_ts,
 )
 
@@ -58,11 +57,121 @@ def _device_id_from_topic(topic: str, expected_suffix: str) -> str | None:
 
 class Ingest:
     """Owns the relay's reaction to device traffic. Called by the webhook
-    router once per inbound event; holds no per-request state itself."""
+    router once per inbound event.
+
+    Holds one piece of per-process state: `_secret_cache`, an in-process
+    cache of `deviceSecrets/{d}` (docs/DEVICE_PLAN.md §2.6: "cache in-process;
+    it changes only on rotate"). It caches only the static key material used
+    for §14.3 signature verification -- the mutable replay-window counters
+    (`upN`/`upBits`/`downN`) are never cached, and are read fresh from
+    Firestore on every call by `app.store.device_secrets.accept_up_n`/
+    `next_down_n`, so they can never go stale here."""
 
     def __init__(self, broker: BrokerClient, routing: Routing | None = None) -> None:
         self._broker = broker
         self._routing = routing if routing is not None else Routing(broker)
+        self._secret_cache: dict[str, device_secrets_store.DeviceSecret] = {}
+
+    def invalidate_secret_cache(self, device_id: str) -> None:
+        """Called by the key-rotation endpoint once one exists (not yet --
+        TODO(orchestrator): wire this into that task) so a freshly rotated
+        `hmacKey` is picked up on the next envelope instead of the stale
+        cached one."""
+        self._secret_cache.pop(device_id, None)
+
+    def _get_secret(self, device_id: str) -> device_secrets_store.DeviceSecret | None:
+        cached = self._secret_cache.get(device_id)
+        if cached is not None:
+            return cached
+        secret = device_secrets_store.get(device_id)
+        if secret is not None:
+            self._secret_cache[device_id] = secret
+        return secret
+
+    # ---- docs/PROTOCOL.md §14.4: verify before parse ----
+
+    def _verify_and_decode(
+        self,
+        device: devices_store.Device | None,
+        device_id: str,
+        topic: str,
+        payload: bytes,
+        *,
+        lwt_exception: bool = False,
+    ) -> tuple[dict[str, Any], wire.EnvelopeEncoding] | None:
+        """§14.4's order, applied uniformly to `/up`, `/status` and `/loc`:
+        size check -> (if `device.authMode == "hmac"`) verify `sig` in
+        constant time, log + count + drop on failure (still 2xx, per
+        `app/routers/webhooks.py`) -> decode (CBOR or JSON) -> (if hmac)
+        check `n` against the replay window, log + drop on replay ->
+        caller applies its own further, kind-specific handling.
+
+        Returns `None` if the caller should drop the envelope (already
+        logged); otherwise the decoded envelope (JSON names) and which wire
+        encoding it arrived in, so callers can record `devices/{d}.wire`
+        (§2.4) for envelopes from a *registered* device.
+
+        `lwt_exception=True` (handle_status only) is §14.6: an *unsigned*
+        `/status` is still accepted, but only when it decodes to exactly
+        `{v, state:"offline", session}` -- the broker-generated LWT, which
+        cannot itself carry a signature.
+        """
+        if wire.is_oversize(payload):
+            wire.log_malformed(topic, payload, "oversize")
+            return None
+
+        if device is None or device.authMode != "hmac":
+            decoded = wire.decode_envelope_bytes(payload)
+            if decoded is None:
+                wire.log_malformed(topic, payload, "non-utf8/non-JSON/non-CBOR-object")
+                return None
+            data, encoding = decoded
+            if device is not None:
+                devices_store.set_wire(device_id, encoding)
+            return data, encoding
+
+        secret = self._get_secret(device_id)
+        ok, unsigned = (
+            devauth.verify(secret.hmacKey, topic, payload) if secret is not None else (False, b"")
+        )
+        if not ok:
+            if lwt_exception:
+                decoded = wire.decode_envelope_bytes(payload)
+                if decoded is not None and wire.is_unsigned_lwt_shape(decoded[0]):
+                    # §14.6: accepted despite the missing signature -- do
+                    # NOT touch `devices/{d}.wire` or the replay window for
+                    # this one exception (it carries no `n`).
+                    return decoded
+            logger.warning(
+                "SECURITY bad-sig device=%s topic=%s first64=%r", device_id, topic, payload[:64]
+            )
+            if secret is not None:
+                device_secrets_store.bump_sig_failures(device_id)
+                window_count = devices_store.record_sig_failure(device_id)
+                if window_count >= devices_store.AUTH_ALARM_THRESHOLD:
+                    logger.error(
+                        "SECURITY authAlarm device=%s: %d bad signatures in the last %ds",
+                        device_id,
+                        window_count,
+                        devices_store.AUTH_ALARM_WINDOW_S,
+                    )
+                    devices_store.set_auth_alarm(device_id, True)
+            return None
+
+        decoded = wire.decode_envelope_bytes(unsigned)
+        if decoded is None:
+            wire.log_malformed(topic, payload, "signed payload did not decode")
+            return None
+        data, encoding = decoded
+        n = data.get("n")
+        if not isinstance(n, int):
+            wire.log_malformed(topic, payload, "hmac envelope missing/invalid n")
+            return None
+        if not device_secrets_store.accept_up_n(device_id, n):
+            logger.warning("SECURITY replay device=%s topic=%s n=%s", device_id, topic, n)
+            return None
+        devices_store.set_wire(device_id, encoding)
+        return data, encoding
 
     # ---- /up ----
 
@@ -71,20 +180,21 @@ class Ingest:
         if device_id is None:
             logger.warning("up webhook for unrecognised topic %s dropped", topic)
             return
-        data = parse_envelope_bytes(payload)
-        if data is None:
-            log_malformed(topic, payload, "oversize, non-utf8 or non-JSON-object")
+        device = devices_store.get_device(device_id)
+        result = self._verify_and_decode(device, device_id, topic, payload)
+        if result is None:
             return
+        data, _encoding = result
         try:
             env = UpEnvelope.model_validate(data)
         except Exception as exc:  # noqa: BLE001 -- pydantic.ValidationError, narrowly caught above
-            log_malformed(topic, payload, str(exc))
+            wire.log_malformed(topic, payload, str(exc))
             return
 
         if env.is_ack:
             self._handle_ack(device_id, env)
         else:
-            self._handle_up_message(device_id, env)
+            self._handle_up_message(device_id, device, env)
 
     def _handle_ack(self, device_id: str, env: UpEnvelope) -> None:
         assert env.ack is not None and env.ack in ("shown", "read")
@@ -124,8 +234,9 @@ class Ingest:
         if result == "noop":
             logger.debug("idempotent ack '%s' for message %s backend %s", ack, msg.id, bid)
 
-    def _handle_up_message(self, device_id: str, env: UpEnvelope) -> None:
-        device = devices_store.get_device(device_id)
+    def _handle_up_message(
+        self, device_id: str, device: devices_store.Device | None, env: UpEnvelope
+    ) -> None:
         if device is None:
             # No registered `devices/{device_id}` doc -- e.g. a device id
             # that was never created through `POST /api/admin/devices`.
@@ -183,20 +294,22 @@ class Ingest:
         if device_id is None:
             logger.warning("status webhook for unrecognised topic %s dropped", topic)
             return
-        data = parse_envelope_bytes(payload)
-        if data is None:
-            log_malformed(topic, payload, "oversize, non-utf8 or non-JSON-object")
+        device = devices_store.get_device(device_id)
+        if device is None:
+            # No registered device -- nowhere to store status. (Still run
+            # through §14.4/§14.6's verify-before-parse pipeline first would
+            # be pointless with no authMode to check; drop here, same as
+            # before this task.)
+            logger.info("status for unregistered device %s dropped", device_id)
             return
+        result = self._verify_and_decode(device, device_id, topic, payload, lwt_exception=True)
+        if result is None:
+            return
+        data, _encoding = result
         try:
             env = StatusEnvelope.model_validate(data)
         except Exception as exc:  # noqa: BLE001 -- pydantic.ValidationError, narrowly caught above
-            log_malformed(topic, payload, str(exc))
-            return
-
-        device = devices_store.get_device(device_id)
-        if device is None:
-            # No registered device -- nowhere to store status.
-            logger.info("status for unregistered device %s dropped", device_id)
+            wire.log_malformed(topic, payload, str(exc))
             return
 
         previous_status = device.status
@@ -251,13 +364,14 @@ class Ingest:
         if device_id is None:
             logger.warning("loc webhook for unrecognised topic %s dropped", topic)
             return
-        data = parse_envelope_bytes(payload)
-        if data is None:
-            log_malformed(topic, payload, "oversize, non-utf8 or non-JSON-object")
+        device = devices_store.get_device(device_id)
+        result = self._verify_and_decode(device, device_id, topic, payload)
+        if result is None:
             return
+        data, _encoding = result
         try:
             env = LocEnvelope.model_validate(data)
         except Exception as exc:  # noqa: BLE001 -- pydantic.ValidationError, narrowly caught above
-            log_malformed(topic, payload, str(exc))
+            wire.log_malformed(topic, payload, str(exc))
             return
         location.ingest_loc(device_id, env)

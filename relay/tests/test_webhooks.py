@@ -89,6 +89,7 @@ def test_webhook_status_dispatches(client: TestClient):
         label="d",
         mqtt_username="pgr-0001",
         mqtt_password_hash="x",
+        auth_mode="password",
     )
 
     body = webhook_body(status_topic("pgr-0001"), online_status_payload("s_00000001"))
@@ -106,6 +107,56 @@ def test_webhook_loc_dispatches_without_error(client: TestClient):
     body = webhook_body(loc_topic("pgr-0001"), loc_payload("l_11111111"))
     resp = client.post("/webhooks/mqtt", content=body, headers=webhook_headers(WEBHOOK_KEY))
     assert resp.status_code == 200
+
+
+def test_webhook_hmac_signed_ack_dispatches(client: TestClient):
+    """S1.3: the router's `/webhooks/mqtt` -> `app.ingest.Ingest` wiring
+    verifies an `authMode: "hmac"` device's signature before parsing (the
+    deeper matrix of accept/replay/LWT cases lives in tests/test_ingest.py,
+    against `Ingest` directly)."""
+    from app import devauth
+    from app.store import device_secrets as device_secrets_store
+
+    key = b"k" * 32
+    devices_store.create_device(
+        device_id="pgr-hmac-wh1",
+        owner_uid="nobody",
+        label="d",
+        mqtt_username="pgr-hmac-wh1",
+        mqtt_password_hash="x",
+        auth_mode="hmac",
+    )
+    device_secrets_store.create("pgr-hmac-wh1", hmac_key=key, mqtt_password_hash="y")
+
+    topic = up_topic("pgr-hmac-wh1")
+    payload = devauth.sign_json(
+        key, topic, {"v": 1, "id": "m_11111111", "ts": 1_700_000_000, "ack": "shown", "n": 1}
+    )
+    resp = client.post(
+        "/webhooks/mqtt", content=webhook_body(topic, payload), headers=webhook_headers(WEBHOOK_KEY)
+    )
+    assert resp.status_code == 200
+    assert device_secrets_store.get("pgr-hmac-wh1").upN == 1
+
+
+def test_webhook_hmac_unsigned_up_message_dropped_but_still_200(client: TestClient):
+    from app.store import device_secrets as device_secrets_store
+
+    devices_store.create_device(
+        device_id="pgr-hmac-wh2",
+        owner_uid="nobody",
+        label="d",
+        mqtt_username="pgr-hmac-wh2",
+        mqtt_password_hash="x",
+        auth_mode="hmac",
+    )
+    device_secrets_store.create("pgr-hmac-wh2", hmac_key=b"k" * 32, mqtt_password_hash="y")
+
+    body = webhook_body(up_topic("pgr-hmac-wh2"), ack_payload("m_22222222", "shown"))
+    resp = client.post("/webhooks/mqtt", content=body, headers=webhook_headers(WEBHOOK_KEY))
+    assert resp.status_code == 200
+    assert device_secrets_store.get("pgr-hmac-wh2").sigFailures == 1
+    assert device_secrets_store.get("pgr-hmac-wh2").upN == 0
 
 
 def test_webhook_malformed_body_is_still_200(client: TestClient):
@@ -138,6 +189,7 @@ def test_webhook_store_error_on_up_message_is_500_not_200(monkeypatch):
         label="d",
         mqtt_username="pgr-broken",
         mqtt_password_hash="x",
+        auth_mode="password",
     )
     backends_store.create_backend(
         "student", kind="pager", config={"deviceId": "pgr-broken"}, enabled=True

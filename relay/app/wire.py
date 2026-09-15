@@ -18,6 +18,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app import wirecbor
+
 logger = logging.getLogger("relay.wire")
 
 MAX_ENVELOPE_BYTES = 640
@@ -84,6 +86,15 @@ def resolve_ts(ts: int) -> int:
     return ts if ts != 0 else int(time.time())
 
 
+def _check_n_range(value: int | None) -> int | None:
+    """§14.2: `n` is a 32-bit unsigned counter, on every signed envelope
+    (`/up`, `/status`, `/loc`). Shared by the three envelope models below
+    that carry it."""
+    if value is not None and not (0 <= value < 2**32):
+        raise ValueError("n out of range")
+    return value
+
+
 class UpEnvelope(BaseModel):
     """A payload received on `pager/{device_id}/up`: either an ack (§3.2,
     `ack` non-null, no `body`) or a student up-message (`from`/`body`
@@ -98,6 +109,15 @@ class UpEnvelope(BaseModel):
     to: str | None = None
     body: str | None = None
     ack: str | None = None
+    # §3.2: the only up `kind` this relay implements today is the implicit
+    # default (an ack or a plain content message, `kind` omitted). `kind:
+    # "contact_req"` is on the wire (§3.2) but its handling is task S4.1's,
+    # not this one's -- until then it (and any other/future kind) takes the
+    # unknown-kind path below, same as an unrecognised `/down` kind (§3.4).
+    kind: str | None = None
+    # §14.2: present on every signed (`authMode: "hmac"`) envelope; absent
+    # on an unsigned (`authMode: "password"`) one.
+    n: int | None = None
 
     @field_validator("id")
     @classmethod
@@ -112,6 +132,11 @@ class UpEnvelope(BaseModel):
         validate_ts(value)
         return value
 
+    @field_validator("n")
+    @classmethod
+    def _check_n(cls, value: int | None) -> int | None:
+        return _check_n_range(value)
+
     @field_validator("to")
     @classmethod
     def _check_to(cls, value: str | None) -> str | None:
@@ -124,6 +149,13 @@ class UpEnvelope(BaseModel):
 
     @model_validator(mode="after")
     def _check_shape(self) -> UpEnvelope:
+        if self.kind is not None:
+            # §3.4: "A kind the receiver does not recognise is handled
+            # exactly like loc_req is handled by text-only firmware: do not
+            # render, do not ack, count it, drop it." `log_malformed`
+            # (called by the ingest.py caller that catches this
+            # ValueError) is that log/count/drop for the relay side.
+            raise ValueError(f"unknown kind on /up: {self.kind!r}")
         if self.ack is not None:
             if self.ack not in ACK_VALUES:
                 raise ValueError("invalid ack value")
@@ -166,6 +198,9 @@ class StatusEnvelope(BaseModel):
     # location duty cycle).
     loc_period_s: int | None = None
     loc_min_s: int | None = None
+    # §14.2: present on every signed envelope; absent on the unsigned LWT
+    # exception (§14.6) and on an unsigned (`authMode: "password"`) device.
+    n: int | None = None
 
     @field_validator("loc_period_s", "loc_min_s")
     @classmethod
@@ -173,6 +208,11 @@ class StatusEnvelope(BaseModel):
         if value is not None and not (0 <= value <= 86400):
             raise ValueError("loc_period_s/loc_min_s out of range")
         return value
+
+    @field_validator("n")
+    @classmethod
+    def _check_n(cls, value: int | None) -> int | None:
+        return _check_n_range(value)
 
     @field_validator("session")
     @classmethod
@@ -287,6 +327,66 @@ def parse_envelope_bytes(raw: bytes) -> dict[str, Any] | None:
     return data
 
 
+EnvelopeEncoding = Literal["json", "cbor"]
+
+
+def is_oversize(raw: bytes) -> bool:
+    """§3.3/§14.4 step 1: the 640-byte check, done *before* anything about
+    the payload (encoding, signature, shape) is inspected."""
+    return len(raw) > MAX_ENVELOPE_BYTES
+
+
+def decode_envelope_bytes(raw: bytes) -> tuple[dict[str, Any], EnvelopeEncoding] | None:
+    """§14.4 step 4 ("parse the message, now safe"): the post-verification
+    (or, for a `password`-mode device, only) decode -- CBOR via
+    `wirecbor.decode` when the first byte is in CBOR's range (§3's
+    first-byte dispatch, `wirecbor.is_cbor`), else JSON. Returns
+    `(dict, encoding)`, or None if the payload is malformed at this coarse
+    level (oversize, non-UTF-8/non-JSON, non-CBOR-map, or not an object) --
+    the same class of check `parse_envelope_bytes` does for the JSON-only
+    caller, extended to also accept CBOR."""
+    if is_oversize(raw):
+        return None
+    if wirecbor.is_cbor(raw):
+        try:
+            data = wirecbor.decode(raw)
+        except Exception:  # noqa: BLE001 -- cbor2 raises several distinct
+            # exception types (and this module's own translate_to_names can
+            # KeyError on a key outside KEYMAP) on malformed input; all of
+            # them mean "malformed" here, same as JSONDecodeError below.
+            return None
+        if not isinstance(data, dict):
+            return None
+        return data, "cbor"
+    try:
+        text = raw.decode("utf-8")
+        data = json.loads(text)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    return data, "json"
+
+
+# §14.6: the one unsigned inbound envelope the relay accepts from an
+# `authMode: "hmac"` device -- the broker-generated LWT, which cannot itself
+# carry a signature (it is registered at CONNECT). DEVICE_TASKS.md's S1.3
+# wording ("exactly {v, state:offline, session}") is used verbatim here; it
+# matches §5.2's own LWT wire example (`{"v":1,"state":"offline","session":
+# "s_3ab91c02"}`), but is stricter than §14.6's own parenthetical ("no live
+# fields (no mode, batt_mv, rssi, session, etc.)"), which lists `session` as
+# a field that must be *absent* -- contradicting §5.2's example, where it is
+# present. Flagged per this task's brief rather than silently resolved;
+# implemented to match the actual wire shape in §5.2 and DEVICE_TASKS.md.
+_LWT_ALLOWED_KEYS = {"v", "state", "session"}
+
+
+def is_unsigned_lwt_shape(data: dict[str, Any]) -> bool:
+    if not set(data.keys()) <= _LWT_ALLOWED_KEYS:
+        return False
+    return data.get("state") == "offline" and isinstance(data.get("session"), str)
+
+
 def log_malformed(topic: str, raw: bytes, reason: str) -> None:
     """§3.4: relay logs the topic and first 64 bytes, then drops."""
     logger.warning("malformed payload on %s (%s): %r", topic, reason, raw[:64])
@@ -358,6 +458,13 @@ class LocEnvelope(BaseModel):
     req: str | None
     cached: bool = False
     err: Literal["no_fix", "disabled"] | None = None
+    # §14.2: present on every signed envelope.
+    n: int | None = None
+
+    @field_validator("n")
+    @classmethod
+    def _check_n(cls, value: int | None) -> int | None:
+        return _check_n_range(value)
 
     @field_validator("id")
     @classmethod
