@@ -59,11 +59,17 @@ Three topics, one subscription on the device. QoS and retained flags are decided
 | `pager/{device_id}/up` | device → relay | 1 | **false** *(a retained reply would be redelivered to the relay on every relay reconnect and double-post to the thread)* | device | relay (`pager/+/up`) |
 | `pager/{device_id}/status` | device → relay | **1** *(QoS 0 can silently lose the `online` edge that triggers re-publish of unacked messages)* | **true** (fixed) | device, and broker on LWT | relay (`pager/+/status`) |
 | `pager/{device_id}/loc` | device → relay | **1** when `req` is non-null, **0** otherwise *(an answer to a location request is something a human is waiting on and must not be silently lost; an unsolicited periodic fix is superseded by the next one, so QoS 0 is right and cheaper)* | **false** *(a retained fix would be redelivered to the relay on every relay reconnect and re-post a stale position)* | device | relay (`pager/+/loc`) |
+| `pager/boot/{bid}/down` | relay → device | 1 | **true** | relay | device only (setup mode) |
+| `pager/boot/{bid}/up` | device → relay | 1 | **false** | device (setup mode) | relay |
 
-- The device subscribes to **exactly one** topic: `pager/{own_id}/down`, QoS 1. No wildcards on the
-  device *(a wildcard subscription on a metered link is an unbounded data risk)*.
+- The device subscribes to **exactly one** topic per session: in normal operation, `pager/{own_id}/down`
+  (QoS 1); in setup mode, `pager/boot/{bid}/down` (QoS 1). No wildcards on the device *(a wildcard
+  subscription on a metered link is an unbounded data risk)*.
   `/loc` is a **publish**, and location requests arrive on `/down` as a
   `kind` (§3.2), not on a second subscription.
+- **Byte limit**: The `pager/{device_id}/…` namespace is subject to the 640-byte limit (§3.3).
+  The `pager/boot/{bid}/…` namespace carries the encrypted provisioning bundle and has its own
+  **4 kB limit** per message.
 - The relay receives `pager/+/up`, `pager/+/status` and `pager/+/loc`. It originally received
   them as an MQTT subscriber at QoS 1; the broker now pushes them to the relay — see the
   transport note below.
@@ -94,10 +100,16 @@ publish API** at QoS 1, retained false. Consequences, and only these:
 
 ---
 
-## 3. Message schema (JSON)
+## 3. Message schema (JSON or CBOR)
 
-Payloads are **minified UTF-8 JSON objects**, no BOM, no trailing newline, no whitespace between
-tokens. One JSON object per MQTT payload.
+Payloads are **minified UTF-8 JSON objects or CBOR definite-length maps with integer keys** (§10),
+no BOM, no trailing newline, no whitespace between tokens. One JSON object or CBOR map per MQTT
+payload. Devices **SHOULD** emit CBOR; the relay accepts both on inbound topics and dispatches on
+the first byte (`0x7B` = JSON `{`, `0xA0–0xBF` = CBOR map). The relay answers each device in the
+encoding of its last `/status` (recorded as `devices/{d}.wire`). Values are identical in both
+encodings — same strings, same enums, same numbers (`lat`/`lon` as float64) — only keys differ
+(text vs integer), and `sig` is the one field whose type changes (byte string in CBOR, base64url
+text in JSON). **`v` does not bump on an encoding-only change.**
 
 Base envelope:
 
@@ -115,8 +127,18 @@ Base envelope:
 | `from` | string | yes on content messages, **absent** on acks | `^[a-z0-9][a-z0-9_-]{0,15}$` **or** the literal `system`, ≤16 chars | Author's **alias**. *(a deployment has named users rather than one parent and one student, so `from` carries the sender's alias rather than a two-value enum. `parent` and `student` are ordinary aliases, so an older two-value payload is still valid. **Firmware impact: none** — `msg.c` accepts any 1–16 byte string and renders it verbatim.)* |
 | `body` | string | yes on content messages, **absent** on acks | ≤ **160 Unicode code points** (fixed) **and** ≤ **320 UTF-8 bytes** *(the code-point cap alone allows 640 bytes; the byte cap lets firmware size static buffers, and §9.4 turns it into the 161-byte RTC mirror by way of the ASCII-only CardKB)* | Message text. |
 | `ack` | string \| null | yes; `null` on content messages | `shown` \| `read` | Ack state being reported. |
-| `kind` | string | no (default `msg`) | `msg` \| `loc_req`; `/down` only | What the down message *is* (§3.2). Absent MUST be read as `msg`. *(a location request needs a down message the device does not render or ack; a field on `/down` costs 17 bytes, whereas a `/cmd` topic would cost the device a second subscription, which §2 exists to prevent.)* |
+| `kind` | string | no (default `msg`) | `msg` \| `loc_req` \| `contact_req` \| `book` \| `cfg`; `/down`: `msg`/`loc_req`/`book`/`cfg`; `/up`: `msg`/`contact_req` | What the message *is* (§3.2). Absent MUST be read as `msg`. |
 | `to` | string | no; `/up` content messages only | same regex as `from` | Recipient alias chosen by the device. Absent → the relay uses the device's configured default recipient, or broadcasts to every user the owner may message. *(the device can address one of several users; optional, so a device that never sets it works unchanged.)* |
+| `n` | uint32 | no; signed envelopes only | 0…2³²-1 | Per-device, per-direction replay counter (§2.4, §2.5). Strictly increasing per publisher. |
+| `sig` | bstr(8) in CBOR / base64url(8) in JSON | no; signed envelopes only | — | HMAC-SHA256 tag, truncated to 64 bits, MUST be the last pair (§2.4). |
+| `bv` | int | `/status` only | 0…2³²-1 | Book version (§4.3, §5.1). |
+| `name` | string | `contact_req` only | ≤16 code points, ≤48 UTF-8 bytes | Contact display name (§4.2). |
+| `ph` | string | `contact_req` only | E.164 or absent | Phone number `+…` or alias reference (§4.2). |
+| `d` | string | `book` only | same regex as `from` | Default recipient alias (§4.3). |
+| `c` | array of objects | `book` only | ≤10 contacts | Approved contacts; each has `a` (alias), `n` (name ≤16 cp), `t` (type: `web`/`sms`/`chat`) (§4.3). |
+| `p` | array of objects | `book` only | ≤4 pending requests | Pending `contact_req`; each has `n` (name), `s` (status: `pend`/`no`) (§4.3). |
+| `more` | bool | `book` only | — | Reserved for chunking if the cap moves (§4.3). |
+| `cfg` | object | `/down` `cfg` kind only | — | Configuration map carrying `lock` (object with `clear` bool and `auto` int minutes) (§5.8). |
 
 Additional rules:
 - `body` MUST NOT contain Unicode control characters `U+0000`–`U+001F` or `U+007F`. Relay strips
@@ -126,9 +148,8 @@ Additional rules:
 - **Unknown fields MUST be ignored, not rejected.** This is the forward-compatibility rule that
   makes §11 additive.
 - Field order is unspecified; a receiver MUST NOT depend on it. Publishers SHOULD emit
-  `v,id,ts,kind,from,to,body,ack` in that order to keep logs diffable *(the two new
-  keys are slotted into the existing order rather than appended, so an older payload is still a
-  prefix-compatible subsequence of a current one)*.
+  `v,id,ts,kind,from,to,body,ack,…,n,sig` in that order to keep logs diffable. **`sig` MUST be
+  the last pair** (§2.4).
 - A publisher SHOULD omit `kind` when it is `msg` and omit `to` when it has no recipient to name;
   both defaults are defined precisely so the common payload does not grow.
 - `system` matches the alias regex, so it is a **reserved alias**: the relay MUST NOT issue it to a
@@ -145,14 +166,17 @@ Additional rules:
 
 ### 3.2 Message kinds
 
-| Kind | Topic | Shape |
-|---|---|---|
-| Down message (sender → device) | `/down` | `{"v":1,"id":"m_7f3a","ts":…,"from":"parent","body":"…","ack":null}` — **99 bytes** for the example above |
-| Location request | `/down` | `{"v":1,"id":"m_7f3a","ts":…,"kind":"loc_req","from":"mom","ack":null}` — **78 bytes**; no `body` |
-| Ack (device → relay) | `/up` | `{"v":1,"id":"m_7f3a","ts":…,"ack":"shown"}` — **51 bytes**; no `from`, no `body` |
-| Up message (device reply) | `/up` | `{"v":1,"id":"u_91c0","ts":…,"from":"student","body":"ok coming","ack":null}` — **84 bytes** |
-| Up message, addressed | `/up` | `{"v":1,"id":"u_91c0","ts":…,"from":"student","to":"mom","body":"ok coming","ack":null}` — **95 bytes** |
-| Location | `/loc` | §13 |
+| Kind | Topic | Shape | Notes |
+|---|---|---|---|
+| Down message (sender → device) | `/down` | `{"v":1,"id":"m_7f3a","ts":…,"from":"parent","body":"…","ack":null}` — **99 bytes** for the example above | Thread entry, rendered and acked. |
+| Location request | `/down` | `{"v":1,"id":"m_7f3a","ts":…,"kind":"loc_req","from":"mom","ack":null}` — **78 bytes**; no `body` | Not a thread entry; device answers on `/loc` (§13.2). |
+| Contact request (device → relay) | `/up` | `{"v":1,"id":"u_2b7c…","ts":…,"kind":"contact_req","name":"Grandma","ph":"+15551234567","ack":null,"n":…,"sig":"…"}` — ≈140 bytes; no `from`, no `body` | Requests admin approval (§4.2); rate-limited and deduped on `id`. |
+| Book (relay → device) | `/down` | `{"v":1,"id":"m_…","ts":…,"kind":"book","bv":7,"d":"mom","c":[{"a":"mom","n":"Mom","t":"web"},…],"p":[{"n":"Uncle Bob","s":"pend"},…],"ack":null,"n":…,"sig":"…"}` — ≈590 bytes max | Not a thread entry; acked `shown` on apply (§4.3); only newest re-published. |
+| Config (relay → device) | `/down` | `{"v":1,"id":"m_…","ts":…,"kind":"cfg","cfg":{"lock":{"clear":true,"auto":5}},"ack":null,"n":…,"sig":"…"}` | Not a thread entry; carries device settings; acked `shown` on apply (§5.8); only newest re-published. |
+| Ack (device → relay) | `/up` | `{"v":1,"id":"m_7f3a","ts":…,"ack":"shown"}` — **51 bytes**; no `from`, no `body` | — |
+| Up message (device reply) | `/up` | `{"v":1,"id":"u_91c0","ts":…,"from":"student","body":"ok coming","ack":null}` — **84 bytes** | Thread entry, routed to default recipient. |
+| Up message, addressed | `/up` | `{"v":1,"id":"u_91c0","ts":…,"from":"student","to":"mom","body":"ok coming","ack":null}` — **95 bytes** | Thread entry, routed to named recipient. |
+| Location | `/loc` | §13 | — |
 
 A receiver distinguishes an ack from a content message by `ack !== null`. A payload with both a
 non-null `ack` and a non-empty `body` is **malformed** (§3.4).
@@ -179,72 +203,105 @@ user's alias. It is a request for a fix, not a message:
   field: the request is never answered, it simply expires, and no message state moves backwards.
   Parsing `kind` is a firmware follow-up, not a prerequisite for the rest of the contract.
 
+**`kind:"contact_req"` (device → relay).** A contact request is an up message with
+`kind:"contact_req"`, `ack:null`, and either `ph` (E.164 phone number) or neither `ph` nor `body`
+(for an alias reference — use `name` as a display name and the relay infers the alias from context
+or returns an error). Fields: `name` is required (1–16 code points, ≤48 UTF-8 bytes); `ph` is
+optional (E.164 or absent). The device includes `n` and `sig` as with any `/up` from an `hmac`
+device. The request is deduped on `id` like any up message and is rate-limited: **at most 5 pending
+requests per device**. A request whose `ph` or implied alias matches an existing pending/approved
+contact is a no-op. The device stores requests locally as `pending` (§4.2, §5.6).
+
+**`kind:"book"` (relay → device).** An address book is a down message with `kind:"book"`, `ack:null`,
+carrying the approved contacts and pending requests for this device:
+- **Not a thread entry:** the device MUST NOT render it in the message thread, and MUST NOT `shown`-
+  or `read`-ack it in the normal sense. Instead, the device acks with `shown` **once the book has
+  been applied** (atomically written to NVS), which is what signals to the relay that the book has
+  landed.
+- **Newest only:** the relay expires any older unacked `book` when it creates a new one. Re-publish
+  on an online edge (§5.3) includes `book`.
+- The payload carries `bv` (book version), `d` (default recipient alias), `c[]` (approved contacts,
+  max 10), `p[]` (pending requests from §4.2, max 4, each with status `pend` or `no`), and `more`
+  (reserved for chunking).
+- A `/down book` is signed by the relay (§2.4, §2.6), carrying `n` and `sig`.
+
+**`kind:"cfg"` (relay → device).** A configuration message is a down message with `kind:"cfg"`,
+`ack:null`, carrying device settings that only the relay can modify (passcode lock, auto-lock
+timing, etc.). Fields: `cfg` is an object that currently holds `lock` (see §5.8 for structure).
+Unknown members of `cfg` are ignored, making this the home for future settings.
+- **Not a thread entry:** the device MUST NOT render it in the message thread, and MUST NOT
+  `shown`- or `read`-ack it in the normal sense. Instead, the device acks with `shown` **once the
+  config has been applied**.
+- **Newest only:** the relay expires any older unacked `cfg` when it creates a new one. Re-publish
+  on an online edge (§5.3) includes `cfg`.
+- A `/down cfg` is signed by the relay, carrying `n` and `sig`.
+
 ### 3.3 Envelope size limit
+
+**Hard limit: 640 bytes** for the `pager/{device_id}/…` namespace, unchanged. Any payload larger than
+640 bytes MUST be dropped unparsed by both relay and device.
 
 Worst case, with every field at its maximum and JSON escaping expanding `"` and `\` to two bytes.
 **This table is a deliberately conservative per-field ceiling, not a payload that can exist**: it
-sums each field's independent maximum, and several of those maxima are mutually exclusive (§3.2
-makes a non-null `ack` and a non-empty `body` malformed, so lines 6 and 7 never co-occur), while
-the `body` line over-counts — see the achievable figures below the limit.
+sums each field's independent maximum, and several of those maxima are mutually exclusive.
 
+**JSON, unsigned (v1):**
 ```
 {} 2
 "v":1, 6
 "id":"<=16>", 24
 "ts":1757700000, 16
 "from":"<=16>", 26
-"body":"<=480 escaped>", 490 (320 UTF-8 bytes, up to 160 of them escaped 1->2)
-"ack":"<=8>" 16
+"body":"<=320>", 330
+"ack":"<=8>", 16
   ----
-  580 v1 worst case (text fields only)
+  420 v1 down msg, text fields only
 
-"to":"<=16>", 24 /up content messages only
+"to":"<=16>", 24
   ----
-  604 worst case: a maximal up message carrying `to`
+  444 up msg with to
 
-"kind":"loc_req", 17 /down only; longest value of a closed 2-value enum
+"sig":"<44 base64url chars>", 50
   ----
-  621 arithmetic ceiling if every field is present at maximum
+  494 up msg with to and sig (signed)
 ```
 
-**Hard limit: 640 bytes — unchanged.** Any payload larger than 640 bytes on any topic MUST be
-dropped unparsed by both relay and device *(580 rounded up with headroom to a
-size the firmware can statically allocate; a fixed limit means the device never mallocs on the RX
-path)*.
+**JSON, signed (with `n` and `sig`):**
+```
+"n":4294967295, 13
+"sig":"<44 base64url>", 50
+  ----
+  473 down msg, signed
+  
+  ----
+  449 up msg without to, signed
+```
 
-*(the two added fields are sized against the existing limit rather than moving it,
-because the limit is what lets the device statically allocate its RX buffer and any change to it
-would be a firmware flag day.)*
+**CBOR, signed (with `n` and `sig`):**
+- Down message 75 B, up message 55 B, `/status` ≈78 B, location ≈105 B — roughly 25% smaller than
+  signed JSON.
 
-*(the ceiling above is kept as-is, because 640 was derived from it and
-re-deriving the limit would be a firmware flag day for no gain; but the achievable numbers are
-recorded here, because "604" was being read as a real payload size and it is not one.)* The
-**largest payload that can actually exist is 438 bytes**: a `/up` content message with `id`,
-`from` and `to` all 16 characters and `body` at its cap. The 490-byte `body` line is unreachable
-because §3.1's two caps bind together — a character that escapes 1→2 (`"` or `\`) is one UTF-8
-byte, so 160 of them consume the whole 160-code-point budget and leave nothing to spend the
-remaining 160 UTF-8 bytes on. The maximum a `body` can occupy on the wire is therefore **320
-bytes**, not 480, reached identically by 160 escaped quotes or by 160 two-byte code points.
-Every other shape is smaller: a maximal `/down` `msg` is 414 bytes, a `loc_req` 101 bytes
-(78 in §3.2's example), a maximal §13 `/loc` envelope 188 bytes. Real headroom against the limit
-is **≥ 202 bytes**, and the common shapes have more than 500.
+**Achievable figures:** The largest payload that can actually exist is ≈438 bytes (JSON, unsigned):
+a `/up` content message with `id`, `from` and `to` all 16 characters and `body` at its cap. With
+signing added, a signed JSON down message or book reaches ≈473 bytes; signed CBOR is ≈395 bytes.
+A maximal `/down` `loc_req` is 101 bytes (78 in §3.2's example). §13's `/loc` envelope is ≤ ~200
+bytes. Real headroom against the 640-byte limit is **≥ 166 bytes** for the largest payloads, and
+typical shapes have over 300 bytes.
 
 *(the one escaping assumption the limit depends on, stated because it was previously
 implicit.)* Publishers MUST serialise non-ASCII `body` characters as **raw UTF-8, not `\uXXXX`
 escapes**. §3's "minified UTF-8 JSON" already implies this, but the consequence is load-bearing:
 a legal 160-code-point non-ASCII `body` emitted with `\u` escaping is 1078 bytes and would be
-dropped unparsed by every receiver, making §3.1's `body` caps and this limit jointly
-unsatisfiable. The relay and the device both already emit raw UTF-8; this fixes that in writing.
-The 621-byte line is arithmetic only: `kind` appears solely on
-`/down`, where `to` never appears, and the only non-default `kind` is `loc_req`, which carries no
-`body` at all (78 bytes in §3.2's example). §13's `/loc` envelope is ≤ ~200 bytes worst case. Every
-shape therefore has at least 19 bytes of headroom against the stated ceiling, and the common ones have
-more than 500.
+dropped unparsed by every receiver. The relay and the device both already emit raw UTF-8; this
+fixes that in writing.
 
 ### 3.4 Malformed payload handling
 
-A payload is malformed if it is >640 bytes, not valid UTF-8, not a JSON object, missing `id`/`ts`/
-`ack`, has an out-of-range field, violates a `body` rule, or sets both `ack` and `body`.
+A payload is malformed if it is >640 bytes, not valid UTF-8, not a JSON or CBOR object, missing
+`id`/`ts`/`ack`, has an out-of-range field, violates a `body` rule, sets both `ack` and `body`,
+or (for a device-originated envelope on an `hmac`-authenticated device) lacks a valid `sig` or
+falls outside the replay window. The one exception: an unsigned `/status` with `state:"offline"` is
+accepted **only** from the broker-generated LWT, never from a device publishing an up message.
 
 *(unknown **values** need the same rule as unknown fields, or the enum additions in
 §3.1 are not additive after all.)* A `kind` the receiver does not recognise is handled exactly like
@@ -295,7 +352,7 @@ state. States are **monotonic** — a message never moves backwards.
 |---|---|---|---|
 | `queued` | relay | message committed to the relay's store by the send API | Also the state of a message whose publish attempt failed (broker down). |
 | `sent` | relay | broker returns **PUBACK** for the QoS 1 `/down` publish — equivalently, the broker's REST publish API accepts the QoS 1 publish with a 2xx | Means *the broker accepted it*, **not** that the device received it. The UI must not say "delivered" here. *(the two are the same fact carried over different transports (§2), so the state machine, its rules and its timings are untouched.)* |
-| `shown` | relay, on device report | device publishes `{"id":…,"ack":"shown"}` on `/up` | Device publishes this **after the e-paper refresh completes** (BUSY deasserted), never before. |
+| `shown` | relay, on device report | device publishes `{"id":…,"ack":"shown"}` on `/up` | Device publishes this **after the e-paper refresh completes** (BUSY deasserted), never before. **Exception:** if the device is locked, `shown` is **not** published for a message that arrived while locked; the message stays `sent` and is re-published on an online edge (§5.3). |
 | `read` | relay, on device report | device publishes `{"id":…,"ack":"read"}` on `/up` | Triggered by a short press of button IO1 while the message is on screen. |
 | `expired` | relay | still `queued` or `sent` 24 h after creation | *(a pickup pager delivering "be at the gym at 3:15" two days late is worse than not delivering it. A terminal, relay-only state; the device never sees or acks it.)* |
 
@@ -380,10 +437,11 @@ broker-generated LWT.
 | `state` | string | **yes** | `online` \| `offline` | See §5.2 for the precise meaning |
 | `mode` | string | yes when `online` | `sleep` \| `active` | Device mode (firmware/README.md) |
 | `batt_mv` | int | yes when `online` | 2000…4500 | Battery millivolts. *(raw mV, not percent; LiFePO4 has a flat 3.2 V plateau so any percent mapping belongs in the UI where it can be changed without a firmware flash.)* |
-| `rssi` | int | no | −140…0 | dBm, for field debugging |
+| `rssi` | int | yes when `online` | −140…0 | RSSI in dBm (now published at every `/status` for field debugging and status bar rendering). |
 | `session` | string | **yes** | `^s_[0-9a-f]{8}$` | Cold-boot session id (§1). Lets the relay tell a reboot from a deep-sleep cycle. |
 | `ts` | int | yes when `online` | epoch s, or 0 | Same rule as §3.5 |
 | `fw` | string | no | ≤16 chars | Firmware version |
+| `bv` | int | no | 0…2³²-1 | Book version (§4.3). Reported so the relay can detect a factory reset or a lost book message and re-publish. |
 | `loc_period_s` | int | no | 0…86400 | The periodic `/loc` interval **the device has chosen** (§13); `0` = periodic location off. |
 | `loc_min_s` | int | no | 0…86400 | The device's own minimum gap between on-demand fixes (§13.3); default 120. |
 
@@ -411,21 +469,23 @@ keeps the TLS+MQTT session up on eDRX while the ESP32 is in deep sleep; that dev
 - On a retained `offline` or an LWT `offline`: mark the device offline; the parent UI shows
   "last seen <time>". No message state changes (§4.1 rule 5).
 - On an `online` whose `session` **differs from the last seen `session`**, or on any
-  offline→online edge: **re-publish unacked messages**. Broker QoS 1 covers the
-  common case; this covers session loss.
+  offline→online edge: **re-publish unacked messages and the newest `book` and `cfg`**. Broker QoS 1
+  covers the common case; this covers session loss.
   - Order: oldest first.
-  - Selection: state in (`queued`, `sent`), age < 24 h.
-  - Cap: **at most 10 messages per online edge** *(matches the device's
-  10-entry thread ring, which lives in ordinary RAM rather than RTC memory (§9.5) but is kept at
-  depth 10 precisely so this cap still lines up; bounds the reconnect burst to ~8 kB / ~1
-  active-mode window. Older unacked messages are left for the `expired` sweep)*.
-  - Re-publish reuses the **same `id`** so device dedup (§4.1 rule 7) suppresses double-rendering.
-  - **Selection excludes `kind:"loc_req"` (a location request that missed its window
-  is worthless, and re-asking is one API call for the requester).** A `loc_req` that is still
-  `sent` when the device comes back simply expires per §3.2.
-  - *(same rule, new trigger.)* The edge is detected from the `/status` message
-  however it reaches the relay: today that is the broker's `/status` push (§2), not a
-  subscriber callback. Selection, order, cap and the re-used `id` are unchanged.
+  - Selection: state in (`queued`, `sent`), age < 24 h; plus the newest unsent `book` (§4.3) and
+    the newest unsent `cfg` (§5.8), one each, which have their own status tracking. Older
+    `book`/`cfg` messages already have a newer one and are never re-sent.
+  - Cap: **at most 10 messages per online edge** *(matches the device's 10-entry thread ring for
+    unacked down messages; `book` and `cfg` are not counted against this cap since they are not
+    thread entries)*.
+  - Re-publish reuses the **same `id`** so device dedup (§4.1 rule 7) suppresses double-rendering
+    and deferred acks.
+  - **Selection excludes `kind:"loc_req"` (a location request that missed its window is worthless,
+    and re-asking is one API call for the requester).** A `loc_req` that is still `sent` when the
+    device comes back simply expires per §3.2.
+  - *(same rule, new trigger.)* The edge is detected from the `/status` message however it reaches
+    the relay: today that is the broker's `/status` push (§2), not a subscriber callback. Selection,
+    order, cap and the re-used `id` are unchanged.
 - The relay MUST NOT publish anything to `/down` on a timer for liveness. There is no application
   ping. MQTT keepalive is the only liveness mechanism (§6).
 
@@ -456,7 +516,8 @@ Status is **never** published on a plain paging wake or on receipt of a down mes
 | MQTT version | **3.1.1** | ** **RESOLVED by header read**: the library exposes no version, no `sessionExpiry`, and no MQTT 5 property API anywhere. `mqttConnect()` emits `AT+SQNSMQTTCONNECT=0,<host>,<port>,<keepAlive>` (`src/proto/WalterMQTT.cpp:83-95`). 3.1.1 it is. |
 | Clean session | **false** — **NOT SETTABLE from the library** | Required in spirit by the "one persistent session" constraint: with `cleanSession=false` and a stable client id the broker queues QoS 1 `/down` while the TCP link is briefly down. **Finding:** neither `mqttConfig()` nor `mqttConnect()` exposes a clean-session flag, so the value is whatever the Sequans MQTT client defaults to. UNVERIFIED, and load-bearing for §4.1 rule 6 and §5.3. Weak evidence against us: `mqttConnect()` *deliberately clears the entire local subscription table* before connecting (`src/proto/WalterMQTT.cpp:87-89`), and the vendor's own `examples/mqtts` re-subscribes from inside the CONNECTED event handler — which is what a library assuming a **clean** session on every connect would look like. Experiment: connect, reset the ESP32 only, and have the relay publish while the device is down — if the queued message arrives on reconnect, the session is persistent. ~20 min on hardware. |
 | LWT | **NOT SETTABLE from the library** | `mqttConfig()` emits `AT+SQNSMQTTCFG=0,"<clientId>"[,"<user>","<pass>"][,<tlsProfileId>]` and stops there (`src/proto/WalterMQTT.cpp:53-75`) — no will topic, message, QoS or retain argument, and grepping the whole of `src/` for `will`/`lastwill` returns nothing. §5.2's LWT contract therefore has no implementation path through the typed API. Fallback: `WalterModem::sendCmd()` (public) can queue a raw `AT+SQNSMQTTCFG=...` carrying the will parameters *before* `mqttConnect()`. UNVERIFIED against the Sequans AT manual. If that fails, the relay must fall back to inferring offline from keepalive expiry and §5.2's LWT becomes advisory. Tracked in §12. |
-| TLS | server-authenticated, CA pinned in modem NVM; username/password per device | Free-tier HiveMQ Cloud model. Provisioning is supported and is exactly the vendor's `examples/mqtts` flow: `tlsWriteCredential(false, 12, ca_pem)` → `tlsConfigProfile(2, WALTER_MODEM_TLS_VALIDATION_CA, WALTER_MODEM_TLS_VERSION_12, 12)` → `mqttConfig(client_id, user, pass, 2)`. Both functions are public (`src/WalterModem.h:4147` and `:4404`; the `public:` block starts at `:4132`). **Slot discipline, from `examples/mqtts/main/mqtts.cpp:249-251`: certificate indices 0–10 and private-key index 1 are reserved for Sequans/BlueCherry — use certificate slot ≥ 11, and TLS profile ≥ 2 (profile 1 is BlueCherry's).** Note this is stricter than the `tlsWriteCredential` doc comment's "10–19"; follow the example. |
+| TLS (production) | server-authenticated, CA pinned in modem NVM; username/password per device; profile ≥ 2 | Free-tier HiveMQ Cloud model. Provisioning is the vendor's `examples/mqtts` flow: `tlsWriteCredential(false, 12, ca_pem)` → `tlsConfigProfile(2, WALTER_MODEM_TLS_VALIDATION_CA, WALTER_MODEM_TLS_VERSION_12, 12)` → `mqttConfig(client_id, user, pass, 2)`. Both functions are public (`src/WalterModem.h:4147` and `:4404`). **Slot discipline: certificate slots 0–10 and private-key index 1 are reserved for Sequans/BlueCherry — use ≥ 11, and TLS profile ≥ 2 (profile 1 is BlueCherry's).** |
+| TLS (bootstrap) | no server-cert validation; profile ≥ 3 | For the one-time setup fetch (§3.2): `tlsConfigProfile(3, WALTER_MODEM_TLS_VALIDATION_NONE, WALTER_MODEM_TLS_VERSION_12, no_cert)` (or certificate slot ≥ 13 with the dev's own CA if VALIDATION_NONE is not available; both are unverified). The bundle is authenticated and encrypted under a token-derived key, so server authentication on this hop adds only DoS resistance. Profile 2 remains pinned for all normal-operation connects. |
 | Reconnect policy | **Only** on detected session loss. Never on a timer. Backoff 5 s, 15 s, 60 s, 300 s, then 300 s steady. | Each reconnect costs a full TLS handshake ≈ 5 kB (§7) — reconnects are the largest single term in the data budget. |
 
 *(scoping note, no behaviour change.)* Every row above describes the **device's**
@@ -551,76 +612,70 @@ energy reasons. Two things break this budget, and firmware MUST log enough to de
 
 ### 7.2 Per-exchange totals
 
-| Exchange | MQTT bytes | + TLS | + TCP/IP | Total |
+Per-exchange sizes are based on CBOR-signed payloads (§3, item 0–8), which are smaller than
+unsigned JSON but carry authentication. Sizes include MQTT frame overhead (§7.1). Figures below the
+line are rounded for the month-total calculation in §7.3.
+
+| Exchange | CBOR signed | + TLS | Total | Notes |
 |---|---|---|---|---|
-| `/down` PUBLISH (99 B payload, topic 19) | 124 | 153 | 193 | |
-| device PUBACK | 4 | 33 | 73 | |
-| broker TCP ack | — | — | 40 | |
-| **down message, delivered** | | | | **306 B** |
-| `/up` ack PUBLISH (51 B payload, topic 17) | 74 | 103 | 143 | |
-| broker PUBACK + device TCP ack | 4 | 33 | 113 | |
-| **one ack (`shown` or `read`)** | | | | **256 B** |
-| **down message fully acked (down + shown + read)** | | | | **818 B ≈ 0.82 kB** |
-| `/up` reply PUBLISH (84 B payload) + PUBACK + ack | 107 | 136 | | **289 B ≈ 0.29 kB** |
-| `/status` PUBLISH (117 B payload, topic 21) + PUBACK + ack | 145 | 174 | | **327 B ≈ 0.33 kB** |
-| `/loc` periodic PUBLISH, QoS 0 (160 B payload, topic 18) + TCP ack; no PUBACK | 182 | 211 | | **291 B ≈ 0.29 kB** |
-| `/loc` answering a `loc_req`, QoS 1 (160 B payload) + PUBACK + ack | 184 | 213 | | **366 B ≈ 0.37 kB** |
-| one location request served (`/down` `loc_req` 78 B, acked, + QoS 1 `/loc` answer) | | | | **651 B ≈ 0.65 kB** |
-| keepalive PINGREQ + PINGRESP (+ TCP ack) | 4 | 62 | | **182 B ≈ 0.18 kB** |
-| **TLS reconnect** (TCP handshake + full TLS 1.2 handshake with a 2-cert chain + MQTT CONNECT/CONNACK + SUBSCRIBE/SUBACK) | | | | **≈ 5 kB (estimate)** |
+| `/down` msg PUBLISH (75 B CBOR, topic 19) + device PUBACK + broker TCP ack | 100 + 4 | +29 | **161 B ≈ 0.16 kB** | Down message delivered (`sent`) |
+| `/up` ack PUBLISH (44 B CBOR, topic 17) + PUBACK + TCP ack | 70 + 4 | +29 | **135 B ≈ 0.14 kB** | One ack (`shown` or `read`) |
+| **Down msg fully acked** (down + shown + read) | | | **432 B ≈ 0.43 kB** | vs. 0.82 kB unsigned JSON |
+| `/up` reply PUBLISH (55 B CBOR) + PUBACK + TCP ack | 80 | +29 | **137 B ≈ 0.14 kB** | Reply sent, vs. 0.29 kB unsigned JSON |
+| `/status` PUBLISH (78 B CBOR, topic 21) + PUBACK + TCP ack | 104 | +29 | **161 B ≈ 0.16 kB** | vs. 0.33 kB unsigned JSON |
+| `/loc` periodic PUBLISH, QoS 0 (105 B CBOR, topic 18) + TCP ack | 130 | +29 | **187 B ≈ 0.19 kB** | vs. 0.29 kB unsigned JSON |
+| `/loc` answering `loc_req`, QoS 1 (105 B CBOR) + PUBACK + TCP ack | 130 + 4 | +29 | **191 B ≈ 0.19 kB** | vs. 0.37 kB unsigned JSON |
+| One location request served (`/down` `loc_req` 78 B + device ack + QoS 1 `/loc` answer) | | | **330 B ≈ 0.33 kB** | vs. 0.65 kB unsigned JSON |
+| keepalive PINGREQ + PINGRESP (+ TCP ack) | 4 | +29 | **71 B ≈ 0.07 kB** | Modem-side only (§6.2) |
+| **TLS reconnect** (TCP + full TLS 1.2 handshake + MQTT CONNECT/CONNACK/SUBSCRIBE/SUBACK) | | | **≈ 5 kB (estimate)** | Session lost, needs re-auth and re-subscribe |
 
 ### 7.3 Monthly projection
+
+Signed CBOR payloads (§7.2) are ≈ 45–50% smaller than unsigned JSON, so the daily budget falls
+despite adding authentication. Data costs nothing on the battery budget (§8), only on the SIM.
 
 Nominal school day: 20 down messages, 5 student replies, 4 reconnects, and a periodic fix
 every 15 min plus 2 on-demand location requests.
 
 ```
-20 down msgs fully acked 20 x 0.82 kB = 16.4 kB
- 5 replies 5 x 0.29 kB = 1.5 kB
-48 keepalives 48 x 0.18 kB = 8.6 kB
-34 status publishes 34 x 0.33 kB = 11.2 kB (24 heartbeat + ~10 event-driven)
+20 down msgs fully acked 20 x 0.43 kB = 8.6 kB
+ 5 replies 5 x 0.14 kB = 0.7 kB
+48 keepalives 48 x 0.07 kB = 3.4 kB
+34 status publishes 34 x 0.16 kB = 5.4 kB (24 heartbeat + ~10 event-driven)
  4 reconnects 4 x 5.00 kB = 20.0 kB
   ---------
-  57.7 kB/day -> 1.69 MB / 30 days (v1)
-96 periodic /loc @15 min 96 x 0.29 kB = 27.8 kB
- 2 location requests 2 x 0.65 kB = 1.3 kB
+  38.1 kB/day -> 1.14 MB / 30 days (signed CBOR)
+96 periodic /loc @15 min 96 x 0.19 kB = 18.2 kB
+ 2 location requests 2 x 0.33 kB = 0.7 kB
   ---------
-  86.8 kB/day -> 2.60 MB / 30 days
+  57.0 kB/day -> 1.71 MB / 30 days
 ```
 
 Pessimistic day: 100 down messages, 20 replies, 24 reconnects (bad coverage), and a periodic
 fix every 5 min plus 10 on-demand requests.
 
 ```
-100 x 0.82 + 20 x 0.29 + 48 x 0.18 + 60 x 0.33 + 24 x 5.00
-= 82.0 + 5.8 + 8.6 + 19.8 + 120.0 = 236 kB/day -> 6.92 MB / 30 days (v1)
-+ 288 x 0.29 + 10 x 0.65 = 83.5 + 6.5 = 326 kB/day -> 9.79 MB / 30 days
+100 x 0.43 + 20 x 0.14 + 48 x 0.07 + 60 x 0.16 + 24 x 5.00
+= 43.0 + 2.8 + 3.4 + 9.6 + 120.0 = 178.8 kB/day -> 5.36 MB / 30 days (signed CBOR)
++ 288 x 0.19 + 10 x 0.33 = 54.7 + 3.3 = 236.8 kB/day -> 7.10 MB / 30 days
 ```
 
-**Verdict.** The 100 MB/month cap allows 3413 kB/day, i.e. ~39× the nominal profile. MQTT+TLS
-overhead is not a risk to the data constraint. The break-even point is ~4070 fully-acked
-messages/day. *(location is added inside the existing budget, not by raising it.)*
-Both profiles still satisfy the project's stricter "< 10 MB estimated monthly usage" bar, but the
-pessimistic profile lands at **9.8 MB**, with essentially no margin, and the term that put it
-there is the 5-minute periodic fix. **A periodic interval below ~5 min breaks that 10 MB bar
-on a bad-coverage day** — which is a second, independent reason (after GNSS power, §12 item 8) for
-the interval to be device-chosen and long. `loc_period_s` = 0 returns both profiles to the v1
-figures exactly.
+**Verdict.** The 100 MB/month cap allows 3413 kB/day, i.e. ~59× the nominal profile signed. Signed
+CBOR payload encoding adds authentication for ≈0.5 % of the nominal budget and ≈3 % of the
+pessimistic budget — negligible against the data cap and the project's stricter "< 10 MB" bar.
+Both profiles stay well under 10 MB/month: nominal 1.71 MB, pessimistic 7.10 MB. **The 5-minute
+periodic-fix interval still raises the pessimistic profile** but no longer jeopardizes the 10 MB
+bar — instead, the margin is ≈3 MB. The interval stays device-chosen (§5.1, §13.3).
 
-**The dominant term is reconnects, not messages** — 20 of 58 kB nominal, 120 of 236 kB pessimistic.
-This is the quantitative reason for "never reconnect on a timer". **Checked
-whether `walter-modem` exposes TLS session resumption: it does not.** The entire public TLS surface
-in v1.5.0 is `tlsWriteCredential()` (`src/WalterModem.h:4147`) and `tlsConfigProfile()` (`:4404`) —
-profile id, validation level, TLS
-version and three credential slot indices. There is no session-ticket or session-id parameter and no
-resumption getter, so a reconnect is a full ~5 kB handshake every time and the ~40 % saving on the
-pessimistic day is unavailable. This does not threaten the 100 MB cap (the pessimistic day is still
-under 7 MB/month) but it does raise the energy cost of §8.3 (b), where each message would pay a full
-handshake.
+**The dominant term is reconnects, not messages** — 20 of 38 kB nominal, 120 of 179 kB pessimistic.
+This is the quantitative reason for "never reconnect on a timer". **Checked whether `walter-modem`
+exposes TLS session resumption: it does not.** There is no session-ticket or session-id parameter
+in v1.5.0's public TLS API, so a reconnect is a full ~5 kB handshake every time. This does not
+threaten the data constraint but it is the dominant energy cost.
 
-**SMS budget: 0 of 100 used.** SMS is out of scope **for the device**. Firmware
-MUST NOT enable any SMS send or receive path. This line exists so a later phase cannot quietly
-introduce one without editing this document.
+**SMS budget: 0 of 100 used.** SMS is out of scope **for the device**. Firmware MUST NOT enable
+any SMS send or receive path. This line exists so a later phase cannot quietly introduce one without
+editing this document.
 
 *(a clarification the SMS backend makes necessary.)* SMS exists as a **server-
 side delivery backend**: the relay hands a message to a third-party SMS provider over HTTPS, from
@@ -940,14 +995,21 @@ component. See `sdkconfig.defaults` for the full finding.
 
 > **Rule.** A datum lives in RTC memory if losing it to a reset would make the relay's view of
 > delivery *wrong* — i.e. the relay believes a message was delivered or a reply was sent when the
-> student will never see it / never sent it. Everything else lives in RAM.
+> student will never see it / never sent it. Everything else lives in RAM or NVS.
 
 Under that rule three things are RTC-resident: the **dedup digest ring** (§4.1 rule 7 — without it a
 post-reset redelivery storm costs a full active-mode window per duplicate), the **pending ack queue**
-(§4.1 rule 6), and the **pending reply queue** (§4.2). One more is RTC-resident by judgement rather
-than by rule: the **newest unread down message**, because §5.3 only re-publishes messages in state
-`queued`/`sent` — a message already acked `shown` but not yet `read` is unrecoverable from the relay,
-so losing it means the student never sees "pickup at 3:15" and nobody finds out.
+(§4.1 rule 6), and the **pending reply metadata** (§4.2 — id, state, attempts only; bodies are in
+NVS). One more is RTC-resident by judgement rather than by rule: the **newest unread down message
+metadata**, because §5.3 only re-publishes messages in state `queued`/`sent` — a message already
+acked `shown` but not yet `read` is unrecoverable from the relay, so losing it means the student
+never sees "pickup at 3:15" and nobody finds out. (The message bodies themselves are stored in NVS
+`msgq` namespace and survive both reset and cold boot.)
+
+**Reply and unread bodies now survive resets.** Device-typed replies and the newest unread message
+are stored in NVS namespace `msgq` with full fidelity (up to 320 UTF-8 bytes), so an unsent reply
+outlives a battery pull and truncation is never silent. (RTC still holds the per-reply metadata:
+id, state, attempts.)
 
 ### 9.3 RTC-resident layout (`pager_rtc_t`, owned by `modes.c`)
 
@@ -961,51 +1023,63 @@ so losing it means the student never sees "pickup at 3:15" and nobody finds out.
 | `mqtt_memfull_count`, `oversize_drop_count`, `modem_resets`, `last_modem_reset_us`, `attach_fail_cycles`, `wake_cycle_count` | 32 | §8.4 M6, §3.4, F4/F1 counters |
 | `msg.seen_ids[16]` (`uint32_t`) + `seen_head` | 68 | Dedup ring (§4.1 rule 7) — **a 32-bit digest of the id, not the id string.** Message ids carry 32 bits of entropy by construction (§1), so the digest is the id's own randomness; 16 entries collide with probability ≈3×10⁻⁸, and the only consequence of a collision is one suppressed render. Costs 68 B where the literal strings cost 276 B. `id_hash == 0` means "empty slot"; a real digest of 0 is stored as 1. |
 | `msg.pending_acks[8]` (`id[17]`, `state`, `attempts`) | 152 | Ack retry queue (§4.1 rule 6). Ids are stored in full — the ack has to put the real id on the wire. |
-| `msg.pending_up[2]` (`created_epoch`, `id[17]`, `body[161]`, `body_len`, `attempts`, `in_use`) | 384 | Unsent student replies (§4.2), **full fidelity, never truncated** — see §9.4 |
-| `msg.unread[1]` (`ts`, `id[17]`, `from[17]`, `body[161]`, `body_len`, `flags`, `in_use`) | 208 | Newest down message acked `shown` but not yet `read` (§9.2) |
+| `msg.pending_up[2]` (`created_epoch`, `id[17]`, `id_len`, `to[17]`, `to_len`, `attempts`, `in_use`) | 80 | Unsent student replies (§4.2) — metadata only; bodies are in NVS `msgq` (§9.2) |
+| `msg.unread[1]` (`ts`, `id[17]`, `from[17]`, `to[17]`, `flags`, `in_use`) | 60 | Newest down message acked `shown` but not yet `read` (§9.2) — metadata only; body in NVS |
 | `msg.dedup_hits`, `msg.malformed_drops`, `msg.reply_failed` | 12 | Diagnostics for the `/status` heartbeat |
-| **Total** | **≈ 920 of 1184** | ~264 B headroom |
+| `auth.up_lo` | 4 | Low 20 bits of `/up` counter (`n`), per-device replay window (§2.5) |
+| `auth.down_n` | 4 | Highest accepted `n` for `/down` messages (§2.5) |
+| `auth.down_bits` | 4 | 64-bit bitmap of recent `/down` counter values for the replay window (§2.5) |
+| `ui_state` | 4 | UI flags and settings (e.g., last screen) |
+| `lock` (`locked`, `fail_count`, `backoff_until_us`, padding) | 16 | Device lock state (§5.8); `locked` flag, wrong-passcode attempt counter, backoff expiry, padding |
+| **Total** | **≈ 460 of 1184** | ~724 B headroom |
 
 `modes.c` remains the sole owner of the struct, its single `magic`/`crc32` pair and `rtc_save()`
 (§11's "one transition funnel" discipline applies to RTC writes too). `msg.c` receives a typed
 pointer to the nested `msg` sub-struct and calls back into `modes.c` to re-CRC. `modes_boot()` MUST
 log `sizeof(pager_rtc_t)` at boot and MUST `_Static_assert(sizeof(pager_rtc_t) <= 1184)`.
 
-### 9.4 Why 161 bytes is full fidelity for a reply, and lossy only for a parent message
+### 9.4 Reply and unread bodies are now full fidelity
 
-§3.1 caps a body at 160 Unicode code points **and** 320 UTF-8 bytes. 320 is the worst case for
-non-ASCII text; 161 B (160 + NUL) is the exact requirement for ASCII.
+§3.1 caps a body at 160 Unicode code points **and** 320 UTF-8 bytes.
 
-- **`pending_up` (student reply):** the only input device is the CardKB, which emits
-  one byte per keypress and has no IME. A composed reply is ASCII by construction, so 160 bytes is
-  160 characters and nothing is ever lost. The composer MUST therefore **refuse input past 160
-  bytes** rather than truncate at send time; `msg_queue_reply()` MUST reject a longer body with an
-  error, never truncate. A truncated reply on the wire would be a silent correctness failure and is
-  the one case this design refuses to accept.
-- **`unread` (parent message):** a parent typing on a browser can emit up to 320 UTF-8 bytes. The RTC
-  mirror is truncated at a **UTF-8 code-point boundary** to ≤160 bytes and flagged
-  `MSG_F_TRUNCATED`. This is lossy only on the reset path: in normal operation the UI renders from
-  the RAM copy, which holds the full 320 bytes. After a reset the student sees the message with a
-  trailing ellipsis rather than not seeing it at all.
+**Reply bodies (§4.2, §5.6).** Once an IME is added (§5.2), a composed reply can be up to 320 UTF-8
+bytes of arbitrary Unicode. Instead of storing bodies in RTC (which has no headroom for 320 bytes),
+replies are now stored in NVS namespace `msgq` with full fidelity. The composer MUST **refuse input
+past 320 UTF-8 bytes** (160 code points, whichever binds first) rather than truncate; a truncated
+reply would be a silent correctness failure. The NVS write happens on submit; the entry is erased
+on PUBACK.
 
-### 9.5 RAM-resident store (`msg.c`, ordinary `.bss`)
+**Unread down messages.** The newest unread down message is stored in NVS `msgq` in full (up to 320
+bytes). In normal operation the UI renders from the RAM copy; on reset, the device restores from NVS
+with full fidelity, never truncated. (Older unread messages beyond the newest are lost to RAM; §9.6
+says so explicitly.)
+
+### 9.5 RAM and NVS store
+
+**RAM-resident, ordinary `.bss`:**
 
 | Field | Bytes | Purpose |
 |---|---|---|
-| `s_thread[10]` — `msg_t` = `ts`, `id[17]`, `from[17]`, `body[321]`, `body_len`, `dir`, `ack_state`, `flags`, `in_use` | 3760 | Thread history, both directions, full 320-byte bodies. **10 entries**, matching §5.3's 10-per-online-edge re-publish cap. |
-| `s_composer[161]` + cursor/length | 168 | In-progress reply text (§9.4) |
-| `ui.c` frame buffers: new plane + shadow (old) plane, 16 B/row × 296 rows each | 9472 | SSD1680 differential partial refresh needs both planes; see §9.6 |
+| `s_thread[32]` — `msg_t` = `ts`, `id[17]`, `from[17]`, `to[17]`, `body[321]`, `body_len`, `dir`, `ack_state`, `flags`, `in_use` | 13312 | Thread history, both directions, full 320-byte bodies. **32 entries** for richer history display; §5.3's 10-per-online-edge re-publish cap is about message *state*, not ring depth. |
+| `s_composer[321]` + cursor/length/to | 328 | In-progress reply text, UTF-8 with IME (§5.2, §9.4); `to` field to track recipient |
+| `ui.c` frame buffers: new plane + shadow (old) plane, 16 B/row × 296 rows each | 9472 | SSD1680 differential partial refresh needs both planes |
 
-≈ 13.4 kB of the ESP32-S3's ~512 kB SRAM. RAM is not the scarce resource here and firmware-dev
-should not optimise this; the scarce resource is the 1184 B above.
+≈ 23.1 kB of the ESP32-S3's ~512 kB SRAM. RAM is not the scarce resource.
+
+**NVS-resident, namespace `msgq` (survives reset and cold boot):**
+
+| Field | Bytes | Purpose |
+|---|---|---|
+| Reply body (each entry) | ≤ 320 + metadata | Unsent reply body, stored on submit, erased on PUBACK (§9.4, §4.2) |
+| Unread message body | ≤ 320 + metadata | Newest unread down message, full fidelity (§9.4) |
 
 ### 9.6 What survives what
 
-| Event | RTC struct | `.bss` (thread, composer, frame buffers) | Modem TLS+MQTT session |
-|---|---|---|---|
-| Light-sleep wake (every 2 s / 5 s — the everyday case, §8) | survives | **survives** | survives |
-| `esp_restart()`, watchdog reset, panic/crash | survives | **lost** | survives (modem is never power-gated, §6.4) |
-| Brownout, EN reset, battery removal, first power-on | **lost** (CRC fails → cold boot) | lost | lost |
+| Event | RTC struct | NVS (`msgq`, `book`, `lock`, `ident`) | `.bss` (thread, composer, frame buffers) | Modem TLS+MQTT session |
+|---|---|---|---|---|
+| Light-sleep wake (every 2 s / 5 s — everyday case, §8) | survives | survives | **survives** | survives |
+| `esp_restart()`, watchdog reset, panic/crash | survives | **survives** | **lost** | survives (modem never power-gated, §6.4) |
+| Brownout, EN reset, battery removal, first power-on | **lost** (CRC fails → cold boot) | **survives** | lost | lost |
 
 Concretely, after a **crash or watchdog reset**: pending acks and pending replies are retried
 normally, dedup still suppresses redeliveries, and the newest unread message is re-rendered from
@@ -1039,34 +1113,64 @@ case of the two.
   rewrite.
 ---
 
-## 10. Path to CBOR (documented, not designed)
+## 10. CBOR keymap (normative)
 
-CBOR is **not** implemented. The principles the current JSON encoding preserves so that it could be:
+Devices emit CBOR (§3) with this integer keymap. The relay accepts both JSON (text keys) and CBOR
+(integer keys) on every inbound topic and answers in the encoding of its last `/status`.
 
-1. **Short keys.** Every field name is ≤4 ASCII characters (`v`, `id`, `ts`, `from`, `body`, `ack`)
-  so each maps 1:1 to a CBOR text key with no renaming, and later to a fixed integer keymap:
-  `v=0, id=1, ts=2, from=3, body=4, ack=5`. New fields (§11) MUST also be ≤4 characters and MUST
-  claim the next free integer in this table when they are added.
-  *(the newer fields claim their integers now, while the table is still cheap to
-  extend.)* Envelope keys: `kind=6, to=7`. `/loc` keys (§13): `loc=8, req=9, cached=10, err=11`,
-  and inside the `loc` object a separate sub-keymap `lat=0, lon=1, acc=2, fix_ts=3, src=4`.
-  **Two names break the ≤4-character rule: `cached` (6) and `fix_ts` (6).** They are kept
-  because legibility on a wire nobody has to hand-decode is worth more than two bytes each on a
-  ≤200-byte envelope that is itself under 6 % of the data budget, and because the integer keymap
-  above removes the cost entirely the day CBOR is implemented. The rule still binds for the
-  `/down` and `/up` envelopes, where the device's static buffers live.
-2. **Self-describing framing.** A JSON payload always begins with `0x7B` (`{`); a CBOR map always
-  begins with `0xA0`–`0xBF` or `0xBF`. A receiver can therefore dispatch on the **first byte** with
-  no negotiation, no new topic and no flag day. *(the alternative, a separate
-  `/down-cbor` topic, doubles subscription count and broker ACL surface for no benefit.)*
-3. **Version field.** `v` distinguishes semantic changes from encoding changes. Encoding change
-  alone does **not** bump `v`; a field-meaning change does. `v:1` is the only defined value.
-4. **Ignore-unknown.** §3.1's rule means a v1 receiver survives a v1-plus-extras publisher.
-5. Expected saving: the 99-byte down message becomes roughly 60–70 bytes with text keys and roughly
-  45–55 bytes with integer keys (estimate). At the nominal profile in §7.3 that saves ~1 kB/day of
-  58 kB/day — **under 2 %**. CBOR is therefore not justified by the data budget; it would be
-  justified only by device-side parse cost or RTC memory pressure. Do not implement it without a
-  measurement that names which of those it is fixing.
+**Envelope keys** (message, ack, location, /status, bootstrap):
+
+| Key | Name | Type | Where |
+|---|---|---|---|
+| 0 | `v` | int | all envelopes (default 1) |
+| 1 | `id` | tstr | all envelopes |
+| 2 | `ts` | int | all envelopes (0 if no network time) |
+| 3 | `from` | tstr | `/down` msg, ack, location answer |
+| 4 | `body` | tstr | `/down` msg, `/up` msg, bootstrap ok (if present) |
+| 5 | `ack` | tstr | all envelopes (`shown`, `read`, or `null`) |
+| 6 | `kind` | tstr | `/down` (msg/loc_req/book/cfg), `/up` (msg/contact_req), bootstrap ok |
+| 7 | `to` | tstr | `/up` content messages |
+| 8 | `loc` | map | `/loc` envelope (§13.2) |
+| 9 | `req` | tstr | `/loc` envelope (§13.2) |
+| 10 | `cached` | bool | `/loc` envelope (§13.2) |
+| 11 | `err` | tstr | `/loc` envelope when `loc` is null |
+| 12 | `n` | uint | signed envelopes (replay counter) |
+| 13 | `sig` | bstr(8) | signed envelopes (HMAC tag); **MUST be last** |
+| 14 | `bv` | int | `/status` and `/down` `book` |
+| 15 | `name` | tstr | `/up` `contact_req`, `/down` `book` contacts |
+| 16 | `ph` | tstr | `/up` `contact_req` |
+| 17 | `d` | tstr | `/down` `book` (default recipient) |
+| 18 | `c` | array | `/down` `book` (contacts) |
+| 19 | `p` | array | `/down` `book` (pending requests) |
+| 20 | `more` | bool | `/down` `book` (reserved for chunking) |
+| 21 | `state` | tstr | `/status` (online/offline) |
+| 22 | `mode` | tstr | `/status` (sleep/active) |
+| 23 | `batt_mv` | int | `/status` (battery millivolts) |
+| 24 | `rssi` | int | `/status` (signal strength in dBm) |
+| 25 | `session` | tstr | `/status` (session id) |
+| 26 | `fw` | tstr | `/status` (firmware version) |
+| 27 | `loc_period_s` | int | `/status` (periodic location interval) |
+| 28 | `loc_min_s` | int | `/status` (on-demand location rate limit) |
+| 29 | `ok` | int | bootstrap `/up` |
+| 30 | `pw` | tstr | bootstrap bundle (MQTT password) |
+| 31 | `k` | bstr(32) | bootstrap bundle (device HMAC key) |
+| 32 | `host` | tstr | bootstrap bundle (broker hostname) |
+| 33 | `port` | int | bootstrap bundle (broker port) |
+| 34 | `ca` | tstr | bootstrap bundle (CA PEM) |
+| 35 | `flags` | int | bootstrap bundle (device flags) |
+| 36 | `label` | tstr | bootstrap bundle (device label) |
+| 37 | `apn` | tstr | bootstrap bundle (carrier APN, optional) |
+| 38 | `cfg` | map | `/down` `cfg` (device settings) |
+
+**Sub-map keys:**
+
+`loc` object (inside `/loc` envelope): `lat=0, lon=1, acc=2, fix_ts=3, src=4`.
+
+`c[]` contact object (inside `/down` `book`): `a=0` (alias), `n=1` (name), `t=2` (type web/sms/chat).
+
+`p[]` pending request object (inside `/down` `book`): `n=0` (name), `s=1` (status pend/no).
+
+`lock` map (inside `/down` `cfg.lock`): `clear=0` (bool), `auto=1` (int minutes).
 
 ---
 
@@ -1078,14 +1182,14 @@ These are reservations only. Code MUST NOT implement, subscribe to, or emit any 
 | Reserved topic | Intended use | Notes |
 |---|---|---|
 | ~~`pager/{id}/loc`~~ | ~~GNSS fixes, device → relay~~ | **Spent — this is now a live topic, specified in §13.** QoS ended up 1-when-answering / 0-when-periodic rather than "QoS 0 likely". |
-| `pager/{id}/cfg` | relay → device config (mode schedule, geofences) | Retained=true so a waking device gets current config with no request |
+| `pager/{id}/cfg` | relay → device config | **Remain reserved but unused.** Device settings arrive as `/down` `cfg` kind messages (§5.8) on the normal `/down` topic. A dedicated `/cfg` topic would require a second subscription and re-publish messages 4–24 times per day for data that changes a few times per month (§5.3 rationale, §4.3). |
 | `pager/{id}/evt` | geofence enter/exit, motion, low-battery alerts | Separate from `/up` so the parent thread stays human messages only |
 
 **Schema slots** — reserved field names, not to be reused for anything else:
-~~`loc` (lat/lon/acc)~~ — **spent, see §13**, along with `kind`, `to`, `req`, `cached`, `err`,
-`loc_period_s` and `loc_min_s`, which are now defined fields and not reservations —
-`prio` (priority / alert level), `exp` (message TTL, would supersede §4's fixed 24 h `expired`
-sweep), `sched` (mode schedule id).
+~~`loc` (lat/lon/acc)~~ — **spent, see §13**; ~~`book`~~ — **spent as a `/down` kind (§4.3)**;
+along with `kind`, `to`, `req`, `cached`, `err`, `loc_period_s`, `loc_min_s`, `bv`, `n`, `sig`,
+which are now defined fields and not reservations — `prio` (priority / alert level), `exp` (message
+TTL, would supersede §4's fixed 24 h `expired` sweep), `sched` (mode schedule id).
 
 **Enum headroom** — `from` already allows `system`, which is where geofence and low-battery
 notifications will render in the thread without a schema change; the rest of `from` is now
@@ -1145,12 +1249,13 @@ the future.
   becomes implementable and idle battery life goes from ~30–35 days back to roughly 80–120 days.
   ~20 minutes on hardware. Nobody should redesign anything for it until it has been run.
 
-5. **Not a decision, but needs an owner:** per-device MQTT credentials and the broker CA must be
-  provisioned to the device at flash time and never committed. The device-side
-  mechanism is settled — `tlsWriteCredential()` into modem NVRAM certificate slot ≥ 11, once per
-  device, persistent across reboots (§6.1) — but no tooling for getting the per-device credentials
-  *to* that call exists in the repo yet. NVS plus a flash-time provisioning step is the obvious
-  shape; nobody owns it.
+5. **Device provisioning is now owned by `DEVICE_PLAN.md` §3 (phase 0/1/2b/3).** One-time setup
+  over the SIM using a typed code and a token-encrypted bootstrap bundle (§3.2 of this plan). The
+  device-side mechanism is `tlsWriteCredential()` into modem NVRAM certificate slot ≥ 11; device
+  identity, MQTT password, and HMAC key are written to NVS namespace `ident` once per setup; the
+  relay stores the per-device HMAC key in server-only `deviceSecrets` collection. Flash encryption
+  is **deliberately off** (no NVS encryption; revoke + new setup code is the threat response for a
+  stolen device).
 
 6. **Resolved — no dedicated battery-voltage sense pin, but option (b) exists and is wired in.**
   §5.1's `/status` schema requires `batt_mv`, and `firmware/README.md`'s hardware table does not
@@ -1349,3 +1454,121 @@ A periodic fix (`req:null`) is published every `loc_period_s` when that value is
 QoS 0, and is the device's decision alone. §7.3 budgets it and flags the interval below which a
 bad-coverage day breaks the project's 10 MB bar. `loc_period_s` = 0 disables periodic location
 entirely and is a valid, fully conformant configuration; on-demand `loc_req` still works.
+
+---
+
+## 14. Device authentication
+
+Every `/up`, `/status`, and `/loc` from a device configured with `authMode: "hmac"` MUST carry `n`
+(replay counter) and `sig` (HMAC-SHA256 tag, truncated to 64 bits). The relay verifies the
+signature and the replay window before parsing and storing the message.
+
+### 14.1 Key material
+
+- **`K_dev`:** 32 random bytes, generated by the relay when the device is created (phase 2b) and
+  returned exactly once to the device in the encrypted provisioning bundle (§3.2). Stored server-side
+  in the server-only Firestore collection `deviceSecrets/{deviceId}`, never in `devices/{d}` which
+  the owner's browser can read.
+- **One key per device, used in both directions.** The topic is part of the MAC input (§14.3), which
+  separates directions and topics; no derived per-direction keys are needed.
+- **MQTT password is separate.** Rotating one does not require rotating the other. Each secret is
+  provisioned via the same one-time setup code but is managed independently at the broker and relay.
+- **Rotation is a new setup code** (§3.5 of `DEVICE_PLAN.md`): the person types it on the device
+  and the bootstrap fetch replaces the key. Silent over-the-air key rotation is not implemented.
+
+### 14.2 Per-device, per-direction counter (`n`)
+
+The counter is 32 bits, split as `n = (epoch << 20) | lo`. It is strictly increasing per publisher
+and is verified with a sliding window to absorb the jump when the epoch increments.
+
+**Device side, `/up`, `/status`, `/loc`:**
+- `lo` (low 20 bits) lives in RTC memory (§9.3 `auth.up_lo`) and increments per publish (free).
+- `epoch` (high 12 bits) lives in NVS and increments only on cold boot or when `lo` wraps. 12 bits
+  of epoch = 4096 cold boots; 20 bits of `lo` = 1 M envelopes per epoch. The relay's window (below)
+  absorbs the jump at each cold boot.
+
+**Device side, `/down`:**
+- Device maintains `down_n` (highest accepted `n`) and a 64-bit bitmap of the 64 values below it in
+  RTC (§9.3). A `/down` failing signature or window verification is treated as malformed (§3.4): count
+  the error, log it, do **not** render, **do not ack**. The relay then sees the message stay `sent`.
+
+**Relay side, per device (in `deviceSecrets/{d}`):**
+- `upN` (highest accepted `n` for device-originated messages), `upBits` (64-bit bitmap of values
+  below it).
+- Accept an inbound `n` if `n > upN` (shift the window) or `upN − 64 < n ≤ upN` and its bit is clear;
+  otherwise drop as a replay and log a security event.
+- The update is part of the same Firestore transaction that deduplicates by message `id`, so this adds
+  no round trip.
+
+### 14.3 Signature (`sig`)
+
+**What is signed:** `HMAC-SHA256(K_dev, topic ‖ 0x00 ‖ P)[0:8]`, where `topic` is the full MQTT
+topic string and `P` is defined below:
+
+- **CBOR:** Publisher encodes the map with a header that includes the `sig` pair, writes every other
+  pair, computes the tag over `topic ‖ 0x00 ‖ P` where `P` is everything written so far, then
+  appends `sig` (key 13, byte string). No re-encoding, no canonical form: `sig` must be the last pair.
+- **JSON:** Publisher serializes without `sig` (that is `P`, ending in `}`), MACs it, then emits
+  `P[0:-1]` + `,"sig":"` + base64url(tag) + `"}`; `sig` is the only field with an ordering rule.
+
+**Verification:** Malformed if missing `sig` or if the signature does not verify. Verifiers require
+the payload to end with the expected tag bytes (CBOR: `0x0D 0x48` + 8 bytes; JSON: trailing tag in
+the `sig` field) and MUST verify in constant time. Parsing happens **only after** verification
+succeeds (§3.4).
+
+**Size:** CBOR envelope with `n` and `sig` is ~15 bytes larger than unsigned; signed CBOR is ≈25%
+smaller than unsigned JSON for the same message (§7.2).
+
+### 14.4 Server-side verification
+
+Order of operations (in `relay/app/ingest.py`):
+
+1. Size check: ≤ 640 bytes (§3.3) — drop unparsed if not.
+2. Look up `deviceSecrets` by device id from the topic (cache in-process). Record the result keyed by
+   device id (changes only on key rotation).
+3. If the device's `authMode` is `"hmac"`, extract and verify `sig` in constant time (§14.3).
+   Failed signature → **count as `sigFailures`, log security event with topic and first 64 bytes,
+   treat as malformed (do not render, do not store), still return 2xx to broker.**
+4. Parse the message (now safe).
+5. Check `n` in the sliding window (§14.2). Out-of-window → same as signature failure: count,
+   log, drop, return 2xx.
+6. Proceed with existing handling (dedup by `id`, route, store, etc.).
+
+**Server-side per-device state:**
+
+```
+deviceSecrets/{deviceId}
+{
+  hmacKey,                    // 32 bytes, base64 in JSON
+  mqttPasswordHash,           // from §6.1; also server-only
+  upN,                        // highest accepted n for /up, /status, /loc
+  upBits,                     // 64-bit sliding window bitmap
+  downN,                      // last n issued for /down (incremented per publish)
+  sigFailures,                // counter; reset on key rotation
+  authMode,                   // "hmac" or unset (v1 device, unsigned)
+  createdAt, rotatedAt,       // timestamps
+  ...
+}
+```
+
+**Alert on repeated signature failures:** More than 20 failures in 10 minutes on one device sets
+a flag in `devices/{d}.status.authAlarm` for the admin UI.
+
+### 14.5 Signing `/down` (relay-originated)
+
+Every `/down` message published by the relay (via the broker's REST API) includes `n` (an
+incrementing counter per device) and `sig` (computed as §14.3). The counter increment happens in
+the same transaction that wrote `deviceSecrets.downN`, so it is atomic and never repeats.
+`downN` is not reset on key rotation; it continues from where it left off, so the window can still
+detect a replayed message from before the rotation.
+
+Every `/down` kind (msg, book, cfg, loc_req) is signed if the device is `hmac`-authenticated. A v1
+device configured without signatures sees an unsigned `/down`; one provisioned with `authMode:
+"hmac"` sees all `/down` signed. The device's provisioning bundle (§3.2) sets the `req_sig` flag.
+
+### 14.6 Unsigned LWT exception
+
+The broker-generated LWT `{"v":1,"state":"offline",…}` cannot carry a signature. The relay accepts
+an unsigned `/status` **only** when it is exactly `state:"offline"` with no live fields (no `mode`,
+`batt_mv`, `rssi`, `session`, etc.). The worst a forger can do with it is mark a device offline in
+the parent UI until the next signed `online` message arrives — accepted as tolerable.
