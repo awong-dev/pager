@@ -92,6 +92,92 @@ def test_unauthenticated_cannot_read_the_message(two_pairs):
     assert resp.status_code == 403
 
 
+def test_party_can_list_query_their_thread(two_pairs):
+    """The web app's thread listener (`web/app/chat/[alias]/
+    ThreadPageClient.tsx`): `messages` filtered by `convKey` **and** by
+    `uids array-contains <self>`. The second filter is what makes the query
+    authorisable -- a `list` is checked abstractly against the query's own
+    declared filters, before any document is read, so a `convKey`-only query
+    asserts nothing about who may read the result and is denied (the next
+    test pins that). Single-document `get`s above never exercised this, which
+    is how a thread that 403'd in the browser passed the suite."""
+    key = messages_store.conv_key("u1", "u2")
+    body = {
+        "structuredQuery": {
+            "from": [{"collectionId": "messages"}],
+            "where": {
+                "compositeFilter": {
+                    "op": "AND",
+                    "filters": [
+                        {
+                            "fieldFilter": {
+                                "field": {"fieldPath": "convKey"},
+                                "op": "EQUAL",
+                                "value": {"stringValue": key},
+                            }
+                        },
+                        {
+                            "fieldFilter": {
+                                "field": {"fieldPath": "uids"},
+                                "op": "ARRAY_CONTAINS",
+                                "value": {"stringValue": "u1"},
+                            }
+                        },
+                    ],
+                }
+            },
+            "orderBy": [{"field": {"fieldPath": "seq"}, "direction": "DESCENDING"}],
+            "limit": 50,
+        }
+    }
+    resp = _run_query("", mint_id_token("u1"), body)
+    assert resp.status_code == 200, resp.text
+    assert any("document" in entry for entry in resp.json()), resp.text
+
+
+def test_thread_list_query_without_the_uids_filter_is_denied(two_pairs):
+    """The same query minus `uids array-contains` -- denied even for a real
+    party to the conversation, because the rule has nothing to prove itself
+    from. Pinned so nobody "simplifies" the redundant-looking filter out of
+    `ThreadPageClient.tsx` and silently empties every thread."""
+    key = messages_store.conv_key("u1", "u2")
+    body = {
+        "structuredQuery": {
+            "from": [{"collectionId": "messages"}],
+            "where": {
+                "fieldFilter": {
+                    "field": {"fieldPath": "convKey"},
+                    "op": "EQUAL",
+                    "value": {"stringValue": key},
+                }
+            },
+        }
+    }
+    resp = _run_query("", mint_id_token("u1"), body)
+    assert resp.status_code == 403, resp.text
+
+
+def test_non_party_cannot_list_query_a_thread(two_pairs):
+    """A `uids array-contains u3` filter is provable, but matches nothing of
+    u1<->u2's -- an outsider gets an empty result set, never other people's
+    messages."""
+    body = {
+        "structuredQuery": {
+            "from": [{"collectionId": "messages"}],
+            "where": {
+                "fieldFilter": {
+                    "field": {"fieldPath": "uids"},
+                    "op": "ARRAY_CONTAINS",
+                    "value": {"stringValue": "u3"},
+                }
+            },
+        }
+    }
+    resp = _run_query("", mint_id_token("u3"), body)
+    assert resp.status_code == 200, resp.text
+    assert not any("document" in entry for entry in resp.json()), resp.text
+
+
 def test_party_can_read_their_conversation(two_pairs):
     key = messages_store.conv_key("u1", "u2")
     token = mint_id_token("u2")

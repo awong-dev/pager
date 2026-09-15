@@ -166,13 +166,21 @@ function ThreadInner({ alias }: { alias: string }) {
   // bigger limit is simpler and just as correct as a cursor for a household-
   // scale thread (§9.3's low daily volume).
   useEffect(() => {
-    if (!convKey) {
+    if (!convKey || !me) {
       return;
     }
     const db = getFirestoreDb();
     const q = query(
       collection(db, "messages"),
       where("convKey", "==", convKey),
+      // Redundant against `convKey` (a convKey is built from exactly these
+      // two uids), but load-bearing for `firestore.rules`: a `list` is
+      // authorised by an *abstract* pre-check against the query's declared
+      // filters alone, before any document is read. `convKey` alone gives
+      // the `messages` rule (`uid in resource.data.uids`) nothing to prove
+      // itself from, so the whole query 403s -- same failure mode, and same
+      // fix, as the `devices`/`locatableBy` queries below.
+      where("uids", "array-contains", me.uid),
       orderBy("seq", "desc"),
       limit(pageSize)
     );
@@ -183,7 +191,7 @@ function ThreadInner({ alias }: { alias: string }) {
       setMessages(rows);
     });
     return unsubscribe;
-  }, [convKey, pageSize]);
+  }, [convKey, me, pageSize]);
 
   // Peer's pager device (for the location card + "Request location") -- see
   // lib/directory.tsx's module docstring for why the query shape differs by

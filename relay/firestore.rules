@@ -37,6 +37,15 @@ service cloud.firestore {
       }
     }
 
+    // A `list` against either collection is authorised by an *abstract*
+    // pre-check, run against the query's own declared filters before any
+    // document is read -- so the query MUST carry a filter this rule can
+    // prove itself from, i.e. `where('uids', 'array-contains', <self>)`.
+    // Both readers do (web/app/chat/page.tsx for conversations,
+    // chat/[alias]/ThreadPageClient.tsx for messages). A thread query
+    // filtered only on `convKey` is denied outright, which is correct: it
+    // asserts nothing about who is allowed to read the result.
+    // `relay/tests/test_rules.py` pins both directions.
     match /messages/{id} {
       allow read: if registered() && request.auth.uid in resource.data.uids;
     }
