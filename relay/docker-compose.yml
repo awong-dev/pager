@@ -18,6 +18,11 @@ services:
       # dynamically generated key the relay would need to be told about
       # after EMQX starts. See relay/README.md.
       - ./emqx/bootstrap_api_keys.txt:/opt/emqx/data/bootstrap_api_keys.txt:ro
+      # docs/DEVICE_TASKS.md S2.1: enables built_in_database
+      # authentication + authorization (deny-by-default) in place of the
+      # anonymous-allowed / allow-all defaults -- see that file's own
+      # comments for why each block is there.
+      - ./emqx/emqx.conf:/opt/emqx/etc/emqx.conf:ro
     environment:
       EMQX_API_KEY__BOOTSTRAP_FILE: /opt/emqx/data/bootstrap_api_keys.txt
     healthcheck:
