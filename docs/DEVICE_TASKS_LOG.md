@@ -15,3 +15,22 @@ One line per task: status (done / built-unverified / blocked), commit hash, and 
 | F3.3 | done | 6305872 | auth.c: CBOR-only sign/verify (devices never speak JSON on the wire), key supplied via new `auth_init(kdev)` rather than as a per-call arg (keeps host-testable, no ident.c dep). auth_verify trims sig bytes without rewriting the map header pair count per DEVICE_PLAN §2.4's no-re-serialisation rule. 32-wide down window confirmed intentional vs S1.1's 64-wide up window (asymmetric by design). Host HMAC/SHA-256 fallback for non-ESP32 builds, verified against known test vectors and authvectors.json. make test + idf.py build both green. |
 | S1.4 | done | 5693d82 | broker.publish_down(device_id, obj): single choke point, reads wire/authMode, signs or leaves unsigned per authMode, fails closed if device/secrets missing. pager.py backend rewired through it. **TODO(orchestrator):** ingest.py's `_send_system_reply` (unknown-recipient auto-reply) still publishes /down directly, unsigned, outside this choke point — not in S1.4's Files list, needs a follow-up task. Also: POST /api/admin/devices creates authMode:"hmac" devices with no deviceSecrets row yet (that's S2.2's job) — such devices can't receive /down until S2.2 lands; this is expected mid-sequence, not a bug. |
 | F3.4 | done | 4b63d4f | net.cpp reads ident_get_*() for credentials; CA-to-slot-12 write now skipped when ca_hash unchanged; net_tls_profile_bootstrap() (profile 3, no cert validation); net_get_rssi/net_publish_raw added. **UNVERIFIED settled:** DEVICE_PLAN.md §5.4's "getRSSI() vs getSignalQuality()" resolved to `WalterModem::getRSSI()` (AT+CSQ, WalterModem.cpp:4478) — getSignalQuality() returns RSRP/RSRQ, a different quantity; raw value 99 ("not known") guarded to return false. **UNVERIFIED settled:** publish binary-safety confirmed — WalterModem::mqttPublish() (WalterMQTT.cpp:97) sends payload as raw bytes via uart_write_bytes, no JSON-string fallback needed; net_publish_raw() implemented directly. idf.py build green. |
+| T1.5 | done, with a Blocked item below | 16379f5 | pager_client.py signs/verifies both encodings, 32-wide down window; e2e_v2.py provisions deviceSecrets rows directly (test-harness plumbing, S2.2 not landed yet). Also fixed (flagged, out-of-scope but real bug): ingest.py's `_send_system_reply` was publishing unsigned /down outside S1.4's `publish_down` choke point — now routed through it. `--wire json` e2e: ALL PASSED (9 scenarios). `--wire cbor` e2e: **fails end-to-end**, see Blocked section. Default wire for pager_client.py set to `"json"` (DEVICE_PLAN.md §2.4 wins over DEVICE_TASKS.md's stated "default cbor" per the docs' own precedence rule). |
+
+## Blocked
+
+- **CBOR wire mode cannot round-trip through the real EMQX broker.** `tools/emqx_setup.py`'s rule
+  SQL (`upsert_action` `"body": "${.}"` at line 134, `upsert_rule` `sql = "SELECT topic, payload,
+  qos, clientid FROM ..."` at line 170) makes EMQX serialize the whole rule-engine event —
+  including the raw MQTT `payload` — as one JSON string for the webhook POST. EMQX's JSON encoder
+  requires valid UTF-8, so a binary CBOR payload gets its invalid bytes replaced with U+FFFD before
+  `relay/app/broker.py`'s `parse_webhook` (~line 191-199, which does `payload.encode("utf-8")` on
+  the JSON string) ever sees the real bytes. `relay/app/broker.py`'s own module docstring already
+  half-acknowledges this gap. Confirmed by T1.5's agent: CBOR+HMAC application logic itself is
+  correct (proven via direct `Ingest.handle_up` calls in `test_devauth.py`/`test_ingest.py`); the
+  break is purely in the EMQX-rule → JSON-webhook hop.
+  **Decision needed:** how to make the EMQX webhook path binary-safe — e.g. base64/hex-encode
+  `payload` in the rule SQL and decode it back in `parse_webhook`. This likely belongs in S2.1
+  (`tools/emqx_setup.py` is already in that task's Files list) or a small new task, since neither
+  currently owns `relay/app/broker.py`'s webhook-parsing side of the fix. Blocks the plan's
+  Definition-of-done requirement that `e2e_v2.py` run green "in both wire encodings."
