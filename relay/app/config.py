@@ -38,6 +38,27 @@ class Settings:
     google_cloud_project: str | None
     firestore_emulator_host: str | None
     firebase_auth_emulator_host: str | None
+    # docs/DEVICE_PLAN.md §3.3 (docs/DEVICE_TASKS.md S2b.2): the production
+    # MQTT/TLS host bootstrap bundles point the device at, and the host
+    # `app/ca_resolve.py` connects to on port 8883 to auto-resolve the
+    # broker's CA when BROKER_CA_PEM (below) is unset. Also read directly
+    # from the environment today by `app/routers/admin.py`'s
+    # `_bootstrap_host_and_ca` (that module's own comment names this task as
+    # the one that would give it a proper home; admin.py is mid-edit by a
+    # concurrent task as of this change, so it still reads `os.environ`
+    # itself instead of `Settings.broker_host`).
+    # Defaulted (unlike every field above) so the many `Settings(**defaults)`
+    # test fixtures across `relay/tests/` -- none of which are in this
+    # task's `Files` list, so they cannot be updated to pass these two
+    # explicitly -- keep constructing without them.
+    broker_host: str = "localhost"
+    # A deployment's Terraform (`infra/`) knows which broker it stood up and
+    # sets this to that broker's CA PEM directly -- wins over auto-resolve
+    # unconditionally (§3.3: "otherwise resolved once at startup"). Empty
+    # means `app/ca_resolve.py` falls back to the TLS-handshake-plus-certifi
+    # lookup; if that also fails, bundles carry no `ca` (the device reports
+    # "broker certificate not trusted").
+    broker_ca_pem: str | None = None
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -52,4 +73,6 @@ class Settings:
             google_cloud_project=os.environ.get("GOOGLE_CLOUD_PROJECT") or None,
             firestore_emulator_host=os.environ.get("FIRESTORE_EMULATOR_HOST") or None,
             firebase_auth_emulator_host=os.environ.get("FIREBASE_AUTH_EMULATOR_HOST") or None,
+            broker_host=os.environ.get("BROKER_HOST", "localhost"),
+            broker_ca_pem=os.environ.get("BROKER_CA_PEM") or None,
         )
