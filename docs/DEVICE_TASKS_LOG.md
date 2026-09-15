@@ -34,3 +34,5 @@ One line per task: status (done / built-unverified / blocked), commit hash, and 
   (`tools/emqx_setup.py` is already in that task's Files list) or a small new task, since neither
   currently owns `relay/app/broker.py`'s webhook-parsing side of the fix. Blocks the plan's
   Definition-of-done requirement that `e2e_v2.py` run green "in both wire encodings."
+
+| S2.1 | done | f6cf19b | emqx_admin.py (ensure_device/ensure_boot_user/delete_user), BROKER_MANAGES_AUTH=0 no-op mode, emqx.conf (built_in_database authn/authz, deny-by-default), tools/emqx_setup.py provisions the relay-1 credential. 10/10 tests pass. Hand-verified against a live container: unknown user refused (CONNACK reason 5); pgr-0001 cannot publish to pgr-0002's topic (broker log: not_authorized, subscriber never received it) but can publish to its own. Noted PROTOCOL.md §2's "three ACL rules" is imprecise — actual mirror-image enforcement needs 4 rules (3 publish + 1 subscribe) per device; implemented the working version, flagged the doc wording. |
