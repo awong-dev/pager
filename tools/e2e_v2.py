@@ -39,7 +39,6 @@ see `infra/README.md`.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import logging
 import os
 import re
@@ -97,14 +96,6 @@ _env_backup: str | None = None
 # `MQTT_PORT` above.
 WIRE_MODE: str = "json"
 
-# docs/DEVICE_TASKS.md T1.5: `hmacKey` per device id, populated by
-# `create_device_with_secret` below and consumed by `make_device` so a
-# scenario that constructs more than one `DeviceClient` for the same device
-# id (e.g. `scenario_text_roundtrip`/`scenario_allowlist` both reconnecting
-# as "pgr-e2e-1", created once in `scenario_bootstrap`) always signs with
-# the same key that device's `deviceSecrets` row actually holds.
-DEVICE_HMAC_KEYS: dict[str, bytes] = {}
-
 # `make_device` caches one `DeviceClient` per device id and hands the same
 # instance back to every scenario that asks for it, rather than
 # constructing a fresh one per call. This matters once devices sign: §14.2's
@@ -128,29 +119,31 @@ def create_device_with_secret(
     *,
     default_to_alias: str | None = None,
 ) -> dict:
-    """`admin.admin_device_add(...)` plus the `deviceSecrets/{device_id}` row
-    every `authMode: "hmac"` device needs before `app/ingest.py` will accept
-    anything from it or `app/broker.py` will sign anything to it
-    (`devices_store.create_device`'s `authMode` default is `"hmac"`,
-    `app/store/devices.py`).
+    """`admin.admin_device_add(...)` (real `POST /api/admin/devices`, S2.2's
+    shape: `{device, setupCode, expiresAt, brokerPush, manualAcl}` -- no
+    plaintext MQTT credential in the response at all, by design) followed by
+    the real §3.2 bootstrap fetch (`pager_client.bootstrap_device`, the same
+    call T2b.4 verified by hand and `scenario_setup_code` below exercises
+    end to end): connects as the one-time `boot-{bid}` credential, decrypts
+    the retained bundle, acks it, and hands back an ordinary signed
+    `DeviceClient` already holding that bundle's real `id`/`pw`/`k`/`host`/
+    `port`. Caches that `DeviceClient` in `_DEVICE_CLIENTS` (see that dict's
+    docstring) so `make_device(device_id)` below returns the exact same,
+    already-provisioned instance instead of constructing a second, unsigned
+    one.
 
-    **Test-harness plumbing, not a protocol decision.** `POST
-    /api/admin/devices` does not yet return a usable `hmacKey`/setup code --
-    that is docs/DEVICE_TASKS.md task S2.2, not landed yet. Rather than
-    block T1.5 on it, this generates the key here and writes it straight to
-    `deviceSecrets` through `app.store.device_secrets`, the same whitebox
-    Firestore-admin-SDK path `Oracle`/`_backdate_location`/`_backdate_message`
-    above already use in this file for state a real client-facing API can't
-    produce yet. TODO(orchestrator): once S2.2 lands, replace this with
-    whatever real provisioning flow it introduces."""
+    Superseded the previous (pre-S2.2, T1.5-era) approach of generating a
+    key here and writing it straight into `deviceSecrets` through
+    `app.store.device_secrets` -- that whitebox shortcut only ever existed
+    because `POST /api/admin/devices` had no usable provisioning flow yet;
+    now that S2.2 (real setup codes) and T2b.4 (a real bootstrap client)
+    both exist, going through them exercises the same path a real device
+    uses instead of hand-writing relay-internal state a real client-facing
+    API can't produce."""
     info = admin.admin_device_add(device_id, owner_alias, default_to_alias=default_to_alias)
-    _use_relay_store()
-    from app.store import device_secrets as device_secrets_store
-
-    hmac_key = os.urandom(32)
-    password_hash = hashlib.sha256(info["mqttPassword"].encode("utf-8")).hexdigest()
-    device_secrets_store.create(device_id, hmac_key=hmac_key, mqtt_password_hash=password_hash)
-    DEVICE_HMAC_KEYS[device_id] = hmac_key
+    device = pager_client.bootstrap_device(info["setupCode"], port=MQTT_PORT, wire=WIRE_MODE)
+    assert device.device_id == device_id, (device.device_id, device_id)
+    _DEVICE_CLIENTS[device_id] = device
     return info
 
 
@@ -159,11 +152,12 @@ def make_device(device_id: str) -> pager_client.DeviceClient:
     calling `pager_client.DeviceClient(...)` directly: returns the same
     cached instance (`_DEVICE_CLIENTS`) across calls for the same device id
     -- see that dict's docstring for why a fresh instance per call would
-    break signed replay-window state -- or, the first time this device id is
-    asked for, creates one that signs with the key
-    `create_device_with_secret` generated for it (or plays unsigned if none
-    was -- e.g. a device this run never provisioned) and speaks this run's
-    `--wire` encoding (`WIRE_MODE`)."""
+    break signed replay-window state. Every device id in this suite is
+    already cached here by `create_device_with_secret` (the real bootstrap
+    flow) by the time a scenario calls this; the fallback branch below only
+    ever fires for a device id this run never provisioned that way, and
+    plays an unsigned v1 device speaking this run's `--wire` encoding
+    (`WIRE_MODE`)."""
     existing = _DEVICE_CLIENTS.get(device_id)
     if existing is not None:
         return existing
@@ -173,7 +167,7 @@ def make_device(device_id: str) -> pager_client.DeviceClient:
         MQTT_PORT,
         None,
         None,
-        hmac_key=DEVICE_HMAC_KEYS.get(device_id),
+        hmac_key=None,
         wire=WIRE_MODE,
     )
     _DEVICE_CLIENTS[device_id] = device
@@ -495,8 +489,8 @@ def scenario_bootstrap() -> None:
     admin.admin_set_allow("parent", "student", message=True, locate=True, one_way=False)
 
     device_info = create_device_with_secret(admin, "pgr-e2e-1", "student", default_to_alias="parent")
-    assert device_info["mqttUsername"] == "pgr-e2e-1"
-    assert device_info["mqttPassword"]
+    assert device_info["device"]["mqttUsername"] == "pgr-e2e-1"
+    assert device_info["setupCode"]
     print("bootstrap: admin, parent, student, allow-edge and device pgr-e2e-1 created")
 
 
@@ -1055,6 +1049,16 @@ def scenario_fanout() -> None:
         tick_resp.raise_for_status()
     assert _sms_delivery_state(oracle, msg_id_2) == "failed", _sms_delivery_state(oracle, msg_id_2)
     print("fanout: sms delivery retried via tick() and reached 'failed' after the attempts cap")
+
+    # The `times=10` armed above outlives `MAX_DELIVERY_ATTEMPTS` (5) worth of
+    # sends -- the mock's `fail_next` counter is process-global (not scoped to
+    # this scenario or this message), so any leftover count would silently
+    # fail the *next* scenario's first sms send instead of this one's. Drain
+    # it via the mock's own `/_reset` (also clears `_sent`, harmless here --
+    # every assertion above that reads `_sent` already ran).
+    reset_resp = httpx.post(f"{TWILIO_MOCK_URL}/_reset", timeout=5.0)
+    reset_resp.raise_for_status()
+    print("fanout: drained the mock's /_fail_next counter via /_reset so it can't leak into later scenarios")
 
 
 def scenario_retention() -> None:
