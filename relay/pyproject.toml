@@ -35,6 +35,12 @@ dependencies = [
     # pins this library's encoding against the firmware's hand-written
     # codec.
     "cbor2",
+    # docs/DEVICE_TASKS.md S2b.1: app/devsetup.py's bootstrap-bundle crypto
+    # (HKDF-SHA256 for bid/bpw/bkey derivation, AES-256-GCM for the bundle
+    # itself, docs/DEVICE_PLAN.md §3.2). Already an indirect dependency
+    # (firebase-admin/httpx pull it in transitively) but declared explicitly
+    # now that this module imports it directly.
+    "cryptography",
 ]
 
 [project.optional-dependencies]

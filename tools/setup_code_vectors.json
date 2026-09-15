@@ -1,0 +1,24 @@
+[
+  {
+    "label": "boot_bundle",
+    "_comment": "docs/DEVICE_TASKS.md S2b.1's 'add a token vector'. Kept in its own file rather than appended to tools/authvectors.json: that file's consumer, relay/tests/test_devauth.py (outside this task's Files list), asserts the vector list's label *set* equals an exact 8-item set and parametrizes every entry over devauth's own (key_b64/topic/obj/json_signed_b64/cbor_signed_b64) shape -- appending a differently-shaped setup-code vector there would break test_devauth.py without touching it, which the task's ground rules forbid. See relay/tests/test_devsetup.py, which reads this file instead.",
+    "token_b64": "AAECAwQFBgc=",
+    "code": "000G-40R4-0M30-EX @ abc123.ala.us-east-1.emqxsl.com",
+    "bid": "593fc75db121",
+    "bpw": "95P90HQMmtdYZbhgDbYrSbO9KuqUtUr7kM5zsP6rWr4=",
+    "bkey_b64": "772nw4ASnix/m3EWNb82bDb/AVxVXwJx5taQgoMy8Is=",
+    "bundle_plain_obj": {
+      "v": 1,
+      "id": "pgr-0001",
+      "pw": "k9J2mQ7xN4pR8sT1vW3yZ0aB6cD5eF",
+      "k_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+      "host": "abc123.ala.us-east-1.emqxsl.com",
+      "port": 8883,
+      "ca": "-----BEGIN CERTIFICATE-----\nMIIB...FAKE...TEST...CA==\n-----END CERTIFICATE-----\n",
+      "flags": 1,
+      "label": "Kid 1"
+    },
+    "bundle_nonce_b64": "AAECAwQFBgcICQoL",
+    "bundle_ct_b64": "AAECAwQFBgcICQoL19JW45XN5PM2uelz3XRGhiI+L8GB3QDVYD/c7f498IOgWDjKaGCXb1mG6LtRDXsY15tDB9vw/Iq4g++MFdljik+RSjhMB5jBOGxWU3iyHoeIubp9f5HWpR9ncaXMGSzX6VUjvGoT+xm3eek35FVZhCJ0xbEcU/6KrOUmZjvzBhXi2Pb7VWkpfiMwKkXhwzYaisu/+kcbRWsHCzsnzaPe2RWzMrsXt4jyFRD0epuw/YSFvWrC6DpmxM+cU6nqPSsMIS4NQFCZHwJHtCiJlAwqhbY2f4s19h55leOFjq4RZwgwm/Czhf+/ZiXQ"
+  }
+]
