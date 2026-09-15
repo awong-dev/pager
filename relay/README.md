@@ -100,10 +100,13 @@ docker compose up -d firebase
 firebase emulators:start --only firestore,auth --project demo-pager
 ```
 
-Then, from `relay/`:
+Then, from `relay/`, in a virtualenv (the tools below and `pytest` both
+need the dependencies, and a Homebrew/system Python will refuse to install
+into itself):
 ```bash
-pip install -e ".[dev]"
-pytest
+python3 -m venv .venv
+.venv/bin/pip install -e ".[dev]"
+.venv/bin/pytest
 ```
 
 `tests/conftest.py` wipes both emulators before every test (Firestore via
@@ -130,7 +133,7 @@ mock — configures EMQX's rule engine, and drives it end to end through
 `tools/e2e_v2.py`'s module docstring for the scenarios, `docs/SERVER_PLAN.md`
 §8):
 ```bash
-python tools/e2e_v2.py
+relay/.venv/bin/python tools/e2e_v2.py   # from the repo root
 ```
 
 ## Message backends (docs/SERVER_PLAN.md §6.4/§6.5)
@@ -170,11 +173,15 @@ deployment from using them:
 ## CLI Tools
 
 For sending messages via the relay API and driving a simulated device +
-server session:
+server session. Both import `httpx`/`paho-mqtt`, so run them with the
+virtualenv's interpreter (`ModuleNotFoundError: No module named 'httpx'`
+means a bare `python3` was used instead):
 ```bash
-python tools/send.py --help
-python tools/pager_client.py --help
+relay/.venv/bin/python tools/send.py --help          # from the repo root
+relay/.venv/bin/python tools/pager_client.py --help
 ```
+`tools/emqx_setup.py` is the exception -- it is stdlib-only, so a plain
+`python3` runs it fine.
 
 ## Wire Protocol
 

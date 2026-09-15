@@ -9,10 +9,10 @@ allow-list and republish (1-4); location -- periodic fixes and read
 permission, on-demand `/locate` incl. coalescing/cached-answer/`no_fix`/
 derived-expiry (5-6); fan-out, retention and byte accounting (7-9).
 
-Usage:
-    python3 tools/e2e_v2.py                 # all scenarios
-    python3 tools/e2e_v2.py bootstrap allowlist
-    python3 tools/e2e_v2.py location_periodic location_on_demand
+Usage (needs the relay virtualenv -- imports `httpx`/`firebase-admin`):
+    relay/.venv/bin/python tools/e2e_v2.py                 # all scenarios
+    relay/.venv/bin/python tools/e2e_v2.py bootstrap allowlist
+    relay/.venv/bin/python tools/e2e_v2.py location_periodic location_on_demand
 
 Exit code 0 if every requested scenario passes, 1 otherwise. Always tears
 down the compose stack it started.

@@ -52,11 +52,12 @@ FIRESTORE_EMULATOR_HOST=localhost:8080 FIREBASE_AUTH_EMULATOR_HOST=localhost:909
 ```
 
 Additional (non-admin) users are then created from `/admin/users` once
-signed in as that admin, or via `tools/pager_client.py admin user-add
-<alias> "<name>" --email/--phone [--admin] --as admin --api
-http://localhost:8000` (needs `DEV_MODE=1` on the relay, already set in
-`relay/docker-compose.yml`, to sign the script in without a real
-email/SMS flow -- see `docs/SERVER_PLAN.md` §8).
+signed in as that admin, or via `relay/.venv/bin/python
+tools/pager_client.py admin user-add <alias> "<name>" --email/--phone
+[--admin] --as admin --api http://localhost:8000` (needs `DEV_MODE=1` on the
+relay, already set in `relay/docker-compose.yml`, to sign the script in
+without a real email/SMS flow -- see `docs/SERVER_PLAN.md` §8). That script
+needs the relay virtualenv's interpreter, not a bare `python3`.
 
 Firebase Auth's email-link sign-in needs a real link click, which the
 emulator UI (`http://localhost:4000/auth`) lets you copy without sending a

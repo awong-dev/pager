@@ -9,9 +9,13 @@ to it) and a server driver (HTTP against the relay's API + the Firestore
 REST API with a real Firebase ID token). One process can therefore play "the
 pager" and "the parent" for a whole end-to-end run -- see `tools/e2e_v2.py`.
 
+Needs `httpx` and `paho-mqtt`, so run it with the relay virtualenv's
+interpreter -- a bare `python3` gives `ModuleNotFoundError: No module named
+'httpx'` (see relay/README.md for creating the venv).
+
 Two ways to drive it:
-  - stdlib `cmd` REPL:            python3 tools/pager_client.py
-  - one-shot subcommand (scripting): python3 tools/pager_client.py msg "hi"
+  - stdlib `cmd` REPL:               relay/.venv/bin/python tools/pager_client.py
+  - one-shot subcommand (scripting): relay/.venv/bin/python tools/pager_client.py msg "hi"
 `--json` on either prints machine-readable output instead of prose.
 
 Device-side flags: `--device-id --host --port --username --password`.
