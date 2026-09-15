@@ -120,11 +120,19 @@ users/{uid}                    {alias, displayName, email, phone, role: 'admin'|
 aliases/{alias}                {uid}                                  uniqueness = doc id, created in a txn
 users/{uid}/backends/{bid}     {kind: 'pager'|'webapp'|'sms'|'gchat'|…, config, enabled, verifiedAt}
 allow/{fromUid}_{toUid}        {fromUid, toUid, message: bool, locate: bool}
-devices/{deviceId}             {ownerUid, label, mqttUsername, mqttPasswordHash, defaultToUid|null, revokedAt,
+devices/{deviceId}             {ownerUid, label, mqttUsername, defaultToUid|null, revokedAt,
+                                authMode: 'hmac'|'password', provisionState: 'issued'|'provisioned',
+                                wire: 'json'|'cbor'|null, bookVersion: int,
                                 locatableBy: [uid…],                  derived from allow.locate
-                                status: {state, mode, battMv, rssi, session, ts, fw, locPeriodS, locMinS, updatedAt}}
+                                status: {state, mode, battMv, rssi, session, ts, fw, locPeriodS, locMinS, 
+                                         authAlarm, updatedAt}}
 devices/{deviceId}/locations/{autoId}
                                {ts, fixTs, lat, lon, accM, src, cached, reqId|null, createdAt}
+deviceSecrets/{deviceId}       {hmacKey, mqttPasswordHash, upN, upBits, downN, sigFailures, createdAt, rotatedAt} [server-only]
+setupCodes/{bid}               {deviceId, expiresAt}                  [server-only]
+contactRequests/{deviceId}_{reqId}
+                               {deviceId, ownerUid, name, phone|null, alias|null,
+                                status: 'pending'|'approved'|'rejected', reason, createdAt, decidedAt, decidedBy}
 messages/{id}                  {id: 'm_…', seq, convKey, uids: [a, b], senderUid, recipientUid,
                                 kind: 'text'|'loc_req'|'loc', body|null, loc|null, wireId|null,
                                 originBackendKind, originBackendId|null, ts, createdAt,
@@ -219,10 +227,13 @@ settings/meta                  {schemaVersion: 2, lastSweepAt, seqCounter}
                                                    || request.auth.uid in resource.data.locatableBy || isAdmin();
     match /locations/{l}             { allow read: if request.auth.uid in get(/databases/$(db)/documents/devices/$(d)).data.locatableBy; } }
   match /allow/{e}                   { allow read: if isAdmin() || request.auth.uid in [resource.data.fromUid, resource.data.toUid]; }
+  match /contactRequests/{e}         { allow read: if isAdmin() || request.auth.uid == resource.data.ownerUid; }
   match /settings/{s}                { allow read: if registered(); }
+  match /deviceSecrets/{d}           { }  /* server-only, no client reads */
+  match /setupCodes/{b}              { }  /* server-only, no client reads */
   match /{document=**}               { allow write: if false; }
   ```
-  Clients never write; the `admin` claim is a Firebase custom claim.
+  Clients never write; the `admin` claim is a Firebase custom claim. `deviceSecrets` and `setupCodes` are server-only collections with no `match` block (default-deny read) and the catch-all write deny.
 - **Schema versioning**: `settings/meta.schemaVersion`. There is no SQL-style migration
   mechanism; a schema change is a code change plus, if it needs one, a one-off Cloud Run job.
 
@@ -342,9 +353,15 @@ POST /api/conversations/{alias}/messages {body}        → 201 {id}
 POST /api/conversations/{alias}/messages/{id}/read     → webapp delivery → 'read'
 POST /api/conversations/{alias}/locate                 → 202 {request_id} (requires allow.locate)
 POST/PATCH/DELETE /api/admin/users[/{uid}]             → admin claim; creates the Auth user too
+POST /api/admin/users/{uid}/backends {kind, config}    → admin-created backend (verifiedAt set, adminVerified)
 PUT  /api/admin/allowlist                              → replace-all; rewrites allow/* and devices.locatableBy
-POST/DELETE /api/admin/devices[/{id}]                  → POST returns the MQTT password ONCE
-POST /api/admin/devices/{id}/rotate-credentials
+POST/DELETE /api/admin/devices[/{id}]                  → POST {device, setupCode, expiresAt, brokerPush, manualAcl}
+POST /api/admin/devices/{id}/rotate-credentials        → {device, setupCode, expiresAt, brokerPush, manualAcl}
+POST /api/admin/devices/{id}/revoke                    → revoke and delete broker credential
+POST /api/admin/devices/{id}/cfg {lock: {clear?, auto?}} → push cfg down message
+GET  /api/admin/contacts?status=pending                → list pending contact requests
+POST /api/admin/contacts/{key}/approve {mode, alias?, locate?} → approve and create user/backend if needed
+POST /api/admin/contacts/{key}/reject {reason}         → reject request
 PUT  /api/admin/settings                               → retention {n, unit} per class
 POST /webhooks/mqtt                                    → broker rule engine; shared-secret header
 POST /webhooks/twilio/sms                              → Twilio signature-validated
