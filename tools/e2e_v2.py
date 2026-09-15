@@ -1194,6 +1194,132 @@ def scenario_bytes() -> None:
     )
 
 
+def _pending_book_or_cfg_acked(device_id: str, field: str) -> bool:
+    """Whitebox check that `app/devcfg.py`'s `ack()` recorded this device's
+    most recent `book`/`cfg` `shown` ack (`devices/{d}.pendingBook`/
+    `pendingCfg`, S4.2) -- there is no client-facing read of this state (a
+    `book`/`cfg` is "not a thread entry", `docs/PROTOCOL.md` §3.2, so it
+    never shows up in `Oracle.message`/`.thread`), so this reads the same
+    raw Firestore field `devcfg.py`'s own docstring describes, the same
+    style `Oracle`/`_backdate_location` already use elsewhere in this file
+    for state a real client-facing API can't produce or read."""
+    _use_relay_store()
+    from app.db.firestore import get_db
+
+    snap = get_db().collection("devices").document(device_id).get()
+    if not snap.exists:
+        return False
+    pending = (snap.to_dict() or {}).get(field)
+    return isinstance(pending, dict) and pending.get("acked") is True
+
+
+def scenario_address_book() -> None:
+    """docs/DEVICE_TASKS.md S4.5: device `contact_req` for
+    `+15550001111 Grandma` -> admin approves with `mode="create"`,
+    `alias="grandma"` -> device receives the updated `/down` `book`, applies
+    it and acks `shown` -> device sends a `to:"grandma"` up message, which
+    fans out to grandma's admin-created `sms` backend and lands at the
+    Twilio mock -> admin pushes `/down` `cfg` `lock.auto=2` -> device applies
+    it and acks `shown`.
+
+    Runnable standalone (`tools/e2e_v2.py address_book`, per this task's own
+    `Verify` line) -- unlike the older scenarios below, which assume
+    `scenario_bootstrap`'s admin/parent/student fixture already ran earlier
+    in the same process, this one calls `bootstrap_admin()` and creates its
+    own user/device, the same self-contained shape `scenario_bootstrap`
+    itself uses."""
+    bootstrap_admin()
+    oracle = Oracle()
+
+    admin = pager_client.ServerClient(RELAY_URL, AUTH_URL)
+    admin.login("admin")
+    admin.admin_user_add("abstudent", "ABStudent", email="abstudent@example.com", phone=None)
+    create_device_with_secret(admin, "pgr-e2e-book", "abstudent")
+
+    device = make_device("pgr-e2e-book")
+    device.connect()
+    wait_until(lambda: device.connected, timeout=10, description="address_book device to connect")
+
+    req_id = device.publish_contact_req("Grandma", "+15550001111")
+
+    def _pending_request() -> dict | None:
+        pending = admin.admin_list_contacts("pending")
+        return next(
+            (r for r in pending if r["deviceId"] == "pgr-e2e-book" and r["reqId"] == req_id), None
+        )
+
+    wait_until(
+        lambda: _pending_request() is not None,
+        timeout=10,
+        description="contact_req to land as a pending contactRequests row",
+    )
+    request = _pending_request()
+    assert request is not None
+    assert request["name"] == "Grandma" and request["phone"] == "+15550001111", request
+    print(f"address_book: contact_req landed pending (key={request['key']})")
+
+    approved = admin.admin_approve_contact(request["key"], mode="create", alias="grandma")
+    assert approved["status"] == "approved", approved
+    print("address_book: admin approved with mode=create, alias=grandma")
+
+    def _book_has_grandma() -> bool:
+        return device.book is not None and any(c.get("a") == "grandma" for c in device.book["c"])
+
+    wait_until(
+        _book_has_grandma,
+        timeout=10,
+        description="device to receive and apply a book containing grandma",
+    )
+    assert device.book is not None
+    print(
+        f"address_book: device applied book bv={device.book['bv']} "
+        f"contacts={[c['a'] for c in device.book['c']]}"
+    )
+
+    wait_until(
+        lambda: _pending_book_or_cfg_acked("pgr-e2e-book", "pendingBook"),
+        timeout=10,
+        description="device's book 'shown' ack to land at the relay",
+    )
+    print("address_book: device's book ack ('shown') landed at the relay")
+
+    up_id = device.publish_msg("hi grandma", to="grandma")
+    wait_until(
+        lambda: any(m.wireId == up_id for m in oracle.thread("abstudent", "grandma")),
+        timeout=10,
+        description="device's to:grandma message to land in the abstudent<->grandma thread",
+    )
+    print("address_book: to:grandma message landed in the abstudent<->grandma thread")
+
+    def _sms_received() -> bool:
+        sent = httpx.get(f"{TWILIO_MOCK_URL}/_sent", timeout=5.0)
+        sent.raise_for_status()
+        return any(
+            s["to"] == "+15550001111" and s["body"] == "hi grandma" for s in sent.json()
+        )
+
+    wait_until(
+        _sms_received, timeout=10, description="grandma's sms backend to receive the message via the Twilio mock"
+    )
+    print("address_book: the Twilio mock recorded the sms send to grandma's phone")
+
+    admin.admin_push_cfg("pgr-e2e-book", auto=2)
+    wait_until(
+        lambda: device.lock_auto_min == 2,
+        timeout=10,
+        description="device to receive and apply cfg lock.auto=2",
+    )
+    print("address_book: device applied cfg lock.auto=2")
+
+    wait_until(
+        lambda: _pending_book_or_cfg_acked("pgr-e2e-book", "pendingCfg"),
+        timeout=10,
+        description="device's cfg 'shown' ack to land at the relay",
+    )
+    print("address_book: device's cfg ack ('shown') landed at the relay")
+    device.disconnect()
+
+
 SCENARIOS: dict[str, Callable[[], None]] = {
     "bootstrap": scenario_bootstrap,
     "text_roundtrip": scenario_text_roundtrip,
@@ -1204,6 +1330,7 @@ SCENARIOS: dict[str, Callable[[], None]] = {
     "fanout": scenario_fanout,
     "retention": scenario_retention,
     "bytes": scenario_bytes,
+    "address_book": scenario_address_book,
 }
 
 

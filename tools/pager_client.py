@@ -23,17 +23,26 @@ Server-side flags: `--api --auth-url --as <alias>` (`--as` is a convenience
 that runs `login <alias>` before the REPL/subcommand).
 
 Implements docs/SERVER_PLAN.md §8's full command set -- text, location
-(PROTOCOL.md §13), backends, retention and sweep:
+(PROTOCOL.md §13), backends, retention and sweep -- plus docs/DEVICE_TASKS.md
+S4.5's address book / cfg round trip (docs/DEVICE_PLAN.md §4, §5.8;
+docs/PROTOCOL.md §3.2's `contact_req`/`book`/`cfg` kinds):
 
   Device: connect, disconnect, crash, inbox, msg, ack, autoack, status, bytes,
           loc <lat> <lon> [acc] | loc auto <period_s> [--walk] |
-          loc min <s> | loc fail on|off
+          loc min <s> | loc fail on|off,
+          contactreq <name> [phone-or-alias]
   Server: login, contacts, chat, say, watch, tick, sweep, locate <alias>,
           locations <alias> [n],
           admin user-add / allow / deny / device-add /
-          settings retention messages=<n><d|w> locations=<n><d|w>,
+          settings retention messages=<n><d|w> locations=<n><d|w> /
+          contacts [pending|approved|rejected] / approve <key> link|create [alias] [--locate] /
+          reject <key> <reason> / cfg <device_id> [--auto <min>] [--clear],
           backend add <kind> <json-config>
 
+`DeviceClient.book`/`.lock` hold this simulated device's own applied state
+(docs/PROTOCOL.md §3.2: `book`/`cfg` are "not a thread entry ... acked
+`shown` once applied") -- see `_handle_book`/`_handle_cfg` below for exactly
+what "applied" means for this simulator.
 """
 
 from __future__ import annotations
@@ -223,6 +232,24 @@ class DeviceClient:
         # (app/store/device_secrets.py).
         self._down_n = 0
         self._down_bits = 0
+        # docs/DEVICE_TASKS.md S4.5 / docs/PROTOCOL.md §3.2 `kind:"book"`:
+        # the last applied address book, or `None` before the device has
+        # ever received one (a fresh device has no default recipient and no
+        # approved contacts). Shape mirrors the wire envelope's own
+        # `bv`/`d`/`c`/`p` fields (`_handle_book` below), which is also what
+        # `book.c[].a` a caller like `tools/e2e_v2.py` reads to confirm an
+        # alias landed.
+        self.book: dict[str, Any] | None = None
+        # docs/DEVICE_PLAN.md §5.8 `cfg` `lock` map, applied cumulatively:
+        # `auto` persists at its last-set value, `clear` is a one-shot
+        # action recorded as `lock_cleared_count` (how many `cfg lock:
+        # {clear:true}` this device has applied) rather than a boolean, so a
+        # test can distinguish "never cleared" from "cleared, still
+        # unlocked" without needing a real passcode/lock state machine this
+        # simulator doesn't otherwise model (out of scope for S4.5, which
+        # only needs the ack + the value landing).
+        self.lock_auto_min: int | None = None
+        self.lock_cleared_count: int = 0
         # docs/PROTOCOL.md §13.3 -- device-side location state. `_lat`/`_lon`
         # is the device's current position (what the next fix attempt
         # reports); `_last_fix` is the last *successful* fix (what a
@@ -417,6 +444,17 @@ class DeviceClient:
             # /loc instead, subject to §13.3's device-side rate limit.
             self._handle_loc_req(data.get("id"))
             return
+        if kind == "book":
+            # §3.2 `kind:"book"`: not a thread entry, applied then acked
+            # `shown` unconditionally -- unlike a `msg`, whose `shown` ack
+            # depends on `autoack`/a simulated button press, a book's ack
+            # reports "applied to NVS", which this simulator does
+            # synchronously on receipt, every time.
+            self._handle_book(data)
+            return
+        if kind == "cfg":
+            self._handle_cfg(data)
+            return
         msg_id = data.get("id")
         if not msg_id:
             return
@@ -479,6 +517,72 @@ class DeviceClient:
         self._publish(self.up_topic, obj, qos=1)
         print(f"-> sent u-message {msg_id}{' to ' + to if to else ''}: {body!r}")
         return msg_id
+
+    # ---- address book / cfg (docs/PROTOCOL.md §3.2 `contact_req`/`book`/
+    # `cfg`, docs/DEVICE_PLAN.md §4 (address book), §5.8 (device lock)) ----
+
+    def publish_contact_req(self, name: str, ph: str | None = None) -> str:
+        """`/up kind:"contact_req"` -- docs/PROTOCOL.md §3.2, §4.2: `name` is
+        the display name, `ph` is *either* an E.164 phone number (leading
+        `+`) or an alias reference (docs/ingest.py's `ContactReqEnvelope`
+        docstring: the field is overloaded, distinguished by the `+`
+        prefix) -- this simulator passes whatever the caller gives it
+        straight through, unvalidated, the same "device doesn't police its
+        own wire shape beyond what it can trivially construct" stance
+        `publish_msg` already takes. No `body`/`from` per §3.2's shape."""
+        req_id = new_id("u_")
+        obj: dict[str, Any] = {
+            "v": 1,
+            "id": req_id,
+            "ts": now_ts(),
+            "kind": "contact_req",
+            "name": name,
+            "ack": None,
+        }
+        if ph:
+            obj["ph"] = ph
+        self._publish(self.up_topic, obj, qos=1)
+        print(f"-> contact_req {req_id}: name={name!r} ph={ph!r}")
+        return req_id
+
+    def _handle_book(self, data: dict[str, Any]) -> None:
+        """docs/PROTOCOL.md §3.2 `kind:"book"`: "acked `shown` once the book
+        has been applied ... atomically written to NVS." This simulator's
+        NVS is just `self.book`, so "applied" is "assigned", synchronously,
+        before the ack goes out -- there is no intermediate state where an
+        observer could see the ack without the new book already in place."""
+        self.book = {
+            "bv": data.get("bv", 0),
+            "d": data.get("d"),
+            "c": data.get("c", []),
+            "p": data.get("p", []),
+        }
+        msg_id = data.get("id")
+        print(
+            f"-> book applied: bv={self.book['bv']} d={self.book['d']!r} "
+            f"contacts={[c.get('a') for c in self.book['c']]} "
+            f"pending={[p.get('n') for p in self.book['p']]}"
+        )
+        if msg_id:
+            self.publish_ack(msg_id, "shown")
+
+    def _handle_cfg(self, data: dict[str, Any]) -> None:
+        """docs/PROTOCOL.md §3.2 `kind:"cfg"` / docs/DEVICE_PLAN.md §5.8:
+        applies `cfg.lock` (unknown `cfg` members ignored, per §3.2) and
+        acks `shown`, same "applied before acked" rule as `_handle_book`.
+        `lock.auto` persists at its last-set value; `lock.clear` is a
+        one-shot action counted in `lock_cleared_count` (see that field's
+        docstring) rather than modelled as a real passcode/lock state
+        machine, which is out of this simulator's scope."""
+        lock = (data.get("cfg") or {}).get("lock") or {}
+        if lock.get("clear"):
+            self.lock_cleared_count += 1
+        if lock.get("auto") is not None:
+            self.lock_auto_min = lock["auto"]
+        msg_id = data.get("id")
+        print(f"-> cfg applied: lock={lock!r} (auto_min now {self.lock_auto_min})")
+        if msg_id:
+            self.publish_ack(msg_id, "shown")
 
     # ---- location (PROTOCOL.md §13) ----
 
@@ -863,6 +967,57 @@ class ServerClient:
             raise RuntimeError(f"admin settings retention failed: {resp.status_code} {resp.text}")
         return resp.json()
 
+    # ---- admin: address book (docs/DEVICE_TASKS.md S4.1/S4.2/S4.5,
+    # docs/DEVICE_PLAN.md §4.3, §5.8) ----
+
+    def admin_list_contacts(
+        self, status: Literal["pending", "approved", "rejected"] | None = None
+    ) -> list[dict[str, Any]]:
+        path = "/api/admin/contacts" + (f"?status={status}" if status else "")
+        resp = self.api_get(path)
+        resp.raise_for_status()
+        return resp.json()
+
+    def admin_approve_contact(
+        self,
+        key: str,
+        *,
+        mode: Literal["link", "create"],
+        alias: str | None = None,
+        locate: bool = False,
+    ) -> dict[str, Any]:
+        """`POST /api/admin/contacts/{key}/approve` -- docs/DEVICE_PLAN.md
+        §4.3's approval dialog. `key` is the `contactRequests/{deviceId}_
+        {reqId}` document id, as returned by `admin_list_contacts()`."""
+        body: dict[str, Any] = {"mode": mode, "locate": locate}
+        if alias is not None:
+            body["alias"] = alias
+        resp = self.api_post(f"/api/admin/contacts/{key}/approve", body)
+        if resp.status_code >= 400:
+            raise RuntimeError(f"admin approve_contact failed: {resp.status_code} {resp.text}")
+        return resp.json()
+
+    def admin_reject_contact(self, key: str, reason: str) -> dict[str, Any]:
+        resp = self.api_post(f"/api/admin/contacts/{key}/reject", {"reason": reason})
+        if resp.status_code >= 400:
+            raise RuntimeError(f"admin reject_contact failed: {resp.status_code} {resp.text}")
+        return resp.json()
+
+    def admin_push_cfg(
+        self, device_id: str, *, auto: int | None = None, clear: bool | None = None
+    ) -> dict[str, Any]:
+        """`POST /api/admin/devices/{id}/cfg` -- docs/DEVICE_PLAN.md §5.8's
+        remote lock controls (`cfg.lock.auto`/`cfg.lock.clear`)."""
+        lock: dict[str, Any] = {}
+        if auto is not None:
+            lock["auto"] = auto
+        if clear is not None:
+            lock["clear"] = clear
+        resp = self.api_post(f"/api/admin/devices/{device_id}/cfg", {"lock": lock})
+        if resp.status_code >= 400:
+            raise RuntimeError(f"admin push_cfg failed: {resp.status_code} {resp.text}")
+        return resp.json()
+
     # ---- Firestore REST reads (exercises firestore.rules) ----
 
     def firestore_get(self, path: str) -> httpx.Response:
@@ -1198,6 +1353,27 @@ class PagerShell(cmd.Cmd):
                 return
             self.device.loc_now(lat, lon, acc)
 
+    def do_contactreq(self, arg: str) -> None:
+        parts = shlex.split(arg)
+        if not parts:
+            print("usage: contactreq <name> [phone-or-alias]")
+            return
+        name = parts[0]
+        ph = parts[1] if len(parts) > 1 else None
+        self.device.publish_contact_req(name, ph)
+
+    def do_book(self, arg: str) -> None:
+        """Shows this device's last-applied address book (`None` before one
+        has ever arrived) -- docs/PROTOCOL.md §3.2 `kind:"book"`."""
+        self._out(self.device.book)
+
+    def do_lock(self, arg: str) -> None:
+        """Shows this device's applied `cfg.lock` state -- docs/DEVICE_PLAN.md
+        §5.8, docs/PROTOCOL.md §3.2 `kind:"cfg"`."""
+        self._out(
+            {"auto_min": self.device.lock_auto_min, "cleared_count": self.device.lock_cleared_count}
+        )
+
     # ---- server commands ----
 
     def do_login(self, arg: str) -> None:
@@ -1292,7 +1468,9 @@ class PagerShell(cmd.Cmd):
     def do_admin(self, arg: str) -> None:
         parts = shlex.split(arg)
         if not parts:
-            print("usage: admin user-add|device-add|allow|deny|settings ...")
+            print(
+                "usage: admin user-add|device-add|allow|deny|settings|contacts|approve|reject|cfg ..."
+            )
             return
         sub, rest = parts[0], parts[1:]
         if sub == "user-add":
@@ -1305,6 +1483,14 @@ class PagerShell(cmd.Cmd):
             self._admin_deny(rest)
         elif sub == "settings":
             self._admin_settings(rest)
+        elif sub == "contacts":
+            self._admin_contacts(rest)
+        elif sub == "approve":
+            self._admin_approve(rest)
+        elif sub == "reject":
+            self._admin_reject(rest)
+        elif sub == "cfg":
+            self._admin_cfg(rest)
         else:
             print(f"unknown admin subcommand: {sub}")
 
@@ -1381,6 +1567,50 @@ class PagerShell(cmd.Cmd):
             print(f"invalid retention value: {exc}")
             return
         self._out(result)
+
+    def _admin_contacts(self, args: list[str]) -> None:
+        status = args[0] if args else None
+        if status is not None and status not in ("pending", "approved", "rejected"):
+            print("usage: admin contacts [pending|approved|rejected]")
+            return
+        self._out(self.server.admin_list_contacts(status))
+
+    def _admin_approve(self, args: list[str]) -> None:
+        parser = argparse.ArgumentParser(prog="admin approve", add_help=False)
+        parser.add_argument("key")
+        parser.add_argument("mode", choices=["link", "create"])
+        parser.add_argument("alias", nargs="?")
+        parser.add_argument("--locate", action="store_true")
+        try:
+            ns = parser.parse_args(args)
+        except SystemExit:
+            return
+        self._out(
+            self.server.admin_approve_contact(
+                ns.key, mode=ns.mode, alias=ns.alias, locate=ns.locate
+            )
+        )
+
+    def _admin_reject(self, args: list[str]) -> None:
+        if len(args) < 2:
+            print("usage: admin reject <key> <reason>")
+            return
+        self._out(self.server.admin_reject_contact(args[0], " ".join(args[1:])))
+
+    def _admin_cfg(self, args: list[str]) -> None:
+        parser = argparse.ArgumentParser(prog="admin cfg", add_help=False)
+        parser.add_argument("device_id")
+        parser.add_argument("--auto", type=int)
+        parser.add_argument("--clear", action="store_true")
+        try:
+            ns = parser.parse_args(args)
+        except SystemExit:
+            return
+        self._out(
+            self.server.admin_push_cfg(
+                ns.device_id, auto=ns.auto, clear=ns.clear if ns.clear else None
+            )
+        )
 
     # ---- misc ----
 
