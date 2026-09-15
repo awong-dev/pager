@@ -38,22 +38,42 @@ envelope (nothing to derive the answering encoding from yet); `publish_down`
 defaults that case to `"json"`, `DEVICE_PLAN.md` §2.4's own default for
 "logs and humans" when there is no device-observed preference yet.
 
+**Binary payloads are the normal case, in both directions.** A
+`docs/PROTOCOL.md` §3.1 CBOR envelope, and every HMAC signature inside one
+(§14), is arbitrary bytes; so is S2b.1's AES-GCM bootstrap blob. Neither
+direction may assume the payload is UTF-8 text:
+
+* outbound, `publish` base64-encodes the payload and sends EMQX's
+  `payload_encoding: "base64"` (`POST /api/v5/publish`), which EMQX decodes
+  back to the exact bytes before publishing them. The device sees the same
+  MQTT message either way -- this is purely how the relay hands bytes to the
+  broker over REST.
+* inbound, the webhook body carries the payload base64-encoded in its own
+  field (see below), because the raw one cannot survive JSON.
+
 **Webhook body shape this module expects** (and what `tools/emqx_setup.py`
 configures EMQX's HTTP action to send, via its `body: "${.}"` template,
 which serializes the whole rule-engine event context as JSON): a JSON
 object containing at least
 
-    {"topic": "pager/<id>/up", "payload": "<the device's raw JSON envelope, as a string>", "qos": 1, ...other fields ignored...}
+    {"topic": "pager/<id>/up",
+     "payload_b64": "<the device's raw envelope, base64>",
+     "payload": "<the same bytes, lossy>",
+     "qos": 1, ...other fields ignored...}
 
-`payload` is a JSON *string* (EMQX does not base64-encode a text MQTT
-payload by default), so `parse_webhook` re-encodes it to UTF-8 bytes to
-match `wire.py`'s `parse_envelope_bytes(bytes) -> ...` contract. A payload
-that is already bytes/str-of-base64 is not produced by this rule
-configuration and is out of scope.
+`payload_b64` comes from that rule's `base64_encode(payload)` and is the
+field `parse_webhook` uses: EMQX's JSON encoder replaces every invalid
+UTF-8 byte of `payload` with U+FFFD (verified against EMQX 5.8.0), so
+`payload` is unrecoverable for anything but pure-text envelopes. It is
+still accepted as a fallback -- UTF-8-encoded, as before -- so a relay
+running against a broker provisioned by an older `emqx_setup.py` keeps
+handling JSON-wire devices instead of dropping them wholesale.
 """
 
 from __future__ import annotations
 
+import base64
+import binascii
 import hmac
 import json
 import logging
@@ -92,14 +112,22 @@ class BrokerClient:
         a network-level failure -- and never raises. A failed publish is a
         delivery-layer concern (the caller leaves the message 'queued';
         retrying it is `/internal/tick`'s job, docs/SERVER_PLAN.md §5.8, not
-        this method's)."""
+        this method's).
+
+        Always `payload_encoding: "base64"` (see the module docstring), not
+        "base64 only when the bytes aren't valid UTF-8": a conditional here
+        would make the binary path the rarely-exercised one, which is
+        exactly how `payload.decode("utf-8")` survived long enough to 500
+        every `POST /api/admin/devices` once S2b.1's encrypted bootstrap
+        blob started flowing through it. One code path, same bytes on the
+        wire."""
         auth = (self._api_key, self._api_secret or "") if self._api_key else None
         body = {
             "topic": topic,
-            "payload": payload.decode("utf-8"),
+            "payload": base64.b64encode(payload).decode("ascii"),
             "qos": qos,
             "retain": retain,
-            "payload_encoding": "plain",
+            "payload_encoding": "base64",
         }
         try:
             resp = httpx.post(
@@ -202,16 +230,31 @@ class BrokerClient:
         if not isinstance(data, dict):
             return None
         topic = data.get("topic")
-        payload = data.get("payload")
         qos = data.get("qos", 0)
-        if not isinstance(topic, str) or payload is None:
+        if not isinstance(topic, str):
             return None
-        if isinstance(payload, str):
-            payload_bytes = payload.encode("utf-8")
-        elif isinstance(payload, (bytes, bytearray)):
-            payload_bytes = bytes(payload)
+        payload_b64 = data.get("payload_b64")
+        if payload_b64 is not None:
+            # The authoritative field (module docstring): the only one that
+            # survives a non-UTF-8 payload. Malformed base64 means the
+            # broker sent something this relay cannot interpret -- drop it
+            # rather than fall back to the lossy `payload`, which would
+            # hand `ingest` bytes that are silently not what the device
+            # sent (and would fail signature verification anyway).
+            if not isinstance(payload_b64, str):
+                return None
+            try:
+                payload_bytes = base64.b64decode(payload_b64, validate=True)
+            except (binascii.Error, ValueError):
+                return None
         else:
-            return None
+            payload = data.get("payload")
+            if isinstance(payload, str):
+                payload_bytes = payload.encode("utf-8")
+            elif isinstance(payload, (bytes, bytearray)):
+                payload_bytes = bytes(payload)
+            else:
+                return None
         if not isinstance(qos, int) or isinstance(qos, bool):
             return None
         return topic, payload_bytes, qos

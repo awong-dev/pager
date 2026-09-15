@@ -14,6 +14,7 @@ the one fake test double for the broker.)
 
 from __future__ import annotations
 
+import base64
 import json
 from dataclasses import dataclass
 from typing import Any
@@ -86,9 +87,21 @@ class FakeBrokerClient:
 
 def webhook_event(topic: str, payload: bytes, qos: int = 1) -> dict:
     """The JSON shape `tools/emqx_setup.py` configures EMQX's HTTP action to
-    POST (see app/broker.py's module docstring): `payload` is a JSON string,
-    not raw bytes/base64."""
-    return {"topic": topic, "payload": payload.decode("utf-8"), "qos": qos}
+    POST (see app/broker.py's module docstring): `payload_b64` carries the
+    exact bytes, and `payload` is EMQX's own lossy JSON rendering of them.
+
+    `errors="replace"` is not a convenience here -- it is what EMQX 5.8.0
+    actually does to a non-UTF-8 payload when `"body": "${.}"` serialises
+    the event context (verified against a live broker: every invalid byte
+    comes back as U+FFFD). Keeping that lossiness in the fake is the point:
+    any code that reads `payload` instead of `payload_b64` fails here
+    exactly as it would in production."""
+    return {
+        "topic": topic,
+        "payload": payload.decode("utf-8", "replace"),
+        "payload_b64": base64.b64encode(payload).decode("ascii"),
+        "qos": qos,
+    }
 
 
 def webhook_body(topic: str, payload: bytes, qos: int = 1) -> bytes:

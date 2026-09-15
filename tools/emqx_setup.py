@@ -185,7 +185,22 @@ def upsert_action(base_url: str, token: str, webhook_key: str) -> None:
 
 def upsert_rule(base_url: str, token: str) -> None:
     topics_sql = ", ".join(f'"{t}"' for t in TOPICS)
-    sql = f"SELECT topic, payload, qos, clientid FROM {topics_sql}"
+    # `base64_encode(payload)` is what makes CBOR (docs/PROTOCOL.md §3.1's
+    # `application/cbor` wire mode) survive the trip: the action's "${.}"
+    # body serialises the whole event context as JSON, and EMQX's JSON
+    # encoder replaces every byte of a non-UTF-8 `payload` with U+FFFD --
+    # verified against EMQX 5.8.0, which turns the raw bytes
+    # `a3 dd 00 ff 7b 22 68 c3 a9 6c 6c 6f` into `"��\x00�{"héllo"`,
+    # i.e. unrecoverable. `payload_b64` carries the bytes intact (the rule
+    # engine base64-encodes the Erlang binary *before* any JSON encoding),
+    # and `app.broker.BrokerClient.parse_webhook` prefers it when present.
+    # `payload` stays in the SELECT so an operator reading a captured
+    # webhook body (or an older relay build) still sees the plain-JSON
+    # envelopes exactly as before.
+    sql = (
+        "SELECT topic, payload, base64_encode(payload) as payload_b64, qos, clientid "
+        f"FROM {topics_sql}"
+    )
     get_status, _ = _request("GET", f"{base_url}/api/v5/rules/{RULE_ID}", token)
     if get_status == 200:
         status, data = _request(
