@@ -22,6 +22,16 @@ Device-side flags: `--device-id --host --port --username --password`.
 Server-side flags: `--api --auth-url --as <alias>` (`--as` is a convenience
 that runs `login <alias>` before the REPL/subcommand).
 
+`--bootstrap "<code>"` (docs/DEVICE_TASKS.md T2b.4, docs/DEVICE_PLAN.md §3.2,
+§3.7): instead of building the device from `--device-id`/`--host`/
+`--username`/`--password`/`--hmac-key`, performs the real setup-code
+bootstrap fetch first -- parse the code, derive `bid`/`bpw`/`bkey`, connect
+to the broker as `boot-{bid}`/`bpw` with no server-cert validation (the
+compose stack's plain 1883, mirroring §6.1's bootstrap TLS profile), fetch
+and decrypt the retained bundle, publish the ack, disconnect -- and only then
+builds the `DeviceClient` from the bundle's own `id`/`pw`/`k`/`host`/`port`,
+ready for the REPL or a one-shot command exactly like any other device.
+
 Implements docs/SERVER_PLAN.md §8's full command set -- text, location
 (PROTOCOL.md §13), backends, retention and sweep -- plus docs/DEVICE_TASKS.md
 S4.5's address book / cfg round trip (docs/DEVICE_PLAN.md §4, §5.8;
@@ -52,6 +62,7 @@ import base64
 import cmd
 import json
 import os
+import queue
 import re
 import shlex
 import sys
@@ -77,7 +88,7 @@ RELAY_DIR = REPO_ROOT / "relay"
 if str(RELAY_DIR) not in sys.path:
     sys.path.insert(0, str(RELAY_DIR))
 
-from app import devauth, wirecbor
+from app import devauth, devsetup, wirecbor
 
 DEFAULT_MQTT_HOST = os.environ.get("MQTT_BROKER_HOST", "localhost")
 DEFAULT_MQTT_PORT = int(os.environ.get("MQTT_BROKER_PORT", "1883"))
@@ -726,6 +737,143 @@ class DeviceClient:
             threading.Thread(target=_answer, args=(delay_s,), daemon=True).start()
         else:
             _answer(0.0)
+
+
+# ---------------------------------------------------------------------------
+# The setup-code bootstrap fetch (docs/DEVICE_TASKS.md T2b.4,
+# docs/DEVICE_PLAN.md §3.2) -- a real device's *first* MQTT session, over a
+# throwaway `boot-{bid}` credential, before it has any of the identity
+# `DeviceClient` above assumes it already has.
+# ---------------------------------------------------------------------------
+
+# How long to wait for the broker CONNACK and for the retained bundle to
+# arrive on subscribe -- generous for a local compose stack; a real device
+# bounds each step differently (§3.2 step 5's "no setup code waiting"
+# error), which is out of scope for this simulator.
+BOOTSTRAP_TIMEOUT_S = 10.0
+
+
+def bootstrap_device(
+    code: str,
+    *,
+    port: int | None = None,
+    wire: Literal["json", "cbor"] = "json",
+    timeout: float = BOOTSTRAP_TIMEOUT_S,
+) -> DeviceClient:
+    """Performs docs/DEVICE_PLAN.md §3.2's bootstrap fetch exactly as a real
+    device would, over a real MQTT connection -- parse the setup code,
+    derive the bootstrap credential/key with `relay/app/devsetup.py` (the
+    same module `POST /api/admin/devices` used to issue the code in the
+    first place, per this file's module docstring on why the simulated
+    device signs with the relay's own `devauth`/`wirecbor` rather than a
+    second implementation of the same math), fetch and decrypt the retained
+    bundle as `boot-{bid}`, ack it, then hand back an ordinary signed
+    `DeviceClient` built from the bundle's real credentials -- unconnected,
+    matching every other constructor in this file (the caller decides when
+    to bring it online).
+
+    Prints one line per step of the Device screen's own progress line
+    (docs/DEVICE_PLAN.md §3.2 step 5, §5.5: "network -> broker -> bundle ->
+    done"); a simulated device has no LTE hop to attach, so its "network"
+    step is just the code's own parse/derive.
+
+    `port`, when given, overrides both the code's own port (always 8883,
+    `app/devsetup.DEFAULT_PORT`, since `POST /api/admin/devices` never has a
+    reason to pick anything else) and the bundle's own `port` field for the
+    post-bootstrap connection -- this module (like the rest of this file,
+    which never calls `tls_set()`) speaks plain MQTT only, so the docs/
+    DEVICE_TASKS.md T2b.4 instruction to "mirror what the firmware will do:
+    no CA check" means, for this tool, connecting to the compose stack's
+    actual plain listener (1883) rather than the 8883 a real TLS-terminating
+    broker would answer on. `main()` always passes `--port` (default 1883)
+    here, so this only matters to a caller pointed at a broker that really
+    does listen on a different plain port.
+
+    `timeout` bounds both the broker CONNACK and the wait for the retained
+    bundle after subscribing -- §3.2 step 4's "the retained bundle arrives
+    immediately (no wait on a relay round trip)" is only true once the
+    subscribe has actually landed, so this still needs a bound for a broker
+    that's unreachable or a code whose bundle was already claimed/expired
+    (`setupCodes/{bid}` deleted, no retained message left to receive)."""
+    print(f"[bootstrap] network: parsing code {code!r}...")
+    token_bytes, host, code_port, apn = devsetup.parse(code)
+    conn_port = port if port is not None else code_port
+    bid, bpw, bkey = devsetup.derive(token_bytes)
+    print(
+        f"[bootstrap] network: derived bid={bid} host={host} port={conn_port} "
+        f"(code said {code_port}) apn={apn!r}"
+    )
+
+    down_topic = devsetup.boot_topic_down(bid)
+    up_topic = f"pager/boot/{bid}/up"
+    username = devsetup.boot_username(bid)
+
+    # docs/DEVICE_PLAN.md §3.2 step 3 / docs/PROTOCOL.md §6.1's bootstrap TLS
+    # row: no server-cert validation on this one-time hop -- mirrored here as
+    # "no TLS at all", since the compose stack (like a real device's
+    # `WALTER_MODEM_TLS_VALIDATION_NONE` profile) only ever needs plain 1883
+    # for this fetch; there is no CA to skip checking.
+    received: queue.Queue[bytes] = queue.Queue()
+    connected = threading.Event()
+
+    def _on_connect(client, userdata, connect_flags, reason_code, properties) -> None:
+        client.subscribe(down_topic, qos=1)
+        connected.set()
+
+    def _on_message(client, userdata, msg) -> None:
+        received.put(msg.payload)
+
+    boot_client = mqtt.Client(
+        callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
+        client_id=username,
+        clean_session=True,
+        protocol=mqtt.MQTTv311,
+    )
+    boot_client.username_pw_set(username, bpw)
+    boot_client.on_connect = _on_connect
+    boot_client.on_message = _on_message
+    boot_client.connect(host, conn_port, keepalive=30)
+    boot_client.loop_start()
+    try:
+        if not connected.wait(timeout):
+            raise RuntimeError(
+                f"bootstrap connect to {host}:{conn_port} as {username!r} timed out after "
+                f"{timeout}s (cannot reach broker)"
+            )
+        print(f"[bootstrap] broker: connected as {username}, subscribed {down_topic}")
+
+        try:
+            payload = received.get(timeout=timeout)
+        except queue.Empty:
+            raise RuntimeError(
+                f"timed out after {timeout}s waiting for the retained bundle on {down_topic} "
+                "(no setup code waiting -- expired or already used?)"
+            ) from None
+
+        plain = devsetup.decrypt_bundle(bkey, payload)
+        print(
+            f"[bootstrap] bundle: decrypted {len(payload)} bytes -> id={plain['id']!r} "
+            f"label={plain.get('label')!r} host={plain['host']}:{plain['port']}"
+        )
+
+        info = boot_client.publish(up_topic, wirecbor.encode({"v": 1, "ok": 1}), qos=1)
+        info.wait_for_publish(timeout=timeout)
+    finally:
+        boot_client.loop_stop()
+        boot_client.disconnect()
+    print(f"[bootstrap] done: acked on {up_topic}, disconnected {username}")
+
+    device = DeviceClient(
+        plain["id"],
+        plain["host"],
+        conn_port,
+        plain["id"],
+        plain["pw"],
+        hmac_key=plain["k"],
+        wire=wire,
+    )
+    print(f"[bootstrap] continuing as {device.device_id} with the bundle's real credentials")
+    return device
 
 
 # ---------------------------------------------------------------------------
@@ -1648,6 +1796,16 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="wire encoding for this device's publishes (default: json, "
         "docs/DEVICE_PLAN.md §2.4's default for tools/pager_client.py)",
     )
+    parser.add_argument(
+        "--bootstrap",
+        metavar="CODE",
+        help="docs/DEVICE_PLAN.md §3.2 setup-code bootstrap fetch: derives and fetches this "
+        "device's real credentials from the broker first, then continues as that device -- "
+        "overrides --device-id/--username/--password/--hmac-key (the bundle supplies all four); "
+        "--host stays the code's own host, but --port (still 1883 by default) overrides both the "
+        "bootstrap hop and the continuation, since this tool never speaks TLS (see "
+        "bootstrap_device()'s docstring)",
+    )
     parser.add_argument("--api", default=DEFAULT_API_URL, help="relay API base URL")
     parser.add_argument("--auth-url", default=DEFAULT_AUTH_URL, help="Auth emulator base URL")
     parser.add_argument("--as", dest="as_alias", help="log in as this alias before running")
@@ -1661,16 +1819,19 @@ def build_arg_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_arg_parser().parse_args(argv)
 
-    hmac_key = base64.b64decode(args.hmac_key) if args.hmac_key else None
-    device = DeviceClient(
-        args.device_id,
-        args.host,
-        args.port,
-        args.username,
-        args.password,
-        hmac_key=hmac_key,
-        wire=args.wire,
-    )
+    if args.bootstrap:
+        device = bootstrap_device(args.bootstrap, port=args.port, wire=args.wire)
+    else:
+        hmac_key = base64.b64decode(args.hmac_key) if args.hmac_key else None
+        device = DeviceClient(
+            args.device_id,
+            args.host,
+            args.port,
+            args.username,
+            args.password,
+            hmac_key=hmac_key,
+            wire=args.wire,
+        )
     server = ServerClient(args.api, args.auth_url)
     shell = PagerShell(device, server, as_json=args.json)
 
