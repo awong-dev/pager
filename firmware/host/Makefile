@@ -22,6 +22,11 @@
 # ships with the OS (Xcode CLT / glibc-based distros) rather than being a
 # keg-only formula.
 #
+# F6.2 (test_input) needs no external dependency: input.c's
+# `#ifdef ESP_PLATFORM` split keeps input_decode_key() (the only thing this
+# test exercises) free of FreeRTOS/driver/esp_timer, same pattern as
+# cbor.c/auth.c above.
+#
 # `make test` builds and runs every test binary; `make png` builds and runs
 # render_png (task F6.1's host PNG test); `make` alone just builds the tests.
 
@@ -50,7 +55,7 @@ endif
 MAIN_SRC := ../main
 BUILD := build
 
-TESTS := test_cbor test_auth test_setup
+TESTS := test_cbor test_auth test_setup test_input
 TEST_BINS := $(TESTS:%=$(BUILD)/%)
 
 # ASSETS: tools/mkassets.py's default output location (docs/DEVICE_TASKS.md
@@ -105,6 +110,17 @@ $(BUILD)/test_setup.o: test_setup.c $(MAIN_SRC)/setup.h $(MAIN_SRC)/cbor.h | $(B
 
 $(BUILD)/test_setup: $(BUILD)/setup.o $(BUILD)/cbor.o $(BUILD)/test_setup.o
 	$(CC) $(CFLAGS) -o $@ $(BUILD)/setup.o $(BUILD)/cbor.o $(BUILD)/test_setup.o $(MBEDTLS_LIBS)
+
+# test_input: input.c (only its ESP_PLATFORM-free input_decode_key(), per
+# input.c's own #ifdef split) + test_input.c.
+$(BUILD)/input.o: $(MAIN_SRC)/input.c $(MAIN_SRC)/input.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $(MAIN_SRC)/input.c
+
+$(BUILD)/test_input.o: test_input.c $(MAIN_SRC)/input.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ test_input.c
+
+$(BUILD)/test_input: $(BUILD)/input.o $(BUILD)/test_input.o
+	$(CC) $(CFLAGS) -o $@ $(BUILD)/input.o $(BUILD)/test_input.o
 
 # render_png: gfx.c (the exact framebuffer/text/glyph module that ships
 # on-device, compiled for the host per its own #ifdef ESP_PLATFORM split)

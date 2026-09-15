@@ -1,20 +1,29 @@
 // modes.c — mode state machine, RTC memory contract, wake-and-drain loop,
-// button short/long press state machine.
+// button/key event dispatch.
 //
 // Authority: docs/PROTOCOL.md §4.1 (ack rules), §5.4 (status cadence), §8
 // (wake sources), §9 (RTC memory), §11 (mode funnel).
 //
 // modes.c is the only place that touches the RTC struct and the only place
-// that changes `mode` (funnelled through set_mode(), per §11). It owns the
-// button state machine and wires msg.c/ui.c together.
+// that changes `mode` (funnelled through set_mode(), per §11). It drains
+// input.c's event queue and wires msg.c/ui.c together; input.c itself owns
+// the button GPIO/FSM and the CardKB key decode table (F6.2,
+// docs/DEVICE_PLAN.md §5.3).
 //
 // All power-effect comments are PENDING_HW.
 
 #include "modes.h"
 #include "msg.h"
 #include "net.h"
-#include "pins.h"
 #include "ui.h"
+
+// F6.2 (docs/DEVICE_PLAN.md §5.3): CardKB decode + button FSM (+BTN_STUCK)
+// + the UI-awake window + one input event queue, moved out of this file
+// and ui.c respectively. ime.h is included (but not yet called from
+// anywhere - see its own module comment) purely so idf.py build actually
+// compiles the header; F6.3 wires the first real text field to it.
+#include "input.h"
+#include "ime.h"
 
 // F3.6 (docs/PROTOCOL.md §14, §10 keymap; docs/DEVICE_PLAN.md §2.5/§2.7):
 // signing, the CBOR /status codec, and the auth_rtc_t sub-struct embedded
@@ -30,7 +39,6 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "driver/gpio.h"
 #include "esp_attr.h"
 #include "esp_log.h"
 #include "esp_random.h"
@@ -58,10 +66,12 @@ static const char *TAG = "modes";
 #define PAGER_MODEM_RESET_MIN_INTERVAL_US ((int64_t) 10 * 60 * 1000000) // F4 rate limit
 #define PAGER_FW_VERSION "0.1.0"
 
-// Part C: button short/long press state machine.
-#define PAGER_BTN_LONG_PRESS_MS 600u
-#define PAGER_BTN_DEBOUNCE_MS 30u
-#define PAGER_BTN_POLL_MS 20u // polling granularity while the FSM is not IDLE
+// F6.2: the button FSM itself (short/long/BTN_STUCK, debounce, long-press
+// threshold) moved to input.c; this is only the outer loop's own polling
+// granularity while input_button_busy() is true (needs to be frequent
+// enough for input.c's debounce/hold-duration timing to resolve well - see
+// input.c's PAGER_BTN_DEBOUNCE_MS/PAGER_BTN_LONG_PRESS_MS).
+#define PAGER_BTN_POLL_MS 20u
 
 // F1/F3 backoff schedule: 5s, 15s, 60s, 300s, then steady at 300s.
 static const uint32_t k_backoff_s[] = { 5, 15, 60, 300 };
@@ -658,40 +668,13 @@ static void run_modem_health_check(void)
 }
 
 // ---------------------------------------------------------------------------
-// Button short/long press state machine. Note the hazard it exists to
-// avoid: a LEVEL wake (esp_sleep_enable_ext0_wakeup(..., 0)) makes
-// esp_light_sleep_start() return immediately for as long as the button is
-// held, so a held button busy-loops the wake-and-drain cycle at ~40mA -
-// roughly a day and a half to drain the cell. modes_run() skips
-// net_sleep() entirely whenever this FSM is not IDLE (same pattern as the
-// composer-open carve-out), which both fixes that battery bug and gives the
-// FSM the frequent polling it needs to measure press duration.
+// F6.2 (docs/DEVICE_PLAN.md §5.3): the button GPIO, its short/long/
+// BTN_STUCK FSM, and the debounce/hold timing constants all moved to
+// input.c (firmware/README.md R2's BTN_STUCK fix spec lives there now).
+// This file keeps only the dispatch table below, called from modes_run()'s
+// input-event drain loop - one call per resolved INPUT_EVT_BTN_SHORT/LONG,
+// after modes_note_activity() has already run for that event.
 // ---------------------------------------------------------------------------
-
-typedef enum {
-    BTN_IDLE = 0,
-    BTN_DOWN,
-    BTN_HELD,
-} btn_state_t;
-
-static btn_state_t s_btn_state = BTN_IDLE;
-static int64_t s_btn_t0_us = 0;
-static int64_t s_btn_debounce_start_us = 0;
-
-static void button_gpio_init(void)
-{
-    gpio_config_t cfg = {
-        .pin_bit_mask = 1ULL << PAGER_PIN_BUTTON,
-        .mode = GPIO_MODE_INPUT,
-        .pull_up_en = GPIO_PULLUP_ENABLE, // active low
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .intr_type = GPIO_INTR_DISABLE,
-    };
-    gpio_config(&cfg);
-}
-
-// Dispatch table (Part C). Every resolved press (short or long) calls
-// modes_note_activity() from button_fsm_step() before dispatching here.
 
 static void composer_try_submit(void)
 {
@@ -731,50 +714,6 @@ static void button_action_long(void)
     ui_show_toast("nothing to send");
 }
 
-static void button_fsm_step(int level, int64_t now_us)
-{
-    switch (s_btn_state) {
-    case BTN_IDLE:
-        if (level == 0) {
-            if (s_btn_debounce_start_us == 0) {
-                s_btn_debounce_start_us = now_us;
-            } else if ((now_us - s_btn_debounce_start_us) >=
-                       (int64_t) PAGER_BTN_DEBOUNCE_MS * 1000) {
-                s_btn_state = BTN_DOWN;
-                s_btn_t0_us = now_us;
-                s_btn_debounce_start_us = 0;
-                // firmware/README.md: button press enters active mode.
-                set_mode(PAGER_MODE_ACTIVE, MODE_REASON_BUTTON);
-            }
-        } else {
-            s_btn_debounce_start_us = 0;
-        }
-        break;
-
-    case BTN_DOWN:
-        if (level != 0) {
-            // Released before the long-press threshold: short press.
-            modes_note_activity();
-            button_action_short();
-            s_btn_state = BTN_IDLE;
-        } else if ((now_us - s_btn_t0_us) >= (int64_t) PAGER_BTN_LONG_PRESS_MS * 1000) {
-            // Fire at 600ms elapsed - do not wait for release.
-            modes_note_activity();
-            button_action_long();
-            s_btn_state = BTN_HELD;
-        }
-        break;
-
-    case BTN_HELD:
-        if (level != 0) {
-            s_btn_state = BTN_IDLE;
-        }
-        break;
-    }
-}
-
-static bool button_fsm_active(void) { return s_btn_state != BTN_IDLE; }
-
 // ---------------------------------------------------------------------------
 // Public entry points
 // ---------------------------------------------------------------------------
@@ -813,7 +752,7 @@ void modes_boot(void)
     auth_init(ident_get_kdev());
     msg_bind_auth(&g_rtc.auth, on_auth_epoch_wrap);
 
-    button_gpio_init();
+    input_init(); // power effect: GPIO config + static queue alloc only
 
     if (!ui_init()) {
         ESP_LOGI(TAG, "display init failed; continuing headless (network/replies/acks unaffected)");
@@ -881,17 +820,32 @@ void modes_run(void)
                      (unsigned) oversize_delta);
         }
 
-        // Skip net_sleep() entirely whenever the composer is open, OR the
-        // button FSM is not IDLE (a held button must not re-enter a level-
-        // triggered light sleep it would just immediately exit again), OR
-        // net_modem_busy(). On that last one: the MQTT event
-        // handler runs at priority 4 against this task's priority 1, so it
-        // hands the CPU back here every time it blocks; without this term
-        // net_sleep() deasserts RTS in the middle of the modem's response
-        // to mqttReceive() (see net.h). Costs ~1.5s of 40mA busy-polling
-        // per incoming message (~0.02 mAh, ~0.4 mAh/day at 20 msgs/day,
-        // estimate) and buys back a per-message message-loss window.
-        bool skip_sleep = ui_composer_is_open() || button_fsm_active() || net_modem_busy();
+        // Skip net_sleep() entirely whenever the composer is open (ui.c's
+        // own CardKB-poll carve-out, unchanged - see ui.c/input.h's F6.2
+        // scope note on why input.c doesn't also read the CardKB while
+        // composing), OR input_button_busy() (a held button must not
+        // re-enter a level-triggered light sleep it would just immediately
+        // exit again), OR input_button_stuck() (same reason, still true
+        // for BTN_STUCK - net_sleep() (net.cpp) arms ext0 wake at level 0,
+        // so it would return immediately over and over for as long as the
+        // button stays down; fixing that needs the net_sleep() ext0-level-1
+        // variant firmware/README.md R2 specifies, which touches net.cpp
+        // and is out of this task's Files list - see input.h's
+        // input_button_stuck() doc comment), OR input_awake()
+        // (docs/DEVICE_PLAN.md §5.3's 30s UI-awake window, armed by the
+        // last key/button event), OR net_modem_busy(). On that last one:
+        // the MQTT event handler runs at priority 4 against this task's
+        // priority 1, so it hands the CPU back here every time it blocks;
+        // without this term net_sleep() deasserts RTS in the middle of the
+        // modem's response to mqttReceive() (see net.h). Costs ~1.5s of
+        // 40mA busy-polling per incoming message (~0.02 mAh, ~0.4 mAh/day
+        // at 20 msgs/day, estimate) and buys back a per-message
+        // message-loss window.
+        bool composer_open = ui_composer_is_open();
+        bool btn_busy = input_button_busy();
+        bool btn_stuck = input_button_stuck();
+        bool ui_awake = input_awake();
+        bool skip_sleep = composer_open || btn_busy || btn_stuck || ui_awake || net_modem_busy();
         if (!skip_sleep) {
             net_sleep(interval_ms);
             // L4/F7: the event task ticks at 10ms + settles for 10ms; give
@@ -899,15 +853,51 @@ void modes_run(void)
             // have produced.
             vTaskDelay(pdMS_TO_TICKS(PAGER_POST_WAKE_YIELD_MS));
             assert(PAGER_POST_WAKE_YIELD_MS >= 30); // F7, debug builds only
-        } else if (ui_composer_is_open()) {
-            vTaskDelay(pdMS_TO_TICKS(100)); // firmware/README.md: CardKB polled at 100ms
-        } else {
+        } else if (btn_busy) {
             vTaskDelay(pdMS_TO_TICKS(PAGER_BTN_POLL_MS)); // button FSM debounce/timing granularity
+        } else if (btn_stuck) {
+            // BTN_STUCK: nothing left to time-measure (no more short/long
+            // resolution while held), so the fine 20ms cadence buys
+            // nothing - poll at the sleep-mode wake interval's own
+            // granularity instead, cheaper than PAGER_BTN_POLL_MS without
+            // touching net_sleep() (see the skip_sleep comment above).
+            vTaskDelay(pdMS_TO_TICKS(PAGER_WAKE_INTERVAL_SLEEP_MS));
+        } else {
+            // composer_open or ui_awake: docs/DEVICE_PLAN.md §5.3, CardKB
+            // polled at 100ms, no light-sleep.
+            vTaskDelay(pdMS_TO_TICKS(100));
         }
 
-        button_fsm_step(gpio_get_level((gpio_num_t) PAGER_PIN_BUTTON), esp_timer_get_time());
+        input_poll(); // power effect: one GPIO read (button FSM step) - see input.h
+
+        input_event_t ievt;
+        while (input_get_event(&ievt)) {
+            modes_note_activity(); // any resolved key/button event counts as activity
+            switch (ievt.type) {
+            case INPUT_EVT_BTN_DOWN:
+                // firmware/README.md: button press enters active mode.
+                set_mode(PAGER_MODE_ACTIVE, MODE_REASON_BUTTON);
+                break;
+            case INPUT_EVT_BTN_SHORT:
+                button_action_short();
+                break;
+            case INPUT_EVT_BTN_LONG:
+                button_action_long();
+                break;
+            case INPUT_EVT_KEY:
+                // No non-composer screen consumes raw keys yet (F6.3's
+                // screen stack is what will); nothing to dispatch to today.
+                ESP_LOGD(TAG, "input key event type=%d (no consumer until F6.3)",
+                         (int) ievt.key.type);
+                break;
+            }
+        }
 
         if (ui_composer_is_open()) {
+            // Freshly re-checked (not the composer_open captured above):
+            // the drain loop just above may have closed the composer
+            // (cancel / submit-via-long-press), and this call must not run
+            // against a just-closed composer.
             ui_key_t key = ui_poll_keys();
             if (key.type == UI_KEYTYPE_ENTER) {
                 // §9.4/Part D: Enter alone submits, without also requiring
