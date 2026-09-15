@@ -39,6 +39,7 @@ see `infra/README.md`.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import logging
 import os
 import re
@@ -86,6 +87,97 @@ import httpx
 import pager_client
 
 _env_backup: str | None = None
+
+# docs/DEVICE_TASKS.md T1.5: which wire encoding every `make_device()`
+# below plays, for the whole run -- set once in `main()` from `--wire`
+# (default "json", docs/DEVICE_PLAN.md §2.4's own default for
+# `tools/pager_client.py`). Module-level rather than threaded through every
+# scenario function's signature because every scenario already reaches
+# `make_device` as a bare module-level call, the same shape as `MQTT_HOST`/
+# `MQTT_PORT` above.
+WIRE_MODE: str = "json"
+
+# docs/DEVICE_TASKS.md T1.5: `hmacKey` per device id, populated by
+# `create_device_with_secret` below and consumed by `make_device` so a
+# scenario that constructs more than one `DeviceClient` for the same device
+# id (e.g. `scenario_text_roundtrip`/`scenario_allowlist` both reconnecting
+# as "pgr-e2e-1", created once in `scenario_bootstrap`) always signs with
+# the same key that device's `deviceSecrets` row actually holds.
+DEVICE_HMAC_KEYS: dict[str, bytes] = {}
+
+# `make_device` caches one `DeviceClient` per device id and hands the same
+# instance back to every scenario that asks for it, rather than
+# constructing a fresh one per call. This matters once devices sign: §14.2's
+# `n` is *per-device, per-process-lifetime* state (the device's own RTC
+# `lo`/NVS `epoch`), so a second `DeviceClient("pgr-e2e-1", ...)` for a
+# device that already published `n=0` (e.g. `scenario_allowlist` reusing
+# `scenario_text_roundtrip`'s device) would restart its counter at `n=0` too
+# and get every publish dropped as a replay by the relay's real,
+# server-side, never-reset window (`app/store/device_secrets.py`) --
+# exactly what a real device's RTC-retaining reconnect (no cold boot, no
+# `crash()`) does not do. A cached instance's `disconnect()`/`connect()`
+# pair models that reconnect correctly; only `crash()` (PROTOCOL.md §1: a
+# new session id, and here also a bumped `n` epoch) models a cold boot.
+_DEVICE_CLIENTS: dict[str, pager_client.DeviceClient] = {}
+
+
+def create_device_with_secret(
+    admin: pager_client.ServerClient,
+    device_id: str,
+    owner_alias: str,
+    *,
+    default_to_alias: str | None = None,
+) -> dict:
+    """`admin.admin_device_add(...)` plus the `deviceSecrets/{device_id}` row
+    every `authMode: "hmac"` device needs before `app/ingest.py` will accept
+    anything from it or `app/broker.py` will sign anything to it
+    (`devices_store.create_device`'s `authMode` default is `"hmac"`,
+    `app/store/devices.py`).
+
+    **Test-harness plumbing, not a protocol decision.** `POST
+    /api/admin/devices` does not yet return a usable `hmacKey`/setup code --
+    that is docs/DEVICE_TASKS.md task S2.2, not landed yet. Rather than
+    block T1.5 on it, this generates the key here and writes it straight to
+    `deviceSecrets` through `app.store.device_secrets`, the same whitebox
+    Firestore-admin-SDK path `Oracle`/`_backdate_location`/`_backdate_message`
+    above already use in this file for state a real client-facing API can't
+    produce yet. TODO(orchestrator): once S2.2 lands, replace this with
+    whatever real provisioning flow it introduces."""
+    info = admin.admin_device_add(device_id, owner_alias, default_to_alias=default_to_alias)
+    _use_relay_store()
+    from app.store import device_secrets as device_secrets_store
+
+    hmac_key = os.urandom(32)
+    password_hash = hashlib.sha256(info["mqttPassword"].encode("utf-8")).hexdigest()
+    device_secrets_store.create(device_id, hmac_key=hmac_key, mqtt_password_hash=password_hash)
+    DEVICE_HMAC_KEYS[device_id] = hmac_key
+    return info
+
+
+def make_device(device_id: str) -> pager_client.DeviceClient:
+    """Every scenario's simulated pager device goes through here instead of
+    calling `pager_client.DeviceClient(...)` directly: returns the same
+    cached instance (`_DEVICE_CLIENTS`) across calls for the same device id
+    -- see that dict's docstring for why a fresh instance per call would
+    break signed replay-window state -- or, the first time this device id is
+    asked for, creates one that signs with the key
+    `create_device_with_secret` generated for it (or plays unsigned if none
+    was -- e.g. a device this run never provisioned) and speaks this run's
+    `--wire` encoding (`WIRE_MODE`)."""
+    existing = _DEVICE_CLIENTS.get(device_id)
+    if existing is not None:
+        return existing
+    device = pager_client.DeviceClient(
+        device_id,
+        MQTT_HOST,
+        MQTT_PORT,
+        None,
+        None,
+        hmac_key=DEVICE_HMAC_KEYS.get(device_id),
+        wire=WIRE_MODE,
+    )
+    _DEVICE_CLIENTS[device_id] = device
+    return device
 
 
 # --------------------------------------------------------------------------
@@ -402,7 +494,7 @@ def scenario_bootstrap() -> None:
     admin.admin_user_add("student", "Student", email="student@example.com", phone=None)
     admin.admin_set_allow("parent", "student", message=True, locate=True, one_way=False)
 
-    device_info = admin.admin_device_add("pgr-e2e-1", "student", default_to_alias="parent")
+    device_info = create_device_with_secret(admin, "pgr-e2e-1", "student", default_to_alias="parent")
     assert device_info["mqttUsername"] == "pgr-e2e-1"
     assert device_info["mqttPassword"]
     print("bootstrap: admin, parent, student, allow-edge and device pgr-e2e-1 created")
@@ -418,7 +510,7 @@ def scenario_text_roundtrip() -> None:
     parent = pager_client.ServerClient(RELAY_URL, AUTH_URL)
     parent.login("parent")
 
-    device = pager_client.DeviceClient("pgr-e2e-1", MQTT_HOST, MQTT_PORT, None, None)
+    device = make_device("pgr-e2e-1")
     device.connect()
     wait_until(lambda: device.connected, timeout=10, description="device to connect")
 
@@ -475,7 +567,7 @@ def scenario_allowlist() -> None:
     reply received by the device; admin denies parent<->student -> send
     returns 403; an unregistered signed-in UID gets 403 and cannot read
     Firestore."""
-    device = pager_client.DeviceClient("pgr-e2e-1", MQTT_HOST, MQTT_PORT, None, None)
+    device = make_device("pgr-e2e-1")
     device.connect()
     wait_until(lambda: device.connected, timeout=10, description="device to connect")
     device.inbox.clear()
@@ -561,7 +653,7 @@ def scenario_republish() -> None:
     oracle = Oracle()
     admin = pager_client.ServerClient(RELAY_URL, AUTH_URL)
     admin.login("admin")
-    admin.admin_device_add("pgr-e2e-2", "student", default_to_alias="parent")
+    create_device_with_secret(admin, "pgr-e2e-2", "student", default_to_alias="parent")
 
     parent = pager_client.ServerClient(RELAY_URL, AUTH_URL)
     parent.login("parent")
@@ -575,7 +667,7 @@ def scenario_republish() -> None:
 
     wait_until(_is_queued_or_sent, timeout=10, description="pager delivery to be created")
 
-    device = pager_client.DeviceClient("pgr-e2e-2", MQTT_HOST, MQTT_PORT, None, None)
+    device = make_device("pgr-e2e-2")
     device.connect()
     wait_until(
         lambda: any(e.data.get("id") == msg_id for e in device.inbox),
@@ -647,10 +739,10 @@ def scenario_location_periodic() -> None:
     # devices that already exist at the time it runs. Setting the edge
     # before the device exists would silently leave `locatableBy` empty
     # forever (until the allow-list happens to be rewritten again).
-    admin.admin_device_add("pgr-e2e-locp", "locperiodic", default_to_alias="parent")
+    create_device_with_secret(admin, "pgr-e2e-locp", "locperiodic", default_to_alias="parent")
     admin.admin_set_allow("parent", "locperiodic", message=True, locate=True, one_way=True)
 
-    device = pager_client.DeviceClient("pgr-e2e-locp", MQTT_HOST, MQTT_PORT, None, None)
+    device = make_device("pgr-e2e-locp")
     device.connect()
     wait_until(lambda: device.connected, timeout=10, description="loc-periodic device to connect")
 
@@ -712,9 +804,9 @@ def scenario_location_on_demand() -> None:
     # Device before allow-edge in every sub-case below -- see
     # scenario_location_periodic's comment on the same ordering.
     admin.admin_user_add("locdemo1", "LocDemo1", email="locdemo1@example.com", phone=None)
-    admin.admin_device_add("pgr-e2e-locd1", "locdemo1", default_to_alias="parent")
+    create_device_with_secret(admin, "pgr-e2e-locd1", "locdemo1", default_to_alias="parent")
     admin.admin_set_allow("parent", "locdemo1", message=True, locate=True, one_way=True)
-    device1 = pager_client.DeviceClient("pgr-e2e-locd1", MQTT_HOST, MQTT_PORT, None, None)
+    device1 = make_device("pgr-e2e-locd1")
     device1.connect()
     wait_until(lambda: device1.connected, timeout=10, description="locdemo1 device to connect")
 
@@ -745,10 +837,10 @@ def scenario_location_on_demand() -> None:
     admin.admin_user_add(
         "locrequester2", "LocRequester2", email="locrequester2@example.com", phone=None
     )
-    admin.admin_device_add("pgr-e2e-locd2", "locdemo2", default_to_alias="parent")
+    create_device_with_secret(admin, "pgr-e2e-locd2", "locdemo2", default_to_alias="parent")
     admin.admin_set_allow("parent", "locdemo2", message=True, locate=True, one_way=True)
     admin.admin_set_allow("locrequester2", "locdemo2", message=True, locate=True, one_way=True)
-    device2 = pager_client.DeviceClient("pgr-e2e-locd2", MQTT_HOST, MQTT_PORT, None, None)
+    device2 = make_device("pgr-e2e-locd2")
     # A real device takes real time to attempt a fix (PROTOCOL.md §13.3
     # rule 2 bounds it at 60s); this simulator otherwise answers instantly,
     # which would make the coalescing window below a flaky race against two
@@ -783,9 +875,9 @@ def scenario_location_on_demand() -> None:
 
     # --- loc fail on -> no_fix, still resolves the request ---
     admin.admin_user_add("locdemo3", "LocDemo3", email="locdemo3@example.com", phone=None)
-    admin.admin_device_add("pgr-e2e-locd3", "locdemo3", default_to_alias="parent")
+    create_device_with_secret(admin, "pgr-e2e-locd3", "locdemo3", default_to_alias="parent")
     admin.admin_set_allow("parent", "locdemo3", message=True, locate=True, one_way=True)
-    device3 = pager_client.DeviceClient("pgr-e2e-locd3", MQTT_HOST, MQTT_PORT, None, None)
+    device3 = make_device("pgr-e2e-locd3")
     device3.connect()
     wait_until(lambda: device3.connected, timeout=10, description="locdemo3 device to connect")
     device3.loc_set_fail(True)
@@ -807,7 +899,7 @@ def scenario_location_on_demand() -> None:
 
     # --- derived expiry: shortened LOC_REQ_TTL_S + tick() ---
     admin.admin_user_add("locdemo4", "LocDemo4", email="locdemo4@example.com", phone=None)
-    admin.admin_device_add("pgr-e2e-locd4", "locdemo4", default_to_alias="parent")
+    create_device_with_secret(admin, "pgr-e2e-locd4", "locdemo4", default_to_alias="parent")
     admin.admin_set_allow("parent", "locdemo4", message=True, locate=True, one_way=True)
     # Deliberately never connected: PROTOCOL.md §5.3 excludes loc_req from
     # the online-edge republish ("a stale location request is worthless"),
@@ -995,7 +1087,7 @@ def scenario_retention() -> None:
 
     # --- locations: retention.locations=1d, messages untouched ---
     admin.admin_user_add("retloc", "RetLoc", email="retloc@example.com", phone=None)
-    admin.admin_device_add("pgr-e2e-retloc", "retloc")
+    create_device_with_secret(admin, "pgr-e2e-retloc", "retloc")
     admin.admin_set_retention(messages="4w", locations="1d")
 
     fresh_loc_id = _backdate_location("pgr-e2e-retloc", days_ago=0.02)  # ~30 min old
@@ -1060,14 +1152,14 @@ def scenario_bytes() -> None:
     admin = pager_client.ServerClient(RELAY_URL, AUTH_URL)
     admin.login("admin")
     admin.admin_user_add("bytesuser", "BytesUser", email="bytesuser@example.com", phone=None)
-    admin.admin_device_add("pgr-e2e-bytes", "bytesuser", default_to_alias="parent")
+    create_device_with_secret(admin, "pgr-e2e-bytes", "bytesuser", default_to_alias="parent")
     # Two-way (not `one_way=True` like the location scenarios) so the
     # device's own up-message below lands in the thread instead of tripping
     # the "unknown recipient"/"not allowed" system-reply path -- this
     # scenario wants representative traffic sizes, not an allow-list check.
     admin.admin_set_allow("parent", "bytesuser", message=True, locate=True, one_way=False)
 
-    device = pager_client.DeviceClient("pgr-e2e-bytes", MQTT_HOST, MQTT_PORT, None, None)
+    device = make_device("pgr-e2e-bytes")
     device.connect()
     wait_until(lambda: device.connected, timeout=10, description="bytes device to connect")
 
@@ -1122,11 +1214,22 @@ def main(argv: list[str] | None = None) -> int:
         "scenarios", nargs="*", default=list(SCENARIOS), help="scenario names to run, in order"
     )
     parser.add_argument("--no-build", action="store_true", help="skip `docker compose build`")
+    parser.add_argument(
+        "--wire",
+        choices=["json", "cbor"],
+        default="json",
+        help="wire encoding every simulated device in this run speaks "
+        "(docs/DEVICE_TASKS.md T1.5) -- run the whole suite once per value to cover both "
+        "(default: json, docs/DEVICE_PLAN.md §2.4's own default for tools/pager_client.py)",
+    )
     args = parser.parse_args(argv)
 
     unknown = [s for s in args.scenarios if s not in SCENARIOS]
     if unknown:
         raise SystemExit(f"unknown scenario(s): {unknown}; choices: {list(SCENARIOS)}")
+
+    global WIRE_MODE
+    WIRE_MODE = args.wire
 
     start_stack(build=not args.no_build)
     passed: list[str] = []

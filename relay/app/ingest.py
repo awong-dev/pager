@@ -38,7 +38,6 @@ from app.wire import (
     LocEnvelope,
     StatusEnvelope,
     UpEnvelope,
-    build_down_payload,
     resolve_ts,
 )
 
@@ -282,10 +281,26 @@ class Ingest:
         # turning one bad `to` into an alert per redelivery. Same shape as
         # `new_id("m_")` (`m_` + 8 hex), so §3.1/§3.3 are unaffected.
         msg_id = "m_" + hashlib.sha256(f"sys:{device_id}:{cause_id}".encode()).hexdigest()[:8]
-        payload = build_down_payload(
-            msg_id=msg_id, ts=int(time.time()), body=body, from_=SYSTEM_ALIAS
-        )
-        self._broker.publish(f"pager/{device_id}/down", payload, qos=1, retain=False)
+        # §14.5: "every `/down` message published by the relay ... includes
+        # `n` and `sig`" -- unconditional, no exception for this reply (only
+        # the broker-generated LWT is exempt, §14.6). Goes through
+        # `BrokerClient.publish_down` -- the one path that takes a fresh `n`
+        # and signs per `devices/{d}.authMode` (docs/DEVICE_TASKS.md S1.4) --
+        # rather than `wire.build_down_payload` + a direct `self._broker.
+        # publish()`, which produced an unsigned envelope an `authMode:
+        # "hmac"` device's own `app/devauth.py`-equivalent verification
+        # would (correctly) drop. Found and fixed by T1.5 once its simulated
+        # device started verifying `/down` signatures instead of decoding
+        # raw JSON unconditionally.
+        obj: dict[str, Any] = {
+            "v": 1,
+            "id": msg_id,
+            "ts": int(time.time()),
+            "from": SYSTEM_ALIAS,
+            "body": body,
+            "ack": None,
+        }
+        self._broker.publish_down(device_id, obj)
 
     # ---- /status ----
 

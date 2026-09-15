@@ -39,6 +39,7 @@ Implements docs/SERVER_PLAN.md §8's full command set -- text, location
 from __future__ import annotations
 
 import argparse
+import base64
 import cmd
 import json
 import os
@@ -48,10 +49,26 @@ import sys
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from pathlib import Path
+from typing import Any, Literal
 
 import httpx
 import paho.mqtt.client as mqtt
+
+# docs/DEVICE_TASKS.md T1.5: the simulated device signs with the same
+# `app/devauth.py`/`app/wirecbor.py` this repo's relay verifies with --
+# rather than reimplementing HMAC/CBOR framing a second time here, which
+# would only let a bug in one implementation hide behind a matching bug in
+# the other. Needs `relay/` on `sys.path`; this file is documented to run
+# under the relay venv already (see module docstring), so this is the only
+# extra setup required -- `tools/e2e_v2.py` does the same thing for its own
+# `import app.*` whitebox helpers.
+REPO_ROOT = Path(__file__).resolve().parent.parent
+RELAY_DIR = REPO_ROOT / "relay"
+if str(RELAY_DIR) not in sys.path:
+    sys.path.insert(0, str(RELAY_DIR))
+
+from app import devauth, wirecbor
 
 DEFAULT_MQTT_HOST = os.environ.get("MQTT_BROKER_HOST", "localhost")
 DEFAULT_MQTT_PORT = int(os.environ.get("MQTT_BROKER_PORT", "1883"))
@@ -131,17 +148,61 @@ class InboxEntry:
     received_at: float = field(default_factory=time.time)
 
 
+# docs/PROTOCOL.md §14.2: n = (epoch << 20) | lo -- 20 bits of `lo` per
+# epoch, 12 bits of epoch left over in the 32-bit counter.
+_UP_LO_BITS = 20
+_UP_LO_MASK = (1 << _UP_LO_BITS) - 1
+
+# docs/DEVICE_TASKS.md T1.5's own instruction ("a 32-wide down window"),
+# narrower than the relay's 64-wide `deviceSecrets.upBits` window
+# (app/store/device_secrets.py, docs/PROTOCOL.md §14.2) -- a device-side
+# implementation choice (how much RTC a real device spends on this), not a
+# wire-format rule, so there is nothing for the two widths to disagree
+# about; the accept/reject arithmetic itself mirrors
+# `device_secrets.accept_up_n` exactly, just over a 32- instead of 64-bit
+# bitmap.
+_DOWN_WINDOW = 32
+_DOWN_WINDOW_MASK = (1 << _DOWN_WINDOW) - 1
+
+
 class DeviceClient:
     """A simulated pager device: real MQTT, docs/PROTOCOL.md's exact wire
     shapes. `crash()` is the one thing a real device can't do to itself on
-    purpose -- it exists to test PROTOCOL.md §5.3's online-edge republish."""
+    purpose -- it exists to test PROTOCOL.md §5.3's online-edge republish.
 
-    def __init__(self, device_id: str, host: str, port: int, username: str | None, password: str | None):
+    `hmac_key` (docs/DEVICE_PLAN.md §2.3, `docs/PROTOCOL.md` §14): `None`
+    (default) plays a v1 `authMode: "password"` device -- every publish goes
+    out unsigned, exactly as before this task. A non-empty key plays an
+    `authMode: "hmac"` device: every publish on `/up`, `/status` and `/loc`
+    gets a fresh `n` (this device's own epoch/lo counter, §14.2) and `sig`
+    (`app/devauth.py`), and every inbound `/down` is verified and dropped
+    (logged, not raised) on a bad signature or a replayed/out-of-window `n`
+    -- `_accept_down_n` below, this device's own mirror of the relay's
+    replay window (§14.2's device-side rules), just 32 wide instead of 64
+    (see `_DOWN_WINDOW`'s docstring).
+
+    `wire` selects the encoding for every envelope this device publishes
+    (first-byte dispatch on receipt, `app/wirecbor.py`) -- independent of
+    `hmac_key`: encoding and signing are orthogonal per §14."""
+
+    def __init__(
+        self,
+        device_id: str,
+        host: str,
+        port: int,
+        username: str | None,
+        password: str | None,
+        *,
+        hmac_key: bytes | None = None,
+        wire: Literal["json", "cbor"] = "json",
+    ):
         self.device_id = device_id
         self.host = host
         self.port = port
         self.username = username
         self.password = password
+        self.hmac_key = hmac_key
+        self.wire = wire
         self.session_id = new_id("s_")
         self.connected = False
         self.inbox: list[InboxEntry] = []
@@ -150,6 +211,18 @@ class DeviceClient:
         self._client: mqtt.Client | None = None
         self._loc_period_s = 0
         self._loc_min_s = 120
+        # §14.2 device-side `/up`, `/status`, `/loc` counter: `n = (epoch <<
+        # 20) | lo`. This process plays one cold boot per `DeviceClient`
+        # instance (epoch/lo start at 0) and one more per `crash()` (a real
+        # device's RTC-invalid cold-boot path -- see `crash()`).
+        self._up_epoch = 0
+        self._up_lo = 0
+        # §14.2 device-side `/down` replay window: highest accepted `n` +
+        # a bitmap of the `_DOWN_WINDOW` values below it, same shape as the
+        # relay's own `deviceSecrets.upN`/`upBits`
+        # (app/store/device_secrets.py).
+        self._down_n = 0
+        self._down_bits = 0
         # docs/PROTOCOL.md §13.3 -- device-side location state. `_lat`/`_lon`
         # is the device's current position (what the next fix attempt
         # reports); `_last_fix` is the last *successful* fix (what a
@@ -207,9 +280,11 @@ class DeviceClient:
         )
         if self.username:
             client.username_pw_set(self.username, self.password)
-        lwt_payload = json.dumps(
-            {"v": 1, "state": "offline", "session": self.session_id}, separators=(",", ":")
-        )
+        # docs/PROTOCOL.md §14.6: the broker-generated LWT can never carry a
+        # signature (and carries no `n`) regardless of `authMode` -- built
+        # directly here, not through `_publish`, so it never picks either up.
+        lwt_obj = {"v": 1, "state": "offline", "session": self.session_id}
+        lwt_payload = self._encode(lwt_obj)
         client.will_set(self.status_topic, lwt_payload, qos=1, retain=True)
         client.on_connect = self._on_connect
         client.on_message = self._on_message
@@ -242,9 +317,15 @@ class DeviceClient:
         """A new cold-boot session id + reconnect -- PROTOCOL.md §1: session
         id changes per cold boot, not per deep-sleep wake. Tests the
         online-edge republish (§5.3), whose trigger is "session differs from
-        the last seen session"."""
+        the last seen session". Also the device-side equivalent of a
+        cold boot (§14.2: RTC invalid) -- bumps the `n` epoch so the relay's
+        replay window absorbs the jump instead of seeing `lo` restart from
+        under its current `upN`."""
         self.disconnect()
         self.session_id = new_id("s_")
+        if self.hmac_key:
+            self._up_epoch += 1
+            self._up_lo = 0
         self.connect()
 
     def _on_connect(self, client, userdata, connect_flags, reason_code, properties) -> None:
@@ -252,13 +333,82 @@ class DeviceClient:
         client.subscribe(self.down_topic, qos=1)
         self.publish_status()
 
+    # ---- wire encoding + signing (docs/PROTOCOL.md §14, §3/§10) ----
+
+    def _encode(self, obj: dict[str, Any]) -> bytes:
+        """Encodes `obj` in this device's chosen wire encoding, unsigned --
+        used only for the LWT (§14.6), which never carries `n`/`sig`."""
+        if self.wire == "cbor":
+            return wirecbor.encode(obj)
+        return json.dumps(obj, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+
+    def _decode(self, payload: bytes) -> dict[str, Any] | None:
+        """Inverse of `_encode`, first-byte dispatch per §3/`wirecbor.is_cbor`
+        -- `None` on anything that doesn't parse."""
+        try:
+            if wirecbor.is_cbor(payload):
+                return wirecbor.decode(payload)
+            return json.loads(payload.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError, KeyError):
+            return None
+
+    def _next_up_n(self) -> int:
+        """§14.2: `n = (epoch << 20) | lo`, `lo` incrementing per publish and
+        wrapping into `epoch` -- this process's stand-in for a device's
+        RTC `lo` + NVS `epoch`. Pre-increments (the first call returns `n=1`,
+        never `n=0`): the relay's replay window (§14.2, `app/store/
+        device_secrets.py`) uses `upN=0` as its own "nothing accepted yet"
+        sentinel, so `n=0` can never be the value that first moves it off
+        that sentinel -- it would read as a replay of a top that was never
+        really there, not as this device's genuine first envelope."""
+        self._up_lo += 1
+        if self._up_lo > _UP_LO_MASK:
+            self._up_lo = 1
+            self._up_epoch += 1
+        return (self._up_epoch << _UP_LO_BITS) | self._up_lo
+
+    def _accept_down_n(self, n: int) -> bool:
+        """§14.2's device-side `/down` replay window, mirroring the relay's
+        own `app/store/device_secrets.accept_up_n` arithmetic exactly, just
+        `_DOWN_WINDOW` wide instead of 64 (see that constant's docstring)."""
+        if n > self._down_n:
+            shift = n - self._down_n
+            if shift >= _DOWN_WINDOW:
+                self._down_bits = 0
+            else:
+                self._down_bits = ((self._down_bits << shift) | (1 << (shift - 1))) & _DOWN_WINDOW_MASK
+            self._down_n = n
+            return True
+        gap = self._down_n - n
+        if 0 < gap <= _DOWN_WINDOW:
+            bit = 1 << (gap - 1)
+            if self._down_bits & bit:
+                return False
+            self._down_bits |= bit
+            return True
+        return False
+
     def _on_message(self, client, userdata, msg) -> None:
         self.bytes.add_received(msg.topic, len(msg.payload))
-        try:
-            data = json.loads(msg.payload.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError):
-            print(f"<- received unparsable payload on {msg.topic}: {msg.payload[:64]!r}")
-            return
+        payload = msg.payload
+        if self.hmac_key:
+            ok, unsigned = devauth.verify(self.hmac_key, msg.topic, payload)
+            if not ok:
+                print(f"<- SECURITY dropped bad-sig/unsigned payload on {msg.topic}: {payload[:64]!r}")
+                return
+            data = self._decode(unsigned)
+            if data is None:
+                print(f"<- dropped unparsable (post-verify) payload on {msg.topic}: {unsigned[:64]!r}")
+                return
+            n = data.get("n")
+            if not isinstance(n, int) or not self._accept_down_n(n):
+                print(f"<- SECURITY dropped replayed/out-of-window /down n={n!r} on {msg.topic}")
+                return
+        else:
+            data = self._decode(payload)
+            if data is None:
+                print(f"<- received unparsable payload on {msg.topic}: {payload[:64]!r}")
+                return
         self.inbox.append(InboxEntry(topic=msg.topic, data=data))
         kind = data.get("kind", "msg")
         print(f"<- [{kind}] {data}")
@@ -277,8 +427,20 @@ class DeviceClient:
             self.publish_ack(msg_id, "shown")
 
     def _publish(self, topic: str, obj: dict[str, Any], qos: int, retain: bool = False) -> None:
+        """§14.3: for an `authMode: hmac` device (`self.hmac_key` set), every
+        publish on `/up`, `/status` and `/loc` (the only topics this class
+        ever publishes to -- `/down` is inbound-only) gets a fresh `n`
+        (`_next_up_n`) and `sig` (`app/devauth.py`), in this device's chosen
+        wire encoding. Unsigned otherwise (`authMode: password`)."""
         assert self._client is not None, "not connected"
-        payload = json.dumps(obj, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+        if self.hmac_key:
+            signed_obj = {**obj, "n": self._next_up_n()}
+            if self.wire == "cbor":
+                payload = devauth.sign_cbor(self.hmac_key, topic, signed_obj)
+            else:
+                payload = devauth.sign_json(self.hmac_key, topic, signed_obj)
+        else:
+            payload = self._encode(obj)
         self.bytes.add_published(topic, len(payload))
         self._client.publish(topic, payload, qos=qos, retain=retain)
 
@@ -1242,6 +1404,20 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--port", type=int, default=DEFAULT_MQTT_PORT)
     parser.add_argument("--username", default=os.environ.get("MQTT_USERNAME"))
     parser.add_argument("--password", default=os.environ.get("MQTT_PASSWORD"))
+    parser.add_argument(
+        "--hmac-key",
+        default=os.environ.get("PAGER_HMAC_KEY", ""),
+        help="base64 device HMAC key (docs/PROTOCOL.md §14) -- every publish is signed "
+        "with it and every /down is verified and dropped on failure. Omit or pass '' to "
+        "play an unsigned authMode:password device (the default).",
+    )
+    parser.add_argument(
+        "--wire",
+        choices=["json", "cbor"],
+        default=os.environ.get("PAGER_WIRE", "json"),
+        help="wire encoding for this device's publishes (default: json, "
+        "docs/DEVICE_PLAN.md §2.4's default for tools/pager_client.py)",
+    )
     parser.add_argument("--api", default=DEFAULT_API_URL, help="relay API base URL")
     parser.add_argument("--auth-url", default=DEFAULT_AUTH_URL, help="Auth emulator base URL")
     parser.add_argument("--as", dest="as_alias", help="log in as this alias before running")
@@ -1255,7 +1431,16 @@ def build_arg_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_arg_parser().parse_args(argv)
 
-    device = DeviceClient(args.device_id, args.host, args.port, args.username, args.password)
+    hmac_key = base64.b64decode(args.hmac_key) if args.hmac_key else None
+    device = DeviceClient(
+        args.device_id,
+        args.host,
+        args.port,
+        args.username,
+        args.password,
+        hmac_key=hmac_key,
+        wire=args.wire,
+    )
     server = ServerClient(args.api, args.auth_url)
     shell = PagerShell(device, server, as_json=args.json)
 
