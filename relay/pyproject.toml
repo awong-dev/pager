@@ -30,6 +30,11 @@ dependencies = [
     # `Request.form()`, which requires this package even for non-multipart
     # forms.
     "python-multipart",
+    # docs/DEVICE_PLAN.md §2.4: the wire's CBOR encoding, integer-keyed per
+    # docs/PROTOCOL.md §10 (`app/wirecbor.py`); `tools/authvectors.json`
+    # pins this library's encoding against the firmware's hand-written
+    # codec.
+    "cbor2",
 ]
 
 [project.optional-dependencies]

@@ -1,0 +1,155 @@
+[
+  {
+    "label": "down_msg",
+    "key_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+    "topic": "pager/pgr-0001/down",
+    "obj": {
+      "v": 1,
+      "id": "m_7f3a2b10",
+      "ts": 1757700000,
+      "from": "parent",
+      "body": "be there at 5",
+      "ack": null
+    },
+    "json_signed_b64": "eyJ2IjoxLCJpZCI6Im1fN2YzYTJiMTAiLCJ0cyI6MTc1NzcwMDAwMCwiZnJvbSI6InBhcmVudCIsImJvZHkiOiJiZSB0aGVyZSBhdCA1IiwiYWNrIjpudWxsLCJzaWciOiI0c1BkTlZldkZ6TSJ9",
+    "cbor_signed_b64": "pwABAWptXzdmM2EyYjEwAhpoxF+gA2ZwYXJlbnQEbWJlIHRoZXJlIGF0IDUF9g1IgkTVmLrPCJU="
+  },
+  {
+    "label": "ack",
+    "key_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+    "topic": "pager/pgr-0001/up",
+    "obj": {
+      "v": 1,
+      "id": "m_7f3a2b10",
+      "ts": 1757700100,
+      "ack": "shown"
+    },
+    "json_signed_b64": "eyJ2IjoxLCJpZCI6Im1fN2YzYTJiMTAiLCJ0cyI6MTc1NzcwMDEwMCwiYWNrIjoic2hvd24iLCJzaWciOiJZeC1mNkhVR1JSUSJ9",
+    "cbor_signed_b64": "pQABAWptXzdmM2EyYjEwAhpoxGAEBWVzaG93bg1Izk1Kk0vLf9I="
+  },
+  {
+    "label": "up_msg_to",
+    "key_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+    "topic": "pager/pgr-0001/up",
+    "obj": {
+      "v": 1,
+      "id": "u_91c0aa21",
+      "ts": 1757700200,
+      "from": "student",
+      "to": "mom",
+      "body": "ok coming",
+      "ack": null
+    },
+    "json_signed_b64": "eyJ2IjoxLCJpZCI6InVfOTFjMGFhMjEiLCJ0cyI6MTc1NzcwMDIwMCwiZnJvbSI6InN0dWRlbnQiLCJ0byI6Im1vbSIsImJvZHkiOiJvayBjb21pbmciLCJhY2siOm51bGwsInNpZyI6Im5WOXhuRWJVcXRzIn0=",
+    "cbor_signed_b64": "qAABAWp1XzkxYzBhYTIxAhpoxGBoA2dzdHVkZW50B2Ntb20EaW9rIGNvbWluZwX2DUjGXUDslh8zpQ=="
+  },
+  {
+    "label": "status",
+    "key_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+    "topic": "pager/pgr-0001/status",
+    "obj": {
+      "v": 1,
+      "state": "online",
+      "mode": "sleep",
+      "batt_mv": 3280,
+      "rssi": -95,
+      "session": "s_3ab91c02",
+      "ts": 1757700000,
+      "fw": "0.1.0",
+      "bv": 7
+    },
+    "json_signed_b64": "eyJ2IjoxLCJzdGF0ZSI6Im9ubGluZSIsIm1vZGUiOiJzbGVlcCIsImJhdHRfbXYiOjMyODAsInJzc2kiOi05NSwic2Vzc2lvbiI6InNfM2FiOTFjMDIiLCJ0cyI6MTc1NzcwMDAwMCwiZnciOiIwLjEuMCIsImJ2Ijo3LCJzaWciOiJyYlFDdDVDZjZJTSJ9",
+    "cbor_signed_b64": "qgABFWZvbmxpbmUWZXNsZWVwFxkM0BgYOF4YGWpzXzNhYjkxYzAyAhpoxF+gGBplMC4xLjAOBw1Ic2o2J2aMULU="
+  },
+  {
+    "label": "loc",
+    "key_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+    "topic": "pager/pgr-0001/loc",
+    "obj": {
+      "v": 1,
+      "id": "l_3c9a11f0",
+      "ts": 1757700000,
+      "loc": {
+        "lat": 37.774929,
+        "lon": -122.419416,
+        "acc": 14,
+        "fix_ts": 1757699991,
+        "src": "gnss"
+      },
+      "req": "m_7f3a2b10",
+      "cached": false
+    },
+    "json_signed_b64": "eyJ2IjoxLCJpZCI6ImxfM2M5YTExZjAiLCJ0cyI6MTc1NzcwMDAwMCwibG9jIjp7ImxhdCI6MzcuNzc0OTI5LCJsb24iOi0xMjIuNDE5NDE2LCJhY2MiOjE0LCJmaXhfdHMiOjE3NTc2OTk5OTEsInNyYyI6Imduc3MifSwicmVxIjoibV83ZjNhMmIxMCIsImNhY2hlZCI6ZmFsc2UsInNpZyI6IkVleXhYTXg1SGdNIn0=",
+    "cbor_signed_b64": "pwABAWpsXzNjOWExMWYwAhpoxF+gCKUA+0BC4zDfm9xqAfvAXprXtjTa0wIOAxpoxF+XBGRnbnNzCWptXzdmM2EyYjEwCvQNSKDYPjDn9b65"
+  },
+  {
+    "label": "book",
+    "key_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+    "topic": "pager/pgr-0001/down",
+    "obj": {
+      "v": 1,
+      "id": "m_88b1c210",
+      "ts": 1757700300,
+      "kind": "book",
+      "bv": 7,
+      "d": "mom",
+      "c": [
+        {
+          "a": "mom",
+          "n": "Mom",
+          "t": "web"
+        },
+        {
+          "a": "dad",
+          "n": "Dad",
+          "t": "sms"
+        }
+      ],
+      "p": [
+        {
+          "n": "Uncle Bob",
+          "s": "pend"
+        }
+      ],
+      "ack": null
+    },
+    "json_signed_b64": "eyJ2IjoxLCJpZCI6Im1fODhiMWMyMTAiLCJ0cyI6MTc1NzcwMDMwMCwia2luZCI6ImJvb2siLCJidiI6NywiZCI6Im1vbSIsImMiOlt7ImEiOiJtb20iLCJuIjoiTW9tIiwidCI6IndlYiJ9LHsiYSI6ImRhZCIsIm4iOiJEYWQiLCJ0Ijoic21zIn1dLCJwIjpbeyJuIjoiVW5jbGUgQm9iIiwicyI6InBlbmQifV0sImFjayI6bnVsbCwic2lnIjoieFBiak03c0RZREkifQ==",
+    "cbor_signed_b64": "qgABAWptXzg4YjFjMjEwAhpoxGDMBmRib29rDgcRY21vbRKCowBjbW9tAWNNb20CY3dlYqMAY2RhZAFjRGFkAmNzbXMTgaIAaVVuY2xlIEJvYgFkcGVuZAX2DUjjjocF/Cr9iw=="
+  },
+  {
+    "label": "cfg",
+    "key_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+    "topic": "pager/pgr-0001/down",
+    "obj": {
+      "v": 1,
+      "id": "m_9a0d5501",
+      "ts": 1757700400,
+      "kind": "cfg",
+      "cfg": {
+        "lock": {
+          "clear": true,
+          "auto": 5
+        }
+      },
+      "ack": null
+    },
+    "json_signed_b64": "eyJ2IjoxLCJpZCI6Im1fOWEwZDU1MDEiLCJ0cyI6MTc1NzcwMDQwMCwia2luZCI6ImNmZyIsImNmZyI6eyJsb2NrIjp7ImNsZWFyIjp0cnVlLCJhdXRvIjo1fX0sImFjayI6bnVsbCwic2lnIjoiQm40akIxc3I3YU0ifQ==",
+    "cbor_signed_b64": "pwABAWptXzlhMGQ1NTAxAhpoxGEwBmNjZmcYJqEAogD1AQUF9g1I57xTPclR/gc="
+  },
+  {
+    "label": "contact_req",
+    "key_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+    "topic": "pager/pgr-0001/up",
+    "obj": {
+      "v": 1,
+      "id": "u_2b7cd930",
+      "ts": 1757700500,
+      "kind": "contact_req",
+      "name": "Grandma",
+      "ph": "+15551234567",
+      "ack": null
+    },
+    "json_signed_b64": "eyJ2IjoxLCJpZCI6InVfMmI3Y2Q5MzAiLCJ0cyI6MTc1NzcwMDUwMCwia2luZCI6ImNvbnRhY3RfcmVxIiwibmFtZSI6IkdyYW5kbWEiLCJwaCI6IisxNTU1MTIzNDU2NyIsImFjayI6bnVsbCwic2lnIjoiV0xwamVGV3E0MWsifQ==",
+    "cbor_signed_b64": "qAABAWp1XzJiN2NkOTMwAhpoxGGUBmtjb250YWN0X3JlcQ9nR3JhbmRtYRBsKzE1NTUxMjM0NTY3BfYNSKXJFGg5gZCb"
+  }
+]
