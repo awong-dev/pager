@@ -765,11 +765,34 @@ class ServerClient:
         query = {
             "structuredQuery": {
                 "from": [{"collectionId": "messages"}],
+                # Both filters, not just `convKey`. A Firestore `list` is
+                # authorised by an abstract pre-check against the query's
+                # declared filters, before any document is read, so
+                # `convKey` alone gives `firestore.rules`' messages rule
+                # (`uid in resource.data.uids`) nothing to prove itself from
+                # and the whole query 403s. `uids array-contains <self>` is
+                # redundant against `convKey` but is what makes it provable
+                # -- same fix as the web app's thread listener
+                # (web/app/chat/[alias]/ThreadPageClient.tsx).
                 "where": {
-                    "fieldFilter": {
-                        "field": {"fieldPath": "convKey"},
-                        "op": "EQUAL",
-                        "value": {"stringValue": conv_key},
+                    "compositeFilter": {
+                        "op": "AND",
+                        "filters": [
+                            {
+                                "fieldFilter": {
+                                    "field": {"fieldPath": "convKey"},
+                                    "op": "EQUAL",
+                                    "value": {"stringValue": conv_key},
+                                }
+                            },
+                            {
+                                "fieldFilter": {
+                                    "field": {"fieldPath": "uids"},
+                                    "op": "ARRAY_CONTAINS",
+                                    "value": {"stringValue": self.uid},
+                                }
+                            },
+                        ],
                     }
                 },
                 "orderBy": [{"field": {"fieldPath": "seq"}}],
