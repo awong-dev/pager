@@ -98,6 +98,15 @@ extern const ui_screen_t g_scr_setup;
  * own module comment above says are not built yet (that note is now stale
  * for this one screen only; scr_pick.c/scr_book.c still need book.c, F7.1). */
 extern const ui_screen_t g_scr_lock;
+/* F7.2 (docs/DEVICE_PLAN.md §5.5 "New message → pick recipient", "Address
+ * book", "Nicknames"): book.c (F7.1) now exists too, so these are the last
+ * two book.c-dependent screens this header's module comment above still
+ * names as not-yet-built — that note is now fully stale. Not yet reachable
+ * from Home (scr_home.c's HROW_NEWMSG/HROW_BOOK rows still show their
+ * pre-F7.1 stub) — see scr_pick.c's/scr_book.c's own module comments for
+ * why wiring that is flagged rather than done here. */
+extern const ui_screen_t g_scr_pick;
+extern const ui_screen_t g_scr_book;
 
 /* scr_chat.c's own "mark every currently-visible down message read"
  * (docs/DEVICE_PLAN.md §5.5's Chat bullet) — exported so Home's "open chat"

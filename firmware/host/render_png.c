@@ -372,6 +372,114 @@ static void render_screen_setup(void)
     gfx_text(0, GFX_SCREEN_H - 9, GFX_FONT_NORMAL, "enter submit  esc clear/back");
 }
 
+/* ---------------------------------------------------------------------
+ * docs/DEVICE_TASKS.md F7.2: "make png (fixtures for each screen)" —
+ * scr_pick.c/scr_book.c are book.h/ESP-IDF-dependent (book_contact_at() etc.
+ * are ESP_PLATFORM-only, book.h's own module comment) and are not built for
+ * the host by any #ifdef split, same reasoning the F6.3 fixtures above
+ * already give for scr_home.c/scr_chat.c/scr_device.c/scr_setup.c. These
+ * four functions hand-draw each of scr_pick.c's/scr_book.c's rendered
+ * states with fixture data matching docs/DEVICE_PLAN.md §5.5's own mockups,
+ * same gfx_text()/gfx_hline() primitives, same FIXTURE_STATUS_H/BODY_TOP
+ * band split.
+ * --------------------------------------------------------------------- */
+
+static void render_screen_pick(void)
+{
+    gfx_clear();
+    draw_fixture_status_bar(3, true, 0, false, 0, 3);
+
+    int y = FIXTURE_BODY_TOP + 2;
+    struct {
+        const char *label, *tag;
+        bool sel;
+    } rows[] = {
+        { "mom  (default)", "web", true },
+        { "dad", "web", false },
+        { "grandma", "sms", false },
+        { "uncle bob", "pending approval", false },
+        { "sam", "not approved", false },
+    };
+    for (size_t i = 0; i < sizeof(rows) / sizeof(rows[0]); i++) {
+        if (rows[i].sel) {
+            gfx_text(0, y, GFX_FONT_NORMAL, ">");
+        }
+        gfx_text(10, y, GFX_FONT_NORMAL, rows[i].label);
+        int tw = gfx_text_width(GFX_FONT_NORMAL, rows[i].tag);
+        gfx_text(GFX_SCREEN_W - tw, y, GFX_FONT_NORMAL, rows[i].tag);
+        y += 12;
+    }
+
+    gfx_text(0, GFX_SCREEN_H - 9, GFX_FONT_NORMAL, "enter choose   esc back");
+}
+
+static void render_screen_book(void)
+{
+    gfx_clear();
+    draw_fixture_status_bar(3, true, 0, false, 0, 3);
+
+    int y = FIXTURE_BODY_TOP + 2;
+    struct {
+        const char *label, *tag;
+        bool sel;
+    } rows[] = {
+        { "gma  (grandma)", "sms", false },
+        { "mom", "web", true },
+        { "dad", "web", false },
+        { "uncle bob", "pending approval", false },
+        { "sam", "not approved", false },
+        { "Add", "", false },
+    };
+    for (size_t i = 0; i < sizeof(rows) / sizeof(rows[0]); i++) {
+        if (rows[i].sel) {
+            gfx_text(0, y, GFX_FONT_NORMAL, ">");
+        }
+        gfx_text(10, y, GFX_FONT_NORMAL, rows[i].label);
+        if (rows[i].tag[0] != '\0') {
+            int tw = gfx_text_width(GFX_FONT_NORMAL, rows[i].tag);
+            gfx_text(GFX_SCREEN_W - tw, y, GFX_FONT_NORMAL, rows[i].tag);
+        }
+        y += 12;
+    }
+
+    gfx_text(0, GFX_SCREEN_H - 9, GFX_FONT_NORMAL, "up/down move   enter select   esc back");
+}
+
+static void render_screen_book_add(void)
+{
+    gfx_clear();
+    draw_fixture_status_bar(3, true, 0, false, 0, 3);
+
+    int y = FIXTURE_BODY_TOP + 2;
+    gfx_text(0, y, GFX_FONT_NORMAL, "Add contact");
+    y += 14;
+    gfx_text(0, y, GFX_FONT_NORMAL, "Name   Grandma_");
+    y += 12;
+    gfx_text(0, y, GFX_FONT_NORMAL, "Phone  +1555123");
+    y += 12;
+    gfx_text(8, y, GFX_FONT_NORMAL, "(or leave blank and type an @alias)");
+
+    gfx_text(0, GFX_SCREEN_H - 9, GFX_FONT_NORMAL,
+             "tab next field   enter send for approval   esc cancel");
+}
+
+static void render_screen_nickname(void)
+{
+    gfx_clear();
+    draw_fixture_status_bar(3, true, 0, false, 0, 3);
+
+    int y = FIXTURE_BODY_TOP + 2;
+    gfx_text(0, y, GFX_FONT_NORMAL, "Nickname");
+    y += 14;
+    gfx_text(0, y, GFX_FONT_NORMAL, "for grandma");
+    y += 12;
+    gfx_text(0, y, GFX_FONT_NORMAL, "> gma_");
+    y += 12;
+    gfx_text(0, y, GFX_FONT_NORMAL, "3/12");
+
+    gfx_text(0, GFX_SCREEN_H - 9, GFX_FONT_NORMAL, "enter save   esc cancel");
+}
+
 int main(int argc, char **argv)
 {
     const char *assets_path = (argc > 1) ? argv[1] : "../../build/assets.bin";
@@ -396,6 +504,10 @@ int main(int argc, char **argv)
         { "screen_chat", render_screen_chat },
         { "screen_device", render_screen_device },
         { "screen_setup", render_screen_setup },
+        { "screen_pick", render_screen_pick },
+        { "screen_book", render_screen_book },
+        { "screen_book_add", render_screen_book_add },
+        { "screen_nickname", render_screen_nickname },
     };
 
     int status = 0;
