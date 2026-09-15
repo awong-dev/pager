@@ -30,12 +30,14 @@ import os
 import secrets
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from firebase_admin import auth as fb_auth
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
+from app import devcfg
 from app.auth import AuthedUser, require_admin
 from app.backends.sms_twilio import normalize_e164
+from app.broker import BrokerClient
 from app.db.firestore import get_db
 from app.store import allow as allow_store
 from app.store import backends as backends_store
@@ -65,6 +67,15 @@ def _admin_write_rate_limit() -> tuple[int, int]:
         os.environ.get("RATE_LIMIT_ADMIN_WRITE_WINDOW_S", str(DEFAULT_ADMIN_WRITE_WINDOW_S))
     )
     return limit, window_s
+
+
+def get_broker(request: Request) -> BrokerClient:
+    """Same `request.app.state.*` dependency shape as `app/routers/
+    conversations.py`'s `get_routing`/`get_location` -- this router had no
+    need for the broker before docs/DEVICE_TASKS.md S4.2's `devcfg.
+    push_book`/`push_cfg`, which publish `/down` directly rather than
+    through `app.routing.Routing`."""
+    return request.app.state.broker
 
 
 def require_admin_write_rate_limit(
@@ -363,8 +374,13 @@ def rotate_credentials(device_id: str) -> RotateCredentialsResponse:
 # from the device's own `/up kind:"contact_req"` (§4.2); approval/rejection
 # is admin-only (§4.3: "the device owner is the student, who must not be able
 # to approve their own recipients"). Every decision below bumps
-# `devices/{d}.bookVersion` and calls `contacts_store.push_book` -- the
-# latter is a placeholder until S4.2 (see `app/store/contacts.py`).
+# `devices/{d}.bookVersion` and calls `devcfg.push_book` (docs/DEVICE_TASKS.md
+# S4.2) to publish the updated book. `app/store/contacts.py` also defines a
+# `push_book` -- S4.1's placeholder no-op stub, documented there as "replace
+# every call site with S4.2's real implementation." `app/store/contacts.py`
+# is not in S4.2's `Files` list, so that stub is left as dead code rather
+# than edited; this router (which *is* in scope, and was already the only
+# caller of the stub) calls `devcfg.push_book` directly instead.
 # ---------------------------------------------------------------------------
 
 
@@ -419,6 +435,7 @@ def approve_contact(
     key: str,
     req: ContactApproveRequest,
     authed: Annotated[AuthedUser, Depends(require_admin)],
+    broker: Annotated[BrokerClient, Depends(get_broker)],
 ) -> ContactRequest:
     request = contacts_store.get_request(key)
     if request is None:
@@ -466,7 +483,7 @@ def approve_contact(
 
     updated = contacts_store.approve(key, decided_by=authed.uid)
     contacts_store.bump_book_version(request.deviceId)
-    contacts_store.push_book(request.deviceId)
+    devcfg.push_book(request.deviceId, broker)
     return updated
 
 
@@ -475,6 +492,7 @@ def reject_contact(
     key: str,
     req: ContactRejectRequest,
     authed: Annotated[AuthedUser, Depends(require_admin)],
+    broker: Annotated[BrokerClient, Depends(get_broker)],
 ) -> ContactRequest:
     request = contacts_store.get_request(key)
     if request is None:
@@ -484,8 +502,39 @@ def reject_contact(
 
     updated = contacts_store.reject(key, reason=req.reason, decided_by=authed.uid)
     contacts_store.bump_book_version(request.deviceId)
-    contacts_store.push_book(request.deviceId)
+    devcfg.push_book(request.deviceId, broker)
     return updated
+
+
+# ---------------------------------------------------------------------------
+# cfg -- docs/DEVICE_PLAN.md §5.8, docs/DEVICE_TASKS.md S4.2.
+# ---------------------------------------------------------------------------
+
+
+class LockCfg(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    clear: bool | None = None
+    # docs/DEVICE_PLAN.md §5.8: `auto_min` is stored device-side as a `u8`
+    # (0-255 minutes; 0 = never).
+    auto: int | None = Field(default=None, ge=0, le=255)
+
+
+class PushCfgRequest(BaseModel):
+    lock: LockCfg
+
+
+@router.post("/devices/{device_id}/cfg", dependencies=[Depends(require_admin_write_rate_limit)])
+def push_cfg(
+    device_id: str,
+    req: PushCfgRequest,
+    broker: Annotated[BrokerClient, Depends(get_broker)],
+) -> dict[str, bool]:
+    if devices_store.get_device(device_id) is None:
+        raise HTTPException(status_code=404, detail="no such device")
+    lock = {k: v for k, v in req.lock.model_dump().items() if v is not None}
+    ok = devcfg.push_cfg(device_id, lock, broker)
+    return {"ok": ok}
 
 
 # ---------------------------------------------------------------------------

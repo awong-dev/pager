@@ -30,7 +30,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
-from app import devauth, location, wire
+from app import devauth, devcfg, location, wire
 from app.broker import BrokerClient
 from app.routing import Routing
 from app.store import contacts as contacts_store
@@ -378,9 +378,16 @@ class Ingest:
         ack_ts = resolve_ts(env.ts)
 
         # A down message's wire `id` is the Firestore `messages/{id}` doc id
-        # itself (see `app/backends/pager.py`'s module docstring).
+        # itself (see `app/backends/pager.py`'s module docstring) -- *except*
+        # for a `book`/`cfg` id (docs/DEVICE_TASKS.md S4.2), which is never a
+        # `messages/{id}` document (`app/devcfg.py`'s module docstring: it
+        # addresses a device, not a (sender, recipient) pair). So a `book`/
+        # `cfg` ack is checked here, after the ordinary lookup misses,
+        # before falling back to "truly unknown id".
         msg = messages_store.get_message(env.id)
         if msg is None:
+            if env.ack == "shown" and devcfg.ack(device_id, env.id):
+                return
             # §4.1 rule 3: unknown id -> log + drop, never create a row.
             logger.info("ack for unknown message id=%s from device=%s dropped", env.id, device_id)
             return
@@ -525,15 +532,44 @@ class Ingest:
             # message state changes, no republish.
             return
 
+        # §5.3's online-edge republish runs *before* the bv-triggered push
+        # below, not after: on a device's very first status ever (or any
+        # edge that lands in the same request as a bv-triggered push), doing
+        # it in this order means the freshly-pushed book is the one and only
+        # publish for this device this request, rather than being published
+        # once by `push_book` and then immediately again by the republish
+        # (which would otherwise resend the very book `push_book` just set
+        # as `pendingBook`) -- both would be harmless on the wire (same id,
+        # device dedup, §4.1 rule 7), but this ordering avoids the wasted
+        # publish.
         session_changed = previous_status.session != env.session
         offline_to_online = previous_status.state == "offline"
         if session_changed or offline_to_online:
             self._republish_unacked(device_id)
 
+        # docs/DEVICE_PLAN.md §4.3 / docs/DEVICE_TASKS.md S4.2: "`/status`
+        # gains `bv`; if the relay sees a `bv` lower than `bookVersion` ...
+        # it pushes the book again." `StatusEnvelope` (app/wire.py) does not
+        # declare `bv` -- wire.py is outside this task's `Files` list -- so
+        # it is read from the raw decoded dict directly, the same "dispatch
+        # on the raw dict before/around the pydantic model" style
+        # `data.get("kind")` already uses above for `contact_req`.
+        reported_bv = data.get("bv")
+        if isinstance(reported_bv, int) and reported_bv < devcfg.get_book_version(device_id):
+            logger.info(
+                "status bv=%s behind devices/%s.bookVersion -- re-pushing book",
+                reported_bv,
+                device_id,
+            )
+            devcfg.push_book(device_id, self._broker)
+
     def _republish_unacked(self, device_id: str) -> None:
         """PROTOCOL.md §5.3's online-edge re-publish, sourced from
         `pendingDeviceIds` (oldest first, capped at 10, both enforced by
-        `messages_store.list_pending_for_device`).
+        `messages_store.list_pending_for_device`), plus (docs/DEVICE_TASKS.md
+        S4.2) the newest unacked `book`/`cfg`, one each, uncapped against the
+        10-message limit above (docs/PROTOCOL.md §5.3: "not counted against
+        this cap since they are not thread entries").
 
         §5.3's selection rule also *excludes* `kind:"loc_req"` ("a location
         request that missed its window is worthless")."""
@@ -542,6 +578,7 @@ class Ingest:
                 continue
             logger.info("re-publishing unacked message %s to device %s", msg.id, device_id)
             self._routing.redeliver_pager(msg, device_id)
+        devcfg.republish_pending(device_id, self._broker)
 
     # ---- /loc ----
 
