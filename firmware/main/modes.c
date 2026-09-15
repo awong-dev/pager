@@ -37,6 +37,14 @@
 // `lock` map dispatch ahead of msg_ingest_down_cbor().
 #include "lock.h"
 
+// F7.1 (docs/DEVICE_PLAN.md §4.3): book.c's NVS-backed address book — the
+// `kind:"book"` dispatch ahead of msg_ingest_down_cbor() (alongside lock.c's
+// `cfg` dispatch, same interception pattern), and the real `bv` for
+// build_status_cbor() below. book.c has no RTC sub-struct of its own (see
+// book.h's module comment) — it only needs the EXISTING g_rtc.auth binding,
+// wired via book_bind() in modes_boot().
+#include "book.h"
+
 #include <assert.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -381,11 +389,14 @@ uint32_t modes_get_oversize_drop_count(void) { return g_rtc.oversize_drop_count;
 uint32_t modes_get_modem_resets(void) { return g_rtc.modem_resets; }
 
 // F3.6: builds the CBOR /status envelope (docs/PROTOCOL.md §2.4/§10), adding
-// `rssi` (now published every time, §5.1) and `bv` (book version; always 0
-// until F7.1 tracks the address book), then signs it with auth_sign() when
-// ident's IDENT_FLAG_REQ_SIG is set. No modem or sleep-state effect of its
-// own beyond the net_get_battery_mv()/net_get_rssi() AT round trips already
-// documented at their call sites.
+// `rssi` (now published every time, §5.1) and `bv` (book version; F7.1:
+// book_get_bv() — 0 until the first `book` has ever been applied, which is
+// exactly what makes §4.3's "relay sees `bv` lower than `bookVersion` ->
+// push again" rule self-heal a factory reset or a never-provisioned
+// device), then signs it with auth_sign() when ident's IDENT_FLAG_REQ_SIG
+// is set. No modem or sleep-state effect of its own beyond the
+// net_get_battery_mv()/net_get_rssi() AT round trips already documented at
+// their call sites (book_get_bv() is a plain RAM read, no NVS I/O).
 static bool build_status_cbor(uint8_t *out, size_t cap, size_t *out_len, const char *state)
 {
     int64_t ts = approx_epoch();
@@ -417,7 +428,7 @@ static bool build_status_cbor(uint8_t *out, size_t cap, size_t *out_len, const c
     cbor_w_tstr(&w, STK_SESSION, g_rtc.session_id, strlen(g_rtc.session_id));
     cbor_w_uint(&w, STK_TS, (uint64_t) ts);
     cbor_w_tstr(&w, STK_FW, PAGER_FW_VERSION, strlen(PAGER_FW_VERSION));
-    cbor_w_uint(&w, STK_BV, 0); // book version: F7.1 will track the real value
+    cbor_w_uint(&w, STK_BV, book_get_bv()); // §4.3: book version, F7.1
 
     if (!signed_env) {
         *out_len = w.len;
@@ -765,6 +776,17 @@ static void on_incoming_message(const char *topic, const char *body, uint16_t le
         return;
     }
 
+    // F7.1 (docs/DEVICE_PLAN.md §4.3, docs/PROTOCOL.md §3.2): `book` is the
+    // other non-content down kind — same "neither `from` nor `body`" reason
+    // `cfg` is intercepted above, before msg_ingest_down_cbor() ever sees it.
+    // Returns true only for a well-formed `kind:"book"` envelope (applied +
+    // acked already); false covers both "not book" and "book but
+    // malformed", both of which correctly fall through to the normal path
+    // below.
+    if (book_ingest_cbor((const uint8_t *) body, (uint16_t) vlen)) {
+        return;
+    }
+
     const msg_t *out = NULL;
     msg_ingest_t r = msg_ingest_down_cbor((const uint8_t *) body, (uint16_t) vlen, &out);
     handle_ingest_result(r, out, (uint16_t) vlen);
@@ -936,6 +958,17 @@ void modes_boot(void)
     // see lock_init()'s own doc comment (lock.h) for the full reasoning.
     lock_bind_rtc(&g_rtc.lock, rtc_lock, rtc_unlock, rtc_save);
     lock_init(was_valid);
+
+    // F7.1 (docs/DEVICE_PLAN.md §4.3): book.c has no RTC sub-struct of its
+    // own (book.h's module comment) — book_bind() hands it the EXISTING
+    // g_rtc.auth plus the same cross-task lock/unlock/save trio and
+    // epoch-wrap hook msg_bind_auth() above already uses, since a
+    // `contact_req` shares the one strictly-increasing /up,/status,/loc
+    // counter with every other signed publish. book_init() then loads NVS
+    // namespace "book" (§4.3's one-blob storage) into book.c's own RAM
+    // cache. No modem or sleep-state effect: a handful of NVS reads only.
+    book_bind(&g_rtc.auth, rtc_lock, rtc_unlock, rtc_save, on_auth_epoch_wrap);
+    book_init();
 
     input_init(); // power effect: GPIO config + static queue alloc only
 

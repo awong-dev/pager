@@ -226,6 +226,14 @@ typedef enum {
  * require key 12 (`n`) or check the replay window in that case (§10's
  * keymap: `n` only exists on signed envelopes).
  *
+ * F7.1: caller contract also requires `buf` to have already been rejected
+ * by book_ingest_cbor()/lock_ingest_cfg_cbor() (both return false for
+ * anything that is not their own kind) — modes.c's on_incoming_message()
+ * tries those first. This function's own MK_KIND case is defense in depth,
+ * not the primary dispatch: an absent `kind` (§3.2's default) or an
+ * explicit `"msg"` are the only values accepted here; anything else is
+ * MSG_INGEST_MALFORMED.
+ *
  * MSG_INGEST_NEW -> caller enters active mode, renders, then calls
  * msg_mark_shown(). MSG_INGEST_DUPLICATE -> re-ack only
  * (msg_mark_shown()/msg_mark_read() as appropriate) — caller MUST NOT

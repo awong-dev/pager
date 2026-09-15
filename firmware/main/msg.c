@@ -161,6 +161,7 @@ static const char *TAG = "msg";
 #define MK_FROM 3
 #define MK_BODY 4
 #define MK_ACK 5
+#define MK_KIND 6
 #define MK_TO 7
 #define MK_N 12
 
@@ -877,6 +878,29 @@ msg_ingest_t msg_ingest_down_cbor(const uint8_t *buf, uint16_t len, const msg_t 
                 return MSG_INGEST_MALFORMED;
             }
             have_ack_null = true;
+            break;
+        }
+        case MK_KIND: {
+            // F7.1 (docs/PROTOCOL.md §3.2): `/down` carries msg/loc_req/
+            // book/cfg. `book`/`cfg` are intercepted by book.c/lock.c
+            // before this function ever runs (modes.c's
+            // on_incoming_message()), and a `loc_req` has no `body` field
+            // so it already fails the have_body check below on its own —
+            // this explicit check is defense in depth against any *other*
+            // non-"msg" kind value reaching here (e.g. a future relay bug
+            // that attaches a body to something that is not a content
+            // message). Absent `kind` still means "msg" (§3.2's own
+            // default), so no case at all is the common, unsigned-cost path.
+            const char *s;
+            size_t slen;
+            if (!cbor_r_tstr(&r, &s, &slen)) {
+                msg_count_malformed();
+                return MSG_INGEST_MALFORMED;
+            }
+            if (!(slen == 3 && memcmp(s, "msg", 3) == 0)) {
+                msg_count_malformed();
+                return MSG_INGEST_MALFORMED;
+            }
             break;
         }
         case MK_N: {
