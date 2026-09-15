@@ -24,12 +24,16 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 import time
 from typing import Any, Literal
+
+from pydantic import BaseModel, ConfigDict, field_validator
 
 from app import devauth, location, wire
 from app.broker import BrokerClient
 from app.routing import Routing
+from app.store import contacts as contacts_store
 from app.store import device_secrets as device_secrets_store
 from app.store import devices as devices_store
 from app.store import messages as messages_store
@@ -45,6 +49,104 @@ logger = logging.getLogger("relay.ingest")
 
 # PROTOCOL.md §4.2 case 3: the one exception to "never auto-reply on MQTT".
 UNKNOWN_RECIPIENT_BODY = "unknown recipient"
+
+# S4.1: the one `system` down reply for a `contact_req` beyond the per-device
+# pending cap (docs/PROTOCOL.md §3.2, docs/DEVICE_TASKS.md S4.1's exact
+# wording).
+TOO_MANY_PENDING_BODY = "too many pending requests"
+
+# docs/PROTOCOL.md §3.2/§3.1: `name` is 1-16 code points, <=48 UTF-8 bytes.
+_CONTACT_NAME_MAX_CODEPOINTS = 16
+_CONTACT_NAME_MAX_UTF8_BYTES = 48
+# Same shape as app/backends/sms_twilio.py's `_E164_RE` (not imported from
+# there to avoid a private cross-module reference: `+` then 7-15 digits,
+# first digit 1-9).
+_PHONE_E164_RE = re.compile(r"^\+[1-9]\d{6,14}$")
+
+
+class ContactReqEnvelope(BaseModel):
+    """A payload received on `pager/{device_id}/up` with `kind:"contact_req"`
+    (docs/PROTOCOL.md §3.2, docs/DEVICE_PLAN.md §4.2). Deliberately modelled
+    here rather than in `app/wire.py`: that module is outside this task's
+    (S4.1) `Files` list, and `wire.UpEnvelope` already treats any non-null
+    `kind` as an unrecognised-kind rejection (§3.4) -- `Ingest.handle_up`
+    below checks `kind` on the raw decoded dict and routes to this model
+    *before* ever calling `UpEnvelope.model_validate`, so that rejection path
+    is never reached for a `contact_req`.
+
+    **`ph` is overloaded** per docs/PROTOCOL.md §3.1's field table ("Phone
+    number `+…` or alias reference") -- flagged as a documentation
+    ambiguity in this task's report: §3.2's prose ("either `ph` (E.164 phone
+    number) or neither `ph` nor `body`... for an alias reference") does not
+    by itself explain how an alias reference would ever be carried on the
+    wire, since there is no separate `alias` key in either §3.1's field
+    table or §10's normative CBOR keymap. The field-table wording is taken
+    as authoritative here: a `ph` value starting with `+` is a phone number,
+    any other non-empty value is an alias reference -- distinguished by
+    `phone`/`alias` below.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    v: int = 1
+    id: str
+    ts: int
+    name: str
+    ph: str | None = None
+    n: int | None = None
+
+    @field_validator("id")
+    @classmethod
+    def _check_id(cls, value: str) -> str:
+        if not wire.ID_RE.match(value):
+            raise ValueError("invalid id format")
+        return value
+
+    @field_validator("ts")
+    @classmethod
+    def _check_ts(cls, value: int) -> int:
+        wire.validate_ts(value)
+        return value
+
+    @field_validator("n")
+    @classmethod
+    def _check_n(cls, value: int | None) -> int | None:
+        if value is not None and not (0 <= value < 2**32):
+            raise ValueError("n out of range")
+        return value
+
+    @field_validator("name")
+    @classmethod
+    def _check_name(cls, value: str) -> str:
+        if not value:
+            raise ValueError("contact_req name must not be empty")
+        if wire.CONTROL_CHAR_RE.search(value):
+            raise ValueError("contact_req name contains control characters")
+        if len(value) > _CONTACT_NAME_MAX_CODEPOINTS:
+            raise ValueError("contact_req name exceeds 16 code points")
+        if len(value.encode("utf-8")) > _CONTACT_NAME_MAX_UTF8_BYTES:
+            raise ValueError("contact_req name exceeds 48 UTF-8 bytes")
+        return value
+
+    @field_validator("ph")
+    @classmethod
+    def _check_ph(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        if value.startswith("+"):
+            if not _PHONE_E164_RE.match(value):
+                raise ValueError("contact_req ph is not a valid E.164 phone number")
+        elif not wire.is_valid_alias(value):
+            raise ValueError("contact_req ph is not a valid E.164 phone number or alias")
+        return value
+
+    @property
+    def phone(self) -> str | None:
+        return self.ph if self.ph is not None and self.ph.startswith("+") else None
+
+    @property
+    def alias(self) -> str | None:
+        return self.ph if self.ph is not None and not self.ph.startswith("+") else None
 
 
 def _device_id_from_topic(topic: str, expected_suffix: str) -> str | None:
@@ -184,6 +286,16 @@ class Ingest:
         if result is None:
             return
         data, _encoding = result
+
+        # S4.1: `kind:"contact_req"` is dispatched on the raw decoded dict,
+        # *before* `UpEnvelope.model_validate` -- that model treats any
+        # non-null `kind` as an unrecognised kind (§3.4) and would otherwise
+        # reject every contact_req. See `ContactReqEnvelope`'s docstring for
+        # why this lives here rather than in `app/wire.py`.
+        if data.get("kind") == "contact_req":
+            self._handle_contact_req(device_id, device, data, topic, payload)
+            return
+
         try:
             env = UpEnvelope.model_validate(data)
         except Exception as exc:  # noqa: BLE001 -- pydantic.ValidationError, narrowly caught above
@@ -194,6 +306,72 @@ class Ingest:
             self._handle_ack(device_id, env)
         else:
             self._handle_up_message(device_id, device, env)
+
+    def _handle_contact_req(
+        self,
+        device_id: str,
+        device: devices_store.Device | None,
+        data: dict[str, Any],
+        topic: str,
+        payload: bytes,
+    ) -> None:
+        """docs/DEVICE_PLAN.md §4.2, docs/PROTOCOL.md §3.2: store a pending
+        `contactRequests/{deviceId}_{id}` row. Same drop rules as any other
+        up message for an unregistered/revoked device (`_handle_up_message`),
+        checked here too since this path never reaches that function."""
+        if device is None:
+            logger.warning(
+                "contact_req %s from unregistered device %s dropped",
+                data.get("id"),
+                device_id,
+            )
+            return
+        if device.revokedAt is not None:
+            logger.warning(
+                "SECURITY contact_req %s from revoked device %s dropped",
+                data.get("id"),
+                device_id,
+            )
+            return
+
+        try:
+            env = ContactReqEnvelope.model_validate(data)
+        except Exception as exc:  # noqa: BLE001 -- pydantic.ValidationError, narrowly caught above
+            wire.log_malformed(topic, payload, str(exc))
+            return
+
+        try:
+            request = contacts_store.create_request(
+                device_id=device_id,
+                owner_uid=device.ownerUid,
+                req_id=env.id,
+                name=env.name,
+                phone=env.phone,
+                alias=env.alias,
+            )
+        except contacts_store.TooManyPending:
+            logger.info(
+                "contact_req %s from device %s rejected: too many pending requests",
+                env.id,
+                device_id,
+            )
+            self._send_system_reply(device_id, TOO_MANY_PENDING_BODY, cause_id=env.id)
+            return
+
+        if request is None:
+            logger.info(
+                "contact_req %s from device %s is a no-op (already pending/approved)",
+                env.id,
+                device_id,
+            )
+            return
+
+        logger.info(
+            "contact_req %s from device %s stored as pending (key=%s)",
+            env.id,
+            device_id,
+            request.key,
+        )
 
     def _handle_ack(self, device_id: str, env: UpEnvelope) -> None:
         assert env.ack is not None and env.ack in ("shown", "read")

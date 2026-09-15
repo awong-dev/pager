@@ -468,6 +468,49 @@ def test_device_secrets_is_default_deny(two_pairs):
     assert resp_write.status_code == 403
 
 
+def test_contact_request_readable_by_owner_and_admin_not_a_third_party(two_pairs):
+    """`contactRequests/{deviceId}_{reqId}` (docs/DEVICE_PLAN.md §4.1):
+    readable by the device owner and by an admin, not by an unrelated
+    registered user."""
+    from app.store import contacts as contacts_store
+
+    devices_store.create_device(
+        device_id="pgr-rules-contacts-1",
+        owner_uid="u1",
+        label="d",
+        mqtt_username="pgr-rules-contacts-1",
+        mqtt_password_hash="x",
+    )
+    contacts_store.create_request(
+        device_id="pgr-rules-contacts-1",
+        owner_uid="u1",
+        req_id="u_rules1",
+        name="Grandma",
+        phone="+15551230000",
+    )
+    doc_key = contacts_store.key("pgr-rules-contacts-1", "u_rules1")
+
+    owner_token = mint_id_token("u1")
+    resp_owner = _get(f"contactRequests/{doc_key}", owner_token)
+    assert resp_owner.status_code == 200
+
+    other_token = mint_id_token("u3")
+    resp_other = _get(f"contactRequests/{doc_key}", other_token)
+    assert resp_other.status_code == 403
+
+    fb_auth.create_user(uid="admin-contacts-1", email="admin-contacts-1@example.com")
+    users_store.create_user(
+        uid="admin-contacts-1", alias="admincontacts1", display_name="Admin", role="admin"
+    )
+    fb_auth.set_custom_user_claims("admin-contacts-1", {"admin": True})
+    admin_token = mint_id_token("admin-contacts-1")
+    resp_admin = _get(f"contactRequests/{doc_key}", admin_token)
+    assert resp_admin.status_code == 200
+
+    resp_unauth = _get(f"contactRequests/{doc_key}", None)
+    assert resp_unauth.status_code == 403
+
+
 def test_sms_verify_codes_is_default_deny(two_pairs):
     backends_store.set_sms_verify_code("bid1", "somehash", int(time.time()) + 600)
 

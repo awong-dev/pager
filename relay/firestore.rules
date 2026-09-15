@@ -90,6 +90,15 @@ service cloud.firestore {
       );
     }
 
+    // docs/DEVICE_PLAN.md §4.1: "`contactRequests` is readable by admins and
+    // by the device owner (the kid can see their own pending list in the web
+    // app too); written only by the relay."
+    match /contactRequests/{r} {
+      allow read: if request.auth != null && (
+        isAdmin() || request.auth.uid == resource.data.ownerUid
+      );
+    }
+
     match /settings/{s} {
       allow read: if registered();
     }

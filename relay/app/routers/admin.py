@@ -35,16 +35,21 @@ from firebase_admin import auth as fb_auth
 from pydantic import BaseModel, ConfigDict
 
 from app.auth import AuthedUser, require_admin
+from app.backends.sms_twilio import normalize_e164
+from app.db.firestore import get_db
 from app.store import allow as allow_store
 from app.store import backends as backends_store
+from app.store import contacts as contacts_store
 from app.store import devices as devices_store
 from app.store import rate_limits as rate_limits_store
 from app.store import settings as settings_store
 from app.store import users as users_store
 from app.store.allow import AllowEdge, EdgeInput
+from app.store.backends import Backend
+from app.store.contacts import ContactRequest
 from app.store.devices import Device
 from app.store.settings import RetentionSetting, RetentionSettings
-from app.store.users import User
+from app.store.users import ALIAS_RE, User
 
 router = APIRouter(prefix="/api/admin", dependencies=[Depends(require_admin)])
 
@@ -175,6 +180,47 @@ def delete_user(uid: str) -> dict[str, bool]:
     except fb_auth.UserNotFoundError:
         pass
     return {"ok": True}
+
+
+class CreateBackendRequest(BaseModel):
+    kind: Literal["sms"]
+    phone: str
+
+
+def _create_admin_asserted_backend(uid: str, phone: str) -> Backend:
+    """Shared by `POST /api/admin/users/{uid}/backends` and the `create`
+    approval path below (docs/DEVICE_PLAN.md §4.3): an `sms` backend
+    asserted verified by an admin rather than by the usual code-verification
+    flow (`app/routers/me.py`'s `POST /api/me/backends/{id}/verify`) --
+    `verifiedAt` set and `phoneIndex` written immediately, same as a real
+    verification, plus `adminVerified: true` recording *how* it got that
+    way. `Backend` (`app/store/backends.py`) does not model `adminVerified`
+    -- that module is outside this task's (S4.1) `Files` list -- so it is
+    written directly on the Firestore doc here (dropped on read by
+    `Backend.model_validate`'s `extra='ignore'` until backends.py adds the
+    field)."""
+    normalized = normalize_e164(phone)
+    backend = backends_store.create_backend(uid, kind="sms", config={"phone": normalized})
+    backends_store.update_backend(uid, backend.id, verified=True)
+    backends_store.set_phone_index(normalized, uid, backend.id)
+    get_db().collection("users").document(uid).collection("backends").document(backend.id).update(
+        {"adminVerified": True}
+    )
+    fetched = backends_store.get_backend(uid, backend.id)
+    assert fetched is not None
+    return fetched
+
+
+@router.post(
+    "/users/{uid}/backends", dependencies=[Depends(require_admin_write_rate_limit)]
+)
+def create_user_backend(uid: str, req: CreateBackendRequest) -> Backend:
+    if users_store.get_user(uid) is None:
+        raise HTTPException(status_code=404, detail="no such user")
+    try:
+        return _create_admin_asserted_backend(uid, req.phone)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -308,6 +354,138 @@ def rotate_credentials(device_id: str) -> RotateCredentialsResponse:
     password_hash = hashlib.sha256(password.encode("utf-8")).hexdigest()
     devices_store.set_mqtt_password_hash(device_id, password_hash)
     return RotateCredentialsResponse(mqttUsername=device.mqttUsername, mqttPassword=password)
+
+
+# ---------------------------------------------------------------------------
+# contacts -- docs/DEVICE_PLAN.md §4.1-4.3, docs/DEVICE_TASKS.md S4.1.
+#
+# A `contactRequests/{deviceId}_{reqId}` row is created by `app.ingest.Ingest`
+# from the device's own `/up kind:"contact_req"` (§4.2); approval/rejection
+# is admin-only (§4.3: "the device owner is the student, who must not be able
+# to approve their own recipients"). Every decision below bumps
+# `devices/{d}.bookVersion` and calls `contacts_store.push_book` -- the
+# latter is a placeholder until S4.2 (see `app/store/contacts.py`).
+# ---------------------------------------------------------------------------
+
+
+class ContactApproveRequest(BaseModel):
+    mode: Literal["link", "create"]
+    alias: str | None = None
+    locate: bool = False
+
+
+class ContactRejectRequest(BaseModel):
+    reason: str
+
+
+def _slugify_name(name: str) -> str | None:
+    """docs/DEVICE_PLAN.md §4.3: "alias defaults to a slug of `name` when one
+    can be derived (a CJK name yields none, so the admin types the alias)."
+    A conservative subset of `ALIAS_RE` (`app/store/users.py`) -- lowercase
+    ASCII letters/digits only, truncated to 16 -- so the result never needs
+    a leading-character special case; `None` when nothing survives (e.g. an
+    all-CJK name), which the caller treats as "the admin must supply one"."""
+    slug = "".join(ch for ch in name.lower() if ch.isascii() and ch.isalnum())[:16]
+    return slug or None
+
+
+def _resolve_link_uid(request: ContactRequest, admin_alias: str | None) -> str | None:
+    """docs/DEVICE_PLAN.md §4.3's "link to existing user": a verified `sms`
+    backend's owner (via `phoneIndex`) takes priority over an alias match,
+    tried first against the request's own `alias` reference (§4.2's
+    "alias the student already knows") and then against the alias the admin
+    typed into the approval dialog."""
+    if request.phone is not None:
+        found = backends_store.get_by_phone(request.phone)
+        if found is not None:
+            return found[0]
+    for alias in (request.alias, admin_alias):
+        if alias:
+            uid = users_store.get_uid_for_alias(alias)
+            if uid is not None:
+                return uid
+    return None
+
+
+@router.get("/contacts")
+def list_contacts(
+    status: Literal["pending", "approved", "rejected"] | None = None,
+) -> list[ContactRequest]:
+    return contacts_store.list_requests(status=status)
+
+
+@router.post("/contacts/{key}/approve", dependencies=[Depends(require_admin_write_rate_limit)])
+def approve_contact(
+    key: str,
+    req: ContactApproveRequest,
+    authed: Annotated[AuthedUser, Depends(require_admin)],
+) -> ContactRequest:
+    request = contacts_store.get_request(key)
+    if request is None:
+        raise HTTPException(status_code=404, detail="no such contact request")
+    if request.status != "pending":
+        raise HTTPException(status_code=409, detail="contact request already decided")
+
+    if req.mode == "link":
+        contact_uid = _resolve_link_uid(request, req.alias)
+        if contact_uid is None:
+            raise HTTPException(status_code=400, detail="no existing user found to link to")
+    else:
+        alias = req.alias or _slugify_name(request.name)
+        if not alias or not ALIAS_RE.match(alias):
+            raise HTTPException(
+                status_code=400,
+                detail="an alias is required to create a new user for this contact",
+            )
+        auth_user = fb_auth.create_user()
+        try:
+            new_user = users_store.create_user(
+                uid=auth_user.uid, alias=alias, display_name=request.name
+            )
+        except (users_store.AliasTaken, users_store.InvalidAlias) as exc:
+            # Same rollback `create_user` (the `/users` route above) already
+            # does: don't leave an orphaned, unregistered Auth account.
+            fb_auth.delete_user(auth_user.uid)
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        contact_uid = new_user.uid
+        if request.phone is not None:
+            _create_admin_asserted_backend(contact_uid, request.phone)
+
+    # §4.3: "upsert two allow edges (owner -> contact `message`, contact ->
+    # owner `message`; `locate` is a separate checkbox, default off)".
+    owner_uid = request.ownerUid
+    allow_store.set_edge(owner_uid, contact_uid, message=True, locate=req.locate)
+    allow_store.set_edge(contact_uid, owner_uid, message=True, locate=req.locate)
+    # `set_edge` already recomputes `locatableBy` for each edge's `to_uid`
+    # (i.e. both directions here); called again explicitly per this task's
+    # `Do` steps, matching `POST /api/admin/devices`'s own belt-and-suspenders
+    # call after `set_edge`/`replace_all` (`allow_store.
+    # recompute_locatable_by_for_owner`'s docstring).
+    allow_store.recompute_locatable_by_for_owner(owner_uid)
+    allow_store.recompute_locatable_by_for_owner(contact_uid)
+
+    updated = contacts_store.approve(key, decided_by=authed.uid)
+    contacts_store.bump_book_version(request.deviceId)
+    contacts_store.push_book(request.deviceId)
+    return updated
+
+
+@router.post("/contacts/{key}/reject", dependencies=[Depends(require_admin_write_rate_limit)])
+def reject_contact(
+    key: str,
+    req: ContactRejectRequest,
+    authed: Annotated[AuthedUser, Depends(require_admin)],
+) -> ContactRequest:
+    request = contacts_store.get_request(key)
+    if request is None:
+        raise HTTPException(status_code=404, detail="no such contact request")
+    if request.status != "pending":
+        raise HTTPException(status_code=409, detail="contact request already decided")
+
+    updated = contacts_store.reject(key, reason=req.reason, decided_by=authed.uid)
+    contacts_store.bump_book_version(request.deviceId)
+    contacts_store.push_book(request.deviceId)
+    return updated
 
 
 # ---------------------------------------------------------------------------
