@@ -14,6 +14,17 @@
  *
  * `POST /admin/devices/{id}/revoke` is mounted (docs/DEVICE_PLAN.md §3.5,
  * S2.2) and also deletes the device's broker credential.
+ *
+ * **Lock controls (docs/DEVICE_PLAN.md §5.8, docs/DEVICE_TASKS.md W4.4):**
+ * "Clear passcode" and the auto-lock select both call `POST /admin/devices/
+ * {id}/cfg` (`relay/app/routers/admin.py`'s `PushCfgRequest{lock:{clear?,
+ * auto?}}`). The select's current value is read from the device's raw
+ * `pendingCfg.obj.cfg.lock.auto` field (`relay/app/devcfg.py`'s
+ * `push_cfg`/`_set_pending`) -- the *last requested* auto-lock minutes, not
+ * necessarily yet acked by the device (§5.8: `cfg` is "acked `shown` on
+ * apply"). `pendingCfg` is, like `provisionState` above, not part of
+ * `lib/types.ts`'s `DeviceDoc` mirror -- read straight off the Firestore
+ * snapshot instead of adding it there, outside this task's `Files` list.
  */
 
 import { collection, onSnapshot } from "firebase/firestore";
@@ -48,12 +59,32 @@ import SetupCodePanel, { type SetupCodeResult } from "./SetupCodePanel";
 // than editing that shared file, which is outside this task's `Files` list.
 type ProvisionState = "issued" | "provisioned" | null | undefined;
 
+// `devices/{d}.pendingCfg` -- `relay/app/devcfg.py`'s `_set_pending` shape,
+// same "not in `DeviceDoc` yet" situation as `ProvisionState` above.
+interface PendingCfgDoc {
+  id: string;
+  obj: { cfg?: { lock?: { auto?: number; clear?: boolean } } };
+  acked: boolean;
+}
+
 interface DeviceRow extends DeviceDoc {
   id: string;
   provisionState?: ProvisionState;
+  pendingCfg?: PendingCfgDoc;
 }
 
 const emptyForm = { deviceId: "", ownerAlias: "", label: "", defaultToAlias: "" };
+
+// docs/DEVICE_PLAN.md §5.8: `auto_min` is a `u8` minutes value, 0 = never;
+// default 5. This is the same small fixed menu a parent needs, not a free
+// numeric field.
+const AUTO_LOCK_OPTIONS: { value: number; label: string }[] = [
+  { value: 0, label: "Off" },
+  { value: 5, label: "5 min" },
+  { value: 15, label: "15 min" },
+  { value: 30, label: "30 min" },
+  { value: 60, label: "60 min" },
+];
 
 // `relay/app/routers/admin.py`'s `DeviceSetupCodeResponse` (S2.2), shared by
 // `POST /devices` and `POST /devices/{id}/rotate-credentials`; only the
@@ -80,7 +111,10 @@ function DevicesInner() {
     const unsubDevices = onSnapshot(collection(db, "devices"), (snap) => {
       const rows: DeviceRow[] = [];
       snap.forEach((d) => {
-        const data = d.data() as DeviceDoc & { provisionState?: ProvisionState };
+        const data = d.data() as DeviceDoc & {
+          provisionState?: ProvisionState;
+          pendingCfg?: PendingCfgDoc;
+        };
         rows.push({ id: d.id, ...data });
       });
       setDevices(rows);
@@ -161,6 +195,25 @@ function DevicesInner() {
     }
   }
 
+  async function setAutoLock(deviceId: string, minutes: number) {
+    setError(null);
+    try {
+      await api.post(`/admin/devices/${deviceId}/cfg`, { lock: { auto: minutes } });
+    } catch (err) {
+      setError(err instanceof ApiError ? String(err.detail ?? err.message) : "Failed to set auto-lock");
+    }
+  }
+
+  async function clearPasscode(deviceId: string) {
+    setError(null);
+    if (!window.confirm(`Clear ${deviceId}'s passcode? The pager unlocks immediately.`)) return;
+    try {
+      await api.post(`/admin/devices/${deviceId}/cfg`, { lock: { clear: true } });
+    } catch (err) {
+      setError(err instanceof ApiError ? String(err.detail ?? err.message) : "Failed to clear passcode");
+    }
+  }
+
   const formValid = form.deviceId.trim() && form.ownerAlias.trim() && form.label.trim();
   const setupResultDevice = setupResult
     ? devices.find((d) => d.id === setupResult.deviceId)
@@ -187,6 +240,7 @@ function DevicesInner() {
             <TableCell>Status</TableCell>
             <TableCell>Provisioned</TableCell>
             <TableCell>Revoked</TableCell>
+            <TableCell>Lock</TableCell>
             <TableCell />
           </TableRow>
         </TableHead>
@@ -200,6 +254,27 @@ function DevicesInner() {
               <TableCell>{d.status?.state ?? "unknown"}</TableCell>
               <TableCell>{d.provisionState === "provisioned" ? "online" : d.provisionState ?? "unknown"}</TableCell>
               <TableCell>{d.revokedAt ? "yes" : "no"}</TableCell>
+              <TableCell>
+                <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
+                  <TextField
+                    select
+                    size="small"
+                    label="Auto-lock"
+                    value={d.pendingCfg?.obj.cfg?.lock?.auto ?? ""}
+                    onChange={(e) => void setAutoLock(d.id, Number(e.target.value))}
+                    sx={{ minWidth: 100 }}
+                  >
+                    {AUTO_LOCK_OPTIONS.map((o) => (
+                      <MenuItem key={o.value} value={o.value}>
+                        {o.label}
+                      </MenuItem>
+                    ))}
+                  </TextField>
+                  <Button size="small" onClick={() => void clearPasscode(d.id)}>
+                    Clear passcode
+                  </Button>
+                </Stack>
+              </TableCell>
               <TableCell>
                 <Stack direction="row" spacing={1}>
                   <Button size="small" onClick={() => void rotate(d)}>
