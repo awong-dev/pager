@@ -44,12 +44,16 @@ def _make_user(uid: str, alias: str) -> None:
 
 
 def _make_pager_device(device_id: str, owner_uid: str):
+    # S1.4: `auth_mode="password"` -- this module's tests are about
+    # tick/sweep retry bookkeeping, not device signing, and assert on plain
+    # JSON `broker.published[...].payload`.
     devices_store.create_device(
         device_id=device_id,
         owner_uid=owner_uid,
         label="d",
         mqtt_username=device_id,
         mqtt_password_hash="x",
+        auth_mode="password",
     )
     backends_store.create_backend(
         owner_uid, kind="pager", config={"deviceId": device_id}, enabled=True

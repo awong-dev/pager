@@ -270,6 +270,45 @@ def test_v2_republish_on_session_change_resends_still_pending():
     assert json.loads(broker.published[0].payload)["id"] == msg.id
 
 
+def test_republish_reuses_id_but_gets_a_fresh_n_and_both_publishes_verify():
+    """docs/DEVICE_TASKS.md S1.4: every `/down` publish goes through
+    `BrokerClient.publish_down`, which signs with a fresh `deviceSecrets.
+    downN` each time (docs/DEVICE_PLAN.md §2.5/§14.5) -- the online-edge
+    republish (`Routing.redeliver_pager`) reuses the same message `id` but
+    must not reuse `n`, and both the original and the republished envelope
+    must still verify against the device's key."""
+    _make_user("mom", "mom")
+    _make_user("student", "student")
+    allow_store.set_edge("mom", "student", message=True, locate=True)
+    key = _make_hmac_pager_device("pgr-hmac-republish", "student")
+
+    broker = FakeBrokerClient()
+    routing = Routing(broker)
+
+    msg = routing.send(
+        sender_uid="mom",
+        recipient_alias="student",
+        kind="text",
+        body="hi",
+        origin_backend_kind="webapp",
+    ).messages[0]
+    assert len(broker.published) == 1
+
+    ok = routing.redeliver_pager(msg, "pgr-hmac-republish")
+    assert ok
+    assert len(broker.published) == 2
+
+    topic = "pager/pgr-hmac-republish/down"
+    decoded = []
+    for published in broker.published:
+        verified, unsigned = devauth.verify(key, topic, published.payload)
+        assert verified
+        decoded.append(json.loads(unsigned))
+
+    assert decoded[0]["id"] == decoded[1]["id"] == msg.id
+    assert decoded[0]["n"] != decoded[1]["n"]
+
+
 # ---- S1.3: ingest verifies before it parses (DEVICE_PLAN.md §2.6, PROTOCOL.md §14) ----
 
 

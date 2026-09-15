@@ -153,6 +153,7 @@ def test_tick_retries_queued_pager_deliveries_end_to_end():
         label="d",
         mqtt_username="pgr-tick-int",
         mqtt_password_hash="x",
+        auth_mode="password",
     )
     backends_store.create_backend(
         "kid", kind="pager", config={"deviceId": "pgr-tick-int"}, enabled=True

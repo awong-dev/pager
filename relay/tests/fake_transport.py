@@ -54,6 +54,12 @@ class FakeBrokerClient:
         self.published.append(PublishedMessage(topic, payload, qos, retain))
         return True
 
+    def publish_down(self, device_id: str, obj: dict[str, Any]) -> bool:
+        # S1.4: `publish_down`'s wire-encoding/signing logic is pure (reads
+        # Firestore + calls `self.publish`), so it works unmodified against
+        # this fake -- same delegation pattern as `parse_webhook` below.
+        return BrokerClient.publish_down(self, device_id, obj)  # type: ignore[arg-type]
+
     def healthcheck(self) -> bool:
         return self.healthy
 

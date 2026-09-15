@@ -8,6 +8,36 @@ broker's REST API (`publish`); inbound device traffic arrives over HTTPS on
 (`verify_webhook`) and shaped by whatever the broker's rule engine's HTTP
 action actually POSTs (`parse_webhook`).
 
+**`publish_down` is the one path to `/down`** (docs/DEVICE_TASKS.md S1.4,
+`docs/PROTOCOL.md` §14.5): every caller that wants to publish to a device
+(`app/backends/pager.py`'s `deliver()`, and through it both the ordinary
+inline send and the online-edge/`/internal/tick` redelivery in
+`app/routing.py`) hands `publish_down` the down envelope's fields as a plain
+dict -- `{v, id, ts, kind?, from, body?, ack}`, the same shape
+`wire.DownEnvelope` models -- and `publish_down` does the rest: reads
+`devices/{d}.wire` (which encoding to answer in) and `.authMode` (whether to
+sign at all), and for an `authMode: "hmac"` device takes a fresh
+`deviceSecrets/{d}.downN` (`app/store/device_secrets.py`'s `next_down_n`,
+itself a transaction, per §14.5's "atomic and never repeats") and signs with
+`app/devauth.py`'s `sign_cbor`/`sign_json`. No other module builds a signed
+(or unsigned) `/down` payload -- `PagerBackend.deliver()` is the only
+caller today, so "no other code path may publish to `/down`" is enforced by
+there being nowhere else in the codebase that reaches for `hmacKey` or
+`downN`.
+
+A device with `authMode: "hmac"` but no `deviceSecrets/{d}` row (a state
+that should not exist once S2.2's provisioning flow lands, but does today --
+`POST /api/admin/devices` does not yet create one) fails closed: logged and
+dropped rather than silently sent unsigned, mirroring `app/ingest.py`'s own
+inbound rule (`_verify_and_decode`: no secret => `ok=False`, never "treat as
+unsigned"). The delivery stays `queued` for `/internal/tick` to retry, same
+as any other publish failure.
+
+`devices/{d}.wire` is `None` until the device's first accepted inbound
+envelope (nothing to derive the answering encoding from yet); `publish_down`
+defaults that case to `"json"`, `DEVICE_PLAN.md` §2.4's own default for
+"logs and humans" when there is no device-observed preference yet.
+
 **Webhook body shape this module expects** (and what `tools/emqx_setup.py`
 configures EMQX's HTTP action to send, via its `body: "${.}"` template,
 which serializes the whole rule-engine event context as JSON): a JSON
@@ -31,7 +61,10 @@ from typing import Any
 
 import httpx
 
+from app import devauth, wirecbor
 from app.config import Settings
+from app.store import device_secrets as device_secrets_store
+from app.store import devices as devices_store
 
 logger = logging.getLogger("relay.broker")
 
@@ -84,6 +117,46 @@ class BrokerClient:
             resp.text[:200],
         )
         return False
+
+    def publish_down(self, device_id: str, obj: dict[str, Any]) -> bool:
+        """The one path to `pager/{device_id}/down` (see module docstring).
+        `obj` is the down envelope's fields (no `n`, no `sig` -- those are
+        this method's job), the same shape `wire.DownEnvelope` models.
+        Returns `False` (never raises) on anything that stops the publish:
+        an unregistered device, an `authMode: "hmac"` device with no
+        `deviceSecrets` row, or `self.publish()` itself failing -- every one
+        of those leaves the caller's delivery `queued` for a later retry."""
+        device = devices_store.get_device(device_id)
+        if device is None:
+            logger.warning("publish_down: no such device %s", device_id)
+            return False
+        topic = f"pager/{device_id}/down"
+        # DEVICE_PLAN.md §2.4: answer in the encoding of the device's last
+        # accepted inbound envelope; `None` (no envelope accepted yet)
+        # defaults to JSON, §2.4's own "logs and humans" default.
+        wire_encoding = device.wire or "json"
+        if device.authMode == "hmac":
+            secret = device_secrets_store.get(device_id)
+            if secret is None:
+                # See module docstring: fails closed, same as ingest.py's
+                # inbound verification when a secret is missing.
+                logger.error(
+                    "publish_down: device %s is authMode=hmac with no "
+                    "deviceSecrets row -- dropping (delivery stays queued)",
+                    device_id,
+                )
+                return False
+            n = device_secrets_store.next_down_n(device_id)
+            signed_obj = {**obj, "n": n}
+            if wire_encoding == "cbor":
+                payload = devauth.sign_cbor(secret.hmacKey, topic, signed_obj)
+            else:
+                payload = devauth.sign_json(secret.hmacKey, topic, signed_obj)
+        elif wire_encoding == "cbor":
+            payload = wirecbor.encode(obj)
+        else:
+            payload = json.dumps(obj, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+        return self.publish(topic, payload, qos=1, retain=False)
 
     def healthcheck(self) -> bool:
         """`GET {base}/status` --

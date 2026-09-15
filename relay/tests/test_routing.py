@@ -34,6 +34,12 @@ def _make_user(uid: str, alias: str) -> None:
 
 
 def _make_pager_device(device_id: str, owner_uid: str, *, default_to_uid: str | None = None):
+    # S1.4: this module's tests exercise fan-out/allow-list/redelivery logic,
+    # not device signing -- `auth_mode="password"` keeps `publish_down`
+    # (`app.broker`) publishing plain JSON, same as before that task, so the
+    # `json.loads(broker.published[...].payload)` assertions below still
+    # apply. `tests/test_ingest.py`'s `_make_hmac_pager_device` is the
+    # signed-envelope counterpart.
     devices_store.create_device(
         device_id=device_id,
         owner_uid=owner_uid,
@@ -41,6 +47,7 @@ def _make_pager_device(device_id: str, owner_uid: str, *, default_to_uid: str | 
         mqtt_username=device_id,
         mqtt_password_hash="x",
         default_to_uid=default_to_uid,
+        auth_mode="password",
     )
     return backends_store.create_backend(
         owner_uid, kind="pager", config={"deviceId": device_id}, enabled=True
