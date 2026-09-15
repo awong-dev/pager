@@ -20,6 +20,7 @@
 
 #include "ui.h"
 #include "msg.h"
+#include "lock.h" /* F6.5: "Lock now" (docs/DEVICE_PLAN.md §5.8) */
 
 #include <stdio.h>
 #include <string.h>
@@ -69,7 +70,7 @@ static const char *fixed_label(home_fixed_row_t k)
     case HROW_NEWMSG: return "New message (needs address book)";
     case HROW_BOOK: return "Address book (needs address book)";
     case HROW_DEVICE: return "Device";
-    case HROW_LOCK: return "Lock now (needs passcode lock)";
+    case HROW_LOCK: return lock_is_set() ? "Lock now" : "Lock now (no passcode set)";
     default: return "?";
     }
 }
@@ -120,7 +121,17 @@ static void home_on_key(input_key_t key)
             ui_push(&g_scr_device);
             break;
         case HROW_LOCK:
-            ui_show_toast("needs passcode lock (not built yet)");
+            // F6.5 (docs/DEVICE_PLAN.md §5.8): lock_now() is a no-op if no
+            // passcode is configured (nothing to protect); the actual
+            // screen-stack transition happens on the very next line
+            // modes_run() runs after this one (lock_screen_sync()), same
+            // iteration, since the Home key event and that sync both run on
+            // modes_run()'s own task in program order.
+            if (lock_is_set()) {
+                lock_now();
+            } else {
+                ui_show_toast("no passcode set (Device screen)");
+            }
             break;
         default:
             break;

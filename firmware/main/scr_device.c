@@ -11,9 +11,25 @@
 //     (already true before this task; unchanged here).
 //   - "Text size: normal/large" [REAL]: ui_text_size()/ui_toggle_text_size()
 //     (ui.c), NVS-backed.
-//   - "Passcode / Auto-lock / Show senders when locked" [STUBBED]: need
-//     lock.c (F6.5, does not exist). Selecting any of them toasts
-//     "needs passcode lock (not built yet)".
+//   - "Passcode / Auto-lock / Show senders when locked" [REAL, F6.5]:
+//     lock.c now exists. "Passcode" cycles set -> change -> off per
+//     docs/DEVICE_PLAN.md §5.8 ("asks for the current passcode first" for
+//     both change and off) as: not-yet-set -> straight to a "new passcode"
+//     prompt; already-set -> a "current passcode" prompt first, and only on
+//     a correct current passcode does a second "new passcode" prompt open,
+//     where submitting it non-empty changes the passcode and submitting it
+//     EMPTY turns the passcode off — this is the one interaction detail
+//     the mockups don't fully spell out (no dedicated "change passcode"
+//     screen is drawn anywhere in §5.5), so this is a deliberate, minimal
+//     reading of "cycles set -> change -> off" that keeps every one of the
+//     three actions reachable and keeps "asks for the current passcode
+//     first" true for both change and off, without inventing a new mockup.
+//     "Auto-lock" cycles 0,1,2,5,10,30,60 minutes independently (drawn as
+//     its own selectable line rather than sharing "Passcode"'s mockup row,
+//     for the same reason: two independently-actionable settings need two
+//     selectable rows in this line-based menu, however the schematic
+//     mockup happens to lay them out visually). "Show senders when locked"
+//     toggles lock_preview().
 //   - "Set up again" [STUBBED — see this file's own note below `MROW_SETUP_AGAIN`
 //     for why this is a documented blocker, not a simple omission]: setup.c's
 //     own module comment states its no-live-session-overlap assumption holds
@@ -38,6 +54,7 @@
 #include "ui.h"
 #include "modes.h"
 #include "ident.h"
+#include "lock.h" /* F6.5: passcode/auto-lock/senders rows, docs/DEVICE_PLAN.md §5.8 */
 
 #include <stdio.h>
 #include <string.h>
@@ -48,16 +65,34 @@ typedef enum {
     MROW_RESYNC = 0,
     MROW_TEXTSIZE,
     MROW_PASSCODE,
+    MROW_AUTOLOCK,
     MROW_SENDERS,
     MROW_SETUP_AGAIN,
     MROW_FACTORY_RESET,
     MROW_COUNT,
 } device_row_t;
 
+/* §5.5's cycle: 0 (never), 1, 2, 5, 10, 30, 60 minutes. */
+static const uint8_t k_autolock_steps[] = {0, 1, 2, 5, 10, 30, 60};
+#define AUTOLOCK_STEPS_N (sizeof(k_autolock_steps) / sizeof(k_autolock_steps[0]))
+
 static int s_sel = 0;
 static bool s_confirm_active = false;
 static char s_confirm_buf[IDENT_DEV_ID_MAX];
 static size_t s_confirm_len = 0;
+
+/* F6.5: the passcode set/change/off modal — see this file's own module
+ * comment above for the exact interaction this implements. */
+typedef enum {
+    PW_MODAL_NONE = 0,
+    PW_MODAL_CURRENT, /* asking for the CURRENT passcode (change/off path) */
+    PW_MODAL_NEW,     /* asking for the NEW passcode (or empty = off, if s_pw_allow_off) */
+} pw_modal_t;
+
+static pw_modal_t s_pw_modal = PW_MODAL_NONE;
+static char s_pw_buf[LOCK_PASSCODE_MAX + 1];
+static size_t s_pw_len = 0;
+static bool s_pw_allow_off = false;
 
 static void device_on_event(ui_evt_t evt)
 {
@@ -65,6 +100,9 @@ static void device_on_event(ui_evt_t evt)
         return;
     }
     s_confirm_active = false; // always start a fresh visit in normal browse mode
+    s_pw_modal = PW_MODAL_NONE;
+    s_pw_len = 0;
+    s_pw_buf[0] = '\0';
     if (s_sel < 0) {
         s_sel = 0;
     }
@@ -115,10 +153,73 @@ static void device_on_key_confirm(input_key_t key)
     }
 }
 
+// F6.5: the passcode set/change/off modal's own key handler — masked field,
+// IME bypassed (same "ASCII-only field" reasoning device_on_key_confirm()
+// above already uses for the factory-reset confirm field).
+static void device_on_key_pw(input_key_t key)
+{
+    switch (key.type) {
+    case INPUT_KEY_CHAR:
+        if (s_pw_len + 1 < sizeof(s_pw_buf)) {
+            s_pw_buf[s_pw_len++] = key.ch;
+            s_pw_buf[s_pw_len] = '\0';
+        }
+        break;
+    case INPUT_KEY_BACKSPACE:
+        if (s_pw_len > 0) {
+            s_pw_buf[--s_pw_len] = '\0';
+        }
+        break;
+    case INPUT_KEY_ESC:
+        s_pw_modal = PW_MODAL_NONE;
+        s_pw_len = 0;
+        s_pw_buf[0] = '\0';
+        break;
+    case INPUT_KEY_ENTER:
+        if (s_pw_modal == PW_MODAL_CURRENT) {
+            // §5.8: "asks for the current passcode first" — verified via
+            // the same lock_try_passcode() the Locked screen itself uses
+            // (shares its fail_count/backoff, deterring brute-forcing from
+            // either surface with one shared schedule).
+            bool ok = lock_try_passcode(s_pw_buf, s_pw_len);
+            s_pw_len = 0;
+            s_pw_buf[0] = '\0';
+            if (ok) {
+                s_pw_modal = PW_MODAL_NEW;
+                s_pw_allow_off = true;
+            } else {
+                ui_show_toast(lock_is_locked_out() ? "wrong - locked out" : "wrong passcode");
+                s_pw_modal = PW_MODAL_NONE;
+            }
+        } else if (s_pw_modal == PW_MODAL_NEW) {
+            if (s_pw_len == 0) {
+                if (s_pw_allow_off) {
+                    lock_clear_passcode();
+                    ui_show_toast("passcode off");
+                } // else: nothing typed on a first-time set — treat as cancelled, no-op
+            } else if (lock_set_passcode(s_pw_buf, s_pw_len)) {
+                ui_show_toast("passcode set");
+            } else {
+                ui_show_toast("4-16 characters");
+            }
+            s_pw_len = 0;
+            s_pw_buf[0] = '\0';
+            s_pw_modal = PW_MODAL_NONE;
+        }
+        break;
+    default:
+        break;
+    }
+}
+
 static void device_on_key(input_key_t key)
 {
     if (s_confirm_active) {
         device_on_key_confirm(key);
+        return;
+    }
+    if (s_pw_modal != PW_MODAL_NONE) {
+        device_on_key_pw(key);
         return;
     }
 
@@ -142,8 +243,31 @@ static void device_on_key(input_key_t key)
             ui_toggle_text_size();
             break;
         case MROW_PASSCODE:
+            s_pw_len = 0;
+            s_pw_buf[0] = '\0';
+            if (lock_is_set()) {
+                s_pw_modal = PW_MODAL_CURRENT;
+                s_pw_allow_off = false; // set once PW_MODAL_CURRENT succeeds, above
+            } else {
+                s_pw_modal = PW_MODAL_NEW;
+                s_pw_allow_off = false; // first-time set: empty = cancel, not "off"
+            }
+            break;
+        case MROW_AUTOLOCK: {
+            uint8_t cur = lock_auto_min();
+            size_t idx = 0;
+            for (size_t i = 0; i < AUTOLOCK_STEPS_N; i++) {
+                if (k_autolock_steps[i] == cur) {
+                    idx = i;
+                    break;
+                }
+            }
+            idx = (idx + 1) % AUTOLOCK_STEPS_N;
+            lock_set_auto_min(k_autolock_steps[idx]);
+            break;
+        }
         case MROW_SENDERS:
-            ui_show_toast("needs passcode lock (not built yet)");
+            lock_set_preview(!lock_preview());
             break;
         case MROW_SETUP_AGAIN:
             ui_show_toast("use the USB console: setup <code> (see F6.3 report)");
@@ -181,6 +305,32 @@ static void device_render_confirm(void)
     gfx_text(0, y, GFX_FONT_NORMAL, line);
 
     gfx_text(0, GFX_SCREEN_H - 9, GFX_FONT_NORMAL, "enter confirm  esc cancel");
+}
+
+// F6.5: the passcode modal's own render — masked, never the actual
+// characters (same reasoning scr_lock.c's Locked-screen field gives).
+static void device_render_pw(void)
+{
+    int y = UI_BODY_TOP + 2;
+    const char *title = (s_pw_modal == PW_MODAL_CURRENT) ? "Current passcode" : "New passcode";
+    gfx_text(0, y, GFX_FONT_NORMAL, title);
+    y += 14;
+    if (s_pw_modal == PW_MODAL_NEW && s_pw_allow_off) {
+        gfx_text(0, y, GFX_FONT_NORMAL, "(empty = turn off)");
+        y += 12;
+    }
+    char mask[LOCK_PASSCODE_MAX + 4]; /* "> " + up to LOCK_PASSCODE_MAX '*' + '_' + NUL */
+    size_t i = 0;
+    mask[i++] = '>';
+    mask[i++] = ' ';
+    for (size_t j = 0; j < s_pw_len; j++) {
+        mask[i++] = '*';
+    }
+    mask[i++] = '_';
+    mask[i] = '\0';
+    gfx_text(0, y, GFX_FONT_NORMAL, mask);
+
+    gfx_text(0, GFX_SCREEN_H - 9, GFX_FONT_NORMAL, "enter submit  esc cancel");
 }
 
 // Info lines (not selectable) followed by the menu rows (selectable, in
@@ -225,9 +375,17 @@ static void device_render_normal(void)
     snprintf(lines[n], DEVICE_LINE_LEN, "Text size: %s",
              ui_text_size() == GFX_FONT_LARGE ? "large" : "normal");
     selectable[n++] = true;
-    snprintf(lines[n], DEVICE_LINE_LEN, "Passcode/Auto-lock (needs lock.c)");
+    snprintf(lines[n], DEVICE_LINE_LEN, "Passcode: %s", lock_is_set() ? "set" : "not set");
     selectable[n++] = true;
-    snprintf(lines[n], DEVICE_LINE_LEN, "Show senders when locked (needs lock.c)");
+    uint8_t auto_min = lock_auto_min();
+    if (auto_min == 0) {
+        snprintf(lines[n], DEVICE_LINE_LEN, "Auto-lock: never");
+    } else {
+        snprintf(lines[n], DEVICE_LINE_LEN, "Auto-lock: %u min", (unsigned) auto_min);
+    }
+    selectable[n++] = true;
+    snprintf(lines[n], DEVICE_LINE_LEN, "Show senders when locked: %s",
+             lock_preview() ? "on" : "off");
     selectable[n++] = true;
     snprintf(lines[n], DEVICE_LINE_LEN, "Set up again (see report)");
     selectable[n++] = true;
@@ -260,6 +418,8 @@ static void device_render(void)
 {
     if (s_confirm_active) {
         device_render_confirm();
+    } else if (s_pw_modal != PW_MODAL_NONE) {
+        device_render_pw();
     } else {
         device_render_normal();
     }

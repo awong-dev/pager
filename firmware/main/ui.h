@@ -93,6 +93,11 @@ extern const ui_screen_t g_scr_home;
 extern const ui_screen_t g_scr_chat;
 extern const ui_screen_t g_scr_device;
 extern const ui_screen_t g_scr_setup;
+/* F6.5 (docs/DEVICE_PLAN.md §5.8): the Locked screen — lock.c now exists, so
+ * this is no longer one of the book.c/lock.c-dependent screens this header's
+ * own module comment above says are not built yet (that note is now stale
+ * for this one screen only; scr_pick.c/scr_book.c still need book.c, F7.1). */
+extern const ui_screen_t g_scr_lock;
 
 /* scr_chat.c's own "mark every currently-visible down message read"
  * (docs/DEVICE_PLAN.md §5.5's Chat bullet) — exported so Home's "open chat"

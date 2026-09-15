@@ -32,6 +32,12 @@
 # everything else in msg.c (ingest/pump/NVS msgq/RTC) needs ESP-IDF/NVS/
 # net.cpp and is not built here.
 #
+# F6.5 (test_lock) exercises lock.c's pure section: lock_passcode_valid()/
+# lock_backoff_seconds() (no dependency at all) and lock_pbkdf2()/
+# lock_parse_cfg() (real mbedtls + cbor.c respectively, same
+# `#ifdef ESP_PLATFORM` split pattern as setup.c/auth.c) — everything else in
+# lock.c (NVS/RTC/lock_ingest_cfg_cbor()) needs ESP-IDF and is not built here.
+#
 # `make test` builds and runs every test binary; `make png` builds and runs
 # render_png (task F6.1's host PNG test); `make` alone just builds the tests.
 
@@ -60,7 +66,7 @@ endif
 MAIN_SRC := ../main
 BUILD := build
 
-TESTS := test_cbor test_auth test_setup test_input test_msg
+TESTS := test_cbor test_auth test_setup test_input test_msg test_lock
 TEST_BINS := $(TESTS:%=$(BUILD)/%)
 
 # ASSETS: tools/mkassets.py's default output location (docs/DEVICE_TASKS.md
@@ -140,6 +146,19 @@ $(BUILD)/test_msg.o: test_msg.c $(MAIN_SRC)/msg.h | $(BUILD)
 
 $(BUILD)/test_msg: $(BUILD)/msg.o $(BUILD)/test_msg.o
 	$(CC) $(CFLAGS) -o $@ $(BUILD)/msg.o $(BUILD)/test_msg.o
+
+# test_lock: lock.c (its pure section only — everything past its own
+# `#ifdef ESP_PLATFORM` split needs NVS/RTC/esp_timer/esp_random and is not
+# built here) + cbor.c (lock_parse_cfg() decodes the `cfg` map) +
+# test_lock.c, linked against the real mbedtls (lock_pbkdf2()).
+$(BUILD)/lock.o: $(MAIN_SRC)/lock.c $(MAIN_SRC)/lock.h $(MAIN_SRC)/cbor.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) $(MBEDTLS_CFLAGS) -c -o $@ $(MAIN_SRC)/lock.c
+
+$(BUILD)/test_lock.o: test_lock.c $(MAIN_SRC)/lock.h $(MAIN_SRC)/cbor.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) $(MBEDTLS_CFLAGS) -c -o $@ test_lock.c
+
+$(BUILD)/test_lock: $(BUILD)/lock.o $(BUILD)/cbor.o $(BUILD)/test_lock.o
+	$(CC) $(CFLAGS) -o $@ $(BUILD)/lock.o $(BUILD)/cbor.o $(BUILD)/test_lock.o $(MBEDTLS_LIBS)
 
 # render_png: gfx.c (the exact framebuffer/text/glyph module that ships
 # on-device, compiled for the host per its own #ifdef ESP_PLATFORM split)

@@ -32,6 +32,11 @@
 #include "cbor.h"
 #include "ident.h"
 
+// F6.5 (docs/DEVICE_PLAN.md §5.8): the passcode lock — RTC fields, the
+// restart->locked and defer-shown-while-locked wiring below, and the `cfg`
+// `lock` map dispatch ahead of msg_ingest_down_cbor().
+#include "lock.h"
+
 #include <assert.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -105,7 +110,11 @@ static const uint32_t k_backoff_s[] = { 5, 15, 60, 300 };
 // §9.2-§9.4) and pending_up/unread gained/lost fields; a stale layout-3
 // struct would otherwise decode msg_pending_up_t.to as garbage bytes that
 // used to be the middle of a body.
-#define PAGER_RTC_MAGIC 0x50475234u // "PGR" + layout version 4
+// F6.5: bumped 4 -> 5 — new `lock` field (lock_rtc_t, +16 B, docs/PROTOCOL.md
+// §9.3's table row); a stale layout-4 struct has no such field at all, so
+// reading it unversioned would decode 16 bytes of whatever used to be past
+// the end of the old struct as `locked`/`fail_count`/`backoff_until_us`.
+#define PAGER_RTC_MAGIC 0x50475235u // "PGR" + layout version 5
 
 typedef enum {
     PAGER_MODE_SLEEP = 0,
@@ -159,17 +168,19 @@ typedef struct {
                       // via the pointer msg_bind_auth() hands msg.c and the
                       // direct &g_rtc.auth uses in this file's own /status
                       // publish path below.
+
+    lock_rtc_t lock; // PROTOCOL.md §9.3, DEVICE_PLAN.md §5.8 — owned in
+                      // layout by modes.c, in behaviour by lock.c via the
+                      // pointer lock_bind_rtc() hands it in modes_boot().
 } pager_rtc_t;
 
-// F6.4: sizeof(pager_rtc_t) is 496 bytes as of this change (see
+// F6.5: sizeof(pager_rtc_t) is 512 bytes as of this change (see
 // firmware/build/school_pager.map's `.rtc.data.0` entry for
-// esp-idf/main/libmain.a(modes.c.obj), 0x1f0, after
+// esp-idf/main/libmain.a(modes.c.obj), 0x200, after
 // `idf.py set-target esp32s3 && idf.py build`, PROTOCOL.md §9.1's own
-// methodology) — down from 944 (F3.6) now that msg_rtc_t's pending_up/
-// unread sub-structs no longer carry inline bodies (moved to NVS namespace
-// `msgq`, docs/PROTOCOL.md §9.2-§9.4); 688 B under the 1184-byte budget
-// below, close to docs/PROTOCOL.md §9.3's own "≈460" estimate for the same
-// layout (ui_state/lock aren't added until F6.5).
+// methodology) — up from 496 (F6.4) by exactly the 16 B `lock` adds
+// (docs/DEVICE_PLAN.md §5.8's own RTC sizing), 672 B under the 1184-byte
+// budget below.
 _Static_assert(sizeof(pager_rtc_t) <= 1184,
                "pager_rtc_t exceeds the measured 1184-byte RTC_SLOW budget "
                "left after walter-modem's own ~7003 bytes (PROTOCOL.md §9.1)");
@@ -669,7 +680,16 @@ static void handle_ingest_result(msg_ingest_t r, const msg_t *out, uint16_t len)
         // g_rtc.mode, same as several other spots in this file already do.
         bool was_asleep = (g_rtc.mode == (uint8_t) PAGER_MODE_SLEEP);
         set_mode(PAGER_MODE_ACTIVE, MODE_REASON_INCOMING_MSG);
-        if (id[0] != '\0') {
+        // F6.5 (docs/DEVICE_PLAN.md §5.8): "no `shown` is published" for a
+        // body received while locked — the message is already inserted into
+        // msg.c's s_thread (MSG_ACK_UNSHOWN) by msg_ingest_down_cbor() above
+        // regardless; skipping render_pending_set() here is what keeps it
+        // that way, rather than relying on ui_incoming()'s own screen-top
+        // check (was_asleep alone would otherwise force the "steal" branch
+        // and push Chat right over the Locked screen — see ui_incoming()'s
+        // `steal = was_asleep || ...`). msg_mark_all_unshown() (scr_lock.c,
+        // on a successful unlock) is what eventually acks these.
+        if (id[0] != '\0' && !lock_is_locked()) {
             render_pending_set(id, from, was_asleep);
         }
         break;
@@ -680,8 +700,12 @@ static void handle_ingest_result(msg_ingest_t r, const msg_t *out, uint16_t len)
         // active mode. *out is NULL if the entry already scrolled out of
         // the 10-deep RAM thread (routine: the 16-deep dedup ring is
         // intentionally wider) - fall back to the id msg.c just parsed.
+        // F6.5: while locked, a duplicate re-delivery of a body this device
+        // never displayed (§5.8) must not be re-acked either — same rule as
+        // the MSG_INGEST_NEW branch above, just for the relay's retry of a
+        // message it never got a `shown` for the first time either.
         const char *id = out ? out->id : msg_last_ingest_id();
-        if (id[0] != '\0') {
+        if (id[0] != '\0' && !lock_is_locked()) {
             if (out && out->ack_state == MSG_ACK_READ) {
                 msg_mark_read(id);
             } else {
@@ -727,6 +751,18 @@ static void on_incoming_message(const char *topic, const char *body, uint16_t le
                      topic, (unsigned) len);
             return;
         }
+    }
+
+    // F6.5 (docs/PROTOCOL.md §3.2/§5.8): `cfg` is not a content message —
+    // it has neither `from` nor `body`, which msg_ingest_down_cbor() below
+    // requires — so it must be intercepted here, before that call, exactly
+    // like auth_verify() already gates what reaches it. Returns true only
+    // for a well-formed `kind:"cfg"` envelope (applied + acked already);
+    // false covers both "not cfg" and "cfg but malformed", both of which
+    // correctly fall through to the normal path below (msg.c's own
+    // MSG_INGEST_MALFORMED handling covers the latter).
+    if (lock_ingest_cfg_cbor((const uint8_t *) body, (uint16_t) vlen)) {
+        return;
     }
 
     const msg_t *out = NULL;
@@ -830,6 +866,31 @@ static void run_modem_health_check(void)
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
+// F6.5 (docs/DEVICE_PLAN.md §5.8): keeps the screen stack in sync with
+// lock.c's `locked` state. Runs only on modes_run()'s own task (called from
+// modes_run() below), which is what makes it safe to mutate the screen stack
+// here even though lock_is_locked() can flip true/false from a completely
+// different task (lock_check_autolock() below, same task, is the common
+// case; but lock_ingest_cfg_cbor()'s admin `clear` runs on the MQTT event
+// task and must NOT touch ui_push()/ui_pop() itself for exactly that
+// reason — this per-iteration poll is what picks that edge up safely
+// instead). The successful-unlock-by-passcode path (scr_lock.c's on_key())
+// already handles its own transition directly (same task, same iteration),
+// so this function's `!locked && showing` branch only ever fires for the
+// admin-clear-while-locked edge.
+// ---------------------------------------------------------------------------
+static void lock_screen_sync(void)
+{
+    bool locked = lock_is_locked();
+    bool showing = (ui_top() == &g_scr_lock);
+    if (locked && !showing) {
+        ui_push(&g_scr_lock);
+    } else if (!locked && showing) {
+        ui_go_home();
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Public entry points
 // ---------------------------------------------------------------------------
 
@@ -867,12 +928,28 @@ void modes_boot(void)
     auth_init(ident_get_kdev());
     msg_bind_auth(&g_rtc.auth, on_auth_epoch_wrap);
 
+    // F6.5 (docs/DEVICE_PLAN.md §5.8): lock.c's RTC binding + NVS load. Must
+    // run before ui_init()/ui_render_boot() below so a locked device never
+    // paints Home even for one frame at boot (see the ui_push() right after
+    // ui_init() below). No modem or sleep-state effect: NVS reads + one
+    // possible RTC write (forcing `locked` when a passcode is configured) —
+    // see lock_init()'s own doc comment (lock.h) for the full reasoning.
+    lock_bind_rtc(&g_rtc.lock, rtc_lock, rtc_unlock, rtc_save);
+    lock_init(was_valid);
+
     input_init(); // power effect: GPIO config + static queue alloc only
 
     if (!ui_init()) {
         ESP_LOGI(TAG, "display init failed; continuing headless (network/replies/acks unaffected)");
     } else {
-        ui_render_boot(); // initial Home screen; disp_init() primes the cadence counter to force a full refresh
+        if (lock_is_locked()) {
+            // §5.8: "Reached by ... any restart while a passcode is set."
+            // Pushed here, before ui_render_boot()'s own forced full
+            // refresh, so that refresh already paints Locked rather than
+            // Home (ui_init() itself always establishes [Home] first).
+            ui_push(&g_scr_lock);
+        }
+        ui_render_boot(); // initial Home/Locked screen; disp_init() primes the cadence counter to force a full refresh
     }
 
     net_set_msg_cb(on_incoming_message);
@@ -1000,6 +1077,10 @@ void modes_run(void)
         input_event_t ievt;
         while (input_get_event(&ievt)) {
             modes_note_activity(); // any resolved key/button event counts as activity
+            // F6.5 (docs/DEVICE_PLAN.md §5.8): "lock_check_autolock(now)
+            // called on every input event". No modem effect; an RTC write
+            // only on the (rare) edge that actually locks.
+            lock_check_autolock(esp_timer_get_time());
             switch (ievt.type) {
             case INPUT_EVT_BTN_DOWN:
                 // firmware/README.md: button press enters active mode.
@@ -1030,11 +1111,29 @@ void modes_run(void)
         s_ui_awake_prev = ui_awake_now;
         if (ui_awake_edge_in) {
             ui_wake_status_refresh();
+            // F6.5: "...and every UI wake" — the other half of
+            // lock_check_autolock()'s call-site contract (docs/DEVICE_PLAN.md
+            // §5.8), covering a UI wake with no fresh input event (should not
+            // normally happen — input.c's own window arms on the same events
+            // that got us here — but keeps the check honest either way).
+            lock_check_autolock(esp_timer_get_time());
         }
 
         // F6.3/README R5: renders (if a message arrived) on this task, then
         // marks `shown` - see service_render_pending()'s own comment.
         service_render_pending();
+
+        // F6.5: pushes/pops the Locked screen to match lock.c's current
+        // state (see lock_screen_sync()'s own comment), and drains any
+        // toast lock.c queued from the MQTT event task (currently only the
+        // admin `cfg` `clear` toast) — both before this iteration's own
+        // render below, same discipline service_render_pending() already
+        // uses for cross-task handoffs.
+        lock_screen_sync();
+        char lock_toast[40];
+        if (lock_take_toast(lock_toast, sizeof(lock_toast))) {
+            ui_show_toast(lock_toast);
+        }
 
         if (ui_awake_now) {
             // The screen stack's own render, reflecting whatever

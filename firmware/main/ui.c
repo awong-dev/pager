@@ -19,6 +19,7 @@
 #include "disp.h"
 #include "gfx.h"
 #include "ident.h"
+#include "lock.h" /* F6.5: gates ui_on_button_short()/ui_on_button_long() below, docs/DEVICE_PLAN.md §5.8 */
 
 #include <string.h>
 #include <stdio.h>
@@ -309,6 +310,13 @@ void ui_dispatch_key(input_key_t key)
 
 void ui_on_button_short(void)
 {
+    // F6.5 (docs/DEVICE_PLAN.md §5.8's Locked mockup: "btn hold = nothing" —
+    // applies to short press too, "the button ... do[es] nothing" while
+    // locked): without this guard, a short press while Locked is on top
+    // would open Chat right over the lock screen, bypassing the passcode.
+    if (lock_is_locked()) {
+        return;
+    }
     // docs/DEVICE_PLAN.md §5.5 (Home's Keys bullet, applies from anywhere):
     // "if any unread, open the newest unread chat, else stay."
     const msg_t *u = msg_newest_unread();
@@ -323,6 +331,12 @@ void ui_on_button_short(void)
 
 void ui_on_button_long(void)
 {
+    // F6.5: same rationale as ui_on_button_short() above — "btn hold =
+    // nothing" while Locked is on top, per docs/DEVICE_PLAN.md §5.8's own
+    // Locked-screen footer text.
+    if (lock_is_locked()) {
+        return;
+    }
     ui_go_home();
 }
 

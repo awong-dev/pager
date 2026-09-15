@@ -981,6 +981,22 @@ static bool mark_common(const char *id, uint8_t ack_state, uint8_t pending_state
 bool msg_mark_shown(const char *id) { return mark_common(id, MSG_ACK_SHOWN, 0); }
 bool msg_mark_read(const char *id) { return mark_common(id, MSG_ACK_READ, 1); }
 
+// F6.5 (docs/DEVICE_PLAN.md §5.8) — see msg.h's own doc comment.
+void msg_mark_all_unshown(void)
+{
+    size_t n = msg_thread_count();
+    for (size_t i = 0; i < n; i++) {
+        const msg_t *m = msg_thread_at(i);
+        if (!m || m->dir != (uint8_t) MSG_DIR_DOWN || m->ack_state != MSG_ACK_UNSHOWN) {
+            continue;
+        }
+        char id[MSG_ID_MAX];
+        strncpy(id, m->id, sizeof(id) - 1);
+        id[sizeof(id) - 1] = '\0';
+        msg_mark_shown(id);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Reply queue (§4.2)
 // ---------------------------------------------------------------------------

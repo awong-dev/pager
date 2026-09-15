@@ -255,6 +255,26 @@ bool msg_mark_shown(const char *id);
  * unread[0] (and its NVS msgq body) if it matches this id. */
 bool msg_mark_read(const char *id);
 
+/* F6.5 (docs/DEVICE_PLAN.md §5.8): queues a `shown` ack (msg_mark_shown())
+ * for every down message currently at exactly MSG_ACK_UNSHOWN — i.e. every
+ * message that arrived while the device was locked and was therefore never
+ * displayed (modes.c's handle_ingest_result() skips render_pending_set()
+ * for those, so they never reach the render-then-mark-shown path
+ * ui_incoming() otherwise guarantees). Called once, right after a
+ * successful unlock (scr_lock.c), on modes_run()'s own task — see
+ * scr_lock.c's own comment for why that ordering is safe without
+ * ui_incoming()'s explicit two-step. A message the student had already seen
+ * (shown or read) before locking is untouched: only ack_state ==
+ * MSG_ACK_UNSHOWN entries qualify, so this never re-acks something already
+ * acked. Subject to the same MSG_PENDING_ACKS_MAX (8) queue depth as any
+ * other ack burst (msg.h's own doc comment on msg_mark_shown()/
+ * msg_mark_read()) — more than 8 messages accumulated while locked is a
+ * documented edge case, not a crash: the 9th+ simply does not get queued by
+ * this pass (pending_ack_upsert_locked() returning false is not surfaced
+ * here, matching scr_chat_mark_visible_read()'s own no-return-value
+ * precedent for the identical burst-queueing situation). */
+void msg_mark_all_unshown(void);
+
 /* Student reply. REJECTS (returns false) if the body fails PROTOCOL.md
  * §3.1's rules (empty, a control character, more than 320 UTF-8 bytes, or
  * more than 160 code points) — never truncates (§9.4). Also rejects if
