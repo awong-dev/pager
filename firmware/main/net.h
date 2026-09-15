@@ -48,6 +48,17 @@ typedef struct {
  * PENDING_HW) attach transient then settles to the idle-attached floor. */
 bool net_init(void);
 
+/* Configures TLS profile 3 (bootstrap only) with
+ * WALTER_MODEM_TLS_VALIDATION_NONE, for the one-time bootstrap MQTT hop of
+ * docs/DEVICE_PLAN.md §3.2 step 3 (setup.c, F3.5). Does not touch profile 2
+ * (production, CA-pinned to cert slot 12) or any cert slot — the bootstrap
+ * bundle is authenticated/encrypted under a single-use key derived from the
+ * typed setup code, so no CA is needed on this hop. Call once before the
+ * bootstrap mqttConfig()/mqttConnect(); switching back to profile 2 for the
+ * production session is the caller's job (another mqttConfig() call).
+ * Power effect: one AT command, no RRC of its own. */
+bool net_tls_profile_bootstrap(void);
+
 /* TLS profile already configured by net_init(); this issues mqttConnect().
  * Call once after net_init() succeeds, and again (after F1/F3 backoff) any
  * time net_get_mqtt_status() reports the session down. Never call on a
@@ -68,6 +79,18 @@ void net_session_down(void);
  * Power effect: the RRC time for one publish if the modem was idle;
  * ~0 extra if it was already in an active RRC state (PENDING_HW). */
 bool net_publish(const char *topic, char *buf, uint16_t len, uint8_t qos);
+
+/* Same as net_publish(), typed for a binary (CBOR) payload instead of text.
+ * WalterModem v1.5.0's mqttPublish() is confirmed binary-safe by reading the
+ * vendor source (src/proto/WalterMQTT.cpp:97-103, src/WalterModem.cpp:
+ * 2049-2068): the AT command line carries only the topic and the byte
+ * count, and the payload is written with uart_write_bytes()/exactly
+ * buf_size bytes after the modem's data prompt — no string handling or
+ * escaping touches `buf`. len > 640 (PROTOCOL.md §3.3) is refused, same as
+ * net_publish().
+ * Power effect: the RRC time for one publish if the modem was idle; ~0
+ * extra if it was already in an active RRC state (PENDING_HW). */
+bool net_publish_raw(const char *topic, uint8_t *buf, uint16_t len, uint8_t qos);
 
 /* Register the callback invoked once per inbound MQTT message, after net.c
  * has already bounds-checked it (§3.4/F6) and fetched it via mqttReceive().
@@ -123,6 +146,20 @@ bool net_get_clock(int64_t *epoch_s);
  * cache a last-known-good value itself.
  * Power effect: one AT round trip, no RRC — same class as net_check(). */
 bool net_get_battery_mv(int *batt_mv);
+
+/* Signal strength in dBm, via WalterModem::getRSSI() -> AT+CSQ
+ * (managed_components/dptechnics__walter-modem/src/WalterModem.h:4334;
+ * implementation src/WalterModem.cpp:4478-4482, dBm conversion
+ * src/WalterModem.cpp:2293). docs/DEVICE_PLAN.md §5.4 flagged which vendor
+ * call (getRSSI() vs getSignalQuality()) exposes plain dBm as UNVERIFIED;
+ * reading WalterModem.h settles it in favour of getRSSI() — getSignalQuality()
+ * (AT+CESQ) returns RSRP/RSRQ instead, a different quantity. Returns false
+ * (and leaves *dbm unchanged) if the AT command fails, or if the modem
+ * reports "not known/not detectable" (raw AT+CSQ 99, which the vendor
+ * converts to +85 dBm, outside its own documented [-113, -51] range) —
+ * callers must not feed that into DEVICE_PLAN.md §5.4's dBm->bars table.
+ * Power effect: one AT round trip, no RRC — same class as net_check(). */
+bool net_get_rssi(int *dbm);
 
 /* Read-only snapshot of MQTT connection state for modes.c's F1/F3 backoff
  * state machine. Does NOT clear disconnect_edge — call

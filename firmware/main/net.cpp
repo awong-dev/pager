@@ -13,6 +13,7 @@
 
 #include "net.h"
 #include "pins.h"
+#include "ident.h"
 
 #include "WalterModem.h"
 
@@ -30,9 +31,9 @@
 static const char *TAG = "net";
 
 // ---------------------------------------------------------------------------
-// Configuration. Broker/credential values are provisioning placeholders —
-// see docs/PROTOCOL.md §12 item 5 (NEEDS HUMAN DECISION: no per-device
-// credential provisioning tooling exists yet). Do not flash these as-is.
+// Configuration. Per-device identity (host/port/dev_id/mqtt_pw/apn/CA) comes
+// from ident.c/h (docs/DEVICE_PLAN.md §3.2 step 3, §3.4), written by setup.c
+// (F3.5) from the bootstrap bundle. Only fleet-wide constants live here.
 // ---------------------------------------------------------------------------
 
 // The UART the modem is wired to; must match the argument passed to
@@ -40,7 +41,6 @@ static const char *TAG = "net";
 static constexpr uart_port_t PAGER_MODEM_UART = UART_NUM_1;
 
 static constexpr int PAGER_PDP_CTX_ID = 1;
-static constexpr const char *PAGER_APN = nullptr; // carrier default; set per-SIM if required
 
 // eDRX 20.48s / PTW 2.56s, raw 3GPP WB-S1 nibble strings (PROTOCOL.md §6.3).
 // These are NOT seconds — configEDRX() splices them verbatim into AT+SQNEDRX.
@@ -52,46 +52,17 @@ static constexpr const char *PAGER_EDRX_PTW = "0001";
 static constexpr uint8_t PAGER_TLS_CA_SLOT = 12;
 static constexpr int PAGER_TLS_PROFILE_ID = 2;
 
-// PLACEHOLDERS — replace at flash time. NEEDS HUMAN DECISION (PROTOCOL.md §12 item 5).
-static constexpr const char *PAGER_MQTT_BROKER_HOST = "CHANGE_ME.broker.example";
-static constexpr uint16_t PAGER_MQTT_BROKER_PORT = 8883;
-static constexpr const char *PAGER_DEVICE_ID = "pgr-0001";
-static constexpr const char *PAGER_MQTT_USERNAME = "pgr-0001";
-static constexpr const char *PAGER_MQTT_PASSWORD = "CHANGE_ME";
+// DEVICE_PLAN.md §3.2 step 3: a second, unpinned profile for the one-time
+// bootstrap MQTT hop only (setup.c, F3.5). Never shares a slot/profile with
+// the production connection above.
+static constexpr int PAGER_TLS_BOOTSTRAP_PROFILE_ID = 3;
+
 static constexpr uint16_t PAGER_MQTT_KEEPALIVE_S = 1800; // PROTOCOL.md §6.2
 
 static constexpr int PAGER_ATTACH_POLL_CAP_S = 300; // F1: single-attempt cap
 
 // PROTOCOL.md §3.3: hard envelope limit, both directions.
 static constexpr uint16_t PAGER_MAX_PAYLOAD = 640;
-
-// Placeholder CA (DigiCert Global Root CA, as used by the vendor's own
-// examples/mqtts). Replace with the real broker's CA before flashing a
-// device — see the NEEDS HUMAN DECISION note above.
-static const char PAGER_CA_CERT_PEM[] = R"EOF(
------BEGIN CERTIFICATE-----
-MIIDrzCCApegAwIBAgIQCDvgVpBCRrGhdWrJWZHHSjANBgkqhkiG9w0BAQUFADBh
-MQswCQYDVQQGEwJVUzEVMBMGA1UEChMMRGlnaUNlcnQgSW5jMRkwFwYDVQQLExB3
-d3cuZGlnaWNlcnQuY29tMSAwHgYDVQQDExdEaWdpQ2VydCBHbG9iYWwgUm9vdCBD
-QTAeFw0wNjExMTAwMDAwMDBaFw0zMTExMTAwMDAwMDBaMGExCzAJBgNVBAYTAlVT
-MRUwEwYDVQQKEwxEaWdpQ2VydCBJbmMxGTAXBgNVBAsTEHd3dy5kaWdpY2VydC5j
-b20xIDAeBgNVBAMTF0RpZ2lDZXJ0IEdsb2JhbCBSb290IENBMIIBIjANBgkqhkiG
-9w0BAQEFAAOCAQ8AMIIBCgKCAQEA4jvhEXLeqKTTo1eqUKKPC3eQyaKl7hLOllsB
-CSDMAZOnTjC3U/dDxGkAV53ijSLdhwZAAIEJzs4bg7/fzTtxRuLWZscFs3YnFo97
-nh6Vfe63SKMI2tavegw5BmV/Sl0fvBf4q77uKNd0f3p4mVmFaG5cIzJLv07A6Fpt
-43C/dxC//AH2hdmoRBBYMql1GNXRor5H4idq9Joz+EkIYIvUX7Q6hL+hqkpMfT7P
-T19sdl6gSzeRntwi5m3OFBqOasv+zbMUZBfHWymeMr/y7vrTC0LUq7dBMtoM1O/4
-gdW7jVg/tRvoSSiicNoxBN33shbyTApOB6jtSj1etX+jkMOvJwIDAQABo2MwYTAO
-BgNVHQ8BAf8EBAMCAYYwDwYDVR0TAQH/BAUwAwEB/zAdBgNVHQ4EFgQUA95QNVbR
-TLtm8KPiGxvDl7I90VUwHwYDVR0jBBgwFoAUA95QNVbRTLtm8KPiGxvDl7I90VUw
-DQYJKoZIhvcNAQEFBQADggEBAMucN6pIExIK+t1EnE9SsPTfrgT1eXkIoyQY/Esr
-hMAtudXH/vTBH1jLuG2cenTnmCmrEbXjcKChzUyImZOMkXDiqw8cvpOp/2PV5Adg
-06O/nVsJ8dWO41P0jmP6P6fbtGbfYmbW0W5BjfIttep3Sp+dWOIrWcBAI+0tKIJF
-PnlUkiaY4IBIqDfv8NZ5YBberOgOzW6sRBc4L0na4UU+Krk2U886UAb3LujEV0ls
-YSEY1QSteDwsOoBrp+uvFRTp2InBuThs4pFsiv9kuXclVzDAGySj4dzp30d8tbQk
-CAUw7C29C79Fv1C5qfPrmAESrciIxpg0X40KPMbp1ZWVbd4=
------END CERTIFICATE-----
-)EOF";
 
 // ---------------------------------------------------------------------------
 // State. All of this is plain (non-RTC) static storage: it survives our
@@ -123,6 +94,15 @@ static volatile uint32_t s_oversize_count = 0;
 
 static char s_down_topic[48];
 static char s_granted_edrx[16] = { 0 };
+
+// DEVICE_PLAN.md §3.3: the hash of the CA last written to modem NVRAM slot
+// PAGER_TLS_CA_SLOT, so repeated net_init() calls within one power session
+// (F4 recovery) skip the NVRAM write when ident's ca_hash has not changed.
+// Deliberately NOT in RTC/NVS: it only needs to survive net_recover_modem(),
+// not a real reboot — a real reboot always rewriting once is harmless and
+// simpler than persisting this across resets.
+static bool s_ca_written = false;
+static uint8_t s_ca_written_hash[IDENT_CA_HASH_LEN];
 
 // PROTOCOL.md §3.3 cap; sized once, no malloc on the RX path (L9).
 static uint8_t s_mqtt_rx_buf[PAGER_MAX_PAYLOAD];
@@ -315,7 +295,13 @@ extern "C" bool net_init(void)
         return false;
     }
 
-    if (!WalterModem::definePDPContext(PAGER_PDP_CTX_ID, PAGER_APN)) {
+    // ident's apn is "" for carrier default (ident.h); definePDPContext()
+    // wants NULL for that case, not an empty string.
+    const char *apn = ident_get_apn();
+    if (apn[0] == '\0') {
+        apn = nullptr;
+    }
+    if (!WalterModem::definePDPContext(PAGER_PDP_CTX_ID, apn)) {
         ESP_LOGI(TAG, "definePDPContext() failed");
         return false;
     }
@@ -389,11 +375,24 @@ extern "C" bool net_init(void)
     }
 
     // TLS provisioning (PROTOCOL.md §6.1): cert slot >=11, TLS profile >=2.
-    // PAGER_CA_CERT_PEM above is a placeholder - see the NEEDS HUMAN
-    // DECISION note at the top of this file before flashing a real device.
-    if (!WalterModem::tlsWriteCredential(false, PAGER_TLS_CA_SLOT, PAGER_CA_CERT_PEM)) {
-        ESP_LOGI(TAG, "tlsWriteCredential() failed");
-        return false;
+    // DEVICE_PLAN.md §3.3: only rewrite modem NVRAM when ident's ca_hash
+    // differs from the hash of what we last wrote this power session (net.cpp
+    // today rewrote unconditionally, every net_init() call including every
+    // F4 recovery).
+    // Power effect: skips one NVRAM write (and its flash wear) per F4
+    // recovery once the CA is already current; tlsConfigProfile() below is a
+    // cheap AT command and still runs every time.
+    const uint8_t *ca_hash = ident_get_ca_hash();
+    if (!s_ca_written || memcmp(s_ca_written_hash, ca_hash, IDENT_CA_HASH_LEN) != 0) {
+        if (!WalterModem::tlsWriteCredential(false, PAGER_TLS_CA_SLOT, ident_get_ca())) {
+            ESP_LOGI(TAG, "tlsWriteCredential() failed");
+            return false;
+        }
+        memcpy(s_ca_written_hash, ca_hash, IDENT_CA_HASH_LEN);
+        s_ca_written = true;
+        ESP_LOGI(TAG, "CA written to modem slot %u (hash changed)", (unsigned) PAGER_TLS_CA_SLOT);
+    } else {
+        ESP_LOGD(TAG, "CA unchanged, skipping NVRAM write to slot %u", (unsigned) PAGER_TLS_CA_SLOT);
     }
     if (!WalterModem::tlsConfigProfile(PAGER_TLS_PROFILE_ID, WALTER_MODEM_TLS_VALIDATION_CA,
                                        WALTER_MODEM_TLS_VERSION_12, PAGER_TLS_CA_SLOT)) {
@@ -401,14 +400,35 @@ extern "C" bool net_init(void)
         return false;
     }
 
-    snprintf(s_down_topic, sizeof(s_down_topic), "pager/%s/down", PAGER_DEVICE_ID);
+    snprintf(s_down_topic, sizeof(s_down_topic), "pager/%s/down", ident_get_dev_id());
 
-    if (!WalterModem::mqttConfig(PAGER_DEVICE_ID, PAGER_MQTT_USERNAME, PAGER_MQTT_PASSWORD,
+    if (!WalterModem::mqttConfig(ident_get_dev_id(), ident_get_dev_id(), ident_get_mqtt_pw(),
                                  PAGER_TLS_PROFILE_ID)) {
         ESP_LOGI(TAG, "mqttConfig() failed");
         return false;
     }
 
+    return true;
+}
+
+extern "C" bool net_tls_profile_bootstrap(void)
+{
+    // DEVICE_PLAN.md §3.2 step 3: the one-time bootstrap MQTT hop
+    // (setup.c, F3.5) trusts no CA - the bundle is authenticated and
+    // encrypted under a single-use key derived from the typed setup code,
+    // so server authentication on this hop would only add DoS resistance
+    // (see the rationale quoted in DEVICE_PLAN.md §3.2 step 3). Configures
+    // profile PAGER_TLS_BOOTSTRAP_PROFILE_ID only; profile PAGER_TLS_PROFILE_ID
+    // (production, CA-pinned to slot PAGER_TLS_CA_SLOT) is untouched.
+    // Power effect: one AT command (profile config), no RRC of its own.
+    if (!WalterModem::tlsConfigProfile(PAGER_TLS_BOOTSTRAP_PROFILE_ID,
+                                       WALTER_MODEM_TLS_VALIDATION_NONE,
+                                       WALTER_MODEM_TLS_VERSION_12)) {
+        ESP_LOGI(TAG, "tlsConfigProfile(bootstrap) failed");
+        return false;
+    }
+    ESP_LOGI(TAG, "bootstrap TLS profile %d configured (VALIDATION_NONE)",
+             PAGER_TLS_BOOTSTRAP_PROFILE_ID);
     return true;
 }
 
@@ -418,12 +438,11 @@ extern "C" bool net_session_up(void)
     // the RRC time it takes. Never call this on a timer - only after
     // net_init() and after a detected session loss (F3).
     s_disconnect_edge = false;
-    if (!WalterModem::mqttConnect(PAGER_MQTT_BROKER_HOST, PAGER_MQTT_BROKER_PORT,
-                                  PAGER_MQTT_KEEPALIVE_S)) {
+    if (!WalterModem::mqttConnect(ident_get_host(), ident_get_port(), PAGER_MQTT_KEEPALIVE_S)) {
         ESP_LOGI(TAG, "mqttConnect() call could not be queued");
         return false;
     }
-    ESP_LOGI(TAG, "MQTT connect issued to %s:%u", PAGER_MQTT_BROKER_HOST, PAGER_MQTT_BROKER_PORT);
+    ESP_LOGI(TAG, "MQTT connect issued to %s:%u", ident_get_host(), (unsigned) ident_get_port());
     return true;
 }
 
@@ -443,6 +462,25 @@ extern "C" bool net_publish(const char *topic, char *buf, uint16_t len, uint8_t 
     }
     // L6: mqttPublish() takes non-const uint8_t*; publish from a mutable buffer.
     return WalterModem::mqttPublish(topic, (uint8_t *) buf, len, qos);
+}
+
+extern "C" bool net_publish_raw(const char *topic, uint8_t *buf, uint16_t len, uint8_t qos)
+{
+    if (len > PAGER_MAX_PAYLOAD) {
+        ESP_LOGI(TAG, "refusing to publish %u bytes > %u cap (PROTOCOL.md §3.3)",
+                 (unsigned) len, (unsigned) PAGER_MAX_PAYLOAD);
+        return false;
+    }
+    // Binary-safe, confirmed by reading the vendor source (not UNVERIFIED):
+    // WalterModem::mqttPublish() (src/proto/WalterMQTT.cpp:97-103) puts only
+    // the topic string and buf_size on the AT command line
+    // ("AT+SQNSMQTTPUBLISH=0,<topic>,<qos>,<buf_size>"); the payload itself
+    // is written with uart_write_bytes(_uartNo, cmd->payload, cmd->payloadSize)
+    // after the modem's "> " data prompt (src/WalterModem.cpp:2049-2068),
+    // i.e. exactly buf_size raw bytes, no NUL-termination or escaping
+    // applied to the payload. Same call as net_publish() above, just typed
+    // for a CBOR byte buffer instead of a text one.
+    return WalterModem::mqttPublish(topic, buf, len, qos);
 }
 
 extern "C" void net_set_msg_cb(void (*cb)(const char *topic, const char *body, uint16_t len))
@@ -555,6 +593,39 @@ extern "C" bool net_get_battery_mv(int *batt_mv)
     return true;
 }
 
+extern "C" bool net_get_rssi(int *dbm)
+{
+    // Power effect: one AT round trip, no RRC of its own - same class as
+    // net_check()/net_get_battery_mv(). Vendor call used: getRSSI()
+    // (managed_components/dptechnics__walter-modem/src/WalterModem.h:4334),
+    // which issues AT+CSQ and converts to dBm itself
+    // (src/WalterModem.cpp:4478-4482 issues it; src/WalterModem.cpp:2293
+    // does `rsp.data.rssi = -113 + rawRSSI*2`). DEVICE_PLAN.md §5.4 flagged
+    // "which of getRSSI()/getSignalQuality() v1.5.0 exposes" as UNVERIFIED,
+    // pending 10 min reading WalterModem.h; that reading is done here and
+    // settles it: getRSSI()/AT+CSQ is the one that returns a single dBm
+    // value in the doc-declared [-113, -51] range, which is what §5.4's
+    // bucket table wants - getSignalQuality()/AT+CESQ returns RSRP/RSRQ
+    // instead (its WalterModemSignalQuality struct), a different quantity.
+    // AT+CSQ's rawRSSI==99 ("not known/not detectable") converts to +85,
+    // outside the documented range; treated here as "no reading" rather
+    // than fed into the bars table as if it were a 4-bar signal.
+    WalterModemRsp rsp = {};
+    if (!WalterModem::getRSSI(&rsp)) {
+        return false;
+    }
+    if (rsp.type != WALTER_MODEM_RSP_DATA_TYPE_RSSI) {
+        return false;
+    }
+    if (rsp.data.rssi < -113 || rsp.data.rssi > -51) {
+        return false;
+    }
+    if (dbm) {
+        *dbm = rsp.data.rssi;
+    }
+    return true;
+}
+
 extern "C" void net_get_mqtt_status(net_mqtt_status_t *out)
 {
     if (!out) {
@@ -601,5 +672,5 @@ extern "C" void net_get_granted_edrx(char *out, size_t out_size)
 
 extern "C" const char *net_get_device_id(void)
 {
-    return PAGER_DEVICE_ID;
+    return ident_get_dev_id();
 }
