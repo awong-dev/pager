@@ -1213,6 +1213,203 @@ def _pending_book_or_cfg_acked(device_id: str, field: str) -> bool:
     return isinstance(pending, dict) and pending.get("acked") is True
 
 
+def _relay_settings():
+    """A `Settings` this host process (not the `relay` container) can
+    actually use to talk to EMQX/Firestore over the compose stack's
+    published ports -- `Settings.from_env()` would instead read this
+    process's own (mostly unset) OS environment, not `relay/.env` (which
+    only the `relay` container's `env_file:` loads), so a whitebox call into
+    `app.devsetup`/`app.broker`/`app.emqx_admin` from here needs its
+    `Settings` built explicitly, the same values `write_env_file()` already
+    writes for the container's use, pointed at this process's own
+    (published-port) view of the same services. Only `scenario_setup_code`
+    needs this so far -- every earlier whitebox helper in this file
+    (`Oracle`, `_backdate_location`, `_pending_book_or_cfg_acked`) only ever
+    touches Firestore, which `_use_relay_store()` already covers."""
+    _use_relay_store()
+    from app.config import Settings
+
+    return Settings(
+        broker_api_url=f"{EMQX_API_URL}/api/v5",
+        broker_api_key=BROKER_API_KEY,
+        broker_api_secret=BROKER_API_SECRET,
+        webhook_key=WEBHOOK_KEY,
+        dev_mode=True,
+        google_cloud_project=FIREBASE_PROJECT_ID,
+        firestore_emulator_host="localhost:8080",
+        firebase_auth_emulator_host="localhost:9099",
+    )
+
+
+def _emqx_user_exists(username: str) -> bool:
+    """Raw EMQX HTTP API check (`GET .../authentication/{mechanism}/users/
+    {username}`) -- the same URL shape `app/emqx_admin.py`'s
+    `_authn_users_url()` builds, hit directly here rather than through
+    `EmqxAdmin` because that class has no "does this user exist" method (its
+    own `ensure_*`/`delete_user` are write-only, per its docstring)."""
+    resp = httpx.get(
+        f"{EMQX_API_URL}/api/v5/authentication/password_based:built_in_database/users/{username}",
+        auth=(BROKER_API_KEY, BROKER_API_SECRET),
+        timeout=5.0,
+    )
+    return resp.status_code == 200
+
+
+def _emqx_retained_message_exists(topic: str) -> bool:
+    """EMQX 5's built-in retainer HTTP API (`GET
+    /api/v5/mqtt/retainer/message/{url-encoded topic}` -- 200 with the
+    message, `404 NOT_FOUND` if nothing is retained there), confirmed by
+    hand against this compose stack's EMQX 5.8.0 before writing this
+    function. Used instead of reconnecting as the bootstrap credential to
+    check for the retained bundle because the expired-code sub-case below
+    revokes that credential in the same cleanup call that clears the
+    retained message -- by the time this needs to check, there is no
+    credential left that could subscribe to find out."""
+    import urllib.parse
+
+    encoded = urllib.parse.quote(topic, safe="")
+    resp = httpx.get(
+        f"{EMQX_API_URL}/api/v5/mqtt/retainer/message/{encoded}",
+        auth=(BROKER_API_KEY, BROKER_API_SECRET),
+        timeout=5.0,
+    )
+    return resp.status_code == 200
+
+
+def scenario_setup_code() -> None:
+    """docs/DEVICE_TASKS.md S2b.5 / docs/DEVICE_PLAN.md §3.2: admin creates a
+    device -> setup code -> a simulated device performs the *real* bootstrap
+    fetch (`pager_client.bootstrap_device`, imported directly, the same call
+    T2b.4 already verified by hand against this stack -- not the stale
+    `create_device_with_secret` whitebox shortcut the older scenarios above
+    use) -> `provisionState` flips to `"provisioned"` on the first signed
+    `/status` (whitebox Firestore read, `app.store.devices.get_device`) ->
+    the bootstrap credential `boot-{bid}` is gone from EMQX afterward
+    (`S2b.1`'s `complete()`, dispatched by `S2b.3`'s webhook route). A
+    second device's code is then expired by patching
+    `setupCodes/{bid}.expiresAt` directly (whitebox) and cleaning it up by
+    calling `devsetup.expire()` *directly* -- per this task's own
+    instructions, it is standalone and "not yet wired into a scheduler"
+    (S2b.1's own flagged gap, confirmed still true by reading
+    `app/devsetup.py` and `app/jobs.py` before writing this) -- which leaves
+    neither a live bootstrap credential nor a retained bundle behind,
+    confirmed through EMQX's own retained-message API (`_emqx_retained_
+    message_exists`) since the credential that could otherwise subscribe to
+    check is revoked in the same cleanup call, and then confirmed once more
+    the way a real device would notice: a fresh `bootstrap_device()` call
+    against the same (now-expired) code fails.
+
+    **`BROKER_MANAGES_AUTH=0` / the shared `boot` user (DEVICE_PLAN.md
+    §3.2's "Deployments where the relay cannot manage broker users" —
+    explicitly `NEEDS HUMAN DECISION` there): NOT exercised here, and not
+    guessed at.** Read `app/devsetup.py`, `app/emqx_admin.py` and
+    `tools/pager_client.py`'s `bootstrap_device()` end to end before writing
+    this: none of the three has any code path for a shared, long-lived
+    `boot` username -- `emqx_admin.ensure_boot_user`/`devsetup.boot_username`
+    always build `boot-{bid}` (a *per-code* identity) and are a pure no-op
+    under `BROKER_MANAGES_AUTH=0` (returns `"manual"`, pushes nothing,
+    including no manual-ACL instructions surfaced anywhere for the boot
+    credential specifically -- `DeviceSetupCodeResponse.manualAcl` only ever
+    describes the device's own three rules). `devsetup.format_code`/`parse`
+    carry no extra field for "the setup code grows by that [shared] user's
+    password" (§3.2's own words) -- there is nothing in the code text for a
+    shared password to grow into. Implementing that flow would mean
+    inventing, un-reviewed, exactly the ACL-scoping-under-one-shared-
+    identity design §3.2 flags as a human decision (a shared credential with
+    wildcard `pager/boot/+/{down,up}` ACL has no per-`bid` topic isolation
+    at the broker layer at all -- the bundle's encryption is the only thing
+    stopping one setup session from reading another's bundle, which is a
+    different, and unreviewed, security story than the per-`bid` credential
+    this module already has). Flagged in this task's report instead of
+    guessed at here, per this run's own instructions."""
+    bootstrap_admin()
+    _use_relay_store()
+    from datetime import UTC, datetime, timedelta
+
+    from app import devsetup
+    from app.broker import BrokerClient
+    from app.db.firestore import get_db
+    from app.emqx_admin import EmqxAdmin
+    from app.store import devices as devices_store
+    from app.store import setup_codes as setup_codes_store
+
+    admin = pager_client.ServerClient(RELAY_URL, AUTH_URL)
+    admin.login("admin")
+    admin.admin_user_add("scowner", "SCOwner", email="scowner@example.com", phone=None)
+
+    # --- happy path: create -> code -> real bootstrap -> provisioned -> boot user gone ---
+    result = admin.admin_device_add("pgr-e2e-setup", "scowner")
+    assert result["brokerPush"] == "pushed", result  # BROKER_MANAGES_AUTH=1 (default) in this stack
+    code = result["setupCode"]
+    print(f"setup_code: admin created pgr-e2e-setup, brokerPush={result['brokerPush']}, code={code!r}")
+
+    token_bytes, _host, _port, _apn = devsetup.parse(code)
+    bid, _bpw, _bkey = devsetup.derive(token_bytes)
+    boot_username = devsetup.boot_username(bid)
+    assert _emqx_user_exists(boot_username), f"{boot_username} should exist right after issue()"
+    print(f"setup_code: bootstrap credential {boot_username} is live on EMQX before the device fetches it")
+
+    device = pager_client.bootstrap_device(code, port=MQTT_PORT, wire=WIRE_MODE)
+    assert device.device_id == "pgr-e2e-setup", device.device_id
+    print("setup_code: real §3.2 bootstrap fetch complete, now holding pgr-e2e-setup's real credentials")
+
+    device.connect()
+    wait_until(lambda: device.connected, timeout=10, description="bootstrapped device to connect signed")
+    device.publish_status(batt_mv=3800, mode="active", rssi=-70)
+
+    def _provisioned() -> bool:
+        d = devices_store.get_device("pgr-e2e-setup")
+        return d is not None and d.provisionState == "provisioned"
+
+    wait_until(
+        _provisioned,
+        timeout=10,
+        description="provisionState to flip to 'provisioned' on the first signed /status",
+    )
+    print("setup_code: provisionState == 'provisioned' after the device's first signed /status")
+
+    assert not _emqx_user_exists(boot_username), f"{boot_username} should be gone after bootstrap completes"
+    assert setup_codes_store.get(bid) is None, "setupCodes/{bid} should be deleted by complete()"
+    print(f"setup_code: boot user {boot_username} and setupCodes/{bid} are both gone -- the boot user is gone")
+    device.disconnect()
+
+    # --- expired code: patch expiresAt, call devsetup.expire() directly, confirm no retained bundle ---
+    result2 = admin.admin_device_add("pgr-e2e-setup-exp", "scowner")
+    code2 = result2["setupCode"]
+    token_bytes2, _h2, _p2, _a2 = devsetup.parse(code2)
+    bid2, _bpw2, _bkey2 = devsetup.derive(token_bytes2)
+    boot_username2 = devsetup.boot_username(bid2)
+    down_topic2 = devsetup.boot_topic_down(bid2)
+
+    assert _emqx_user_exists(boot_username2), "boot user should exist before expiry"
+    assert _emqx_retained_message_exists(down_topic2), "retained bundle should exist before expiry"
+    print("setup_code: pgr-e2e-setup-exp's bootstrap credential and retained bundle both exist before expiry")
+
+    get_db().collection("setupCodes").document(bid2).update(
+        {"expiresAt": datetime.now(UTC) - timedelta(minutes=1)}
+    )
+    settings = _relay_settings()
+    expired_count = devsetup.expire(
+        settings=settings, broker=BrokerClient(settings), emqx=EmqxAdmin(settings)
+    )
+    assert expired_count == 1, expired_count
+    print(
+        "setup_code: devsetup.expire() (S2b.1, standalone -- not wired into a scheduler) "
+        f"cleaned up {expired_count} expired code"
+    )
+
+    assert not _emqx_retained_message_exists(down_topic2), "retained bundle must be cleared after expiry"
+    assert not _emqx_user_exists(boot_username2), "boot credential must be revoked after expiry"
+    assert setup_codes_store.get(bid2) is None
+    print("setup_code: expired code left no retained message on pager/boot/{bid}/down and no live bootstrap credential")
+
+    try:
+        pager_client.bootstrap_device(code2, port=MQTT_PORT, wire=WIRE_MODE, timeout=5.0)
+        raise AssertionError("bootstrap_device() must fail against an expired code")
+    except RuntimeError as exc:
+        print(f"setup_code: a real bootstrap attempt against the expired code fails, as a real device would: {exc}")
+
+
 def scenario_address_book() -> None:
     """docs/DEVICE_TASKS.md S4.5: device `contact_req` for
     `+15550001111 Grandma` -> admin approves with `mode="create"`,
@@ -1331,6 +1528,7 @@ SCENARIOS: dict[str, Callable[[], None]] = {
     "retention": scenario_retention,
     "bytes": scenario_bytes,
     "address_book": scenario_address_book,
+    "setup_code": scenario_setup_code,
 }
 
 
