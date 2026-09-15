@@ -57,7 +57,7 @@ crosses the wire; this section covers the device-local behaviour the protocol do
 
 - Sleep-mode current: PENDING_HW
 - Acceptance test (message latency): PENDING_HW
-- Full list of what to check on first hardware bring-up: the measurement checklists below (M1-M15)
+- Full list of what to check on first hardware bring-up: the measurement checklists below (M1-M23)
   and the "Residual risks" section's cheapest-experiment column, roughly in priority order.
 
 ## Measurement checklist: network and power (all PENDING_HW)
@@ -76,6 +76,10 @@ measured. See `docs/PROTOCOL.md` §6.5, §8.2-§8.4 for the arithmetic these num
 | M6 | `MEMORY_FULL` event count over 24h | Direct evidence the wake-and-drain cycle is losing messages; counted in RTC (`mqtt_memfull_count`) but never exercised against real traffic |
 | M7 | Does the modem send PINGREQ autonomously at the configured keepalive? | Resolved by construction per the library API (no ping call exists), but never observed on the wire |
 | M8 | Clean-session behaviour across an ESP32-only reset (modem session survives?) | PROTOCOL.md §12 item 4 - the highest-value follow-up experiment; unresolved and load-bearing for whether §8.3(b) (deep sleep + forced redelivery) is ever worth revisiting |
+| M16 | I²C CardKB polling (`ui.c`'s composer read / `input_feed_key()`, F6.2) across repeated 100 ms light-sleep cycles | `DEVICE_PLAN.md` §10's own open assumption: whether the CardKB and its I2C bus survive `net_sleep()`'s light-sleep re-entry without a dropped or garbled byte while the composer is open. The plan's own cheapest experiment is "one afternoon with M1's current trace" |
+| M17 | UI-awake window current draw (active mode, composer open, CardKB polled every 100 ms, `PAGER_UI_AWAKE_S`=30s) | Validates `DEVICE_PLAN.md` §5.7's ≈ 7 mAh/day-at-20-interactions estimate and the "one more AT round trip per UI wake (signal + battery), ≈ 100 ms at 40 mA" it is built on |
+| M18 | `bars_from_rssi_dbm()` bucket thresholds (`ui.c`: dBm ≥ -85/-95/-105/-115 → 4/3/2/1/0 bars) against a real cell | The dBm conversion itself is settled in source (F3.4: `WalterModem::getRSSI()`/AT+CSQ, `dBm = -113 + raw*2`, `raw==99` guarded off as "no reading" — `net.cpp`'s `net_get_rssi()`); the bucket boundaries chosen for the status-bar icon are engineering estimates that have never been seen against a live signal |
+| M19 | `segs_from_batt_mv()` LiFePO4 threshold calibration (`ui.c`: 3300/3250/3200/3100 mV → 4/3/2/1/0 segments) | `DEVICE_PLAN.md` §10: these thresholds were picked, not derived from a real discharge curve under the device's own load; pairs with M15's voltage-reading check |
 
 Also unresolved and not measurable without hardware: whether the modem/broker silently clamp
 a 1800s MQTT keepalive, and whether the carrier's NAT tolerates a 1800s idle TCP flow
@@ -87,13 +91,26 @@ Same rule as above: no device has been attached.
 
 | # | What to measure | Why it matters |
 |---|---|---|
-| M9 | Font legibility on the actual panel | `ui.c`'s 5x7 font is hand-authored for this project (not transcribed from an external font file); it has never been rendered or photographed. Structurally correct (right glyph count/size), but on-glass legibility is completely unverified. |
+| M9 | Noto Sans / Noto Sans CJK SC legibility on the actual panel, at 12 px and 16 px | F6.1 replaced the earlier hand-authored 5x7 font with real pre-rasterised Noto Sans + Noto Sans CJK SC glyphs (`tools/mkassets.py`) at both sizes, packed into a 597,128-byte (583 KiB) `assets.bin` — comfortably under the 1 MiB `assets` partition (`partitions.csv`) — and already rendered to PNG on the host (`make png`) for eyeballing, but never seen on the actual e-paper panel. `DEVICE_PLAN.md` §10 flags 12 px CJK specifically as the assumption to check first ("Host-side PNG first, then M9 on glass; the fallback is 14 px for `normal`"). Separately, and not a panel-legibility question: `mkassets.py`'s own docstring notes its CJK glyph selection uses code-point order as a frequency stand-in (no offline GB2312 frequency table was available), so a few common hanzi are expected to render as tofu regardless of how legible the font itself is — don't conflate the two failure modes when reading the first photograph. |
 | M10 | SSD1680 `0x22` display-update-control-2 values (`0xF7` full, `0xFF` partial) | Carried forward from PROTOCOL.md §6 as "inferred, not verified from the datasheet PDF" — this firmware transcribes them unchanged and adds no independent verification. |
 | M11 | BUSY pin polarity (assumed active-high) | `ui.c`'s `disp_wait_busy()` assumes BUSY=1 means busy, a common but unconfirmed SSD1680 breakout convention for this exact panel. If wrong, every refresh will either return immediately (garbage on screen) or hit the 15s timeout and mark the display dead every boot. |
 | M12 | SSD1680 partial-refresh RAM continuity across a VCC_EN power cycle | `ui.c` deliberately keeps `PAGER_PIN_DISP_VCC_EN` enabled continuously after `ui_init()` rather than gating it off between every refresh (PROTOCOL.md §8.4's "~0 mA between refreshes" assumption), because power-cycling the panel would very likely wipe the controller's internal old/new RAM planes that partial refresh diffs against — this could not be confirmed against a datasheet. The real display-domain current is therefore higher than §8.4's "~0 mA" figure by an unquantified amount until this is measured. |
-| M13 | CardKB byte stream during real typing | Confirms `ui_poll_keys()`'s assumption (0x00=no key, printable ASCII, 0x08=backspace, 0x0D=enter, ignore >=0x80) against real hardware, and separately confirms PROTOCOL.md §9.4's own open assumption that the CardKB never emits multi-byte sequences. |
+| M13 | CardKB byte stream during real typing, including arrow keys and a held key | Confirms `input_decode_key()`'s table (F6.2, exhaustively host-tested over 0x00-0xFF in `firmware/host/test_input.c` but never against real hardware): `0x00`=no key, `0x20`-`0x7E`=printable, `0x08`=backspace, `0x09`=tab, `0x0D`=enter, `0x1B`=esc, and — the two `DEVICE_PLAN.md` §10 rows this line exists to settle — arrow codes `0xB4`/`0xB5`/`0xB6`/`0xB7`=left/up/down/right, and whether the CardKB holds the last key until read (the "key held until read" assumption that would enable key-to-wake; `input.h`'s `input_feed_key()` entry point for this is written but not yet called from anywhere, pending this measurement). Also separately confirms PROTOCOL.md §9.4's own open assumption that the CardKB never emits multi-byte sequences. |
 | M14 | Partial-refresh timing per the 20-partial/1-full cadence | Confirms the 20-partial cadence (see "Device behaviour contract" above) doesn't visibly ghost/degrade the panel before the scheduled full refresh, and feeds PROTOCOL.md §6.5's M7 (partial refresh must complete in <1.5s). |
 | M15 | `getVoltage()`/`AT+SQNVMON` reading vs. a multimeter across the actual battery | PROTOCOL.md §12 item 6: `net_get_battery_mv()` now publishes a real reading in `/status`'s `batt_mv`, inferred from Walter's public schematics to track `VBAT` rather than a fixed regulated rail, but never confirmed against real hardware. 5-minute check on first bring-up. |
+| M20 | Typing ~50 mixed characters on the CardKB, timed against a stopwatch | `DEVICE_PLAN.md` §10: is this acceptable to a non-developer? First bring-up check; if not, the Wi-Fi portal noted in §3.0 is the fallback. |
+
+## Measurement checklist: firmware timing and storage (all PENDING_HW)
+
+Same rule as above: no device has been attached. These three come from `DEVICE_PLAN.md` §10 rows
+that explicitly call for a device-side timing measurement (as opposed to the CPU-speed/host-only
+numbers already available, cited below for comparison).
+
+| # | What to measure | Why it matters |
+|---|---|---|
+| M21 | PBKDF2-HMAC-SHA256 timing on the actual ESP32-S3, 10 000 iterations (`lock.c`'s `lock_pbkdf2()`, via `mbedtls_pkcs5_pbkdf2_hmac_ext`) | `DEVICE_PLAN.md` §10 estimates ≈ 50-100 ms on the S3. The only number measured so far is **20.5 ms for 10 000 iterations on the host CPU** (F6.5, `firmware/host/test_lock.c`'s `test_pbkdf2_round_trip_and_timing()`, printed as `PBKDF2 (10000 iterations, host CPU): %.1f ms`) — this is explicitly a host-CPU number, not the S3's (no hardware crypto acceleration assumed, different core), and must not be read as an on-device result. Adjust the iteration count to land near 100 ms once the real number is in, per §10's own instruction. |
+| M22 | NVS blob write time for a 320-byte blob (`msg.c`'s `msgq` namespace, full-fidelity reply/unread bodies moved off RTC in F6.4) | `DEVICE_PLAN.md` §10: must complete well under the 100 ms composer poll and never block the modem event task (it runs on the main task either way, so a slow write is a composer-lag bug, not a crash). No host-side substitute exists — NVS write timing is real-flash-dependent. |
+| M23 | `esp_partition_mmap()` boot-time cost for the `assets` partition (`gfx.c`'s `gfx_init()`) | Static facts are already known and require no hardware: the partition is 1 MiB (`partitions.csv`, `0x100000`) and the real payload is 597,128 bytes (583 KiB, F6.1's `assets.bin`), so there is no size-fit risk. `gfx.c`'s own comment claims the mmap "draws no additional current and reads nothing until a glyph is blitted" — that is a design argument, not a measurement. What is still unmeasured: the actual wall-clock cost of the `esp_partition_mmap()` call itself at boot, and whether mapping ~583 KiB of flash consumes MMU page-table capacity the app's own IROM/DROM mappings need (two 2 MiB OTA slots already share that budget). |
 
 ## Build
 
