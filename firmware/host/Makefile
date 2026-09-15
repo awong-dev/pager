@@ -15,7 +15,15 @@
 # resort for a system install with a discoverable default library path
 # (e.g. `apt install libmbedtls-dev` on Linux CI).
 #
-# `make test` builds and runs every test binary; `make` alone just builds.
+# F6.1 (render_png) similarly links zlib for its PNG IDAT chunk (a PNG
+# IDAT payload *is* a zlib stream, RFC 2083 §9.3, so this is the one
+# dependency needed, not a general-purpose PNG library) — same
+# pkg-config-then-bare-flag pattern, minus the brew fallback since zlib
+# ships with the OS (Xcode CLT / glibc-based distros) rather than being a
+# keg-only formula.
+#
+# `make test` builds and runs every test binary; `make png` builds and runs
+# render_png (task F6.1's host PNG test); `make` alone just builds the tests.
 
 CC ?= cc
 CFLAGS ?= -std=c11 -Wall -Wextra -Werror -O1 -g
@@ -33,13 +41,24 @@ ifeq ($(strip $(MBEDTLS_LIBS)),)
   endif
 endif
 
+ZLIB_CFLAGS := $(shell pkg-config --cflags zlib 2>/dev/null)
+ZLIB_LIBS := $(shell pkg-config --libs zlib 2>/dev/null)
+ifeq ($(strip $(ZLIB_LIBS)),)
+  ZLIB_LIBS := -lz
+endif
+
 MAIN_SRC := ../main
 BUILD := build
 
 TESTS := test_cbor test_auth test_setup
 TEST_BINS := $(TESTS:%=$(BUILD)/%)
 
-.PHONY: all test clean
+# ASSETS: tools/mkassets.py's default output location (docs/DEVICE_TASKS.md
+# F6.1's Verify: `python tools/mkassets.py --lang sc -o build/assets.bin`,
+# run from the repo root), resolved relative to this directory.
+ASSETS ?= ../../build/assets.bin
+
+.PHONY: all test png clean
 all: $(TEST_BINS)
 
 test: $(TEST_BINS)
@@ -86,6 +105,21 @@ $(BUILD)/test_setup.o: test_setup.c $(MAIN_SRC)/setup.h $(MAIN_SRC)/cbor.h | $(B
 
 $(BUILD)/test_setup: $(BUILD)/setup.o $(BUILD)/cbor.o $(BUILD)/test_setup.o
 	$(CC) $(CFLAGS) -o $@ $(BUILD)/setup.o $(BUILD)/cbor.o $(BUILD)/test_setup.o $(MBEDTLS_LIBS)
+
+# render_png: gfx.c (the exact framebuffer/text/glyph module that ships
+# on-device, compiled for the host per its own #ifdef ESP_PLATFORM split)
+# + render_png.c, linked against zlib for the PNG IDAT chunk.
+$(BUILD)/gfx.o: $(MAIN_SRC)/gfx.c $(MAIN_SRC)/gfx.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $(MAIN_SRC)/gfx.c
+
+$(BUILD)/render_png.o: render_png.c $(MAIN_SRC)/gfx.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) $(ZLIB_CFLAGS) -c -o $@ render_png.c
+
+$(BUILD)/render_png: $(BUILD)/gfx.o $(BUILD)/render_png.o
+	$(CC) $(CFLAGS) -o $@ $(BUILD)/gfx.o $(BUILD)/render_png.o $(ZLIB_LIBS)
+
+png: $(BUILD)/render_png
+	./$(BUILD)/render_png $(ASSETS)
 
 clean:
 	rm -rf $(BUILD)

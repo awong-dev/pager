@@ -1,20 +1,29 @@
-/* ui.h — custom SSD1680 e-paper driver, CardKB keyboard, reply composer.
+/* ui.h — CardKB keyboard input and the thread-view/composer screens.
  *
- * Authority: docs/PROTOCOL.md §6 (SSD1680 command sequence, refresh cadence),
- * §9.5 (frame buffer sizing), §9.4 (composer 160-byte limit, ASCII-only
- * CardKB assumption). firmware/README.md (20-partial-refresh cadence).
+ * docs/DEVICE_TASKS.md F6.1 split this file: the SSD1680 transport moved to
+ * disp.c/disp.h (BUSY handling, partial/full refresh, the 20-partial
+ * cadence) and the framebuffer/text/glyph primitives moved to gfx.c/gfx.h
+ * (Noto-derived fonts from the mmap'd `assets` partition, replacing the
+ * retired hand-drawn 5x7 font). This header's public API is unchanged by
+ * that split — modes.c, the only caller, needed no changes.
+ *
+ * Authority: docs/PROTOCOL.md §9.5 (frame buffer sizing — now disp.h/gfx.h's
+ * concern), §9.4 (composer limit; docs/DEVICE_PLAN.md §5.2 withdraws the
+ * old "reply body is ASCII" assumption in favor of UTF-8, 160 code
+ * points/320 bytes). firmware/README.md (20-partial-refresh cadence, now
+ * disp.c's).
  *
  * No third-party display component: firmware-architect rejected
  * cleishm/idfxx_epaper_ssd1680 (idf: '>=5.5' in its manifest vs. this
- * project's release-v5.2 toolchain). This is a from-scratch driver against
- * the SSD1680 command set.
+ * project's release-v5.2 toolchain). disp.c is a from-scratch driver
+ * against the SSD1680 command set.
  *
- * Every timing/current/visual claim in this module is PENDING_HW — no
- * device is attached to the session that wrote it. In particular the font
- * bitmap below is hand-authored for this project (not transcribed from any
- * external font file, to avoid a licensing/dependency question), and its
- * on-glass legibility is UNVERIFIED: there is no way to render or
- * photograph the framebuffer in this environment.
+ * Every timing/current/visual claim in this module (and in disp.c/gfx.c)
+ * is PENDING_HW — no device is attached to the session that wrote it, and
+ * on-glass legibility of the Noto-derived fonts is UNVERIFIED: there is no
+ * way to render or photograph the framebuffer in this environment (the
+ * host-side PNG render in firmware/host/render_png.c is the closest
+ * approximation available pre-hardware, per docs/DEVICE_PLAN.md §5.2).
  */
 #ifndef UI_H
 #define UI_H
