@@ -17,9 +17,9 @@ One line per task: status (done / built-unverified / blocked), commit hash, and 
 | F3.4 | done | 4b63d4f | net.cpp reads ident_get_*() for credentials; CA-to-slot-12 write now skipped when ca_hash unchanged; net_tls_profile_bootstrap() (profile 3, no cert validation); net_get_rssi/net_publish_raw added. **UNVERIFIED settled:** DEVICE_PLAN.md §5.4's "getRSSI() vs getSignalQuality()" resolved to `WalterModem::getRSSI()` (AT+CSQ, WalterModem.cpp:4478) — getSignalQuality() returns RSRP/RSRQ, a different quantity; raw value 99 ("not known") guarded to return false. **UNVERIFIED settled:** publish binary-safety confirmed — WalterModem::mqttPublish() (WalterMQTT.cpp:97) sends payload as raw bytes via uart_write_bytes, no JSON-string fallback needed; net_publish_raw() implemented directly. idf.py build green. |
 | T1.5 | done, with a Blocked item below | 16379f5 | pager_client.py signs/verifies both encodings, 32-wide down window; e2e_v2.py provisions deviceSecrets rows directly (test-harness plumbing, S2.2 not landed yet). Also fixed (flagged, out-of-scope but real bug): ingest.py's `_send_system_reply` was publishing unsigned /down outside S1.4's `publish_down` choke point — now routed through it. `--wire json` e2e: ALL PASSED (9 scenarios). `--wire cbor` e2e: **fails end-to-end**, see Blocked section. Default wire for pager_client.py set to `"json"` (DEVICE_PLAN.md §2.4 wins over DEVICE_TASKS.md's stated "default cbor" per the docs' own precedence rule). |
 
-## Blocked
+## Blocked (resolved items kept for history — see "RESOLVED" markers)
 
-- **CBOR wire mode cannot round-trip through the real EMQX broker.** `tools/emqx_setup.py`'s rule
+- **RESOLVED by commit `40532fe` (server-architect escalation).** CBOR wire mode cannot round-trip through the real EMQX broker. `tools/emqx_setup.py`'s rule
   SQL (`upsert_action` `"body": "${.}"` at line 134, `upsert_rule` `sql = "SELECT topic, payload,
   qos, clientid FROM ..."` at line 170) makes EMQX serialize the whole rule-engine event —
   including the raw MQTT `payload` — as one JSON string for the webhook POST. EMQX's JSON encoder
@@ -34,14 +34,32 @@ One line per task: status (done / built-unverified / blocked), commit hash, and 
   (`tools/emqx_setup.py` is already in that task's Files list) or a small new task, since neither
   currently owns `relay/app/broker.py`'s webhook-parsing side of the fix. Blocks the plan's
   Definition-of-done requirement that `e2e_v2.py` run green "in both wire encodings."
-  **UPDATE (S4.5):** this is broader than first thought. `relay/app/broker.py`'s `publish()`
-  (line ~99) does `"payload": payload.decode("utf-8")` unconditionally — it chokes on **any**
-  binary payload, not just CBOR-wire devices. This makes `devsetup.issue()` (S2b.1) 500 on
-  *every* device creation once its real MQTT publish of the AES-GCM-encrypted bootstrap bundle is
-  wired in (as S2.2 does), regardless of `--wire json`/`cbor`. Two independent agents (T1.5, S4.5)
-  hit variants of this same root cause. **Escalating to server-architect** for a proper fix to
-  `relay/app/broker.py`'s publish path (outbound) and `parse_webhook` (inbound) — likely
-  base64/hex-encoding both directions consistently with EMQX's REST API.
+  **UPDATE (S4.5):** broader than first thought — `relay/app/broker.py`'s `publish()` choked on
+  any binary payload, not just CBOR. **Fix (`40532fe`):** EMQX's REST publish API takes
+  `payload_encoding: "base64"`; the webhook rule SQL now adds `base64_encode(payload) as
+  payload_b64` alongside the existing plain `payload` column (kept for operator readability /
+  back-compat). Confirmed empirically against a live EMQX 5.8.0 (sniffed the actual webhook body).
+  20 new tests (`test_broker.py`) pin the exact failing byte from the original traceback.
+  `tools/e2e_v2.py address_book` now passes in **both** `--wire json` and `--wire cbor` against
+  the real stack. `docs/SERVER_PLAN.md` §9.4's hand-configured production rule SQL was also fixed
+  (it still said plain `payload`, which would have silently broken CBOR devices in prod).
+
+- **NEW: `tools/e2e_v2.py` is stale against S2.2's response shape and cannot create a working
+  device on a clean checkout.** `create_device_with_secret` reads `info["mqttPassword"]`/
+  `["mqttUsername"]`, but `POST /api/admin/devices` now returns `{device, setupCode, expiresAt,
+  brokerPush, manualAcl}` (S2.2) — no plaintext password at all (S2.2 provisions a real random
+  EMQX credential the harness never sees). Every e2e scenario that creates a device is affected.
+  **Decision needed:** this is really "S2b.5's job description" (its own text says "admin creates
+  a device → code → `--bootstrap` device comes online") but nothing currently updates
+  `create_device_with_secret`/`scenario_bootstrap` for devices created outside the bootstrap flow
+  (i.e. every *other* scenario, which still needs a fast non-bootstrap way to get a working
+  device+key for testing). Needs either a test-only admin endpoint/flag to fetch a device's
+  plaintext secret, or every scenario rewritten to go through full bootstrap.
+
+- **NEW, minor: cross-scenario leak in the full e2e run.** `scenario_fanout` arms
+  `POST /_fail_next {"times": 10}` and only consumes ~6; the leftover armed failures spill into
+  `address_book`'s SMS-mock step when scenarios run in the default full order. Pre-existing,
+  wire-mode-independent. One-line fix: drain/reset the mock at the end of `scenario_fanout`.
 
 | S2.1 | done | f6cf19b | emqx_admin.py (ensure_device/ensure_boot_user/delete_user), BROKER_MANAGES_AUTH=0 no-op mode, emqx.conf (built_in_database authn/authz, deny-by-default), tools/emqx_setup.py provisions the relay-1 credential. 10/10 tests pass. Hand-verified against a live container: unknown user refused (CONNACK reason 5); pgr-0001 cannot publish to pgr-0002's topic (broker log: not_authorized, subscriber never received it) but can publish to its own. Noted PROTOCOL.md §2's "three ACL rules" is imprecise — actual mirror-image enforcement needs 4 rules (3 publish + 1 subscribe) per device; implemented the working version, flagged the doc wording. |
 | S4.1 | done | 7de2767 | contacts.py store, ingest contact_req handling, admin approve/reject/backends endpoints, firestore.rules. Dedup, 5-pending cap, book-version bump all in place. push_book(device_id) left as a logging no-op stub in contacts.py per orchestrator note — S4.2 replaces its body. **Flagged, not resolved:** PROTOCOL.md §3.1 says `ph` covers "phone or alias reference" but §10's keymap has no separate alias wire key — implemented `ph` starting with `+` as E.164, else treated as alias. `devices.bookVersion`/`backends.adminVerified` written as raw undeclared fields (devices.py/backends.py models out of scope) — will silently round-trip via extra="ignore" until a task with those files in scope declares them properly. |
