@@ -28,6 +28,8 @@ and Twilio / Google Workspace accounts if you want the SMS and Google Chat backe
 |---|---|
 | `docs/PROTOCOL.md` | Authoritative wire contract — topics, message schema, ack state machine, location, power/latency budget. Code conforms to this, not the reverse. |
 | `docs/SERVER_PLAN.md` | Design reference for the server stack: user registry, allow-lists, location, multi-backend delivery, the web app, Firestore schema and security rules, cost analysis, and the Terraform layout. |
+| `docs/DEVICE_PLAN.md` | Design plan (not yet implemented) for SIM-only device provisioning via a typed setup code, per-device HMAC authentication of every CBOR envelope, the server-approved on-device address book, the passcode lock, and the multi-screen e-paper UI. |
+| `docs/DEVICE_TASKS.md` | The execution plan for `DEVICE_PLAN.md`: ordered, self-contained tasks per track (docs, server, tools, web, firmware) with files, steps and verification commands, written for an implementing agent. |
 | `relay/` | FastAPI relay: webhook ingest, routing, delivery backends, admin and conversation APIs, retention. See `relay/README.md` to run it locally. |
 | `web/` | Next.js + MUI web app on Firebase (Auth, Firestore listeners, FCM). See `web/README.md`. |
 | `firmware/` | ESP-IDF firmware for the Walter (ESP32-S3 + Sequans GM02SP) device. See `firmware/README.md` for hardware, build instructions, the measurement checklist, and known residual risks. |
