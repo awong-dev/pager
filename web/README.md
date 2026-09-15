@@ -94,12 +94,6 @@ config's `rewrites()` only matters to `next dev`.
   the alias, not the uid.
   The fix is either to loosen `users/{uid}`'s read rule to `registered()`,
   or to add a `GET /api/me/contacts`-shaped endpoint.
-- **Device revoke has no relay route yet** (`relay/app/store/devices.py` has
-  `revoke_device()`, but `relay/app/routers/admin.py` never mounts it --
-  only create/list/delete/rotate-credentials exist). `/admin/devices`'
-  Revoke button calls the endpoint this feature needs
-  (`POST /api/admin/devices/{id}/revoke`) and shows the resulting 404
-  inline. Adding that route closes it.
 - **The notifications "test" button is local-only.** There is no relay
   endpoint that sends a real push on demand, so it only proves permission +
   display work in this browser, not the full FCM round trip.
@@ -127,10 +121,31 @@ incognito window) to act as two different people at once where noted.
 4. **Allow-list**: `/admin/allowlist` -> check Message + Locate for
    `mom -> student` and `student -> mom` -> Save. Reload the page and
    confirm the checkboxes persisted.
-5. **Create a device**: `/admin/devices` -> Create device, owner = student.
-   Confirm the MQTT username/password dialog appears, and that closing it
-   makes the password unrecoverable from the UI (it's gone on reopen/reload
-   -- only Rotate can issue a new one).
+5. **Create a device**: `/admin/devices` -> Add device, owner = student.
+   Confirm the setup-code panel appears with the big code, a working Copy
+   button, a QR code rendered below it, the two-step "on the pager"
+   instructions, and a live "expires in mm:ss" countdown; confirm the code
+   is gone on reopen/reload (only Rotate can issue a new one). If the relay
+   logs `brokerPush: "manual"` for this device (no EMQX admin API in this
+   compose stack), confirm the panel instead shows the manual ACL lines to
+   enter by hand.
+5a. **Provisioning flips to online** (needs `docs/DEVICE_TASKS.md` T2b.4's
+    `tools/pager_client.py --bootstrap` and S2b.3's `pager/boot/+/up`
+    webhook wiring -- skip this step if those have not landed yet): with the
+    setup-code panel still open, run `tools/pager_client.py --bootstrap
+    "<the code shown>"` (or `tools/e2e_v2.py`'s `setup_code` scenario) to
+    simulate the device's bootstrap fetch and first signed `/status`.
+    Expect the panel's banner to flip from "Waiting for the device to
+    connect..." to "`<deviceId>` is online" with no page reload, and the
+    table's Provisioned column to read `online`.
+5b. **Rotate and revoke, on a second throwaway device** (rotating or
+    revoking the `student` device here would break its connection for steps
+    6-9 below): Add a second device, e.g. owner = mom, id `scratch-1`. Click
+    Rotate -> confirm the same setup-code panel reappears with a fresh
+    code/QR/countdown and the table's Provisioned column reverts to
+    `issued`. Click Revoke -> confirm the browser confirmation prompt, then
+    confirm the table's Revoked column flips to `yes` with no page reload;
+    delete `scratch-1` afterwards to keep the table clean for later steps.
 6. **Sign in as a member and send a message**: sign in as `mom` (a second
    browser profile), `/chat` -> "Open conversation by alias" -> `student` ->
    send a message. Expect: the message appears immediately (own
