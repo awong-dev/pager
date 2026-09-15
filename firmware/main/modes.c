@@ -16,6 +16,13 @@
 #include "pins.h"
 #include "ui.h"
 
+// F3.6 (docs/PROTOCOL.md §14, §10 keymap; docs/DEVICE_PLAN.md §2.5/§2.7):
+// signing, the CBOR /status codec, and the auth_rtc_t sub-struct embedded
+// below.
+#include "auth.h"
+#include "cbor.h"
+#include "ident.h"
+
 #include <assert.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -81,7 +88,9 @@ static const uint32_t k_backoff_s[] = { 5, 15, 60, 300 };
 // convention: "a version tag and a CRC"). Bump it on any layout change: a
 // stale-but-CRC-valid struct read across an incompatible change would
 // otherwise decode as garbage.
-#define PAGER_RTC_MAGIC 0x50475232u // "PGR" + layout version 2
+// F3.6: bumped 2 -> 3 for the new `auth` (auth_rtc_t, +12 B) field below,
+// docs/DEVICE_PLAN.md §2.7's "RTC changes".
+#define PAGER_RTC_MAGIC 0x50475233u // "PGR" + layout version 3
 
 typedef enum {
     PAGER_MODE_SLEEP = 0,
@@ -129,8 +138,20 @@ typedef struct {
 
     uint32_t attach_fail_cycles; // F1
     uint32_t wake_cycle_count;   // drives the "every 60 wakes" F4 check
+
+    auth_rtc_t auth; // PROTOCOL.md §14.2/§9.3, DEVICE_PLAN.md §2.5/§2.7 —
+                      // owned in layout by modes.c, in behaviour by auth.c
+                      // via the pointer msg_bind_auth() hands msg.c and the
+                      // direct &g_rtc.auth uses in this file's own /status
+                      // publish path below.
 } pager_rtc_t;
 
+// F3.6: sizeof(pager_rtc_t) is 944 bytes as of this change (see
+// firmware/build/school_pager.map's `.rtc.data.0` entry for
+// esp-idf/main/libmain.a(modes.c.obj), 0x3b0, after
+// `idf.py set-target esp32s3 && idf.py build`, PROTOCOL.md §9.1's own
+// methodology) — up from 932 before auth_rtc_t (+12 B: up_lo/down_n/
+// down_bits, 4 B each), still 240 B under the 1184-byte budget below.
 _Static_assert(sizeof(pager_rtc_t) <= 1184,
                "pager_rtc_t exceeds the measured 1184-byte RTC_SLOW budget "
                "left after walter-modem's own ~7003 bytes (PROTOCOL.md §9.1)");
@@ -199,65 +220,175 @@ static int64_t approx_epoch(void)
 }
 
 // ---------------------------------------------------------------------------
-// Status (/status) publishing - PROTOCOL.md §5.
+// F3.6 (docs/PROTOCOL.md §14/§2.7): NVS persistence for the /up,/status,/loc
+// counter's epoch half. Called only when auth_next_up_n() reports `up_lo`
+// just wrapped (~once per 1M signed publishes) — never on the hot path.
 // ---------------------------------------------------------------------------
+
+static void on_auth_epoch_wrap(void)
+{
+    // Power effect: one NVS (flash) write. No modem or sleep-state effect.
+    // ident_t has no per-field setter, so this snapshots every getter into a
+    // local copy, bumps n_epoch, and writes the whole struct back via
+    // ident_store() (same contract setup.c's own first-time write uses).
+    ident_t snap;
+    memset(&snap, 0, sizeof(snap));
+    strncpy(snap.dev_id, ident_get_dev_id(), sizeof(snap.dev_id) - 1);
+    strncpy(snap.mqtt_pw, ident_get_mqtt_pw(), sizeof(snap.mqtt_pw) - 1);
+    memcpy(snap.kdev, ident_get_kdev(), sizeof(snap.kdev));
+    strncpy(snap.host, ident_get_host(), sizeof(snap.host) - 1);
+    snap.port = ident_get_port();
+    strncpy(snap.ca, ident_get_ca(), sizeof(snap.ca) - 1);
+    snap.ca_len = ident_get_ca_len();
+    strncpy(snap.apn, ident_get_apn(), sizeof(snap.apn) - 1);
+    snap.flags = ident_get_flags();
+    strncpy(snap.label, ident_get_label(), sizeof(snap.label) - 1);
+    memcpy(snap.ca_hash, ident_get_ca_hash(), sizeof(snap.ca_hash));
+    snap.n_epoch = (uint16_t) (ident_get_n_epoch() + 1);
+    snap.claimed = ident_get_claimed();
+
+    if (!ident_store(&snap)) {
+        ESP_LOGI(TAG, "failed to persist n_epoch=%u after up_lo wrap (§2.5) - "
+                      "next boot's replay window may see a gap",
+                 (unsigned) snap.n_epoch);
+    } else {
+        ESP_LOGI(TAG, "n_epoch bumped to %u after up_lo wrap (§14.2)", (unsigned) snap.n_epoch);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Status (/status) publishing - PROTOCOL.md §5, §14.
+// ---------------------------------------------------------------------------
+
+// PROTOCOL.md §10 envelope keymap — the subset this file writes for /status.
+#define STK_V 0
+#define STK_TS 2
+#define STK_N 12
+#define STK_BV 14
+#define STK_STATE 21
+#define STK_MODE 22
+#define STK_BATT_MV 23
+#define STK_RSSI 24
+#define STK_SESSION 25
+#define STK_FW 26
 
 // PROTOCOL.md §5.1: batt_mv must be in [2000, 4500] when state:"online".
 #define PAGER_BATT_MV_MIN 2000
 #define PAGER_BATT_MV_MAX 4500
 
-// Last known-good battery reading, so a single failed AT command doesn't
-// block a /status publish. Plain static (not RTC_DATA_ATTR): this design
-// never deep sleeps, only light sleeps, and light sleep retains ordinary
-// RAM (same reasoning net.cpp's own module-static state uses). Resets to
-// the fallback below only on a real reboot.
-static int s_last_batt_mv = 0; // 0 = no good reading yet this boot
+#define PAGER_RSSI_UNSET (-1000) // outside net_get_rssi()'s valid [-113,-51] range
 
-static bool build_status_json(char *out, size_t out_size, const char *state)
+// Last known-good battery/RSSI readings, so a single failed AT command
+// doesn't block a /status publish. Plain static (not RTC_DATA_ATTR): this
+// design never deep sleeps, only light sleeps, and light sleep retains
+// ordinary RAM (same reasoning net.cpp's own module-static state uses).
+// Reset to the fallback below only on a real reboot.
+static int s_last_batt_mv = 0;              // 0 = no good reading yet this boot
+static int s_last_rssi_dbm = PAGER_RSSI_UNSET; // unset = no good reading yet this boot
+
+// `v` MUST be non-negative for cbor_w_uint(); dBm readings are not, so
+// /status's `rssi` field needs the signed form.
+static bool cbor_w_int(cbor_w_t *w, uint32_t key, int64_t v)
+{
+    return (v < 0) ? cbor_w_nint(w, key, v) : cbor_w_uint(w, key, (uint64_t) v);
+}
+
+// F3.6: builds the CBOR /status envelope (docs/PROTOCOL.md §2.4/§10), adding
+// `rssi` (now published every time, §5.1) and `bv` (book version; always 0
+// until F7.1 tracks the address book), then signs it with auth_sign() when
+// ident's IDENT_FLAG_REQ_SIG is set. No modem or sleep-state effect of its
+// own beyond the net_get_battery_mv()/net_get_rssi() AT round trips already
+// documented at their call sites.
+static bool build_status_cbor(uint8_t *out, size_t cap, size_t *out_len, const char *state)
 {
     int64_t ts = approx_epoch();
     const char *mode_str = (g_rtc.mode == (uint8_t) PAGER_MODE_ACTIVE) ? "active" : "sleep";
-    // batt_mv: no ADC pin is defined in pins.h for battery sense, but that
-    // is no longer needed - PROTOCOL.md §12 item 6 (resolved) has net.cpp
-    // reading the modem's own AT+SQNVMON supply-rail voltage instead, which
-    // is believed (not yet hardware-confirmed, see §12's unverified-
-    // assumptions table) to track the battery directly. Fall back to the
-    // last known-good reading on a failed/out-of-range AT round trip, and
-    // only to a fixed placeholder if no good reading has ever been taken
-    // this boot - either way this must never block or fail the publish.
+
+    // batt_mv: see the F1-era comment this replaces — net.cpp's AT+SQNVMON
+    // read, falling back to the last known-good value and finally to a
+    // fixed placeholder, never blocking or failing the publish.
     int batt_mv;
     if (!net_get_battery_mv(&batt_mv) || batt_mv < PAGER_BATT_MV_MIN ||
         batt_mv > PAGER_BATT_MV_MAX) {
-        if (s_last_batt_mv != 0) {
-            batt_mv = s_last_batt_mv;
-        } else {
-            // Last-resort fallback only: a fixed mid-range LiFePO4 value,
-            // not a measurement. Only hit before the first successful
-            // reading this boot (e.g. modem not yet responsive).
-            batt_mv = 3300;
-        }
+        batt_mv = (s_last_batt_mv != 0) ? s_last_batt_mv : 3300;
     } else {
         s_last_batt_mv = batt_mv;
     }
-    int n = snprintf(out, out_size,
-                      "{\"v\":1,\"state\":\"%s\",\"mode\":\"%s\",\"batt_mv\":%d,"
-                      "\"session\":\"%s\",\"ts\":%lld,\"fw\":\"%s\"}",
-                      state, mode_str, batt_mv, g_rtc.session_id, (long long) ts,
-                      PAGER_FW_VERSION);
-    return n > 0 && (size_t) n < out_size;
+
+    // rssi: same last-known-good pattern as batt_mv. net_get_rssi() already
+    // validates the vendor's documented [-113,-51] dBm range (net.cpp), so
+    // -113 (weakest valid reading) is used only before the first successful
+    // reading this boot - a placeholder outside the documented range would
+    // misrepresent a real reading rather than read as "weak signal".
+    int rssi_dbm;
+    if (!net_get_rssi(&rssi_dbm)) {
+        rssi_dbm = (s_last_rssi_dbm != PAGER_RSSI_UNSET) ? s_last_rssi_dbm : -113;
+    } else {
+        s_last_rssi_dbm = rssi_dbm;
+    }
+
+    bool signed_env = (ident_get_flags() & IDENT_FLAG_REQ_SIG) != 0;
+    uint32_t nfields = 9; // v,state,mode,batt_mv,rssi,session,ts,fw,bv
+    if (signed_env) {
+        nfields += 2; // n (written below) + sig (appended by auth_sign())
+    }
+
+    cbor_w_t w;
+    cbor_w_init(&w, out, cap);
+    cbor_w_map(&w, nfields);
+    cbor_w_uint(&w, STK_V, 1);
+    cbor_w_tstr(&w, STK_STATE, state, strlen(state));
+    cbor_w_tstr(&w, STK_MODE, mode_str, strlen(mode_str));
+    cbor_w_uint(&w, STK_BATT_MV, (uint64_t) batt_mv);
+    cbor_w_int(&w, STK_RSSI, rssi_dbm);
+    cbor_w_tstr(&w, STK_SESSION, g_rtc.session_id, strlen(g_rtc.session_id));
+    cbor_w_uint(&w, STK_TS, (uint64_t) ts);
+    cbor_w_tstr(&w, STK_FW, PAGER_FW_VERSION, strlen(PAGER_FW_VERSION));
+    cbor_w_uint(&w, STK_BV, 0); // book version: F7.1 will track the real value
+
+    if (!signed_env) {
+        *out_len = w.len;
+        return !w.err;
+    }
+
+    // §14.2: n for /up,/status,/loc; RTC-resident in g_rtc.auth (this file
+    // owns that storage directly, unlike msg.c which goes through the
+    // msg_bind_auth() pointer).
+    bool wrapped = false;
+    rtc_lock();
+    uint32_t n = auth_next_up_n(&g_rtc.auth, ident_get_n_epoch(), &wrapped);
+    rtc_save();
+    rtc_unlock();
+    cbor_w_uint(&w, STK_N, n);
+    if (w.err) {
+        return false;
+    }
+    if (wrapped) {
+        on_auth_epoch_wrap();
+    }
+
+    char topic[48];
+    snprintf(topic, sizeof(topic), "pager/%s/status", net_get_device_id());
+    size_t len = w.len;
+    if (!auth_sign(topic, out, &len, cap)) {
+        return false;
+    }
+    *out_len = len;
+    return true;
 }
 
 static void publish_status_online(void)
 {
-    char json[192];
-    if (!build_status_json(json, sizeof(json), "online")) {
-        ESP_LOGI(TAG, "status JSON build failed (buffer too small)");
+    uint8_t buf[256];
+    size_t len = 0;
+    if (!build_status_cbor(buf, sizeof(buf), &len, "online")) {
+        ESP_LOGI(TAG, "status CBOR build failed (buffer too small or auth_sign failed)");
         return;
     }
     char topic[48];
     snprintf(topic, sizeof(topic), "pager/%s/status", net_get_device_id());
 
-    if (net_publish(topic, json, (uint16_t) strlen(json), 1)) {
+    if (net_publish_raw(topic, buf, (uint16_t) len, 1)) {
         rtc_lock();
         g_rtc.status_pub_count++;
         g_rtc.last_status_epoch = approx_epoch();
@@ -358,12 +489,8 @@ bool modes_is_active(void)
 // Incoming message hook — wired to msg.c's ingest/dedup/ack state machine.
 // ---------------------------------------------------------------------------
 
-static void on_incoming_message(const char *topic, const char *body, uint16_t len)
+static void handle_ingest_result(msg_ingest_t r, const msg_t *out, uint16_t len)
 {
-    (void) topic;
-    const msg_t *out = NULL;
-    msg_ingest_t r = msg_ingest_down(body, len, &out);
-
     switch (r) {
     case MSG_INGEST_NEW: {
         // Copy the id BEFORE rendering. `out` points into
@@ -408,11 +535,45 @@ static void on_incoming_message(const char *topic, const char *body, uint16_t le
 
     case MSG_INGEST_MALFORMED:
     default:
-        // §3.4: log, count (msg.c already counted it), do not ack, do not
-        // render, do not reboot.
+        // §3.4: log, count (already counted by whichever of msg_ingest_down()/
+        // msg_ingest_down_cbor()/msg_count_malformed() rejected it), do not
+        // ack, do not render, do not reboot.
         ESP_LOGD(TAG, "malformed down message dropped (%u bytes)", (unsigned) len);
         break;
     }
+}
+
+// F3.6 (docs/PROTOCOL.md §14.3/§14.4): verifies before parsing when ident's
+// IDENT_FLAG_REQ_SIG is set, then decodes CBOR; unsigned (req_sig==0)
+// devices keep the JSON/cJSON path until F6.4 removes it. No modem or
+// sleep-state effect: pure computation on the already-received buffer.
+static void on_incoming_message(const char *topic, const char *body, uint16_t len)
+{
+    bool req_sig = (ident_get_flags() & IDENT_FLAG_REQ_SIG) != 0;
+    const msg_t *out = NULL;
+    msg_ingest_t r;
+
+    if (!req_sig) {
+        r = msg_ingest_down(body, len, &out);
+        handle_ingest_result(r, out, len);
+        return;
+    }
+
+    // `body` points at net.cpp's own static RX buffer (s_mqtt_rx_buf):
+    // mutable memory exposed through this callback's const-qualified
+    // parameter. Nothing else touches it while this callback runs
+    // (net.cpp's s_handler_busy guard covers exactly this window), so
+    // trimming the trailing `sig` suffix in place here is safe.
+    size_t vlen = len;
+    if (!auth_verify(topic, (uint8_t *) (uintptr_t) body, &vlen)) {
+        msg_count_malformed();
+        ESP_LOGD(TAG,
+                 "signature verify failed on %s (%u bytes) - dropped, not acked (§3.4/§14.3)",
+                 topic, (unsigned) len);
+        return;
+    }
+    r = msg_ingest_down_cbor((const uint8_t *) body, (uint16_t) vlen, &out);
+    handle_ingest_result(r, out, (uint16_t) vlen);
 }
 
 // ---------------------------------------------------------------------------
@@ -643,6 +804,14 @@ void modes_boot(void)
 
     msg_bind_rtc(&g_rtc.msg, rtc_lock, rtc_unlock, rtc_save);
     msg_init(was_valid);
+
+    // F3.6 (docs/PROTOCOL.md §14, §2.7): K_dev copy + the auth_rtc_t binding
+    // msg.c's publish/ingest paths use. No modem or sleep-state effect:
+    // ident_get_kdev() is a read of the already-loaded ident_t (main.c calls
+    // ident_load() before modes_boot()), auth_init() only copies into its
+    // own static storage.
+    auth_init(ident_get_kdev());
+    msg_bind_auth(&g_rtc.auth, on_auth_epoch_wrap);
 
     button_gpio_init();
 

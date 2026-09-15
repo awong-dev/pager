@@ -21,7 +21,29 @@
 #include "esp_rom_crc.h"
 #include "esp_timer.h"
 
+// F3.6 (docs/PROTOCOL.md §14, §10 keymap): signing/verification and the CBOR
+// codec every publish now goes through. ident.h is needed only for the
+// read-only IDENT_FLAG_REQ_SIG check and ident_get_n_epoch() — this file
+// still does no NVS I/O of its own (see msg_bind_auth()'s header comment for
+// where n_epoch persistence on wrap actually happens).
+#include "auth.h"
+#include "cbor.h"
+#include "ident.h"
+
 static const char *TAG = "msg";
+
+// PROTOCOL.md §10 envelope keymap — the subset this file writes/reads.
+// Key 13 (sig) is never written/read via cbor_w_*/cbor_r_* here: auth_sign()
+// appends it as ten raw bytes and auth_verify() strips those same ten bytes
+// before this file ever sees the buffer (docs/DEVICE_PLAN.md §2.4's
+// "no re-serialisation" rule).
+#define MK_V 0
+#define MK_ID 1
+#define MK_TS 2
+#define MK_FROM 3
+#define MK_BODY 4
+#define MK_ACK 5
+#define MK_N 12
 
 // ---------------------------------------------------------------------------
 // RTC wiring (msg.h: msg_bind_rtc()).
@@ -39,6 +61,24 @@ void msg_bind_rtc(msg_rtc_t *rtc, msg_rtc_lock_fn lock, msg_rtc_unlock_fn unlock
     s_lock = lock;
     s_unlock = unlock;
     s_save = save;
+}
+
+// F3.6: auth_rtc_t binding — see msg.h's msg_bind_auth() doc comment.
+static auth_rtc_t *s_auth_rtc = NULL;
+static msg_epoch_wrap_fn s_on_epoch_wrap = NULL;
+
+void msg_bind_auth(auth_rtc_t *rtc, msg_epoch_wrap_fn on_wrap)
+{
+    s_auth_rtc = rtc;
+    s_on_epoch_wrap = on_wrap;
+}
+
+void msg_count_malformed(void)
+{
+    s_lock();
+    s_rtc->malformed_drops++;
+    s_save();
+    s_unlock();
 }
 
 // ---------------------------------------------------------------------------
@@ -221,6 +261,82 @@ static bool body_rules_ok(const char *body, size_t body_len)
     return codepoints <= 160;
 }
 
+// F3.6: shared tail of both msg_ingest_down() (JSON) and
+// msg_ingest_down_cbor() — dedup (§4.1 rule 7), thread insert, RTC unread
+// mirror (§9.2/§9.3). Callers have already validated every field; `id_str`/
+// `from_str`/`body_str` need not be the caller's own storage (this function
+// makes its own bounded copies before returning).
+static msg_ingest_t ingest_common(const char *id_str, int64_t ts, const char *from_str,
+                                   const char *body_str, size_t body_len, const msg_t **out)
+{
+    uint32_t digest = id_digest(id_str);
+    char id_copy[MSG_ID_MAX];
+    strncpy(id_copy, id_str, MSG_ID_MAX - 1);
+    id_copy[MSG_ID_MAX - 1] = '\0';
+    strncpy(s_last_ingest_id, id_copy, MSG_ID_MAX - 1);
+    s_last_ingest_id[MSG_ID_MAX - 1] = '\0';
+    char from_copy[MSG_FROM_MAX];
+    strncpy(from_copy, from_str, MSG_FROM_MAX - 1);
+    from_copy[MSG_FROM_MAX - 1] = '\0';
+    char body_copy[MSG_RAM_BODY_MAX];
+    strncpy(body_copy, body_str, MSG_RAM_BODY_MAX - 1);
+    body_copy[MSG_RAM_BODY_MAX - 1] = '\0';
+
+    bool is_dup;
+    s_lock();
+    is_dup = seen_contains_locked(digest);
+    if (!is_dup) {
+        seen_add_locked(digest);
+    } else {
+        s_rtc->dedup_hits++;
+    }
+    s_save();
+    s_unlock();
+
+    if (is_dup) {
+        if (out) {
+            s_lock();
+            *out = thread_find_locked(id_copy, MSG_DIR_DOWN);
+            s_unlock();
+        }
+        return MSG_INGEST_DUPLICATE;
+    }
+
+    msg_t entry = { 0 };
+    entry.ts = ts;
+    strncpy(entry.id, id_copy, MSG_ID_MAX - 1);
+    strncpy(entry.from, from_copy, MSG_FROM_MAX - 1);
+    strncpy(entry.body, body_copy, MSG_RAM_BODY_MAX - 1);
+    entry.body_len = (uint16_t) body_len;
+    entry.dir = (uint8_t) MSG_DIR_DOWN;
+    entry.ack_state = MSG_ACK_UNSHOWN;
+    entry.flags = 0;
+    entry.in_use = true;
+
+    s_lock();
+    thread_insert_locked(&entry);
+    if (out) {
+        *out = &s_thread[0];
+    }
+
+    // Mirror as the newest unread entry (§9.2/§9.3), truncated to RTC
+    // fidelity (§9.4). The newest ingest is always "the newest unread
+    // entry" under this design's single-slot unread mirror.
+    msg_unread_t *u = &s_rtc->unread[0];
+    u->ts = ts;
+    strncpy(u->id, id_copy, MSG_ID_MAX - 1);
+    u->id[MSG_ID_MAX - 1] = '\0';
+    strncpy(u->from, from_copy, MSG_FROM_MAX - 1);
+    u->from[MSG_FROM_MAX - 1] = '\0';
+    bool truncated = utf8_truncate(body_copy, body_len, u->body, MSG_RTC_BODY_MAX, &u->body_len);
+    u->flags = truncated ? MSG_F_TRUNCATED : 0;
+    u->in_use = true;
+    s_save();
+    s_unlock();
+
+    return MSG_INGEST_NEW;
+}
+
 msg_ingest_t msg_ingest_down(const char *json, uint16_t len, const msg_t **out)
 {
     if (out) {
@@ -233,139 +349,244 @@ msg_ingest_t msg_ingest_down(const char *json, uint16_t len, const msg_t **out)
         if (root) {
             cJSON_Delete(root);
         }
-        goto malformed_no_json;
+        msg_count_malformed();
+        return MSG_INGEST_MALFORMED;
     }
 
-    {
-        cJSON *j_id = cJSON_GetObjectItemCaseSensitive(root, "id");
-        cJSON *j_ts = cJSON_GetObjectItemCaseSensitive(root, "ts");
-        cJSON *j_from = cJSON_GetObjectItemCaseSensitive(root, "from");
-        cJSON *j_body = cJSON_GetObjectItemCaseSensitive(root, "body");
-        cJSON *j_ack = cJSON_GetObjectItemCaseSensitive(root, "ack");
+    cJSON *j_id = cJSON_GetObjectItemCaseSensitive(root, "id");
+    cJSON *j_ts = cJSON_GetObjectItemCaseSensitive(root, "ts");
+    cJSON *j_from = cJSON_GetObjectItemCaseSensitive(root, "from");
+    cJSON *j_body = cJSON_GetObjectItemCaseSensitive(root, "body");
+    cJSON *j_ack = cJSON_GetObjectItemCaseSensitive(root, "ack");
 
-        if (!j_id || !cJSON_IsString(j_id) || !id_shape_ok(j_id->valuestring)) {
-            cJSON_Delete(root);
-            goto malformed;
-        }
-        if (!j_ts || !cJSON_IsNumber(j_ts)) {
-            cJSON_Delete(root);
-            goto malformed;
-        }
-        double ts_d = j_ts->valuedouble;
-        int64_t ts = (int64_t) ts_d;
-        if (!(ts == 0 || (ts >= 1000000000LL && ts <= 2000000000LL))) {
-            cJSON_Delete(root);
-            goto malformed;
-        }
-        if (!j_ack) {
-            cJSON_Delete(root);
-            goto malformed; // ack is required (even if null), §3.1
-        }
-        // Device only ever receives content messages on /down (acks are
-        // device->relay only, §3.2); a non-null ack here is malformed.
-        if (!cJSON_IsNull(j_ack)) {
-            cJSON_Delete(root);
-            goto malformed;
-        }
-        if (!j_from || !cJSON_IsString(j_from) || strlen(j_from->valuestring) > 16 ||
-            strlen(j_from->valuestring) == 0) {
-            cJSON_Delete(root);
-            goto malformed;
-        }
-        if (!j_body || !cJSON_IsString(j_body)) {
-            cJSON_Delete(root);
-            goto malformed;
-        }
-        size_t body_len = strlen(j_body->valuestring);
-        if (!body_rules_ok(j_body->valuestring, body_len)) {
-            cJSON_Delete(root);
-            goto malformed;
-        }
-
-        // Valid. Dedup (§4.1 rule 7) before touching the thread.
-        uint32_t digest = id_digest(j_id->valuestring);
-        char id_copy[MSG_ID_MAX];
-        strncpy(id_copy, j_id->valuestring, MSG_ID_MAX - 1);
-        id_copy[MSG_ID_MAX - 1] = '\0';
-        strncpy(s_last_ingest_id, id_copy, MSG_ID_MAX - 1);
-        s_last_ingest_id[MSG_ID_MAX - 1] = '\0';
-        char from_copy[MSG_FROM_MAX];
-        strncpy(from_copy, j_from->valuestring, MSG_FROM_MAX - 1);
-        from_copy[MSG_FROM_MAX - 1] = '\0';
-        char body_copy[MSG_RAM_BODY_MAX];
-        strncpy(body_copy, j_body->valuestring, MSG_RAM_BODY_MAX - 1);
-        body_copy[MSG_RAM_BODY_MAX - 1] = '\0';
-
+    if (!j_id || !cJSON_IsString(j_id) || !id_shape_ok(j_id->valuestring)) {
         cJSON_Delete(root);
-
-        bool is_dup;
-        s_lock();
-        is_dup = seen_contains_locked(digest);
-        if (!is_dup) {
-            seen_add_locked(digest);
-        } else {
-            s_rtc->dedup_hits++;
-        }
-        s_save();
-        s_unlock();
-
-        if (is_dup) {
-            if (out) {
-                s_lock();
-                *out = thread_find_locked(id_copy, MSG_DIR_DOWN);
-                s_unlock();
-            }
-            return MSG_INGEST_DUPLICATE;
-        }
-
-        msg_t entry = { 0 };
-        entry.ts = ts;
-        strncpy(entry.id, id_copy, MSG_ID_MAX - 1);
-        strncpy(entry.from, from_copy, MSG_FROM_MAX - 1);
-        strncpy(entry.body, body_copy, MSG_RAM_BODY_MAX - 1);
-        entry.body_len = (uint16_t) body_len;
-        entry.dir = (uint8_t) MSG_DIR_DOWN;
-        entry.ack_state = MSG_ACK_UNSHOWN;
-        entry.flags = 0;
-        entry.in_use = true;
-
-        s_lock();
-        thread_insert_locked(&entry);
-        if (out) {
-            *out = &s_thread[0];
-        }
-
-        // Mirror as the newest unread entry (§9.2/§9.3), truncated to RTC
-        // fidelity (§9.4). The newest ingest is always "the newest unread
-        // entry" under this design's single-slot unread mirror.
-        msg_unread_t *u = &s_rtc->unread[0];
-        u->ts = ts;
-        strncpy(u->id, id_copy, MSG_ID_MAX - 1);
-        u->id[MSG_ID_MAX - 1] = '\0';
-        strncpy(u->from, from_copy, MSG_FROM_MAX - 1);
-        u->from[MSG_FROM_MAX - 1] = '\0';
-        bool truncated = utf8_truncate(body_copy, body_len, u->body, MSG_RTC_BODY_MAX, &u->body_len);
-        u->flags = truncated ? MSG_F_TRUNCATED : 0;
-        u->in_use = true;
-        s_save();
-        s_unlock();
-
-        return MSG_INGEST_NEW;
+        msg_count_malformed();
+        return MSG_INGEST_MALFORMED;
+    }
+    if (!j_ts || !cJSON_IsNumber(j_ts)) {
+        cJSON_Delete(root);
+        msg_count_malformed();
+        return MSG_INGEST_MALFORMED;
+    }
+    double ts_d = j_ts->valuedouble;
+    int64_t ts = (int64_t) ts_d;
+    if (!(ts == 0 || (ts >= 1000000000LL && ts <= 2000000000LL))) {
+        cJSON_Delete(root);
+        msg_count_malformed();
+        return MSG_INGEST_MALFORMED;
+    }
+    if (!j_ack) {
+        cJSON_Delete(root);
+        msg_count_malformed(); // ack is required (even if null), §3.1
+        return MSG_INGEST_MALFORMED;
+    }
+    // Device only ever receives content messages on /down (acks are
+    // device->relay only, §3.2); a non-null ack here is malformed.
+    if (!cJSON_IsNull(j_ack)) {
+        cJSON_Delete(root);
+        msg_count_malformed();
+        return MSG_INGEST_MALFORMED;
+    }
+    if (!j_from || !cJSON_IsString(j_from) || strlen(j_from->valuestring) > 16 ||
+        strlen(j_from->valuestring) == 0) {
+        cJSON_Delete(root);
+        msg_count_malformed();
+        return MSG_INGEST_MALFORMED;
+    }
+    if (!j_body || !cJSON_IsString(j_body)) {
+        cJSON_Delete(root);
+        msg_count_malformed();
+        return MSG_INGEST_MALFORMED;
+    }
+    size_t body_len = strlen(j_body->valuestring);
+    if (!body_rules_ok(j_body->valuestring, body_len)) {
+        cJSON_Delete(root);
+        msg_count_malformed();
+        return MSG_INGEST_MALFORMED;
     }
 
-malformed:
-    s_lock();
-    s_rtc->malformed_drops++;
-    s_save();
-    s_unlock();
-    return MSG_INGEST_MALFORMED;
+    char id_local[MSG_ID_MAX];
+    strncpy(id_local, j_id->valuestring, MSG_ID_MAX - 1);
+    id_local[MSG_ID_MAX - 1] = '\0';
+    char from_local[MSG_FROM_MAX];
+    strncpy(from_local, j_from->valuestring, MSG_FROM_MAX - 1);
+    from_local[MSG_FROM_MAX - 1] = '\0';
+    char body_local[MSG_RAM_BODY_MAX];
+    strncpy(body_local, j_body->valuestring, MSG_RAM_BODY_MAX - 1);
+    body_local[MSG_RAM_BODY_MAX - 1] = '\0';
 
-malformed_no_json:
+    cJSON_Delete(root);
+
+    return ingest_common(id_local, ts, from_local, body_local, body_len, out);
+}
+
+// F3.6 (docs/PROTOCOL.md §10, §14.3/§14.4): CBOR twin of msg_ingest_down(),
+// used only for ident IDENT_FLAG_REQ_SIG devices, only on a buffer that has
+// already passed auth_verify() — see msg.h's doc comment on the
+// declared-pair-count-minus-one accounting this requires.
+msg_ingest_t msg_ingest_down_cbor(const uint8_t *buf, uint16_t len, const msg_t **out)
+{
+    if (out) {
+        *out = NULL;
+    }
+    s_last_ingest_id[0] = '\0';
+
+    cbor_r_t r;
+    cbor_r_init(&r, buf, len);
+    uint32_t count;
+    if (!cbor_r_map(&r, &count) || count == 0) {
+        msg_count_malformed();
+        return MSG_INGEST_MALFORMED;
+    }
+    count -= 1; // the trimmed `sig` pair (key 13), see msg.h
+
+    char id_local[MSG_ID_MAX] = "";
+    char from_local[MSG_FROM_MAX] = "";
+    char body_local[MSG_RAM_BODY_MAX] = "";
+    int64_t ts = 0;
+    size_t body_len = 0;
+    uint32_t n = 0;
+    bool have_id = false, have_ts = false, have_from = false, have_body = false;
+    bool have_ack_null = false, have_n = false;
+
+    for (uint32_t i = 0; i < count; i++) {
+        uint32_t key;
+        if (!cbor_r_key(&r, &key)) {
+            msg_count_malformed();
+            return MSG_INGEST_MALFORMED;
+        }
+        switch (key) {
+        case MK_V: {
+            uint64_t v;
+            if (!cbor_r_uint(&r, &v)) {
+                msg_count_malformed();
+                return MSG_INGEST_MALFORMED;
+            }
+            break;
+        }
+        case MK_ID: {
+            const char *s;
+            size_t slen;
+            if (!cbor_r_tstr(&r, &s, &slen) || slen == 0 || slen >= sizeof(id_local)) {
+                msg_count_malformed();
+                return MSG_INGEST_MALFORMED;
+            }
+            memcpy(id_local, s, slen);
+            id_local[slen] = '\0';
+            if (!id_shape_ok(id_local)) {
+                msg_count_malformed();
+                return MSG_INGEST_MALFORMED;
+            }
+            have_id = true;
+            break;
+        }
+        case MK_TS: {
+            int64_t v;
+            if (cbor_r_peek(&r) == CBOR_T_NINT) {
+                if (!cbor_r_nint(&r, &v)) {
+                    msg_count_malformed();
+                    return MSG_INGEST_MALFORMED;
+                }
+            } else {
+                uint64_t u;
+                if (!cbor_r_uint(&r, &u)) {
+                    msg_count_malformed();
+                    return MSG_INGEST_MALFORMED;
+                }
+                v = (int64_t) u;
+            }
+            if (!(v == 0 || (v >= 1000000000LL && v <= 2000000000LL))) {
+                msg_count_malformed();
+                return MSG_INGEST_MALFORMED;
+            }
+            ts = v;
+            have_ts = true;
+            break;
+        }
+        case MK_FROM: {
+            const char *s;
+            size_t slen;
+            if (!cbor_r_tstr(&r, &s, &slen) || slen == 0 || slen >= sizeof(from_local)) {
+                msg_count_malformed();
+                return MSG_INGEST_MALFORMED;
+            }
+            memcpy(from_local, s, slen);
+            from_local[slen] = '\0';
+            have_from = true;
+            break;
+        }
+        case MK_BODY: {
+            const char *s;
+            size_t slen;
+            if (!cbor_r_tstr(&r, &s, &slen) || slen >= sizeof(body_local)) {
+                msg_count_malformed();
+                return MSG_INGEST_MALFORMED;
+            }
+            memcpy(body_local, s, slen);
+            body_local[slen] = '\0';
+            if (!body_rules_ok(body_local, slen)) {
+                msg_count_malformed();
+                return MSG_INGEST_MALFORMED;
+            }
+            body_len = slen;
+            have_body = true;
+            break;
+        }
+        case MK_ACK: {
+            // Device only ever receives content messages on /down (§3.2):
+            // a non-null ack here is malformed, exactly like the JSON path.
+            if (cbor_r_peek(&r) != CBOR_T_NULL || !cbor_r_null(&r)) {
+                msg_count_malformed();
+                return MSG_INGEST_MALFORMED;
+            }
+            have_ack_null = true;
+            break;
+        }
+        case MK_N: {
+            uint64_t v;
+            if (!cbor_r_uint(&r, &v) || v > 0xFFFFFFFFu) {
+                msg_count_malformed();
+                return MSG_INGEST_MALFORMED;
+            }
+            n = (uint32_t) v;
+            have_n = true;
+            break;
+        }
+        default:
+            if (!cbor_r_skip(&r)) {
+                msg_count_malformed();
+                return MSG_INGEST_MALFORMED;
+            }
+            break;
+        }
+    }
+
+    if (!have_id || !have_ts || !have_from || !have_body || !have_ack_null || !have_n) {
+        msg_count_malformed();
+        return MSG_INGEST_MALFORMED;
+    }
+
+    // §2.5/§14.2: device-side mirror of the relay's replay window on the
+    // /down counter. A rejection here is the §3.4 malformed outcome: no
+    // ack, no render, and (per auth_accept_down_n()'s own contract) no RTC
+    // state change.
+    if (!s_auth_rtc) {
+        msg_count_malformed();
+        return MSG_INGEST_MALFORMED;
+    }
+    bool accepted;
     s_lock();
-    s_rtc->malformed_drops++;
+    accepted = auth_accept_down_n(s_auth_rtc, n);
     s_save();
     s_unlock();
-    return MSG_INGEST_MALFORMED;
+    if (!accepted) {
+        msg_count_malformed();
+        ESP_LOGD(TAG, "down n=%u rejected by replay window (§2.5)", (unsigned) n);
+        return MSG_INGEST_MALFORMED;
+    }
+
+    return ingest_common(id_local, ts, from_local, body_local, body_len, out);
 }
 
 // ---------------------------------------------------------------------------
@@ -485,27 +706,75 @@ bool msg_queue_reply(const char *body, uint16_t len)
 // Pump (§4.1 rule 6, §4.2). At most one publish per call.
 // ---------------------------------------------------------------------------
 
+// F3.6: allocates the next /up,/status,/loc counter value under the bound
+// auth_rtc_t's lock (docs/PROTOCOL.md §14.2) and reports whether `up_lo`
+// just wrapped — caller must then invoke s_on_epoch_wrap() *outside* any
+// lock (it does an NVS write via ident_store(), modes.c's on_auth_epoch_
+// wrap()). Returns 0 / *wrapped=false if auth was never bound (defensive;
+// modes_boot() always calls msg_bind_auth() before net is up).
+static uint32_t next_up_n_locked(bool *wrapped)
+{
+    if (wrapped) {
+        *wrapped = false;
+    }
+    if (!s_auth_rtc) {
+        return 0;
+    }
+    s_lock();
+    uint32_t n = auth_next_up_n(s_auth_rtc, ident_get_n_epoch(), wrapped);
+    s_save();
+    s_unlock();
+    return n;
+}
+
+// F3.6 (docs/PROTOCOL.md §2.4/§10/§14): every publish is now CBOR, signed
+// with auth_sign() when ident's IDENT_FLAG_REQ_SIG is set. No modem or
+// sleep-state effect beyond the one net_publish_raw() call already had.
 static bool publish_ack(const char *id, const char *ack_str)
 {
     int64_t ts = 0;
     net_get_clock(&ts); // best-effort; leaves ts=0 on failure per §3.5
 
-    cJSON *root = cJSON_CreateObject();
-    cJSON_AddNumberToObject(root, "v", 1);
-    cJSON_AddStringToObject(root, "id", id);
-    cJSON_AddNumberToObject(root, "ts", (double) ts);
-    cJSON_AddStringToObject(root, "ack", ack_str);
-    char *out = cJSON_PrintUnformatted(root);
-    cJSON_Delete(root);
-    if (!out) {
-        return false;
+    bool signed_env = (ident_get_flags() & IDENT_FLAG_REQ_SIG) != 0;
+    uint32_t nfields = 4; // v, id, ts, ack
+    if (signed_env) {
+        nfields += 2; // n (written below) + sig (appended by auth_sign(),
+                       // never written via cbor_w_* — see the MK_* comment)
     }
+
+    uint8_t buf[128];
+    cbor_w_t w;
+    cbor_w_init(&w, buf, sizeof(buf));
+    cbor_w_map(&w, nfields);
+    cbor_w_uint(&w, MK_V, 1);
+    cbor_w_tstr(&w, MK_ID, id, strlen(id));
+    cbor_w_uint(&w, MK_TS, (uint64_t) ts);
+    cbor_w_tstr(&w, MK_ACK, ack_str, strlen(ack_str));
 
     char topic[48];
     snprintf(topic, sizeof(topic), "pager/%s/up", net_get_device_id());
-    bool ok = net_publish(topic, out, (uint16_t) strlen(out), 1);
-    cJSON_free(out);
-    return ok;
+
+    if (!signed_env) {
+        if (w.err) {
+            return false;
+        }
+        return net_publish_raw(topic, buf, (uint16_t) w.len, 1);
+    }
+
+    bool wrapped = false;
+    uint32_t n = next_up_n_locked(&wrapped);
+    cbor_w_uint(&w, MK_N, n);
+    if (w.err) {
+        return false;
+    }
+    size_t len = w.len;
+    if (!auth_sign(topic, buf, &len, sizeof(buf))) {
+        return false;
+    }
+    if (wrapped && s_on_epoch_wrap) {
+        s_on_epoch_wrap();
+    }
+    return net_publish_raw(topic, buf, (uint16_t) len, 1);
 }
 
 static bool publish_reply(const msg_pending_up_t *p)
@@ -513,36 +782,59 @@ static bool publish_reply(const msg_pending_up_t *p)
     int64_t ts = 0;
     net_get_clock(&ts);
 
-    cJSON *root = cJSON_CreateObject();
-    cJSON_AddNumberToObject(root, "v", 1);
-    cJSON_AddStringToObject(root, "id", p->id);
-    cJSON_AddNumberToObject(root, "ts", (double) ts);
-    cJSON_AddStringToObject(root, "from", "student");
-    cJSON_AddStringToObject(root, "body", p->body);
-    cJSON_AddNullToObject(root, "ack");
-    char *out = cJSON_PrintUnformatted(root);
-    cJSON_Delete(root);
-    if (!out) {
-        return false;
+    bool signed_env = (ident_get_flags() & IDENT_FLAG_REQ_SIG) != 0;
+    uint32_t nfields = 6; // v, id, ts, from, body, ack(null)
+    if (signed_env) {
+        nfields += 2; // n (written below) + sig (appended by auth_sign())
     }
+
+    uint8_t buf[256];
+    cbor_w_t w;
+    cbor_w_init(&w, buf, sizeof(buf));
+    cbor_w_map(&w, nfields);
+    cbor_w_uint(&w, MK_V, 1);
+    cbor_w_tstr(&w, MK_ID, p->id, strlen(p->id));
+    cbor_w_uint(&w, MK_TS, (uint64_t) ts);
+    cbor_w_tstr(&w, MK_FROM, "student", 7);
+    cbor_w_tstr(&w, MK_BODY, p->body, p->body_len);
+    cbor_w_null(&w, MK_ACK);
 
     char topic[48];
     snprintf(topic, sizeof(topic), "pager/%s/up", net_get_device_id());
-    bool ok = net_publish(topic, out, (uint16_t) strlen(out), 1);
-    cJSON_free(out);
-    return ok;
+
+    if (!signed_env) {
+        if (w.err) {
+            return false;
+        }
+        return net_publish_raw(topic, buf, (uint16_t) w.len, 1);
+    }
+
+    bool wrapped = false;
+    uint32_t n = next_up_n_locked(&wrapped);
+    cbor_w_uint(&w, MK_N, n);
+    if (w.err) {
+        return false;
+    }
+    size_t len = w.len;
+    if (!auth_sign(topic, buf, &len, sizeof(buf))) {
+        return false;
+    }
+    if (wrapped && s_on_epoch_wrap) {
+        s_on_epoch_wrap();
+    }
+    return net_publish_raw(topic, buf, (uint16_t) len, 1);
 }
 
 void msg_pump(void)
 {
-    // NOTE (documented simplification, see final report): net_publish()
+    // NOTE (documented simplification, see final report): net_publish_raw()
     // returning true means WalterModem accepted the mqttPublish() call, not
     // that a PUBACK was observed — net.cpp's PUBLISHED handler does not yet
     // map a mid back to a pending_ack/pending_up entry (its own comment
-    // defers that wiring to this file). Treating a successful net_publish()
-    // as "sent" is a known gap, not a silent one; true QoS1 confirmation
-    // is future work requiring net.cpp to route WALTER_MODEM_MQTT_EVENT_
-    // PUBLISHED back here by mid.
+    // defers that wiring to this file). Treating a successful
+    // net_publish_raw() as "sent" is a known gap, not a silent one; true
+    // QoS1 confirmation is future work requiring net.cpp to route
+    // WALTER_MODEM_MQTT_EVENT_PUBLISHED back here by mid.
 
     s_lock();
 

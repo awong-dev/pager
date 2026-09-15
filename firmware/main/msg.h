@@ -40,6 +40,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "auth.h" /* auth_rtc_t — F3.6, see msg_bind_auth() below */
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -151,6 +153,20 @@ typedef void (*msg_rtc_save_fn)(void); /* must be called with the lock already h
 void msg_bind_rtc(msg_rtc_t *rtc, msg_rtc_lock_fn lock, msg_rtc_unlock_fn unlock,
                    msg_rtc_save_fn save);
 
+/* F3.6 (docs/PROTOCOL.md §14, docs/DEVICE_PLAN.md §2.5/§2.7): binds the
+ * auth_rtc_t sub-struct modes.c embeds inside its own pager_rtc_t (the same
+ * pattern msg_bind_rtc() above uses for msg_rtc_t) so this file's
+ * publish/ingest paths can call auth_next_up_n()/auth_accept_down_n()
+ * directly, under the already-bound msg_rtc_lock_fn/msg_rtc_save_fn.
+ * `on_wrap` is called synchronously, lock NOT held, the moment
+ * auth_next_up_n() reports the `up_lo` half of the /up,/status,/loc counter
+ * just wrapped — the caller (modes.c) must bump and persist ident's
+ * n_epoch via ident_store() before the next signed publish, or the relay's
+ * replay window sees `n` go backwards (auth.h's own doc comment). May be
+ * NULL if `rtc` is NULL (unsigned build/test double). */
+typedef void (*msg_epoch_wrap_fn)(void);
+void msg_bind_auth(auth_rtc_t *rtc, msg_epoch_wrap_fn on_wrap);
+
 /* ---------------------------------------------------------------------
  * Public API.
  * --------------------------------------------------------------------- */
@@ -178,6 +194,21 @@ typedef enum {
  * acking regardless. MSG_INGEST_MALFORMED -> count only, no ack, no
  * render, *out is always NULL. */
 msg_ingest_t msg_ingest_down(const char *json, uint16_t len, const msg_t **out);
+
+/* F3.6 (docs/PROTOCOL.md §14.3/§14.4, §10 keymap): CBOR-decoding twin of
+ * msg_ingest_down(), for devices provisioned with ident's IDENT_FLAG_REQ_SIG
+ * set. Caller contract (identical to msg_ingest_down() otherwise): `buf`
+ * MUST already have passed auth_verify() — auth_verify() trims the trailing
+ * `sig` suffix bytes but, per its own "no re-serialisation" contract, does
+ * NOT rewrite the map header's declared pair count, which therefore still
+ * counts the now-absent `sig` pair once; this function accounts for that by
+ * reading exactly (declared count − 1) pairs, so it must never be called on
+ * a buffer that was not just verified. Also requires key 12 (`n`) and
+ * checks it against the bound auth_rtc_t's replay window
+ * (auth_accept_down_n()) — missing or out-of-window `n` is the same
+ * MSG_INGEST_MALFORMED outcome as any other validation failure (§3.4): no
+ * ack, no render, no RTC state change beyond the malformed counter. */
+msg_ingest_t msg_ingest_down_cbor(const uint8_t *buf, uint16_t len, const msg_t **out);
 
 /* Most recently parsed message id from msg_ingest_down(), valid for
  * MSG_INGEST_NEW and MSG_INGEST_DUPLICATE (empty string for
@@ -230,6 +261,13 @@ typedef struct {
     uint32_t reply_failed;
 } msg_stats_t;
 void msg_get_stats(msg_stats_t *out);
+
+/* F3.6: increments the malformed_drops counter (§3.4 diagnostics) for a
+ * caller that rejects an envelope *before* handing it to msg_ingest_down()/
+ * msg_ingest_down_cbor() — currently only a failed auth_verify() on the RX
+ * path (modes.c). Exposed so that rejection is still counted even though
+ * this file never got far enough to parse the envelope. */
+void msg_count_malformed(void);
 
 /* ---------------------------------------------------------------------
  * Composer buffer (owned here since msg_queue_reply() is the consumer of
