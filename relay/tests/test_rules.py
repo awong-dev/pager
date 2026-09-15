@@ -26,6 +26,7 @@ from firebase_admin import auth as fb_auth
 
 from app.store import allow as allow_store
 from app.store import backends as backends_store
+from app.store import device_secrets as device_secrets_store
 from app.store import devices as devices_store
 from app.store import messages as messages_store
 from app.store import users as users_store
@@ -426,6 +427,44 @@ def test_gchat_link_codes_is_default_deny(two_pairs):
     assert resp_unauth.status_code == 403
 
     resp_write = _write("gchatLinkCodes/999111", owner_token, {"uid": "u3"})
+    assert resp_write.status_code == 403
+
+
+def test_device_secrets_is_default_deny(two_pairs):
+    """`deviceSecrets/{d}` (docs/DEVICE_PLAN.md §2.6) holds the device's HMAC
+    key and MQTT password hash -- unreadable by the device's own owner (whose
+    browser can read `devices/{d}` itself) and unreadable by an admin client
+    (whose elevated `request.auth.token.admin` claim reaches `devices/{d}`
+    and `users/{uid}` but must not reach this collection either), the same
+    default-deny-with-no-`match`-block posture `phoneIndex` above pins."""
+    devices_store.create_device(
+        device_id="pgr-secret-rules-1",
+        owner_uid="u1",
+        label="d",
+        mqtt_username="pgr-secret-rules-1",
+        mqtt_password_hash="x",
+    )
+    device_secrets_store.create(
+        "pgr-secret-rules-1", hmac_key=b"k" * 32, mqtt_password_hash="hash"
+    )
+
+    owner_token = mint_id_token("u1")
+    resp = _get("deviceSecrets/pgr-secret-rules-1", owner_token)
+    assert resp.status_code == 403
+
+    fb_auth.create_user(uid="admin1", email="admin1@example.com")
+    users_store.create_user(uid="admin1", alias="admin1", display_name="Admin", role="admin")
+    fb_auth.set_custom_user_claims("admin1", {"admin": True})
+    admin_token = mint_id_token("admin1")
+    resp_admin = _get("deviceSecrets/pgr-secret-rules-1", admin_token)
+    assert resp_admin.status_code == 403
+
+    resp_unauth = _get("deviceSecrets/pgr-secret-rules-1", None)
+    assert resp_unauth.status_code == 403
+
+    resp_write = _write(
+        "deviceSecrets/pgr-secret-rules-1", owner_token, {"mqttPasswordHash": "hacked"}
+    )
     assert resp_write.status_code == 403
 
 
