@@ -59,6 +59,64 @@ bool net_init(void);
  * Power effect: one AT command, no RRC of its own. */
 bool net_tls_profile_bootstrap(void);
 
+/* ---------------------------------------------------------------------
+ * Bootstrap-only additions (docs/DEVICE_PLAN.md §3.2, setup.c, F3.5).
+ *
+ * Not in F3.5's `Files` list, but added here anyway and flagged in the F3.5
+ * report: net.h/net.cpp is the only place allowed to touch WalterModem (see
+ * this header's own module comment), and DEVICE_TASKS.md F3.5's "Do" step
+ * ("attach -> profile 3 -> MQTT as boot-{bid} -> subscribe ... -> publish
+ * ... -> disconnect") cannot be implemented from setup.c (plain C) without
+ * new entry points here — net_init()/net_session_up() are hardwired to
+ * ident's production host/port/dev_id/mqtt_pw/profile 2 and cannot be
+ * reused for a not-yet-provisioned device. These functions never run in the
+ * same power cycle as net_init(): main.c only reaches setup.c when
+ * ident_load() has already failed, and setup_run() esp_restart()s on every
+ * exit path, so there is no session-state overlap with the production
+ * globals below (s_down_topic, the MQTT event handler registration, etc.)
+ * to worry about.
+ * --------------------------------------------------------------------- */
+
+/* One-time bootstrap attach: WalterModem::begin() + event handler
+ * registration + PDP context with the setup code's own `apn` (NULL/empty =
+ * carrier default, same convention as net_init()) + single-attempt attach
+ * wait (same F1-style cap net_init() uses). Deliberately skips
+ * eDRX/PSM/voltage-monitor/TLS/mqttConfig — those are either production-only
+ * concerns or handled by net_tls_profile_bootstrap()/net_bootstrap_connect()
+ * below; there is no ident yet to configure any of net_init()'s ident-derived
+ * pieces against. Call once, before net_tls_profile_bootstrap().
+ * Power effect: same as net_init()'s attach phase — modem leaves reset and
+ * attaches LTE-M, at whichever eDRX/PSM the modem defaults to (neither is
+ * requested on this path): the bootstrap session is a few seconds long and
+ * torn down (net_session_down() + esp_restart()) immediately after, so the
+ * production sleep-mode paging settings do not matter here. */
+bool net_bootstrap_attach(const char *apn);
+
+/* One-time bootstrap MQTT connect: mqttConfig(client_id, client_id, password,
+ * the bootstrap TLS profile) + mqttConnect(host, port). Also (re)points the
+ * shared down-topic buffer at `down_topic` so the existing CONNECTED-event
+ * auto-resubscribe (net.cpp's pager_mqtt_event_handler, the same mechanism
+ * net_init()'s production session uses) subscribes to it — safe only
+ * because this device never runs a bootstrap and a production session in
+ * the same power cycle (see the module note above). Call after
+ * net_bootstrap_attach() and net_tls_profile_bootstrap() both succeed; poll
+ * net_get_mqtt_status().mqtt_connected afterward for the SUBSCRIBED edge,
+ * same as the production path.
+ * Power effect: one TLS handshake (~5 kB, VALIDATION_NONE, no CA round
+ * trip) plus the RRC time it takes. */
+bool net_bootstrap_connect(const char *client_id, const char *password, const char *host,
+                           uint16_t port, const char *down_topic);
+
+/* Writes `ca_pem` to modem NVRAM cert slot 12 (PAGER_TLS_CA_SLOT), the same
+ * slot/call net_init() uses for the production CA — used by setup.c right
+ * after a bootstrap fetch validates the bundle (docs/DEVICE_PLAN.md §3.2
+ * step 4's "CA to slot 12"), unconditionally (no ca_hash short-circuit: this
+ * runs at most once per device lifetime, unlike net_init()'s per-boot/per-F4
+ * -recovery calls).
+ * Power effect: one NVRAM write (flash wear on the modem's own storage, not
+ * the ESP32's), no RRC. */
+bool net_write_ca(const char *ca_pem);
+
 /* TLS profile already configured by net_init(); this issues mqttConnect().
  * Call once after net_init() succeeds, and again (after F1/F3 backoff) any
  * time net_get_mqtt_status() reports the session down. Never call on a
@@ -96,7 +154,11 @@ bool net_publish_raw(const char *topic, uint8_t *buf, uint16_t len, uint8_t qos)
  * has already bounds-checked it (§3.4/F6) and fetched it via mqttReceive().
  * Runs on the modem library's _eventProcessingTask (L4), not an ISR and not
  * the RX task — keep it short. `body` is not necessarily NUL-terminated
- * beyond `len` bytes; treat it as a fixed-length buffer. */
+ * beyond `len` bytes; treat it as a fixed-length buffer.
+ * PROTOCOL.md §2: the oversize check this callback sits behind is
+ * topic-aware — `pager/boot/...` (setup.c, F3.5) gets the 4 kB bundle cap,
+ * every other topic keeps the 640-byte envelope cap; `len` is bounded by
+ * whichever cap applied to the topic the message arrived on. */
 void net_set_msg_cb(void (*cb)(const char *topic, const char *body, uint16_t len));
 
 /* Light-sleep the ESP32 for up to `ms` milliseconds, or until the button

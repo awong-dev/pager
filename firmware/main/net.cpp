@@ -61,8 +61,22 @@ static constexpr uint16_t PAGER_MQTT_KEEPALIVE_S = 1800; // PROTOCOL.md §6.2
 
 static constexpr int PAGER_ATTACH_POLL_CAP_S = 300; // F1: single-attempt cap
 
-// PROTOCOL.md §3.3: hard envelope limit, both directions.
+// PROTOCOL.md §3.3: hard envelope limit, both directions, for the
+// pager/{device_id}/... namespace.
 static constexpr uint16_t PAGER_MAX_PAYLOAD = 640;
+
+// PROTOCOL.md §2: the pager/boot/{bid}/... namespace (setup.c, F3.5) has its
+// own, larger 4 kB limit for the encrypted bootstrap bundle
+// (DEVICE_PLAN.md §3.2 step 4). One shared RX buffer sized to the larger of
+// the two; the MESSAGE handler below picks whichever cap applies to the
+// topic a given message actually arrived on.
+static constexpr uint16_t PAGER_BOOT_MAX_PAYLOAD = 4096;
+static constexpr const char *PAGER_BOOT_TOPIC_PREFIX = "pager/boot/";
+
+// DEVICE_PLAN.md §3.2 step 4: the bootstrap session is a few seconds long
+// (fetch one retained message, publish one ack, disconnect) — a short
+// keepalive is plenty and avoids implying this is a long-lived session.
+static constexpr uint16_t PAGER_BOOT_MQTT_KEEPALIVE_S = 60;
 
 // ---------------------------------------------------------------------------
 // State. All of this is plain (non-RTC) static storage: it survives our
@@ -104,8 +118,9 @@ static char s_granted_edrx[16] = { 0 };
 static bool s_ca_written = false;
 static uint8_t s_ca_written_hash[IDENT_CA_HASH_LEN];
 
-// PROTOCOL.md §3.3 cap; sized once, no malloc on the RX path (L9).
-static uint8_t s_mqtt_rx_buf[PAGER_MAX_PAYLOAD];
+// Sized to the larger of the two namespace caps above; sized once, no
+// malloc on the RX path (L9).
+static uint8_t s_mqtt_rx_buf[PAGER_BOOT_MAX_PAYLOAD];
 
 static int64_t s_clock_epoch = 0;    // 0 = no network time yet (§3.5)
 static int64_t s_clock_epoch_us = 0; // esp_timer_get_time() at the moment s_clock_epoch was read
@@ -207,16 +222,27 @@ static void pager_mqtt_event_handler(WMMQTTEventType event, const WMMQTTEventDat
         // question into a message-loss one. modes_run() ORs
         // net_modem_busy() into its skip_sleep condition.
         s_handler_busy = true;
-        if (data->msg_length > PAGER_MAX_PAYLOAD) {
-            // F6: oversize payload. Log, count, do not ack/render, but still
-            // drain it with a scratch read so it doesn't wedge the modem's
-            // buffer into F5.
-            s_oversize_count = s_oversize_count + 1; // volatile: avoid deprecated ++ (C++20)
-            ESP_LOGI(TAG, "oversize MQTT message dropped: %u bytes > %u cap",
-                     (unsigned) data->msg_length, (unsigned) PAGER_MAX_PAYLOAD);
-            WalterModem::mqttReceive(data->topic, data->mid, s_mqtt_rx_buf, sizeof(s_mqtt_rx_buf));
-            s_handler_busy = false;
-            break;
+        {
+            // PROTOCOL.md §2: pager/boot/{bid}/... (setup.c, F3.5) gets the
+            // 4 kB bundle cap; every other topic keeps the 640-byte
+            // envelope cap. Braced so `payload_cap`'s initialization does
+            // not cross into the other case labels below (C++ forbids
+            // jumping past a non-trivial initializer within one switch).
+            uint16_t payload_cap =
+                (strncmp(data->topic, PAGER_BOOT_TOPIC_PREFIX, strlen(PAGER_BOOT_TOPIC_PREFIX)) == 0)
+                    ? PAGER_BOOT_MAX_PAYLOAD
+                    : PAGER_MAX_PAYLOAD;
+            if (data->msg_length > payload_cap) {
+                // F6: oversize payload. Log, count, do not ack/render, but
+                // still drain it with a scratch read so it doesn't wedge the
+                // modem's buffer into F5.
+                s_oversize_count = s_oversize_count + 1; // volatile: avoid deprecated ++ (C++20)
+                ESP_LOGI(TAG, "oversize MQTT message dropped: %u bytes > %u cap",
+                         (unsigned) data->msg_length, (unsigned) payload_cap);
+                WalterModem::mqttReceive(data->topic, data->mid, s_mqtt_rx_buf, sizeof(s_mqtt_rx_buf));
+                s_handler_busy = false;
+                break;
+            }
         }
 
         // L1/L2: never mqttDidRing(). Fetch by the real mid from this event.
@@ -429,6 +455,113 @@ extern "C" bool net_tls_profile_bootstrap(void)
     }
     ESP_LOGI(TAG, "bootstrap TLS profile %d configured (VALIDATION_NONE)",
              PAGER_TLS_BOOTSTRAP_PROFILE_ID);
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// Bootstrap-only additions (docs/DEVICE_PLAN.md §3.2, setup.c F3.5). See
+// net.h's module note on why these live here despite not being in F3.5's
+// `Files` list: WalterModem is a C++-only API, and net_init()/net_session_up()
+// are hardwired to ident's production values, which do not exist yet during
+// a bootstrap fetch.
+// ---------------------------------------------------------------------------
+
+extern "C" bool net_bootstrap_attach(const char *apn)
+{
+    // Power effect: same class as net_init()'s attach phase — modem leaves
+    // reset, attaches LTE-M. No eDRX/PSM/voltage-monitor requested (this
+    // session is torn down within seconds, see net.h's doc comment).
+    if (!WalterModem::begin(PAGER_MODEM_UART)) {
+        ESP_LOGI(TAG, "WalterModem::begin() failed (bootstrap)");
+        return false;
+    }
+
+    WalterModem::setMQTTEventHandler(pager_mqtt_event_handler, nullptr);
+    WalterModem::setNetworkEventHandler(pager_network_event_handler, nullptr);
+
+    if (!WalterModem::setOpState(WALTER_MODEM_OPSTATE_NO_RF)) {
+        ESP_LOGI(TAG, "setOpState(NO_RF) failed (bootstrap)");
+        return false;
+    }
+
+    // DEVICE_PLAN.md §3.2 step 2: "the code's APN or the carrier default" —
+    // same NULL-for-empty convention net_init() uses for ident's apn.
+    const char *use_apn = (apn && apn[0] != '\0') ? apn : nullptr;
+    if (!WalterModem::definePDPContext(PAGER_PDP_CTX_ID, use_apn)) {
+        ESP_LOGI(TAG, "definePDPContext() failed (bootstrap)");
+        return false;
+    }
+
+    if (!WalterModem::setOpState(WALTER_MODEM_OPSTATE_FULL)) {
+        ESP_LOGI(TAG, "setOpState(FULL) failed (bootstrap)");
+        return false;
+    }
+
+    if (!WalterModem::setNetworkSelectionMode(WALTER_MODEM_NETWORK_SEL_MODE_AUTOMATIC)) {
+        ESP_LOGI(TAG, "setNetworkSelectionMode() failed (bootstrap)");
+        return false;
+    }
+
+    // Same single-attempt cap as net_init()'s F1 attach wait; the caller
+    // (setup.c) owns turning a false return into the "no network" message
+    // DEVICE_PLAN.md §3.2 step 5 names.
+    bool attached = false;
+    for (int waited_s = 0; waited_s < PAGER_ATTACH_POLL_CAP_S; waited_s++) {
+        WalterModemNetworkRegState st = WalterModem::getNetworkRegState();
+        if (st == WALTER_MODEM_NETWORK_REG_REGISTERED_HOME ||
+            st == WALTER_MODEM_NETWORK_REG_REGISTERED_ROAMING) {
+            attached = true;
+            break;
+        }
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+    if (!attached) {
+        ESP_LOGI(TAG, "network attach timed out after %ds (bootstrap)", PAGER_ATTACH_POLL_CAP_S);
+        return false;
+    }
+    ESP_LOGI(TAG, "network attached (bootstrap)");
+    return true;
+}
+
+extern "C" bool net_bootstrap_connect(const char *client_id, const char *password, const char *host,
+                                      uint16_t port, const char *down_topic)
+{
+    // Points the shared down-topic buffer at the bootstrap topic so the
+    // existing CONNECTED-event auto-resubscribe (pager_mqtt_event_handler
+    // above) subscribes to it, exactly like the production session does for
+    // pager/{own_id}/down — see net.h's module note on why that sharing is
+    // safe here (bootstrap and production never coexist in one power cycle).
+    snprintf(s_down_topic, sizeof(s_down_topic), "%s", down_topic);
+
+    if (!WalterModem::mqttConfig(client_id, client_id, password,
+                                 PAGER_TLS_BOOTSTRAP_PROFILE_ID)) {
+        ESP_LOGI(TAG, "mqttConfig() failed (bootstrap)");
+        return false;
+    }
+
+    // Power effect: one TLS handshake (~5 kB, VALIDATION_NONE profile, no CA
+    // round trip) plus the RRC time it takes.
+    s_disconnect_edge = false;
+    if (!WalterModem::mqttConnect(host, port, PAGER_BOOT_MQTT_KEEPALIVE_S)) {
+        ESP_LOGI(TAG, "mqttConnect() call could not be queued (bootstrap)");
+        return false;
+    }
+    ESP_LOGI(TAG, "bootstrap MQTT connect issued to %s:%u as %s", host, (unsigned) port, client_id);
+    return true;
+}
+
+extern "C" bool net_write_ca(const char *ca_pem)
+{
+    // DEVICE_PLAN.md §3.2 step 4's "CA to slot 12": same slot/call net_init()
+    // uses for the production CA, called unconditionally here (no ca_hash
+    // short-circuit — this runs at most once per device lifetime, unlike
+    // net_init()'s per-boot/per-F4-recovery calls).
+    // Power effect: one NVRAM write on the modem's own storage, no RRC.
+    if (!WalterModem::tlsWriteCredential(false, PAGER_TLS_CA_SLOT, ca_pem)) {
+        ESP_LOGI(TAG, "tlsWriteCredential() failed (bootstrap CA write)");
+        return false;
+    }
+    ESP_LOGI(TAG, "CA written to modem slot %u (bootstrap)", (unsigned) PAGER_TLS_CA_SLOT);
     return true;
 }
 

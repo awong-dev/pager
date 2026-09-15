@@ -24,3 +24,8 @@ CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
+
+# F3.5 (docs/DEVICE_TASKS.md): setup.c's setup_derive() needs mbedtls_hkdf()
+# for the setup code's bid/bpw/bkey derivation (docs/DEVICE_PLAN.md §3.2);
+# off by default in ESP-IDF 5.2's mbedtls Kconfig.
+CONFIG_MBEDTLS_HKDF_C=y
