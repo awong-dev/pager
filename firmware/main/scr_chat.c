@@ -15,9 +15,23 @@
 // observable behaviour yet, but the composer now goes through ime_feed()
 // rather than pushing raw bytes directly, so a real IME drops in later
 // without touching this file's key-dispatch structure.
+//
+// F7.3 (docs/DEVICE_TASKS.md, docs/DEVICE_PLAN.md §5.5 "Sending from a
+// chat"/"Nicknames"): this screen still renders the one merged thread (the
+// scope note above is unchanged by this task — there is still no per-peer
+// Chat view for scr_pick.c/scr_home.c to open "into"), so the only way a
+// message sent from here can target a specific peer is the composer's own
+// leading `@nick`/`@alias` word, exactly as the Nicknames paragraph
+// describes: "the composer also accepts `@nick` or `@alias` as the first
+// word to pick the recipient from the keyboard without the picker". Without
+// a leading `@word`, `to` is empty (the default recipient, wire unchanged).
+// Resolution here reuses book.h's existing public accessors
+// (book_contact_count()/book_contact_at()/book_get_default_alias()) — no new
+// book.h entry point was needed, so book.c/h stays untouched by this task.
 
 #include "ui.h"
 #include "msg.h"
+#include "book.h"
 #include "ime.h"
 
 #include <stdio.h>
@@ -80,13 +94,106 @@ static void clamp_scroll(void)
     }
 }
 
+// §5.5 Nicknames paragraph: a leading `@word` (first char '@', word = up to
+// the next space or end of text) resolves against the approved contacts'
+// nickname first, then alias — matching either "@nick" or "@alias" per the
+// same paragraph. Returns true and fills `alias_out` on a match; false (and
+// leaves `alias_out` untouched) if the composer has no leading `@word` at
+// all (nothing to resolve — not an error) OR if the sentinel `*is_at_word`
+// is set true but no contact matched (the "unknown" case the caller toasts
+// on). `*word_len` is the byte length of the word (used by the caller to
+// strip "@word" plus one following space from the body).
+static bool resolve_at_word(const char *text, bool *is_at_word, size_t *word_len,
+                             char *alias_out, size_t alias_cap)
+{
+    *is_at_word = false;
+    *word_len = 0;
+    if (text[0] != '@') {
+        return false;
+    }
+    const char *p = text + 1;
+    size_t wlen = 0;
+    while (p[wlen] != '\0' && p[wlen] != ' ') {
+        wlen++;
+    }
+    if (wlen == 0) {
+        return false; // bare "@" with nothing after it — send literally, not a reference
+    }
+    *is_at_word = true;
+    *word_len = wlen;
+
+    size_t n = book_contact_count();
+    for (size_t i = 0; i < n; i++) {
+        book_contact_t c;
+        if (!book_contact_at(i, &c)) {
+            continue;
+        }
+        bool nick_match = c.nickname[0] != '\0' && strncmp(c.nickname, p, wlen) == 0 &&
+                           c.nickname[wlen] == '\0';
+        bool alias_match = strncmp(c.alias, p, wlen) == 0 && c.alias[wlen] == '\0';
+        if (nick_match || alias_match) {
+            strncpy(alias_out, c.alias, alias_cap - 1);
+            alias_out[alias_cap - 1] = '\0';
+            return true;
+        }
+    }
+    return false; // *is_at_word stays true — caller toasts "unknown"
+}
+
 static void try_send(void)
 {
     uint16_t len = msg_composer_len();
     if (len == 0) {
         return; // nothing to send; §5.5 doesn't define a beep-on-empty-enter, just do nothing
     }
-    if (msg_queue_reply(msg_composer_text(), len)) {
+    const char *text = msg_composer_text();
+
+    bool is_at_word = false;
+    size_t wlen = 0;
+    char resolved_alias[BOOK_ALIAS_MAX] = "";
+    bool matched = resolve_at_word(text, &is_at_word, &wlen, resolved_alias, sizeof(resolved_alias));
+
+    if (is_at_word && !matched) {
+        // §5.5: "picker error toast if unknown" — same ui_show_toast() path
+        // every other composer error uses; the composer is left exactly as
+        // typed so the student can fix the typo, same as "reply too long".
+        char toast[48];
+        int shown = (wlen > 16) ? 16 : (int) wlen;
+        snprintf(toast, sizeof(toast), "unknown @%.*s - use New message", shown, text + 1);
+        ui_show_toast(toast);
+        return;
+    }
+
+    const char *body = text;
+    uint16_t body_len = len;
+    char to[BOOK_ALIAS_MAX] = "";
+
+    if (is_at_word) {
+        // Strip "@word" and one following space (if present) from the body.
+        size_t skip = 1 + wlen;
+        if (text[skip] == ' ') {
+            skip++;
+        }
+        body = text + skip;
+        body_len = (uint16_t) (len - skip);
+
+        // §5.5: "except the default recipient, where `to` is omitted so the
+        // wire stays identical to today's common case" — compare the
+        // resolved alias against the book's own default, not the literal
+        // `@word` typed (an `@alias` for the default recipient must also
+        // omit `to`, not just an unqualified send).
+        char default_alias[BOOK_ALIAS_MAX] = "";
+        bool have_default = book_get_default_alias(default_alias, sizeof(default_alias));
+        if (!(have_default && strcmp(default_alias, resolved_alias) == 0)) {
+            strncpy(to, resolved_alias, sizeof(to) - 1);
+        }
+    }
+
+    if (body_len == 0) {
+        return; // "@word" consumed the whole composer — nothing left to send
+    }
+
+    if (msg_queue_reply(to, body, body_len)) {
         msg_composer_reset();
         s_scroll = 0; // auto-follow back to the newest (the reply itself)
     } else {

@@ -289,9 +289,19 @@ void msg_mark_all_unshown(void);
  * pending_up is full (both slots in_use) or the NVS write fails. On
  * success: generates id ("u_" + 8 lowercase hex from esp_random()), writes
  * the full body to NVS namespace `msgq`, inserts into pending_up (metadata
- * only) AND into s_thread (dir=up, ack_state=pending, to="" — no peer
- * targeting yet, that's F7.3). */
-bool msg_queue_reply(const char *body, uint16_t len);
+ * only) AND into s_thread (dir=up, ack_state=pending, to=<as given>).
+ *
+ * F7.3 (docs/DEVICE_PLAN.md §5.5 "Sending from a chat"): `to` is the peer
+ * alias to address this reply to, or "" for the default recipient — the
+ * wire's own `to` (key 7, publish_reply()) is omitted whenever `to` is ""
+ * here, which the caller (scr_chat.c) also uses for "the peer alias equals
+ * the default recipient" so the wire stays identical to today's common case.
+ * `to` is copied defensively (truncated to MSG_TO_MAX-1) and is NOT itself
+ * validated against the address book — scr_chat.c is the only caller and it
+ * only ever passes "" or an alias already confirmed against book.h's own
+ * accessors (book_contact_at()/book_get_default_alias()), so a second check
+ * here would be redundant, not a safety net for anything reachable today. */
+bool msg_queue_reply(const char *to, const char *body, uint16_t len);
 
 /* Called once per wake cycle from modes_run() while the MQTT session is
  * connected. AT MOST ONE publish per call. Priority: pending acks

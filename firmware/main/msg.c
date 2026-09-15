@@ -1025,7 +1025,7 @@ void msg_mark_all_unshown(void)
 // Reply queue (§4.2)
 // ---------------------------------------------------------------------------
 
-bool msg_queue_reply(const char *body, uint16_t len)
+bool msg_queue_reply(const char *to, const char *body, uint16_t len)
 {
     if (!body || !body_rules_ok(body, len)) {
         // Reject, never truncate (§9.4).
@@ -1038,6 +1038,12 @@ bool msg_queue_reply(const char *body, uint16_t len)
 
     char id[MSG_ID_MAX];
     snprintf(id, sizeof(id), "u_%08x", (unsigned) esp_random());
+
+    // F7.3: copied defensively once, up front — see msg.h's own doc comment
+    // on why this is not re-validated against the book here.
+    char to_copy[MSG_TO_MAX];
+    strncpy(to_copy, to ? to : "", MSG_TO_MAX - 1);
+    to_copy[MSG_TO_MAX - 1] = '\0';
 
     s_lock();
     int slot = -1;
@@ -1061,7 +1067,7 @@ bool msg_queue_reply(const char *body, uint16_t len)
 
     // NVS write with the lock released (flash I/O, §4.2/§9.4) — matches
     // msg_pump()'s existing discipline of never blocking under the lock.
-    bool wrote = msgq_write_reply(slot, id, "", body);
+    bool wrote = msgq_write_reply(slot, id, to_copy, body);
 
     s_lock();
     if (!wrote) {
@@ -1076,7 +1082,8 @@ bool msg_queue_reply(const char *body, uint16_t len)
     p->created_us = esp_timer_get_time();
     strncpy(p->id, id, MSG_ID_MAX - 1);
     p->id[MSG_ID_MAX - 1] = '\0';
-    p->to[0] = '\0'; // no peer targeting yet, F7.3
+    strncpy(p->to, to_copy, MSG_TO_MAX - 1);
+    p->to[MSG_TO_MAX - 1] = '\0';
     p->attempts = 0;
     s_save();
 
@@ -1084,7 +1091,8 @@ bool msg_queue_reply(const char *body, uint16_t len)
     entry.ts = 0; // filled in at publish time from the network clock (§3.5)
     strncpy(entry.id, id, MSG_ID_MAX - 1);
     strncpy(entry.from, "student", MSG_FROM_MAX - 1);
-    entry.to[0] = '\0';
+    strncpy(entry.to, to_copy, MSG_TO_MAX - 1);
+    entry.to[MSG_TO_MAX - 1] = '\0';
     memcpy(entry.body, body, len);
     entry.body[len] = '\0';
     entry.body_len = len;
