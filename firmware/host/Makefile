@@ -27,6 +27,11 @@
 # test exercises) free of FreeRTOS/driver/esp_timer, same pattern as
 # cbor.c/auth.c above.
 #
+# F6.4 (test_msg) exercises only msg.c's UTF-8 composer section, which sits
+# ahead of msg.c's own `#ifdef ESP_PLATFORM` split (same pattern again) —
+# everything else in msg.c (ingest/pump/NVS msgq/RTC) needs ESP-IDF/NVS/
+# net.cpp and is not built here.
+#
 # `make test` builds and runs every test binary; `make png` builds and runs
 # render_png (task F6.1's host PNG test); `make` alone just builds the tests.
 
@@ -55,7 +60,7 @@ endif
 MAIN_SRC := ../main
 BUILD := build
 
-TESTS := test_cbor test_auth test_setup test_input
+TESTS := test_cbor test_auth test_setup test_input test_msg
 TEST_BINS := $(TESTS:%=$(BUILD)/%)
 
 # ASSETS: tools/mkassets.py's default output location (docs/DEVICE_TASKS.md
@@ -121,6 +126,20 @@ $(BUILD)/test_input.o: test_input.c $(MAIN_SRC)/input.h | $(BUILD)
 
 $(BUILD)/test_input: $(BUILD)/input.o $(BUILD)/test_input.o
 	$(CC) $(CFLAGS) -o $@ $(BUILD)/input.o $(BUILD)/test_input.o
+
+# test_msg: msg.c's composer section only (its own `#ifdef ESP_PLATFORM`
+# split keeps NVS/RTC/net/auth/cbor-dependent code, which this test does not
+# exercise, out of the host build) + test_msg.c. msg.h pulls in auth.h,
+# which is already host-safe (test_auth.c above links the real auth.c
+# against it), so no extra include path is needed.
+$(BUILD)/msg.o: $(MAIN_SRC)/msg.c $(MAIN_SRC)/msg.h $(MAIN_SRC)/auth.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $(MAIN_SRC)/msg.c
+
+$(BUILD)/test_msg.o: test_msg.c $(MAIN_SRC)/msg.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ test_msg.c
+
+$(BUILD)/test_msg: $(BUILD)/msg.o $(BUILD)/test_msg.o
+	$(CC) $(CFLAGS) -o $@ $(BUILD)/msg.o $(BUILD)/test_msg.o
 
 # render_png: gfx.c (the exact framebuffer/text/glyph module that ships
 # on-device, compiled for the host per its own #ifdef ESP_PLATFORM split)

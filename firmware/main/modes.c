@@ -100,7 +100,12 @@ static const uint32_t k_backoff_s[] = { 5, 15, 60, 300 };
 // otherwise decode as garbage.
 // F3.6: bumped 2 -> 3 for the new `auth` (auth_rtc_t, +12 B) field below,
 // docs/DEVICE_PLAN.md §2.7's "RTC changes".
-#define PAGER_RTC_MAGIC 0x50475233u // "PGR" + layout version 3
+// F6.4: bumped 3 -> 4 — msg_rtc_t's pending_up/unread sub-structs dropped
+// their inline bodies (moved to NVS namespace `msgq`, docs/PROTOCOL.md
+// §9.2-§9.4) and pending_up/unread gained/lost fields; a stale layout-3
+// struct would otherwise decode msg_pending_up_t.to as garbage bytes that
+// used to be the middle of a body.
+#define PAGER_RTC_MAGIC 0x50475234u // "PGR" + layout version 4
 
 typedef enum {
     PAGER_MODE_SLEEP = 0,
@@ -156,12 +161,15 @@ typedef struct {
                       // publish path below.
 } pager_rtc_t;
 
-// F3.6: sizeof(pager_rtc_t) is 944 bytes as of this change (see
+// F6.4: sizeof(pager_rtc_t) is 496 bytes as of this change (see
 // firmware/build/school_pager.map's `.rtc.data.0` entry for
-// esp-idf/main/libmain.a(modes.c.obj), 0x3b0, after
+// esp-idf/main/libmain.a(modes.c.obj), 0x1f0, after
 // `idf.py set-target esp32s3 && idf.py build`, PROTOCOL.md §9.1's own
-// methodology) — up from 932 before auth_rtc_t (+12 B: up_lo/down_n/
-// down_bits, 4 B each), still 240 B under the 1184-byte budget below.
+// methodology) — down from 944 (F3.6) now that msg_rtc_t's pending_up/
+// unread sub-structs no longer carry inline bodies (moved to NVS namespace
+// `msgq`, docs/PROTOCOL.md §9.2-§9.4); 688 B under the 1184-byte budget
+// below, close to docs/PROTOCOL.md §9.3's own "≈460" estimate for the same
+// layout (ui_state/lock aren't added until F6.5).
 _Static_assert(sizeof(pager_rtc_t) <= 1184,
                "pager_rtc_t exceeds the measured 1184-byte RTC_SLOW budget "
                "left after walter-modem's own ~7003 bytes (PROTOCOL.md §9.1)");
@@ -685,7 +693,7 @@ static void handle_ingest_result(msg_ingest_t r, const msg_t *out, uint16_t len)
 
     case MSG_INGEST_MALFORMED:
     default:
-        // §3.4: log, count (already counted by whichever of msg_ingest_down()/
+        // §3.4: log, count (already counted by whichever of
         // msg_ingest_down_cbor()/msg_count_malformed() rejected it), do not
         // ack, do not render, do not reboot.
         ESP_LOGD(TAG, "malformed down message dropped (%u bytes)", (unsigned) len);
@@ -693,36 +701,36 @@ static void handle_ingest_result(msg_ingest_t r, const msg_t *out, uint16_t len)
     }
 }
 
-// F3.6 (docs/PROTOCOL.md §14.3/§14.4): verifies before parsing when ident's
-// IDENT_FLAG_REQ_SIG is set, then decodes CBOR; unsigned (req_sig==0)
-// devices keep the JSON/cJSON path until F6.4 removes it. No modem or
-// sleep-state effect: pure computation on the already-received buffer.
+// F3.6 (docs/PROTOCOL.md §14.3/§14.4), F6.4 (docs/DEVICE_PLAN.md H14 "CBOR
+// for devices"): every device decodes CBOR now — the JSON/cJSON RX path
+// that used to cover req_sig==0 devices is gone (cJSON dropped from
+// CMakeLists.txt entirely). auth_verify() still only runs when ident's
+// IDENT_FLAG_REQ_SIG is set; msg_ingest_down_cbor() itself only requires
+// the `n` replay counter (and checks the replay window) in that same case
+// — see its own doc comment in msg.h. No modem or sleep-state effect: pure
+// computation on the already-received buffer.
 static void on_incoming_message(const char *topic, const char *body, uint16_t len)
 {
     bool req_sig = (ident_get_flags() & IDENT_FLAG_REQ_SIG) != 0;
-    const msg_t *out = NULL;
-    msg_ingest_t r;
-
-    if (!req_sig) {
-        r = msg_ingest_down(body, len, &out);
-        handle_ingest_result(r, out, len);
-        return;
-    }
-
-    // `body` points at net.cpp's own static RX buffer (s_mqtt_rx_buf):
-    // mutable memory exposed through this callback's const-qualified
-    // parameter. Nothing else touches it while this callback runs
-    // (net.cpp's s_handler_busy guard covers exactly this window), so
-    // trimming the trailing `sig` suffix in place here is safe.
     size_t vlen = len;
-    if (!auth_verify(topic, (uint8_t *) (uintptr_t) body, &vlen)) {
-        msg_count_malformed();
-        ESP_LOGD(TAG,
-                 "signature verify failed on %s (%u bytes) - dropped, not acked (§3.4/§14.3)",
-                 topic, (unsigned) len);
-        return;
+
+    if (req_sig) {
+        // `body` points at net.cpp's own static RX buffer (s_mqtt_rx_buf):
+        // mutable memory exposed through this callback's const-qualified
+        // parameter. Nothing else touches it while this callback runs
+        // (net.cpp's s_handler_busy guard covers exactly this window), so
+        // trimming the trailing `sig` suffix in place here is safe.
+        if (!auth_verify(topic, (uint8_t *) (uintptr_t) body, &vlen)) {
+            msg_count_malformed();
+            ESP_LOGD(TAG,
+                     "signature verify failed on %s (%u bytes) - dropped, not acked (§3.4/§14.3)",
+                     topic, (unsigned) len);
+            return;
+        }
     }
-    r = msg_ingest_down_cbor((const uint8_t *) body, (uint16_t) vlen, &out);
+
+    const msg_t *out = NULL;
+    msg_ingest_t r = msg_ingest_down_cbor((const uint8_t *) body, (uint16_t) vlen, &out);
     handle_ingest_result(r, out, (uint16_t) vlen);
 }
 

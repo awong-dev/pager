@@ -16,11 +16,20 @@
  * Every public entry point below that touches RTC-resident state takes the
  * lock, does its work without logging or blocking calls, and releases it —
  * mirroring the discipline PROTOCOL.md §9 demands for the MQTT-event-task
- * caller of msg_ingest_down(). The same lock is reused to guard the
+ * caller of msg_ingest_down_cbor(). The same lock is reused to guard the
  * RAM-resident thread (s_thread) and composer buffer below: it is the only
- * cross-task primitive in this design (msg_ingest_down can run on
+ * cross-task primitive in this design (msg_ingest_down_cbor can run on
  * WalterModem's _eventProcessingTask while ui.c renders from modes_run()'s
  * task), and contention is negligible at one wake per few seconds.
+ *
+ * F6.4 (docs/DEVICE_PLAN.md §5.6, §5.2; docs/PROTOCOL.md §9.2-§9.4):
+ * variable-length bodies (a pending reply, the newest unread down message)
+ * no longer live in RTC at all — they are written to NVS namespace `msgq`
+ * with full 320-byte/160-codepoint fidelity, and RTC keeps only the small
+ * metadata needed to know a body exists and to retry/re-ack it (id, `to`,
+ * attempts/flags, a monotonic timestamp). This is what let the composer's
+ * caps grow from the old 160-byte/ASCII assumption to the full §3.1 limits
+ * without blowing the RTC budget (docs/PROTOCOL.md §9.1).
  *
  * Deliberate deviation from PROTOCOL.md §9.3's literal field name: the
  * pending_up "created_epoch" field is stored as a MONOTONIC microsecond
@@ -32,6 +41,14 @@
  * (msg_pump), which a monotonic clock answers correctly always; the wire
  * envelope's own `ts` field (wall clock, allowed to be 0 as documented) is
  * filled in separately at publish time from net_get_clock().
+ *
+ * Second deviation, same section: PROTOCOL.md §9.3's `msg.unread[1]` row
+ * also lists a `to[17]` field. A *down* message has no outbound recipient
+ * of its own — only `from` (the sender) is meaningful — so this
+ * implementation does not carry a `to` on msg_unread_t; nothing would ever
+ * set it. (Flagged in the F6.4 report as a likely doc/table copy-paste from
+ * the `pending_up` row above it, not re-litigated here since it doesn't
+ * change any power/sleep/modem behaviour.)
  */
 #ifndef MSG_H
 #define MSG_H
@@ -47,25 +64,28 @@ extern "C" {
 #endif
 
 /* ---------------------------------------------------------------------
- * Sizing constants — PROTOCOL.md §9.3 (RTC) / §9.5 (RAM).
+ * Sizing constants — PROTOCOL.md §9.3 (RTC) / §9.5 (RAM) / §9.4 (composer).
  * --------------------------------------------------------------------- */
 
 #define MSG_ID_MAX 17    /* 16 chars + NUL, PROTOCOL.md §1 */
 #define MSG_FROM_MAX 17  /* 16 chars + NUL */
+#define MSG_TO_MAX 17    /* 16 chars + NUL — peer alias for up messages, §5.6 */
 
-#define MSG_RTC_BODY_MAX 161 /* 160 bytes + NUL — RTC mirror fidelity, §9.4 */
 #define MSG_RAM_BODY_MAX 321 /* 320 UTF-8 bytes + NUL — full fidelity, §9.5 */
 
 #define MSG_SEEN_IDS_MAX 16     /* §4.1 rule 7 — do not shrink, PROTOCOL.md §9.7 */
 #define MSG_PENDING_ACKS_MAX 8  /* §4.1 rule 6 */
 #define MSG_PENDING_UP_MAX 2    /* §4.2 */
-#define MSG_THREAD_DEPTH 10     /* §9.5, matches §5.3's re-publish cap */
+#define MSG_THREAD_DEPTH 32     /* §9.5 (F6.4: 10 -> 32, richer scrollback) */
 
-#define MSG_COMPOSER_MAX 161 /* 160 bytes + NUL, §9.4 */
+/* Composer caps, docs/DEVICE_PLAN.md §5.2/§9.4: 160 Unicode code points
+ * *and* 320 UTF-8 bytes, whichever binds first — refuse further input
+ * rather than truncate. */
+#define MSG_COMPOSER_MAX 321 /* 320 UTF-8 bytes + NUL */
+#define MSG_COMPOSER_MAX_CODEPOINTS 160
 
 /* msg_t.flags */
-#define MSG_F_TRUNCATED (1u << 0)   /* RTC mirror lost bytes at a codepoint boundary, §9.4 */
-#define MSG_F_RECOVERED (1u << 1)   /* restored from RTC unread[0] after a reset, §9.6 */
+#define MSG_F_RECOVERED (1u << 1)   /* restored after a reset/cold boot, §9.6 */
 #define MSG_F_SEND_FAILED (1u << 2) /* up message: 3 attempts or >2h old, §4.2 */
 
 /* msg_t.dir */
@@ -91,6 +111,7 @@ typedef struct {
     int64_t ts;
     char id[MSG_ID_MAX];
     char from[MSG_FROM_MAX];
+    char to[MSG_TO_MAX]; /* peer alias for up messages; empty = default, §5.6 */
     char body[MSG_RAM_BODY_MAX];
     uint16_t body_len;
     uint8_t dir;       /* msg_dir_t */
@@ -111,22 +132,26 @@ typedef struct {
     bool in_use;
 } msg_pending_ack_t;
 
+/* F6.4: body no longer stored here — full fidelity lives in NVS namespace
+ * `msgq`, key by slot index (msg.c's msgq_write_reply()/msgq_read_reply()).
+ * This is metadata only: enough to retry the publish (id, to) and to know
+ * whether the entry is stale (created_us). */
 typedef struct {
     int64_t created_us; /* esp_timer_get_time() at queue time — see header note, monotonic */
     char id[MSG_ID_MAX];
-    char body[MSG_RTC_BODY_MAX]; /* full fidelity, never truncated, §9.4 */
-    uint16_t body_len;
+    char to[MSG_TO_MAX]; /* peer alias; empty = default, §5.6 */
     uint8_t attempts;
     bool in_use;
 } msg_pending_up_t;
 
+/* F6.4: body no longer stored here — full fidelity lives in NVS namespace
+ * `msgq`, key "unread" (msg.c's msgq_write_unread()/msgq_read_unread()).
+ * See this header's second deviation note for why there is no `to` field
+ * here (PROTOCOL.md §9.3's table lists one; a down message has none). */
 typedef struct {
     int64_t ts;
     char id[MSG_ID_MAX];
     char from[MSG_FROM_MAX];
-    char body[MSG_RTC_BODY_MAX]; /* truncated at a codepoint boundary, §9.4 */
-    uint16_t body_len;
-    uint8_t flags; /* MSG_F_TRUNCATED if the original was longer */
     bool in_use;
 } msg_unread_t;
 
@@ -172,10 +197,14 @@ void msg_bind_auth(auth_rtc_t *rtc, msg_epoch_wrap_fn on_wrap);
  * --------------------------------------------------------------------- */
 
 /* cold boot -> zero the RAM thread; RTC's own zeroing is modes.c's job via
- * rtc_cold_init(). reset recovery (rtc_was_valid==true) -> RAM thread
- * starts empty (it's .bss, always zeroed on reset) but re-insert msg's
- * rtc-resident unread[0] (if in_use) as s_thread[0] with MSG_F_RECOVERED
- * set, so the screen isn't blank after a crash. Must be called after
+ * rtc_cold_init(). F6.4: regardless of rtc_was_valid, msg.c also sweeps NVS
+ * namespace `msgq` for a pending reply and/or the newest-unread body that
+ * outlived the reset (docs/PROTOCOL.md §9.2's durability claim) and
+ * reconstructs the minimum RTC/RAM state to keep retrying/showing them —
+ * on a cold boot this is the ONLY way that state survives, since RTC itself
+ * was just zeroed. On a warm reset (rtc_was_valid==true) RTC's own
+ * metadata is trusted for *whether* something exists; NVS is still the
+ * only place the body itself is read from (§9.4). Must be called after
  * msg_bind_rtc(). */
 void msg_init(bool rtc_was_valid);
 
@@ -185,39 +214,36 @@ typedef enum {
     MSG_INGEST_MALFORMED,
 } msg_ingest_t;
 
-/* Caller contract: MSG_INGEST_NEW -> caller enters active mode, renders,
- * then calls msg_mark_shown(). MSG_INGEST_DUPLICATE -> re-ack only
+/* F3.6 (docs/PROTOCOL.md §14.3/§14.4, §10 keymap), F6.4 (docs/DEVICE_PLAN.md
+ * H14 "CBOR for devices"): the one and only down-ingest path. Every device
+ * decodes CBOR regardless of `ident`'s IDENT_FLAG_REQ_SIG — JSON was only
+ * ever a stop-gap for req_sig==0 devices until this task, and is gone
+ * (cJSON dropped from CMakeLists.txt too). Caller contract: `buf` MUST
+ * already have passed auth_verify() when IDENT_FLAG_REQ_SIG is set (trims
+ * the ten trailing `sig` bytes without rewriting the map header's declared
+ * pair count — see the accounting note inline in msg.c); for a req_sig==0
+ * device `buf` is used as received, unverified, and this function does NOT
+ * require key 12 (`n`) or check the replay window in that case (§10's
+ * keymap: `n` only exists on signed envelopes).
+ *
+ * MSG_INGEST_NEW -> caller enters active mode, renders, then calls
+ * msg_mark_shown(). MSG_INGEST_DUPLICATE -> re-ack only
  * (msg_mark_shown()/msg_mark_read() as appropriate) — caller MUST NOT
  * re-render, re-alert, or re-enter active mode (§4.1 rule 7). *out may be
  * NULL on this path if the original entry already scrolled out of the RAM
- * thread; the id string handed to msg_ingest_down() is still valid for
- * acking regardless. MSG_INGEST_MALFORMED -> count only, no ack, no
- * render, *out is always NULL. */
-msg_ingest_t msg_ingest_down(const char *json, uint16_t len, const msg_t **out);
-
-/* F3.6 (docs/PROTOCOL.md §14.3/§14.4, §10 keymap): CBOR-decoding twin of
- * msg_ingest_down(), for devices provisioned with ident's IDENT_FLAG_REQ_SIG
- * set. Caller contract (identical to msg_ingest_down() otherwise): `buf`
- * MUST already have passed auth_verify() — auth_verify() trims the trailing
- * `sig` suffix bytes but, per its own "no re-serialisation" contract, does
- * NOT rewrite the map header's declared pair count, which therefore still
- * counts the now-absent `sig` pair once; this function accounts for that by
- * reading exactly (declared count − 1) pairs, so it must never be called on
- * a buffer that was not just verified. Also requires key 12 (`n`) and
- * checks it against the bound auth_rtc_t's replay window
- * (auth_accept_down_n()) — missing or out-of-window `n` is the same
- * MSG_INGEST_MALFORMED outcome as any other validation failure (§3.4): no
- * ack, no render, no RTC state change beyond the malformed counter. */
+ * thread; the id string handed back via msg_last_ingest_id() is still
+ * valid for acking regardless. MSG_INGEST_MALFORMED -> count only, no ack,
+ * no render, *out is always NULL. */
 msg_ingest_t msg_ingest_down_cbor(const uint8_t *buf, uint16_t len, const msg_t **out);
 
-/* Most recently parsed message id from msg_ingest_down(), valid for
+/* Most recently parsed message id from msg_ingest_down_cbor(), valid for
  * MSG_INGEST_NEW and MSG_INGEST_DUPLICATE (empty string for
  * MSG_INGEST_MALFORMED results where the id field itself did not validate).
  * Exists because a duplicate whose s_thread entry has already scrolled out
- * of the 10-deep RAM ring (which can happen in normal operation: the
- * 16-deep dedup ring is intentionally wider than the thread, §4.1 rule 7)
- * still needs to be re-acked by id (§4.1 rule 1), and *out is NULL in that
- * case. */
+ * of the 32-deep RAM ring (which can happen in normal operation: the
+ * 16-deep dedup ring is intentionally narrower than the thread now, but a
+ * long-offline device can still see this, §4.1 rule 7) still needs to be
+ * re-acked by id (§4.1 rule 1), and *out is NULL in that case. */
 const char *msg_last_ingest_id(void);
 
 /* down message: state -> shown, queues a pending_ack entry. Returns false
@@ -226,14 +252,17 @@ const char *msg_last_ingest_id(void);
 bool msg_mark_shown(const char *id);
 
 /* down message: state -> read, queues a pending_ack entry, clears rtc
- * unread[0] if it matches this id. */
+ * unread[0] (and its NVS msgq body) if it matches this id. */
 bool msg_mark_read(const char *id);
 
-/* Student reply. REJECTS (returns false) if len > 160 bytes — never
- * truncates (§9.4). Also rejects if pending_up is full (both slots
- * in_use). On success: generates id ("u_" + 8 lowercase hex from
- * esp_random()), inserts into pending_up AND into s_thread (dir=up,
- * ack_state=pending). */
+/* Student reply. REJECTS (returns false) if the body fails PROTOCOL.md
+ * §3.1's rules (empty, a control character, more than 320 UTF-8 bytes, or
+ * more than 160 code points) — never truncates (§9.4). Also rejects if
+ * pending_up is full (both slots in_use) or the NVS write fails. On
+ * success: generates id ("u_" + 8 lowercase hex from esp_random()), writes
+ * the full body to NVS namespace `msgq`, inserts into pending_up (metadata
+ * only) AND into s_thread (dir=up, ack_state=pending, to="" — no peer
+ * targeting yet, that's F7.3). */
 bool msg_queue_reply(const char *body, uint16_t len);
 
 /* Called once per wake cycle from modes_run() while the MQTT session is
@@ -241,18 +270,45 @@ bool msg_queue_reply(const char *body, uint16_t len);
  * oldest-first (FIFO by array slot order — see msg.c), then pending
  * replies. Acks: 3 attempts then drop. Replies: 3 attempts OR
  * created_us > 2h old -> mark MSG_F_SEND_FAILED on the matching s_thread
- * entry and free the pending_up slot (§4.2). */
+ * entry, free the pending_up slot AND erase its NVS `msgq` body (§4.2). */
 void msg_pump(void);
 
 size_t msg_thread_count(void);
+
+/* README R6 fix: both accessors take the lock and copy the matching entry
+ * into a dedicated static snapshot before returning a pointer to it, so the
+ * pointer handed back can never be torn or moved out from under the caller
+ * by a concurrent msg_ingest_down_cbor()/msg_queue_reply() (different task)
+ * — it is a *copy*, frozen at the moment of the call, not a view into the
+ * live, moving s_thread ring. Each function owns its own snapshot slot, so
+ * calling one does not invalidate a pointer already returned by the other
+ * within the same caller (e.g. scr_chat.c's chat_render() reads
+ * msg_newest_unread() once, then msg_thread_at() per row). A second call to
+ * the *same* function does overwrite its own snapshot, so callers must
+ * finish with one result (copy the fields they need) before requesting the
+ * next, exactly as today's callers already do. */
 const msg_t *msg_thread_at(size_t index); /* 0 = newest; NULL if index >= msg_thread_count() */
 const msg_t *msg_newest_unread(void);     /* NULL if none */
 
-/* true once, after a reset recovery, until this is called for the first
- * time afterward — self-clearing one-shot (chosen semantics: "true once"
- * per the header comment in the phase brief; no separate ack/clear call is
- * exposed since a getter that also clears is simpler for a single UI
- * caller). Always false after a cold boot. */
+/* Chat/thread queries (docs/DEVICE_PLAN.md §5.6): invokes `cb` once per
+ * s_thread entry belonging to peer `alias` — a down message belongs to the
+ * peer that sent it (`from == alias`); an up message belongs to the peer it
+ * was addressed to (`to == alias`; since no caller sets `to` yet, F6.4's
+ * only caller of this would be one that already knows aliases equal "").
+ * `from_newest` selects direction (newest-first / oldest-first); `cb`
+ * receives a stack COPY (same discipline as msg_thread_at(), README R6),
+ * taken under the lock, which is held for the whole iteration — `cb` MUST
+ * NOT block, allocate, or call back into msg.c. The peers list itself is
+ * not tracked separately; a caller derives it on demand from
+ * msg_thread_at()'s from/to fields (docs/DEVICE_PLAN.md §5.6). */
+typedef void (*msg_iter_peer_cb)(const msg_t *m, void *ctx);
+void msg_iter_peer(const char *alias, bool from_newest, msg_iter_peer_cb cb, void *ctx);
+
+/* true once, after a reset/cold-boot recovery, until this is called for the
+ * first time afterward — self-clearing one-shot (chosen semantics: "true
+ * once" per the header comment in the phase brief; no separate ack/clear
+ * call is exposed since a getter that also clears is simpler for a single
+ * UI caller). Always false after a boot with nothing to recover. */
 bool msg_history_lost(void);
 
 typedef struct {
@@ -263,7 +319,7 @@ typedef struct {
 void msg_get_stats(msg_stats_t *out);
 
 /* F3.6: increments the malformed_drops counter (§3.4 diagnostics) for a
- * caller that rejects an envelope *before* handing it to msg_ingest_down()/
+ * caller that rejects an envelope *before* handing it to
  * msg_ingest_down_cbor() — currently only a failed auth_verify() on the RX
  * path (modes.c). Exposed so that rejection is still counted even though
  * this file never got far enough to parse the envelope. */
@@ -272,15 +328,34 @@ void msg_count_malformed(void);
 /* ---------------------------------------------------------------------
  * Composer buffer (owned here since msg_queue_reply() is the consumer of
  * its contents; ui.c drives it via these accessors instead of touching the
- * buffer directly, keeping msg.c the single owner of the 160-byte limit).
+ * buffer directly, keeping msg.c the single owner of the 320-byte/
+ * 160-codepoint limit, docs/DEVICE_PLAN.md §5.2/§9.4).
+ *
+ * No ESP-IDF dependency (host-tested by firmware/host/test_msg.c, same
+ * `#ifdef ESP_PLATFORM` split as input.c/auth.c): every text buffer on the
+ * device is UTF-8 "from day one" per §5.2, but the CardKB and the only IME
+ * built so far (ime.h's identity IME) still feed one byte at a time via
+ * ime_result_t.commit_utf8's loop in scr_chat.c, so msg_composer_push_char()
+ * keeps that exact one-byte-at-a-time signature and instead buffers an
+ * in-progress multi-byte UTF-8 sequence internally, only checking the caps
+ * and committing once a whole code point has arrived — a code point is
+ * accepted or refused atomically, never split across the 320-byte/
+ * 160-codepoint boundary (§9.4: "refusing further input rather than
+ * truncating").
  * --------------------------------------------------------------------- */
 void msg_composer_reset(void);
-/* Returns false (and leaves the buffer unchanged) if appending `c` would
- * exceed MSG_COMPOSER_MAX-1 bytes. */
+/* Returns false (and leaves the buffer + code point count unchanged) if
+ * completing the in-progress UTF-8 sequence with `c` would exceed either
+ * MSG_COMPOSER_MAX-1 bytes or MSG_COMPOSER_MAX_CODEPOINTS code points. A
+ * byte that only continues an incomplete sequence (the cap check hasn't
+ * happened yet) returns true without changing either count. */
 bool msg_composer_push_char(char c);
+/* Deletes the last whole code point (not just the last byte), and cancels
+ * any in-progress incomplete sequence. */
 bool msg_composer_backspace(void);
 const char *msg_composer_text(void);
-uint16_t msg_composer_len(void);
+uint16_t msg_composer_len(void);             /* bytes committed so far */
+uint16_t msg_composer_codepoint_count(void); /* code points committed so far */
 
 #ifdef __cplusplus
 }
