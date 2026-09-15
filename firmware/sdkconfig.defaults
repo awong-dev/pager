@@ -15,3 +15,12 @@
 # relieve is instead addressed by sizing modes.c's own RTC struct to fit the
 # ~7kB the library already consumes in this configuration (see
 # modes_boot()'s sizeof() log).
+
+# F3.1 (docs/DEVICE_TASKS.md): custom partition table — nvs/assets/otadata
+# plus two OTA app slots, docs/DEVICE_PLAN.md §3.4. Flash size follows the
+# real Walter module (16 MB, DEVICE_PLAN.md §5.1), not the ESP-IDF generic
+# 2 MB default, which is too small for this layout.
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="16MB"

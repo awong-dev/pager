@@ -1,0 +1,13 @@
+# partitions.csv — docs/DEVICE_PLAN.md §3.4.
+#
+# Requires CONFIG_ESPTOOLPY_FLASHSIZE_16MB (sdkconfig.defaults): the
+# Walter module ships 16 MB of flash (DEVICE_PLAN.md §5.1), and this
+# layout (nvs + assets + two 2 MB OTA app slots) does not fit the
+# ESP-IDF generic 2 MB default.
+#
+# Name,     Type, SubType,  Offset,   Size,      Flags
+nvs,        data, nvs,      ,         0x6000,
+otadata,    data, ota,      ,         0x2000,
+assets,     data, spiffs,   ,         0x100000,
+ota_0,      app,  ota_0,    ,         0x200000,
+ota_1,      app,  ota_1,    ,         0x200000,
