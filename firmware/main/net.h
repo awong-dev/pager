@@ -258,18 +258,6 @@ void net_get_granted_edrx(char *out, size_t out_size);
  * /status topics; net.c already knows it for the /down subscription. */
 const char *net_get_device_id(void);
 
-/* TEMPORARY hardware bring-up diagnostic (boot test screen) -- see net.cpp's
- * own comment on this function. Self-contained: brings the modem up itself
- * rather than depending on net_init()/ident. Blocking; `gnss_timeout_s`
- * bounds the GNSS fix wait (no assistance data is downloaded, so this is a
- * bare cold/warm-start fix -- can be slow or fail indoors/no sky view).
- * Any output pointer may be NULL to skip that value. Returns false (leaving
- * lat, lon, confidence and sat_count untouched) if the modem doesn't come
- * up, GNSS can't be configured, or the fix times out; batt_mv is still
- * filled in that case if voltage read succeeded before the GNSS attempt. */
-bool net_boot_diagnostics(double *lat, double *lon, double *confidence, uint8_t *sat_count,
-                          int *batt_mv, int gnss_timeout_s);
-
 #ifdef __cplusplus
 }
 #endif

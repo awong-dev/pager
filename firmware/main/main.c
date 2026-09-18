@@ -10,11 +10,8 @@
 
 #include <stdio.h>
 
-#include "disp.h"
-#include "gfx.h"
 #include "ident.h"
 #include "modes.h"
-#include "net.h"
 #include "pins.h"
 #include "setup.h"
 
@@ -36,77 +33,6 @@ static void board_power_init(void)
     };
     gpio_config(&cfg);
     gpio_set_level(PAGER_PIN_3V3_EN, 0); // active-low: enable the rail
-}
-
-// TEMPORARY hardware bring-up screen (not a design decision -- this is a
-// stand-in for the real Home screen while F6.3's scr_home.c/book.c-driven
-// greeting doesn't exist yet; the greeting text/layout is expected to
-// change). Runs unconditionally, before ident_load(), so it doesn't depend
-// on provisioning state or the (separately broken -- see the
-// UART0-vs-USB-Serial/JTAG console note) setup console.
-#define BOOT_GREETING "Hi May! Hi Colin! Hi Hannah!"
-#define BOOT_GNSS_TIMEOUT_S 120
-
-static void show_boot_screen(void)
-{
-    gfx_clear();
-#ifdef ESP_PLATFORM
-    if (!gfx_init()) {
-        ESP_LOGI(TAG, "boot screen: no/invalid assets partition; text draws as tofu");
-    }
-#endif
-    if (!disp_init()) {
-        ESP_LOGI(TAG, "boot screen: disp_init failed, skipping");
-        return;
-    }
-
-    // First pass: something on screen right away, since the GNSS fix below
-    // can block for up to BOOT_GNSS_TIMEOUT_S seconds.
-    gfx_rect(4, 4, GFX_SCREEN_W - 8, GFX_SCREEN_H - 8);
-    gfx_text(20, 20, GFX_FONT_NORMAL, "school_pager -- booting");
-    gfx_text(20, 50, GFX_FONT_NORMAL, "getting GNSS fix...");
-    gfx_text(20, 70, GFX_FONT_NORMAL, "(up to 2 minutes)");
-    disp_full_refresh();
-
-    double lat = 0, lon = 0, confidence = 0;
-    uint8_t sat_count = 0;
-    int batt_mv = 0;
-    bool have_fix =
-        net_boot_diagnostics(&lat, &lon, &confidence, &sat_count, &batt_mv, BOOT_GNSS_TIMEOUT_S);
-
-    gfx_clear();
-    gfx_rect(4, 4, GFX_SCREEN_W - 8, GFX_SCREEN_H - 8);
-
-    char lines[3][64];
-    int n = gfx_text_wrap(GFX_FONT_LARGE, BOOT_GREETING, GFX_SCREEN_W - 16, lines, 3);
-    int y = 8;
-    for (int i = 0; i < n && i < 3; i++) {
-        gfx_text(8, y, GFX_FONT_LARGE, lines[i]);
-        y += 20;
-    }
-
-    gfx_hline(8, GFX_SCREEN_W - 8, y + 2);
-    y += 10;
-
-    char buf[64];
-    if (have_fix) {
-        snprintf(buf, sizeof(buf), "GPS: %.5f, %.5f (%u sats)", lat, lon, (unsigned) sat_count);
-    } else {
-        snprintf(buf, sizeof(buf), "GPS: no fix (timed out/failed)");
-    }
-    gfx_text(8, y, GFX_FONT_NORMAL, buf);
-    y += 16;
-
-    if (batt_mv > 0) {
-        snprintf(buf, sizeof(buf), "Battery: %d.%02d V", batt_mv / 1000, (batt_mv % 1000) / 10);
-    } else {
-        snprintf(buf, sizeof(buf), "Battery: unknown");
-    }
-    gfx_text(8, y, GFX_FONT_NORMAL, buf);
-
-    disp_full_refresh();
-    ESP_LOGI(TAG, "boot screen: drawn (fix=%d lat=%.6f lon=%.6f batt_mv=%d)", have_fix, lat, lon,
-             batt_mv);
 }
 
 /* docs/DEVICE_TASKS.md F3.5: `setup <code>` over the USB serial console.
@@ -165,8 +91,18 @@ static void start_setup_console(void)
     esp_console_repl_config_t repl_config = ESP_CONSOLE_REPL_CONFIG_DEFAULT();
     repl_config.prompt = "pager>";
 
-    esp_console_dev_uart_config_t uart_config = ESP_CONSOLE_DEV_UART_CONFIG_DEFAULT();
-    ESP_ERROR_CHECK(esp_console_new_repl_uart(&uart_config, &repl_config, &repl));
+    // esp_console_new_repl_uart() binds to UART0's own RX/TX pins, a
+    // physically separate peripheral from the native USB-Serial/JTAG port
+    // this board's single USB connector actually exposes (confirmed on
+    // real hardware: typing `setup <code>` over the flashing/monitor cable
+    // reached nowhere -- the REPL's stdin was listening on unconnected
+    // UART0 pins the whole time). USB-Serial/JTAG is this project's
+    // sdkconfig CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG, already used
+    // for boot/log output; using it here too makes the console reachable
+    // over the same cable used to flash and monitor.
+    esp_console_dev_usb_serial_jtag_config_t usb_config =
+        ESP_CONSOLE_DEV_USB_SERIAL_JTAG_CONFIG_DEFAULT();
+    ESP_ERROR_CHECK(esp_console_new_repl_usb_serial_jtag(&usb_config, &repl_config, &repl));
 
     esp_console_register_help_command();
 
@@ -195,8 +131,6 @@ void app_main(void)
         nvs_err = nvs_flash_init();
     }
     ESP_ERROR_CHECK(nvs_err);
-
-    show_boot_screen(); // TEMPORARY -- see its own comment above
 
     if (!ident_load()) {
         // No valid identity in NVS: docs/DEVICE_TASKS.md F3.5, Setup mode.

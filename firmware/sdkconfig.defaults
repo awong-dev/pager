@@ -29,3 +29,16 @@ CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
 # for the setup code's bid/bpw/bkey derivation (docs/DEVICE_PLAN.md §3.2);
 # off by default in ESP-IDF 5.2's mbedtls Kconfig.
 CONFIG_MBEDTLS_HKDF_C=y
+
+# This board exposes exactly one USB connector, wired to the ESP32-S3's
+# native USB-Serial/JTAG peripheral -- UART0's own RX/TX pins (the
+# ESP-IDF default console) go nowhere reachable from that connector. Found
+# on real hardware: main.c's Setup-mode console (`setup <code>`) was bound
+# to UART0 and silently could not be typed into over the flashing/monitor
+# cable, even though boot/log output appeared fine (log output already
+# went out over USB-Serial/JTAG as the *secondary* console). Promoting it
+# to the *primary* console unifies input and output on the one connection
+# that actually exists, and is required for esp_console_new_repl_usb_
+# serial_jtag() (main.c) to even compile -- that API is gated behind this
+# exact Kconfig symbol, not the secondary-console one.
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
