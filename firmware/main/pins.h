@@ -4,6 +4,15 @@
 #ifndef PINS_H
 #define PINS_H
 
+// Board 3V3 peripheral rail enable. Off by default on power-up/reset;
+// GPIO0 must be driven LOW to turn it on. Found during hardware bring-up
+// (docs/DEVICE_TASKS_LOG.md): the display (and likely other peripherals
+// downstream of this rail) get no power at all until this is set, separate
+// from PAGER_PIN_DISP_VCC_EN's own local gate below. GPIO0 is a boot
+// strapping pin but is safe to repurpose as a plain GPIO output once
+// app_main() is running (strapping is sampled only during reset/boot).
+#define PAGER_PIN_3V3_EN 0  // active-low
+
 // Display (SSD1680, SPI)
 #define PAGER_PIN_DISP_SCK 12
 #define PAGER_PIN_DISP_MOSI 11

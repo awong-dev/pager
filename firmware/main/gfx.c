@@ -36,7 +36,13 @@ void gfx_set_pixel(int x, int y, bool black)
     if (x < 0 || x >= GFX_SCREEN_W || y < 0 || y >= GFX_SCREEN_H) {
         return;
     }
-    int native_row = x;
+    // Hardware bring-up finding (docs/DEVICE_TASKS_LOG.md): the panel's
+    // native row 0 is wired to the opposite physical edge from what a
+    // direct x->native_row mapping assumed, producing a horizontal mirror
+    // with no vertical flip. Reversed here rather than by changing the
+    // RAM Y-address direction in disp.c, so this is the single point of
+    // truth for the landscape-rotation mapping.
+    int native_row = (GFX_FB_ROWS - 1) - x;
     int native_byte = y / 8;
     int bit = 7 - (y % 8);
     if (black) {

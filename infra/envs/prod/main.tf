@@ -1,11 +1,23 @@
 provider "google" {
   project = var.project_id
   region  = var.region
+
+  # Forces the X-Goog-User-Project header on every request instead of
+  # relying on ADC's quota_project_id (gcloud auth application-default
+  # set-quota-project) being picked up automatically -- some APIs
+  # (identitytoolkit.googleapis.com/google_identity_platform_config in
+  # particular) don't reliably honor the ADC-file setting alone and 403
+  # with "requires a quota project" even when one is configured there.
+  user_project_override = true
+  billing_project       = var.project_id
 }
 
 provider "google-beta" {
   project = var.project_id
   region  = var.region
+
+  user_project_override = true
+  billing_project       = var.project_id
 }
 
 # --- Firebase project + Firestore + Auth + Hosting ------------------------

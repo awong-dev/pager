@@ -57,14 +57,25 @@ static void disp_unlock(void)
 static bool disp_wait_busy(void)
 {
     int64_t start = esp_timer_get_time();
+    int entry_level = gpio_get_level(PAGER_PIN_DISP_BUSY);
+    // TEMPORARY hardware bring-up diagnostic: log the raw BUSY level and how
+    // many poll iterations actually happened, so we can tell "genuinely
+    // idle already" apart from "BUSY line not really connected" without a
+    // multimeter/scope.
+    int iters = 0;
     // BUSY high = busy (common SSD1680 breakout polarity) — UNVERIFIED
     // against this exact panel's datasheet, PENDING_HW.
     while (gpio_get_level(PAGER_PIN_DISP_BUSY) == 1) {
+        iters++;
         if (esp_timer_get_time() - start > PAGER_UI_BUSY_TIMEOUT_US) {
+            ESP_LOGI(TAG, "BUSY: entry=%d timed out after %d iters (~%lld ms)", entry_level,
+                     iters, (esp_timer_get_time() - start) / 1000);
             return false;
         }
         vTaskDelay(pdMS_TO_TICKS(10)); // NEVER a tight busy-loop
     }
+    ESP_LOGI(TAG, "BUSY: entry=%d exit=%d iters=%d elapsed=%lld us", entry_level,
+             gpio_get_level(PAGER_PIN_DISP_BUSY), iters, esp_timer_get_time() - start);
     return true;
 }
 
@@ -347,9 +358,16 @@ bool disp_init(void)
         return false;
     }
 
+    // TEMPORARY hardware bring-up diagnostic.
+    ESP_LOGI(TAG, "BUSY raw level before power-on: %d", gpio_get_level(PAGER_PIN_DISP_BUSY));
+
     // Power effect: VCC on for the duration of reset+init (a few tens of ms).
     disp_power_on();
+    ESP_LOGI(TAG, "BUSY raw level after power-on (pre-reset): %d",
+             gpio_get_level(PAGER_PIN_DISP_BUSY));
     disp_hw_reset();
+    ESP_LOGI(TAG, "BUSY raw level right after hw_reset (pre-command): %d",
+             gpio_get_level(PAGER_PIN_DISP_BUSY));
     if (!disp_run_init_sequence()) {
         ESP_LOGI(TAG, "init sequence BUSY timeout; retrying once");
         disp_hw_reset();

@@ -10,14 +10,14 @@
         "source": "/api/**",
         "run": {
           "serviceId": "pager-relay",
-          "region": "us-central1"
+          "region": "us-west1"
         }
       },
       {
         "source": "/webhooks/**",
         "run": {
           "serviceId": "pager-relay",
-          "region": "us-central1"
+          "region": "us-west1"
         }
       },
       {

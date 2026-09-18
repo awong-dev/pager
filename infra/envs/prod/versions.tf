@@ -19,7 +19,7 @@ terraform {
   # once the bucket exists. `terraform validate -backend=false` (this
   # module's CI/dev-loop check) never touches this block at all.
   backend "gcs" {
-    bucket = "REPLACE_WITH_INFRA_BOOTSTRAP_STATE_BUCKET_NAME"
+    bucket = "kid-pager-tfstate"
     prefix = "envs/prod"
   }
 }
