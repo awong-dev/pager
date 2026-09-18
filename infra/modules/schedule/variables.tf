@@ -41,7 +41,12 @@ variable "region" {
 }
 
 variable "relay_service_url" {
-  description = "infra/modules/relay-service's service_url output."
+  description = "infra/modules/relay-service's service_url output. Used as the Scheduler http_target's actual call destination (uri) -- NOT the OIDC audience, see oidc_audience below."
+  type        = string
+}
+
+variable "oidc_audience" {
+  description = "Must match infra/modules/relay-service's oidc_audience exactly (both fed the same value from envs/prod) -- app/routers/internal.py checks the OIDC token's aud claim against its own OIDC_AUDIENCE env var, which is this same string, not the run.app URL."
   type        = string
 }
 

@@ -9,12 +9,16 @@ provider "google" {
 # for_each so infra/README.md's bootstrap step is a single `terraform apply`.
 locals {
   base_apis = [
-    "run.googleapis.com",                # Cloud Run v2 (relay service + jobs)
-    "cloudscheduler.googleapis.com",     # tick + sweep
-    "cloudtasks.googleapis.com",         # delivery retry queue
-    "firestore.googleapis.com",          # the data store
-    "firebase.googleapis.com",           # Firebase project/web-app/hosting resources
-    "identitytoolkit.googleapis.com",    # Identity Platform / Firebase Auth config
+    "run.googleapis.com",             # Cloud Run v2 (relay service + jobs)
+    "cloudscheduler.googleapis.com",  # tick + sweep
+    "cloudtasks.googleapis.com",      # delivery retry queue
+    "firestore.googleapis.com",       # the data store
+    "firebase.googleapis.com",        # Firebase project/web-app/hosting resources
+    "identitytoolkit.googleapis.com", # Identity Platform / Firebase Auth config
+    # Identity Platform's own console settings page 400s without this
+    # enabled -- found live debugging default sendOobCode (email link /
+    # password reset) delivery silently failing on a fresh project.
+    "cloudfunctions.googleapis.com",
     "firebaseextensions.googleapis.com", # required by some google_firebase_* resources
     "secretmanager.googleapis.com",      # secret containers
     "artifactregistry.googleapis.com",   # relay container images

@@ -1,13 +1,20 @@
 "use client";
 
 /** `/login` -- docs/SERVER_PLAN.md §7.3: single email-or-phone input, hand
- * built with MUI over Firebase Auth. Email uses the passwordless email-link
- * flow (`sendSignInLinkToEmail` -> the link lands back here with
- * `?finish=1` -> `signInWithEmailLink`); phone uses invisible reCAPTCHA +
- * `signInWithPhoneNumber` -> a 6-digit code. After sign-in,
- * `lib/auth-context.tsx` calls `GET /api/me` itself and exposes a 403 as
- * `notRegisteredMessage`, which this page renders and treats as staying on
- * `/login` (the account was already signed out by the context).
+ * built with MUI over Firebase Auth. Email offers two paths: the
+ * passwordless email-link flow (`sendSignInLinkToEmail` -> the link lands
+ * back here with `?finish=1` -> `signInWithEmailLink`) and, if a password is
+ * entered, direct `signInWithEmailAndPassword` -- added because Google's
+ * default email-sending pipeline turned out to be broken project-wide on
+ * this Identity Platform project (every `sendOobCode` request, of any type,
+ * returns success but nothing is ever delivered), so password sign-in is
+ * the only way in until that's resolved. Both stay available: the email
+ * field is shared, the password field is optional, and the primary button's
+ * label/action switches based on whether a password was entered. Phone uses
+ * invisible reCAPTCHA + `signInWithPhoneNumber` -> a 6-digit code. After
+ * sign-in, `lib/auth-context.tsx` calls `GET /api/me` itself and exposes a
+ * 403 as `notRegisteredMessage`, which this page renders and treats as
+ * staying on `/login` (the account was already signed out by the context).
  */
 
 import {
@@ -15,6 +22,7 @@ import {
   RecaptchaVerifier,
   isSignInWithEmailLink,
   sendSignInLinkToEmail,
+  signInWithEmailAndPassword,
   signInWithEmailLink,
   signInWithPhoneNumber,
 } from "firebase/auth";
@@ -43,6 +51,7 @@ export default function LoginPage() {
 
   const [mode, setMode] = useState<Mode>("enter-identifier");
   const [identifier, setIdentifier] = useState("");
+  const [password, setPassword] = useState("");
   const [code, setCode] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -99,13 +108,22 @@ export default function LoginPage() {
     if (!value) return;
     setBusy(true);
     try {
-      if (value.includes("@")) {
+      if (value.includes("@") && password) {
+        const auth = getFirebaseAuth();
+        await signInWithEmailAndPassword(auth, value, password);
+        // AuthProvider handles the rest.
+      } else if (value.includes("@")) {
         const auth = getFirebaseAuth();
         const url = new URL(window.location.href);
         url.search = "?finish=1";
         await sendSignInLinkToEmail(auth, value, {
           url: url.toString(),
           handleCodeInApp: true,
+          // linkDomain is only for opting into a *custom* Hosting domain --
+          // Google rejects it outright (auth/invalid-hosting-link-domain)
+          // when set to the default web.app/firebaseapp.com domain this
+          // project uses, confirmed against the real API. Omit it entirely
+          // unless/until a custom domain (infra/README.md step 12) exists.
         });
         window.localStorage.setItem(EMAIL_LINK_STORAGE_KEY, value);
         setMode("email-sent");
@@ -166,12 +184,28 @@ export default function LoginPage() {
               label="Email or phone (+1XXXXXXXXXX)"
               value={identifier}
               onChange={(e) => setIdentifier(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && void handleSubmitIdentifier()}
+              onKeyDown={(e) => e.key === "Enter" && !password && void handleSubmitIdentifier()}
               autoFocus
               fullWidth
             />
+            {identifier.includes("@") && (
+              <TextField
+                label="Password (leave blank for an emailed sign-in link instead)"
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && void handleSubmitIdentifier()}
+                fullWidth
+              />
+            )}
             <Button variant="contained" disabled={busy} onClick={() => void handleSubmitIdentifier()}>
-              {busy ? "Sending..." : "Continue"}
+              {busy
+                ? identifier.includes("@") && password
+                  ? "Signing in..."
+                  : "Sending..."
+                : identifier.includes("@") && password
+                  ? "Sign in"
+                  : "Continue"}
             </Button>
           </Stack>
         )}

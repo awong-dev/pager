@@ -20,6 +20,19 @@ provider "google-beta" {
   billing_project       = var.project_id
 }
 
+# Shared OIDC audience for Cloud Scheduler -> relay /internal/* calls
+# (relay-service's app/routers/internal.py, schedule's oidc_token.audience).
+# A fixed string rather than relay_service.service_url on purpose -- avoids
+# the self-reference cycle a service's own computed .uri would create, per
+# app/routers/internal.py's module docstring. The scheduler SA's email is
+# deterministic (schedule/main.tf's account_id is the literal
+# "pager-scheduler") so it's computed here rather than creating a module
+# cycle just to read it back from module.schedule.
+locals {
+  relay_oidc_audience    = "https://${var.relay_service_name}"
+  scheduler_caller_email = "pager-scheduler@${var.project_id}.iam.gserviceaccount.com"
+}
+
 # --- Firebase project + Firestore + Auth + Hosting ------------------------
 module "firebase" {
   source = "../../modules/firebase"
@@ -64,6 +77,9 @@ module "relay_service" {
   twilio_from_number_secret_id = var.enable_sms_secrets ? module.secrets.secret_ids.twilio_from_number : null
   twilio_base_url              = var.twilio_base_url
 
+  oidc_audience       = local.relay_oidc_audience
+  oidc_allowed_emails = local.scheduler_caller_email
+
   labels = var.labels
 
   depends_on = [module.firebase]
@@ -78,6 +94,7 @@ module "schedule" {
 
   relay_service_url  = module.relay_service.service_url
   relay_service_name = module.relay_service.service_name
+  oidc_audience      = local.relay_oidc_audience
 
   tick_schedule  = var.tick_schedule
   sweep_schedule = var.sweep_schedule

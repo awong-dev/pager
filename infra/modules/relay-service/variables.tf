@@ -76,6 +76,16 @@ variable "twilio_base_url" {
   default     = ""
 }
 
+variable "oidc_audience" {
+  description = "app/routers/internal.py's OIDC_AUDIENCE -- must match infra/modules/schedule's oidc_token.audience exactly (both fed the same value from envs/prod, per that file's module docstring 'Known gap' section). Also set as this service's custom_audiences so a fixed, non-self-referential string (e.g. \"https://pager-relay\") can be used instead of the service's own computed .uri."
+  type        = string
+}
+
+variable "oidc_allowed_emails" {
+  description = "app/routers/internal.py's OIDC_ALLOWED_EMAILS -- comma-separated caller service-account emails allowed to call /internal/*. Today just infra/modules/schedule's pager-scheduler SA; computed deterministically in envs/prod (account_id is the literal \"pager-scheduler\") to avoid a module cycle."
+  type        = string
+}
+
 variable "tasks_mode" {
   description = "relay/app/tasks.py's TASKS_MODE. Only \"inline\" is usable end-to-end today; \"cloud_tasks\" builds tasks but has nowhere to dispatch them yet (see that module's docstring's known-gap section). The variable exists so the eventual flip is a tfvars change, not a module edit."
   type        = string

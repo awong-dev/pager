@@ -83,6 +83,11 @@ resource "google_cloud_run_v2_service" "relay" {
   # app level (see infra/modules/schedule's module docstring).
   ingress = "INGRESS_TRAFFIC_ALL"
 
+  # app/routers/internal.py's OIDC_AUDIENCE (below) must match this exactly.
+  # A fixed string, not this service's own computed .uri, so wiring it does
+  # not require a two-apply bootstrap (see that file's module docstring).
+  custom_audiences = [var.oidc_audience]
+
   template {
     service_account = google_service_account.relay.email
 
@@ -130,6 +135,14 @@ resource "google_cloud_run_v2_service" "relay" {
       env {
         name  = "TWILIO_BASE_URL"
         value = var.twilio_base_url
+      }
+      env {
+        name  = "OIDC_AUDIENCE"
+        value = var.oidc_audience
+      }
+      env {
+        name  = "OIDC_ALLOWED_EMAILS"
+        value = var.oidc_allowed_emails
       }
 
       dynamic "env" {
