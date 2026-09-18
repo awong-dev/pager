@@ -302,12 +302,21 @@ static bool nickname_valid(const char *s, size_t len) { return text_field_valid(
 // shared mutex instead of a book_rtc_t of its own.
 // ---------------------------------------------------------------------------
 
+// Real hardware finding (see msg.c's identical fix): scr_home.c/scr_book.c
+// can call book.c accessors before book_bind() ever runs (setup_run(),
+// F3.5, calls ui_init() standalone ahead of modes_boot()) -- a NULL
+// s_lock()/s_unlock() there is a jump to address 0, not just a bad read.
+// Defaulting to a no-op keeps every accessor safe pre-bind.
+static void book_lock_noop(void) {}
+
 static auth_rtc_t *s_auth_rtc = NULL;
-static book_lock_fn s_lock = NULL;
-static book_unlock_fn s_unlock = NULL;
-static book_save_fn s_rtc_save = NULL; // ONLY for auth_rtc_t mutation (next_up_n_locked) — never
-                                       // for this module's own NVS blob, which has no RTC mirror
-static book_epoch_wrap_fn s_on_wrap = NULL;
+static book_lock_fn s_lock = book_lock_noop;
+static book_unlock_fn s_unlock = book_lock_noop;
+static book_save_fn s_rtc_save = book_lock_noop; // ONLY for auth_rtc_t mutation
+                                                  // (next_up_n_locked) — never for this
+                                                  // module's own NVS blob, which has no
+                                                  // RTC mirror
+static book_epoch_wrap_fn s_on_wrap = book_lock_noop;
 
 void book_bind(auth_rtc_t *auth_rtc, book_lock_fn lock, book_unlock_fn unlock, book_save_fn save,
                book_epoch_wrap_fn on_wrap)

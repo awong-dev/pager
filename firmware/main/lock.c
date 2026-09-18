@@ -238,10 +238,17 @@ bool lock_parse_cfg(const uint8_t *buf, uint16_t len, bool sig_pair_present, cha
 // RTC wiring (lock.h: lock_bind_rtc()) — same pattern as msg_bind_rtc().
 // ---------------------------------------------------------------------------
 
+// Real hardware finding (see msg.c's identical fix): scr_home.c/scr_device.c
+// can call lock.c accessors before lock_bind_rtc() ever runs (setup_run(),
+// F3.5, calls ui_init() standalone ahead of modes_boot()) -- a NULL
+// s_lock()/s_unlock() there is a jump to address 0, not just a bad read.
+// Defaulting to a no-op keeps every accessor safe pre-bind.
+static void lock_rtc_lock_noop(void) {}
+
 static lock_rtc_t *s_rtc = NULL;
-static lock_rtc_lock_fn s_lock = NULL;
-static lock_rtc_unlock_fn s_unlock = NULL;
-static lock_rtc_save_fn s_save = NULL;
+static lock_rtc_lock_fn s_lock = lock_rtc_lock_noop;
+static lock_rtc_unlock_fn s_unlock = lock_rtc_lock_noop;
+static lock_rtc_save_fn s_save = lock_rtc_lock_noop;
 
 void lock_bind_rtc(lock_rtc_t *rtc, lock_rtc_lock_fn lock, lock_rtc_unlock_fn unlock,
                     lock_rtc_save_fn save)

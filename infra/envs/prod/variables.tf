@@ -54,6 +54,11 @@ variable "broker_api_url" {
   type        = string
 }
 
+variable "broker_host" {
+  description = "The broker's MQTT(S) hostname (not the REST API URL) -- baked into every device's setup-code bootstrap bundle. For EMQX Cloud Serverless this is normally the same base hostname as broker_api_url, just used for MQTT(S) instead of the REST management API."
+  type        = string
+}
+
 variable "twilio_base_url" {
   description = "Leave empty in a real deployment -- see infra/modules/relay-service/variables.tf's comment. Only meaningful pointed at a Twilio-mock-shaped staging endpoint."
   type        = string

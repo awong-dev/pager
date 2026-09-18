@@ -34,6 +34,11 @@ variable "broker_api_url" {
   type        = string
 }
 
+variable "broker_host" {
+  description = "app/routers/admin.py's _bootstrap_host_and_ca() BROKER_HOST -- the broker's MQTT(S) hostname baked into every device's setup-code bootstrap bundle. Distinct from broker_api_url (that's the REST management API base URL, a different port/purpose on the same EMQX Cloud Serverless deployment). Falls back to \"localhost\" if unset, which is only correct for the local docker-compose stack -- found live trying to provision a real device against a real deployment with this unset."
+  type        = string
+}
+
 # --- Secret Manager wiring ------------------------------------------
 # These come from infra/modules/secrets' outputs. Cloud Run v2 refuses to
 # create a revision that references a secret with zero versions, so

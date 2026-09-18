@@ -129,6 +129,10 @@ resource "google_cloud_run_v2_service" "relay" {
         value = var.broker_api_url
       }
       env {
+        name  = "BROKER_HOST"
+        value = var.broker_host
+      }
+      env {
         name  = "TASKS_MODE"
         value = var.tasks_mode
       }

@@ -90,6 +90,13 @@ static void start_setup_console(void)
     esp_console_repl_t *repl = NULL;
     esp_console_repl_config_t repl_config = ESP_CONSOLE_REPL_CONFIG_DEFAULT();
     repl_config.prompt = "pager>";
+    // Default (4096) overflows: confirmed on real hardware -- `setup <code>`
+    // crashed (Guru Meditation LoadProhibited, corrupted-pointer signature
+    // several frames deep in vfprintf/xRingbufferSend) on the very first
+    // ESP_LOGI call inside ui_init()->gfx_init(), before setup_run() even
+    // reaches its own mbedtls AES-GCM/HKDF and MQTT work, which use
+    // meaningfully more stack still.
+    repl_config.task_stack_size = 16384;
 
     // esp_console_new_repl_uart() binds to UART0's own RX/TX pins, a
     // physically separate peripheral from the native USB-Serial/JTAG port

@@ -69,6 +69,13 @@ locals {
     "roles/cloudtasks.admin",           # infra/modules/schedule
     "roles/iam.securityAdmin",          # grant the relay runtime SA + scheduler SA their project IAM roles via Terraform
     "roles/serviceusage.serviceUsageConsumer",
+    # Self-referential bootstrap gap, found live: this module's own
+    # `terraform apply` (run by this exact SA in CI) manages the workload
+    # identity pool/provider this SA authenticates through -- without this
+    # role, CI's own apply 403s reading its own pool
+    # (iam.workloadIdentityPools.get). roles/iam.securityAdmin does not
+    # cover Workload Identity Federation resources.
+    "roles/iam.workloadIdentityPoolAdmin",
   ]
 }
 

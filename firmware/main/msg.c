@@ -169,10 +169,21 @@ static const char *TAG = "msg";
 // RTC wiring (msg.h: msg_bind_rtc()).
 // ---------------------------------------------------------------------------
 
+// Real hardware finding: setup_run() (F3.5) calls ui_init() standalone,
+// before modes_boot() (and therefore msg_bind_rtc()) ever runs -- by
+// design, setup.c predates and is meant to run independently of the rest
+// of the app. F6.3's later scr_home.c calls msg_thread_count() while
+// building the Home screen's menu regardless, which used to jump through
+// a NULL s_lock()/s_unlock() (Guru Meditation InstrFetchProhibited,
+// confirmed live). Defaulting to a no-op keeps every accessor safe to call
+// pre-bind and correctly reports "nothing yet", which is the truthful
+// answer at that point anyway.
+static void msg_rtc_lock_noop(void) {}
+
 static msg_rtc_t *s_rtc = NULL;
-static msg_rtc_lock_fn s_lock = NULL;
-static msg_rtc_unlock_fn s_unlock = NULL;
-static msg_rtc_save_fn s_save = NULL;
+static msg_rtc_lock_fn s_lock = msg_rtc_lock_noop;
+static msg_rtc_unlock_fn s_unlock = msg_rtc_lock_noop;
+static msg_rtc_save_fn s_save = msg_rtc_lock_noop;
 
 void msg_bind_rtc(msg_rtc_t *rtc, msg_rtc_lock_fn lock, msg_rtc_unlock_fn unlock,
                    msg_rtc_save_fn save)
