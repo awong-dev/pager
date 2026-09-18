@@ -15,6 +15,9 @@ pubsub-debug.log
 database-debug.log
 firestore-export-metadata.json
 
+# Firebase CLI local deploy cache (root-level firebase deploy)
+.firebase/
+
 # Environment files
 .env
 # (but NOT .env.example)
