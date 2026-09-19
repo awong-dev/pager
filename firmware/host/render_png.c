@@ -258,16 +258,17 @@ static void render_tofu(void)
 // the status text's ink visibly lower than the icons -- see ui.c's comment
 // on that constant for the measured font-asset numbers behind -3.
 #define FIXTURE_STATUS_TEXT_Y (-3)
+#define FIXTURE_STATUS_ICON_GAP 4 /* matches ui.c's UI_STATUS_ICON_GAP */
 
+// Matches ui.c's draw_status_bar() layout: spelled-out counts on the left,
+// signal bars / MQTT link / battery right-aligned on the right (user
+// request: "new: 0  unsent: 0" on the left, icons on the right).
 static void draw_fixture_status_bar(int bars, bool link_ok, int unsent, bool lock_on, int unread,
                                      int batt_segs)
 {
-    gfx_icon(0, 0, (gfx_icon_t) (GFX_ICON_SIGNAL_0 + bars));
-    gfx_icon(16, 0, link_ok ? GFX_ICON_LINK_OK : GFX_ICON_LINK_X);
-
-    char buf[16];
-    snprintf(buf, sizeof(buf), "u%d", unsent);
-    int x = gfx_text(32, FIXTURE_STATUS_TEXT_Y, GFX_FONT_NORMAL, buf) + 3;
+    char buf[32];
+    snprintf(buf, sizeof(buf), "new: %d  unsent: %d", unread, unsent);
+    int x = gfx_text(0, FIXTURE_STATUS_TEXT_Y, GFX_FONT_NORMAL, buf) + 3;
     if (lock_on) {
         gfx_icon(x, 0, GFX_ICON_LOCK);
     }
@@ -275,9 +276,11 @@ static void draw_fixture_status_bar(int bars, bool link_ok, int unsent, bool loc
     int batt_x = GFX_SCREEN_W - GFX_ICON_W;
     gfx_icon(batt_x, 0, (gfx_icon_t) (GFX_ICON_BATTERY_0 + batt_segs));
 
-    snprintf(buf, sizeof(buf), "new %d", unread);
-    int uw = gfx_text_width(GFX_FONT_NORMAL, buf);
-    gfx_text(batt_x - 4 - uw, FIXTURE_STATUS_TEXT_Y, GFX_FONT_NORMAL, buf);
+    int mqtt_x = batt_x - GFX_ICON_W - FIXTURE_STATUS_ICON_GAP;
+    gfx_icon(mqtt_x, 0, link_ok ? GFX_ICON_LINK_OK : GFX_ICON_LINK_X);
+
+    int bars_x = mqtt_x - GFX_ICON_W - FIXTURE_STATUS_ICON_GAP;
+    gfx_icon(bars_x, 0, (gfx_icon_t) (GFX_ICON_SIGNAL_0 + bars));
 
     gfx_hline(0, GFX_SCREEN_W - 1, FIXTURE_STATUS_H);
 }

@@ -553,12 +553,38 @@ void gfx_icon(int x, int y, gfx_icon_t id)
             gfx_set_pixel(x + 5 + i, y + 9 - i, true);
         }
         break;
-    case GFX_ICON_LINK_X:
-        for (int i = 0; i < GFX_ICON_W; i++) {
-            gfx_set_pixel(x + i, y + i, true);
-            gfx_set_pixel(x + i, y + GFX_ICON_H - 1 - i, true);
+    case GFX_ICON_LINK_X: {
+        /* "no entry" sign: a circle outline (midpoint circle algorithm) plus
+         * a single bottom-left-to-top-right slash through it, replacing the
+         * old corner-to-corner X at the user's request -- easier to tell
+         * apart from GFX_ICON_LOCK/other diagonal-heavy icons at a glance. */
+        int cx = x + GFX_ICON_W / 2;
+        int cy = y + GFX_ICON_H / 2;
+        int r = GFX_ICON_W / 2 - 1;
+        int dx = r, dy = 0, err = 0;
+        while (dx >= dy) {
+            gfx_set_pixel(cx + dx, cy + dy, true);
+            gfx_set_pixel(cx + dy, cy + dx, true);
+            gfx_set_pixel(cx - dy, cy + dx, true);
+            gfx_set_pixel(cx - dx, cy + dy, true);
+            gfx_set_pixel(cx - dx, cy - dy, true);
+            gfx_set_pixel(cx - dy, cy - dx, true);
+            gfx_set_pixel(cx + dy, cy - dx, true);
+            gfx_set_pixel(cx + dx, cy - dy, true);
+            dy++;
+            if (err <= 0) {
+                err += 2 * dy + 1;
+            }
+            if (err > 0) {
+                dx--;
+                err -= 2 * dx + 1;
+            }
+        }
+        for (int i = -r; i <= r; i++) {
+            gfx_set_pixel(cx + i, cy - i, true);
         }
         break;
+    }
     case GFX_ICON_LOCK:
         gfx_rect(x + 1, y + 5, 10, 7);
         gfx_hline(x + 3, x + 8, y + 2);

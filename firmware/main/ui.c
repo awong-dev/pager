@@ -221,39 +221,48 @@ static void count_unread_unsent(int *unread, int *unsent)
 // icons' span instead.
 #define UI_STATUS_TEXT_Y (-3)
 
+// Icon spacing along the right-aligned group below (signal bars, MQTT link,
+// battery) — same 4px gap the old adjacent-icon layout used (lock icon sat
+// 4px after the "u<n>" text it followed).
+#define UI_STATUS_ICON_GAP 4
+
 static void draw_status_bar(void)
 {
+    int unread = 0, unsent = 0;
+    count_unread_unsent(&unread, &unsent);
+
+    // Left: spelled-out counts, at the user's request (replacing the old
+    // icon + "u<n>"/"new <n>" abbreviations split across both ends of the
+    // bar).
+    char buf[32];
+    snprintf(buf, sizeof(buf), "new: %d  unsent: %d", unread, unsent);
+    int x = gfx_text(0, UI_STATUS_TEXT_Y, GFX_FONT_NORMAL, buf) + 3;
+
+    // "[lock if sig on]" (§5.4) — envelope signing (auth.c/IDENT_FLAG_REQ_SIG),
+    // NOT the device-passcode lock (lock.c/F6.5, not built). Kept right after
+    // the counts, its old adjacency.
+    if (ident_get_flags() & IDENT_FLAG_REQ_SIG) {
+        gfx_icon(x, 0, GFX_ICON_LOCK);
+    }
+
+    // Right, at the user's request: signal bars, then MQTT link, then
+    // battery, battery flush against the right edge same as before.
+    int batt_x = GFX_SCREEN_W - GFX_ICON_W;
+    gfx_icon(batt_x, 0, (gfx_icon_t) (GFX_ICON_BATTERY_0 + segs_from_batt_mv(modes_get_batt_mv())));
+
+    net_mqtt_status_t st;
+    net_get_mqtt_status(&st);
+    int mqtt_x = batt_x - GFX_ICON_W - UI_STATUS_ICON_GAP;
+    gfx_icon(mqtt_x, 0, st.mqtt_connected ? GFX_ICON_LINK_OK : GFX_ICON_LINK_X);
+
     int bars = bars_from_rssi_dbm(modes_get_rssi_dbm());
-    gfx_icon(0, 0, (gfx_icon_t) (GFX_ICON_SIGNAL_0 + bars));
     // Note: §5.4 also specifies a distinct "not registered -> x" bucket
     // separate from "0 bars"; net_get_rssi() (net.h) exposes only a dBm
     // reading or failure-with-fallback, no registration-state bit, so that
     // distinction collapses into "0 bars" here. Fixing it needs a new
     // net.h entry point, out of this task's Files list.
-
-    net_mqtt_status_t st;
-    net_get_mqtt_status(&st);
-    gfx_icon(16, 0, st.mqtt_connected ? GFX_ICON_LINK_OK : GFX_ICON_LINK_X);
-
-    int unread = 0, unsent = 0;
-    count_unread_unsent(&unread, &unsent);
-
-    char buf[16];
-    snprintf(buf, sizeof(buf), "u%d", unsent);
-    int x = gfx_text(32, UI_STATUS_TEXT_Y, GFX_FONT_NORMAL, buf) + 3;
-
-    // "[lock if sig on]" (§5.4) — envelope signing (auth.c/IDENT_FLAG_REQ_SIG),
-    // NOT the device-passcode lock (lock.c/F6.5, not built).
-    if (ident_get_flags() & IDENT_FLAG_REQ_SIG) {
-        gfx_icon(x, 0, GFX_ICON_LOCK);
-    }
-
-    int batt_x = GFX_SCREEN_W - GFX_ICON_W;
-    gfx_icon(batt_x, 0, (gfx_icon_t) (GFX_ICON_BATTERY_0 + segs_from_batt_mv(modes_get_batt_mv())));
-
-    snprintf(buf, sizeof(buf), "new %d", unread);
-    int uw = gfx_text_width(GFX_FONT_NORMAL, buf);
-    gfx_text(batt_x - 4 - uw, UI_STATUS_TEXT_Y, GFX_FONT_NORMAL, buf);
+    int bars_x = mqtt_x - GFX_ICON_W - UI_STATUS_ICON_GAP;
+    gfx_icon(bars_x, 0, (gfx_icon_t) (GFX_ICON_SIGNAL_0 + bars));
 
     gfx_hline(0, GFX_SCREEN_W - 1, UI_STATUS_H);
 }
