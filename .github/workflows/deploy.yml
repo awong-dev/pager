@@ -163,9 +163,15 @@ jobs:
           workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ secrets.GCP_DEPLOY_SERVICE_ACCOUNT }}
 
+      # Node 20 reached end-of-life in April 2026 -- this pin lagged behind
+      # that (separate from the actions/setup-node@v4->v7 bump above, which
+      # only fixed what runtime the ACTION itself executes on, not what
+      # Node version it installs here for the build). 24 is the current
+      # Active LTS. Verified in a real node:24 container: npm ci and npm
+      # run build both succeed against the current web/package-lock.json.
       - uses: actions/setup-node@v7
         with:
-          node-version: "20"
+          node-version: "24"
 
       # web/ provides the Next.js static export this step builds;
       # relay/firestore.rules + relay/firestore.indexes.json provide the
