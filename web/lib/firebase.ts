@@ -22,13 +22,22 @@ import {
   getFirestore,
 } from "firebase/firestore";
 
+// `||`, not `??` -- confirmed live (deploy.yml sets these from GitHub Actions
+// repo variables that hadn't actually been created yet): an unset
+// `vars.FOO` in a workflow expands to an empty string, not nothing, so
+// Next.js inlines `process.env.NEXT_PUBLIC_FIREBASE_API_KEY` as `""` at
+// build time -- `??` only falls back on null/undefined, so `""` sailed
+// straight through as `firebaseConfig.apiKey`, and Firebase Auth's
+// "auth/invalid-api-key" (a blank/malformed key) is a strictly worse,
+// harder-to-diagnose failure than "auth/api-key-not-valid" (an obviously-a-
+// placeholder key) would have been. `||` treats "" the same as unset.
 const firebaseConfig = {
-  apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY ?? "demo-api-key",
-  authDomain: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN ?? "demo-pager.firebaseapp.com",
-  projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID ?? "demo-pager",
-  storageBucket: process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET ?? "demo-pager.appspot.com",
-  messagingSenderId: process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID ?? "0",
-  appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID ?? "1:0:web:0",
+  apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY || "demo-api-key",
+  authDomain: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN || "demo-pager.firebaseapp.com",
+  projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID || "demo-pager",
+  storageBucket: process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET || "demo-pager.appspot.com",
+  messagingSenderId: process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID || "0",
+  appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID || "1:0:web:0",
 };
 
 const USE_EMULATORS = process.env.NEXT_PUBLIC_USE_EMULATORS === "1";
