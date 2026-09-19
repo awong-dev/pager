@@ -147,6 +147,13 @@ Read that workflow's own top-of-file comment for the exact gating mechanism firs
   - `GCP_DEPLOY_SERVICE_ACCOUNT` = `terraform output -raw ci_deploy_service_account_email`
 - Repo **variables** (same page, "Variables" tab):
   - `GCP_PROJECT_ID`, `GCP_REGION`, `BROKER_API_URL`, `BROKER_HOST` (same values as `terraform.tfvars`)
+  - `FIREBASE_PROJECT_ID`, `FIREBASE_API_KEY`, `FIREBASE_AUTH_DOMAIN`, `FIREBASE_STORAGE_BUCKET`,
+    `FIREBASE_MESSAGING_SENDER_ID`, `FIREBASE_APP_ID` -- the web app's Firebase config (same values as
+    `web/.env.local`'s own `NEXT_PUBLIC_FIREBASE_*`, from the Firebase console's Project Settings ->
+    General -> "Your apps" -> the web app's config snippet). Not secret -- a Firebase web app's config
+    is meant to be public, the project is protected by Firestore/Auth rules -- but they must be set as
+    repo variables regardless, or `firebase-deploy`'s build silently ships the demo-project fallback
+    baked into `web/lib/firebase.ts`, and every real sign-in fails with `auth/api-key-not-valid`.
 
 Once both secrets exist, a push to `main` (or a manual `workflow_dispatch` run) builds the relay
 image, pushes it, runs `terraform apply` via WIF, and runs `firebase deploy --only

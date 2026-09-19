@@ -174,8 +174,28 @@ jobs:
       # exists only for this deploy step -- local dev still uses
       # relay/firebase.json (baked into the emulator image) and
       # web/firebase.json (a local Hosting preview) independently.
+      #
+      # web/lib/firebase.ts reads NEXT_PUBLIC_FIREBASE_* via
+      # `process.env` -- Next.js inlines those at BUILD time (this step),
+      # not at runtime, and falls back to its own demo-project constants
+      # ("demo-api-key" etc.) when a var is unset. Without these set here,
+      # every deployed build silently ships the demo config, and Firebase
+      # Auth rejects it outright once a real person tries to sign in
+      # (confirmed live: "auth/api-key-not-valid..."). None of these are
+      # secret -- a Firebase web app's apiKey/appId/etc. are meant to be
+      # public; the project is protected by Firestore/Auth rules, not by
+      # hiding this config -- so they're repo variables, matching
+      # broker_api_url/broker_host's own vars.* pattern above.
       - name: Build web app
         working-directory: web
+        env:
+          NEXT_PUBLIC_USE_EMULATORS: "0"
+          NEXT_PUBLIC_FIREBASE_PROJECT_ID: ${{ vars.FIREBASE_PROJECT_ID }}
+          NEXT_PUBLIC_FIREBASE_API_KEY: ${{ vars.FIREBASE_API_KEY }}
+          NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN: ${{ vars.FIREBASE_AUTH_DOMAIN }}
+          NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET: ${{ vars.FIREBASE_STORAGE_BUCKET }}
+          NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID: ${{ vars.FIREBASE_MESSAGING_SENDER_ID }}
+          NEXT_PUBLIC_FIREBASE_APP_ID: ${{ vars.FIREBASE_APP_ID }}
         run: |
           npm ci
           npm run build
