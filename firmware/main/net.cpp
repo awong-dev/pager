@@ -807,3 +807,19 @@ extern "C" const char *net_get_device_id(void)
 {
     return ident_get_dev_id();
 }
+
+extern "C" bool net_check_sim(void)
+{
+    if (!WalterModem::begin(PAGER_MODEM_UART)) {
+        ESP_LOGI(TAG, "SIM check: WalterModem::begin() failed");
+        return false;
+    }
+    if (!WalterModem::setOpState(WALTER_MODEM_OPSTATE_NO_RF)) {
+        ESP_LOGI(TAG, "SIM check: setOpState(NO_RF) failed");
+        return false;
+    }
+    WalterModemRsp rsp = {};
+    bool ok = WalterModem::getSIMCardIMSI(&rsp);
+    ESP_LOGI(TAG, "SIM check: %s", ok ? "IMSI read OK" : "no SIM detected (IMSI read failed)");
+    return ok;
+}

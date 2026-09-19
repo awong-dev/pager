@@ -258,6 +258,14 @@ void net_get_granted_edrx(char *out, size_t out_size);
  * /status topics; net.c already knows it for the /down subscription. */
 const char *net_get_device_id(void);
 
+/* Quick, network-attach-free SIM presence check for the pre-provisioning
+ * boot screen (main.c) -- self-contained like net_bootstrap_attach(),
+ * brings the modem up itself rather than depending on net_init()/ident.
+ * WalterModem::getSIMCardIMSI() only needs NO_RF/FULL opstate, not a real
+ * network attach, so this returns quickly regardless of signal. Power
+ * effect: modem leaves reset, one AT round trip, no RRC. */
+bool net_check_sim(void);
+
 #ifdef __cplusplus
 }
 #endif

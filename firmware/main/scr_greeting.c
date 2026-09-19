@@ -21,14 +21,25 @@
 #include "ui.h"
 
 #include <stdio.h>
+#include <string.h>
 
 #ifdef ESP_PLATFORM
 #include "esp_random.h"
 #endif
 
 static scr_greeting_mode_t s_mode = GREETING_HELLO;
+static char s_status[32] = "";
 
 void scr_greeting_set_mode(scr_greeting_mode_t mode) { s_mode = mode; }
+
+void scr_greeting_set_status(const char *status)
+{
+    if (!status) {
+        s_status[0] = '\0';
+        return;
+    }
+    snprintf(s_status, sizeof(s_status), "%s", status);
+}
 
 static uint32_t next_rand(void)
 {
@@ -78,6 +89,11 @@ static void render(void)
         int w = gfx_text_width(sz, wrapped[i]);
         gfx_text((GFX_SCREEN_W - w) / 2, wy, sz, wrapped[i]);
         wy += 20;
+    }
+
+    if (s_status[0] != '\0') {
+        int fw = gfx_text_width(GFX_FONT_NORMAL, s_status);
+        gfx_text((GFX_SCREEN_W - fw) / 2, GFX_SCREEN_H - 9, GFX_FONT_NORMAL, s_status);
     }
 }
 

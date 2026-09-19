@@ -511,6 +511,41 @@ static void render_screen_greeting(void)
     draw_centered_wrapped("Hi Colin! Hi May! Hi Hannah!");
 }
 
+// main.c's pre-provisioning boot screen: same banner, plus scr_greeting.c's
+// status footer (added for the no-SIM boot path) -- drawn by hand here the
+// same way draw_centered_wrapped() mirrors render()'s banner half, since
+// this fixture set predates scr_greeting.c existing as a live screen and
+// still draws everything itself rather than calling into it.
+static void draw_status_footer(const char *status)
+{
+    int fw = gfx_text_width(GFX_FONT_NORMAL, status);
+    gfx_text((GFX_SCREEN_W - fw) / 2, GFX_SCREEN_H - 9, GFX_FONT_NORMAL, status);
+}
+
+static void render_screen_greeting_booting(void)
+{
+    gfx_clear();
+    draw_fixture_status_bar(0, false, 0, false, 0, 0);
+    draw_centered_wrapped("Hi Colin! Hi May! Hi Hannah!");
+    draw_status_footer("booting");
+}
+
+static void render_screen_greeting_sim_missing(void)
+{
+    gfx_clear();
+    draw_fixture_status_bar(0, false, 0, false, 0, 0);
+    draw_centered_wrapped("Hi Colin! Hi May! Hi Hannah!");
+    draw_status_footer("sim missing");
+}
+
+static void render_screen_greeting_shutting_down(void)
+{
+    gfx_clear();
+    draw_fixture_status_bar(0, false, 0, false, 0, 0);
+    draw_centered_wrapped("Hi Colin! Hi May! Hi Hannah!");
+    draw_status_footer("shutting down");
+}
+
 static void render_screen_sleeping(void)
 {
     gfx_clear();
@@ -548,6 +583,9 @@ int main(int argc, char **argv)
         { "screen_nickname", render_screen_nickname },
         { "screen_greeting", render_screen_greeting },
         { "screen_sleeping", render_screen_sleeping },
+        { "screen_greeting_booting", render_screen_greeting_booting },
+        { "screen_greeting_sim_missing", render_screen_greeting_sim_missing },
+        { "screen_greeting_shutting_down", render_screen_greeting_shutting_down },
     };
 
     int status = 0;

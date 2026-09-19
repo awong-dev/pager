@@ -116,6 +116,16 @@ typedef enum {
     GREETING_SLEEPING,
 } scr_greeting_mode_t;
 void scr_greeting_set_mode(scr_greeting_mode_t mode);
+
+/* Optional footer line under the "Hi ...!" banner (GREETING_HELLO only --
+ * GREETING_SLEEPING's single centered "sleeping" word never grew a footer,
+ * nothing asked for one). Added for main.c's pre-provisioning boot screen
+ * (no ident/no SIM yet, so it reuses this screen rather than standing up a
+ * whole scr_boot.c): "booting" -> "sim missing"/found -> "shutting down".
+ * NULL/"" (the default) draws no footer at all, so modes_boot()'s normal
+ * post-ident-load push is unaffected. Copies into a fixed internal buffer;
+ * `status` need not outlive the call. */
+void scr_greeting_set_status(const char *status);
 extern const ui_screen_t g_scr_greeting;
 
 /* scr_chat.c's own "mark every currently-visible down message read"

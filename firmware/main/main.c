@@ -12,8 +12,10 @@
 
 #include "ident.h"
 #include "modes.h"
+#include "net.h"
 #include "pins.h"
 #include "setup.h"
+#include "ui.h"
 
 static const char *TAG = "school_pager";
 
@@ -141,12 +143,62 @@ void app_main(void)
 
     if (!ident_load()) {
         // No valid identity in NVS: docs/DEVICE_TASKS.md F3.5, Setup mode.
-        // The modem is never touched here — start_setup_console() only
-        // starts the USB-serial REPL task; setup_run() (setup.c) is the one
-        // thing that ever brings the modem up, once a person types
-        // `setup <code>`. Power effect: current stays at the CPU-idle-loop
-        // floor until that happens.
+        // Reuses scr_greeting.c (the same "Hi ...!" banner shown post-setup)
+        // as a generic pre-provisioning splash, with a status footer that
+        // walks booting -> sim missing/found -> shutting down -- added at
+        // the user's request so a device sitting on a shelf with no SIM
+        // fitted yet shows *something* legible instead of the noise-pattern
+        // blank shadow plane a never-painted panel shows.
+        //
+        // The SIM check runs unconditionally, once, every boot (not gated
+        // behind a console command) -- the user's explicit choice over
+        // waiting for a person to notice and type something first. It is a
+        // single net_check_sim() call, never retried: also the user's
+        // explicit choice over a periodic recheck loop, since nothing about
+        // a missing SIM changes without a person physically opening the
+        // device, and this design never deep sleeps (§8.3) to wake back up
+        // for one anyway.
+        //
+        // start_setup_console() still always runs afterward regardless of
+        // the SIM result: `setup <code>` is the one and only way this device
+        // ever leaves this branch (a fresh net_bootstrap_attach() inside
+        // setup_run() will simply fail its own way if the SIM is genuinely
+        // absent), and typing it requires nothing this check could have
+        // broken.
         ESP_LOGI(TAG, "IDENT missing; starting Setup mode console");
+
+        bool ui_ok = ui_init();
+        if (ui_ok) {
+            scr_greeting_set_mode(GREETING_HELLO);
+            scr_greeting_set_status("booting");
+            ui_push(&g_scr_greeting);
+            ui_render_boot();
+        }
+
+        bool sim_ok = net_check_sim();
+        ESP_LOGI(TAG, "SIM check: %s", sim_ok ? "found" : "missing");
+        if (ui_ok) {
+            scr_greeting_set_status(sim_ok ? "type: setup <code>" : "sim missing");
+            ui_render();
+        }
+
+        if (!sim_ok) {
+            // Best-effort pause so "sim missing" is actually readable before
+            // the panel moves on -- not a retry wait, just legibility.
+            vTaskDelay(pdMS_TO_TICKS(4000));
+            if (ui_ok) {
+                scr_greeting_set_status("shutting down");
+                ui_render();
+            }
+        }
+
+        // net_check_sim() leaves the modem parked at NO_RF (no RRC, no
+        // teardown call) rather than touching it further here -- harmless,
+        // since net_bootstrap_attach() (setup_run(), setup.c) unconditionally
+        // re-issues setOpState(NO_RF) then setOpState(FULL) itself on the
+        // way to a real attach, regardless of the opstate it finds. Power
+        // effect from here: current stays at the CPU-idle-loop floor (plus
+        // the modem's own NO_RF floor) until a person types `setup <code>`.
         start_setup_console();
         for (;;) {
             vTaskDelay(pdMS_TO_TICKS(1000));
