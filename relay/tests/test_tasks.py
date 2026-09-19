@@ -34,7 +34,27 @@ def test_build_task_queue_unknown_mode_raises():
         tasks.build_task_queue("carrier-pigeon")
 
 
-def test_build_task_queue_cloud_tasks_mode_constructs_cloud_tasks_queue():
+def test_build_task_queue_cloud_tasks_mode_constructs_cloud_tasks_queue(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    # build_task_queue("cloud_tasks") goes through CloudTasksQueue()'s
+    # no-client branch, which otherwise constructs a REAL
+    # tasks_v2.CloudTasksClient() -- that eagerly calls google.auth.default()
+    # in its constructor, which raises DefaultCredentialsError in any
+    # environment without real GCP credentials (confirmed failing in CI,
+    # which has none by design -- this workflow's own header comment: "No
+    # paid services, no secrets"). Every other CloudTasksQueue test in this
+    # file already avoids this by passing client=_FakeCloudTasksClient()
+    # directly; this one has to patch the library class instead, since its
+    # whole point is exercising build_task_queue()'s no-client construction
+    # path.
+    from google.cloud import tasks_v2
+
+    class _FakeClient:
+        pass
+
+    monkeypatch.setattr(tasks_v2, "CloudTasksClient", _FakeClient)
+
     queue = tasks.build_task_queue("cloud_tasks")
     assert isinstance(queue, tasks.CloudTasksQueue)
 
