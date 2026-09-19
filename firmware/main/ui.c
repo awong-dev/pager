@@ -221,7 +221,7 @@ static void count_unread_unsent(int *unread, int *unsent)
 // icons' span instead.
 #define UI_STATUS_TEXT_Y (-3)
 
-// Icon spacing along the right-aligned group below (signal bars, MQTT link,
+// Icon spacing along the right-aligned group below (MQTT link, signal bars,
 // battery) — same 4px gap the old adjacent-icon layout used (lock icon sat
 // 4px after the "u<n>" text it followed).
 #define UI_STATUS_ICON_GAP 4
@@ -245,24 +245,24 @@ static void draw_status_bar(void)
         gfx_icon(x, 0, GFX_ICON_LOCK);
     }
 
-    // Right, at the user's request: signal bars, then MQTT link, then
+    // Right, at the user's request: MQTT link, then signal bars, then
     // battery, battery flush against the right edge same as before.
     int batt_x = GFX_SCREEN_W - GFX_ICON_W;
     gfx_icon(batt_x, 0, (gfx_icon_t) (GFX_ICON_BATTERY_0 + segs_from_batt_mv(modes_get_batt_mv())));
 
-    net_mqtt_status_t st;
-    net_get_mqtt_status(&st);
-    int mqtt_x = batt_x - GFX_ICON_W - UI_STATUS_ICON_GAP;
-    gfx_icon(mqtt_x, 0, st.mqtt_connected ? GFX_ICON_LINK_OK : GFX_ICON_LINK_X);
-
+    int bars_x = batt_x - GFX_ICON_W - UI_STATUS_ICON_GAP;
     int bars = bars_from_rssi_dbm(modes_get_rssi_dbm());
     // Note: §5.4 also specifies a distinct "not registered -> x" bucket
     // separate from "0 bars"; net_get_rssi() (net.h) exposes only a dBm
     // reading or failure-with-fallback, no registration-state bit, so that
     // distinction collapses into "0 bars" here. Fixing it needs a new
     // net.h entry point, out of this task's Files list.
-    int bars_x = mqtt_x - GFX_ICON_W - UI_STATUS_ICON_GAP;
     gfx_icon(bars_x, 0, (gfx_icon_t) (GFX_ICON_SIGNAL_0 + bars));
+
+    net_mqtt_status_t st;
+    net_get_mqtt_status(&st);
+    int mqtt_x = bars_x - GFX_ICON_W - UI_STATUS_ICON_GAP;
+    gfx_icon(mqtt_x, 0, st.mqtt_connected ? GFX_ICON_LINK_OK : GFX_ICON_LINK_X);
 
     gfx_hline(0, GFX_SCREEN_W - 1, UI_STATUS_H);
 }

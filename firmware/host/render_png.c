@@ -261,8 +261,10 @@ static void render_tofu(void)
 #define FIXTURE_STATUS_ICON_GAP 4 /* matches ui.c's UI_STATUS_ICON_GAP */
 
 // Matches ui.c's draw_status_bar() layout: spelled-out counts on the left,
-// signal bars / MQTT link / battery right-aligned on the right (user
-// request: "new: 0  unsent: 0" on the left, icons on the right).
+// MQTT link / signal bars / battery right-aligned on the right (user
+// request: "new: 0  unsent: 0" on the left, icons on the right, MQTT and
+// bars swapped from an earlier iteration so MQTT sits leftmost of the
+// three).
 static void draw_fixture_status_bar(int bars, bool link_ok, int unsent, bool lock_on, int unread,
                                      int batt_segs)
 {
@@ -276,11 +278,11 @@ static void draw_fixture_status_bar(int bars, bool link_ok, int unsent, bool loc
     int batt_x = GFX_SCREEN_W - GFX_ICON_W;
     gfx_icon(batt_x, 0, (gfx_icon_t) (GFX_ICON_BATTERY_0 + batt_segs));
 
-    int mqtt_x = batt_x - GFX_ICON_W - FIXTURE_STATUS_ICON_GAP;
-    gfx_icon(mqtt_x, 0, link_ok ? GFX_ICON_LINK_OK : GFX_ICON_LINK_X);
-
-    int bars_x = mqtt_x - GFX_ICON_W - FIXTURE_STATUS_ICON_GAP;
+    int bars_x = batt_x - GFX_ICON_W - FIXTURE_STATUS_ICON_GAP;
     gfx_icon(bars_x, 0, (gfx_icon_t) (GFX_ICON_SIGNAL_0 + bars));
+
+    int mqtt_x = bars_x - GFX_ICON_W - FIXTURE_STATUS_ICON_GAP;
+    gfx_icon(mqtt_x, 0, link_ok ? GFX_ICON_LINK_OK : GFX_ICON_LINK_X);
 
     gfx_hline(0, GFX_SCREEN_W - 1, FIXTURE_STATUS_H);
 }
