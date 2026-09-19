@@ -42,7 +42,22 @@ services:
         condition: service_healthy
       twilio-mock:
         condition: service_started
-    env_file: .env
+    # required: false -- CI's unit-test stage (.github/workflows/ci.yml)
+    # runs `docker compose up -d firebase` / `down -v` against this same
+    # file without ever starting `relay` and without relay/.env existing
+    # (that stage never needs the relay container; tools/e2e_v2.py writes
+    # its own .env later, for the separate end-to-end stage). Confirmed on
+    # a real CI run: some Docker Compose versions eagerly resolve every
+    # service's env_file (not just the ones actually being started) when
+    # a command like `down` needs the whole project's config, and error
+    # out if a required one is missing -- observed failing `docker compose
+    # down -v` with "env file ... not found", even though `up -d firebase`
+    # (a different command) had just succeeded against the identical file.
+    # Real local dev is unaffected: relay/README.md still has developers
+    # create a real .env before starting the relay service itself.
+    env_file:
+      - path: .env
+        required: false
     environment:
       # docs/SERVER_PLAN.md §5.9: emulator-aware (app/db/firestore.py),
       # pointed at the `firebase` service on the compose network. Overrides
