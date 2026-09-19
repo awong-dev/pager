@@ -254,6 +254,11 @@ static void render_tofu(void)
 #define FIXTURE_BODY_TOP (FIXTURE_STATUS_H + 1)
 #define FIXTURE_FOOTER_Y (GFX_SCREEN_H - 16)
 
+// ui.c's own UI_STATUS_TEXT_Y (-3): confirmed on real hardware that y=1 put
+// the status text's ink visibly lower than the icons -- see ui.c's comment
+// on that constant for the measured font-asset numbers behind -3.
+#define FIXTURE_STATUS_TEXT_Y (-3)
+
 static void draw_fixture_status_bar(int bars, bool link_ok, int unsent, bool lock_on, int unread,
                                      int batt_segs)
 {
@@ -262,7 +267,7 @@ static void draw_fixture_status_bar(int bars, bool link_ok, int unsent, bool loc
 
     char buf[16];
     snprintf(buf, sizeof(buf), "u%d", unsent);
-    int x = gfx_text(32, 1, GFX_FONT_NORMAL, buf) + 3;
+    int x = gfx_text(32, FIXTURE_STATUS_TEXT_Y, GFX_FONT_NORMAL, buf) + 3;
     if (lock_on) {
         gfx_icon(x, 0, GFX_ICON_LOCK);
     }
@@ -272,7 +277,7 @@ static void draw_fixture_status_bar(int bars, bool link_ok, int unsent, bool loc
 
     snprintf(buf, sizeof(buf), "new %d", unread);
     int uw = gfx_text_width(GFX_FONT_NORMAL, buf);
-    gfx_text(batt_x - 4 - uw, 1, GFX_FONT_NORMAL, buf);
+    gfx_text(batt_x - 4 - uw, FIXTURE_STATUS_TEXT_Y, GFX_FONT_NORMAL, buf);
 
     gfx_hline(0, GFX_SCREEN_W - 1, FIXTURE_STATUS_H);
 }

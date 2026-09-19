@@ -207,6 +207,20 @@ static void count_unread_unsent(int *unread, int *unsent)
     }
 }
 
+// Status-bar text's own line_top_y. Icons below are drawn at y=0 and their
+// ink sits roughly in rows 0-11 (icon_bars()/icon_battery()/gfx.c's
+// GFX_ICON_LINK_* all bottom out around row 9-11). GFX_FONT_NORMAL's ink
+// does NOT start at line_top_y -- confirmed on real hardware (text sat
+// visibly lower than the icons, "off by nearly 4 pixels") and measured
+// directly from the real font asset data: baseline=13, and the glyphs this
+// row actually draws (digits, and the x-height letters in "new ") have
+// bearing_y 7-9, so their ink top is line_top_y + (13-9)..(13-7) = +4..+6,
+// and EVERY one of them bottoms out at line_top_y+12 (none has a
+// descender). Drawing at y=1 (the old value) put that ink at rows 5/7..13,
+// well below the icons' own rows. -3 puts it at rows 1/3..9, matching the
+// icons' span instead.
+#define UI_STATUS_TEXT_Y (-3)
+
 static void draw_status_bar(void)
 {
     int bars = bars_from_rssi_dbm(modes_get_rssi_dbm());
@@ -226,7 +240,7 @@ static void draw_status_bar(void)
 
     char buf[16];
     snprintf(buf, sizeof(buf), "u%d", unsent);
-    int x = gfx_text(32, 1, GFX_FONT_NORMAL, buf) + 3;
+    int x = gfx_text(32, UI_STATUS_TEXT_Y, GFX_FONT_NORMAL, buf) + 3;
 
     // "[lock if sig on]" (§5.4) — envelope signing (auth.c/IDENT_FLAG_REQ_SIG),
     // NOT the device-passcode lock (lock.c/F6.5, not built).
@@ -239,7 +253,7 @@ static void draw_status_bar(void)
 
     snprintf(buf, sizeof(buf), "new %d", unread);
     int uw = gfx_text_width(GFX_FONT_NORMAL, buf);
-    gfx_text(batt_x - 4 - uw, 1, GFX_FONT_NORMAL, buf);
+    gfx_text(batt_x - 4 - uw, UI_STATUS_TEXT_Y, GFX_FONT_NORMAL, buf);
 
     gfx_hline(0, GFX_SCREEN_W - 1, UI_STATUS_H);
 }
