@@ -146,7 +146,7 @@ Read that workflow's own top-of-file comment for the exact gating mechanism firs
   - `GCP_WORKLOAD_IDENTITY_PROVIDER` = `terraform output -raw ci_deploy_workload_identity_provider` (from `infra/envs/prod`)
   - `GCP_DEPLOY_SERVICE_ACCOUNT` = `terraform output -raw ci_deploy_service_account_email`
 - Repo **variables** (same page, "Variables" tab):
-  - `GCP_PROJECT_ID`, `GCP_REGION`, `BROKER_API_URL` (same values as `terraform.tfvars`)
+  - `GCP_PROJECT_ID`, `GCP_REGION`, `BROKER_API_URL`, `BROKER_HOST` (same values as `terraform.tfvars`)
 
 Once both secrets exist, a push to `main` (or a manual `workflow_dispatch` run) builds the relay
 image, pushes it, runs `terraform apply` via WIF, and runs `firebase deploy --only
