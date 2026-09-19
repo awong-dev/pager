@@ -191,9 +191,30 @@ const ui_screen_t *ui_top(void);
 /* Status bar height in px (icons are a fixed 12x12, gfx.h — §5.4's nominal
  * "10 px" is rounded up to fit them without clipping); screens must not
  * draw above this + the 1px separator hline ui_render() draws at
- * y == UI_STATUS_H. */
-#define UI_STATUS_H 12
+ * y == UI_STATUS_H.
+ *
+ * 14, not 12: confirmed on real hardware that 12 was too short and the
+ * separator hline was drawn right through the bottom of the status bar's
+ * own text (draw_status_bar()'s gfx_text() calls at y=1) -- measured
+ * directly from the real font asset data (tools/mkassets.py's encoded
+ * baseline=13 for the 12px block, i.e. already taller than the nominal
+ * "12px" label), text drawn at line_top_y=1 bottoms out at row 13 for an
+ * ordinary (non-descender) glyph, one row past the old UI_STATUS_H=12. */
+#define UI_STATUS_H 14
 #define UI_BODY_TOP (UI_STATUS_H + 1)
+
+/* Footer key-hints row shared by every scr_*.c (§5.4/§5.5: "a footer of key
+ * hints"), always GFX_FONT_NORMAL. The old convention drawn everywhere was
+ * `GFX_SCREEN_H - 9`, which confirmed-broke on real hardware
+ * (scr_greeting.c's status footer, "shutting down", visibly cut off at the
+ * bottom) -- the 12px font's real baseline is 13 (see UI_STATUS_H's own
+ * comment above) and its descenders (g/y/p/q/j) reach row 14 below
+ * line_top_y, so `-9` put more than half of every footer's own descenders,
+ * and often the whole baseline-and-below body of the line, past row 127
+ * where gfx_set_pixel() silently clips it. -16 keeps the deepest real
+ * descender (row 14 relative to line_top_y) at row 126, one row of margin
+ * before the panel's own bottom edge. */
+#define UI_FOOTER_Y (GFX_SCREEN_H - 16)
 
 /* Clears the framebuffer, draws the status bar, calls the top screen's
  * render(), then disp_partial_refresh() — ALWAYS a partial, never the

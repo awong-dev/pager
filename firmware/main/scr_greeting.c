@@ -117,7 +117,7 @@ static void render(void)
 
     if (s_status[0] != '\0') {
         int fw = gfx_text_width(GFX_FONT_NORMAL, s_status);
-        gfx_text((GFX_SCREEN_W - fw) / 2, GFX_SCREEN_H - 9, GFX_FONT_NORMAL, s_status);
+        gfx_text((GFX_SCREEN_W - fw) / 2, UI_FOOTER_Y, GFX_FONT_NORMAL, s_status);
     }
 }
 

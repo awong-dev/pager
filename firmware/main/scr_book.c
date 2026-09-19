@@ -292,7 +292,7 @@ static void add_render(void)
     y += 12;
     gfx_text(8, y, GFX_FONT_NORMAL, "(or leave blank and type an @alias)");
 
-    gfx_text(0, GFX_SCREEN_H - 9, GFX_FONT_NORMAL,
+    gfx_text(0, UI_FOOTER_Y, GFX_FONT_NORMAL,
              "tab next field   enter send for approval   esc cancel");
 }
 
@@ -364,7 +364,7 @@ static void nick_render(void)
     snprintf(counter, sizeof(counter), "%u/12", (unsigned) s_nick_field.cp_count);
     gfx_text(0, y, GFX_FONT_NORMAL, counter);
 
-    gfx_text(0, GFX_SCREEN_H - 9, GFX_FONT_NORMAL, "enter save   esc cancel");
+    gfx_text(0, UI_FOOTER_Y, GFX_FONT_NORMAL, "enter save   esc cancel");
 }
 
 /* ---------------------------------------------------------------------
@@ -490,7 +490,7 @@ static void list_render(void)
         y += 12;
     }
 
-    gfx_text(0, GFX_SCREEN_H - 9, GFX_FONT_NORMAL, "up/down move   enter select   esc back");
+    gfx_text(0, UI_FOOTER_Y, GFX_FONT_NORMAL, "up/down move   enter select   esc back");
 }
 
 /* ---------------------------------------------------------------------

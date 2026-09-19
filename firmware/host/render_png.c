@@ -240,13 +240,19 @@ static void render_tofu(void)
  * a representative mockup of each F6.3 screen directly with hardcoded
  * fixture data matching docs/DEVICE_PLAN.md §5.5's own mockups, using the
  * exact same gfx_text()/gfx_icon()/gfx_hline() primitives and the same
- * UI_STATUS_H=12/UI_BODY_TOP=13 band split ui.c's real status bar uses
+ * UI_STATUS_H=14/UI_BODY_TOP=15 band split ui.c's real status bar uses
  * (ui.h) — close enough to eyeball the font/layout choices those screens
  * actually make, without linking code that cannot build on the host.
+ * UI_STATUS_H is 14, not the nominal-looking 12, and every footer below
+ * uses UI_FOOTER_Y (GFX_SCREEN_H - 16), not "- 9": both confirmed on real
+ * hardware to be the minimum needed to stop gfx_set_pixel()'s bounds-check
+ * from silently clipping real glyph descenders (see ui.h's own comments on
+ * both constants for the measured font-asset numbers behind them).
  * --------------------------------------------------------------------- */
 
-#define FIXTURE_STATUS_H 12
+#define FIXTURE_STATUS_H 14
 #define FIXTURE_BODY_TOP (FIXTURE_STATUS_H + 1)
+#define FIXTURE_FOOTER_Y (GFX_SCREEN_H - 16)
 
 static void draw_fixture_status_bar(int bars, bool link_ok, int unsent, bool lock_on, int unread,
                                      int batt_segs)
@@ -295,7 +301,7 @@ static void render_screen_home(void)
     y += 12;
     gfx_text(10, y, GFX_FONT_NORMAL, "Lock now (needs passcode lock)");
 
-    gfx_text(0, GFX_SCREEN_H - 9, GFX_FONT_NORMAL, "up/down move  enter open  hold=home");
+    gfx_text(0, FIXTURE_FOOTER_Y, GFX_FONT_NORMAL, "up/down move  enter open  hold=home");
 }
 
 static void render_screen_chat(void)
@@ -332,7 +338,7 @@ static void render_screen_chat(void)
     (void) x;
     gfx_text(GFX_SCREEN_W - cw, y, GFX_FONT_NORMAL, counter);
 
-    gfx_text(0, GFX_SCREEN_H - 9, GFX_FONT_NORMAL, "enter send  esc back  ^v history");
+    gfx_text(0, FIXTURE_FOOTER_Y, GFX_FONT_NORMAL, "enter send  esc back  ^v history");
 }
 
 static void render_screen_device(void)
@@ -358,7 +364,7 @@ static void render_screen_device(void)
     y += 12;
     gfx_text(10, y, GFX_FONT_NORMAL, "Text size: normal");
 
-    gfx_text(0, GFX_SCREEN_H - 9, GFX_FONT_NORMAL, "up/down move  enter select  esc back");
+    gfx_text(0, FIXTURE_FOOTER_Y, GFX_FONT_NORMAL, "up/down move  enter select  esc back");
 }
 
 static void render_screen_setup(void)
@@ -375,7 +381,7 @@ static void render_screen_setup(void)
     y += 16;
     gfx_text(0, y, GFX_FONT_NORMAL, "network . broker . bundle . done");
 
-    gfx_text(0, GFX_SCREEN_H - 9, GFX_FONT_NORMAL, "enter submit  esc clear/back");
+    gfx_text(0, FIXTURE_FOOTER_Y, GFX_FONT_NORMAL, "enter submit  esc clear/back");
 }
 
 /* ---------------------------------------------------------------------
@@ -416,7 +422,7 @@ static void render_screen_pick(void)
         y += 12;
     }
 
-    gfx_text(0, GFX_SCREEN_H - 9, GFX_FONT_NORMAL, "enter choose   esc back");
+    gfx_text(0, FIXTURE_FOOTER_Y, GFX_FONT_NORMAL, "enter choose   esc back");
 }
 
 static void render_screen_book(void)
@@ -448,7 +454,7 @@ static void render_screen_book(void)
         y += 12;
     }
 
-    gfx_text(0, GFX_SCREEN_H - 9, GFX_FONT_NORMAL, "up/down move   enter select   esc back");
+    gfx_text(0, FIXTURE_FOOTER_Y, GFX_FONT_NORMAL, "up/down move   enter select   esc back");
 }
 
 static void render_screen_book_add(void)
@@ -465,7 +471,7 @@ static void render_screen_book_add(void)
     y += 12;
     gfx_text(8, y, GFX_FONT_NORMAL, "(or leave blank and type an @alias)");
 
-    gfx_text(0, GFX_SCREEN_H - 9, GFX_FONT_NORMAL,
+    gfx_text(0, FIXTURE_FOOTER_Y, GFX_FONT_NORMAL,
              "tab next field   enter send for approval   esc cancel");
 }
 
@@ -483,7 +489,7 @@ static void render_screen_nickname(void)
     y += 12;
     gfx_text(0, y, GFX_FONT_NORMAL, "3/12");
 
-    gfx_text(0, GFX_SCREEN_H - 9, GFX_FONT_NORMAL, "enter save   esc cancel");
+    gfx_text(0, FIXTURE_FOOTER_Y, GFX_FONT_NORMAL, "enter save   esc cancel");
 }
 
 // scr_greeting.c fixtures. Not the real screen (render_png links only
@@ -519,7 +525,7 @@ static void render_screen_greeting(void)
 static void draw_status_footer(const char *status)
 {
     int fw = gfx_text_width(GFX_FONT_NORMAL, status);
-    gfx_text((GFX_SCREEN_W - fw) / 2, GFX_SCREEN_H - 9, GFX_FONT_NORMAL, status);
+    gfx_text((GFX_SCREEN_W - fw) / 2, FIXTURE_FOOTER_Y, GFX_FONT_NORMAL, status);
 }
 
 static void render_screen_greeting_booting(void)

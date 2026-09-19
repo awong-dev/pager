@@ -304,7 +304,7 @@ static void device_render_confirm(void)
     snprintf(line, sizeof(line), "> %s", s_confirm_buf);
     gfx_text(0, y, GFX_FONT_NORMAL, line);
 
-    gfx_text(0, GFX_SCREEN_H - 9, GFX_FONT_NORMAL, "enter confirm  esc cancel");
+    gfx_text(0, UI_FOOTER_Y, GFX_FONT_NORMAL, "enter confirm  esc cancel");
 }
 
 // F6.5: the passcode modal's own render — masked, never the actual
@@ -330,7 +330,7 @@ static void device_render_pw(void)
     mask[i] = '\0';
     gfx_text(0, y, GFX_FONT_NORMAL, mask);
 
-    gfx_text(0, GFX_SCREEN_H - 9, GFX_FONT_NORMAL, "enter submit  esc cancel");
+    gfx_text(0, UI_FOOTER_Y, GFX_FONT_NORMAL, "enter submit  esc cancel");
 }
 
 // Info lines (not selectable) followed by the menu rows (selectable, in
@@ -411,7 +411,7 @@ static void device_render_normal(void)
         y += 12;
     }
 
-    gfx_text(0, GFX_SCREEN_H - 9, GFX_FONT_NORMAL, "up/down move  enter select  esc back");
+    gfx_text(0, UI_FOOTER_Y, GFX_FONT_NORMAL, "up/down move  enter select  esc back");
 }
 
 static void device_render(void)

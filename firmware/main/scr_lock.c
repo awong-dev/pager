@@ -168,7 +168,7 @@ static void lock_render(void)
         gfx_text(8, y, sz, line);
     }
 
-    gfx_text(0, GFX_SCREEN_H - 9, sz, "enter unlock            btn hold = nothing");
+    gfx_text(0, UI_FOOTER_Y, sz, "enter unlock            btn hold = nothing");
 }
 
 const ui_screen_t g_scr_lock = {

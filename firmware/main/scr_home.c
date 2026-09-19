@@ -194,7 +194,7 @@ static void home_render(void)
         y += 12;
     }
 
-    gfx_text(0, GFX_SCREEN_H - 9, sz, "up/down move  enter open  hold=home");
+    gfx_text(0, UI_FOOTER_Y, sz, "up/down move  enter open  hold=home");
 }
 
 const ui_screen_t g_scr_home = {

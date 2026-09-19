@@ -105,7 +105,7 @@ static void pick_render(void)
         gfx_text(0, y, GFX_FONT_NORMAL, "No address book yet.");
         y += 12;
         gfx_text(0, y, GFX_FONT_NORMAL, "Re-sync from the Device screen.");
-        gfx_text(0, GFX_SCREEN_H - 9, GFX_FONT_NORMAL, "esc back");
+        gfx_text(0, UI_FOOTER_Y, GFX_FONT_NORMAL, "esc back");
         return;
     }
 
@@ -168,7 +168,7 @@ static void pick_render(void)
         y += 12;
     }
 
-    gfx_text(0, GFX_SCREEN_H - 9, GFX_FONT_NORMAL, "enter choose   esc back");
+    gfx_text(0, UI_FOOTER_Y, GFX_FONT_NORMAL, "enter choose   esc back");
 }
 
 const ui_screen_t g_scr_pick = {

@@ -336,7 +336,7 @@ static void chat_render(void)
     gfx_text(x, y, GFX_FONT_NORMAL, msg_composer_text());
     gfx_text(GFX_SCREEN_W - cw, y, GFX_FONT_NORMAL, counter);
 
-    gfx_text(0, GFX_SCREEN_H - 9, GFX_FONT_NORMAL, "enter send  esc back  ^v history");
+    gfx_text(0, UI_FOOTER_Y, GFX_FONT_NORMAL, "enter send  esc back  ^v history");
 }
 
 const ui_screen_t g_scr_chat = {
