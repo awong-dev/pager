@@ -1,5 +1,13 @@
 // scr_greeting.c — boot splash ("Hi <name>! Hi <name>! Hi <name>!", order
-// randomized each time it's shown) and its reused-layout "sleeping" mode.
+// randomized each time it's PUSHED, not each time it's repainted -- see
+// on_event()/s_line below; a real hardware bug (duplicated/garbled names,
+// stray overlapping strokes) came from an earlier version that reshuffled
+// inside render() itself, so a screen pushed once but partial-refreshed
+// several times in a row (main.c's booting -> sim missing -> shutting down
+// status sequence) painted a DIFFERENT name order each time, and the
+// e-paper panel -- which only partial-refreshes the diffed region, not a
+// full clear -- showed overlapping remnants of two or three shuffles at
+// once) and its reused-layout "sleeping" mode.
 //
 // Not part of docs/DEVICE_PLAN.md §5.5's screen set — added directly at the
 // user's request as a real, separate screen (Home's own conversation-row
@@ -29,6 +37,7 @@
 
 static scr_greeting_mode_t s_mode = GREETING_HELLO;
 static char s_status[32] = "";
+static char s_line[64] = ""; /* the shuffled "Hi ...!" banner, fixed for this push -- see on_event() */
 
 void scr_greeting_set_mode(scr_greeting_mode_t mode) { s_mode = mode; }
 
@@ -56,6 +65,31 @@ static uint32_t next_rand(void)
 #endif
 }
 
+// Fisher-Yates over 3 elements, run once per push (on_event(), below) so
+// every repaint of the same push draws the identical banner -- see this
+// file's module comment on why re-shuffling per-repaint corrupted the
+// e-paper display for real.
+static void shuffle_line(void)
+{
+    static const char *const names[3] = { "Colin", "May", "Hannah" };
+    int order[3] = { 0, 1, 2 };
+    for (int i = 2; i > 0; i--) {
+        int j = (int) (next_rand() % (uint32_t) (i + 1));
+        int t = order[i];
+        order[i] = order[j];
+        order[j] = t;
+    }
+    snprintf(s_line, sizeof(s_line), "Hi %s! Hi %s! Hi %s!", names[order[0]], names[order[1]],
+             names[order[2]]);
+}
+
+static void on_event(ui_evt_t evt)
+{
+    if (evt == UI_EVT_ENTER && s_mode == GREETING_HELLO) {
+        shuffle_line();
+    }
+}
+
 static void render(void)
 {
     const int sz = GFX_FONT_LARGE;
@@ -68,21 +102,11 @@ static void render(void)
         return;
     }
 
-    static const char *const names[3] = { "Colin", "May", "Hannah" };
-    int order[3] = { 0, 1, 2 };
-    // Fisher-Yates over 3 elements.
-    for (int i = 2; i > 0; i--) {
-        int j = (int) (next_rand() % (uint32_t) (i + 1));
-        int t = order[i];
-        order[i] = order[j];
-        order[j] = t;
+    if (s_line[0] == '\0') {
+        shuffle_line(); // defensive: render() called before any on_event(ENTER), shouldn't happen via ui_push()
     }
-
-    char line[64];
-    snprintf(line, sizeof(line), "Hi %s! Hi %s! Hi %s!", names[order[0]], names[order[1]],
-             names[order[2]]);
     char wrapped[2][64];
-    int n = gfx_text_wrap(sz, line, GFX_SCREEN_W - 16, wrapped, 2);
+    int n = gfx_text_wrap(sz, s_line, GFX_SCREEN_W - 16, wrapped, 2);
     int total_h = n * 20;
     int wy = UI_BODY_TOP + (GFX_SCREEN_H - UI_BODY_TOP - total_h) / 2;
     for (int i = 0; i < n && i < 2; i++) {
@@ -107,5 +131,5 @@ const ui_screen_t g_scr_greeting = {
     .name = "greeting",
     .render = render,
     .on_key = on_key,
-    .on_event = NULL,
+    .on_event = on_event,
 };
