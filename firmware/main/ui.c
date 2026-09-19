@@ -289,14 +289,17 @@ void ui_render_boot(void)
 }
 
 // Called from modes.c on the input_awake() true->false edge (the UI-awake
-// window lapsing, docs/DEVICE_PLAN.md §5.4). The framebuffer already holds
-// whatever the most recent ui_render() call painted — this does not repaint
-// content, it only lets the 20-partial cadence counter decide partial vs.
-// full and sends whichever is due, so a due full refresh lands here
-// (session just ended) rather than mid-interaction or on the inbound-
-// message path.
+// window lapsing, docs/DEVICE_PLAN.md §5.4). modes.c pushes scr_greeting.c's
+// "sleeping" screen at this same edge, so this now does repaint (unlike its
+// original contract of just flushing whatever ui_render() last painted) —
+// paint_frame() is cheap (framebuffer only, no SPI) and a no-op-looking
+// diff when the stack didn't actually change, so this stays correct for
+// callers that push nothing new here too. The 20-partial cadence counter
+// still decides partial vs. full, so a due full refresh lands here (session
+// just ended) rather than mid-interaction or on the inbound-message path.
 void ui_on_awake_lapse(void)
 {
+    paint_frame();
     disp_refresh_cadence(); // power effect: ~0.3-0.8s partial, or ~2-4s full (every 20th), PENDING_HW
 }
 

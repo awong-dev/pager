@@ -125,8 +125,14 @@ static uint8_t s_gray[GFX_SCREEN_H][GFX_SCREEN_W];
 
 static void snapshot_framebuffer(void)
 {
+    // gfx_set_pixel()'s native_row = (GFX_FB_ROWS - 1) - x (a real-hardware
+    // fix, found live: the panel's native row 0 is wired to the opposite
+    // physical edge from a direct x->native_row mapping) -- mirrored here
+    // to match, or every PNG this tool writes is horizontally flipped
+    // relative to gfx_set_pixel's actual write-side convention. Confirmed:
+    // every existing screen_* fixture was mirrored before this fix.
     for (int x = 0; x < GFX_SCREEN_W; x++) {
-        const uint8_t *row = gfx_fb_native_row(x);
+        const uint8_t *row = gfx_fb_native_row((GFX_FB_ROWS - 1) - x);
         for (int y = 0; y < GFX_SCREEN_H; y++) {
             int bit = (row[y / 8] >> (7 - (y % 8))) & 1;
             s_gray[y][x] = bit ? 255 : 0;
@@ -480,6 +486,38 @@ static void render_screen_nickname(void)
     gfx_text(0, GFX_SCREEN_H - 9, GFX_FONT_NORMAL, "enter save   esc cancel");
 }
 
+// scr_greeting.c fixtures. Not the real screen (render_png links only
+// gfx.c, not ui.c/scr_*.c -- see this file's own module comment on why)
+// -- a fixed name order rather than scr_greeting.c's actual random shuffle,
+// so the PNG is deterministic to review. Layout matches scr_greeting.c's
+// render() by hand: centered, GFX_FONT_LARGE, wrapped to 2 lines max.
+static void draw_centered_wrapped(const char *text)
+{
+    char wrapped[2][64];
+    int n = gfx_text_wrap(GFX_FONT_LARGE, text, GFX_SCREEN_W - 16, wrapped, 2);
+    int total_h = n * 20;
+    int y = FIXTURE_BODY_TOP + (GFX_SCREEN_H - FIXTURE_BODY_TOP - total_h) / 2;
+    for (int i = 0; i < n && i < 2; i++) {
+        int w = gfx_text_width(GFX_FONT_LARGE, wrapped[i]);
+        gfx_text((GFX_SCREEN_W - w) / 2, y, GFX_FONT_LARGE, wrapped[i]);
+        y += 20;
+    }
+}
+
+static void render_screen_greeting(void)
+{
+    gfx_clear();
+    draw_fixture_status_bar(3, true, 0, false, 0, 3);
+    draw_centered_wrapped("Hi Colin! Hi May! Hi Hannah!");
+}
+
+static void render_screen_sleeping(void)
+{
+    gfx_clear();
+    draw_fixture_status_bar(3, true, 0, false, 0, 3);
+    draw_centered_wrapped("sleeping");
+}
+
 int main(int argc, char **argv)
 {
     const char *assets_path = (argc > 1) ? argv[1] : "../../build/assets.bin";
@@ -508,6 +546,8 @@ int main(int argc, char **argv)
         { "screen_book", render_screen_book },
         { "screen_book_add", render_screen_book_add },
         { "screen_nickname", render_screen_nickname },
+        { "screen_greeting", render_screen_greeting },
+        { "screen_sleeping", render_screen_sleeping },
     };
 
     int status = 0;

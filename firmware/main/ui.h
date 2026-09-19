@@ -108,6 +108,16 @@ extern const ui_screen_t g_scr_lock;
 extern const ui_screen_t g_scr_pick;
 extern const ui_screen_t g_scr_book;
 
+/* scr_greeting.c: boot splash + reused-layout "sleeping" screen — see that
+ * file's own module comment for the two modes.c call sites that own its
+ * push/pop lifecycle. Not part of DEVICE_PLAN.md §5.5's screen set. */
+typedef enum {
+    GREETING_HELLO = 0,
+    GREETING_SLEEPING,
+} scr_greeting_mode_t;
+void scr_greeting_set_mode(scr_greeting_mode_t mode);
+extern const ui_screen_t g_scr_greeting;
+
 /* scr_chat.c's own "mark every currently-visible down message read"
  * (docs/DEVICE_PLAN.md §5.5's Chat bullet) — exported so Home's "open chat"
  * path and ui_on_button_short() can call it right after a *user-initiated*

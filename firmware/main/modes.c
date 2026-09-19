@@ -975,6 +975,11 @@ void modes_boot(void)
     if (!ui_init()) {
         ESP_LOGI(TAG, "display init failed; continuing headless (network/replies/acks unaffected)");
     } else {
+        // Boot splash (scr_greeting.c) — pushed under a possible Locked
+        // screen below, so a locked device still always shows Locked first
+        // (revealed once unlocked) rather than this ever bypassing it.
+        scr_greeting_set_mode(GREETING_HELLO);
+        ui_push(&g_scr_greeting);
         if (lock_is_locked()) {
             // §5.8: "Reached by ... any restart while a passcode is set."
             // Pushed here, before ui_render_boot()'s own forced full
@@ -1166,6 +1171,20 @@ void modes_run(void)
         char lock_toast[40];
         if (lock_take_toast(lock_toast, sizeof(lock_toast))) {
             ui_show_toast(lock_toast);
+        }
+
+        // scr_greeting.c: push its "sleeping" mode on the awake->asleep
+        // edge (revealed by ui_on_awake_lapse()'s repaint just below/after),
+        // pop it back off on the asleep->awake edge if it's still on top —
+        // same push/pop-to-match-state discipline as lock_screen_sync()
+        // just above. on_key also pops unconditionally (scr_greeting.c's
+        // own comment) as a second, redundant path to the same end state;
+        // whichever runs first in a given tick leaves the other a no-op.
+        if (ui_awake_edge_out) {
+            scr_greeting_set_mode(GREETING_SLEEPING);
+            ui_push(&g_scr_greeting);
+        } else if (ui_awake_edge_in && ui_top() == &g_scr_greeting) {
+            ui_pop();
         }
 
         if (ui_awake_now) {
