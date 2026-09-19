@@ -808,6 +808,27 @@ extern "C" const char *net_get_device_id(void)
     return ident_get_dev_id();
 }
 
+// int, not WalterModemState, so this compiles even if the enum ever gains
+// values this switch doesn't know about yet -- diagnostic-only, never used
+// for control flow.
+static const char *walter_state_name(int result)
+{
+    switch (result) {
+    case WALTER_MODEM_STATE_OK: return "OK";
+    case WALTER_MODEM_STATE_ERROR: return "ERROR";
+    case WALTER_MODEM_STATE_TIMEOUT: return "TIMEOUT";
+    case WALTER_MODEM_STATE_NO_MEMORY: return "NO_MEMORY";
+    case WALTER_MODEM_STATE_NO_FREE_PDP_CONTEXT: return "NO_FREE_PDP_CONTEXT";
+    case WALTER_MODEM_STATE_NO_SUCH_PDP_CONTEXT: return "NO_SUCH_PDP_CONTEXT";
+    case WALTER_MODEM_STATE_NO_FREE_SOCKET: return "NO_FREE_SOCKET";
+    case WALTER_MODEM_STATE_NO_SUCH_SOCKET: return "NO_SUCH_SOCKET";
+    case WALTER_MODEM_STATE_NO_SUCH_PROFILE: return "NO_SUCH_PROFILE";
+    case WALTER_MODEM_STATE_BUSY: return "BUSY";
+    case WALTER_MODEM_STATE_NO_DATA: return "NO_DATA";
+    default: return "?";
+    }
+}
+
 extern "C" bool net_check_sim(void)
 {
     if (!WalterModem::begin(PAGER_MODEM_UART)) {
@@ -818,8 +839,33 @@ extern "C" bool net_check_sim(void)
         ESP_LOGI(TAG, "SIM check: setOpState(NO_RF) failed");
         return false;
     }
+
+    // First real caller of getSIMCardIMSI() in this codebase (net_init()'s
+    // own production bring-up never reads the SIM directly) -- no prior
+    // evidence either way on how quickly this modem/SIM combination
+    // actually answers AT+CIMI right after a CFUN=4 transition. Real SIM
+    // cards commonly need a brief moment to power up and become readable
+    // after the interface that reads them is (re)enabled; a single
+    // immediate attempt has no way to tell "genuinely no SIM" apart from
+    // "SIM just needed another moment", so this polls for up to
+    // PAGER_SIM_CHECK_POLL_CAP_S rather than firing once. Power effect:
+    // same AT-round-trip class as a single attempt, repeated at most this
+    // many times, no RRC either way (opstate is NO_RF throughout).
+    constexpr int PAGER_SIM_CHECK_POLL_CAP_S = 5;
     WalterModemRsp rsp = {};
-    bool ok = WalterModem::getSIMCardIMSI(&rsp);
+    bool ok = false;
+    for (int waited_s = 0; waited_s <= PAGER_SIM_CHECK_POLL_CAP_S; waited_s++) {
+        rsp = {};
+        ok = WalterModem::getSIMCardIMSI(&rsp);
+        if (ok) {
+            break;
+        }
+        ESP_LOGI(TAG, "SIM check: attempt %d/%d failed (result=%s)", waited_s + 1,
+                 PAGER_SIM_CHECK_POLL_CAP_S + 1, walter_state_name(rsp.result));
+        if (waited_s < PAGER_SIM_CHECK_POLL_CAP_S) {
+            vTaskDelay(pdMS_TO_TICKS(1000));
+        }
+    }
     ESP_LOGI(TAG, "SIM check: %s", ok ? "IMSI read OK" : "no SIM detected (IMSI read failed)");
     return ok;
 }
