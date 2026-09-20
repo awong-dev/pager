@@ -39,6 +39,12 @@ variable "broker_host" {
   type        = string
 }
 
+variable "broker_ca_pem" {
+  description = "app/routers/admin.py's _bootstrap_host_and_ca() BROKER_CA_PEM -- the broker's root CA as PEM text, baked into every setup-code bootstrap bundle so the device pins it (docs/DEVICE_PLAN.md section 3.3). Empty (the default) means pin nothing: the env var is not set at all, the relay sends an empty CA, and the device runs with certificate validation off. A public root CA is not a secret. Only setup codes issued after a change carry the new value."
+  type        = string
+  default     = ""
+}
+
 # --- Secret Manager wiring ------------------------------------------
 # These come from infra/modules/secrets' outputs. Cloud Run v2 refuses to
 # create a revision that references a secret with zero versions, so

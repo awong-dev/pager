@@ -20,6 +20,13 @@ relay_image = "us-central1-docker.pkg.dev/my-pager-project/pager/relay:latest"
 # (docs/SERVER_PLAN.md §9.4; infra/README.md's runbook step covers this).
 broker_api_url = "https://<your-deployment>.emqxsl.com:8443/api/v5"
 
+# The broker's MQTT(S) hostname, baked into every setup code (required).
+broker_host = "<your-deployment>.emqxsl.com"
+
+# Root CA devices pin for the broker (docs/DEVICE_PLAN.md section 3.3).
+# Leave unset to pin nothing (validation off). For EMQX Cloud Serverless:
+# broker_ca_pem_file = "certs/digicert-global-root-g2.pem"
+
 # Optional overrides (defaults shown):
 # firestore_location     = "nam5"
 # custom_domain          = ""

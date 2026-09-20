@@ -59,6 +59,12 @@ variable "broker_host" {
   type        = string
 }
 
+variable "broker_ca_pem_file" {
+  description = "Path, relative to infra/envs/prod, of the PEM root CA devices should pin for the broker -- e.g. \"certs/digicert-global-root-g2.pem\" for EMQX Cloud Serverless. Empty (the default) pins nothing: devices run with certificate validation off (docs/DEVICE_PLAN.md section 3.3). A file path rather than the PEM text so the same value works from terraform.tfvars and from a one-line CI `-var`."
+  type        = string
+  default     = ""
+}
+
 variable "twilio_base_url" {
   description = "Leave empty in a real deployment -- see infra/modules/relay-service/variables.tf's comment. Only meaningful pointed at a Twilio-mock-shaped staging endpoint."
   type        = string

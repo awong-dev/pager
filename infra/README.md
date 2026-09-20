@@ -147,6 +147,10 @@ Read that workflow's own top-of-file comment for the exact gating mechanism firs
   - `GCP_DEPLOY_SERVICE_ACCOUNT` = `terraform output -raw ci_deploy_service_account_email`
 - Repo **variables** (same page, "Variables" tab):
   - `GCP_PROJECT_ID`, `GCP_REGION`, `BROKER_API_URL`, `BROKER_HOST` (same values as `terraform.tfvars`)
+  - `BROKER_CA_PEM_FILE` (optional; same value as `terraform.tfvars`' `broker_ca_pem_file`, e.g.
+    `certs/digicert-global-root-g2.pem`). Leave it unset to pin no CA. **If `terraform.tfvars` sets it
+    and this repo variable does not, the next CI deploy silently un-pins:** setup codes issued after
+    that carry no CA. Devices already set up keep whatever CA they were given.
   - `FIREBASE_PROJECT_ID`, `FIREBASE_API_KEY`, `FIREBASE_AUTH_DOMAIN`, `FIREBASE_STORAGE_BUCKET`,
     `FIREBASE_MESSAGING_SENDER_ID`, `FIREBASE_APP_ID` -- the web app's Firebase config (same values as
     `web/.env.local`'s own `NEXT_PUBLIC_FIREBASE_*`, from the Firebase console's Project Settings ->

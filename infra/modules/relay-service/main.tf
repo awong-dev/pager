@@ -132,6 +132,16 @@ resource "google_cloud_run_v2_service" "relay" {
         name  = "BROKER_HOST"
         value = var.broker_host
       }
+      # Only set when a CA is actually pinned: an unset BROKER_CA_PEM and an
+      # empty one mean the same thing to the relay ("pin nothing"), and
+      # leaving it unset keeps the revision's env list honest.
+      dynamic "env" {
+        for_each = var.broker_ca_pem == "" ? [] : [var.broker_ca_pem]
+        content {
+          name  = "BROKER_CA_PEM"
+          value = env.value
+        }
+      }
       env {
         name  = "TASKS_MODE"
         value = var.tasks_mode
