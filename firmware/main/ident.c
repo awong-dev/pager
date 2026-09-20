@@ -125,17 +125,24 @@ bool ident_load(void)
         return false;
     }
 
-    ident_t tmp;
+    /* static, not a stack local: ident_t carries a 4 kB `ca` buffer and this
+     * runs on the main task. As a local it overflowed that stack on the first
+     * boot that actually had an identity in NVS (confirmed on hardware: reset
+     * loop straight after the first successful setup). Boot is single-threaded
+     * here, so a static scratch copy is safe. */
+    static ident_t tmp;
     memset(&tmp, 0, sizeof(tmp));
 
-    /* Required: no identity without all six of these. */
+    /* Required: no identity without these (`ca` below is the exception). */
     bool ok = true;
     ok = ok && read_str(h, "dev_id", tmp.dev_id, sizeof(tmp.dev_id)) == FIELD_OK;
     ok = ok && read_str(h, "mqtt_pw", tmp.mqtt_pw, sizeof(tmp.mqtt_pw)) == FIELD_OK;
     ok = ok && read_blob(h, "kdev", tmp.kdev, sizeof(tmp.kdev)) == FIELD_OK;
     ok = ok && read_str(h, "host", tmp.host, sizeof(tmp.host)) == FIELD_OK;
     ok = ok && read_u16(h, "port", &tmp.port) == FIELD_OK;
-    ok = ok && read_str(h, "ca", tmp.ca, sizeof(tmp.ca)) == FIELD_OK;
+    /* `ca` is optional: empty/absent means the production session pins no
+     * CA (net_init() then uses validation off). Only a read error fails. */
+    ok = ok && read_str(h, "ca", tmp.ca, sizeof(tmp.ca)) != FIELD_ERROR;
 
     if (ok && !valid_dev_id(tmp.dev_id, strlen(tmp.dev_id))) {
         ESP_LOGD(TAG, "dev_id '%s' fails PROTOCOL.md %%1 regex", tmp.dev_id);

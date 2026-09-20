@@ -42,3 +42,8 @@ CONFIG_MBEDTLS_HKDF_C=y
 # serial_jtag() (main.c) to even compile -- that API is gated behind this
 # exact Kconfig symbol, not the secondary-console one.
 CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+
+# modes_run() runs on the main task and drives ui/gfx, mbedtls HMAC and the
+# modem library; the 3584-byte default overflowed on hardware. Same size the
+# setup REPL task already needed (main.c).
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384

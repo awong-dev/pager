@@ -510,7 +510,9 @@ static bool decode_and_validate_bundle(const uint8_t *plain, size_t plain_len, i
         case BOOT_KEY_CA: {
             const char *s;
             size_t slen;
-            if (!cbor_r_tstr(&r, &s, &slen) || slen == 0 || slen >= sizeof(out->ca)) {
+            /* Empty is legal: the relay sends "" when it pins no CA, and the
+             * production session then runs with validation off (net_init()). */
+            if (!cbor_r_tstr(&r, &s, &slen) || slen >= sizeof(out->ca)) {
                 return false;
             }
             memcpy(out->ca, s, slen);
@@ -556,7 +558,9 @@ static bool decode_and_validate_bundle(const uint8_t *plain, size_t plain_len, i
         }
     }
 
-    if (!(have_id && have_pw && have_k && have_host && have_port && have_ca && have_label)) {
+    /* `ca` is optional (absent == empty == "pin nothing"); see BOOT_KEY_CA. */
+    (void) have_ca;
+    if (!(have_id && have_pw && have_k && have_host && have_port && have_label)) {
         return false;
     }
 
@@ -684,25 +688,33 @@ bool setup_run(const char *code)
 
     static uint8_t plain[SETUP_BUNDLE_MAX];
     size_t plain_len = 0;
+    /* Diagnostic: the three failures below all surface as "code damaged";
+     * the length tells a truncated receive apart from a wrong key. */
+    ESP_LOGI(TAG, "bundle received: %u bytes", (unsigned) s_bundle_len);
     if (!setup_decrypt_bundle(bkey, s_bundle_buf, s_bundle_len, plain, sizeof(plain), &plain_len)) {
         net_session_down();
+        ESP_LOGI(TAG, "bundle AES-GCM decrypt failed (bad tag: wrong key or corrupted bytes)");
         return fail(ui_ok, "code damaged"); /* bad tag: wrong key or corrupted bundle */
     }
 
-    ident_t id;
+    static ident_t id; /* static: 4 kB+ struct, keep it off the task stack (see ident_load()) */
     if (!decode_and_validate_bundle(plain, plain_len, &id)) {
         net_session_down();
+        ESP_LOGI(TAG, "bundle decrypted (%u bytes) but CBOR decode/validate failed",
+                 (unsigned) plain_len);
         return fail(ui_ok, "code damaged");
     }
 
     if (!ident_store(&id)) {
         net_session_down();
+        ESP_LOGI(TAG, "bundle valid but ident_store() (NVS write) failed");
         return fail(ui_ok, "code damaged"); /* NVS write failure; no better bucket among the four */
     }
 
     // Power effect: one NVRAM write on the modem's own storage, no RRC; see
     // net_write_ca()'s own doc comment.
-    if (!net_write_ca(id.ca)) {
+    /* No CA in the bundle: nothing to write, net_init() runs unpinned. */
+    if (id.ca[0] != '\0' && !net_write_ca(id.ca)) {
         net_session_down();
         return fail(ui_ok, "cannot reach broker"); /* modem-side failure, same session as above */
     }

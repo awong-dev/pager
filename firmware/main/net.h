@@ -266,6 +266,30 @@ const char *net_get_device_id(void);
  * effect: modem leaves reset, one AT round trip, no RRC. */
 bool net_check_sim(void);
 
+/* TEMPORARY diagnostic (main.c's `nettest` console command): attaches like
+ * net_bootstrap_attach(), then dials a plain socket (no TLS at all, TCP if
+ * udp==false else UDP) to host:port and polls for up to 10s for it to reach
+ * WALTER_MODEM_SOCKET_STATE_OPENED. Added to isolate raw network/transport
+ * reachability from the TLS/MQTT layer after net_bootstrap_connect() hung
+ * for 30s with zero CONNECTED/DISCONNECTED event and no corresponding
+ * connection attempt ever showing up in EMQX Cloud's own dashboard --
+ * narrows "is this an APN/carrier-level block" from "is this a TLS/MQTT-
+ * specific problem." The udp option was added after every TCP attempt (any
+ * host, any port) hung identically while the vendor's own BlueCherry demo
+ * (coap.bluecherry.io, UDP/DTLS) is known to work on this same SIM/kit --
+ * narrows further to "TCP specifically" vs "all outbound traffic". Remove
+ * once the broker-connect issue is root-caused. */
+bool net_check_tcp(const char *host, uint16_t port, bool udp, bool tls);
+
+/* TEMPORARY diagnostic (main.c's `mqtttest` console command): attaches like
+ * net_bootstrap_attach(), then issues a real AT+SQNSMQTTCONNECT to host:port
+ * over the VALIDATION_NONE bootstrap TLS profile with dummy credentials, and
+ * waits up to 30 s for an MQTT event. Exists so a TLS server we control can
+ * capture the ClientHello the modem's dedicated MQTT engine sends (SNI or
+ * not), as opposed to nettest's socket-layer ClientHello. Remove together
+ * with net_check_tcp(). */
+bool net_check_mqtt(const char *host, uint16_t port, int tls_mode);
+
 #ifdef __cplusplus
 }
 #endif

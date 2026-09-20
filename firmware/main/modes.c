@@ -269,7 +269,7 @@ static void on_auth_epoch_wrap(void)
     // ident_t has no per-field setter, so this snapshots every getter into a
     // local copy, bumps n_epoch, and writes the whole struct back via
     // ident_store() (same contract setup.c's own first-time write uses).
-    ident_t snap;
+    static ident_t snap; /* static: 4 kB+ struct, too big for this task's stack (see ident_load()) */
     memset(&snap, 0, sizeof(snap));
     strncpy(snap.dev_id, ident_get_dev_id(), sizeof(snap.dev_id) - 1);
     strncpy(snap.mqtt_pw, ident_get_mqtt_pw(), sizeof(snap.mqtt_pw) - 1);

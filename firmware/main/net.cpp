@@ -30,6 +30,27 @@
 
 static const char *TAG = "net";
 
+// int, not WalterModemState, so this compiles even if the enum ever gains
+// values this switch doesn't know about yet -- diagnostic-only, never used
+// for control flow.
+static const char *walter_state_name(int result)
+{
+    switch (result) {
+    case WALTER_MODEM_STATE_OK: return "OK";
+    case WALTER_MODEM_STATE_ERROR: return "ERROR";
+    case WALTER_MODEM_STATE_TIMEOUT: return "TIMEOUT";
+    case WALTER_MODEM_STATE_NO_MEMORY: return "NO_MEMORY";
+    case WALTER_MODEM_STATE_NO_FREE_PDP_CONTEXT: return "NO_FREE_PDP_CONTEXT";
+    case WALTER_MODEM_STATE_NO_SUCH_PDP_CONTEXT: return "NO_SUCH_PDP_CONTEXT";
+    case WALTER_MODEM_STATE_NO_FREE_SOCKET: return "NO_FREE_SOCKET";
+    case WALTER_MODEM_STATE_NO_SUCH_SOCKET: return "NO_SUCH_SOCKET";
+    case WALTER_MODEM_STATE_NO_SUCH_PROFILE: return "NO_SUCH_PROFILE";
+    case WALTER_MODEM_STATE_BUSY: return "BUSY";
+    case WALTER_MODEM_STATE_NO_DATA: return "NO_DATA";
+    default: return "?";
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Configuration. Per-device identity (host/port/dev_id/mqtt_pw/apn/CA) comes
 // from ident.c/h (docs/DEVICE_PLAN.md §3.2 step 3, §3.4), written by setup.c
@@ -52,10 +73,30 @@ static constexpr const char *PAGER_EDRX_PTW = "0001";
 static constexpr uint8_t PAGER_TLS_CA_SLOT = 12;
 static constexpr int PAGER_TLS_PROFILE_ID = 2;
 
-// DEVICE_PLAN.md §3.2 step 3: a second, unpinned profile for the one-time
-// bootstrap MQTT hop only (setup.c, F3.5). Never shares a slot/profile with
-// the production connection above.
-static constexpr int PAGER_TLS_BOOTSTRAP_PROFILE_ID = 3;
+// DEVICE_PLAN.md §3.2 step 3: the one-time bootstrap MQTT hop (setup.c,
+// F3.5) reuses PAGER_TLS_PROFILE_ID rather than a separate profile --
+// bootstrap and production never run in the same power cycle (main.c only
+// reaches setup.c when ident_load() has already failed; setup_run() always
+// esp_restart()s on exit), and each path calls tlsConfigProfile() fresh
+// before use anyway (VALIDATION_NONE here, VALIDATION_CA in net_init()), so
+// there is no real state to collide.
+//
+// History, for anyone tempted to give this its own profile again: this was
+// first 3, which doesn't exist -- the vendor library's own Kconfig caps
+// WALTER_MODEM_MAX_TLS_PROFILES at a hard maximum of 3 (`range 1 3`,
+// managed_components/dptechnics__walter-modem/Kconfig), so valid IDs are
+// only 0/1/2, and every real provisioning attempt failed instantly with
+// tlsConfigProfile()'s local NO_SUCH_PROFILE check. Switching to 1 "fixed"
+// that check but broke the actual MQTT connect in a much sneakier way: it
+// silently hung forever with no CONNECTED/DISCONNECTED event and no
+// connection ever reaching the broker (confirmed on real hardware, and
+// confirmed NOT a network/SIM/APN issue by testing plain TCP/UDP sockets to
+// three different hosts including the vendor's own coap.bluecherry.io,
+// which all hung identically). The vendor's own examples/mqtts.cpp names
+// the reason directly: "profile 1 is reserved for BlueCherry" -- not a
+// style convention, a real modem-side reservation that generic MQTT usage
+// silently breaks against.
+static constexpr int PAGER_TLS_BOOTSTRAP_PROFILE_ID = PAGER_TLS_PROFILE_ID;
 
 static constexpr uint16_t PAGER_MQTT_KEEPALIVE_S = 1800; // PROTOCOL.md §6.2
 
@@ -408,23 +449,35 @@ extern "C" bool net_init(void)
     // Power effect: skips one NVRAM write (and its flash wear) per F4
     // recovery once the CA is already current; tlsConfigProfile() below is a
     // cheap AT command and still runs every time.
-    const uint8_t *ca_hash = ident_get_ca_hash();
-    if (!s_ca_written || memcmp(s_ca_written_hash, ca_hash, IDENT_CA_HASH_LEN) != 0) {
-        if (!WalterModem::tlsWriteCredential(false, PAGER_TLS_CA_SLOT, ident_get_ca())) {
-            ESP_LOGI(TAG, "tlsWriteCredential() failed");
-            return false;
+    // A CA is pinned only when the bundle carried one. With none, the session
+    // runs with validation off: envelopes are still HMAC-authenticated
+    // (PROTOCOL.md section 2.4), and a broker that changes its root CA can no longer
+    // brick the pager. Either way the CA slot MUST be named in the profile --
+    // see net_tls_profile_bootstrap() for the plaintext-fallback finding.
+    const bool pin_ca = ident_get_ca_len() > 0;
+    if (pin_ca) {
+        const uint8_t *ca_hash = ident_get_ca_hash();
+        if (!s_ca_written || memcmp(s_ca_written_hash, ca_hash, IDENT_CA_HASH_LEN) != 0) {
+            if (!WalterModem::tlsWriteCredential(false, PAGER_TLS_CA_SLOT, ident_get_ca())) {
+                ESP_LOGI(TAG, "tlsWriteCredential() failed");
+                return false;
+            }
+            memcpy(s_ca_written_hash, ca_hash, IDENT_CA_HASH_LEN);
+            s_ca_written = true;
+            ESP_LOGI(TAG, "CA written to modem slot %u (hash changed)", (unsigned) PAGER_TLS_CA_SLOT);
+        } else {
+            ESP_LOGD(TAG, "CA unchanged, skipping NVRAM write to slot %u", (unsigned) PAGER_TLS_CA_SLOT);
         }
-        memcpy(s_ca_written_hash, ca_hash, IDENT_CA_HASH_LEN);
-        s_ca_written = true;
-        ESP_LOGI(TAG, "CA written to modem slot %u (hash changed)", (unsigned) PAGER_TLS_CA_SLOT);
-    } else {
-        ESP_LOGD(TAG, "CA unchanged, skipping NVRAM write to slot %u", (unsigned) PAGER_TLS_CA_SLOT);
     }
-    if (!WalterModem::tlsConfigProfile(PAGER_TLS_PROFILE_ID, WALTER_MODEM_TLS_VALIDATION_CA,
+    if (!WalterModem::tlsConfigProfile(PAGER_TLS_PROFILE_ID,
+                                       pin_ca ? WALTER_MODEM_TLS_VALIDATION_CA
+                                              : WALTER_MODEM_TLS_VALIDATION_NONE,
                                        WALTER_MODEM_TLS_VERSION_12, PAGER_TLS_CA_SLOT)) {
         ESP_LOGI(TAG, "tlsConfigProfile() failed");
         return false;
     }
+    ESP_LOGI(TAG, "TLS profile %d: %s", PAGER_TLS_PROFILE_ID,
+             pin_ca ? "CA pinned (VALIDATION_CA)" : "no CA pinned (VALIDATION_NONE)");
 
     snprintf(s_down_topic, sizeof(s_down_topic), "pager/%s/down", ident_get_dev_id());
 
@@ -447,10 +500,26 @@ extern "C" bool net_tls_profile_bootstrap(void)
     // profile PAGER_TLS_BOOTSTRAP_PROFILE_ID only; profile PAGER_TLS_PROFILE_ID
     // (production, CA-pinned to slot PAGER_TLS_CA_SLOT) is untouched.
     // Power effect: one AT command (profile config), no RRC of its own.
+    //
+    // The CA slot MUST be named even though validation is off. Confirmed on
+    // real hardware (GM02SP LR8.2.1.0-61488) by capturing the wire bytes on a
+    // server we control: with AT+SQNSPCFG=2,2,"",0,,,, (no CA slot) the
+    // modem's AT+SQNSMQTT* engine silently skips TLS and sends a PLAINTEXT
+    // MQTT CONNECT -- credentials included -- to the TLS port. A TLS-only
+    // broker then waits for a ClientHello forever and +SQNSMQTTONCONNECT
+    // never fires (the original `setup` hang). With the slot named
+    // (AT+SQNSPCFG=2,2,"",0,12,,,) the same engine sends a normal TLS 1.2
+    // ClientHello with SNI. The generic socket layer (AT+SQNSD) does TLS
+    // either way, which is why nettest never reproduced this.
+    // UNVERIFIED: behaviour when slot PAGER_TLS_CA_SLOT is empty, as on a
+    // factory-fresh modem -- every test so far had a cert in it.
+    WalterModemRsp rsp = {};
     if (!WalterModem::tlsConfigProfile(PAGER_TLS_BOOTSTRAP_PROFILE_ID,
                                        WALTER_MODEM_TLS_VALIDATION_NONE,
-                                       WALTER_MODEM_TLS_VERSION_12)) {
-        ESP_LOGI(TAG, "tlsConfigProfile(bootstrap) failed");
+                                       WALTER_MODEM_TLS_VERSION_12, PAGER_TLS_CA_SLOT, 0xff, 0xff,
+                                       &rsp)) {
+        ESP_LOGI(TAG, "tlsConfigProfile(bootstrap) failed (result=%s)",
+                 walter_state_name(rsp.result));
         return false;
     }
     ESP_LOGI(TAG, "bootstrap TLS profile %d configured (VALIDATION_NONE)",
@@ -520,6 +589,23 @@ extern "C" bool net_bootstrap_attach(const char *apn)
         return false;
     }
     ESP_LOGI(TAG, "network attached (bootstrap)");
+
+    // TEMPORARY diagnostic: real-hardware bootstrap MQTT connect stalled
+    // silently for the full 30s poll with no CONNECTED/DISCONNECTED event,
+    // and EMQX Cloud's own dashboard shows no record of a connection
+    // attempt ever arriving -- meaning the failure is somewhere between the
+    // modem and the broker, not a broker-side rejection. Confirming the PDP
+    // context actually has a real IP address rules in/out "attached at the
+    // RRC/LTE level but never got real IP connectivity" as the cause.
+    WalterModemRsp pdp_rsp = {};
+    if (WalterModem::getPDPAddress(&pdp_rsp, NULL, NULL, PAGER_PDP_CTX_ID)) {
+        ESP_LOGI(TAG, "PDP address (bootstrap): %s / %s",
+                 pdp_rsp.data.pdpAddressList.pdpAddress ? pdp_rsp.data.pdpAddressList.pdpAddress : "(null)",
+                 pdp_rsp.data.pdpAddressList.pdpAddress2 ? pdp_rsp.data.pdpAddressList.pdpAddress2 : "(null)");
+    } else {
+        ESP_LOGI(TAG, "getPDPAddress() failed (bootstrap, result=%s)", walter_state_name(pdp_rsp.result));
+    }
+
     return true;
 }
 
@@ -808,27 +894,6 @@ extern "C" const char *net_get_device_id(void)
     return ident_get_dev_id();
 }
 
-// int, not WalterModemState, so this compiles even if the enum ever gains
-// values this switch doesn't know about yet -- diagnostic-only, never used
-// for control flow.
-static const char *walter_state_name(int result)
-{
-    switch (result) {
-    case WALTER_MODEM_STATE_OK: return "OK";
-    case WALTER_MODEM_STATE_ERROR: return "ERROR";
-    case WALTER_MODEM_STATE_TIMEOUT: return "TIMEOUT";
-    case WALTER_MODEM_STATE_NO_MEMORY: return "NO_MEMORY";
-    case WALTER_MODEM_STATE_NO_FREE_PDP_CONTEXT: return "NO_FREE_PDP_CONTEXT";
-    case WALTER_MODEM_STATE_NO_SUCH_PDP_CONTEXT: return "NO_SUCH_PDP_CONTEXT";
-    case WALTER_MODEM_STATE_NO_FREE_SOCKET: return "NO_FREE_SOCKET";
-    case WALTER_MODEM_STATE_NO_SUCH_SOCKET: return "NO_SUCH_SOCKET";
-    case WALTER_MODEM_STATE_NO_SUCH_PROFILE: return "NO_SUCH_PROFILE";
-    case WALTER_MODEM_STATE_BUSY: return "BUSY";
-    case WALTER_MODEM_STATE_NO_DATA: return "NO_DATA";
-    default: return "?";
-    }
-}
-
 extern "C" bool net_check_sim(void)
 {
     if (!WalterModem::begin(PAGER_MODEM_UART)) {
@@ -868,4 +933,150 @@ extern "C" bool net_check_sim(void)
     }
     ESP_LOGI(TAG, "SIM check: %s", ok ? "IMSI read OK" : "no SIM detected (IMSI read failed)");
     return ok;
+}
+
+extern "C" bool net_check_tcp(const char *host, uint16_t port, bool udp, bool tls)
+{
+    if (!net_bootstrap_attach(NULL)) {
+        ESP_LOGI(TAG, "nettest: attach failed");
+        return false;
+    }
+
+    if (tls) {
+        if (!WalterModem::tlsConfigProfile(PAGER_TLS_PROFILE_ID, WALTER_MODEM_TLS_VALIDATION_NONE,
+                                           WALTER_MODEM_TLS_VERSION_12)) {
+            ESP_LOGI(TAG, "nettest: tlsConfigProfile() failed");
+            return false;
+        }
+    }
+
+    constexpr int PAGER_TCP_TEST_SOCKET_ID = 1;
+    if (!WalterModem::socketConfig(PAGER_TCP_TEST_SOCKET_ID)) {
+        ESP_LOGI(TAG, "nettest: socketConfig() failed");
+        return false;
+    }
+    // Confirmed missing here by comparison against the vendor's own
+    // examples/udp and examples/tcp: both call socketConfigSecure(id,
+    // false) right after socketConfig(), before ever dialing -- every
+    // socket dial attempt without this hung identically at
+    // WALTER_MODEM_SOCKET_STATE_PENDING_NO_DATA(5) forever, TCP or UDP, to
+    // three different hosts including the vendor's own coap.bluecherry.io
+    // (reachable fine via the modem's separate, dedicated BlueCherry/CoAP
+    // client), which is what proved this was a socket-config bug rather
+    // than a SIM/APN restriction.
+    //
+    // tls option: added after a real MQTT bootstrap connect (TLS, profile
+    // 2, VALIDATION_NONE) hung the exact same way against a host:port a
+    // plaintext nettest just proved reachable -- isolates "is it TLS
+    // itself" from "is it the MQTT protocol layer" by wrapping this same
+    // generic socket (not MQTT at all) in TLS profile PAGER_TLS_PROFILE_ID.
+    if (!WalterModem::socketConfigSecure(PAGER_TCP_TEST_SOCKET_ID, tls, PAGER_TLS_PROFILE_ID)) {
+        ESP_LOGI(TAG, "nettest: socketConfigSecure() failed");
+        return false;
+    }
+
+    WalterModemRsp rsp = {};
+    WalterModemSocketProto proto = udp ? WALTER_MODEM_SOCKET_PROTO_UDP : WALTER_MODEM_SOCKET_PROTO_TCP;
+    if (!WalterModem::socketDial(PAGER_TCP_TEST_SOCKET_ID, proto, port, host, 0,
+                                 WALTER_MODEM_ACCEPT_ANY_REMOTE_DISABLED, &rsp)) {
+        ESP_LOGI(TAG, "nettest: socketDial() failed (result=%s)", walter_state_name(rsp.result));
+        return false;
+    }
+    ESP_LOGI(TAG, "nettest: socketDial (%s) issued to %s:%u -- OK response means dialed",
+             udp ? "UDP" : "TCP", host, (unsigned) port);
+
+    // Confirmed by comparison against the working vendor reference
+    // (examples/walter_feels, verified live against this exact SIM/host):
+    // it NEVER polls socketGetState() before sending -- it treats
+    // socketDial()'s own "OK" as sufficient and sends immediately. AT+SQNSS?
+    // on our own socket right after a successful dial showed a fully
+    // resolved 5-tuple (real remote IP, real local/remote ports) at
+    // "status 2" (WALTER_MODEM_SOCKET_STATE_PENDING_NO_DATA once mapped) --
+    // this diagnostic's earlier "poll for OPENED/READY" loop was waiting for
+    // a state a live, working UDP socket apparently never reaches, producing
+    // a false "FAILED" on a socket that was actually fine. Sending a real
+    // payload and getting AT-level "OK" back is a much more direct test of
+    // whether the socket actually works than guessing at the right
+    // state enum.
+    const char *test_payload = "pager nettest";
+    bool sent = WalterModem::socketSend(PAGER_TCP_TEST_SOCKET_ID, (uint8_t *) test_payload,
+                                        (uint16_t) strlen(test_payload));
+    ESP_LOGI(TAG, "nettest: socketSend: %s", sent ? "OK" : "FAILED");
+    WalterModem::socketClose(PAGER_TCP_TEST_SOCKET_ID);
+    return sent;
+}
+
+extern "C" bool net_check_mqtt(const char *host, uint16_t port, int tls_mode)
+{
+    // TEMPORARY diagnostic (main.c's `mqtttest`): points the modem's own
+    // AT+SQNSMQTT* engine at an arbitrary host:port over the VALIDATION_NONE
+    // bootstrap TLS profile, so a TLS server under our control (e.g.
+    // `openssl s_server -tlsextdebug -msg`) can show exactly what ClientHello
+    // the MQTT engine sends -- SNI present or not, TLS version, ciphers.
+    // Dummy credentials: the far end need not be a real broker.
+    if (!net_bootstrap_attach(NULL)) {
+        ESP_LOGI(TAG, "mqtttest: attach failed");
+        return false;
+    }
+    if (!net_tls_profile_bootstrap()) {
+        return false;
+    }
+    // tls_mode: 0 = bootstrap profile as-is (VALIDATION_NONE, no CA slot),
+    // 1 = VALIDATION_CA + CA slot, 2 = VALIDATION_NONE + CA slot, 3 = mode 2
+    // after first deleting the cert in that slot (factory-fresh case). Mode 2
+    // separates "validation level 0" from "no CA slot named" as the thing
+    // that makes the engine fall back to plaintext.
+    if (tls_mode == 3) {
+        // `emptyca`: reproduce a factory-fresh modem. Writing zero bytes to a
+        // credential slot deletes it (Sequans AT+SQNSNVW). DESTRUCTIVE to slot
+        // PAGER_TLS_CA_SLOT -- harmless once no CA is pinned, and net_init()
+        // rewrites the slot on the next boot if the identity does pin one.
+        char cmd[48];
+        snprintf(cmd, sizeof(cmd), "AT+SQNSNVW=\"certificate\",%u,0", (unsigned) PAGER_TLS_CA_SLOT);
+        bool del = WalterModem::sendCmd(cmd);
+        ESP_LOGI(TAG, "mqtttest: delete cert slot %u: %s", (unsigned) PAGER_TLS_CA_SLOT,
+                 del ? "OK" : "FAILED (slot may already be empty)");
+        s_ca_written = false;
+    }
+    if (tls_mode == 2 || tls_mode == 3) {
+        if (!WalterModem::tlsConfigProfile(PAGER_TLS_PROFILE_ID, WALTER_MODEM_TLS_VALIDATION_NONE,
+                                           WALTER_MODEM_TLS_VERSION_12, PAGER_TLS_CA_SLOT)) {
+            ESP_LOGI(TAG, "mqtttest: tlsConfigProfile(VALIDATION_NONE + CA slot) failed");
+            return false;
+        }
+    }
+    if (tls_mode == 1) {
+        // `mqtttest <host> <port> ca`: same profile id, but configured the way
+        // the vendor's examples/mqtts and net_init() do it (VALIDATION_CA with
+        // the CA slot). Exists because the VALIDATION_NONE profile was observed
+        // to make the MQTT engine send a PLAINTEXT CONNECT to the TLS port --
+        // this isolates whether the validation level is what disables TLS.
+        if (!WalterModem::tlsConfigProfile(PAGER_TLS_PROFILE_ID, WALTER_MODEM_TLS_VALIDATION_CA,
+                                           WALTER_MODEM_TLS_VERSION_12, PAGER_TLS_CA_SLOT)) {
+            ESP_LOGI(TAG, "mqtttest: tlsConfigProfile(VALIDATION_CA) failed");
+            return false;
+        }
+    }
+    if (!net_bootstrap_connect("pager-sni-test", "x", host, port, "pager/sni-test/down")) {
+        return false;
+    }
+
+    // Wait up to 30 s for any outcome. Against a non-MQTT TLS server the
+    // expected result is "no event" -- the server-side log is the real output.
+    for (int i = 0; i < 30; i++) {
+        if (s_mqtt_connected) {
+            ESP_LOGI(TAG, "mqtttest: MQTT session usable after ~%d s", i);
+            return true;
+        }
+        if (s_disconnect_edge) {
+            ESP_LOGI(TAG, "mqtttest: connect failed / disconnected after ~%d s", i);
+            break;
+        }
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+    if (!s_disconnect_edge) {
+        ESP_LOGI(TAG, "mqtttest: no CONNECTED/DISCONNECTED event within 30 s");
+    }
+    WalterModem::mqttDisconnect();
+    return false;
 }

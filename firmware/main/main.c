@@ -1,3 +1,4 @@
+#include <stdlib.h>
 #include <string.h>
 
 #include "esp_console.h"
@@ -82,6 +83,53 @@ static int cmd_setup(int argc, char **argv)
     return 0; // unreachable: setup_run() only returns by not returning (esp_restart())
 }
 
+// TEMPORARY diagnostic command: `nettest <host> <port>` dials a plain TCP
+// socket (no TLS) via net_check_tcp() -- see that function's own doc
+// comment in net.h for why. Remove once the broker-connect issue is
+// root-caused.
+static int cmd_nettest(int argc, char **argv)
+{
+    esp_log_level_set("WalterModem", ESP_LOG_DEBUG); // raw AT TX:/RX: trace
+    if (argc < 3 || argc > 4) {
+        printf("usage: nettest <host> <port> [udp|tls]\n");
+        return 1;
+    }
+    long port = strtol(argv[2], NULL, 10);
+    if (port <= 0 || port > 65535) {
+        printf("bad port\n");
+        return 1;
+    }
+    bool udp = (argc == 4) && (strcmp(argv[3], "udp") == 0);
+    bool tls = (argc == 4) && (strcmp(argv[3], "tls") == 0);
+    bool ok = net_check_tcp(argv[1], (uint16_t) port, udp, tls);
+    printf("nettest: %s\n", ok ? "CONNECTED" : "FAILED (see log above)");
+    return ok ? 0 : 1;
+}
+
+// TEMPORARY diagnostic command: `mqtttest <host> <port>` issues a real
+// AT+SQNSMQTTCONNECT (TLS, VALIDATION_NONE, dummy credentials) via
+// net_check_mqtt() -- see net.h. Remove together with nettest.
+static int cmd_mqtttest(int argc, char **argv)
+{
+    esp_log_level_set("WalterModem", ESP_LOG_DEBUG); // raw AT TX:/RX: trace
+    if (argc < 3 || argc > 4) {
+        printf("usage: mqtttest <host> <port> [ca|noneca|emptyca]\n");
+        return 1;
+    }
+    long port = strtol(argv[2], NULL, 10);
+    if (port <= 0 || port > 65535) {
+        printf("bad port\n");
+        return 1;
+    }
+    int tls_mode = 0;
+    if (argc == 4 && strcmp(argv[3], "ca") == 0) tls_mode = 1;
+    if (argc == 4 && strcmp(argv[3], "noneca") == 0) tls_mode = 2;
+    if (argc == 4 && strcmp(argv[3], "emptyca") == 0) tls_mode = 3;
+    bool ok = net_check_mqtt(argv[1], (uint16_t) port, tls_mode);
+    printf("mqtttest: %s\n", ok ? "CONNECTED" : "NOT CONNECTED (see log above)");
+    return ok ? 0 : 1;
+}
+
 // No modem/radio access of its own; starts the USB-serial REPL task that
 // waits for a person to type `setup <code>` (docs/DEVICE_PLAN.md §3.2 step
 // 5's Setup mode). Power effect: none beyond the idle CPU/UART-RX floor
@@ -122,6 +170,22 @@ static void start_setup_console(void)
         .func = &cmd_setup,
     };
     ESP_ERROR_CHECK(esp_console_cmd_register(&setup_cmd));
+
+    const esp_console_cmd_t nettest_cmd = {
+        .command = "nettest",
+        .help = "nettest <host> <port> -- TEMPORARY: plain TCP (no TLS) connectivity probe",
+        .hint = NULL,
+        .func = &cmd_nettest,
+    };
+    ESP_ERROR_CHECK(esp_console_cmd_register(&nettest_cmd));
+
+    const esp_console_cmd_t mqtttest_cmd = {
+        .command = "mqtttest",
+        .help = "mqtttest <host> <port> -- TEMPORARY: modem MQTT-engine TLS connect probe",
+        .hint = NULL,
+        .func = &cmd_mqtttest,
+    };
+    ESP_ERROR_CHECK(esp_console_cmd_register(&mqtttest_cmd));
 
     ESP_ERROR_CHECK(esp_console_start_repl(repl));
 }
