@@ -51,6 +51,7 @@ import LocationCard from "@/components/LocationCard";
 import RequireAuth from "@/components/RequireAuth";
 import { ApiError, api } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
+import { locBackoffLabel } from "@/lib/deviceTrust";
 import { useDirectory } from "@/lib/directory";
 import { getFirestoreDb } from "@/lib/firebase";
 import { formatClock, isLocReqExpired } from "@/lib/time";
@@ -323,6 +324,10 @@ function ThreadInner({ alias }: { alias: string }) {
     }
   }
 
+  // docs/V02_DESIGN.md §5/§4.3: unobtrusive, next to the locate action --
+  // absent on older firmware or once the backoff has cleared.
+  const locateBackoffLabel = device ? locBackoffLabel(device.status.locBackoffS) : null;
+
   return (
     <Stack spacing={2} sx={{ height: "calc(100vh - 140px)" }}>
       <Stack direction="row" spacing={2} sx={{ alignItems: "center" }}>
@@ -334,15 +339,22 @@ function ThreadInner({ alias }: { alias: string }) {
         )}
         <Box sx={{ flexGrow: 1 }} />
         {allowLocate && (
-          <Button
-            size="small"
-            variant="outlined"
-            startIcon={<LocationOnIcon />}
-            disabled={locateBusy}
-            onClick={() => void handleLocate()}
-          >
-            Request location
-          </Button>
+          <Stack spacing={0.25} sx={{ alignItems: "flex-end" }}>
+            <Button
+              size="small"
+              variant="outlined"
+              startIcon={<LocationOnIcon />}
+              disabled={locateBusy}
+              onClick={() => void handleLocate()}
+            >
+              Request location
+            </Button>
+            {locateBackoffLabel && (
+              <Typography variant="caption" color="text.secondary">
+                {locateBackoffLabel}
+              </Typography>
+            )}
+          </Stack>
         )}
       </Stack>
 

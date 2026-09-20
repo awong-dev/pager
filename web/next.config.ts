@@ -36,7 +36,10 @@ const nextConfig: NextConfig = {
       // required: `/chat/[alias]` is a real filesystem route, so an
       // `afterFiles` rewrite (the bare-array default) would never fire.
       // `:alias` matches a single segment, so `/chat` itself is untouched.
-      beforeFiles: [{ source: "/chat/:alias", destination: "/chat/_" }],
+      beforeFiles: [
+        { source: "/chat/:alias", destination: "/chat/_" },
+        { source: "/devices/:id", destination: "/devices/_" },
+      ],
       afterFiles: [
         { source: "/api/:path*", destination: "http://localhost:8000/api/:path*" },
         { source: "/webhooks/:path*", destination: "http://localhost:8000/webhooks/:path*" },

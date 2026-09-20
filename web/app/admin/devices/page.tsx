@@ -28,31 +28,47 @@
  */
 
 import { collection, onSnapshot } from "firebase/firestore";
+import Link from "next/link";
 import { useEffect, useState } from "react";
 import Alert from "@mui/material/Alert";
 import Button from "@mui/material/Button";
 import Dialog from "@mui/material/Dialog";
 import DialogActions from "@mui/material/DialogActions";
 import DialogContent from "@mui/material/DialogContent";
+import DialogContentText from "@mui/material/DialogContentText";
 import DialogTitle from "@mui/material/DialogTitle";
 import MenuItem from "@mui/material/MenuItem";
+import Snackbar from "@mui/material/Snackbar";
 import Stack from "@mui/material/Stack";
 import Table from "@mui/material/Table";
 import TableBody from "@mui/material/TableBody";
 import TableCell from "@mui/material/TableCell";
+import TableContainer from "@mui/material/TableContainer";
 import TableHead from "@mui/material/TableHead";
 import TableRow from "@mui/material/TableRow";
 import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
 
 import AppShell from "@/components/AppShell";
+import DeviceTrustChip from "@/components/DeviceTrustChip";
 import RequireAuth from "@/components/RequireAuth";
 import { ApiError, api } from "@/lib/api";
+import { locBackoffLabel } from "@/lib/deviceTrust";
 import { useDirectory } from "@/lib/directory";
 import { getFirestoreDb } from "@/lib/firebase";
 import type { DeviceDoc, UserDoc } from "@/lib/types";
 
 import SetupCodePanel, { type SetupCodeResult } from "./SetupCodePanel";
+
+// docs/V02_DESIGN.md §4.4: `POST /api/admin/devices/{id}/ca`
+// `{"action":"push"|"unpin"}` (`relay/app/routers/admin.py`'s `push_ca`).
+type CaAction = "push" | "unpin";
+
+interface CaConfirmState {
+  deviceId: string;
+  label: string;
+  action: CaAction;
+}
 
 // `devices/{d}.provisionState` (docs/DEVICE_PLAN.md §3.2/§D0.2) is not yet
 // part of `lib/types.ts`'s `DeviceDoc` mirror; declared locally here rather
@@ -105,6 +121,10 @@ function DevicesInner() {
   const [createOpen, setCreateOpen] = useState(false);
   const [form, setForm] = useState(emptyForm);
   const [setupResult, setSetupResult] = useState<SetupCodeResult | null>(null);
+  const [caConfirm, setCaConfirm] = useState<CaConfirmState | null>(null);
+  const [caBusy, setCaBusy] = useState(false);
+  const [caError, setCaError] = useState<string | null>(null);
+  const [caSuccess, setCaSuccess] = useState<string | null>(null);
 
   useEffect(() => {
     const db = getFirestoreDb();
@@ -214,6 +234,28 @@ function DevicesInner() {
     }
   }
 
+  // docs/V02_DESIGN.md §4.4: the change is asynchronous -- the chip only
+  // updates once the pager's next `/status` arrives, so success here says
+  // exactly that rather than implying it already happened.
+  async function submitCaAction() {
+    if (!caConfirm) return;
+    setCaBusy(true);
+    setCaError(null);
+    try {
+      await api.post(`/admin/devices/${caConfirm.deviceId}/ca`, { action: caConfirm.action });
+      setCaConfirm(null);
+      setCaSuccess("Sent to the pager; it applies on its next connection.");
+    } catch (err) {
+      setCaError(
+        err instanceof ApiError
+          ? String(err.detail ?? err.message)
+          : "Failed to update CA trust for this device."
+      );
+    } finally {
+      setCaBusy(false);
+    }
+  }
+
   const formValid = form.deviceId.trim() && form.ownerAlias.trim() && form.label.trim();
   const setupResultDevice = setupResult
     ? devices.find((d) => d.id === setupResult.deviceId)
@@ -230,68 +272,108 @@ function DevicesInner() {
       </Stack>
       {error && <Alert severity="error">{error}</Alert>}
 
-      <Table size="small">
-        <TableHead>
-          <TableRow>
-            <TableCell>Device ID</TableCell>
-            <TableCell>Label</TableCell>
-            <TableCell>Owner</TableCell>
-            <TableCell>Default to</TableCell>
-            <TableCell>Status</TableCell>
-            <TableCell>Provisioned</TableCell>
-            <TableCell>Revoked</TableCell>
-            <TableCell>Lock</TableCell>
-            <TableCell />
-          </TableRow>
-        </TableHead>
-        <TableBody>
-          {devices.map((d) => (
-            <TableRow key={d.id}>
-              <TableCell>{d.id}</TableCell>
-              <TableCell>{d.label}</TableCell>
-              <TableCell>@{uidToAlias(d.ownerUid) ?? d.ownerUid.slice(0, 8)}</TableCell>
-              <TableCell>{d.defaultToUid ? `@${uidToAlias(d.defaultToUid) ?? d.defaultToUid.slice(0, 8)}` : "--"}</TableCell>
-              <TableCell>{d.status?.state ?? "unknown"}</TableCell>
-              <TableCell>{d.provisionState === "provisioned" ? "online" : d.provisionState ?? "unknown"}</TableCell>
-              <TableCell>{d.revokedAt ? "yes" : "no"}</TableCell>
-              <TableCell>
-                <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
-                  <TextField
-                    select
-                    size="small"
-                    label="Auto-lock"
-                    value={d.pendingCfg?.obj.cfg?.lock?.auto ?? ""}
-                    onChange={(e) => void setAutoLock(d.id, Number(e.target.value))}
-                    sx={{ minWidth: 100 }}
-                  >
-                    {AUTO_LOCK_OPTIONS.map((o) => (
-                      <MenuItem key={o.value} value={o.value}>
-                        {o.label}
-                      </MenuItem>
-                    ))}
-                  </TextField>
-                  <Button size="small" onClick={() => void clearPasscode(d.id)}>
-                    Clear passcode
-                  </Button>
-                </Stack>
-              </TableCell>
-              <TableCell>
-                <Stack direction="row" spacing={1}>
-                  <Button size="small" onClick={() => void rotate(d)}>
-                    Rotate
-                  </Button>
-                  <Button size="small" color="warning" onClick={() => void revoke(d.id)}>
-                    Revoke
-                  </Button>
-                  <Button size="small" color="error" onClick={() => void deleteDevice(d.id)}>
-                    Delete
-                  </Button>
-                </Stack>
-              </TableCell>
+      <TableContainer sx={{ overflowX: "auto" }}>
+        <Table size="small">
+          <TableHead>
+            <TableRow>
+              <TableCell>Device ID</TableCell>
+              <TableCell>Label</TableCell>
+              <TableCell>Owner</TableCell>
+              <TableCell>Default to</TableCell>
+              <TableCell>Status</TableCell>
+              <TableCell>Provisioned</TableCell>
+              <TableCell>Revoked</TableCell>
+              <TableCell>CA trust</TableCell>
+              <TableCell>Lock</TableCell>
+              <TableCell />
             </TableRow>
-          ))}
-        </TableBody>
-      </Table>
+          </TableHead>
+          <TableBody>
+            {devices.map((d) => {
+              const backoff = locBackoffLabel(d.status?.locBackoffS);
+              return (
+                <TableRow key={d.id}>
+                  <TableCell>{d.id}</TableCell>
+                  <TableCell>{d.label}</TableCell>
+                  <TableCell>@{uidToAlias(d.ownerUid) ?? d.ownerUid.slice(0, 8)}</TableCell>
+                  <TableCell>{d.defaultToUid ? `@${uidToAlias(d.defaultToUid) ?? d.defaultToUid.slice(0, 8)}` : "--"}</TableCell>
+                  <TableCell>
+                    {d.status?.state ?? "unknown"}
+                    {backoff && (
+                      <Typography variant="caption" color="text.secondary" component="div">
+                        {backoff}
+                      </Typography>
+                    )}
+                  </TableCell>
+                  <TableCell>{d.provisionState === "provisioned" ? "online" : d.provisionState ?? "unknown"}</TableCell>
+                  <TableCell>{d.revokedAt ? "yes" : "no"}</TableCell>
+                  <TableCell>
+                    <Stack spacing={0.5} sx={{ alignItems: "flex-start" }}>
+                      <DeviceTrustChip tls={d.status?.tls} caFp={d.status?.caFp} />
+                      <Stack direction="row" spacing={0.5}>
+                        <Button
+                          size="small"
+                          onClick={() =>
+                            setCaConfirm({ deviceId: d.id, label: d.label, action: "push" })
+                          }
+                        >
+                          Push CA
+                        </Button>
+                        <Button
+                          size="small"
+                          color="warning"
+                          onClick={() =>
+                            setCaConfirm({ deviceId: d.id, label: d.label, action: "unpin" })
+                          }
+                        >
+                          Un-pin CA
+                        </Button>
+                      </Stack>
+                    </Stack>
+                  </TableCell>
+                  <TableCell>
+                    <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
+                      <TextField
+                        select
+                        size="small"
+                        label="Auto-lock"
+                        value={d.pendingCfg?.obj.cfg?.lock?.auto ?? ""}
+                        onChange={(e) => void setAutoLock(d.id, Number(e.target.value))}
+                        sx={{ minWidth: 100 }}
+                      >
+                        {AUTO_LOCK_OPTIONS.map((o) => (
+                          <MenuItem key={o.value} value={o.value}>
+                            {o.label}
+                          </MenuItem>
+                        ))}
+                      </TextField>
+                      <Button size="small" onClick={() => void clearPasscode(d.id)}>
+                        Clear passcode
+                      </Button>
+                    </Stack>
+                  </TableCell>
+                  <TableCell>
+                    <Stack direction="row" spacing={1} sx={{ flexWrap: "wrap" }}>
+                      <Button size="small" component={Link} href={`/devices/${d.id}`}>
+                        SMS
+                      </Button>
+                      <Button size="small" onClick={() => void rotate(d)}>
+                        Rotate
+                      </Button>
+                      <Button size="small" color="warning" onClick={() => void revoke(d.id)}>
+                        Revoke
+                      </Button>
+                      <Button size="small" color="error" onClick={() => void deleteDevice(d.id)}>
+                        Delete
+                      </Button>
+                    </Stack>
+                  </TableCell>
+                </TableRow>
+              );
+            })}
+          </TableBody>
+        </Table>
+      </TableContainer>
 
       <Dialog open={createOpen} onClose={() => setCreateOpen(false)} fullWidth maxWidth="xs">
         <DialogTitle>Add device</DialogTitle>
@@ -353,6 +435,55 @@ function DevicesInner() {
           onClose={() => setSetupResult(null)}
         />
       )}
+
+      <Dialog open={caConfirm !== null} onClose={() => (caBusy ? undefined : setCaConfirm(null))}>
+        <DialogTitle>
+          {caConfirm?.action === "push" ? "Push CA certificate" : "Un-pin CA certificate"}
+        </DialogTitle>
+        <DialogContent>
+          {caError && (
+            <Alert severity="error" sx={{ mb: 2 }}>
+              {caError}
+            </Alert>
+          )}
+          <DialogContentText>
+            {caConfirm?.action === "push" ? (
+              <>
+                This sends <strong>{caConfirm.label}</strong> ({caConfirm.deviceId}) a pointer to
+                this relay&apos;s current CA certificate. The pager fetches it, verifies its hash,
+                and switches to validating the broker&apos;s certificate the next time it
+                reconnects. This does not happen immediately.
+              </>
+            ) : (
+              <>
+                This tells <strong>{caConfirm?.label}</strong> ({caConfirm?.deviceId}) to stop
+                validating the broker&apos;s certificate. The pager will connect without
+                verifying who it is talking to. Use this only to recover a device stuck unable to
+                connect; it does not happen immediately.
+              </>
+            )}
+          </DialogContentText>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setCaConfirm(null)} disabled={caBusy}>
+            Cancel
+          </Button>
+          <Button
+            onClick={() => void submitCaAction()}
+            disabled={caBusy}
+            color={caConfirm?.action === "unpin" ? "warning" : "primary"}
+          >
+            {caConfirm?.action === "push" ? "Push CA" : "Un-pin CA"}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Snackbar
+        open={caSuccess !== null}
+        autoHideDuration={5000}
+        onClose={() => setCaSuccess(null)}
+        message={caSuccess}
+      />
     </Stack>
   );
 }

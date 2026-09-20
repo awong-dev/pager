@@ -43,6 +43,8 @@ export interface AllowEdgeDoc {
 }
 
 // ---- devices/{deviceId} -- app/store/devices.py ----
+export type TlsState = "unpinned" | "pinned" | "broken";
+
 export interface DeviceStatusDoc {
   state: string | null;
   mode: string | null;
@@ -53,6 +55,17 @@ export interface DeviceStatusDoc {
   fw: string | null;
   locPeriodS: number | null;
   locMinS: number | null;
+  // docs/V02_DESIGN.md §4.3 (CA trust): trust state and the pinned CA's short
+  // fingerprint. Both absent on older firmware -- render nothing, not
+  // "undefined".
+  tls?: TlsState | null;
+  caFp?: string | null;
+  // docs/V02_DESIGN.md §5 (location): seconds until the next GPS attempt is
+  // allowed, 0 = now. Absent on older firmware.
+  locBackoffS?: number | null;
+  // docs/V02_DESIGN.md §6 (device SMS): audit-queue entries dropped on the
+  // pager before they could be uploaded. Absent on older firmware.
+  smsLost?: number | null;
   updatedAt: Timestamp | null;
 }
 
