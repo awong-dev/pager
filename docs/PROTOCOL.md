@@ -5,8 +5,9 @@
 this file *first*, then the code — including anything `docs/SERVER_PLAN.md` implies, whose wire
 changes are all recorded here.
 
-**Scope:** a text and location relay. Geofences, schedule-based mode switching and device-side SMS
-are out of scope; §11 records where the contract leaves room for them.
+**Scope:** a text and location relay, **plus** (v0.2, owner decision 2026-09-20, §3.6/§7.3) an
+audited device-direct SMS path to a parent-managed allow-list. Geofences and schedule-based mode
+switching are still out of scope; §11 records where the contract leaves room for them.
 
 **Compatibility.** Payloads carry an explicit schema version (`v`, §3.1) and every field added
 since the first release is optional, so a device that ignores all of them stays conformant and a
@@ -127,7 +128,7 @@ Base envelope:
 | `from` | string | yes on content messages, **absent** on acks | `^[a-z0-9][a-z0-9_-]{0,15}$` **or** the literal `system`, ≤16 chars | Author's **alias**. *(a deployment has named users rather than one parent and one student, so `from` carries the sender's alias rather than a two-value enum. `parent` and `student` are ordinary aliases, so an older two-value payload is still valid. **Firmware impact: none** — `msg.c` accepts any 1–16 byte string and renders it verbatim.)* |
 | `body` | string | yes on content messages, **absent** on acks | ≤ **160 Unicode code points** (fixed) **and** ≤ **320 UTF-8 bytes** *(the code-point cap alone allows 640 bytes; the byte cap lets firmware size static buffers, and §9.4 turns it into the 161-byte RTC mirror by way of the ASCII-only CardKB)* | Message text. |
 | `ack` | string \| null | yes; `null` on content messages | `shown` \| `read` | Ack state being reported. |
-| `kind` | string | no (default `msg`) | `msg` \| `loc_req` \| `contact_req` \| `book` \| `cfg`; `/down`: `msg`/`loc_req`/`book`/`cfg`; `/up`: `msg`/`contact_req` | What the message *is* (§3.2). Absent MUST be read as `msg`. |
+| `kind` | string | no (default `msg`) | `msg` \| `loc_req` \| `contact_req` \| `book` \| `cfg` \| `sms_log`; `/down`: `msg`/`loc_req`/`book`/`cfg`; `/up`: `msg`/`contact_req`/`sms_log` | What the message *is* (§3.2). Absent MUST be read as `msg`. |
 | `to` | string | no; `/up` content messages only | same regex as `from` | Recipient alias chosen by the device. Absent → the relay uses the device's configured default recipient, or broadcasts to every user the owner may message. *(the device can address one of several users; optional, so a device that never sets it works unchanged.)* |
 | `n` | uint | no; signed envelopes only | 0…2⁵³-1 *(v0.2: widened from a 32-bit counter; see rationale)* | Per-device, per-direction replay counter (§2.4, §2.5, §14.2). Strictly increasing per publisher. |
 | `sig` | bstr(8) in CBOR / base64url(8) in JSON | no; signed envelopes only | — | HMAC-SHA256 tag, truncated to 64 bits, MUST be the last pair (§2.4). |
@@ -138,7 +139,11 @@ Base envelope:
 | `c` | array of objects | `book` only | ≤10 contacts | Approved contacts; each has `a` (alias), `n` (name ≤16 cp), `t` (type: `web`/`sms`/`chat`) (§4.3). |
 | `p` | array of objects | `book` only | ≤4 pending requests | Pending `contact_req`; each has `n` (name), `s` (status: `pend`/`no`) (§4.3). |
 | `more` | bool | `book` only | — | Reserved for chunking if the cap moves (§4.3). |
-| `cfg` | object | `/down` `cfg` kind only | — | Configuration map carrying `lock` (object with `clear` bool and `auto` int minutes) (§5.8). |
+| `cfg` | object | `/down` `cfg` kind only | — | Configuration map carrying `lock` (object with `clear` bool and `auto` int minutes; a dangling cross-reference to "§5.8" for its full shape predates this table's current section numbering and is flagged, not fixed, here), `ca` (v0.2, §4.4) and `sms` (v0.2, §3.6 — the SMS contact allow-list). |
+| `peer` | string | `sms_log` only | E.164 | The other party's phone number (§3.6). |
+| `dir` | string | `sms_log` only | `out` \| `in` | Direction of the SMS this entry audits (§3.6). |
+| `st` | string | `sms_log` only | `sent` \| `failed` \| `recv` \| `blocked` | Outcome of the SMS this entry audits (§3.6). |
+| `sms_ts` | int | `sms_log` only | ≥ 0, epoch s | When the SMS itself was sent/received, which may differ from the envelope's own `ts` if the pager was offline and queued the audit entry (§3.6). |
 
 Additional rules:
 - `body` MUST NOT contain Unicode control characters `U+0000`–`U+001F` or `U+007F`. Relay strips
@@ -176,6 +181,7 @@ Additional rules:
 | Ack (device → relay) | `/up` | `{"v":1,"id":"m_7f3a","ts":…,"ack":"shown"}` — **51 bytes**; no `from`, no `body` | — |
 | Up message (device reply) | `/up` | `{"v":1,"id":"u_91c0","ts":…,"from":"student","body":"ok coming","ack":null}` — **84 bytes** | Thread entry, routed to default recipient. |
 | Up message, addressed | `/up` | `{"v":1,"id":"u_91c0","ts":…,"from":"student","to":"mom","body":"ok coming","ack":null}` — **95 bytes** | Thread entry, routed to named recipient. |
+| SMS log (device → relay) | `/up` | `{"v":1,"id":"s_1a2b3c4d","ts":…,"kind":"sms_log","peer":"+12065550100","dir":"out","st":"sent","body":"On my way","sms_ts":…,"n":…,"sig":"…"}` — **170 bytes** signed JSON, **88 bytes** signed CBOR | Not a thread entry, not routed to anyone; audits the pager's own direct SMS send/receive (§3.6). QoS 1, deduped on `id` like any other up message. |
 | Location | `/loc` | §13 | — |
 
 A receiver distinguishes an ack from a content message by `ack !== null`. A payload with both a
@@ -227,8 +233,11 @@ carrying the approved contacts and pending requests for this device:
 
 **`kind:"cfg"` (relay → device).** A configuration message is a down message with `kind:"cfg"`,
 `ack:null`, carrying device settings that only the relay can modify (passcode lock, auto-lock
-timing, etc.). Fields: `cfg` is an object that currently holds `lock` (see §5.8 for structure).
-Unknown members of `cfg` are ignored, making this the home for future settings.
+timing, CA trust, the SMS contact allow-list, etc.). Fields: `cfg` is an object that currently
+holds `lock` (see §5.8 for structure), `ca` (v0.2, §4.4) and `sms` (v0.2, §3.6/§10 — an array of
+`{n, p}` objects, the device's *whole* SMS contact allow-list, replaced wholesale on every push;
+`[]` is a legal push meaning "no SMS contacts"). Unknown members of `cfg` are ignored, making this
+the home for future settings.
 - **Not a thread entry:** the device MUST NOT render it in the message thread, and MUST NOT
   `shown`- or `read`-ack it in the normal sense. Instead, the device acks with `shown` **once the
   config has been applied**.
@@ -331,6 +340,63 @@ The device sets `ts` from the LTE network clock obtained at attach (NITZ / modem
 substitutes its own receive time. *(avoids adding an SNTP/`esp_netif` code path
 purely for timestamps; the relay is already authoritative for thread ordering.)*
 Thread order in the parent UI is the relay's insertion order (SQLite rowid), **not** `ts`.
+
+### 3.6 `kind:"sms_log"` (device-direct SMS, v0.2)
+
+Owner decision (2026-09-20, `V02_DESIGN.md` §6): the pager may send and receive SMS **directly
+through its own modem**, to a phone-number allow-list the device's owner (or an admin) manages in
+the web app — a delivery path that works without the relay, for exactly the case the relay itself
+cannot cover (the relay and the broker are both down, or the parent's own phone has no data). This
+reverses this document's own earlier "no device-side SMS path" rule (§7.3's SMS budget section);
+the pager has **no UI of its own** to add, edit or remove an allow-list entry — only the parent, in
+the web app, can.
+
+- **The allow-list itself is not a wire message.** It travels as `/down cfg.sms` (§3.2's `cfg` kind,
+  §10's `cfg.sms[]` sub-map): an array of `{n, p}` (name, E.164 phone), the *whole* list every time,
+  newest-wins exactly like `cfg.lock`/`cfg.ca`, acked `shown` once the device has written it to NVS.
+  Max 8 entries. The relay's own name-length cap for this list (24 UTF-8 bytes, tighter than
+  `book`/`contact_req`'s 48-byte name cap) exists purely so 8 maximal entries always fit under the
+  640-byte envelope limit in *both* wire encodings — see the byte arithmetic in the relay
+  implementation task's report; a future revision that widens the name cap back to 48 bytes would
+  first have to either shrink the entry cap or move to CBOR-only delivery for this one kind.
+- **Sending.** A message to an SMS contact goes out through the modem's own `smsSend()`, never
+  through `/down`/`/up` at all — the relay is not in this path.
+- **Receiving.** An inbound SMS from a listed number is inserted into the on-device thread and
+  alerts like any other message; from an unlisted number, it is **never shown** to the student —
+  only logged.
+- **The audit trail, non-negotiable:** every SMS in either direction — sent, failed, received, or
+  blocked — produces exactly one signed `/up` envelope, `kind:"sms_log"`, id `s_` + 8 hex, QoS 1,
+  deduped on `id` exactly like any other up message (redelivery-safe). Fields, beyond the base
+  envelope's `id`/`ts`/`n`/`sig`:
+
+  | Field | Type | Range | Meaning |
+  |---|---|---|---|
+  | `peer` | string | `^\+[1-9]\d{6,14}$` (E.164) | The other party's phone number. |
+  | `dir` | string | `out` \| `in` | Direction of the SMS this entry audits. |
+  | `st` | string | `sent` \| `failed` \| `recv` \| `blocked` | Outcome: `sent`/`failed` for `dir:"out"`; `recv`/`blocked` for `dir:"in"` (`blocked` = sender not on the allow-list, never shown). |
+  | `body` | string | ≤160 Unicode code points; **empty allowed** | The SMS text. Unlike an ordinary content message's `body` (§3.1), an empty `body` is legal here — some real handsets/gateways deliver a body-less SMS, and this is an audit record of what happened, not a thing a human reads on the pager's screen. |
+  | `sms_ts` | int | ≥ 0, epoch s | When the SMS itself was sent/received — differs from the envelope's own `ts` whenever the pager was offline and queued the entry. |
+
+  Example (JSON, signed, ~170 bytes; ~88 bytes as signed CBOR):
+  ```json
+  {"v":1,"id":"s_1a2b3c4d","ts":1757700000,"kind":"sms_log","peer":"+12065550100","dir":"out","st":"sent","body":"On my way","sms_ts":1757700000,"n":12,"sig":"…"}
+  ```
+- **Not a thread entry, not routed to anyone.** The relay stores it under
+  `devices/{deviceId}/smsLog/{logId}` (`logId` = this envelope's own `id`) and nothing else — no
+  `messages/{id}` row, no delivery/backend fan-out, no push notification. It is read back only
+  through `GET /api/devices/{id}/sms-log` (owner or admin), never through a Firestore listener.
+- **Offline durability.** If the pager is offline when an SMS is sent or received, the audit entry
+  is queued in NVS (at least 16 entries) and published once the session is back; **sent/received
+  first, logged second** — the whole point of this path is that it works without the relay, so a
+  slow or failed audit publish must never block or roll back the SMS itself. If the queue fills, the
+  oldest entry is dropped and the drop is counted in `/status`'s `sms_lost` (§5.1) rather than
+  silently lost with no trace at all.
+- **Retention.** No dedicated sweep exists yet for `smsLog` (unlike `messages`/`locations`, §5.7) —
+  entries accumulate until a future retention task adds one. Flagged as a known gap, not a decision
+  to keep them forever.
+- **Compatibility.** All of §3.6 is new in v0.2; a v0.1 device sends no `sms_log` and applies no
+  `cfg.sms`, and is unaffected — every field here is on a kind (`sms_log`) and a sub-map (`cfg.sms`)
+  such a device never emits or parses.
 
 ---
 
@@ -449,7 +515,7 @@ broker-generated LWT.
 | `tls` | string | no | `unpinned` \| `pinned` \| `broken` | *(v0.2, `CA_TRUST_PLAN.md` §3.1)* CA trust state: `unpinned` (no CA in the identity, validation off, by choice, not a fault), `pinned` (CA set, last connect validated), `broken` (CA set, last validated connect failed, running with validation off as a reachability fallback — §13.3's "pages still arrive" rule applies here too). Absent means firmware older than v0.2. |
 | `ca_fp` | string | no | 16 lowercase hex chars | *(v0.2)* First 16 hex characters of the SHA-256 of the pinned CA PEM (the same digest carried in the bootstrap bundle's `ca_sha`/a `cfg.ca.sha` push, §4.4). Absent when `tls` is `unpinned` or absent. |
 | `loc_backoff_s` | int | no | 0…86400 | *(v0.2, §13.3)* Seconds until the device's own growing location-attempt backoff next allows a fresh fix attempt; `0` = an attempt is allowed now. See §13.3's amendment for how this relates to `loc_min_s`. |
-| `sms_lost` | int | no | ≥ 0 | *(v0.2, out of scope until device SMS ships, §6/§7.3 — accepted now per the ground rule that a relay must take a new optional field before any firmware sends it)* Count of `sms_log` audit entries dropped from the device's NVS queue for lack of space; normally 0. |
+| `sms_lost` | int | no | ≥ 0 | *(v0.2, §3.6 — device-direct SMS)* Count of `sms_log` audit entries dropped from the device's NVS queue for lack of space; normally 0. |
 
 *(all six fields above are **display and diagnosis only**; the relay stores the reported
 values and never writes them back. The device owns its location duty cycle because the cost being
@@ -685,16 +751,26 @@ exposes TLS session resumption: it does not.** There is no session-ticket or ses
 in v1.5.0's public TLS API, so a reconnect is a full ~5 kB handshake every time. This does not
 threaten the data constraint but it is the dominant energy cost.
 
-**SMS budget: 0 of 100 used.** SMS is out of scope **for the device**. Firmware MUST NOT enable
-any SMS send or receive path. This line exists so a later phase cannot quietly introduce one without
-editing this document.
+**SMS budget: device-direct SMS is in scope (v0.2, owner decision 2026-09-20, reversing this
+document's earlier "no device-side SMS path" rule — see §3.6).** The pager's own modem may send
+and receive SMS directly, to a **parent-managed allow-list of phone numbers**, as a delivery path
+that does not depend on the relay at all. Every real SMS the modem sends or receives against this
+SIM's 100-message/month allowance is one message off that budget — a school day with a handful of
+direct texts to a parent's own phone is nowhere near it, but this line exists precisely so nobody
+has to guess: **every SMS sent or received by the modem MUST also produce one signed `sms_log`
+audit envelope** (§3.6), non-negotiable, so the relay has a complete record of what left/reached
+the SIM even though it never carried the message itself. `UNVERIFIED` whether the production SIM
+(a Google Fi data-only SIM) carries SMS at all — `smstest` (§1 item 7) exists to find out; if it
+does not, the feature fails safe (every send attempt logs `st:"failed"`, §3.6) rather than silently
+pretending to work.
 
-*(a clarification the SMS backend makes necessary.)* SMS exists as a **server-
-side delivery backend**: the relay hands a message to a third-party SMS provider over HTTPS, from
-the server, to a human's phone. That traffic never touches this SIM, this modem or this budget, and
-a message delivered to a user by SMS is still delivered to the *device* by MQTT exactly as
-specified above. The 100-message SIM allowance stays at **0 used**, and the rule above is unchanged:
-the day anything asks the modem to send an SMS, this document gets edited first.
+*(the pre-existing clarification the server-side SMS backend needs, unchanged by the paragraph
+above.)* SMS also exists, separately, as a **server-side delivery backend**: the relay hands a
+message to a third-party SMS provider over HTTPS, from the server, to a human's phone. That traffic
+never touches this SIM, this modem or this budget, and a message delivered to a user by that backend
+is still delivered to the *device* by MQTT exactly as specified above — it is a wholly different
+path from the direct-SMS one above, sharing nothing but three letters. `docs/SERVER_PLAN.md` §6.4
+covers it; nothing in this section applies to it.
 
 ### 7.4 Measurement — validating the model
 
@@ -1178,8 +1254,11 @@ Devices emit CBOR (§3) with this integer keymap. The relay accepts both JSON (t
 | 41 | `ca_sha` | bstr(32) | bootstrap bundle (v0.2, CA pointer SHA-256 — §4.4) |
 | 42 | `ca_fp` | tstr(16) | `/status` (v0.2, CA fingerprint — §5.1) |
 | 43 | `loc_backoff_s` | int | `/status` (v0.2, location backoff — §5.1, §13.3) |
-| 44-47 | *(reserved)* | — | Allocated by `V02_DESIGN.md` §7 to device SMS (`sms_log`'s `peer`/`dir`/`st`/`sms_ts`), a later task's own scope — not defined here yet; do not reuse these numbers for anything else. |
-| 48 | `sms_lost` | int | `/status` (v0.2, device SMS audit-drop counter — accepted here per §0's forward-compatibility rule even though `sms_log` itself is not yet specified in this document) |
+| 44 | `peer` | tstr | `/up` `sms_log` (v0.2, §3.6 — the other party's E.164 phone number) |
+| 45 | `dir` | tstr | `/up` `sms_log` (v0.2, §3.6 — `out`/`in`) |
+| 46 | `st` | tstr | `/up` `sms_log` (v0.2, §3.6 — `sent`/`failed`/`recv`/`blocked`) |
+| 47 | `sms_ts` | int | `/up` `sms_log` (v0.2, §3.6 — when the SMS itself was sent/received) |
+| 48 | `sms_lost` | int | `/status` (v0.2, §3.6 — device SMS audit-drop counter) |
 
 **Sub-map keys:**
 
@@ -1190,15 +1269,19 @@ Devices emit CBOR (§3) with this integer keymap. The relay accepts both JSON (t
 `p[]` pending request object (inside `/down` `book`): `n=0` (name), `s=1` (status pend/no).
 
 `cfg` object (inside `/down` `cfg`, key 38 above): `lock=0` (map, existing — see below), `ca=1`
-(map, v0.2 — §4.4: `{url=0 tstr, sha=1 bstr(32)}`; `sha` absent on an un-pin push, `url=""`).
-`sms=2` is reserved by `V02_DESIGN.md` §7 for a later task's device-SMS contact list; not defined
-here yet.
+(map, v0.2 — §4.4: `{url=0 tstr, sha=1 bstr(32)}`; `sha` absent on an un-pin push, `url=""`),
+`sms=2` (array, v0.2 — §3.6: the device's whole SMS contact allow-list, `[{n=0 tstr, p=1 tstr}, …]`).
 
 `lock` map (inside `/down` `cfg.lock`): `clear=0` (bool), `auto=1` (int minutes).
 
 `ca` map (inside `/down` `cfg.ca`, v0.2, §4.4): `url=0` (tstr; `""` means un-pin), `sha=1`
 (bstr(32), the CA PEM's SHA-256 — same digest as the bootstrap bundle's `ca_sha`; absent when
 `url` is `""`).
+
+`cfg.sms[]` item (v0.2, §3.6): `n=0` (tstr, contact display name, ≤16 code points and ≤24 UTF-8
+bytes — tighter than `book`/`contact_req`'s 48-byte name cap; see §3.6 for why), `p=1` (tstr,
+E.164 phone number). Note this is its own small namespace, distinct from `c[]`'s `{a, n, t}` above,
+even though both happen to use `n` for a display name.
 
 **JSON note (§3, §14.3):** the CBOR sub-map keys above are integers; in JSON the same *names* are
 used (`{"lock":{...}}`, `{"ca":{"url":...,"sha":...}}`), and, exactly like `sig`, a `bstr`-typed

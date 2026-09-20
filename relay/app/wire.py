@@ -539,3 +539,96 @@ class LocEnvelope(BaseModel):
         if self.loc is not None and self.err is not None:
             raise ValueError("loc and err are mutually exclusive")
         return self
+
+
+# docs/V02_DESIGN.md §6/§7: `peer` is always a real phone number (never an
+# alias reference the way `contact_req`'s overloaded `ph` can be, §4.2) --
+# same E.164 shape as `app/ingest.py`'s private `_PHONE_E164_RE` and
+# `app/backends/sms_twilio.py`'s `_E164_RE`, duplicated rather than imported
+# across modules for the same reason those two don't share one either (a
+# private regex is not a public contract worth coupling two unrelated
+# modules to).
+_SMS_PEER_RE = re.compile(r"^\+[1-9]\d{6,14}$")
+SMS_LOG_DIR_VALUES = ("out", "in")
+SMS_LOG_ST_VALUES = ("sent", "failed", "recv", "blocked")
+# §6: "body" (the SMS text itself, not the wire envelope's usual body rules)
+# is "<=160 chars but allow empty" -- deliberately *not* `validate_body`
+# above: an SMS log entry's body must be allowed empty (some real handsets
+# and gateways deliver a body-less/heartbeat SMS) and is not itself the
+# thing a §3.4 "malformed" rejection should key on the way a `msg` kind's
+# `body` is.
+SMS_LOG_BODY_MAX_CODEPOINTS = 160
+
+
+class SmsLogEnvelope(BaseModel):
+    """A payload received on `pager/{device_id}/up` with `kind:"sms_log"`
+    (docs/V02_DESIGN.md §6/§7): the pager's own modem sending/receiving SMS
+    directly, audited back to the relay. Not a thread entry, not routed to
+    any user -- `app/ingest.py`'s `Ingest._handle_sms_log` only ever writes
+    it to `devices/{deviceId}/smsLog/{logId}` (`app/store/sms.py`).
+
+    Modelled here (unlike `contact_req`, which lives in `app/ingest.py`)
+    per this task's own file list. Dispatched by `app/ingest.py`'s
+    `handle_up` on the raw decoded dict's `kind`, *before*
+    `UpEnvelope.model_validate` -- exactly the same "why not `app/wire.py`'s
+    `UpEnvelope`" reasoning `ContactReqEnvelope`'s own docstring gives (that
+    model treats any non-null `kind` as unrecognised, §3.4)."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    v: int = 1
+    id: str
+    ts: int
+    peer: str
+    dir: Literal["out", "in"]
+    st: Literal["sent", "failed", "recv", "blocked"]
+    body: str = ""
+    sms_ts: int
+    # §14.2: present on every signed envelope (this kind is only ever
+    # signed -- an SMS audit log from an unsigned v1 device is not a real
+    # deployment shape, since device-side SMS is a v0.2 feature -- but `n`
+    # is still optional here, not required, for the same uniform reason
+    # every other `/up` envelope model in this file leaves it optional: an
+    # `authMode: "password"` device is never rejected by *shape* for
+    # lacking `n`, only by `app/ingest.py`'s `_verify_and_decode`, which
+    # never signs/verifies at all for such a device.
+    n: int | None = None
+
+    @field_validator("id")
+    @classmethod
+    def _check_id(cls, value: str) -> str:
+        if not ID_RE.match(value):
+            raise ValueError("invalid id format")
+        return value
+
+    @field_validator("ts")
+    @classmethod
+    def _check_ts(cls, value: int) -> int:
+        validate_ts(value)
+        return value
+
+    @field_validator("peer")
+    @classmethod
+    def _check_peer(cls, value: str) -> str:
+        if not _SMS_PEER_RE.match(value):
+            raise ValueError("sms_log peer is not a valid E.164 phone number")
+        return value
+
+    @field_validator("body")
+    @classmethod
+    def _check_body(cls, value: str) -> str:
+        if len(value) > SMS_LOG_BODY_MAX_CODEPOINTS:
+            raise ValueError("sms_log body exceeds 160 Unicode code points")
+        return value
+
+    @field_validator("sms_ts")
+    @classmethod
+    def _check_sms_ts(cls, value: int) -> int:
+        if value < 0:
+            raise ValueError("sms_ts must be >= 0")
+        return value
+
+    @field_validator("n")
+    @classmethod
+    def _check_n(cls, value: int | None) -> int | None:
+        return _check_n_range(value)

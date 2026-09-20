@@ -77,6 +77,7 @@ report rather than guessed past silently.
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from datetime import UTC, datetime
@@ -94,6 +95,7 @@ from app.store import devices as devices_store
 from app.store import users as users_store
 from app.wire import MAX_ENVELOPE_BYTES
 from app.wirecbor import encode as cbor_encode
+from app.wirecbor import to_json_safe
 
 logger = logging.getLogger("relay.devcfg")
 
@@ -136,10 +138,20 @@ _PENDING_CFG_FIELD = "pendingCfg"
 # scheme) leaves any `cfg.lock` already pending in production, before this
 # change deploys, still tracked and re-publishable.
 _PENDING_CFG_CA_FIELD = "pendingCfgCa"
+# docs/V02_DESIGN.md §6: `cfg.sms` gets its own pending slot too, for the
+# same reason `cfg.ca` did -- a pending SMS-contact push must not clobber
+# (or be clobbered by) a pending `cfg.lock`/`cfg.ca`, since all three are
+# independently "newest unacked, one at a time" per *kind* of cfg.
+_PENDING_CFG_SMS_FIELD = "pendingCfgSms"
 # Every field `ack()`/`republish_pending()` iterate over -- see their
-# docstrings for why book/lock/ca are three independent "newest unacked"
+# docstrings for why book/lock/ca/sms are four independent "newest unacked"
 # slots rather than one.
-_ALL_PENDING_FIELDS = (_PENDING_BOOK_FIELD, _PENDING_CFG_FIELD, _PENDING_CFG_CA_FIELD)
+_ALL_PENDING_FIELDS = (
+    _PENDING_BOOK_FIELD,
+    _PENDING_CFG_FIELD,
+    _PENDING_CFG_CA_FIELD,
+    _PENDING_CFG_SMS_FIELD,
+)
 
 
 def _devices():
@@ -217,18 +229,45 @@ def _listed_requests(device_id: str) -> list[dict[str, Any]]:
     ]
 
 
+# docs/V02_DESIGN.md §6: `sig` is 11 base64url characters at runtime (8 raw
+# bytes, `app/devauth.py`'s 64-bit truncated tag) -- `,"sig":"<11 chars>"`
+# is the exact tail `sign_json` appends (see that function's docstring).
+_SIGNED_JSON_SIG_SUFFIX_BYTES = len(',"sig":""') + 11
+
+
 def _assert_within_envelope_limit(obj: dict[str, Any]) -> None:
-    """docs/DEVICE_TASKS.md S4.2: "assert the signed CBOR is <= 640 bytes."
+    """docs/DEVICE_TASKS.md S4.2: "assert the signed CBOR is <= 640 bytes,"
+    extended (docs/V02_DESIGN.md §6: "check ... in both encodings") to also
+    assert the signed *JSON* size -- `cfg.sms`'s size depends on the SMS
+    contact names' actual UTF-8 byte length, unlike `book`/`cfg.lock`/
+    `cfg.ca`, whose worst case was always comfortably under 640 bytes in
+    either encoding, so this second check was never load-bearing before now.
     `obj` is unsigned (signing is `BrokerClient.publish_down`'s job, which
     needs the device's `deviceSecrets.hmacKey` this module never touches),
-    so this estimates the signed size: `n` (worst case, a full uint32) plus
-    the fixed 10-byte `sig` pair, both accounted for without needing real
-    key material."""
+    so this estimates each signed size: `n` (worst case, the full 52-bit
+    counter) plus the fixed-length `sig` pair each encoding actually
+    produces, both accounted for without needing real key material."""
     worst_case = {**obj, "n": _WORST_CASE_N}
-    signed_len = len(cbor_encode(worst_case)) + _SIGNED_CBOR_SIG_BYTES
-    assert signed_len <= MAX_ENVELOPE_BYTES, (
-        f"devcfg {obj.get('kind')!r} payload too large: {signed_len} bytes "
+    cbor_len = len(cbor_encode(worst_case)) + _SIGNED_CBOR_SIG_BYTES
+    assert cbor_len <= MAX_ENVELOPE_BYTES, (
+        f"devcfg {obj.get('kind')!r} payload too large: {cbor_len} bytes "
         f"signed CBOR (limit {MAX_ENVELOPE_BYTES})"
+    )
+    # `to_json_safe` mirrors `devauth.sign_json`'s own pre-serialisation
+    # step: a raw `bytes` leaf (e.g. `cfg.ca.sha`) is not JSON-serialisable
+    # at all, and the real JSON wire form is base64url text, not raw bytes
+    # (docs/V02_DESIGN.md §7).
+    json_len = (
+        len(
+            json.dumps(
+                to_json_safe(worst_case), separators=(",", ":"), ensure_ascii=False
+            ).encode("utf-8")
+        )
+        + _SIGNED_JSON_SIG_SUFFIX_BYTES
+    )
+    assert json_len <= MAX_ENVELOPE_BYTES, (
+        f"devcfg {obj.get('kind')!r} payload too large: {json_len} bytes "
+        f"signed JSON (limit {MAX_ENVELOPE_BYTES})"
     )
 
 
@@ -352,6 +391,51 @@ def unpin_ca(device_id: str, broker: BrokerClient) -> bool:
     _assert_within_envelope_limit(obj)
     _set_pending(device_id, _PENDING_CFG_CA_FIELD, obj)
     return broker.publish_down(device_id, obj)
+
+
+def push_sms_contacts(
+    device_id: str, contacts: list[dict[str, Any]], broker: BrokerClient
+) -> bool:
+    """docs/V02_DESIGN.md §6: `/down cfg.sms = [{n, p}, ...]` -- the *whole*
+    SMS contact allow-list, every time (`[]` is a legal push, meaning "no
+    SMS contacts"), newest-wins and acked `shown` on apply exactly like
+    `cfg.lock`/`cfg.ca`. `contacts` is `[{"name": ..., "phone": ...}, ...]`
+    (`app/store/devices.py`'s `SmsContact.model_dump()` shape) -- the caller
+    (`app/routers/devices.py`) has already validated max-8/unique-phone/
+    E.164/name-length before calling this, so this function does not
+    re-validate, only maps `name`/`phone` to the wire's `n`/`p` (§7's
+    `cfg.sms[]` sub-map) and stores/publishes.
+
+    Stored under its own pending slot (`_PENDING_CFG_SMS_FIELD`), independent
+    of a pending `cfg.lock`/`cfg.ca` -- see `_ALL_PENDING_FIELDS`'s
+    docstring."""
+    if devices_store.get_device(device_id) is None:
+        logger.warning("push_sms_contacts: no such device %s", device_id)
+        return False
+    obj: dict[str, Any] = {
+        "v": 1,
+        "id": new_message_id(),
+        "ts": int(time.time()),
+        "kind": "cfg",
+        "cfg": {"sms": [{"n": c["name"], "p": c["phone"]} for c in contacts]},
+        "ack": None,
+    }
+    _assert_within_envelope_limit(obj)
+    _set_pending(device_id, _PENDING_CFG_SMS_FIELD, obj)
+    return broker.publish_down(device_id, obj)
+
+
+def sms_pending(device_id: str) -> bool:
+    """True iff this device has a pushed `cfg.sms` not yet acked `shown` --
+    `GET`/`PUT /api/devices/{id}/sms-contacts`'s `pending` field
+    (`app/routers/devices.py`). `False` (not an error) for an unregistered
+    device, matching every other read in this module's "no such device is
+    just an empty/false answer" style."""
+    snap = _devices().document(device_id).get()
+    if not snap.exists:
+        return False
+    pending = (snap.to_dict() or {}).get(_PENDING_CFG_SMS_FIELD)
+    return isinstance(pending, dict) and not pending.get("acked", False)
 
 
 def ack(device_id: str, msg_id: str) -> bool:

@@ -40,14 +40,27 @@ docs/PROTOCOL.md §3.2's `contact_req`/`book`/`cfg` kinds):
   Device: connect, disconnect, crash, inbox, msg, ack, autoack, status, bytes,
           loc <lat> <lon> [acc] | loc auto <period_s> [--walk] |
           loc min <s> | loc fail on|off | loc backoff <s>,
-          contactreq <name> [phone-or-alias]
+          contactreq <name> [phone-or-alias],
+          sms out <phone> <text...> | sms in <phone> <text...>
   Server: login, contacts, chat, say, watch, tick, sweep, locate <alias>,
           locations <alias> [n],
           admin user-add / allow / deny / device-add / ca push|unpin <device_id> /
           settings retention messages=<n><d|w> locations=<n><d|w> /
           contacts [pending|approved|rejected] / approve <key> link|create [alias] [--locate] /
           reject <key> <reason> / cfg <device_id> [--auto <min>] [--clear],
-          backend add <kind> <json-config>
+          backend add <kind> <json-config>,
+          smscontacts get <device_id> | smscontacts set <device_id> <name> <phone> [<name> <phone>...] |
+          smslog <device_id> [limit]
+
+docs/V02_DESIGN.md §6 (device-direct SMS): `sms out`/`sms in` publish a
+correctly signed `kind:"sms_log"` `/up` envelope -- `out` always logs
+`st:"sent"` (this simulator has no real modem send to fail); `in` checks the
+sender against this device's own applied `cfg.sms` contact list
+(`DeviceClient.sms_contacts`, landed by `_apply_sms_contacts` below) and logs
+`recv` for a listed number, `blocked` for an unlisted one. `smscontacts`/
+`smslog` drive the owner-facing `GET`/`PUT /api/devices/{id}/sms-contacts`
+and `GET /api/devices/{id}/sms-log` API (`ServerClient`, logged in as the
+device's owner -- not the admin API).
 
 `DeviceClient.book`/`.lock` hold this simulated device's own applied state
 (docs/PROTOCOL.md §3.2: `book`/`cfg` are "not a thread entry ... acked
@@ -272,6 +285,11 @@ class DeviceClient:
         # needed to compute the fingerprint).
         self.tls: str = "unpinned"
         self.ca_fp: str | None = None
+        # docs/V02_DESIGN.md §6: this device's own applied `cfg.sms` --
+        # `[{"name": ..., "phone": ...}, ...]`, landed by `_apply_sms_contacts`
+        # below. `sms in <phone> <text>` checks an inbound SMS's sender
+        # against this list to decide `recv` vs `blocked`.
+        self.sms_contacts: list[dict[str, str]] = []
         # docs/V02_DESIGN.md §5 -- reported in `/status`; not a real backoff
         # computation (this simulator answers every `loc_req` instantly), a
         # test-only knob a caller can set directly (`loc backoff <s>`) to
@@ -621,13 +639,66 @@ class DeviceClient:
             self.lock_auto_min = lock["auto"]
         if "ca" in cfg:
             self._apply_ca(cfg["ca"] or {})
+        if "sms" in cfg:
+            self._apply_sms_contacts(cfg["sms"] or [])
         msg_id = data.get("id")
         print(
             f"-> cfg applied: lock={lock!r} (auto_min now {self.lock_auto_min}) "
-            f"tls={self.tls} ca_fp={self.ca_fp}"
+            f"tls={self.tls} ca_fp={self.ca_fp} sms_contacts={self.sms_contacts}"
         )
         if msg_id:
             self.publish_ack(msg_id, "shown")
+
+    def _apply_sms_contacts(self, contacts: list[dict[str, Any]]) -> None:
+        """docs/V02_DESIGN.md §6: `cfg.sms = [{n, p}, ...]` -- the *whole*
+        list, replacing whatever this device had before (never merged), same
+        as the real firmware's NVS-backed contact list would. `n`/`p` are the
+        wire's own short key names (docs/PROTOCOL.md §10's `cfg.sms[]`
+        sub-map) -- stored here under readable `name`/`phone` keys."""
+        self.sms_contacts = [
+            {"name": c.get("n", ""), "phone": c.get("p", "")} for c in contacts
+        ]
+
+    # ---- device-direct SMS (docs/V02_DESIGN.md §6) ----
+
+    def publish_sms_log(self, *, peer: str, direction: Literal["out", "in"], st: str, body: str) -> str:
+        """`/up kind:"sms_log"` -- docs/V02_DESIGN.md §6/§7: the pager's own
+        modem sending/receiving SMS directly, audited back to the relay.
+        Never a thread entry, never routed to anyone -- this simulator's
+        `sms out`/`sms in` REPL commands are the only callers."""
+        log_id = new_id("s_")
+        # No `ack` key -- docs/V02_DESIGN.md §6/§7's `sms_log` shape is
+        # `{id, ts, peer, dir, st, body, sms_ts}` (+ `n`/`sig`), unlike an
+        # ordinary content message; `ack` is not one of its fields.
+        obj: dict[str, Any] = {
+            "v": 1,
+            "id": log_id,
+            "ts": now_ts(),
+            "kind": "sms_log",
+            "peer": peer,
+            "dir": direction,
+            "st": st,
+            "body": body,
+            "sms_ts": now_ts(),
+        }
+        self._publish(self.up_topic, obj, qos=1)
+        print(f"-> sms_log {log_id}: dir={direction} peer={peer} st={st} body={body!r}")
+        return log_id
+
+    def sms_send(self, peer: str, body: str) -> str:
+        """`sms out <phone> <text>`: this simulator always succeeds (no real
+        modem `smsSend()` to fail), so `st` is always `sent`."""
+        return self.publish_sms_log(peer=peer, direction="out", st="sent", body=body)
+
+    def sms_receive(self, peer: str, body: str) -> str:
+        """`sms in <phone> <text>`: docs/V02_DESIGN.md §6's receive rule --
+        "sender on the list -> ... alert like any message; sender not on the
+        list -> never shown, logged as blocked." This simulator has no
+        message thread to insert into either way (`sms_log` is never a
+        thread entry, §6), so the only observable difference here is `st`."""
+        listed = any(c["phone"] == peer for c in self.sms_contacts)
+        st = "recv" if listed else "blocked"
+        return self.publish_sms_log(peer=peer, direction="in", st=st, body=body)
 
     def _apply_ca(self, ca: dict[str, Any]) -> None:
         url = ca.get("url")
@@ -1228,6 +1299,46 @@ class ServerClient:
             raise RuntimeError(f"admin push_ca failed: {resp.status_code} {resp.text}")
         return resp.json()
 
+    # ---- owner-facing device API (docs/V02_DESIGN.md §6) ----
+
+    def my_devices(self) -> list[dict[str, Any]]:
+        """`GET /api/devices` -- the currently-logged-in user's own devices
+        (id, label, status). Owner-scoped, unlike `/api/admin/devices`."""
+        resp = self.api_get("/api/devices")
+        resp.raise_for_status()
+        return resp.json()
+
+    def sms_contacts_get(self, device_id: str) -> dict[str, Any]:
+        """`GET /api/devices/{id}/sms-contacts` -- owner or admin only."""
+        resp = self.api_get(f"/api/devices/{device_id}/sms-contacts")
+        if resp.status_code >= 400:
+            raise RuntimeError(f"sms_contacts_get failed: {resp.status_code} {resp.text}")
+        return resp.json()
+
+    def sms_contacts_put(
+        self, device_id: str, contacts: list[dict[str, str]]
+    ) -> dict[str, Any]:
+        """`PUT /api/devices/{id}/sms-contacts` -- validates, stores, pushes
+        `cfg.sms` to the device. `contacts` is `[{"name": ..., "phone":
+        ...}, ...]`, the *whole* list (docs/V02_DESIGN.md §6)."""
+        resp = self.api_put(f"/api/devices/{device_id}/sms-contacts", {"contacts": contacts})
+        if resp.status_code >= 400:
+            raise RuntimeError(f"sms_contacts_put failed: {resp.status_code} {resp.text}")
+        return resp.json()
+
+    def sms_log_get(
+        self, device_id: str, *, limit: int = 100, before: int | None = None
+    ) -> dict[str, Any]:
+        """`GET /api/devices/{id}/sms-log?limit=&before=` -- the audit log,
+        newest first."""
+        path = f"/api/devices/{device_id}/sms-log?limit={limit}"
+        if before is not None:
+            path += f"&before={before}"
+        resp = self.api_get(path)
+        if resp.status_code >= 400:
+            raise RuntimeError(f"sms_log_get failed: {resp.status_code} {resp.text}")
+        return resp.json()
+
     # ---- Firestore REST reads (exercises firestore.rules) ----
 
     def firestore_get(self, path: str) -> httpx.Response:
@@ -1582,6 +1693,22 @@ class PagerShell(cmd.Cmd):
         ph = parts[1] if len(parts) > 1 else None
         self.device.publish_contact_req(name, ph)
 
+    def do_sms(self, arg: str) -> None:
+        """`sms out <phone> <text...>` / `sms in <phone> <text...>` --
+        docs/V02_DESIGN.md §6: publish a correctly signed `kind:"sms_log"`
+        `/up` envelope, exactly as the pager's own modem would after sending
+        or receiving an SMS directly (no relay round trip for the SMS
+        itself -- this command *is* the audit trail)."""
+        parts = shlex.split(arg)
+        if len(parts) < 3 or parts[0] not in ("out", "in"):
+            print("usage: sms out|in <phone> <text...>")
+            return
+        direction, phone, text = parts[0], parts[1], " ".join(parts[2:])
+        if direction == "out":
+            self.device.sms_send(phone, text)
+        else:
+            self.device.sms_receive(phone, text)
+
     def do_book(self, arg: str) -> None:
         """Shows this device's last-applied address book (`None` before one
         has ever arrived) -- docs/PROTOCOL.md §3.2 `kind:"book"`."""
@@ -1844,6 +1971,44 @@ class PagerShell(cmd.Cmd):
         except SystemExit:
             return
         self._out(self.server.admin_push_ca(ns.device_id, ns.action))
+
+    # ---- owner-facing device API (docs/V02_DESIGN.md §6) ----
+
+    def do_devices(self, arg: str) -> None:
+        """`GET /api/devices` -- the logged-in user's own devices."""
+        self._out(self.server.my_devices())
+
+    def do_smscontacts(self, arg: str) -> None:
+        """`smscontacts get <device_id>` / `smscontacts set <device_id>
+        <name> <phone> [<name> <phone> ...]` -- `GET`/`PUT
+        /api/devices/{id}/sms-contacts` (docs/V02_DESIGN.md §6), as the
+        currently logged-in owner (or admin)."""
+        parts = shlex.split(arg)
+        if len(parts) >= 2 and parts[0] == "get":
+            self._out(self.server.sms_contacts_get(parts[1]))
+            return
+        if len(parts) >= 2 and parts[0] == "set":
+            device_id = parts[1]
+            rest = parts[2:]
+            if len(rest) % 2 != 0:
+                print("usage: smscontacts set <device_id> <name> <phone> [<name> <phone> ...]")
+                return
+            contacts = [
+                {"name": rest[i], "phone": rest[i + 1]} for i in range(0, len(rest), 2)
+            ]
+            self._out(self.server.sms_contacts_put(device_id, contacts))
+            return
+        print("usage: smscontacts get|set <device_id> ...")
+
+    def do_smslog(self, arg: str) -> None:
+        """`smslog <device_id> [limit]` -- `GET /api/devices/{id}/sms-log`."""
+        parts = shlex.split(arg)
+        if not parts:
+            print("usage: smslog <device_id> [limit]")
+            return
+        device_id = parts[0]
+        limit = int(parts[1]) if len(parts) > 1 else 100
+        self._out(self.server.sms_log_get(device_id, limit=limit))
 
     # ---- misc ----
 

@@ -81,6 +81,25 @@ service cloud.firestore {
           request.auth.uid in
             get(/databases/$(db)/documents/devices/$(d)).data.get('locatableBy', []);
       }
+
+      // docs/V02_DESIGN.md §6: device-direct SMS audit log. Owner and admin
+      // only -- unlike `locations`, this is *not* opened up to everyone in
+      // `locatableBy` (a location permission says nothing about whether
+      // someone should read a kid's SMS history). The web app actually
+      // reads this through `GET /api/devices/{id}/sms-log`
+      // (`app/routers/devices.py`), not straight from Firestore -- this
+      // rule exists so that boundary is enforced independently of the API
+      // route too, the same "the rule, not just the code" discipline this
+      // file's own header comment states, and per this task's own brief
+      // ("client-readable only by the device's owner and admins if the
+      // rules already give owners read access to their device document" --
+      // they do, `devices/{d}`'s own `allow read` above).
+      match /smsLog/{l} {
+        allow read: if request.auth != null && (
+          isAdmin() ||
+          get(/databases/$(db)/documents/devices/$(d)).data.ownerUid == request.auth.uid
+        );
+      }
     }
 
     match /allow/{e} {

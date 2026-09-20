@@ -1521,6 +1521,70 @@ def scenario_address_book() -> None:
     device.disconnect()
 
 
+def scenario_sms_log() -> None:
+    """docs/V02_DESIGN.md §6: admin pushes an SMS contact allow-list
+    (`PUT /api/devices/{id}/sms-contacts`) -> device receives and applies
+    `/down cfg.sms`, acks `shown` -> device sends an SMS to the listed
+    contact (`sms out`) and receives one from an unlisted number
+    (`sms in`) -> both land in `devices/{id}/smsLog` with the right `st`,
+    readable back through `GET /api/devices/{id}/sms-log` (name resolved for
+    the listed contact, `null` for the unlisted one) -- covers the relay's
+    whole device-direct-SMS surface end to end, run as
+    `tools/e2e_v2.py sms_log`."""
+    bootstrap_admin()
+
+    admin = pager_client.ServerClient(RELAY_URL, AUTH_URL)
+    admin.login("admin")
+    admin.admin_user_add("smsstudent", "SMSStudent", email="smsstudent@example.com", phone=None)
+    create_device_with_secret(admin, "pgr-e2e-sms", "smsstudent")
+
+    device = make_device("pgr-e2e-sms")
+    device.connect()
+    wait_until(lambda: device.connected, timeout=10, description="sms_log device to connect")
+
+    mom_phone = "+15550002222"
+    stranger_phone = "+15550003333"
+    pushed = admin.sms_contacts_put("pgr-e2e-sms", [{"name": "Mom", "phone": mom_phone}])
+    assert pushed["contacts"] == [{"name": "Mom", "phone": mom_phone}], pushed
+    print("sms_log: admin pushed sms-contacts=[Mom]")
+
+    wait_until(
+        lambda: any(c.get("phone") == mom_phone for c in device.sms_contacts),
+        timeout=10,
+        description="device to receive and apply cfg.sms containing Mom",
+    )
+    print(f"sms_log: device applied sms_contacts={device.sms_contacts}")
+
+    wait_until(
+        lambda: _pending_book_or_cfg_acked("pgr-e2e-sms", "pendingCfgSms"),
+        timeout=10,
+        description="device's cfg.sms 'shown' ack to land at the relay",
+    )
+    print("sms_log: device's cfg.sms ack ('shown') landed at the relay")
+
+    out_id = device.sms_send(mom_phone, "on my way")
+    in_id = device.sms_receive(stranger_phone, "who is this")
+
+    def _log_entries() -> list[dict]:
+        return admin.sms_log_get("pgr-e2e-sms")["entries"]
+
+    wait_until(
+        lambda: len(_log_entries()) >= 2,
+        timeout=10,
+        description="both sms_log entries to land at the relay",
+    )
+    entries = {e["id"]: e for e in _log_entries()}
+    assert entries[out_id]["dir"] == "out" and entries[out_id]["st"] == "sent", entries[out_id]
+    assert entries[out_id]["name"] == "Mom", entries[out_id]
+    assert entries[in_id]["dir"] == "in" and entries[in_id]["st"] == "blocked", entries[in_id]
+    assert entries[in_id]["name"] is None, entries[in_id]
+    print(
+        "sms_log: out->Mom logged 'sent', in from an unlisted number logged 'blocked' "
+        "with no name resolved"
+    )
+    device.disconnect()
+
+
 SCENARIOS: dict[str, Callable[[], None]] = {
     "bootstrap": scenario_bootstrap,
     "text_roundtrip": scenario_text_roundtrip,
@@ -1533,6 +1597,7 @@ SCENARIOS: dict[str, Callable[[], None]] = {
     "bytes": scenario_bytes,
     "address_book": scenario_address_book,
     "setup_code": scenario_setup_code,
+    "sms_log": scenario_sms_log,
 }
 
 

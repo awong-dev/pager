@@ -9,14 +9,46 @@ latest.
 
 from __future__ import annotations
 
+import re
 import time
 from datetime import datetime
 from typing import Literal
 
 from google.cloud.firestore import FieldFilter
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 
 from app.db.firestore import get_db
+
+# docs/V02_DESIGN.md §6: `phone` is a real number, never an alias reference
+# (unlike `contact_req`'s overloaded `ph`, §4.2) -- same E.164 shape
+# duplicated across `app/wire.py`'s `_SMS_PEER_RE`, `app/ingest.py`'s
+# `_PHONE_E164_RE` and `app/backends/sms_twilio.py`'s `_E164_RE`, for the
+# same "not a public contract worth cross-module coupling" reason none of
+# those import from each other either.
+_SMS_PHONE_RE = re.compile(r"^\+[1-9]\d{6,14}$")
+_CONTROL_CHAR_RE = re.compile(r"[\x00-\x1f\x7f]")
+SMS_CONTACT_NAME_MAX_CODEPOINTS = 16
+# docs/V02_DESIGN.md §6/§7: "Max 8 entries" is the design's own cap, but a
+# `cfg.sms` push with 8 entries whose names use `book`/`contact_req`'s
+# looser 48-UTF-8-byte cap does not fit in *signed JSON* (see
+# `app/devcfg.py`'s `push_sms_contacts` docstring and this task's report for
+# the byte arithmetic: 8 x 48-byte names is 762 signed-JSON bytes against the
+# 640-byte envelope limit, PROTOCOL.md §3.3 -- `sig` really is only 11
+# base64url characters at runtime (`app/devauth.py`'s 64-bit truncated tag),
+# not the 44 an older, stale part of PROTOCOL.md §3.3's own worst-case table
+# still shows for a pre-truncation, full-HMAC `sig`; flagged as a documentation
+# discrepancy in this task's report, left alone as out of this task's scope).
+# Rather than shrink the contact-count cap below the design's stated 8 (a
+# more visible, more surprising change for a parent configuring the list),
+# this tightens the *name* byte cap instead -- 24 UTF-8 bytes still fits
+# every 16-codepoint ASCII name in full, and enough short non-Latin names
+# (12 two/three-byte codepoints) for the common case, while guaranteeing 8
+# maximal entries fit in both encodings with real margin (570/640 JSON,
+# 421/640 CBOR -- see this task's report). Flagged there as a deliberate,
+# documented deviation from the design text's unqualified "name <= 16 chars"
+# rather than a silent one.
+SMS_CONTACT_NAME_MAX_UTF8_BYTES = 24
+MAX_SMS_CONTACTS = 8
 
 # docs/DEVICE_PLAN.md §2.6 / docs/PROTOCOL.md §14.4: "more than 20 failures
 # in 10 minutes on one device" raises `devices/{d}.status.authAlarm`.
@@ -52,6 +84,44 @@ class DeviceStatus(BaseModel):
     authAlarm: bool | None = None
 
 
+class SmsContact(BaseModel):
+    """docs/V02_DESIGN.md §6: one entry of `devices/{id}.smsContacts`, the
+    parent-managed allow-list for the pager's own direct SMS path. `name`
+    1-16 code points (no control characters); `phone` E.164. Uniqueness
+    (`phone`) and the 8-entry cap are enforced by the API
+    (`app/routers/devices.py`), not here -- this model only shapes one
+    entry, the same "model the item, cap the list elsewhere" split
+    `app/wire.py`'s `LocFix`/`LocEnvelope` use."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    name: str
+    phone: str
+
+    @field_validator("name")
+    @classmethod
+    def _check_name(cls, value: str) -> str:
+        if not (1 <= len(value) <= SMS_CONTACT_NAME_MAX_CODEPOINTS):
+            raise ValueError(
+                f"sms contact name {value!r} must be 1-{SMS_CONTACT_NAME_MAX_CODEPOINTS} "
+                "characters"
+            )
+        if _CONTROL_CHAR_RE.search(value):
+            raise ValueError(f"sms contact name {value!r} contains control characters")
+        if len(value.encode("utf-8")) > SMS_CONTACT_NAME_MAX_UTF8_BYTES:
+            raise ValueError(
+                f"sms contact name {value!r} exceeds {SMS_CONTACT_NAME_MAX_UTF8_BYTES} UTF-8 bytes"
+            )
+        return value
+
+    @field_validator("phone")
+    @classmethod
+    def _check_phone(cls, value: str) -> str:
+        if not _SMS_PHONE_RE.match(value):
+            raise ValueError(f"sms contact phone {value!r} is not a valid E.164 number")
+        return value
+
+
 class Device(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -63,6 +133,14 @@ class Device(BaseModel):
     revokedAt: datetime | None = None
     locatableBy: list[str] = []
     status: DeviceStatus = DeviceStatus()
+    # docs/V02_DESIGN.md §6: the whole SMS contact allow-list, owner/admin
+    # managed only (the pager itself has no UI to add/edit/remove a number).
+    # Pushed to the device as `/down cfg.sms` on every change
+    # (`app/devcfg.py`'s `push_sms_contacts`) -- this field is the relay's
+    # own source of truth, independent of whatever the device has actually
+    # applied/acked (`devices/{d}.pendingCfgSms` tracks that, same shape as
+    # `pendingBook`/`pendingCfg`/`pendingCfgCa`).
+    smsContacts: list[SmsContact] = []
     # docs/DEVICE_PLAN.md §2.6/§14: "password" is the v1, unsigned device;
     # "hmac" is a device provisioned with a `deviceSecrets/{d}` key that
     # signs every `/up`, `/status` and `/loc` envelope (app/devauth.py).
@@ -166,6 +244,18 @@ def revoke_device(device_id: str) -> Device:
 
 def set_locatable_by(device_id: str, uids: list[str]) -> None:
     _devices().document(device_id).update({"locatableBy": uids})
+
+
+def set_sms_contacts(device_id: str, contacts: list[SmsContact]) -> None:
+    """docs/V02_DESIGN.md §6: `PUT /api/devices/{id}/sms-contacts`'s writer
+    (`app/routers/devices.py`) -- the API has already validated max-8/
+    unique-phone/shape before calling this, so this function just stores
+    whatever list it is given, the whole list replacing the old one (never
+    merged/appended -- an SMS contact removed in the request must actually
+    disappear)."""
+    _devices().document(device_id).set(
+        {"smsContacts": [c.model_dump() for c in contacts]}, merge=True
+    )
 
 
 def set_provision_state(device_id: str, state: Literal["issued", "provisioned"]) -> None:

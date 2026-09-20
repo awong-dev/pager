@@ -4,26 +4,26 @@ added by task D0.1) and docs/DEVICE_PLAN.md §2.4.
 Devices publish every envelope on `pager/{id}/...` as a **CBOR
 definite-length map with integer keys**; JSON keeps the same *values* (same
 strings, same enums, same numbers) under text keys for humans, logs and
-`tools/send.py`. This module only renames keys and, for the four nested
+`tools/send.py`. This module only renames keys and, for the nested
 object shapes the keymap defines, the keys one level down -- it never
 changes a value's type or content (`docs/DEVICE_PLAN.md` §2.4: "values are
 identical to the JSON ones").
 
 `KEYMAP` is `PROTOCOL.md` §10's single flat integer namespace for envelope,
-`/status`, bootstrap and `cfg` field *names* (0-43, 48 -- 44-47 are reserved
-by `V02_DESIGN.md` §7 for a later device-SMS task and are not in this map).
-Five field names nest one level deeper and get their own small local
-namespace, per §10's "Sub-map keys" list: `loc` (the `/loc` fix object),
-`c[]` items (named `contact` here), `p[]` items (named `request` here),
-`cfg.lock`, and `cfg.ca` (v0.2, docs/V02_DESIGN.md §4.4/§7).
+`/status`, bootstrap and `cfg` field *names* (0-48). Six field names nest one
+level deeper and get their own small local namespace, per §10's "Sub-map
+keys" list: `loc` (the `/loc` fix object), `c[]` items (named `contact`
+here), `p[]` items (named `request` here), `cfg.lock`, `cfg.ca` (v0.2,
+docs/V02_DESIGN.md §4.4/§7), and `cfg.sms[]` items (v0.2, docs/V02_DESIGN.md
+§6/§7, named `sms_contact` here).
 
 **Gap in `PROTOCOL.md` §10, closed by v0.2's own edit rather than left
 open:** an earlier revision of this module flagged that the table gave
 `cfg`'s own numeric key (38) and `lock`'s *inner* keys (`clear=0, auto=1`)
 but never assigned a numeric key to the `lock` field *inside* the `cfg` map
 itself. `PROTOCOL.md` §10 now states the `cfg` sub-map explicitly
-(`lock=0, ca=1`, `sms=2` reserved) -- `CFG_KEYMAP` below is that allocation,
-not this module's own guess any more.
+(`lock=0, ca=1, sms=2`) -- `CFG_KEYMAP` below is that allocation, not this
+module's own guess any more.
 """
 
 from __future__ import annotations
@@ -34,8 +34,8 @@ from typing import Any
 import cbor2
 
 # PROTOCOL.md §10: envelope 0-20, /status 21-28, bootstrap 29-37, cfg 38,
-# v0.2 additions 39-43 + 48 (44-47 are docs/V02_DESIGN.md §6's sms_log keys --
-# a later task's allocation, not touched here).
+# v0.2 additions 39-48 (44-47 are docs/V02_DESIGN.md §6's sms_log-only
+# fields: `peer`/`dir`/`st`/`sms_ts`).
 KEYMAP: dict[str, int] = {
     "v": 0,
     "id": 1,
@@ -82,6 +82,13 @@ KEYMAP: dict[str, int] = {
     "ca_sha": 41,
     "ca_fp": 42,
     "loc_backoff_s": 43,
+    # docs/V02_DESIGN.md §6/§7 (device-direct SMS): `/up kind:"sms_log"`'s
+    # own fields. `body`/`id`/`ts`/`kind`/`n`/`sig` are shared with every
+    # other envelope kind and already have keys above.
+    "peer": 44,
+    "dir": 45,
+    "st": 46,
+    "sms_ts": 47,
     "sms_lost": 48,
 }
 REVERSE_KEYMAP: dict[int, str] = {v: k for k, v in KEYMAP.items()}
@@ -93,16 +100,22 @@ REQUEST_KEYMAP: dict[str, int] = {"n": 0, "s": 1}
 LOCK_KEYMAP: dict[str, int] = {"clear": 0, "auto": 1}
 # docs/V02_DESIGN.md §7: `cfg.ca = {url, sha}`.
 CA_KEYMAP: dict[str, int] = {"url": 0, "sha": 1}
+# docs/V02_DESIGN.md §6/§7: `cfg.sms = [{n, p}, ...]` -- one entry per SMS
+# contact. Its own small namespace, distinct from `CONTACT_KEYMAP` (the
+# `book`'s `c[]` items, `{a, n, t}`) even though both happen to use `n` for
+# a display name -- the two lists are unrelated wire shapes that just share
+# a JSON key name.
+SMS_CONTACT_KEYMAP: dict[str, int] = {"n": 0, "p": 1}
 # PROTOCOL.md §10's own `cfg` sub-map allocation (see module docstring):
-# `lock=0`, `ca=1`; `sms=2` is reserved there for a later task
-# (docs/V02_DESIGN.md §6) and deliberately not added here.
-CFG_KEYMAP: dict[str, int] = {"lock": 0, "ca": 1}
+# `lock=0`, `ca=1`, `sms=2`.
+CFG_KEYMAP: dict[str, int] = {"lock": 0, "ca": 1, "sms": 2}
 
 _REVERSE_LOC = {v: k for k, v in LOC_KEYMAP.items()}
 _REVERSE_CONTACT = {v: k for k, v in CONTACT_KEYMAP.items()}
 _REVERSE_REQUEST = {v: k for k, v in REQUEST_KEYMAP.items()}
 _REVERSE_LOCK = {v: k for k, v in LOCK_KEYMAP.items()}
 _REVERSE_CA = {v: k for k, v in CA_KEYMAP.items()}
+_REVERSE_SMS_CONTACT = {v: k for k, v in SMS_CONTACT_KEYMAP.items()}
 _REVERSE_CFG = {v: k for k, v in CFG_KEYMAP.items()}
 
 
@@ -122,6 +135,13 @@ def _value_to_int_keys(name: str, value: Any) -> Any:
                 # docs/V02_DESIGN.md §7: `cfg.ca = {url, sha}`; `sha` is
                 # absent on an un-pin push (`url=""`, §4.4).
                 out[CFG_KEYMAP["ca"]] = {CA_KEYMAP[ck]: cv for ck, cv in v.items()}
+            elif k == "sms" and isinstance(v, list):
+                # docs/V02_DESIGN.md §6/§7: `cfg.sms = [{n, p}, ...]` -- the
+                # whole SMS contact list, republished every time (an empty
+                # list is a legal push, meaning "no SMS contacts").
+                out[CFG_KEYMAP["sms"]] = [
+                    {SMS_CONTACT_KEYMAP[sk]: sv for sk, sv in item.items()} for item in v
+                ]
             else:
                 # §3.2: "Unknown members of cfg are ignored" -- a future
                 # member this module does not know a numeric key for yet
@@ -145,6 +165,10 @@ def _value_to_names(name: str, value: Any) -> Any:
                 out["lock"] = {_REVERSE_LOCK[lk]: lv for lk, lv in v.items()}
             elif k == CFG_KEYMAP["ca"] and isinstance(v, dict):
                 out["ca"] = {_REVERSE_CA[ck]: cv for ck, cv in v.items()}
+            elif k == CFG_KEYMAP["sms"] and isinstance(v, list):
+                out["sms"] = [
+                    {_REVERSE_SMS_CONTACT[sk]: sv for sk, sv in item.items()} for item in v
+                ]
             else:
                 out[_REVERSE_CFG.get(k, k)] = v
         return out

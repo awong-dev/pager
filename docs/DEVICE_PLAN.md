@@ -667,6 +667,39 @@ request — UTF-8 throughout),
 rewritten only when a `book` arrives, a request is made, or a nickname changes. RAM copy for
 rendering.
 
+### 4.4 Device-direct SMS (v0.2)
+
+Full design in `V02_DESIGN.md` §6 (owner decision 2026-09-20); this is the pointer + device-side
+summary. A second, independent contact list — **SMS contacts** — sits alongside the address book
+above, for a delivery path that does not go through the relay at all: the pager's own modem sending
+and receiving SMS directly, to a parent-managed allow-list.
+
+- **List management is server-only, same posture as the address book**, but with no device-side
+  request flow at all — there is no on-device equivalent of `contactreq` for this list. The pager
+  never adds, edits or removes an SMS contact itself; only the owner or an admin, in the web app.
+- **Delivery**: `/down cfg.sms` (`PROTOCOL.md` §3.6/§10, the `cfg` kind's `sms` sub-map), the *whole*
+  list every time (max 8 `{name, phone}` entries), newest-wins and acked `shown` on apply — the same
+  shape `cfg.lock`/`cfg.ca` already use, stored in its own NVS slot (not the `book` blob above, since
+  it has nothing to do with the message thread's recipient set).
+- **Composer/picker integration**: SMS contacts appear in the recipient picker and as `@name` in the
+  composer, tagged `sms` so they're visually distinct from a `book` contact. A message to one is
+  sent with `smsSend()` — GSM 7-bit when the whole message is in the basic alphabet (≤160
+  characters), UCS-2 otherwise (≤70 characters, and the composer enforces the tighter limit before
+  the character count can silently overflow into truncation); no concatenated SMS. The thread entry
+  shows `sent`/`FAILED` exactly like any other reply.
+- **Receiving** (`+CMTI` → read → delete from the SIM): a sender on the list is inserted into the
+  thread and alerts like any message; a sender not on the list is **never shown**.
+- **Audit is mandatory, not optional**, in both directions including blocked receives — see
+  `PROTOCOL.md` §3.6 for the exact `sms_log` envelope. This is the feature's real safety property:
+  even though the SMS itself never touches the relay, the relay still ends up with a complete
+  record of who the pager texted and who texted it, for the same reason the address book's
+  allow-list exists — a parent needs visibility into who can reach their kid outside the relay's own
+  channel, not just the ability to grant it.
+- **`UNVERIFIED`**: whether SMS works at all on the production SIM (data-only Google Fi is a real
+  possibility of "no"), the modem's `+CMTI` timing under eDRX, and UCS-2 text-mode support on this
+  firmware — `smstest` (the debug console command, `V02_DESIGN.md` §2 item 7) exists to settle all
+  three on real hardware before this feature is relied on.
+
 ---
 
 ## 5. On-device UI

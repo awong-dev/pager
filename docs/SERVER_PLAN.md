@@ -124,10 +124,24 @@ devices/{deviceId}             {ownerUid, label, mqttUsername, defaultToUid|null
                                 authMode: 'hmac'|'password', provisionState: 'issued'|'provisioned',
                                 wire: 'json'|'cbor'|null, bookVersion: int,
                                 locatableBy: [uid…],                  derived from allow.locate
-                                status: {state, mode, battMv, rssi, session, ts, fw, locPeriodS, locMinS, 
+                                smsContacts: [{name, phone}…],        v0.2 §6, max 8, owner/admin-managed
+                                status: {state, mode, battMv, rssi, session, ts, fw, locPeriodS, locMinS,
                                          authAlarm, updatedAt}}
 devices/{deviceId}/locations/{autoId}
                                {ts, fixTs, lat, lon, accM, src, cached, reqId|null, createdAt}
+devices/{deviceId}/smsLog/{logId}
+                               {ts, smsTs, dir: 'out'|'in', peer, st: 'sent'|'failed'|'recv'|'blocked',
+                                body, receivedAt}      v0.2 §6/§7 (device-direct SMS audit log; `logId` is
+                                                        the device's own `sms_log` envelope `id`, `s_…`,
+                                                        which is what makes a webhook redelivery idempotent
+                                                        — dedup is "the same document id", not a separate
+                                                        marker collection). Not a thread entry, not routed
+                                                        to anyone; read via `GET /api/devices/{id}/sms-log`,
+                                                        never straight from Firestore (§5.1's usual "the web
+                                                        app reads this collection directly" does not apply
+                                                        here — see the rules sketch below). No retention
+                                                        sweep yet (§5.7 does not cover it) — a gap flagged,
+                                                        not filled, by the task that added this collection.
 deviceSecrets/{deviceId}       {hmacKey, mqttPasswordHash, upN, upBits, downN, sigFailures, createdAt, rotatedAt} [server-only]
 setupCodes/{bid}               {deviceId, expiresAt}                  [server-only]
 contactRequests/{deviceId}_{reqId}
@@ -214,7 +228,12 @@ settings/meta                  {schemaVersion: 2, lastSweepAt, seqCounter}
   second person send as the originally-linked user.
 - Indexes: `messages(convKey, seq)`, `messages(pendingDeviceIds array-contains, createdAt)`,
   `messages(createdAt)` for the sweep, `locations(createdAt)` collection-group for the sweep.
-  Declared in `relay/firestore.indexes.json`.
+  Declared in `relay/firestore.indexes.json`. **`smsLog` needs none**: `GET /api/devices/{id}/
+  sms-log`'s only query is `smsLog` (a single device's subcollection, not a collection-group)
+  ordered by `ts` descending with an optional `where('ts', '<', before)` on that same field —
+  Firestore's automatic single-field indexing already covers a range filter and an order-by on
+  the same field, the same reason `locations`' own per-device reads need no index either (only
+  its *collection-group* sweep query does).
 - Security rules (sketch; the real file is `relay/firestore.rules`, deployed by CI):
   ```
   function registered() { return exists(/databases/$(db)/documents/users/$(request.auth.uid)); }
@@ -225,7 +244,9 @@ settings/meta                  {schemaVersion: 2, lastSweepAt, seqCounter}
   match /conversations/{k}           { allow read: if registered() && request.auth.uid in resource.data.uids; }
   match /devices/{d}                 { allow read: if resource.data.ownerUid == request.auth.uid
                                                    || request.auth.uid in resource.data.locatableBy || isAdmin();
-    match /locations/{l}             { allow read: if request.auth.uid in get(/databases/$(db)/documents/devices/$(d)).data.locatableBy; } }
+    match /locations/{l}             { allow read: if request.auth.uid in get(/databases/$(db)/documents/devices/$(d)).data.locatableBy; }
+    match /smsLog/{l}                { allow read: if isAdmin()
+                                                   || get(/databases/$(db)/documents/devices/$(d)).data.ownerUid == request.auth.uid; } }
   match /allow/{e}                   { allow read: if isAdmin() || request.auth.uid in [resource.data.fromUid, resource.data.toUid]; }
   match /contactRequests/{e}         { allow read: if isAdmin() || request.auth.uid == resource.data.ownerUid; }
   match /settings/{s}                { allow read: if registered(); }
@@ -234,6 +255,17 @@ settings/meta                  {schemaVersion: 2, lastSweepAt, seqCounter}
   match /{document=**}               { allow write: if false; }
   ```
   Clients never write; the `admin` claim is a Firebase custom claim. `deviceSecrets` and `setupCodes` are server-only collections with no `match` block (default-deny read) and the catch-all write deny.
+  **`smsLog` is deliberately narrower than `locations`**: a `locate`-permission `locatableBy` uid
+  may read a device's location fixes but not its SMS audit log — a location grant says nothing
+  about who should see a kid's texts. In practice the web app reads this log through
+  `GET /api/devices/{id}/sms-log` (`relay/app/routers/devices.py`), not straight from Firestore
+  (unlike `locations`, which §5.1 lists as a direct-Firestore read); the rule exists anyway so the
+  boundary holds independently of the API route, per this file's own "the rule, not just the code"
+  posture. `smsContacts` needs no separate rule: it is a plain field on the already owner/admin/
+  locatableBy-readable `devices/{d}` document (a known, accepted trade-off — a `locate`-only uid
+  can incidentally read it too, since Firestore rules cannot restrict one field within a document
+  read differently from its siblings; the write side is unaffected, still denied to every client by
+  the blanket rule above).
 - **Schema versioning**: `settings/meta.schemaVersion`. There is no SQL-style migration
   mechanism; a schema change is a code change plus, if it needs one, a one-off Cloud Run job.
 
@@ -321,7 +353,8 @@ relay/app/
   main.py            app factory; mounts routers; /healthz
   config.py          Settings (env only) — grows; see relay/.env.example
   db/firestore.py    firebase-admin init (emulator-aware), typed collection helpers, txn helpers;
-  store/             users.py, devices.py, backends.py, allow.py, messages.py, locations.py, settings.py
+  store/             users.py, devices.py, backends.py, allow.py, messages.py, locations.py, settings.py,
+                     sms.py (devices/{id}/smsLog/{logId} — v0.2 §6/§7, device-direct SMS audit log)
   wire.py            + kind, to, alias regex, LocEnvelope
   broker.py          BrokerClient: publish(topic, payload, qos, retain) over the broker REST API;
                      verify_webhook(request); parse_webhook(body) → (topic, payload, qos)
@@ -333,7 +366,8 @@ relay/app/
   location.py        loc_req lifecycle, coalescing, cached answers
   jobs.py            tick(): retry queued publishes + failed adapter deliveries; sweep(): retention
   tasks.py           Cloud Tasks enqueue (prod) / inline thread (dev) for delivery retries
-  routers/           me.py, conversations.py, admin.py, webhooks.py (mqtt, twilio, gchat),
+  routers/           me.py, conversations.py, admin.py, devices.py (GET /api/devices, owner/admin
+                     sms-contacts + sms-log — v0.2 §6), webhooks.py (mqtt, twilio, gchat),
                      internal.py (tick, sweep, task handler — OIDC-authenticated), dev.py, legacy.py
   notify/            sms.py (Twilio) — used by the sms backend and its link flow
 ```
@@ -363,6 +397,10 @@ GET  /api/admin/contacts?status=pending                → list pending contact 
 POST /api/admin/contacts/{key}/approve {mode, alias?, locate?} → approve and create user/backend if needed
 POST /api/admin/contacts/{key}/reject {reason}         → reject request
 PUT  /api/admin/settings                               → retention {n, unit} per class
+GET  /api/devices                                      → caller's own devices: [{id, label, status}]
+GET  /api/devices/{id}/sms-contacts                    → {contacts: [{name, phone}], pending}  (v0.2 §6)
+PUT  /api/devices/{id}/sms-contacts {contacts}         → validate, store, push cfg.sms; same response shape
+GET  /api/devices/{id}/sms-log?limit=&before=          → {entries: [{id, ts, smsTs, dir, peer, name, st, body}]}
 POST /webhooks/mqtt                                    → broker rule engine; shared-secret header
 POST /webhooks/twilio/sms                              → Twilio signature-validated
 POST /webhooks/gchat                                   → Google-issued JWT-validated
