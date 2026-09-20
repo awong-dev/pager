@@ -86,6 +86,29 @@ fetch socket (§4.4, a later task). Raised to `range 1 6` / `default 6` so a
 later task does not need to touch this vendored component again just to use
 profile 3.
 
+## Patch 1.5 — CEREG lac/ci dropped for non-PSM report types (`src/WalterModem.cpp`, `_processModemRSP()`)
+
+Found wiring `docs/V02_DESIGN.md` §5's cell/tracking-area-change location
+trigger, which needs the `+CEREG` URC's `lac`/`ci` fields
+(`WMNetworkEventData.cereg.lac`/`.ci`). The URC handler's `sscanf()` already
+parses `lac`/`ci`/`act` correctly for both extended-URC variants (with or
+without the trailing PSM timer fields), storing them in local `lac[16]`/
+`ci[16]`/`act` — but the code that copies those locals into the dispatched
+`WalterModemEvent` gated ALL FIVE fields (`lac`, `ci`, `act`, `activeTime`,
+`periodicTau`) behind one `hasPsmInfo` flag, which is only true for the two
+report types that ALSO carry the PSM active-timer/periodic-TAU fields
+(`AT+CEREG=4` or `=5`). Requesting the plain "with location" report type
+(`AT+CEREG=2`, `WALTER_MODEM_CEREG_REPORTS_ENABLED_WITH_LOCATION`, this
+project's own choice — no PSM timers needed) meant every dispatched event
+carried `lac[0]='\0'`/`ci[0]='\0'`, even though the modem sent them on the
+wire and this function's own `sscanf()` had already parsed them into `lac`/
+`ci`.
+
+**Fix**: copy `lac`/`ci`/`act` unconditionally (they are always correctly
+populated-or-empty by the `sscanf()` above, independent of `hasPsmInfo`);
+keep `hasPsmInfo` gating only `activeTime`/`periodicTau`, which really are
+absent unless that specific report type was requested.
+
 ## Not applied here
 
 **Patch 1.4 (SMS)** — `smsSend()`, a `+CMTI` SMS event handler, `smsRead()`,

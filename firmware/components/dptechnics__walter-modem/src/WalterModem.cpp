@@ -1912,18 +1912,28 @@ void WalterModem::_processModemRSP(WalterModemCmd* cmd, WalterModemBuffer* buff)
       newEvent.network.data.cereg.state = _regState;
       newEvent.network.data.cereg.hasPsmInfo = hasPsmInfo;
 
+      // PAGER PATCH (docs/V02_DESIGN.md §5, cell-change location trigger):
+      // lac/ci/act are already correctly populated (or left as the
+      // all-zero locals declared above) by the sscanf() calls above,
+      // independent of hasPsmInfo -- hasPsmInfo only tells us whether the
+      // *PSM timer* fields (activeTime/periodicTau) were ALSO present on
+      // this particular URC. The original code gated ALL FIVE fields
+      // (lac/ci/act/activeTime/periodicTau) on hasPsmInfo, which meant
+      // AT+CEREG report types 2/3 (WITH_LOCATION[_EMM_CAUSE], no PSM
+      // timers) silently dropped lac/ci from every event even though the
+      // modem put them on the wire and this function's own sscanf() parsed
+      // them successfully. Found wiring the pager's cell-change trigger,
+      // which needs exactly this data and got empty strings back from every
+      // CEREG report type except the two PSM-timer variants.
+      _strncpy_s(newEvent.network.data.cereg.lac, lac, sizeof(newEvent.network.data.cereg.lac));
+      _strncpy_s(newEvent.network.data.cereg.ci, ci, sizeof(newEvent.network.data.cereg.ci));
+      newEvent.network.data.cereg.act = act;
       if(hasPsmInfo) {
-        _strncpy_s(newEvent.network.data.cereg.lac, lac, sizeof(newEvent.network.data.cereg.lac));
-        _strncpy_s(newEvent.network.data.cereg.ci, ci, sizeof(newEvent.network.data.cereg.ci));
-        newEvent.network.data.cereg.act = act;
         _strncpy_s(newEvent.network.data.cereg.activeTime, activeTime,
                    sizeof(newEvent.network.data.cereg.activeTime));
         _strncpy_s(newEvent.network.data.cereg.periodicTau, periodicTau,
                    sizeof(newEvent.network.data.cereg.periodicTau));
       } else {
-        newEvent.network.data.cereg.lac[0] = '\0';
-        newEvent.network.data.cereg.ci[0] = '\0';
-        newEvent.network.data.cereg.act = 0;
         newEvent.network.data.cereg.activeTime[0] = '\0';
         newEvent.network.data.cereg.periodicTau[0] = '\0';
       }

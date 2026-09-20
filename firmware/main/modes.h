@@ -58,4 +58,17 @@ uint32_t modes_get_modem_resets(void);
  * own beyond what net_publish_raw() already costs when the modem was idle. */
 bool modes_publish_status_now(void);
 
+/* v0.2 §5 (location, loc.c): route 2's deliberate CFUN=4 window tears the
+ * MQTT session down and takes the radio off on purpose. While `suppress` is
+ * true, modes_run()'s own reconnect-retry loop and the F4 modem-health
+ * check are both skipped entirely (neither would make sense mid-window: the
+ * reconnect loop would race loc.c's own re-attach, and net_check() reading
+ * NO_RF as "modem unresponsive" would trigger a real, unwanted modem reset).
+ * loc.c is the only caller: set true right before net_session_down()+
+ * net_radio_off(), false right after net_is_attached() confirms (or times
+ * out on) the re-attach — modes_run()'s ordinary F1/F3 logic then reconnects
+ * MQTT itself on its very next iteration, with no special-casing needed
+ * there. No modem/sleep-state effect of its own: a single RAM flag. */
+void modes_set_loc_suppress(bool suppress);
+
 #endif /* MODES_H */

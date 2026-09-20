@@ -12,6 +12,7 @@
 #include <stdio.h>
 
 #include "ident.h"
+#include "loc.h"
 #include "modes.h"
 #include "net.h"
 #include "pins.h"
@@ -219,16 +220,37 @@ static void start_setup_console(void)
 // finding start_setup_console() documents (ui_init()/gfx_init()'s first
 // ESP_LOGI call overflowed the default 4 kB stack).
 //
-// `gnsstest <seconds>`, `cafetch <url> <sha256hex>`, `smstest <number>
-// <text>` are named in docs/V02_DESIGN.md §2.7 alongside this REPL but each
-// depends on a feature this task does not implement (§5 location/GNSS, §4.4
-// CA fetch, §6 SMS respectively) -- left for the tasks that add those
-// features; only the REPL itself plus the pre-existing nettest/mqtttest are
-// added here.
+// `gnsstest <seconds>` (docs/V02_DESIGN.md §2.7/§5) is added below, now that
+// §5 (location) is implemented. `cafetch <url> <sha256hex>` and `smstest
+// <number> <text>` still depend on features this task does not implement
+// (§4.4 CA fetch, §6 SMS respectively) -- left for the tasks that add them.
 //
 // Power effect: none beyond the idle CPU/UART-RX floor until a command is
 // typed, same as start_setup_console(); nettest/mqtttest's own modem use is
-// documented at their definitions above.
+// documented at their definitions above; gnsstest's is documented at
+// loc_debug_run() (loc.h).
+
+// v0.2 §5: `gnsstest <seconds>` -- runs one location-fix attempt through the
+// exact same route/state-machine code a real loc_req uses, bypassing the
+// backoff/battery-floor gate. Blocks this console task (never modes_run()'s
+// -- see loc_debug_run()'s own doc comment) until the attempt finishes or
+// `seconds` elapses.
+static int cmd_gnsstest(int argc, char **argv)
+{
+    if (argc != 2) {
+        printf("usage: gnsstest <seconds>\n");
+        return 1;
+    }
+    long seconds = strtol(argv[1], NULL, 10);
+    if (seconds <= 0 || seconds > 120) {
+        printf("seconds must be 1..120\n");
+        return 1;
+    }
+    bool ok = loc_debug_run((uint32_t) seconds);
+    printf("gnsstest: %s (see the log above for route/confidence/satellite/session detail)\n",
+           ok ? "FIX" : "no fix / refused / already running - see log");
+    return ok ? 0 : 1;
+}
 static void start_normal_console(void)
 {
     esp_console_repl_t *repl = NULL;
@@ -257,6 +279,14 @@ static void start_normal_console(void)
         .func = &cmd_mqtttest,
     };
     ESP_ERROR_CHECK(esp_console_cmd_register(&mqtttest_cmd));
+
+    const esp_console_cmd_t gnsstest_cmd = {
+        .command = "gnsstest",
+        .help = "gnsstest <seconds> -- one location-fix attempt, bypassing backoff/battery floor",
+        .hint = NULL,
+        .func = &cmd_gnsstest,
+    };
+    ESP_ERROR_CHECK(esp_console_cmd_register(&gnsstest_cmd));
 
     ESP_ERROR_CHECK(esp_console_start_repl(repl));
     ESP_LOGI(TAG, "debug console REPL started in normal mode (PAGER_DEBUG_NO_LIGHT_SLEEP)");

@@ -66,7 +66,7 @@ endif
 MAIN_SRC := ../main
 BUILD := build
 
-TESTS := test_cbor test_auth test_setup test_input test_msg test_lock
+TESTS := test_cbor test_auth test_setup test_input test_msg test_lock test_loc
 TEST_BINS := $(TESTS:%=$(BUILD)/%)
 
 # ASSETS: tools/mkassets.py's default output location (docs/DEVICE_TASKS.md
@@ -163,6 +163,20 @@ $(BUILD)/test_lock.o: test_lock.c $(MAIN_SRC)/lock.h $(MAIN_SRC)/cbor.h | $(BUIL
 
 $(BUILD)/test_lock: $(BUILD)/lock.o $(BUILD)/cbor.o $(BUILD)/test_lock.o
 	$(CC) $(CFLAGS) -o $@ $(BUILD)/lock.o $(BUILD)/cbor.o $(BUILD)/test_lock.o $(MBEDTLS_LIBS)
+
+# test_loc: loc.c (its pure section only -- everything past its own
+# `#ifdef ESP_PLATFORM` split needs ESP-IDF/net.h/accel.h/auth.h/ident.h and
+# is not built here) + cbor.c (loc_build_cbor()/loc_parse_req_cbor()) +
+# test_loc.c. No mbedtls needed: loc.c's pure section never signs anything
+# (auth_sign() is only ever called from its device-only section).
+$(BUILD)/loc.o: $(MAIN_SRC)/loc.c $(MAIN_SRC)/loc.h $(MAIN_SRC)/cbor.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $(MAIN_SRC)/loc.c
+
+$(BUILD)/test_loc.o: test_loc.c $(MAIN_SRC)/loc.h $(MAIN_SRC)/cbor.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ test_loc.c
+
+$(BUILD)/test_loc: $(BUILD)/loc.o $(BUILD)/cbor.o $(BUILD)/test_loc.o
+	$(CC) $(CFLAGS) -o $@ $(BUILD)/loc.o $(BUILD)/cbor.o $(BUILD)/test_loc.o
 
 # render_png: gfx.c (the exact framebuffer/text/glyph module that ships
 # on-device, compiled for the host per its own #ifdef ESP_PLATFORM split)

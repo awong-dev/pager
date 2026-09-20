@@ -45,6 +45,15 @@
 // wired via book_bind() in modes_boot().
 #include "book.h"
 
+// v0.2 §5 (docs/V02_DESIGN.md, docs/PROTOCOL.md §3.2/§13): loc.c's
+// `kind:"loc_req"` dispatch ahead of msg_ingest_down_cbor() (same
+// interception slot as lock.c/book.c above), its own tiny RTC-resident route
+// hint (loc_rtc_t, embedded below), and its `/status` fields
+// (loc_min_s/loc_period_s/loc_backoff_s). accel.c's LIS3DH poll is driven
+// from modes_run()'s loop alongside input_poll()/ui_poll_keyboard().
+#include "accel.h"
+#include "loc.h"
+
 #include <assert.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -122,7 +131,11 @@ static const uint32_t k_backoff_s[] = { 5, 15, 60, 300 };
 // §9.3's table row); a stale layout-4 struct has no such field at all, so
 // reading it unversioned would decode 16 bytes of whatever used to be past
 // the end of the old struct as `locked`/`fail_count`/`backoff_until_us`.
-#define PAGER_RTC_MAGIC 0x50475235u // "PGR" + layout version 5
+// v0.2 §5: bumped 5 -> 6 — new `loc` field (loc_rtc_t, +8 B, PROTOCOL.md
+// §9.3's table row): the single route-to-the-radio byte loc.c remembers
+// (V02_DESIGN.md §5). Everything else location-related is deliberately
+// RAM-only (loc.h's own module comment), so this is the whole addition.
+#define PAGER_RTC_MAGIC 0x50475236u // "PGR" + layout version 6
 
 typedef enum {
     PAGER_MODE_SLEEP = 0,
@@ -180,15 +193,19 @@ typedef struct {
     lock_rtc_t lock; // PROTOCOL.md §9.3, DEVICE_PLAN.md §5.8 — owned in
                       // layout by modes.c, in behaviour by lock.c via the
                       // pointer lock_bind_rtc() hands it in modes_boot().
+
+    loc_rtc_t loc; // v0.2 §5 (docs/V02_DESIGN.md, PROTOCOL.md §9.3) — owned
+                    // in layout by modes.c, in behaviour by loc.c via the
+                    // pointer loc_bind() hands it in modes_boot().
 } pager_rtc_t;
 
-// F6.5: sizeof(pager_rtc_t) is 512 bytes as of this change (see
-// firmware/build/school_pager.map's `.rtc.data.0` entry for
-// esp-idf/main/libmain.a(modes.c.obj), 0x200, after
-// `idf.py set-target esp32s3 && idf.py build`, PROTOCOL.md §9.1's own
-// methodology) — up from 496 (F6.4) by exactly the 16 B `lock` adds
-// (docs/DEVICE_PLAN.md §5.8's own RTC sizing), 672 B under the 1184-byte
-// budget below.
+// F6.5: sizeof(pager_rtc_t) was 512 bytes (see firmware/build/school_pager.map's
+// `.rtc.data.0` entry for esp-idf/main/libmain.a(modes.c.obj), PROTOCOL.md
+// §9.1's own methodology) before this change.
+// v0.2 §5: +8 B for the new `loc` field (loc_rtc_t) -> 520 bytes, 664 B
+// under the 1184-byte budget below. modes_boot()'s own ESP_LOGI of
+// sizeof(g_rtc) is the authoritative figure — see the report this task
+// ships with for the number it actually printed.
 _Static_assert(sizeof(pager_rtc_t) <= 1184,
                "pager_rtc_t exceeds the measured 1184-byte RTC_SLOW budget "
                "left after walter-modem's own ~7003 bytes (PROTOCOL.md §9.1)");
@@ -222,6 +239,20 @@ static bool s_ui_awake_prev = false; // F6.3: edge-detects input_awake() for ui_
 static int64_t s_connect_attempt_us = 0;
 static uint32_t s_connect_watchdog_count = 0;
 #define PAGER_CONNECT_WATCHDOG_US ((int64_t) 60 * 1000000) // §2.3: 60s
+
+// v0.2 §5: see modes.h's own modes_set_loc_suppress() doc comment. RAM-only,
+// same reasoning as s_connect_attempt_us above (never survives, or needs to
+// survive, a reset).
+static volatile bool s_loc_suppress = false;
+
+void modes_set_loc_suppress(bool suppress)
+{
+    if (suppress != s_loc_suppress) {
+        ESP_LOGI(TAG, "location %s the ordinary MQTT reconnect/F4 health-check machinery",
+                 suppress ? "suppressing" : "releasing");
+    }
+    s_loc_suppress = suppress;
+}
 
 // ---------------------------------------------------------------------------
 // RTC helpers
@@ -324,6 +355,9 @@ static void on_auth_epoch_wrap(void)
 #define STK_RSSI 24
 #define STK_SESSION 25
 #define STK_FW 26
+#define STK_LOC_PERIOD_S 27
+#define STK_LOC_MIN_S 28
+#define STK_LOC_BACKOFF_S 43 // v0.2 §7
 
 // PROTOCOL.md §5.1: batt_mv must be in [2000, 4500] when state:"online".
 #define PAGER_BATT_MV_MIN 2000
@@ -427,7 +461,10 @@ static bool build_status_cbor(uint8_t *out, size_t cap, size_t *out_len, const c
     int rssi_dbm = refresh_rssi_dbm();
 
     bool signed_env = (ident_get_flags() & IDENT_FLAG_REQ_SIG) != 0;
-    uint32_t nfields = 9; // v,state,mode,batt_mv,rssi,session,ts,fw,bv
+    // v0.2 §5/§7: +3 for loc_period_s/loc_min_s/loc_backoff_s (loc.c's own
+    // getters — plain reads of already-resident policy state, no AT round
+    // trip of their own beyond what batt_mv/rssi above already cost).
+    uint32_t nfields = 9 + 3; // v,state,mode,batt_mv,rssi,session,ts,fw,bv,loc_period_s,loc_min_s,loc_backoff_s
     if (signed_env) {
         nfields += 2; // n (written below) + sig (appended by auth_sign())
     }
@@ -444,6 +481,9 @@ static bool build_status_cbor(uint8_t *out, size_t cap, size_t *out_len, const c
     cbor_w_uint(&w, STK_TS, (uint64_t) ts);
     cbor_w_tstr(&w, STK_FW, PAGER_FW_VERSION, strlen(PAGER_FW_VERSION));
     cbor_w_uint(&w, STK_BV, book_get_bv()); // §4.3: book version, F7.1
+    cbor_w_uint(&w, STK_LOC_PERIOD_S, loc_get_period_s()); // v0.2 §5: always 0, periodic fixes parked
+    cbor_w_uint(&w, STK_LOC_MIN_S, loc_get_min_s());        // v0.2 §5: the 10-minute trigger floor
+    cbor_w_uint(&w, STK_LOC_BACKOFF_S, loc_get_backoff_remaining_s()); // v0.2 §7 key 43
 
     if (!signed_env) {
         *out_len = w.len;
@@ -823,6 +863,20 @@ static void on_incoming_message(const char *topic, const char *body, uint16_t le
         return;
     }
 
+    // v0.2 §5 (docs/PROTOCOL.md §3.2/§13, docs/V02_DESIGN.md §5): `loc_req`
+    // is the third non-content down kind — same "neither `from` nor `body`"
+    // reason `cfg`/`book` are intercepted above, before
+    // msg_ingest_down_cbor() ever sees it. Never a thread entry, never
+    // shown/read-acked, answered regardless of lock state or mode
+    // (loc_ingest_req_cbor() itself never touches ui.c/set_mode() — see
+    // loc.h's own doc comment). Returns true only for a well-formed
+    // `kind:"loc_req"` envelope (queued/answered/started already); false
+    // covers both "not loc_req" and "loc_req but malformed", both of which
+    // correctly fall through to the normal path below.
+    if (loc_ingest_req_cbor((const uint8_t *) body, (uint16_t) vlen)) {
+        return;
+    }
+
     const msg_t *out = NULL;
     msg_ingest_t r = msg_ingest_down_cbor((const uint8_t *) body, (uint16_t) vlen, &out);
     handle_ingest_result(r, out, (uint16_t) vlen, (const uint8_t *) body);
@@ -1073,6 +1127,17 @@ void modes_boot(void)
             ESP_LOGI(TAG, "net_session_up() failed at boot; will retry per F3 backoff");
         }
     }
+
+    // v0.2 §5 (docs/V02_DESIGN.md): loc.c's RTC route-hint binding + GNSS/
+    // accelerometer bring-up. Runs after ui_init() (accel.c shares the I2C
+    // bus ui_init()'s i2c_kb_init() already installed — see accel.h's own
+    // module comment) and after net_init() (net_gnss_config() needs the
+    // modem to exist; harmless, already-logged failure either way if
+    // net_init() itself failed above — location then simply always answers
+    // from cache/no_fix, this task's own fail-open rule). No paging-path
+    // effect either way.
+    loc_bind(&g_rtc.loc, &g_rtc.auth, rtc_lock, rtc_unlock, rtc_save, on_auth_epoch_wrap);
+    loc_init();
 
     rtc_lock();
     g_rtc.mode = (uint8_t) PAGER_MODE_SLEEP; // firmware/README.md: boot in sleep mode
@@ -1334,7 +1399,14 @@ void modes_run(void)
                 schedule_backoff(&backoff_index, &next_session_retry_us);
             }
         } else if (!st.mqtt_connected) {
-            if (esp_timer_get_time() >= next_session_retry_us) {
+            // v0.2 §5: skip entirely while location's route 2 (CFUN=4
+            // window) owns the session on purpose — see
+            // modes_set_loc_suppress()'s own doc comment. Once it releases
+            // the flag, next_session_retry_us is normally already in the
+            // past (the session was healthy, backoff_index==0, right up
+            // until loc.c tore it down), so this reconnects on the very
+            // next iteration with no special-casing needed here.
+            if (!s_loc_suppress && esp_timer_get_time() >= next_session_retry_us) {
                 ESP_LOGI(TAG, "retrying MQTT session (backoff idx=%u)", (unsigned) backoff_index);
                 bool up_ok = net_session_up();
                 note_session_up_attempt(up_ok); // §2.3: arms the connect watchdog
@@ -1357,11 +1429,23 @@ void modes_run(void)
             msg_pump();
         }
 
-        // F4: checkComm() every 60 wake cycles in sleep mode.
-        if (g_rtc.mode == (uint8_t) PAGER_MODE_SLEEP &&
+        // F4: checkComm() every 60 wake cycles in sleep mode. v0.2 §5:
+        // skipped during location's route-2 window (see
+        // modes_set_loc_suppress()'s own doc comment) — net_check() would
+        // read NO_RF as "modem unresponsive" and force a real, unwanted
+        // modem reset in the middle of a deliberate radio-off window.
+        if (!s_loc_suppress && g_rtc.mode == (uint8_t) PAGER_MODE_SLEEP &&
             (wake_cycle_count % PAGER_CHECKCOMM_EVERY_N_WAKES) == 0) {
             run_modem_health_check();
         }
+
+        // v0.2 §5: accelerometer poll (unconditional, same discipline
+        // input_poll() uses — a no-op read if accel_init() never found the
+        // chip) and one GNSS attempt-state-machine step (a no-op if no
+        // attempt is in progress). Neither blocks for more than one small,
+        // bounded piece of work — see accel.h/loc.h's own doc comments.
+        accel_poll();
+        loc_service();
 
         maybe_publish_heartbeat();
 

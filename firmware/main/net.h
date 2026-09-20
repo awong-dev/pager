@@ -293,6 +293,117 @@ bool net_check_tcp(const char *host, uint16_t port, bool udp, bool tls);
  * with net_check_tcp(). */
 bool net_check_mqtt(const char *host, uint16_t port, int tls_mode);
 
+/* ---------------------------------------------------------------------
+ * GNSS (docs/V02_DESIGN.md §5, docs/LOCATION_PLAN.md). Every power-effect
+ * comment here is PENDING_HW/UNVERIFIED: nothing in this section has run on
+ * a real Walter yet. loc.c is the only caller; it owns the whole
+ * request/backoff/route policy and never calls WalterModem directly (this
+ * header is the boundary, same rule every other net.h entry point follows).
+ * --------------------------------------------------------------------- */
+
+typedef enum {
+    NET_GNSS_EVT_NONE = 0,  /* net_gnss_poll_event() found nothing new */
+    NET_GNSS_EVT_FIX,       /* WMGNSSFixEvent status READY; fields below valid */
+    NET_GNSS_EVT_NO_FIX,    /* status STOPPED_BY_USER/NO_RTC: attempt ended, no position */
+    NET_GNSS_EVT_REFUSED,   /* status LTE_CONCURRENCY: modem refused a fix while attached */
+} net_gnss_evt_t;
+
+typedef struct {
+    net_gnss_evt_t kind;
+    double lat, lon;
+    double confidence;  /* estimatedConfidence, metres; loc.c's threshold is <=100 */
+    int64_t fix_ts;     /* unix seconds the fix was taken */
+    uint8_t sat_count;
+} net_gnss_event_t;
+
+/* gnssConfig(): HIGH sensitivity, cold/warm-start acquisition, on-device
+ * location. Persists across reboots per the vendor doc, so calling this more
+ * than once (loc_init(), and again before every attempt) is a harmless
+ * no-op AT command, not a re-provision. Power effect: one AT round trip, no
+ * RRC, does not itself power the GNSS receiver. */
+bool net_gnss_config(void);
+
+/* gnssGetAssistanceStatus() for WALTER_MODEM_GNSS_ASSISTANCE_TYPE_REALTIME_EPHEMERIS.
+ * *out_seconds_to_update is the vendor's own `timeToUpdate` (<=0 means due
+ * now). Returns false if the AT command itself failed, which the caller
+ * must treat as "assume due" (fail toward the slower/safer path, never
+ * toward a fix attempt with stale ephemeris). Power effect: one AT round
+ * trip, no RRC. */
+bool net_gnss_assistance_due(int32_t *out_seconds_to_update);
+
+/* gnssUpdateAssistance(REALTIME_EPHEMERIS): downloads over the still-attached
+ * LTE session (must run before any detach — route 2). Blocking, bounded by
+ * the modem's own command timeout; logs elapsed time as a stand-in for the
+ * byte cost V02_DESIGN.md §5 asks to be measured (the vendor API reports
+ * neither bytes nor a progress callback). Power effect: one LTE-attached
+ * data transaction, a few kB (PENDING_HW, UNVERIFIED size — look for
+ * "gnssUpdateAssistance" in the log). */
+bool net_gnss_update_assistance(void);
+
+/* gnssPerformAction(GET_SINGLE_FIX). True only means the modem accepted the
+ * request ("OK") — NOT that a fix has arrived; the result comes later via
+ * net_gnss_poll_event(). A synchronous false here is equivalent to a later
+ * NET_GNSS_EVT_REFUSED and the caller should treat it the same way. Power
+ * effect: starts the GNSS receiver; current draw continues until a result
+ * event arrives or net_gnss_cancel() is called (PENDING_HW, UNVERIFIED). */
+bool net_gnss_start_fix(void);
+
+/* gnssPerformAction(CANCEL), best-effort, for when loc.c's own attempt
+ * budget expires before a result event arrives. Power effect: stops the
+ * GNSS receiver. */
+void net_gnss_cancel(void);
+
+/* Non-blocking: true and fills *out at most once per net_gnss_start_fix()
+ * call, the first time net.cpp's GNSS event handler (WalterModem's own
+ * _eventProcessingTask) has recorded a WALTER_MODEM_GNSS_EVENT_FIX. Mirrors
+ * the msg-callback handoff net_set_msg_cb() documents: the event handler
+ * itself only copies the struct and sets a flag; every log line and all
+ * further modem API use happens here, on the caller's own task (loc.c's
+ * loc_service(), from modes_run()). */
+bool net_gnss_poll_event(net_gnss_event_t *out);
+
+/* CFUN=4-equivalent (WALTER_MODEM_OPSTATE_NO_RF) — route 2's deliberate
+ * radio-off window. Caller must already have called net_session_down()
+ * (MQTT) first; modes.c's ordinary F1/F3/F4 recovery machinery must be
+ * suppressed around this call and net_radio_on()/net_is_attached() below
+ * (see modes_set_loc_suppress()). Power effect: LTE radio off; GNSS free of
+ * LTE contention. */
+bool net_radio_off(void);
+
+/* Leaves the window: WALTER_MODEM_OPSTATE_FULL. Does not wait for
+ * re-attach — poll net_is_attached() afterward, same non-blocking-per-call
+ * discipline loc.c's whole state machine uses. Power effect: LTE-M
+ * re-attach begins (PENDING_HW, same class as net_init()'s attach phase). */
+bool net_radio_on(void);
+
+/* getNetworkRegState() == HOME/ROAMING. Same cost class as net_check(): one
+ * AT round trip, no RRC — safe to call once per loc_service() iteration
+ * while polling for re-attach. */
+bool net_is_attached(void);
+
+/* Cell/tracking-area change trigger (V02_DESIGN.md §5 trigger 1). `cb` is
+ * called from the network event handler (WalterModem's own event task — keep
+ * it short, same rule as net_set_msg_cb()) with a short-lived "lac:ci" key
+ * (net.cpp's own static buffer; copy it if the callback needs it afterward),
+ * but ONLY when that key differs from the immediately previous one net.cpp
+ * observed — net.cpp does this first, cheap de-duplication itself so loc.c's
+ * own 10-minute debounce (loc_trigger_cell_change()) only has to reason
+ * about genuine changes, not every REG_STATE_CHANGE URC. Requires
+ * configCEREGReports(ENABLED_WITH_LOCATION), which net_init() now requests
+ * (non-fatal if the modem rejects it — the trigger then just never fires,
+ * which is this design's required fail-open behaviour). */
+void net_set_cell_change_cb(void (*cb)(const char *cell_key));
+
+/* Arms LIS3DH INT1 (pins.h PAGER_PIN_LIS3DH_INT1) as a second light-sleep
+ * wake source alongside the button's ext0 (net_sleep()). Call once, from
+ * accel.c, only after a successful WHO_AM_I probe — never call this if the
+ * chip is absent, or an unwired/floating IO2 armed as a wake source would
+ * wake the ESP32 on every light-sleep cycle for nothing. See net_sleep()'s
+ * own comment for why this needs ext1 (not a second ext0) and which level
+ * mode it uses. Power effect: none by itself; adds an early-wake path to
+ * the existing ~1 mA light-sleep floor. */
+void net_enable_accel_wake(void);
+
 #ifdef __cplusplus
 }
 #endif

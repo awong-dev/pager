@@ -169,6 +169,33 @@ static int64_t s_clock_epoch_us = 0; // esp_timer_get_time() at the moment s_clo
 
 static bool s_wake_sources_armed = false;
 
+// v0.2 §5 (location, loc.c): GNSS event handoff, same single-flag pattern as
+// the msg-callback path above. Written only by pager_gnss_event_handler()
+// (WalterModem's _eventProcessingTask), read/cleared only by
+// net_gnss_poll_event() (loc.c's own task, via loc_service()) -- one flag,
+// one writer, one reader, same reasoning s_msg_cb's buffer already relies on.
+static volatile bool s_gnss_event_pending = false;
+static net_gnss_event_t s_gnss_event;
+
+// Cell-change trigger (V02_DESIGN.md §5 trigger 1): the callback loc.c
+// registers, plus the last "lac:ci" key seen, so this file only invokes the
+// callback on a genuine change (loc.c's own 10-minute debounce decides
+// whether that change actually resets the backoff -- see net_set_cell_change_cb()'s
+// own doc comment in net.h).
+static void (*s_cell_change_cb)(const char *) = nullptr;
+// Sized for the worst case ("lac"/"ci" are each up to 15 chars + NUL in the
+// vendor's own WMNetworkEventData, WalterModem.h) plus the ":" separator and
+// NUL, so snprintf() below can never truncate -- loc.c's own cell_key field
+// (LOC_CELL_KEY_MAX, loc.h) is smaller and truncates via strncpy() instead,
+// which is fine there (an opaque comparison key, never rendered).
+static char s_last_cell_key[40] = { 0 };
+static bool s_have_last_cell_key = false;
+
+// v0.2 §5: arms IO2 (LIS3DH INT1) as an ext1 light-sleep wake source, only
+// once accel.c has confirmed the chip is actually present (see
+// net_enable_accel_wake()'s own doc comment in net.h).
+static bool s_accel_wake_enabled = false;
+
 // ---------------------------------------------------------------------------
 // F3 classification helper.
 // ---------------------------------------------------------------------------
@@ -316,12 +343,68 @@ static void pager_mqtt_event_handler(WMMQTTEventType event, const WMMQTTEventDat
     }
 }
 
+// v0.2 §5 (location): GNSS event handoff. Runs on WalterModem's
+// _eventProcessingTask (same task pager_mqtt_event_handler above runs on) --
+// per this task's own rule ("never call modem APIs from the GNSS event
+// callback beyond what the library's own examples do"), this function does
+// nothing but classify the vendor's WMGNSSFixEvent and copy it into
+// s_gnss_event; every subsequent modem call (cancel, re-attach, ...) happens
+// from loc.c's own task via net_gnss_poll_event() and the rest of this
+// file's net_gnss_*()/net_radio_*() functions.
+static void pager_gnss_event_handler(WMGNSSEventType event, const WMGNSSEventData *data, void *args)
+{
+    (void) args;
+    if (event != WALTER_MODEM_GNSS_EVENT_FIX) {
+        return; // STATUS/ASSISTANCE URCs: nothing in this design consumes them yet
+    }
+    const WMGNSSFixEvent *fix = &data->gnssfix;
+    net_gnss_event_t ev = {};
+    switch (fix->status) {
+    case WALTER_MODEM_GNSS_FIX_STATUS_READY:
+        ev.kind = NET_GNSS_EVT_FIX;
+        ev.lat = fix->latitude;
+        ev.lon = fix->longitude;
+        ev.confidence = fix->estimatedConfidence;
+        ev.fix_ts = fix->timestamp;
+        ev.sat_count = fix->satCount;
+        break;
+    case WALTER_MODEM_GNSS_FIX_STATUS_LTE_CONCURRENCY:
+        ev.kind = NET_GNSS_EVT_REFUSED;
+        break;
+    case WALTER_MODEM_GNSS_FIX_STATUS_STOPPED_BY_USER:
+    case WALTER_MODEM_GNSS_FIX_STATUS_NO_RTC:
+    default:
+        ev.kind = NET_GNSS_EVT_NO_FIX;
+        break;
+    }
+    s_gnss_event = ev;
+    s_gnss_event_pending = true;
+}
+
 static void pager_network_event_handler(WMNetworkEventType event, const WMNetworkEventData *data, void *args)
 {
     (void) args;
 
     if (event == WALTER_MODEM_NETWORK_EVENT_REG_STATE_CHANGE) {
         ESP_LOGI(TAG, "network registration state -> %d", (int) data->cereg.state);
+        // v0.2 §5 trigger 1: lac/ci are only non-empty when the modem's
+        // CEREG report type carries location info (net_init() requests
+        // ENABLED_WITH_LOCATION) -- empty on a plain state change (e.g. the
+        // deregistration this file's own route-2 NO_RF transition causes),
+        // which this guard correctly ignores rather than treating "no
+        // service" as a cell change.
+        if (data->cereg.lac[0] != '\0' && data->cereg.ci[0] != '\0') {
+            char key[sizeof(s_last_cell_key)];
+            snprintf(key, sizeof(key), "%s:%s", data->cereg.lac, data->cereg.ci);
+            if (!s_have_last_cell_key || strncmp(key, s_last_cell_key, sizeof(key)) != 0) {
+                strncpy(s_last_cell_key, key, sizeof(s_last_cell_key) - 1);
+                s_last_cell_key[sizeof(s_last_cell_key) - 1] = '\0';
+                s_have_last_cell_key = true;
+                if (s_cell_change_cb) {
+                    s_cell_change_cb(s_last_cell_key);
+                }
+            }
+        }
         return;
     }
 
@@ -400,6 +483,18 @@ extern "C" bool net_init(void)
 
     WalterModem::setMQTTEventHandler(pager_mqtt_event_handler, nullptr);
     WalterModem::setNetworkEventHandler(pager_network_event_handler, nullptr);
+    WalterModem::setGNSSEventHandler(pager_gnss_event_handler, nullptr); // v0.2 §5
+
+    // v0.2 §5 trigger 1 (cell/tracking-area change): the default CEREG
+    // report type carries no lac/ci at all, so pager_network_event_handler()
+    // would never see a cell identity to compare. Non-fatal: the trigger
+    // simply never fires if this is rejected (this design's own fail-open
+    // rule for everything location-related), same tolerance configEDRX()
+    // below already documents for a rejected request.
+    if (!WalterModem::configCEREGReports(WALTER_MODEM_CEREG_REPORTS_ENABLED_WITH_LOCATION)) {
+        ESP_LOGI(TAG, "configCEREGReports(ENABLED_WITH_LOCATION) failed - cell-change location "
+                      "trigger will never fire");
+    }
 
     if (!WalterModem::setOpState(WALTER_MODEM_OPSTATE_NO_RF)) {
         ESP_LOGI(TAG, "setOpState(NO_RF) failed");
@@ -791,6 +886,23 @@ extern "C" void net_sleep(uint32_t ms)
     // replicate its RTS choreography by hand instead.
     if (!s_wake_sources_armed) {
         esp_sleep_enable_ext0_wakeup((gpio_num_t) PAGER_PIN_BUTTON, 0 /* active low */);
+        // v0.2 §5 trigger 2 (motion): a second, independent wake pin needs
+        // ext1, not a second ext0 -- the ESP32-S3 (like every ESP32 variant)
+        // has exactly one ext0 source (a single fixed RTC GPIO, already
+        // spoken for by the button) but ext1 takes a bitmask of any number
+        // of RTC GPIOs sharing one level mode. IO2 (LIS3DH INT1) is
+        // configured push-pull active-high (accel.c), so ANY_HIGH is the
+        // right mode for a one-pin mask; it does not need to agree with
+        // ext0's own (unrelated) active-low button polarity -- the two wake
+        // sources are independent and can coexist armed simultaneously.
+        // Only armed once accel.c has confirmed the chip actually answers
+        // WHO_AM_I (net_enable_accel_wake()) -- an unwired/floating IO2
+        // armed as ANY_HIGH would wake the ESP32 on every light-sleep cycle
+        // for nothing, which is expected to be the common case on the
+        // owner's bench unit (accel.c's own module comment).
+        if (s_accel_wake_enabled) {
+            esp_sleep_enable_ext1_wakeup(1ULL << PAGER_PIN_LIS3DH_INT1, ESP_EXT1_WAKEUP_ANY_HIGH);
+        }
         s_wake_sources_armed = true;
     }
     esp_sleep_enable_timer_wakeup((uint64_t) ms * 1000ULL);
@@ -1151,4 +1263,122 @@ extern "C" bool net_check_mqtt(const char *host, uint16_t port, int tls_mode)
     }
     WalterModem::mqttDisconnect();
     return false;
+}
+
+// ---------------------------------------------------------------------------
+// v0.2 §5 (location, loc.c). See net.h's own doc comments for the contract
+// each of these follows; this section is the only place that turns loc.c's
+// small facade calls into real WalterModem GNSS/opstate API use.
+// ---------------------------------------------------------------------------
+
+extern "C" bool net_gnss_config(void)
+{
+    // Power effect: one AT command, no RRC, does not power the GNSS receiver
+    // by itself (gnssPerformAction() below does that).
+    if (!WalterModem::gnssConfig(WALTER_MODEM_GNSS_SENS_MODE_HIGH,
+                                 WALTER_MODEM_GNSS_ACQ_MODE_COLD_WARM_START,
+                                 WALTER_MODEM_GNSS_LOC_MODE_ON_DEVICE_LOCATION)) {
+        ESP_LOGI(TAG, "gnssConfig() failed");
+        return false;
+    }
+    return true;
+}
+
+extern "C" bool net_gnss_assistance_due(int32_t *out_seconds_to_update)
+{
+    WalterModemRsp rsp = {};
+    if (!WalterModem::gnssGetAssistanceStatus(&rsp)) {
+        ESP_LOGI(TAG, "gnssGetAssistanceStatus() failed");
+        return false;
+    }
+    const WMGNSSAssistance &a =
+        rsp.data.gnssAssistance[WALTER_MODEM_GNSS_ASSISTANCE_TYPE_REALTIME_EPHEMERIS];
+    if (out_seconds_to_update) {
+        *out_seconds_to_update = a.timeToUpdate;
+    }
+    ESP_LOGI(TAG, "gnss real-time ephemeris: available=%d timeToUpdate=%lds timeToExpire=%lds",
+             (int) a.available, (long) a.timeToUpdate, (long) a.timeToExpire);
+    return true;
+}
+
+extern "C" bool net_gnss_update_assistance(void)
+{
+    int64_t t0_us = esp_timer_get_time();
+    bool ok = WalterModem::gnssUpdateAssistance(WALTER_MODEM_GNSS_ASSISTANCE_TYPE_REALTIME_EPHEMERIS);
+    int64_t elapsed_ms = (esp_timer_get_time() - t0_us) / 1000;
+    // V02_DESIGN.md §5: "log the bytes it costs" -- the vendor API reports
+    // neither bytes nor a progress callback, so elapsed time is the nearest
+    // stand-in available; UNVERIFIED what real byte cost that corresponds to.
+    ESP_LOGI(TAG, "gnssUpdateAssistance(REALTIME_EPHEMERIS): %s, %lld ms",
+             ok ? "ok" : "failed", (long long) elapsed_ms);
+    return ok;
+}
+
+extern "C" bool net_gnss_start_fix(void)
+{
+    if (!WalterModem::gnssPerformAction(WALTER_MODEM_GNSS_ACTION_GET_SINGLE_FIX)) {
+        ESP_LOGI(TAG, "gnssPerformAction(GET_SINGLE_FIX) refused synchronously");
+        return false;
+    }
+    ESP_LOGI(TAG, "gnss single-fix action accepted; waiting for a GNSS event");
+    return true;
+}
+
+extern "C" void net_gnss_cancel(void)
+{
+    if (!WalterModem::gnssPerformAction(WALTER_MODEM_GNSS_ACTION_CANCEL)) {
+        ESP_LOGI(TAG, "gnssPerformAction(CANCEL) failed (best-effort)");
+    }
+}
+
+extern "C" bool net_gnss_poll_event(net_gnss_event_t *out)
+{
+    if (!s_gnss_event_pending) {
+        return false;
+    }
+    if (out) {
+        *out = s_gnss_event;
+    }
+    s_gnss_event_pending = false;
+    return true;
+}
+
+extern "C" bool net_radio_off(void)
+{
+    if (!WalterModem::setOpState(WALTER_MODEM_OPSTATE_NO_RF)) {
+        ESP_LOGI(TAG, "setOpState(NO_RF) failed (loc route 2)");
+        return false;
+    }
+    return true;
+}
+
+extern "C" bool net_radio_on(void)
+{
+    if (!WalterModem::setOpState(WALTER_MODEM_OPSTATE_FULL)) {
+        ESP_LOGI(TAG, "setOpState(FULL) failed (loc route 2 restore)");
+        return false;
+    }
+    return true;
+}
+
+extern "C" bool net_is_attached(void)
+{
+    // Power effect: one AT round trip ("AT+CEREG?"), no RRC of its own --
+    // same cost class as net_check(). WalterModem::getNetworkRegState()
+    // genuinely blocks on this command (confirmed by reading the vendor
+    // source, not an accessor of already-tracked state), so loc.c calls this
+    // at most once per loc_service() iteration while polling for re-attach.
+    WalterModemNetworkRegState st = WalterModem::getNetworkRegState();
+    return st == WALTER_MODEM_NETWORK_REG_REGISTERED_HOME ||
+           st == WALTER_MODEM_NETWORK_REG_REGISTERED_ROAMING;
+}
+
+extern "C" void net_set_cell_change_cb(void (*cb)(const char *cell_key))
+{
+    s_cell_change_cb = cb;
+}
+
+extern "C" void net_enable_accel_wake(void)
+{
+    s_accel_wake_enabled = true;
 }
