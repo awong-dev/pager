@@ -95,6 +95,62 @@ What breaks or needs care:
 - Lock-in: the pager's firmware would hard-code `beam.soracom.io`. Keep the TLS path buildable so a
   non-Soracom SIM remains an option.
 
+## Without a broker at all (owner's question: why is EMQX still there?)
+
+EMQX is in the Beam design above only because Beam's **MQTT** entry point is a proxy, not a
+broker: something behind it has to hold the pager's subscription and push a page down the open
+connection. That was the least-change option, not the only one. Soracom has the two pieces needed
+to drop the broker entirely:
+
+- **Uplink: Beam's UDP→HTTPS (or HTTP→HTTPS) entry point.** The pager sends one datagram to Beam;
+  Beam POSTs it to an HTTPS URL of ours, i.e. **straight to the relay on Cloud Run**, adding the
+  SIM's IMSI and a signature header proving it came through Soracom, and returns the HTTP
+  response to the pager as the reply datagram. The relay's ingest is already an HTTP endpoint fed
+  by a webhook, so this is close to a drop-in for `/webhooks/mqtt`. (Beam, not Funk: Funk targets
+  Lambda/Cloud Functions with their IAM; the relay is a plain HTTPS service.)
+- **Downlink: Remote Command, `sendDownlinkUdp`.** The relay calls Soracom's API
+  (`POST /v1/sims/{simId}/downlink/udp`) and Soracom delivers a UDP datagram to the pager over its
+  private network. No VPG needed, addressed by SIM id so the pager's IP can change. It is
+  **fire-and-forget**: no delivery confirmation and no device response comes back.
+
+What that buys: no broker, no MQTT, no TCP, no TLS, **no keepalive and no reconnects at all**. The
+radio is used only for real traffic, which is the best possible case for both the data budget
+(roughly 0.2-0.3 MB/month nominal) and the battery. The old reason for insisting on the modem's
+built-in MQTT client was that it sends keepalives without waking the ESP32; with UDP there is no
+keepalive to send, so that reason goes away.
+
+What it costs:
+
+- **Reliability moves into our protocol.** UDP can drop, duplicate and reorder. The pieces already
+  exist (ids, dedup, `shown`/`read` acks, the relay re-publishing unacked messages) but the relay's
+  retry is tied to the pager's online edge today; it would need a timer (retry an unacked page
+  after N seconds, back off, give up) because there is no connection whose loss signals anything.
+- **No presence.** No broker means no connect/disconnect edge and no Last Will. "Online" becomes
+  "sent a heartbeat recently", plus what Soracom's session API reports for the SIM.
+- **The idle session.** Soracom ends a data session after about an hour idle. The hourly status
+  heartbeat already in the design keeps it up; if it drops, downlinks fail until the pager next
+  sends something.
+- **The same unverified sleep question as today** (`PROTOCOL.md` §8.3, M5), in a new form: the modem
+  must hold an open UDP socket, be paged for an incoming datagram during eDRX, and raise a ring
+  that wakes the ESP32. Never tested on this modem.
+- **A rewrite, not a port.** Firmware transport (`net.cpp`: UDP socket, send, retries, no MQTT
+  engine), relay transport (Soracom API client with token refresh instead of the broker publish;
+  a Beam endpoint instead of the webhook; topics become a field or a URL path), the test client
+  and the local docker stack, which would need a fake Soracom.
+- **Total lock-in.** Today's design runs on any SIM and any MQTT broker. This one runs only on
+  Soracom, in firmware and relay both.
+- `UNVERIFIED`: Remote Command's price and rate limits (not on the pages read), its behaviour when
+  the pager is in an eDRX sleep, and datagram size limits (ours are ≤ 640 bytes).
+
+Security is as in the Beam section, and the same condition applies: AEAD for bodies and fixes,
+because everything is plaintext through Soracom. The HMAC stays.
+
+**Verdict.** Architecturally this is the best fit a pager could ask for, and it would delete more
+code than it adds. It is also the riskiest change on the table: it discards a transport that was
+finally proven end to end two days ago, for one whose key behaviour (a paged UDP downlink waking a
+sleeping pager) nobody has seen work. Treat it as the long-term direction to *test towards*, not a
+switch to make now. The trial below is ordered so each step is cheap and can end the experiment.
+
 ## Funk
 
 Not suitable as the pager's main path. A pager is a downlink device and Funk cannot push. The
@@ -113,13 +169,21 @@ Beam is worth a trial; Funk is not. Order of work if pursued:
    registration time, granted eDRX and paging latency. If eDRX is not granted, stop.
 2. Point the debug build's `mqtttest` at `beam.soracom.io:1883` with no TLS profile and confirm
    publish, subscribe and the 1200 s keepalive through Beam to EMQX.
-3. Only then: add AEAD bodies (option E), a build-time transport switch (`tls` | `beam`), Beam
-   credential injection, and rework device SMS to go via Soracom and the relay.
+3. Broker-free probe: open a UDP socket on the modem, put the pager in its normal eDRX sleep, and
+   call `sendDownlinkUdp` from a laptop. Measure delivery rate, latency against the eDRX cycle,
+   and whether the ESP32 wakes. Send a datagram to Beam's UDP→HTTPS entry point and read the
+   reply. This one experiment decides between "Beam in front of EMQX" and "no broker".
+4. Only then: add AEAD bodies (option E), a build-time transport switch, and rework device SMS to
+   go via Soracom and the relay. If step 3 passed, the transport is `udp`; if not, `beam-mqtt`
+   with EMQX kept behind it.
 
 Sources: [Soracom pricing and fee schedule](https://developers.soracom.io/en/docs/reference/fees/),
 [Beam MQTT entry point](https://developers.soracom.io/en/docs/beam/mqtt/),
 [Beam overview](https://developers.soracom.io/en/docs/beam/),
 [Funk overview](https://developers.soracom.io/en/docs/funk/),
+[Beam UDP→HTTPS entry point](https://developers.soracom.io/en/docs/beam/udp-http/),
+[Downlink API](https://developers.soracom.io/en/docs/air/downlink-api/),
+[Remote Command UDP usage](https://developers.soracom.io/en/docs/remote-command/udp-usage/),
 [SMS and USSD functionality](https://developers.soracom.io/en/docs/air/sms-ussd/),
 [Do Soracom IoT SIM cards support SMS?](https://support.soracom.io/hc/en-us/articles/44639414111129-Do-Soracom-IoT-SIM-Cards-Support-SMS),
 [Air SIM session timeout](https://support.soracom.io/hc/en-us/articles/235781348-Will-my-Air-SIM-session-timeout-after-a-certain-amount-of-time).
