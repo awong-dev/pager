@@ -151,19 +151,60 @@ finally proven end to end two days ago, for one whose key behaviour (a paged UDP
 sleeping pager) nobody has seen work. Treat it as the long-term direction to *test towards*, not a
 switch to make now. The trial below is ordered so each step is cheap and can end the experiment.
 
-## Funk
+## Funk, reconsidered (owner's challenge, 2026-09-20: why not Funk over UDP?)
 
-Not suitable as the pager's main path. A pager is a downlink device and Funk cannot push. The
-workarounds are polling (an RRC connection every few seconds defeats eDRX and the battery budget)
-or using a $0.005 MT-SMS as a doorbell for every page (about $3-4 a month at 25 pages a day, plus
-SMS latency and a second delivery mechanism to make reliable). It would also mean replacing the
-modem's built-in MQTT client, the broker and the webhook with a new request/response protocol on
-the ESP32. Funk, or Beam's UDP→HTTPS entry point, could be a cheap uplink for status and location
-reports later; that is an optimisation, not an architecture.
+My first pass dismissed Funk for the wrong reason. "Funk cannot push" is true, but it is equally
+true of Beam's UDP entry point: in a broker-free design **the downlink is Remote Command either
+way**, and the only question is which service carries the *uplink*. For that job Funk over UDP is
+sensible, and on authentication it is the better of the two.
+
+How Funk authenticates, which is not quite what one would assume:
+
+- For **AWS Lambda and Azure Functions**, Funk holds real cloud credentials in Soracom's credential
+  store and invokes the function through the provider's IAM. That is true server-to-server IAM.
+- For **Google Cloud, it does not use Google IAM.** Soracom's configuration guide says the
+  credentials setting "is not required" for Google Cloud Functions: Funk simply POSTs to the
+  function's HTTPS URL. The function therefore has to allow unauthenticated invocation at the IAM
+  level, and authenticates the caller itself from the **`X-Soracom-Token` header: a JWT signed by
+  Soracom** whose `ctx` carries the IMSI, SIM id, operator id and source protocol.
+- That is still a clear improvement on `WEBHOOK_KEY`. It is asymmetric (we verify with Soracom's
+  public key and hold no secret that can leak or pick up a stray newline), it is per request, and
+  it binds each message to a SIM identity that the cellular network authenticated. Beam's
+  UDP→HTTPS entry point offers only a header signed with a pre-shared key, i.e. the same kind of
+  shared secret we have today.
+- So the layering the owner describes is right: Soracom's signed token says *which SIM* sent this
+  and that it came through Soracom; our HMAC and counter say *which pager* wrote it and that it is
+  fresh; AEAD (if added) keeps Soracom from reading it.
+
+Funk versus Beam for the uplink, on Google Cloud:
+
+| | Funk (UDP) | Beam (UDP→HTTPS) |
+|---|---|---|
+| Caller authentication | Soracom-signed JWT with SIM context | header signed with a pre-shared key |
+| Secrets we must hold | none (a public key) | one shared key |
+| Reply to the pager | status code, optionally the function's response | HTTP status and body |
+| Price | first 50,000/month free, then $0.18 per 10,000 | first 100,000/month free, then $0.09 per 10,000 |
+| At our ~6,000 requests/month | free | free |
+| Target | documented as a `cloudfunctions.net` URL | any HTTPS URL |
+
+`UNVERIFIED`: whether Funk accepts a Cloud Run (`run.app`) URL as the Google target, since the
+relay is a Cloud Run service and not a Cloud Function. If it does not, a ten-line Cloud Function
+that verifies the token and forwards to the relay closes the gap (and *that* hop can use Google
+IAM properly). Also unverified: payload and response size limits on the UDP entry point, and how
+binary payloads are wrapped (the options are JSON, text or binary; our envelopes are CBOR).
+
+**Revised view: for a broker-free design, use Funk over UDP for the uplink.** What still argues
+against switching now has nothing to do with Funk. It is everything in the previous section:
+the downlink (`sendDownlinkUdp` waking a sleeping pager) has never been seen to work, reliability
+and presence move into our own protocol, device SMS to a phone is impossible on a Soracom SIM,
+the rewrite is large, and the lock-in is total. Those are reasons to run the trial first, not
+reasons to avoid the destination.
 
 ## Recommendation
 
-Beam is worth a trial; Funk is not. Order of work if pursued:
+Soracom is worth a trial, and the broker-free shape (Funk over UDP up, Remote Command down) is
+the one to aim for, with "Beam's MQTT entry point in front of EMQX" as the low-risk fallback if
+the downlink experiment fails. Order of work if pursued:
 
 1. Buy one plan-US SIM. With the **existing** firmware (TLS straight to EMQX, no Beam) check
    registration time, granted eDRX and paging latency. If eDRX is not granted, stop.
@@ -171,8 +212,8 @@ Beam is worth a trial; Funk is not. Order of work if pursued:
    publish, subscribe and the 1200 s keepalive through Beam to EMQX.
 3. Broker-free probe: open a UDP socket on the modem, put the pager in its normal eDRX sleep, and
    call `sendDownlinkUdp` from a laptop. Measure delivery rate, latency against the eDRX cycle,
-   and whether the ESP32 wakes. Send a datagram to Beam's UDP→HTTPS entry point and read the
-   reply. This one experiment decides between "Beam in front of EMQX" and "no broker".
+   and whether the ESP32 wakes. Send a datagram to Funk's UDP entry point, verify the
+   `X-Soracom-Token` at the receiving end, and read the reply on the pager. This one experiment decides between "Beam in front of EMQX" and "no broker".
 4. Only then: add AEAD bodies (option E), a build-time transport switch, and rework device SMS to
    go via Soracom and the relay. If step 3 passed, the transport is `udp`; if not, `beam-mqtt`
    with EMQX kept behind it.
@@ -181,6 +222,7 @@ Sources: [Soracom pricing and fee schedule](https://developers.soracom.io/en/doc
 [Beam MQTT entry point](https://developers.soracom.io/en/docs/beam/mqtt/),
 [Beam overview](https://developers.soracom.io/en/docs/beam/),
 [Funk overview](https://developers.soracom.io/en/docs/funk/),
+[Funk configuration](https://developers.soracom.io/en/docs/funk/configuration/),
 [Beam UDP→HTTPS entry point](https://developers.soracom.io/en/docs/beam/udp-http/),
 [Downlink API](https://developers.soracom.io/en/docs/air/downlink-api/),
 [Remote Command UDP usage](https://developers.soracom.io/en/docs/remote-command/udp-usage/),
