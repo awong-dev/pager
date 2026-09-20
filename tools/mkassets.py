@@ -19,6 +19,22 @@ font data itself. See the docstring in the repo's F6.1 task notes for which
 files were used to exercise this script in an offline sandbox (a real Noto
 Sans + Noto Sans CJK pair, found already installed on the build host).
 
+Variable fonts and the baseline (added 2026-09-20 while trying Literata as
+the text face; it was flashed to a real panel and **rejected — Noto Sans stays**,
+so do not repeat the experiment without a new reason):
+  * --sans-axes "opsz=7,wght=500" sets variable-font design coordinates on
+    the text face. It mattered for Literata: at its default optical size the
+    space is 2 px wide at 12 px and words run together; the smallest optical
+    size opens it to Noto's 3 px, and weight 500 survives 1-bit hinting
+    better than 400. No effect on a static font such as Noto Sans.
+  * --baseline "12=13,16=18" pins the per-size baseline. By default it is
+    the text face's own ascender, and it positions every glyph, CJK
+    included. Noto Sans gives 13/18 px at 12/16; Literata gives 15/19, which
+    dropped all text 1-2 px onto the rules under each row. Pin it whenever
+    the text face changes so the UI's rows do not move.
+Both options are off by default, so a plain Noto build is byte-for-byte what
+it was before they existed.
+
 CJK repertoire note (docs/DEVICE_PLAN.md §5.2 names four legacy standards —
 GB2312, Big5, JIS X 0208, KS X 1001 — as the exact repertoire per language).
 This script does NOT embed those legacy code tables (not available in this
@@ -182,12 +198,33 @@ def _render_glyph(face, size_px, cp):
     }
 
 
-def _build_size_block(size_px, entries, sans_face, cjk_face):
+def _apply_axes(face, axes):
+    """Set variable-font design coordinates from {"opsz": 7, "wght": 500}.
+    Axes not named keep the font's default. No-op for a static font."""
+    if not axes:
+        return
+    info = face.get_variation_info()
+    tags = {"OpticalSize": "opsz", "Weight": "wght", "Width": "wdth", "Italic": "ital",
+            "Slant": "slnt"}
+    coords = []
+    for axis in info.axes:
+        tag = tags.get(axis.name, axis.name)
+        value = axes.get(tag, axis.default)
+        coords.append(max(axis.minimum, min(axis.maximum, value)))
+    face.set_var_design_coords(coords)
+
+
+def _build_size_block(size_px, entries, sans_face, cjk_face, baseline_override=None):
     """entries: sorted [(codepoint, font), ...]. Returns the block's bytes
     (sub-header + codepoint table + record table + bitmap blob), per
     gfx.h's format doc."""
     sans_face.set_pixel_sizes(0, size_px)
-    baseline = round(sans_face.size.ascender / 64)
+    # The baseline places every glyph in its row, CJK included. It defaults
+    # to the text face's ascender, which differs per font (Noto Sans: 13/18 px
+    # at 12/16; Literata: 15/19), so swapping fonts would silently move all
+    # text down the screen. --baseline pins it to what the UI was laid out for.
+    baseline = baseline_override if baseline_override is not None else round(
+        sans_face.size.ascender / 64)
     baseline = max(0, min(255, baseline))
 
     codepoints_bytes = bytearray()
@@ -217,8 +254,9 @@ def _build_size_block(size_px, entries, sans_face, cjk_face):
     return bytes(sub_header) + bytes(codepoints_bytes) + bytes(records_bytes) + bytes(bitmap_blob)
 
 
-def build_assets(lang, sans_font, cjk_font, cjk_face_index):
+def build_assets(lang, sans_font, cjk_font, cjk_face_index, sans_axes=None, baselines=None):
     sans_face = freetype.Face(str(sans_font))
+    _apply_axes(sans_face, sans_axes)
     cjk_face = _open_cjk_face(cjk_font, lang, cjk_face_index)
 
     entries = _collect_codepoints(lang, sans_face, cjk_face)
@@ -230,7 +268,11 @@ def build_assets(lang, sans_font, cjk_font, cjk_face_index):
         file=sys.stderr,
     )
 
-    blocks = [_build_size_block(size_px, entries, sans_face, cjk_face) for size_px in SIZES]
+    blocks = [
+        _build_size_block(size_px, entries, sans_face, cjk_face,
+                          (baselines or {}).get(size_px))
+        for size_px in SIZES
+    ]
 
     header_len = 16
     total = header_len + sum(len(b) for b in blocks)
@@ -251,9 +293,20 @@ def main():
     ap.add_argument("--cjk-face-index", type=int, default=None,
                      help="face index within --cjk-font; default auto-selects by --lang "
                           "(see _open_cjk_face)")
+    ap.add_argument("--sans-axes", default="",
+                     help='variable-font axes for --sans-font, e.g. "opsz=7,wght=500"')
+    ap.add_argument("--baseline", default="",
+                     help='baseline in px per size, e.g. "12=13,16=18" (default: the text '
+                          "face's own ascender). Pin it when changing fonts so the UI's rows "
+                          "do not move.")
     args = ap.parse_args()
 
-    data = build_assets(args.lang, Path(args.sans_font), Path(args.cjk_font), args.cjk_face_index)
+    axes = {k.strip(): float(v) for k, v in
+            (kv.split("=") for kv in args.sans_axes.split(",") if kv.strip())}
+    baselines = {int(k): int(v) for k, v in
+                 (kv.split("=") for kv in args.baseline.split(",") if kv.strip())}
+    data = build_assets(args.lang, Path(args.sans_font), Path(args.cjk_font), args.cjk_face_index,
+                        axes, baselines)
 
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
