@@ -86,11 +86,22 @@ def resolve_ts(ts: int) -> int:
     return ts if ts != 0 else int(time.time())
 
 
+#: docs/V02_DESIGN.md §3 / docs/PROTOCOL.md §3.1, §14.2 (v0.2): `n` widens
+#: from a 32-bit counter to a 52-bit one (`epoch` grows from 12 to 32 bits;
+#: `lo` stays 20 bits) so a 12-bit epoch's ~4096-cold-boot lifetime cannot be
+#: exhausted. `2**53` (not `2**52`) is the exact bound the design gives --
+#: "n becomes a 52-bit unsigned integer (< 2^53, exact in JSON and in a
+#: Firestore int64)" -- one bit of headroom above the tightest packing, kept
+#: because that is the number every other document (PROTOCOL.md §3.1's `n`
+#: row, §7's keymap table) states directly.
+N_MAX_EXCLUSIVE = 2**53
+
+
 def _check_n_range(value: int | None) -> int | None:
-    """§14.2: `n` is a 32-bit unsigned counter, on every signed envelope
-    (`/up`, `/status`, `/loc`). Shared by the three envelope models below
-    that carry it."""
-    if value is not None and not (0 <= value < 2**32):
+    """§14.2: `n` is a replay counter, on every signed envelope (`/up`,
+    `/status`, `/loc`). Shared by the three envelope models below that carry
+    it."""
+    if value is not None and not (0 <= value < N_MAX_EXCLUSIVE):
         raise ValueError("n out of range")
     return value
 
@@ -198,15 +209,45 @@ class StatusEnvelope(BaseModel):
     # location duty cycle).
     loc_period_s: int | None = None
     loc_min_s: int | None = None
+    # docs/V02_DESIGN.md §4.3/§7 (CA trust, optional, absent = older
+    # firmware): trust state and the first 16 hex chars of the pinned CA's
+    # SHA-256, per `CA_TRUST_PLAN.md` §3.3.
+    tls: Literal["unpinned", "pinned", "broken"] | None = None
+    ca_fp: str | None = None
+    # docs/V02_DESIGN.md §5 (location, optional): seconds until the device's
+    # own backoff next allows an attempt, 0 = now. Generous upper bound
+    # (matches loc_period_s/loc_min_s's own 86400 rather than the design's
+    # 12 h/43200s ceiling) so a future retune of the backoff schedule is not
+    # a relay-side rejection.
+    loc_backoff_s: int | None = None
+    # docs/V02_DESIGN.md §6/§7 (device SMS, optional): count of sms_log
+    # audit entries dropped for lack of NVS queue space, normally 0. Modelled
+    # here (not left to `extra="ignore"`) because the ground rule (§0) is
+    # explicit that a relay must accept this *before* any firmware sends it.
+    sms_lost: int | None = None
     # §14.2: present on every signed envelope; absent on the unsigned LWT
     # exception (§14.6) and on an unsigned (`authMode: "password"`) device.
     n: int | None = None
 
-    @field_validator("loc_period_s", "loc_min_s")
+    @field_validator("loc_period_s", "loc_min_s", "loc_backoff_s")
     @classmethod
     def _check_loc_timing(cls, value: int | None) -> int | None:
         if value is not None and not (0 <= value <= 86400):
-            raise ValueError("loc_period_s/loc_min_s out of range")
+            raise ValueError("loc_period_s/loc_min_s/loc_backoff_s out of range")
+        return value
+
+    @field_validator("ca_fp")
+    @classmethod
+    def _check_ca_fp(cls, value: str | None) -> str | None:
+        if value is not None and not re.fullmatch(r"[0-9a-f]{16}", value):
+            raise ValueError("ca_fp must be 16 lowercase hex chars")
+        return value
+
+    @field_validator("sms_lost")
+    @classmethod
+    def _check_sms_lost(cls, value: int | None) -> int | None:
+        if value is not None and value < 0:
+            raise ValueError("sms_lost must be >= 0")
         return value
 
     @field_validator("n")
@@ -351,9 +392,13 @@ def decode_envelope_bytes(raw: bytes) -> tuple[dict[str, Any], EnvelopeEncoding]
         try:
             data = wirecbor.decode(raw)
         except Exception:  # noqa: BLE001 -- cbor2 raises several distinct
-            # exception types (and this module's own translate_to_names can
-            # KeyError on a key outside KEYMAP) on malformed input; all of
-            # them mean "malformed" here, same as JSONDecodeError below.
+            # exception types on malformed input (truncated maps, bad
+            # additional-info bytes, etc.); all of them mean "malformed"
+            # here, same as JSONDecodeError below. An *unknown* integer key
+            # is not one of these any more -- wirecbor.translate_to_names
+            # drops it rather than raising, per §3.1's "unknown fields MUST
+            # be ignored" (a newer device's new field must not make this
+            # decode -- and therefore the whole envelope -- fail).
             return None
         if not isinstance(data, dict):
             return None

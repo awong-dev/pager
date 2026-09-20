@@ -111,7 +111,7 @@ class ContactReqEnvelope(BaseModel):
     @field_validator("n")
     @classmethod
     def _check_n(cls, value: int | None) -> int | None:
-        if value is not None and not (0 <= value < 2**32):
+        if value is not None and not (0 <= value < wire.N_MAX_EXCLUSIVE):
             raise ValueError("n out of range")
         return value
 
@@ -536,7 +536,18 @@ class Ingest:
             fw=env.fw,
             locPeriodS=env.loc_period_s,
             locMinS=env.loc_min_s,
+            tls=env.tls,
+            caFp=env.ca_fp,
+            locBackoffS=env.loc_backoff_s,
+            smsLost=env.sms_lost,
         )
+
+        # docs/V02_DESIGN.md §4.3 / CA_TRUST_PLAN.md §3.3: "on a transition
+        # into `broken`, log a security event." `previous_status.tls` is
+        # `None` for a device that predates this field or has never
+        # reported it, which is correctly *not* "broken" already.
+        if env.tls == "broken" and previous_status.tls != "broken":
+            logger.error("SECURITY tls-broken device=%s", device_id)
 
         if env.state != "online":
             # §5.3: bare offline (retained or LWT) -> mark offline, no

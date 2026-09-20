@@ -27,6 +27,13 @@ broker_host = "<your-deployment>.emqxsl.com"
 # Leave unset to pin nothing (validation off). For EMQX Cloud Serverless:
 # broker_ca_pem_file = "certs/digicert-global-root-g2.pem"
 
+# This deployment's own public HTTPS origin (docs/V02_DESIGN.md §4.4) --
+# needed once a CA is pinned above, so the bootstrap bundle's CA pointer
+# (`GET /ca/{sha256hex}.pem`) resolves to something real. Cloud Run's own
+# URL is only known after the first apply (a cyclic reference otherwise),
+# so this is set by hand, e.g.:
+# public_base_url = "https://pager-relay-xxxxxxxxxx-uw.a.run.app"
+
 # Optional overrides (defaults shown):
 # firestore_location     = "nam5"
 # custom_domain          = ""

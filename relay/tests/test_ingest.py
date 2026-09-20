@@ -501,3 +501,89 @@ def test_unsigned_lwt_status_is_accepted_from_hmac_device():
     assert device.status.state == "offline"
     assert device.status.authAlarm is not True
     assert device_secrets_store.get("pgr-hmac-lwt").sigFailures == 0
+
+
+# ---- docs/V02_DESIGN.md §3/§4.3/§5/§7: widened n, CA trust status fields ----
+
+
+def test_status_persists_tls_ca_fp_loc_backoff_s_sms_lost():
+    _make_user("catrustuser", "catrustuser")
+    _make_pager_device("pgr-catrust-1", "catrustuser")
+    ingest, _broker = _ingest()
+
+    ingest.handle_status(
+        status_topic("pgr-catrust-1"),
+        online_status_payload(
+            "s_00000001", tls="pinned", ca_fp="0123456789abcdef", loc_backoff_s=40, sms_lost=1
+        ),
+    )
+
+    status = devices_store.get_device("pgr-catrust-1").status
+    assert status.tls == "pinned"
+    assert status.caFp == "0123456789abcdef"
+    assert status.locBackoffS == 40
+    assert status.smsLost == 1
+
+
+def test_status_logs_security_event_on_transition_into_broken(caplog):
+    _make_user("catrustuser2", "catrustuser2")
+    _make_pager_device("pgr-catrust-2", "catrustuser2")
+    ingest, _broker = _ingest()
+
+    ingest.handle_status(
+        status_topic("pgr-catrust-2"), online_status_payload("s_00000001", tls="pinned")
+    )
+    with caplog.at_level("ERROR", logger="relay.ingest"):
+        ingest.handle_status(
+            status_topic("pgr-catrust-2"), online_status_payload("s_00000002", tls="broken")
+        )
+    assert any(
+        "SECURITY tls-broken device=pgr-catrust-2" in rec.message for rec in caplog.records
+    )
+    assert devices_store.get_device("pgr-catrust-2").status.tls == "broken"
+
+
+def test_status_does_not_re_log_while_already_broken(caplog):
+    _make_user("catrustuser3", "catrustuser3")
+    _make_pager_device("pgr-catrust-3", "catrustuser3")
+    ingest, _broker = _ingest()
+
+    ingest.handle_status(
+        status_topic("pgr-catrust-3"), online_status_payload("s_00000001", tls="broken")
+    )
+    with caplog.at_level("ERROR", logger="relay.ingest"):
+        caplog.clear()
+        ingest.handle_status(
+            status_topic("pgr-catrust-3"), online_status_payload("s_00000002", tls="broken")
+        )
+    assert not any("SECURITY tls-broken" in rec.message for rec in caplog.records)
+
+
+def test_status_accepts_n_well_above_the_old_32_bit_ceiling():
+    """docs/V02_DESIGN.md §3: `n = (epoch << 20) | lo` with a 32-bit epoch --
+    a real device's `n` can legitimately exceed 2**32 now (e.g. after 4096+
+    cold boots, exactly the point the old 12-bit epoch would have died)."""
+    key = _make_hmac_pager_device("pgr-bign", "bignuser")
+    _make_user("bignuser", "bignuser")
+    ingest, _broker = _ingest()
+    status_t = status_topic("pgr-bign")
+
+    n_big = (4096 << 20) | 1  # epoch=4096 alone already exceeds a 12-bit epoch
+    assert n_big >= 2**32
+    payload = devauth.sign_json(
+        key,
+        status_t,
+        {
+            "v": 1,
+            "state": "online",
+            "mode": "sleep",
+            "batt_mv": 3300,
+            "rssi": -90,
+            "session": "s_00000001",
+            "ts": 1_700_000_000,
+            "n": n_big,
+        },
+    )
+    ingest.handle_status(status_t, payload)
+    assert devices_store.get_device("pgr-bign").status.state == "online"
+    assert device_secrets_store.get("pgr-bign").upN == n_big

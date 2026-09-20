@@ -145,7 +145,8 @@ jobs:
             -var "github_repo=${{ github.event.repository.name }}" \
             -var "broker_api_url=${{ vars.BROKER_API_URL }}" \
             -var "broker_host=${{ vars.BROKER_HOST }}" \
-            -var "broker_ca_pem_file=${{ vars.BROKER_CA_PEM_FILE }}"
+            -var "broker_ca_pem_file=${{ vars.BROKER_CA_PEM_FILE }}" \
+            -var "public_base_url=${{ vars.PUBLIC_BASE_URL }}"
         # Every other variable (custom_domain, enable_sms_secrets, time_zone,
         # use_broker_gce, ...) is left at infra/envs/prod/variables.tf's
         # defaults unless also passed as a repo variable above -- add

@@ -129,7 +129,7 @@ Base envelope:
 | `ack` | string \| null | yes; `null` on content messages | `shown` \| `read` | Ack state being reported. |
 | `kind` | string | no (default `msg`) | `msg` \| `loc_req` \| `contact_req` \| `book` \| `cfg`; `/down`: `msg`/`loc_req`/`book`/`cfg`; `/up`: `msg`/`contact_req` | What the message *is* (§3.2). Absent MUST be read as `msg`. |
 | `to` | string | no; `/up` content messages only | same regex as `from` | Recipient alias chosen by the device. Absent → the relay uses the device's configured default recipient, or broadcasts to every user the owner may message. *(the device can address one of several users; optional, so a device that never sets it works unchanged.)* |
-| `n` | uint32 | no; signed envelopes only | 0…2³²-1 | Per-device, per-direction replay counter (§2.4, §2.5). Strictly increasing per publisher. |
+| `n` | uint | no; signed envelopes only | 0…2⁵³-1 *(v0.2: widened from a 32-bit counter; see rationale)* | Per-device, per-direction replay counter (§2.4, §2.5, §14.2). Strictly increasing per publisher. |
 | `sig` | bstr(8) in CBOR / base64url(8) in JSON | no; signed envelopes only | — | HMAC-SHA256 tag, truncated to 64 bits, MUST be the last pair (§2.4). |
 | `bv` | int | `/status` only | 0…2³²-1 | Book version (§4.3, §5.1). |
 | `name` | string | `contact_req` only | ≤16 code points, ≤48 UTF-8 bytes | Contact display name (§4.2). |
@@ -268,13 +268,13 @@ sums each field's independent maximum, and several of those maxima are mutually 
 
 **JSON, signed (with `n` and `sig`):**
 ```
-"n":4294967295, 13
+"n":9007199254740991, 19  (v0.2: n's max grew from 2^32-1 (10 digits) to 2^53-1 (16 digits), +6 B)
 "sig":"<44 base64url>", 50
   ----
-  473 down msg, signed
+  479 down msg, signed
   
   ----
-  449 up msg without to, signed
+  455 up msg without to, signed
 ```
 
 **CBOR, signed (with `n` and `sig`):**
@@ -283,7 +283,9 @@ sums each field's independent maximum, and several of those maxima are mutually 
 
 **Achievable figures:** The largest payload that can actually exist is ≈438 bytes (JSON, unsigned):
 a `/up` content message with `id`, `from` and `to` all 16 characters and `body` at its cap. With
-signing added, a signed JSON down message or book reaches ≈473 bytes; signed CBOR is ≈395 bytes.
+signing added, a signed JSON down message or book reaches ≈479 bytes (v0.2: +6 B over v0.1's
+≈473, from `n`'s wider maximum); signed CBOR is ≈395 bytes (CBOR encodes `n` at minimal length, so
+it does not grow until an epoch value actually needs more bytes, §14.2).
 A maximal `/down` `loc_req` is 101 bytes (78 in §3.2's example). §13's `/loc` envelope is ≤ ~200
 bytes. Real headroom against the 640-byte limit is **≥ 166 bytes** for the largest payloads, and
 typical shapes have over 300 bytes.
@@ -444,12 +446,22 @@ broker-generated LWT.
 | `bv` | int | no | 0…2³²-1 | Book version (§4.3). Reported so the relay can detect a factory reset or a lost book message and re-publish. |
 | `loc_period_s` | int | no | 0…86400 | The periodic `/loc` interval **the device has chosen** (§13); `0` = periodic location off. |
 | `loc_min_s` | int | no | 0…86400 | The device's own minimum gap between on-demand fixes (§13.3); default 120. |
+| `tls` | string | no | `unpinned` \| `pinned` \| `broken` | *(v0.2, `CA_TRUST_PLAN.md` §3.1)* CA trust state: `unpinned` (no CA in the identity, validation off, by choice, not a fault), `pinned` (CA set, last connect validated), `broken` (CA set, last validated connect failed, running with validation off as a reachability fallback — §13.3's "pages still arrive" rule applies here too). Absent means firmware older than v0.2. |
+| `ca_fp` | string | no | 16 lowercase hex chars | *(v0.2)* First 16 hex characters of the SHA-256 of the pinned CA PEM (the same digest carried in the bootstrap bundle's `ca_sha`/a `cfg.ca.sha` push, §4.4). Absent when `tls` is `unpinned` or absent. |
+| `loc_backoff_s` | int | no | 0…86400 | *(v0.2, §13.3)* Seconds until the device's own growing location-attempt backoff next allows a fresh fix attempt; `0` = an attempt is allowed now. See §13.3's amendment for how this relates to `loc_min_s`. |
+| `sms_lost` | int | no | ≥ 0 | *(v0.2, out of scope until device SMS ships, §6/§7.3 — accepted now per the ground rule that a relay must take a new optional field before any firmware sends it)* Count of `sms_log` audit entries dropped from the device's NVS queue for lack of space; normally 0. |
 
-*(both fields are **display and diagnosis only**; the relay stores the reported
+*(all six fields above are **display and diagnosis only**; the relay stores the reported
 values and never writes them back. The device owns its location duty cycle because the cost being
 traded is GNSS power on its battery (§12 item 8), which the server cannot see. Making these
 server-settable would need a `/cfg` topic, which §11 still only reserves.)* They are optional, so
 a `/status` without them remains valid, and a relay MUST treat their absence as "unknown", not as `0`.
+**Compatibility (§0):** every field in this table added since the first release — these five
+included — is optional, and an *older* relay MUST NOT reject a `/status` merely because it carries
+a field the relay predates (§3.1's "unknown fields MUST be ignored" already covers this; called out
+again here because it is the exact case v0.2 shipped the relay's own acceptance of these fields
+ahead of any firmware sending them, per the "add the relay's acceptance ... before any firmware
+that sends them is flashed" rule).
 
 ### 5.2 LWT payload (48 bytes)
 
@@ -1156,11 +1168,18 @@ Devices emit CBOR (§3) with this integer keymap. The relay accepts both JSON (t
 | 31 | `k` | bstr(32) | bootstrap bundle (device HMAC key) |
 | 32 | `host` | tstr | bootstrap bundle (broker hostname) |
 | 33 | `port` | int | bootstrap bundle (broker port) |
-| 34 | `ca` | tstr | bootstrap bundle (CA PEM) |
+| 34 | `ca` | tstr | bootstrap bundle (CA PEM) — **v0.1-era, legacy.** A relay MUST still decode this key if it appears (an old retained bundle, or a bundle from before a device's firmware/relay pair upgraded), but a v0.2 relay MUST NOT emit it: `ca_url`+`ca_sha` (40/41 below) replace it (§4.4). |
 | 35 | `flags` | int | bootstrap bundle (device flags) |
 | 36 | `label` | tstr | bootstrap bundle (device label) |
 | 37 | `apn` | tstr | bootstrap bundle (carrier APN, optional) |
 | 38 | `cfg` | map | `/down` `cfg` (device settings) |
+| 39 | `tls` | tstr | `/status` (v0.2, CA trust state — §5.1) |
+| 40 | `ca_url` | tstr | bootstrap bundle (v0.2, CA pointer URL — §4.4) |
+| 41 | `ca_sha` | bstr(32) | bootstrap bundle (v0.2, CA pointer SHA-256 — §4.4) |
+| 42 | `ca_fp` | tstr(16) | `/status` (v0.2, CA fingerprint — §5.1) |
+| 43 | `loc_backoff_s` | int | `/status` (v0.2, location backoff — §5.1, §13.3) |
+| 44-47 | *(reserved)* | — | Allocated by `V02_DESIGN.md` §7 to device SMS (`sms_log`'s `peer`/`dir`/`st`/`sms_ts`), a later task's own scope — not defined here yet; do not reuse these numbers for anything else. |
+| 48 | `sms_lost` | int | `/status` (v0.2, device SMS audit-drop counter — accepted here per §0's forward-compatibility rule even though `sms_log` itself is not yet specified in this document) |
 
 **Sub-map keys:**
 
@@ -1170,7 +1189,20 @@ Devices emit CBOR (§3) with this integer keymap. The relay accepts both JSON (t
 
 `p[]` pending request object (inside `/down` `book`): `n=0` (name), `s=1` (status pend/no).
 
+`cfg` object (inside `/down` `cfg`, key 38 above): `lock=0` (map, existing — see below), `ca=1`
+(map, v0.2 — §4.4: `{url=0 tstr, sha=1 bstr(32)}`; `sha` absent on an un-pin push, `url=""`).
+`sms=2` is reserved by `V02_DESIGN.md` §7 for a later task's device-SMS contact list; not defined
+here yet.
+
 `lock` map (inside `/down` `cfg.lock`): `clear=0` (bool), `auto=1` (int minutes).
+
+`ca` map (inside `/down` `cfg.ca`, v0.2, §4.4): `url=0` (tstr; `""` means un-pin), `sha=1`
+(bstr(32), the CA PEM's SHA-256 — same digest as the bootstrap bundle's `ca_sha`; absent when
+`url` is `""`).
+
+**JSON note (§3, §14.3):** the CBOR sub-map keys above are integers; in JSON the same *names* are
+used (`{"lock":{...}}`, `{"ca":{"url":...,"sha":...}}`), and, exactly like `sig`, a `bstr`-typed
+field (`ca_sha`/`cfg.ca.sha`) is base64url text without padding in JSON, raw bytes in CBOR.
 
 ---
 
@@ -1407,7 +1439,15 @@ device and the server disagree about is a limit that produces phantom `expired` 
 1. A `loc_req` arriving **less than `loc_min_s`** (default **120 s**) after the last fix *attempt*
   is answered **immediately** from the last fix, with `cached:true`, **without powering GNSS**.
   The window runs from the last *attempt*, not the last success, so a device in a basement cannot
-  be made to retry continuously by a user pressing a button.
+  be made to retry continuously by a user pressing a button. **Amended, v0.2 (`V02_DESIGN.md`
+  §5):** a device may replace this fixed `loc_min_s` window with a **growing backoff** instead —
+  5 minutes after the first failed attempt, doubling on every further failure, capped at 12 hours,
+  and reset to zero by a successful fix. This is *stricter* than the fixed `loc_min_s` window (it
+  only ever waits as long or longer), so it remains conformant with the rule above; a device
+  choosing it reports the seconds until its next allowed attempt in `/status`'s `loc_backoff_s`
+  (§5.1) so the relay and web app do not show a phantom "expired" while the device is deliberately
+  quiet. `loc_min_s` keeps its old meaning (the floor a fixed-window device enforces, or the
+  backoff-scheme device's minimum step) either way.
 2. Otherwise the device attempts a fix, **bounded by 60 s**, and then answers: the fix if it got
   one, otherwise `loc:null, err:"no_fix"`. The device always answers a `loc_req` it accepted;
   silence is reserved for firmware that does not implement `kind` at all (§3.2).
@@ -1415,7 +1455,8 @@ device and the server disagree about is a limit that produces phantom `expired` 
   start another one; it is answered by the same result, as a separate `/loc` publish with its own
   `req`.
 4. `loc_min_s` and the periodic interval `loc_period_s` are reported in `/status` (§5.1) for
-  display. They are the **device's** choices — see §12 item 8 for why.
+  display. They are the **device's** choices — see §12 item 8 for why. `loc_backoff_s` (§5.1,
+  v0.2) is reported the same way, for a device using item 1's growing-backoff amendment.
 
 **The relay mirrors this limit; it does not merely trust it.**
 
@@ -1478,27 +1519,59 @@ signature and the replay window before parsing and storing the message.
 
 ### 14.2 Per-device, per-direction counter (`n`)
 
-The counter is 32 bits, split as `n = (epoch << 20) | lo`. It is strictly increasing per publisher
-and is verified with a sliding window to absorb the jump when the epoch increments.
+`n = (epoch << 20) | lo`. **v0.2 (`V02_DESIGN.md` §3): `epoch` widened from 12 to 32 bits, `lo`
+stays 20 bits, so `n` is a 52-bit unsigned integer** (exact in JSON and in a Firestore int64;
+§3.1's range is `0…2⁵³-1`, one bit of headroom above the tightest packing). It is strictly
+increasing per publisher and is verified with a sliding window to absorb the jump when the epoch
+increments. CBOR encodes `n` at minimal length, so nothing on the wire grows until the epoch passes
+4095 — the same point at which the old 12-bit epoch would have wrapped and died. *(Why: TLS covers
+only pager↔broker, and only when the server is authenticated, which §4.4 makes optional with a
+deliberate fallback to no validation on a trust break — so TLS cannot be the sole replay defence;
+the counter is what stops a third-party broker, or an on-path attacker during that fallback,
+replaying an old signed `/down`. A 12-bit epoch's guaranteed exhaustion after 4096 cold boots — a
+realistic lifetime for a device with a flaky battery — was the failure mode that forced the
+widening; a 32-bit epoch is effectively unbounded for this project's purposes.)*
 
 **Device side, `/up`, `/status`, `/loc`:**
 - `lo` (low 20 bits) lives in RTC memory (§9.3 `auth.up_lo`) and increments per publish (free).
-- `epoch` (high 12 bits) lives in NVS and increments only on cold boot or when `lo` wraps. 12 bits
-  of epoch = 4096 cold boots; 20 bits of `lo` = 1 M envelopes per epoch. The relay's window (below)
-  absorbs the jump at each cold boot.
+- `epoch` (now 32 bits, up from 12) lives in NVS and increments only on cold boot or when `lo`
+  wraps. `n` itself is `uint64_t` end to end on the up path (signing, CBOR writer); only the NVS
+  `epoch` field and the wire encoding change from v0.1. 20 bits of `lo` = 1 M envelopes per epoch.
+  The relay's window (below) absorbs the jump at each cold boot regardless of epoch width.
+- **Migration:** a device upgrading from v0.1 reads its old 12-bit-epoch NVS value once (a
+  distinct, narrower key), then keeps the epoch going forward in a new, wider key — the two never
+  share storage, so a half-migrated value can never be misread as either width.
 
 **Device side, `/down`:**
 - Device maintains `down_n` (highest accepted `n`) and a 64-bit bitmap of the 64 values below it in
-  RTC (§9.3). A `/down` failing signature or window verification is treated as malformed (§3.4): count
-  the error, log it, do **not** render, **do not ack**. The relay then sees the message stay `sent`.
+  RTC (§9.3). This path may stay `uint32_t` internally (the relay's own `downN` counts by one from
+  zero and has no epoch/lo split to begin with — see below), but MUST *parse* a `uint64_t` `n`
+  without rejecting it, since the relay signs with the same widened field. A `/down` failing
+  signature or window verification is treated as malformed (§3.4): count the error, log it, do
+  **not** render, **do not ack**. The relay then sees the message stay `sent`.
 
 **Relay side, per device (in `deviceSecrets/{d}`):**
 - `upN` (highest accepted `n` for device-originated messages), `upBits` (64-bit bitmap of values
-  below it).
+  below it). Both are plain integers with no epoch/lo split of their own — the split is a
+  device-side NVS/RTC storage detail (how a device budgets its own limited non-volatile bits), not
+  a wire or server-side concept; the relay only ever compares whole `n` values. Firestore stores
+  `upN` as an int64, which holds every value up to `2⁵³-1` exactly, same as JSON.
 - Accept an inbound `n` if `n > upN` (shift the window) or `upN − 64 < n ≤ upN` and its bit is clear;
-  otherwise drop as a replay and log a security event.
+  otherwise drop as a replay and log a security event. This arithmetic is unchanged by the width
+  increase — `n` growing from 32 to 52 significant bits changes only which absolute values appear,
+  never the comparison.
 - The update is part of the same Firestore transaction that deduplicates by message `id`, so this adds
   no round trip.
+- `downN` (§14.5, the relay's own per-device `/down` counter) is unaffected by any of the above: it
+  counts by one from zero and is nowhere near either bound in practice, so it stays a plain
+  incrementing integer with no epoch/lo split — the width increase exists for the *device's* counter,
+  which is the one that has to survive thousands of cold boots on a coin-cell-scale clock, not the
+  relay's.
+
+**Still parked:** a signed resync handshake for the case where a device's NVS (and therefore its
+whole identity, not just this counter) is lost outright — with a 32-bit epoch this is now only
+needed if NVS itself is gone, at which point re-provisioning is required anyway (`DEVICE_PLAN.md`
+§2.5).
 
 ### 14.3 Signature (`sig`)
 

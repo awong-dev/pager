@@ -183,7 +183,13 @@ class BrokerClient:
         elif wire_encoding == "cbor":
             payload = wirecbor.encode(obj)
         else:
-            payload = json.dumps(obj, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+            # wirecbor.to_json_safe: see app/devauth.py's sign_json docstring
+            # -- an unsigned `cfg.ca` push (a `password`-mode device) still
+            # needs its raw-bytes `sha` turned into base64url text before
+            # `json.dumps`.
+            payload = json.dumps(
+                wirecbor.to_json_safe(obj), separators=(",", ":"), ensure_ascii=False
+            ).encode("utf-8")
         return self.publish(topic, payload, qos=1, retain=False)
 
     def healthcheck(self) -> bool:

@@ -59,6 +59,17 @@ class Settings:
     # lookup; if that also fails, bundles carry no `ca` (the device reports
     # "broker certificate not trusted").
     broker_ca_pem: str | None = None
+    # docs/V02_DESIGN.md §4.4: the relay's own public base URL, used to build
+    # the content-addressed `GET /ca/{sha256hex}.pem` pointer a bootstrap
+    # bundle or a `cfg.ca` push hands a device (`https://<this>/ca/<sha>.pem`).
+    # Cloud Run v2 cannot reference a service's own URL from inside its own
+    # `terraform apply` (a genuine cyclic reference), so this is a plain env
+    # var/Terraform variable (`infra/modules/relay-service`), not something
+    # derived at runtime. Empty means "no public URL configured" -- when a CA
+    # *is* configured, `app/devsetup.py`/the CA-push admin route refuse to
+    # issue a setup code/push rather than silently sending an unpinned
+    # bundle (docs/V02_DESIGN.md §4.4's "refuse ... with a clear error").
+    public_base_url: str | None = None
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -80,4 +91,5 @@ class Settings:
             firebase_auth_emulator_host=os.environ.get("FIREBASE_AUTH_EMULATOR_HOST") or None,
             broker_host=os.environ.get("BROKER_HOST", "localhost"),
             broker_ca_pem=os.environ.get("BROKER_CA_PEM") or None,
+            public_base_url=(os.environ.get("PUBLIC_BASE_URL") or "").rstrip("/") or None,
         )

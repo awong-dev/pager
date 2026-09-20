@@ -142,6 +142,16 @@ resource "google_cloud_run_v2_service" "relay" {
           value = env.value
         }
       }
+      # docs/V02_DESIGN.md §4.4: only set when actually configured, same
+      # "absent means unconfigured" shape as BROKER_CA_PEM above -- an empty
+      # PUBLIC_BASE_URL and an unset one mean the same thing to the relay.
+      dynamic "env" {
+        for_each = var.public_base_url == "" ? [] : [var.public_base_url]
+        content {
+          name  = "PUBLIC_BASE_URL"
+          value = env.value
+        }
+      }
       env {
         name  = "TASKS_MODE"
         value = var.tasks_mode

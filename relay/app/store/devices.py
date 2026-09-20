@@ -36,6 +36,15 @@ class DeviceStatus(BaseModel):
     fw: str | None = None
     locPeriodS: int | None = None
     locMinS: int | None = None
+    # docs/V02_DESIGN.md §4.3/§7 (CA trust): trust state and the pinned CA's
+    # short fingerprint, per `CA_TRUST_PLAN.md` §3.3 ("Relay: persist both on
+    # devices/{id}").
+    tls: Literal["unpinned", "pinned", "broken"] | None = None
+    caFp: str | None = None
+    # docs/V02_DESIGN.md §5 (location): the device's own reported backoff.
+    locBackoffS: int | None = None
+    # docs/V02_DESIGN.md §6/§7 (device SMS): audit-queue drop counter.
+    smsLost: int | None = None
     updatedAt: datetime | None = None
     # docs/DEVICE_PLAN.md §2.6: set once `sigFailures` crosses
     # AUTH_ALARM_THRESHOLD inside AUTH_ALARM_WINDOW_S; cleared on key

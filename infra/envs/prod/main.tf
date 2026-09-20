@@ -66,9 +66,10 @@ module "relay_service" {
   service_name = var.relay_service_name
   image        = var.relay_image
 
-  broker_api_url = var.broker_api_url
-  broker_host    = var.broker_host
-  broker_ca_pem  = var.broker_ca_pem_file == "" ? "" : file("${path.module}/${var.broker_ca_pem_file}")
+  broker_api_url   = var.broker_api_url
+  broker_host      = var.broker_host
+  broker_ca_pem    = var.broker_ca_pem_file == "" ? "" : file("${path.module}/${var.broker_ca_pem_file}")
+  public_base_url  = var.public_base_url
 
   broker_api_key_secret_id    = module.secrets.secret_ids.broker_api_key
   broker_api_secret_secret_id = module.secrets.secret_ids.broker_api_secret

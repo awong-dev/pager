@@ -151,5 +151,39 @@
     },
     "json_signed_b64": "eyJ2IjoxLCJpZCI6InVfMmI3Y2Q5MzAiLCJ0cyI6MTc1NzcwMDUwMCwia2luZCI6ImNvbnRhY3RfcmVxIiwibmFtZSI6IkdyYW5kbWEiLCJwaCI6IisxNTU1MTIzNDU2NyIsImFjayI6bnVsbCwic2lnIjoiV0xwamVGV3E0MWsifQ==",
     "cbor_signed_b64": "qAABAWp1XzJiN2NkOTMwAhpoxGGUBmtjb250YWN0X3JlcQ9nR3JhbmRtYRBsKzE1NTUxMjM0NTY3BfYNSKXJFGg5gZCb"
+  },
+  {
+    "label": "status",
+    "key_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+    "topic": "pager/pgr-0001/status",
+    "obj": {
+      "v": 1,
+      "state": "online",
+      "mode": "sleep",
+      "batt_mv": 3300,
+      "rssi": -80,
+      "session": "s_deadbeef",
+      "ts": 1757700001,
+      "fw": "0.2.0",
+      "n": 4294967297
+    },
+    "json_signed_b64": "eyJ2IjoxLCJzdGF0ZSI6Im9ubGluZSIsIm1vZGUiOiJzbGVlcCIsImJhdHRfbXYiOjMzMDAsInJzc2kiOi04MCwic2Vzc2lvbiI6InNfZGVhZGJlZWYiLCJ0cyI6MTc1NzcwMDAwMSwiZnciOiIwLjIuMCIsIm4iOjQyOTQ5NjcyOTcsInNpZyI6IlZxU3lsRFR0WmdZIn0=",
+    "cbor_signed_b64": "qgABFWZvbmxpbmUWZXNsZWVwFxkM5BgYOE8YGWpzX2RlYWRiZWVmAhpoxF+hGBplMC4yLjAMGwAAAAEAAAABDUgtDG4LTpyqZg=="
+  },
+  {
+    "label": "loc",
+    "key_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+    "topic": "pager/pgr-0001/loc",
+    "obj": {
+      "v": 1,
+      "id": "l_9a8b7c6d",
+      "ts": 1757700000,
+      "loc": null,
+      "req": "m_7f3a2b10",
+      "err": "no_fix",
+      "n": 9007199254740991
+    },
+    "json_signed_b64": "eyJ2IjoxLCJpZCI6ImxfOWE4YjdjNmQiLCJ0cyI6MTc1NzcwMDAwMCwibG9jIjpudWxsLCJyZXEiOiJtXzdmM2EyYjEwIiwiZXJyIjoibm9fZml4IiwibiI6OTAwNzE5OTI1NDc0MDk5MSwic2lnIjoibWZxZWEyc0pDTWsifQ==",
+    "cbor_signed_b64": "qAABAWpsXzlhOGI3YzZkAhpoxF+gCPYJam1fN2YzYTJiMTALZm5vX2ZpeAwbAB////////8NSKjqSKOfCwBM"
   }
 ]

@@ -118,6 +118,110 @@ def test_status_invalid_session_format_is_malformed():
         StatusEnvelope.model_validate({"v": 1, "state": "offline", "session": "not-a-session"})
 
 
+# ---------------------------------------------------------------------------
+# docs/V02_DESIGN.md §3: `n` widens from a 32-bit to a 52-bit counter
+# (< 2**53). §14.2's `n = (epoch << 20) | lo` with a 32-bit epoch means a
+# real device can now report an `n` well above the old 2**32 ceiling.
+# ---------------------------------------------------------------------------
+
+
+def _online_status(**overrides: object) -> dict:
+    base = {
+        "v": 1,
+        "state": "online",
+        "mode": "sleep",
+        "batt_mv": 3280,
+        "rssi": -85,
+        "session": "s_aabbccdd",
+        "ts": 1_700_000_000,
+    }
+    base.update(overrides)
+    return base
+
+
+@pytest.mark.parametrize("n", [0, 2**32 - 1, 2**32, 2**32 + 1, 2**53 - 1])
+def test_n_up_to_2_53_minus_1_is_accepted_on_every_signed_kind(n):
+    assert UpEnvelope.model_validate(
+        {"v": 1, "id": "m_aaaaaaaa", "ts": 1_700_000_000, "ack": "shown", "n": n}
+    ).n == n
+    assert StatusEnvelope.model_validate(_online_status(n=n)).n == n
+    assert (
+        LocEnvelope.model_validate(
+            {
+                "v": 1,
+                "id": "l_aaaaaaaa",
+                "ts": 1_700_000_000,
+                "loc": None,
+                "req": None,
+                "err": "no_fix",
+                "n": n,
+            }
+        ).n
+        == n
+    )
+
+
+@pytest.mark.parametrize("n", [2**53, 2**53 + 1, -1])
+def test_n_at_or_above_2_53_or_negative_is_rejected(n):
+    with pytest.raises(ValidationError):
+        UpEnvelope.model_validate(
+            {"v": 1, "id": "m_aaaaaaaa", "ts": 1_700_000_000, "ack": "shown", "n": n}
+        )
+    with pytest.raises(ValidationError):
+        StatusEnvelope.model_validate(_online_status(n=n))
+
+
+# ---------------------------------------------------------------------------
+# docs/V02_DESIGN.md §4.3/§5/§7 -- new optional `/status` fields. Ground
+# rule §0: "unknown or new optional /status fields must never cause
+# rejection", and these four are the concrete new fields that must be
+# *accepted* (not merely ignored) before any firmware sends them.
+# ---------------------------------------------------------------------------
+
+
+def test_status_accepts_tls_ca_fp_loc_backoff_s_sms_lost():
+    env = StatusEnvelope.model_validate(
+        _online_status(tls="broken", ca_fp="0123456789abcdef", loc_backoff_s=320, sms_lost=2)
+    )
+    assert env.tls == "broken"
+    assert env.ca_fp == "0123456789abcdef"
+    assert env.loc_backoff_s == 320
+    assert env.sms_lost == 2
+
+
+def test_status_tls_ca_fp_loc_backoff_s_sms_lost_are_optional():
+    env = StatusEnvelope.model_validate(_online_status())
+    assert env.tls is None
+    assert env.ca_fp is None
+    assert env.loc_backoff_s is None
+    assert env.sms_lost is None
+
+
+def test_status_rejects_bad_tls_value():
+    with pytest.raises(ValidationError):
+        StatusEnvelope.model_validate(_online_status(tls="not-a-state"))
+
+
+def test_status_rejects_malformed_ca_fp():
+    with pytest.raises(ValidationError):
+        StatusEnvelope.model_validate(_online_status(ca_fp="too-short"))
+    with pytest.raises(ValidationError):
+        StatusEnvelope.model_validate(_online_status(ca_fp="0123456789ABCDEF"))  # must be lowercase
+
+
+def test_status_rejects_negative_sms_lost():
+    with pytest.raises(ValidationError):
+        StatusEnvelope.model_validate(_online_status(sms_lost=-1))
+
+
+def test_status_still_ignores_a_genuinely_unknown_field():
+    """The pre-existing `extra='ignore'` forward-compat guarantee, still
+    true for a field this relay has no opinion on at all (as opposed to the
+    four modelled-and-validated fields above)."""
+    env = StatusEnvelope.model_validate(_online_status(some_future_field="whatever"))
+    assert env.state == "online"
+
+
 def test_parse_envelope_bytes_rejects_oversize():
     huge = b'{"body":"' + b"x" * 700 + b'"}'
     assert parse_envelope_bytes(huge) is None

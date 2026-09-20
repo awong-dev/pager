@@ -13,9 +13,10 @@ import json
 from pathlib import Path
 from typing import Any
 
+import cbor2
 import pytest
 
-from app import devauth, wirecbor
+from app import devauth, wire, wirecbor
 
 VECTORS_PATH = Path(__file__).resolve().parents[2] / "tools" / "authvectors.json"
 VECTORS: list[dict[str, Any]] = json.loads(VECTORS_PATH.read_text())
@@ -214,3 +215,44 @@ def test_is_cbor_detects_first_byte():
     assert wirecbor.is_cbor(bytes([0xBF]))
     assert not wirecbor.is_cbor(b"{}")
     assert not wirecbor.is_cbor(b"")
+
+
+# ---------------------------------------------------------------------------
+# docs/PROTOCOL.md §0/§3.1's forward-compatibility rule, applied to CBOR
+# integer keys: an unknown key must be dropped, not make the whole envelope
+# fail to decode (docs/V02_DESIGN.md ground rule 0 -- "unknown ... /status
+# fields from a newer device must not make an older relay reject the
+# envelope"). Before this fix, `wirecbor.translate_to_names` raised
+# `KeyError` on an unknown key, which `app/wire.py`'s `decode_envelope_bytes`
+# caught and turned into "malformed, drop the whole envelope".
+# ---------------------------------------------------------------------------
+
+def test_decode_drops_a_single_unknown_integer_key_not_the_whole_envelope():
+    # Key 99 is not in wirecbor.KEYMAP (a newer relay-only allocation, or a
+    # future key this relay predates) alongside two keys this relay knows.
+    raw = cbor2.dumps({0: 1, 21: "online", 99: "from-the-future"})
+    decoded = wirecbor.decode(raw)
+    assert decoded == {"v": 1, "state": "online"}
+
+
+def test_decode_envelope_bytes_accepts_cbor_with_an_unknown_key():
+    raw = cbor2.dumps({0: 1, 21: "online", 25: "s_aabbccdd", 99: "from-the-future"})
+    result = wire.decode_envelope_bytes(raw)
+    assert result is not None
+    data, encoding = result
+    assert encoding == "cbor"
+    assert data == {"v": 1, "state": "online", "session": "s_aabbccdd"}
+
+
+def test_to_json_safe_base64url_encodes_bytes_recursively():
+    obj = {"cfg": {"ca": {"url": "https://x/y.pem", "sha": b"\x00\x01\xfe\xff"}}}
+    safe = wirecbor.to_json_safe(obj)
+    assert safe["cfg"]["ca"]["url"] == "https://x/y.pem"
+    assert safe["cfg"]["ca"]["sha"] == "AAH-_w"  # base64url, no padding
+    # Round-trips through json.dumps without error (the whole point).
+    json.dumps(safe)
+
+
+def test_to_json_safe_leaves_non_bytes_values_unchanged():
+    obj = {"a": 1, "b": [1, "x", None, {"c": True}]}
+    assert wirecbor.to_json_safe(obj) == obj

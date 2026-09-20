@@ -51,9 +51,9 @@ from typing import Any
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
-from app import wirecbor
+from app import ca_resolve, wirecbor
 from app.broker import BrokerClient
 from app.config import Settings
 from app.emqx_admin import EmqxAdmin
@@ -244,11 +244,19 @@ def boot_topic_down(bid: str) -> str:
 
 class BootstrapDevice(BaseModel):
     """The bundle's plaintext fields (`docs/DEVICE_PLAN.md` §3.2 step 4):
-    `{"v":1,"id":...,"pw":...,"k":...,"host":...,"port":...,"ca":...,
-    "flags":...,"label":...}`, plus the rarely-needed `apn`. `k` is the raw
-    32-byte HMAC key -- `app/wirecbor.py`'s CBOR encoder writes `bytes`
-    values as CBOR byte strings, which is what the device needs, not base64
-    text."""
+    `{"v":1,"id":...,"pw":...,"k":...,"host":...,"port":...,"ca_url":...,
+    "ca_sha":...,"flags":...,"label":...}`, plus the rarely-needed `apn`.
+    `k` is the raw 32-byte HMAC key -- `app/wirecbor.py`'s CBOR encoder
+    writes `bytes` values as CBOR byte strings, which is what the device
+    needs, not base64 text.
+
+    docs/V02_DESIGN.md §4.4: **the CA never travels inline again.** `ca_url`
+    + `ca_sha` (a pointer, fetched and hash-checked) replace the old `ca`
+    field (a full PEM, which does not fit the modem library's 1540-byte
+    receive buffer for a Let's Encrypt/Google root -- `CA_TRUST_PLAN.md`
+    §3.4). Both absent means unpinned; `_check_ca_pair` below enforces they
+    are never given one without the other, since a `ca_url` a device cannot
+    hash-check is worse than no CA at all."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -257,20 +265,35 @@ class BootstrapDevice(BaseModel):
     k: bytes
     host: str
     port: int = DEFAULT_PORT
-    ca: str
+    ca_url: str | None = None
+    ca_sha: bytes | None = None
     flags: int = 0
     label: str
     apn: str | None = None
 
+    @field_validator("ca_sha")
+    @classmethod
+    def _check_ca_sha_len(cls, value: bytes | None) -> bytes | None:
+        if value is not None and len(value) != 32:
+            raise ValueError("ca_sha must be a 32-byte SHA-256 digest")
+        return value
+
+    @model_validator(mode="after")
+    def _check_ca_pair(self) -> BootstrapDevice:
+        if (self.ca_url is None) != (self.ca_sha is None):
+            raise ValueError("ca_url and ca_sha must be both present or both absent")
+        return self
+
 
 def bundle(device: BootstrapDevice, bkey: bytes) -> bytes:
-    """CBOR-encodes `device` under boot keys 0 (`v`), 1 (`id`), 30-37
-    (`pw,k,host,port,ca,flags,label,apn`) -- `app/wirecbor.KEYMAP` already
-    assigns exactly those numbers to those names (`docs/PROTOCOL.md` §10) --
-    then AES-256-GCM-encrypts it under `bkey` with a fresh random 12-byte
-    nonce. Returns `nonce ‖ ciphertext ‖ tag` raw bytes (`cryptography`'s
-    `AESGCM.encrypt` already appends the 16-byte tag to the ciphertext, so
-    prepending the nonce is the only assembly needed)."""
+    """CBOR-encodes `device` under boot keys 0 (`v`), 1 (`id`), 30-33/35-37
+    (`pw,k,host,port,flags,label,apn`) plus the v0.2 pointer keys 40-41
+    (`ca_url,ca_sha`) -- `app/wirecbor.KEYMAP` already assigns exactly those
+    numbers to those names (`docs/PROTOCOL.md` §10) -- then AES-256-GCM-
+    encrypts it under `bkey` with a fresh random 12-byte nonce. Returns
+    `nonce ‖ ciphertext ‖ tag` raw bytes (`cryptography`'s `AESGCM.encrypt`
+    already appends the 16-byte tag to the ciphertext, so prepending the
+    nonce is the only assembly needed)."""
     plain_obj: dict[str, Any] = {
         "v": 1,
         "id": device.id,
@@ -278,10 +301,12 @@ def bundle(device: BootstrapDevice, bkey: bytes) -> bytes:
         "k": device.k,
         "host": device.host,
         "port": device.port,
-        "ca": device.ca,
         "flags": device.flags,
         "label": device.label,
     }
+    if device.ca_url is not None:
+        plain_obj["ca_url"] = device.ca_url
+        plain_obj["ca_sha"] = device.ca_sha
     if device.apn is not None:
         plain_obj["apn"] = device.apn
     plaintext = wirecbor.encode(plain_obj)
@@ -312,7 +337,7 @@ def issue(
     mqtt_password: str,
     hmac_key: bytes,
     host: str,
-    ca: str,
+    ca_pem: str | None,
     label: str,
     port: int = DEFAULT_PORT,
     flags: int = 0,
@@ -328,7 +353,16 @@ def issue(
     parameters). Pushes the bootstrap credential to the broker, publishes
     the encrypted bundle retained to `pager/boot/{bid}/down`, records
     `setupCodes/{bid}` (never the token), and returns the setup code once.
-    """
+
+    `ca_pem` (docs/V02_DESIGN.md §4.4): the CA PEM text to pin, or `None`/
+    empty for an unpinned deployment (both bundle fields absent -- see
+    `BootstrapDevice`'s docstring). When given, this resolves to a pointer
+    (`ca_resolve.ca_pointer`) rather than travelling inline; that call
+    raises `ca_resolve.PublicBaseUrlRequired` if `settings.public_base_url`
+    is empty, which propagates out of `issue()` uncaught -- the caller
+    (`app/routers/admin.py`) turns it into a 500 rather than this module
+    silently sending an unpinned bundle for a deployment that thinks it has
+    pinned one."""
     settings = settings if settings is not None else Settings.from_env()
     broker = broker if broker is not None else BrokerClient(settings)
     emqx = emqx if emqx is not None else EmqxAdmin(settings)
@@ -338,13 +372,19 @@ def issue(
 
     emqx.ensure_boot_user(bid, bpw)
 
+    ca_url: str | None = None
+    ca_sha: bytes | None = None
+    if ca_pem:
+        ca_url, ca_sha = ca_resolve.ca_pointer(ca_pem, settings)
+
     device = BootstrapDevice(
         id=device_id,
         pw=mqtt_password,
         k=hmac_key,
         host=host,
         port=port,
-        ca=ca,
+        ca_url=ca_url,
+        ca_sha=ca_sha,
         flags=flags,
         label=label,
         apn=apn,

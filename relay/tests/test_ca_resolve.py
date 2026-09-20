@@ -238,3 +238,43 @@ def test_resolve_broker_ca_no_match_leaves_ca_empty(
 
     assert resolved is None
     assert ca_resolve.get_broker_ca_subject() is None
+
+
+# ---------------------------------------------------------------------------
+# docs/V02_DESIGN.md §4.4: ca_pointer() -- pointer + remember(), and the
+# PublicBaseUrlRequired refusal.
+# ---------------------------------------------------------------------------
+
+
+def test_ca_pointer_builds_url_and_remembers_pem():
+    from app.store import cas as cas_store
+
+    pem = "-----BEGIN CERTIFICATE-----\nfake\n-----END CERTIFICATE-----\n"
+    settings = make_settings(public_base_url="https://relay.example.com")
+
+    url, sha = ca_resolve.ca_pointer(pem, settings)
+
+    import hashlib
+
+    expected_sha = hashlib.sha256(pem.encode("utf-8")).digest()
+    assert sha == expected_sha
+    assert url == f"https://relay.example.com/ca/{expected_sha.hex()}.pem"
+    assert cas_store.get_pem(expected_sha.hex()) == pem
+
+
+def test_ca_pointer_strips_a_trailing_slash_from_public_base_url():
+    pem = "-----BEGIN CERTIFICATE-----\nfake\n-----END CERTIFICATE-----\n"
+    settings = make_settings(public_base_url="https://relay.example.com/")
+
+    url, _sha = ca_resolve.ca_pointer(pem, settings)
+
+    assert "//ca/" not in url.replace("https://", "")
+    assert url.startswith("https://relay.example.com/ca/")
+
+
+def test_ca_pointer_without_public_base_url_raises():
+    pem = "-----BEGIN CERTIFICATE-----\nfake\n-----END CERTIFICATE-----\n"
+    settings = make_settings(public_base_url=None)
+
+    with pytest.raises(ca_resolve.PublicBaseUrlRequired):
+        ca_resolve.ca_pointer(pem, settings)

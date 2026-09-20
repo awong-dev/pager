@@ -24,7 +24,7 @@ from app.db.firestore import get_db
 from app.ingest import Ingest
 from app.location import Location
 from app.logging_config import configure_logging, request_id_var
-from app.routers import admin, conversations, dev, internal, me, webhooks
+from app.routers import admin, ca, conversations, dev, internal, me, webhooks
 from app.routing import Routing
 
 # JSON logs with a `severity` field, shaped for Cloud Logging's
@@ -94,6 +94,7 @@ def create_app(
         return response
 
     app.include_router(webhooks.router)
+    app.include_router(ca.router)
     app.include_router(admin.router)
     app.include_router(dev.router)
     app.include_router(conversations.router)

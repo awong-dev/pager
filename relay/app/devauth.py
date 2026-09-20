@@ -58,10 +58,18 @@ def sign_cbor(key: bytes, topic: str, obj: dict[str, Any]) -> bytes:
 
 def sign_json(key: bytes, topic: str, obj: dict[str, Any]) -> bytes:
     """§14.3's JSON rule: minified JSON without `sig` (that is `P`, ending in
-    `}`), MAC it, then emit `P[:-1] + ',"sig":"<base64url tag>"}'`."""
+    `}`), MAC it, then emit `P[:-1] + ',"sig":"<base64url tag>"}'`.
+
+    `wirecbor.to_json_safe` first turns any raw `bytes` leaf (e.g. a
+    `/down cfg.ca.sha`, docs/V02_DESIGN.md §7 -- built as `bytes` regardless
+    of which wire encoding it is published in) into base64url text, since
+    `json.dumps` cannot serialise `bytes` at all; every other value passes
+    through unchanged."""
     if "sig" in obj:
         raise ValueError("obj must not already contain sig")
-    p = json.dumps(obj, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    p = json.dumps(wirecbor.to_json_safe(obj), separators=(",", ":"), ensure_ascii=False).encode(
+        "utf-8"
+    )
     if not p.endswith(b"}"):
         raise ValueError("obj did not serialise to a JSON object")
     b64 = base64.urlsafe_b64encode(tag(key, topic, p)).rstrip(b"=").decode("ascii")

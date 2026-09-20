@@ -210,27 +210,38 @@ would produce false rejections; 64 is the IPsec/DTLS convention and costs 8 byte
 a Firestore transaction on that one document; the same transaction is where the existing `wireIds`
 dedup already lives, so this adds no round trip.
 
-**Device side, `n` for `/up`, `/status`, `/loc`.** A 32-bit counter split as
-`n = (epoch << 20) | lo`. `lo` lives in RTC memory and increments per publish (free). `epoch` lives
-in NVS and increments **only** on a cold boot (RTC CRC invalid) or when `lo` wraps, i.e. an NVS write
-a handful of times over the device's life. 12 bits of epoch = 4096 cold boots; 20 bits of `lo` = 1 M
-envelopes per epoch. The relay's window absorbs the jump at each cold boot. RTC cost: 4 bytes.
+**Device side, `n` for `/up`, `/status`, `/loc`.** A counter split as `n = (epoch << 20) | lo`.
+`lo` lives in RTC memory and increments per publish (free). `epoch` lives in NVS and increments
+**only** on a cold boot (RTC CRC invalid) or when `lo` wraps, i.e. an NVS write a handful of times
+over the device's life. **v0.2 (`V02_DESIGN.md` §3): `epoch` widens from 12 to 32 bits — `n` is now
+a 52-bit unsigned integer, `uint64_t` end to end on the up path (signing, CBOR writer).** 20 bits of
+`lo` stays 1 M envelopes per epoch; 32 bits of epoch is 4 billion cold boots, in practice unbounded
+for this project. The relay's window absorbs the jump at each cold boot exactly as before — the
+width change affects only how large a jump the relay's `n > upN` comparison has to accept, never the
+comparison itself. RTC cost is unchanged (`lo` is still 20 bits in a 4-byte RTC field); the NVS
+`epoch` field grows from `uint16_t` to `uint32_t`. **Migration:** on first boot after an upgrade, the
+device reads its old 12-bit-epoch NVS key (`n_epoch`, `uint16_t`) once, then keeps the epoch going
+forward in a new key (`n_epoch32`, `uint32_t`) — the two are never the same storage slot, so a
+partially-migrated device can never misread one width as the other.
 
-*(To think about later, raised by the owner 2026-09-20; nothing here is decided or built.)* Should
-the relay tell the device the last sequence number it saw, instead of the device bumping an epoch
-in NVS? It can be made safe, but only as a **signed, fresh handshake**: the device sends a signed
-hello carrying a random value, the relay answers with a signed message echoing that value plus its
-`upN`, and the device resumes from there. A bare, unchallenged "your last n was X" is not safe: an
-attacker replays an old one to wind the counter back, and every message captured after X becomes
-replayable. Trade against the epoch bump: the handshake costs one round trip of airtime per cold
-boot, new protocol and relay state, and the pager cannot send until the relay answers; the epoch
-bump costs one NVS write per cold boot and nothing on the air, but is capped at 4096 cold boots
-(12 bits), after which the device needs new credentials. About eleven years at one cold boot a
-day; much less for a pager whose battery dies several times a day. A reasonable end state is to
-keep the epoch and add the handshake only as the recovery path for epoch exhaustion. Ruled out:
-deriving `n` from the clock. The clock is seeded from the network, and the modem was seen
-reporting a year-2070 time once; one bad timestamp would push the relay's window decades ahead
-and lock the device out for good.
+*(Why the widening, not the alternative below: raised by the owner 2026-09-20, decided
+2026-09-20.)* The 12-bit epoch's guaranteed exhaustion after 4096 cold boots — about eleven years
+at one cold boot a day, much less for a pager whose battery dies several times a day — was flagged
+as a real risk: the failure mode of a live device silently unable to authenticate once exhausted is
+worse than the wire-size cost of a wider field. Should the relay instead tell the device the last
+sequence number it saw, rather than the device bumping an epoch in NVS? It can be made safe, but
+only as a **signed, fresh handshake**: the device sends a signed hello carrying a random value, the
+relay answers with a signed message echoing that value plus its `upN`, and the device resumes from
+there. A bare, unchallenged "your last n was X" is not safe: an attacker replays an old one to wind
+the counter back, and every message captured after X becomes replayable. Trade against the epoch
+bump: the handshake costs one round trip of airtime per cold boot, new protocol and relay state, and
+the pager cannot send until the relay answers; the epoch bump costs one NVS write per cold boot and
+nothing on the air. With a 32-bit epoch the handshake is **still parked**: it is only needed if NVS
+itself is lost outright, and at that point the whole device identity (not just this counter) is gone
+and re-provisioning is required anyway — the same "still parked" note now made explicit rather than
+left as a future trade to reconsider. Ruled out: deriving `n` from the clock. The clock is seeded
+from the network, and the modem was seen reporting a year-2070 time once; one bad timestamp would
+push the relay's window decades ahead and lock the device out for good.
 
 *(Implementation note, 2026-09-20.)* The cold-boot bump described above was specified here but
 missing from the firmware until it was found live: every cold boot restarted `lo` at 0 under the
@@ -484,22 +495,55 @@ bundle carries:
 | Self-hosted on GCE (`infra/modules/broker-gce`) | Let's Encrypt via certbot at first boot; falls back to plain 1883 only, logged, if DNS is not ready | ISRG Root X1, which `infra/` already names |
 | EMQX open source, untouched defaults | a self-signed demo certificate under `etc/certs/`, signed by a bundled test CA | that test CA — the "custom PEM" case; fine for the local compose stack, never for a deployment |
 
-Because the CA travels in the bundle, the device needs **no built-in root store and no CA choice
-in the typed code**. The relay has to know the PEM it wants pinned: `BROKER_CA_PEM` in config
+Because the CA is delivered (see below) to the device, it needs **no built-in root store and no CA
+choice in the typed code**. The relay has to know the PEM it wants pinned: `BROKER_CA_PEM` in config
 (the Terraform in `infra/` knows which broker it deployed and sets it), otherwise resolved once at
 startup by a TLS handshake to the broker and matching the served chain's issuer against the
 `certifi` bundle, with the result shown on *Admin → Settings* so a wrong guess is visible before a
 device is issued. A self-signed or private CA is just a different PEM in the same field; nothing on
 the device changes.
 
+**v0.2 (`V02_DESIGN.md` §4.4, `CA_TRUST_PLAN.md` §3.4): the CA no longer travels inline in the
+bundle.** The measured sizes above were always going to be a problem for a broker behind a root
+other than DigiCert's — ISRG Root X1 (Let's Encrypt) is 1939 bytes PEM and GTS Root R1 is 1911,
+both larger than the vendor library's 1540-byte receive buffer even before the rest of the bundle's
+fields are added, so a bundle carrying either inline cannot be received at all. The bootstrap
+bundle now carries a **pointer** instead — `ca_url` + `ca_sha` (§7's boot keys 40/41: a URL and the
+CA PEM's SHA-256) — and the device fetches the CA itself, over its own bootstrap-hop TLS socket
+(profile 3, validation off, exactly like the bundle fetch itself: trust comes from the hash, which
+arrived inside the already-encrypted bundle, not from the fetch), verifying the SHA-256 before
+trusting anything. Both fields absent means unpinned, same meaning as an empty inline `ca` before.
+Firmware **still accepts the old inline `ca` field** (key 34) if it ever sees one — a retained
+bundle from before an upgrade, or a relay that has not yet been upgraded — preferring the pointer
+when both are somehow present, so nothing already deployed breaks; a v0.2 relay itself never emits
+the inline form again. Once fetched (whether at bootstrap or via the `cfg.ca` push of §4.4 below),
+the CA PEM and its hash are stored in NVS exactly as before this change (`ca`/`ca_hash` in the
+`ident` namespace, §3.4) — the pointer only changes how the bytes arrive on the wire, not what the
+device keeps.
+
 The CA is written to modem NVRAM only when its hash differs from the stored `ca_hash`, instead of
 on every `net_init()` as `net.cpp:394` does today (that call currently reruns on every F4
 recovery).
 
+**Pushing a new CA without a new setup code (v0.2, `V02_DESIGN.md` §4.4).** The same pointer shape
+travels in an ordinary signed `/down` `cfg` message once the device is already provisioned:
+`cfg.ca = {url, sha}`, `url = ""` to un-pin. Two-phase apply, so a bad push cannot make things
+worse: write the new CA to a scratch slot, reconnect validated; commit (`ident_store`, slot 12,
+state `pinned`, ack `shown`) only if that connect succeeds, otherwise discard it, keep the previous
+CA and state, and do not ack (the relay re-publishes on the next online edge, per the newest-
+unacked-`cfg` rule §5.8 already gives `cfg.lock` — a pending CA push and a pending lock push are
+independent and do not clobber each other). Admin-triggered from the web app
+(`POST /api/admin/devices/{id}/ca`), and this is also how a device stuck in the `broken` trust state
+(`CA_TRUST_PLAN.md` §3.1-3.2, `V02_DESIGN.md` §4.1-4.2 — `unpinned`/`pinned`/`broken`, entered when
+a validated connect fails and the device falls back to running unvalidated so pages keep arriving)
+gets repaired without anyone touching it.
+
 ### 3.4 What the device keeps
 
 NVS namespace `ident`, one key per bundle field (`dev_id`, `mqtt_pw`, `kdev` blob 32, `host`,
-`port`, `ca` ≤ 4 kB, `apn`, `flags`, `label`), plus `ca_hash`, `n_epoch` (u16, §2.5 counter epoch,
+`port`, `ca` ≤ 4 kB — fetched via the v0.2 `ca_url`/`ca_sha` pointer or, for a bundle predating it,
+still read inline, §3.3 — `apn`, `flags`, `label`), plus `ca_hash`, `n_epoch` (u16, legacy — read
+once for migration then superseded by `n_epoch32`, u32, §2.5 counter epoch,
 starts at 0) and `claimed` (u8, set on the first verified `book`, §4.3 — display only). Partition
 table: `partitions.csv` with `nvs` (24 kB — the address book of §4 shares it under its own
 namespace, and `msgq` of §5.6), `assets` (font and IME data, §5.2), `otadata`/`ota_0` reserved for

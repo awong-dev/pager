@@ -45,6 +45,12 @@ variable "broker_ca_pem" {
   default     = ""
 }
 
+variable "public_base_url" {
+  description = "app/config.py's PUBLIC_BASE_URL -- this deployment's own public HTTPS origin. Already used by app/tasks.py and app/backends/sms_twilio.py; docs/V02_DESIGN.md §4.4 adds a use: the base of the content-addressed `GET /ca/{sha256hex}.pem` pointer a bootstrap bundle or a `cfg.ca` push hands a device. Cloud Run v2 cannot reference a service's own computed .uri from inside the same apply (a genuine cyclic reference -- see this module's `oidc_audience` variable for the same problem solved with a fixed string), so this is a plain variable rather than `google_cloud_run_v2_service.relay.uri`: set it by hand once the service exists (infra/README.md), e.g. the production value `https://pager-relay-2ix4jtetvq-uw.a.run.app`. Empty (the default) means unset: a bootstrap/push for a deployment with a CA configured then fails closed with a clear error instead of silently sending an unpinned bundle (app/devsetup.py)."
+  type        = string
+  default     = ""
+}
+
 # --- Secret Manager wiring ------------------------------------------
 # These come from infra/modules/secrets' outputs. Cloud Run v2 refuses to
 # create a revision that references a secret with zero versions, so

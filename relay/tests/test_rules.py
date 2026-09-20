@@ -26,6 +26,7 @@ from firebase_admin import auth as fb_auth
 
 from app.store import allow as allow_store
 from app.store import backends as backends_store
+from app.store import cas as cas_store
 from app.store import device_secrets as device_secrets_store
 from app.store import devices as devices_store
 from app.store import messages as messages_store
@@ -465,6 +466,35 @@ def test_device_secrets_is_default_deny(two_pairs):
     resp_write = _write(
         "deviceSecrets/pgr-secret-rules-1", owner_token, {"mqttPasswordHash": "hacked"}
     )
+    assert resp_write.status_code == 403
+
+
+def test_cas_is_default_deny(two_pairs):
+    """`cas/{sha256hex}` (docs/V02_DESIGN.md §4.4) holds a CA PEM the relay
+    has served a pointer for -- not secret (a CA is public by construction),
+    but there is deliberately no client Firestore read path for it either:
+    the one public read is `GET /ca/{sha256hex}.pem` (`app/routers/ca.py`),
+    which can apply its own cache headers and 404 semantics. Same default-
+    deny-with-no-`match`-block posture `phoneIndex`/`deviceSecrets` above
+    pin -- unreadable by an ordinary registered user and by an admin alike."""
+    sha_hex = "ab" * 32
+    cas_store.remember(sha_hex, "-----BEGIN CERTIFICATE-----\nfake\n-----END CERTIFICATE-----\n")
+
+    owner_token = mint_id_token("u1")
+    resp = _get(f"cas/{sha_hex}", owner_token)
+    assert resp.status_code == 403
+
+    fb_auth.create_user(uid="admin-cas", email="admin-cas@example.com")
+    users_store.create_user(uid="admin-cas", alias="admincas", display_name="Admin", role="admin")
+    fb_auth.set_custom_user_claims("admin-cas", {"admin": True})
+    admin_token = mint_id_token("admin-cas")
+    resp_admin = _get(f"cas/{sha_hex}", admin_token)
+    assert resp_admin.status_code == 403
+
+    resp_unauth = _get(f"cas/{sha_hex}", None)
+    assert resp_unauth.status_code == 403
+
+    resp_write = _write(f"cas/{sha_hex}", owner_token, {"pem": "hacked"})
     assert resp_write.status_code == 403
 
 

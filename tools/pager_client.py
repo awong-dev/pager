@@ -39,11 +39,11 @@ docs/PROTOCOL.md §3.2's `contact_req`/`book`/`cfg` kinds):
 
   Device: connect, disconnect, crash, inbox, msg, ack, autoack, status, bytes,
           loc <lat> <lon> [acc] | loc auto <period_s> [--walk] |
-          loc min <s> | loc fail on|off,
+          loc min <s> | loc fail on|off | loc backoff <s>,
           contactreq <name> [phone-or-alias]
   Server: login, contacts, chat, say, watch, tick, sweep, locate <alias>,
           locations <alias> [n],
-          admin user-add / allow / deny / device-add /
+          admin user-add / allow / deny / device-add / ca push|unpin <device_id> /
           settings retention messages=<n><d|w> locations=<n><d|w> /
           contacts [pending|approved|rejected] / approve <key> link|create [alias] [--locate] /
           reject <key> <reason> / cfg <device_id> [--auto <min>] [--clear],
@@ -261,6 +261,22 @@ class DeviceClient:
         # only needs the ack + the value landing).
         self.lock_auto_min: int | None = None
         self.lock_cleared_count: int = 0
+        # docs/V02_DESIGN.md §4.3/§4.4 (CA trust): applied `cfg.ca` state,
+        # reported back in `/status` per `CA_TRUST_PLAN.md` §3.3. This
+        # simulator does not really fetch/hash-check a CA over HTTP (there
+        # is no modem here) -- it "applies" a push by trusting the `sha` it
+        # was handed directly, which is enough to exercise the relay's
+        # push/ack/republish/status plumbing end to end without a real TLS
+        # fetch. `ca_fp` is the first 16 hex chars of that same sha256
+        # digest (the field IS the CA PEM's hash, so no separate fetch is
+        # needed to compute the fingerprint).
+        self.tls: str = "unpinned"
+        self.ca_fp: str | None = None
+        # docs/V02_DESIGN.md §5 -- reported in `/status`; not a real backoff
+        # computation (this simulator answers every `loc_req` instantly), a
+        # test-only knob a caller can set directly (`loc backoff <s>`) to
+        # exercise the relay's acceptance of the field end to end.
+        self.loc_backoff_s: int = 0
         # docs/PROTOCOL.md §13.3 -- device-side location state. `_lat`/`_lon`
         # is the device's current position (what the next fix attempt
         # reports); `_last_fix` is the last *successful* fix (what a
@@ -496,23 +512,27 @@ class DeviceClient:
     def publish_status(
         self, *, batt_mv: int = 3280, mode: str = "sleep", rssi: int = -85, fw: str = "sim-0.2.0"
     ) -> None:
-        self._publish(
-            self.status_topic,
-            {
-                "v": 1,
-                "state": "online",
-                "mode": mode,
-                "batt_mv": batt_mv,
-                "rssi": rssi,
-                "session": self.session_id,
-                "ts": now_ts(),
-                "fw": fw,
-                "loc_period_s": self._loc_period_s,
-                "loc_min_s": self._loc_min_s,
-            },
-            qos=1,
-            retain=True,
-        )
+        obj: dict[str, Any] = {
+            "v": 1,
+            "state": "online",
+            "mode": mode,
+            "batt_mv": batt_mv,
+            "rssi": rssi,
+            "session": self.session_id,
+            "ts": now_ts(),
+            "fw": fw,
+            "loc_period_s": self._loc_period_s,
+            "loc_min_s": self._loc_min_s,
+            # docs/V02_DESIGN.md §4.3/§5: `tls` is always reported (it always
+            # has a value -- `unpinned` is a real, valid state, not "absent
+            # means older firmware" the way `ca_fp`/`loc_backoff_s` are
+            # -- but `ca_fp` is only meaningful once something is pinned.
+            "tls": self.tls,
+            "loc_backoff_s": self.loc_backoff_s,
+        }
+        if self.ca_fp is not None:
+            obj["ca_fp"] = self.ca_fp
+        self._publish(self.status_topic, obj, qos=1, retain=True)
 
     def publish_ack(self, msg_id: str, ack: str) -> None:
         self._publish(self.up_topic, {"v": 1, "id": msg_id, "ts": now_ts(), "ack": ack}, qos=1)
@@ -584,16 +604,50 @@ class DeviceClient:
         `lock.auto` persists at its last-set value; `lock.clear` is a
         one-shot action counted in `lock_cleared_count` (see that field's
         docstring) rather than modelled as a real passcode/lock state
-        machine, which is out of this simulator's scope."""
-        lock = (data.get("cfg") or {}).get("lock") or {}
+        machine, which is out of this simulator's scope.
+
+        docs/V02_DESIGN.md §4.4: also applies `cfg.ca` (`{url, sha}`, `url`
+        absent or `""` un-pins). Trust comes from the hash, which arrived
+        signed (§14) or inside the encrypted bootstrap bundle, exactly like
+        the real firmware's two-phase apply -- but this simulator has no
+        modem and no TLS socket to actually fetch/hash-check the CA over, so
+        it "applies" a push unconditionally rather than modelling the real
+        fetch/verify/commit-or-rollback sequence (`CA_TRUST_PLAN.md` §3.4)."""
+        cfg = data.get("cfg") or {}
+        lock = cfg.get("lock") or {}
         if lock.get("clear"):
             self.lock_cleared_count += 1
         if lock.get("auto") is not None:
             self.lock_auto_min = lock["auto"]
+        if "ca" in cfg:
+            self._apply_ca(cfg["ca"] or {})
         msg_id = data.get("id")
-        print(f"-> cfg applied: lock={lock!r} (auto_min now {self.lock_auto_min})")
+        print(
+            f"-> cfg applied: lock={lock!r} (auto_min now {self.lock_auto_min}) "
+            f"tls={self.tls} ca_fp={self.ca_fp}"
+        )
         if msg_id:
             self.publish_ack(msg_id, "shown")
+
+    def _apply_ca(self, ca: dict[str, Any]) -> None:
+        url = ca.get("url")
+        if not url:
+            # docs/V02_DESIGN.md §4.4: "url = '' means un-pin."
+            self.tls = "unpinned"
+            self.ca_fp = None
+            return
+        sha = ca.get("sha")
+        sha_hex: str | None
+        if isinstance(sha, bytes):
+            sha_hex = sha.hex()
+        elif isinstance(sha, str):
+            # JSON wire: base64url, no padding, per docs/V02_DESIGN.md §7.
+            padded = sha + "=" * (-len(sha) % 4)
+            sha_hex = base64.urlsafe_b64decode(padded).hex()
+        else:
+            sha_hex = None
+        self.tls = "pinned"
+        self.ca_fp = sha_hex[:16] if sha_hex else None
 
     # ---- location (PROTOCOL.md §13) ----
 
@@ -1166,6 +1220,14 @@ class ServerClient:
             raise RuntimeError(f"admin push_cfg failed: {resp.status_code} {resp.text}")
         return resp.json()
 
+    def admin_push_ca(self, device_id: str, action: Literal["push", "unpin"]) -> dict[str, Any]:
+        """`POST /api/admin/devices/{id}/ca` -- docs/V02_DESIGN.md §4.4's
+        CA-pointer push/un-pin."""
+        resp = self.api_post(f"/api/admin/devices/{device_id}/ca", {"action": action})
+        if resp.status_code >= 400:
+            raise RuntimeError(f"admin push_ca failed: {resp.status_code} {resp.text}")
+        return resp.json()
+
     # ---- Firestore REST reads (exercises firestore.rules) ----
 
     def firestore_get(self, path: str) -> httpx.Response:
@@ -1466,8 +1528,18 @@ class PagerShell(cmd.Cmd):
         if not parts:
             print(
                 "usage: loc <lat> <lon> [acc] | loc auto <period_s> [--walk] | "
-                "loc min <s> | loc fail on|off"
+                "loc min <s> | loc fail on|off | loc backoff <s>"
             )
+            return
+        if parts[0] == "backoff":
+            # docs/V02_DESIGN.md §5: a test-only knob for `/status`'s
+            # `loc_backoff_s` (not a real backoff computation -- see
+            # `DeviceClient.loc_backoff_s`'s docstring).
+            if len(parts) != 2:
+                print("usage: loc backoff <s>")
+                return
+            self.device.loc_backoff_s = int(parts[1])
+            print(f"loc backoff_s = {parts[1]}")
             return
         if parts[0] == "auto":
             parser = argparse.ArgumentParser(prog="loc auto", add_help=False)
@@ -1617,7 +1689,8 @@ class PagerShell(cmd.Cmd):
         parts = shlex.split(arg)
         if not parts:
             print(
-                "usage: admin user-add|device-add|allow|deny|settings|contacts|approve|reject|cfg ..."
+                "usage: admin user-add|device-add|allow|deny|settings|contacts|"
+                "approve|reject|cfg|ca ..."
             )
             return
         sub, rest = parts[0], parts[1:]
@@ -1639,6 +1712,8 @@ class PagerShell(cmd.Cmd):
             self._admin_reject(rest)
         elif sub == "cfg":
             self._admin_cfg(rest)
+        elif sub == "ca":
+            self._admin_ca(rest)
         else:
             print(f"unknown admin subcommand: {sub}")
 
@@ -1759,6 +1834,16 @@ class PagerShell(cmd.Cmd):
                 ns.device_id, auto=ns.auto, clear=ns.clear if ns.clear else None
             )
         )
+
+    def _admin_ca(self, args: list[str]) -> None:
+        parser = argparse.ArgumentParser(prog="admin ca", add_help=False)
+        parser.add_argument("action", choices=["push", "unpin"])
+        parser.add_argument("device_id")
+        try:
+            ns = parser.parse_args(args)
+        except SystemExit:
+            return
+        self._out(self.server.admin_push_ca(ns.device_id, ns.action))
 
     # ---- misc ----
 

@@ -142,6 +142,17 @@ retries and no retention sweep run in this deployment**. See
 `pager-scheduler@<project>.iam.gserviceaccount.com` email for `OIDC_ALLOWED_EMAILS`) — track it
 as a real follow-up before relying on scheduled jobs.
 
+**Second known gap, same root cause (cyclic self-reference): `public_base_url`.** Once a CA is
+pinned (`broker_ca_pem_file` above), devices need `PUBLIC_BASE_URL` set to something real so their
+bootstrap bundle's CA pointer (`GET /ca/{sha256hex}.pem`, docs/V02_DESIGN.md §4.4) resolves — Cloud
+Run v2 cannot reference a service's own `.uri` from inside the same `apply` that creates it, so
+`infra/envs/prod/variables.tf`'s `public_base_url` has no computed default. After this first apply,
+run `terraform output -raw relay_service_url`, set `public_base_url` in `terraform.tfvars` to that
+value (production today: `https://pager-relay-2ix4jtetvq-uw.a.run.app`), and `terraform apply`
+again. Until that second apply, a device create/rotate against a deployment with a CA pinned fails
+with a 500 (`app/devsetup.py` refuses to issue an unpinned bundle silently) rather than a device
+that can never validate its CA pointer.
+
 ## 9. Wire up GitHub Actions (turns `.github/workflows/deploy.yml` from a no-op into a real pipeline)
 
 Read that workflow's own top-of-file comment for the exact gating mechanism first. Then:
@@ -155,6 +166,10 @@ Read that workflow's own top-of-file comment for the exact gating mechanism firs
     `certs/digicert-global-root-g2.pem`). Leave it unset to pin no CA. **If `terraform.tfvars` sets it
     and this repo variable does not, the next CI deploy silently un-pins:** setup codes issued after
     that carry no CA. Devices already set up keep whatever CA they were given.
+  - `PUBLIC_BASE_URL` (same value as `terraform.tfvars`' `public_base_url`, §8's second known gap
+    above -- the deployed Cloud Run URL, once known). Only load-bearing once a CA is pinned; if this
+    repo variable is unset while `BROKER_CA_PEM_FILE` is set, the next CI deploy makes device
+    create/rotate start failing with a 500 instead of silently un-pinning (`app/devsetup.py`).
   - `FIREBASE_PROJECT_ID`, `FIREBASE_API_KEY`, `FIREBASE_AUTH_DOMAIN`, `FIREBASE_STORAGE_BUCKET`,
     `FIREBASE_MESSAGING_SENDER_ID`, `FIREBASE_APP_ID` -- the web app's Firebase config (same values as
     `web/.env.local`'s own `NEXT_PUBLIC_FIREBASE_*`, from the Firebase console's Project Settings ->

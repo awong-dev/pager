@@ -65,6 +65,12 @@ variable "broker_ca_pem_file" {
   default     = ""
 }
 
+variable "public_base_url" {
+  description = "docs/V02_DESIGN.md §4.4 / infra/modules/relay-service/variables.tf's public_base_url: this deployment's own public HTTPS origin (already used by app/tasks.py, app/backends/sms_twilio.py; now also the base of the CA-pointer URL a bootstrap bundle hands a device). Cloud Run v2's own computed URL cannot be referenced from inside the same apply that creates the service (a genuine cyclic reference), so this has no default derived from module.relay_service.service_url -- set it by hand after the service exists. Empty (the default) leaves it unset; production's value is `https://pager-relay-2ix4jtetvq-uw.a.run.app` (infra/README.md)."
+  type        = string
+  default     = ""
+}
+
 variable "twilio_base_url" {
   description = "Leave empty in a real deployment -- see infra/modules/relay-service/variables.tf's comment. Only meaningful pointed at a Twilio-mock-shaped staging endpoint."
   type        = string

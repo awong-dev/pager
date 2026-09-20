@@ -82,7 +82,9 @@ import time
 from datetime import UTC, datetime
 from typing import Any
 
+from app import ca_resolve
 from app.broker import BrokerClient
+from app.config import Settings
 from app.db.firestore import get_db
 from app.ids import new_message_id
 from app.store import allow as allow_store
@@ -114,13 +116,30 @@ _BOOK_NAME_MAX_CODEPOINTS = 16
 # name) to avoid coupling this module to devauth's internals for one flat
 # integer.
 _SIGNED_CBOR_SIG_BYTES = 10
-# Worst-case `n` (uint32 max) -- included in the size check even though the
-# real value is only known at publish time (`app/store/device_secrets.py`'s
-# `next_down_n`), so the assertion below never under-counts.
-_WORST_CASE_N = 2**32 - 1
+# Worst-case `n` -- docs/V02_DESIGN.md §3 widens `n` to a 52-bit counter
+# (`app/wire.py`'s `N_MAX_EXCLUSIVE`); included in the size check even
+# though the real value is only known at publish time (`app/store/
+# device_secrets.py`'s `next_down_n`), so the assertion below never
+# under-counts. `next_down_n` itself still counts by one from zero (§3: "the
+# relay's own downN counts by one"), so this worst case is far more
+# conservative than any downN reachable in practice -- which is the point of
+# a worst-case bound.
+_WORST_CASE_N = 2**53 - 1
 
 _PENDING_BOOK_FIELD = "pendingBook"
 _PENDING_CFG_FIELD = "pendingCfg"
+# docs/V02_DESIGN.md §4.4: `cfg.ca` gets its own pending slot, separate from
+# `cfg.lock`'s `_PENDING_CFG_FIELD` -- a pending lock and a pending CA push
+# must not clobber each other (each is independently "newest unacked, only
+# one at a time", but the two *kinds* of cfg coexist). Keeping the existing
+# `pendingCfg` name for `lock` (rather than renaming both to a uniform
+# scheme) leaves any `cfg.lock` already pending in production, before this
+# change deploys, still tracked and re-publishable.
+_PENDING_CFG_CA_FIELD = "pendingCfgCa"
+# Every field `ack()`/`republish_pending()` iterate over -- see their
+# docstrings for why book/lock/ca are three independent "newest unacked"
+# slots rather than one.
+_ALL_PENDING_FIELDS = (_PENDING_BOOK_FIELD, _PENDING_CFG_FIELD, _PENDING_CFG_CA_FIELD)
 
 
 def _devices():
@@ -282,6 +301,59 @@ def push_cfg(device_id: str, lock: dict[str, Any], broker: BrokerClient) -> bool
     return broker.publish_down(device_id, obj)
 
 
+def push_ca(
+    device_id: str, *, pem: str, broker: BrokerClient, settings: Settings | None = None
+) -> bool:
+    """docs/V02_DESIGN.md §4.4: `/down cfg.ca = {url, sha}` -- the CA-pointer
+    push. `pem` is the CA PEM text to push (normally the relay's own current
+    CA, `BROKER_CA_PEM`/`ca_resolve.get_broker_ca_pem()`, but this module
+    does not read the environment itself, matching `push_cfg`'s "the caller
+    builds the payload" shape); `ca_resolve.ca_pointer` computes the
+    content-addressed URL, remembers the PEM in `cas/{sha}` so the pointer
+    keeps resolving later, and raises `ca_resolve.PublicBaseUrlRequired` if
+    `PUBLIC_BASE_URL` is not configured -- propagated to the caller (the
+    admin route) rather than swallowed, since silently not pushing would
+    look identical to a broker outage.
+
+    Stored under its own pending slot (`_PENDING_CFG_CA_FIELD`), independent
+    of a pending `cfg.lock` -- see `_ALL_PENDING_FIELDS`'s docstring."""
+    if devices_store.get_device(device_id) is None:
+        logger.warning("push_ca: no such device %s", device_id)
+        return False
+    settings = settings if settings is not None else Settings.from_env()
+    url, sha = ca_resolve.ca_pointer(pem, settings)
+    obj: dict[str, Any] = {
+        "v": 1,
+        "id": new_message_id(),
+        "ts": int(time.time()),
+        "kind": "cfg",
+        "cfg": {"ca": {"url": url, "sha": sha}},
+        "ack": None,
+    }
+    _assert_within_envelope_limit(obj)
+    _set_pending(device_id, _PENDING_CFG_CA_FIELD, obj)
+    return broker.publish_down(device_id, obj)
+
+
+def unpin_ca(device_id: str, broker: BrokerClient) -> bool:
+    """docs/V02_DESIGN.md §4.4: "`url = ''` means un-pin." No `sha` at all --
+    there is nothing to hash-check when there is no CA."""
+    if devices_store.get_device(device_id) is None:
+        logger.warning("unpin_ca: no such device %s", device_id)
+        return False
+    obj: dict[str, Any] = {
+        "v": 1,
+        "id": new_message_id(),
+        "ts": int(time.time()),
+        "kind": "cfg",
+        "cfg": {"ca": {"url": ""}},
+        "ack": None,
+    }
+    _assert_within_envelope_limit(obj)
+    _set_pending(device_id, _PENDING_CFG_CA_FIELD, obj)
+    return broker.publish_down(device_id, obj)
+
+
 def ack(device_id: str, msg_id: str) -> bool:
     """docs/PROTOCOL.md §3.2: a book/cfg is "acked `shown` once applied,"
     through the same `{"id":..., "ack":"shown"}` `/up` machinery as any
@@ -302,7 +374,7 @@ def ack(device_id: str, msg_id: str) -> bool:
     data = snap.to_dict() or {}
     matched = False
     updates: dict[str, Any] = {}
-    for field in (_PENDING_BOOK_FIELD, _PENDING_CFG_FIELD):
+    for field in _ALL_PENDING_FIELDS:
         pending = data.get(field)
         if isinstance(pending, dict) and pending.get("id") == msg_id:
             matched = True
@@ -325,7 +397,7 @@ def republish_pending(device_id: str, broker: BrokerClient) -> None:
     if not snap.exists:
         return
     data = snap.to_dict() or {}
-    for field in (_PENDING_BOOK_FIELD, _PENDING_CFG_FIELD):
+    for field in _ALL_PENDING_FIELDS:
         pending = data.get(field)
         if not isinstance(pending, dict) or pending.get("acked"):
             continue

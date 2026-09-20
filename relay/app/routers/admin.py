@@ -35,7 +35,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from firebase_admin import auth as fb_auth
 from pydantic import BaseModel, ConfigDict, Field
 
-from app import devcfg, devsetup
+from app import ca_resolve, devcfg, devsetup
 from app.auth import AuthedUser, require_admin
 from app.backends.sms_twilio import normalize_e164
 from app.broker import BrokerClient
@@ -345,17 +345,19 @@ class DeviceSetupCodeResponse(BaseModel):
 HMAC_KEY_BYTES = 32
 
 
-def _bootstrap_host_and_ca() -> tuple[str, str]:
-    """docs/DEVICE_PLAN.md §3.3: the broker host/CA the bootstrap bundle
-    hands the device belongs in `app.config.Settings` once
-    docs/DEVICE_TASKS.md S2b.2's `ca_resolve.py` exists to actually resolve
-    the CA -- neither `config.py` nor a new module is in this task's
-    `Files` list. Read directly from the environment instead, the same
-    pattern `app/emqx_admin.py`'s own `_broker_manages_auth` already uses
-    for a setting with nowhere else to live yet."""
-    host = os.environ.get("BROKER_HOST", "localhost")
-    ca = os.environ.get("BROKER_CA_PEM", "")
-    return host, ca
+def _bootstrap_host_and_ca(settings: Settings) -> tuple[str, str | None]:
+    """docs/DEVICE_PLAN.md §3.3 / docs/V02_DESIGN.md §4.4: the broker host
+    the bootstrap bundle hands the device, and the CA PEM to pin (`None`
+    for an unpinned deployment). Now that `app.config.Settings` carries both
+    (`broker_host`, `broker_ca_pem`), this reads them from there instead of
+    `os.environ` directly -- the comment this replaced named this task as
+    the one that would give it a proper home. `settings.broker_ca_pem` (a
+    deployment's own Terraform-set value) wins outright; otherwise
+    `ca_resolve.get_broker_ca_pem()` (docs/DEVICE_TASKS.md S2b.2's
+    auto-resolve, wired in here per docs/V02_DESIGN.md §4.4's "wire that
+    resolver in at last")."""
+    ca = settings.broker_ca_pem or ca_resolve.get_broker_ca_pem()
+    return settings.broker_host, ca
 
 
 # docs/DEVICE_PLAN.md section 3.4 / section 10 H2: bit 0 of the bundle's `flags` is the
@@ -447,21 +449,24 @@ def create_device(
     # credential + ACL before handing out a setup code that will eventually
     # let a device connect with it.
     emqx_result = emqx.ensure_device(req.deviceId, password, req.deviceId)
-    host, ca = _bootstrap_host_and_ca()
+    host, ca = _bootstrap_host_and_ca(settings)
     now = datetime.now(UTC)
-    setup_code = devsetup.issue(
-        req.deviceId,
-        mqtt_password=password,
-        hmac_key=hmac_key,
-        host=host,
-        ca=ca,
-        flags=_bootstrap_flags("hmac"),  # create_device()'s default authMode
-        label=req.label,
-        settings=settings,
-        broker=broker,
-        emqx=emqx,
-        now=now,
-    )
+    try:
+        setup_code = devsetup.issue(
+            req.deviceId,
+            mqtt_password=password,
+            hmac_key=hmac_key,
+            host=host,
+            ca_pem=ca,
+            flags=_bootstrap_flags("hmac"),  # create_device()'s default authMode
+            label=req.label,
+            settings=settings,
+            broker=broker,
+            emqx=emqx,
+            now=now,
+        )
+    except ca_resolve.PublicBaseUrlRequired as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
     expires_at = now + timedelta(minutes=devsetup.EXPIRY_MINUTES)
 
     device = devices_store.get_device(req.deviceId)
@@ -532,21 +537,24 @@ def rotate_credentials(
     devices_store.set_provision_state(device_id, "issued")
 
     emqx_result = emqx.ensure_device(device.mqttUsername, password, device_id)
-    host, ca = _bootstrap_host_and_ca()
+    host, ca = _bootstrap_host_and_ca(settings)
     now = datetime.now(UTC)
-    setup_code = devsetup.issue(
-        device_id,
-        mqtt_password=password,
-        hmac_key=hmac_key,
-        host=host,
-        ca=ca,
-        flags=_bootstrap_flags(device.authMode),
-        label=device.label,
-        settings=settings,
-        broker=broker,
-        emqx=emqx,
-        now=now,
-    )
+    try:
+        setup_code = devsetup.issue(
+            device_id,
+            mqtt_password=password,
+            hmac_key=hmac_key,
+            host=host,
+            ca_pem=ca,
+            flags=_bootstrap_flags(device.authMode),
+            label=device.label,
+            settings=settings,
+            broker=broker,
+            emqx=emqx,
+            now=now,
+        )
+    except ca_resolve.PublicBaseUrlRequired as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
     expires_at = now + timedelta(minutes=devsetup.EXPIRY_MINUTES)
 
     updated = devices_store.get_device(device_id)
@@ -745,6 +753,45 @@ def push_cfg(
         raise HTTPException(status_code=404, detail="no such device")
     lock = {k: v for k, v in req.lock.model_dump().items() if v is not None}
     ok = devcfg.push_cfg(device_id, lock, broker)
+    return {"ok": ok}
+
+
+# ---------------------------------------------------------------------------
+# ca -- docs/V02_DESIGN.md §4.4, docs/CA_TRUST_PLAN.md §3.4.
+# ---------------------------------------------------------------------------
+
+
+class PushCaRequest(BaseModel):
+    action: Literal["push", "unpin"]
+
+
+@router.post("/devices/{device_id}/ca", dependencies=[Depends(require_admin_write_rate_limit)])
+def push_ca(
+    device_id: str,
+    req: PushCaRequest,
+    broker: Annotated[BrokerClient, Depends(get_broker)],
+    settings: Annotated[Settings, Depends(get_app_settings)],
+) -> dict[str, bool]:
+    """`{"action": "push"}` pushes the relay's own current CA
+    (`settings.broker_ca_pem` or `ca_resolve.get_broker_ca_pem()`, same
+    precedence as `_bootstrap_host_and_ca`) as a `/down cfg.ca` pointer;
+    `{"action": "unpin"}` pushes `cfg.ca = {url: ""}`. Like `cfg.lock`, only
+    the newest unacked `cfg.ca` is re-published (`app/devcfg.py`'s
+    `_PENDING_CFG_CA_FIELD`), independent of any pending `cfg.lock`."""
+    if devices_store.get_device(device_id) is None:
+        raise HTTPException(status_code=404, detail="no such device")
+    if req.action == "unpin":
+        ok = devcfg.unpin_ca(device_id, broker)
+        return {"ok": ok}
+    ca_pem = settings.broker_ca_pem or ca_resolve.get_broker_ca_pem()
+    if not ca_pem:
+        raise HTTPException(
+            status_code=400, detail="no CA is configured on this relay to push"
+        )
+    try:
+        ok = devcfg.push_ca(device_id, pem=ca_pem, broker=broker, settings=settings)
+    except ca_resolve.PublicBaseUrlRequired as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
     return {"ok": ok}
 
 

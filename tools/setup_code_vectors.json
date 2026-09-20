@@ -20,5 +20,28 @@
     },
     "bundle_nonce_b64": "AAECAwQFBgcICQoL",
     "bundle_ct_b64": "AAECAwQFBgcICQoL19JW45XN5PM2uelz3XRGhiI+L8GB3QDVYD/c7f498IOgWDjKaGCXb1mG6LtRDXsY15tDB9vw/Iq4g++MFdljik+RSjhMB5jBOGxWU3iyHoeIubp9f5HWpR9ncaXMGSzX6VUjvGoT+xm3eek35FVZhCJ0xbEcU/6KrOUmZjvzBhXi2Pb7VWkpfiMwKkXhwzYaisu/+kcbRWsHCzsnzaPe2RWzMrsXt4jyFRD0epuw/YSFvWrC6DpmxM+cU6nqPSsMIS4NQFCZHwJHtCiJlAwqhbY2f4s19h55leOFjq4RZwgwm/Czhf+/ZiXQ"
+  },
+  {
+    "label": "boot_bundle_ca_pointer",
+    "_comment": "docs/V02_DESIGN.md section 4.4 (task: relay/protocol half of section 4): a second vector, ADDED alongside the original 'boot_bundle' entry rather than replacing it, for the pointer bundle shape (ca_url/ca_sha, boot keys 40/41) -- the original vector keeps pinning the v0.1-era inline `ca` (boot key 34), which firmware must keep accepting. See tools/setup_code_vectors.json's first entry's own _comment for why this lives in this file rather than tools/authvectors.json.",
+    "token_b64": "CAkKCwwNDg8=",
+    "code": "104G-M2RC-1M70-YX @ pointer.ala.us-east-1.emqxsl.com",
+    "bid": "19c8c19518db",
+    "bpw": "z81ZdeZohbThDL4MI6zblQhsQaM6beLZJX3oUjwT87c=",
+    "bkey_b64": "8uc80oTzuoLHBJilkSZj/uMtjIF3/YIbC1XzneDboqA=",
+    "bundle_plain_obj": {
+      "v": 1,
+      "id": "pgr-0002",
+      "pw": "q8K3nR6yM5oS9tU2vX4zA1bC7dE0fG",
+      "k_b64": "ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8=",
+      "host": "pointer.ala.us-east-1.emqxsl.com",
+      "port": 8883,
+      "ca_url": "https://pager-relay-example.a.run.app/ca/75cb4954fe880eb6a6d8bac1d129c48d4a80a0e20dddff0a2e113b7f251ae22a.pem",
+      "ca_sha_b64": "dctJVP6IDram2LrB0SnEjUqAoOIN3f8KLhE7fyUa4io=",
+      "flags": 1,
+      "label": "Kid 2"
+    },
+    "bundle_nonce_b64": "s/eD46F6PskvKkea",
+    "bundle_ct_b64": "s/eD46F6PskvKkeapuX0RKBNflwgOc5geT2YugKB6Wb2Lo4d0iPiuCseTdcvcAbSzmUnD1JBsGGWNv5aI80ay4KuuPqVbFbxyygHD9ED7A+xZXqSy1wHjfJPx5mPnoK9ALVpMKgKI0wElaiMoTKzZ3h+IZb0QJyI2hhUQm1wu0BsHXiNDS9logyMJieXPKMLg4gMeXyPg6DGLWDJXTQwQwmahnsWv9exs2cR1jJ1V+pL/3iZVRBjc8TxkXkfhBTJXhvqiW4Hz8aRnKxLISNXnpHofgdJVKPjZsDQZE2FxbJBvJ5MQqPbdMWzdPEvia4/CGPSXQkFS63l+lyE0l0sTLB5C5qdmMsbY3emhre96/x++PGgvUtL3qYt2j5iWH0PkEk+APw+XVaYEkSLjwJx3J90JyJ6YMsd"
   }
 ]

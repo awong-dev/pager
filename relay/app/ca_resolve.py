@@ -36,6 +36,7 @@ in the running app calls them yet.
 from __future__ import annotations
 
 import functools
+import hashlib
 import logging
 import socket
 import ssl
@@ -47,6 +48,7 @@ from cryptography import x509
 from cryptography.hazmat.primitives import serialization
 
 from app.config import Settings
+from app.store import cas as cas_store
 
 logger = logging.getLogger("relay.ca_resolve")
 
@@ -258,6 +260,36 @@ def _split_pem_certificates(data: bytes) -> list[bytes]:
         elif in_block:
             current.append(line)
     return blocks
+
+
+class PublicBaseUrlRequired(RuntimeError):
+    """docs/V02_DESIGN.md §4.4: "If a CA is configured but PUBLIC_BASE_URL
+    is not, refuse to issue a setup code with a clear 500-class error rather
+    than silently sending an unpinned bundle." Raised by `ca_pointer` below;
+    `app/devsetup.py` (bootstrap) and `app/devcfg.py` (the CA-push admin
+    route) both let it propagate to their HTTP-layer caller
+    (`app/routers/admin.py`), which turns it into a 500."""
+
+
+def ca_pointer(pem: str, settings: Settings) -> tuple[str, bytes]:
+    """`pem` -> `(url, sha256_digest)` for a bootstrap bundle's `ca_url`/
+    `ca_sha` or a `/down cfg.ca` push (docs/V02_DESIGN.md §4.4): remembers
+    `pem` in `cas/{sha256hex}` (`app/store/cas.py`) so `GET
+    /ca/{sha256hex}.pem` keeps resolving this pointer even after the
+    relay's own *current* CA changes, then builds the content-addressed
+    URL from `settings.public_base_url`. Raises `PublicBaseUrlRequired` if
+    that setting is empty -- there is nothing correct to put in `ca_url`
+    otherwise, and a pointer to nowhere is worse than refusing outright."""
+    if not settings.public_base_url:
+        raise PublicBaseUrlRequired(
+            "a broker CA is configured but PUBLIC_BASE_URL is not set -- refusing to issue "
+            "an unpinned bundle/push silently (docs/V02_DESIGN.md section 4.4)"
+        )
+    sha = hashlib.sha256(pem.encode("utf-8")).digest()
+    sha_hex = sha.hex()
+    cas_store.remember(sha_hex, pem)
+    url = f"{settings.public_base_url.rstrip('/')}/ca/{sha_hex}.pem"
+    return url, sha
 
 
 def _to_pem(cert: x509.Certificate) -> str:
