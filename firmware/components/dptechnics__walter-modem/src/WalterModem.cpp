@@ -1804,6 +1804,12 @@ TickType_t WalterModem::_processModemCMD(WalterModemCmd* cmd, bool queueError)
 #pragma endregion // CMD_PROCESSING
 #pragma region RSP_PROCESSING
 
+/* PAGER PATCH: (1.4, SMS) forward declaration — the real definition lives
+ * with the rest of the SMS support, near the SMS method implementations
+ * further down this file, but _processModemRSP() (immediately below) is
+ * the only caller and needs it in scope first. */
+static int _smsSplitCmgrFields(const char* s, char out[][32], int outCap, int maxFields);
+
 void WalterModem::_processModemRSP(WalterModemCmd* cmd, WalterModemBuffer* buff)
 {
 
@@ -1827,6 +1833,39 @@ void WalterModem::_processModemRSP(WalterModemCmd* cmd, WalterModemBuffer* buff)
   }
 
   WalterModemState result = WALTER_MODEM_STATE_OK;
+
+  /**
+   * PAGER PATCH: (1.4, SMS) Second line of a text-mode AT+CMGR response: the
+   * message body itself, arriving as its own CRLF-terminated line right
+   * after the "+CMGR: ..." header line (RSP_PROC_SMS region below) sets
+   * `_smsCmgrAwaitingBody`. Checked FIRST, ahead of every other prefix match
+   * in this function, because the body text is arbitrary and could
+   * otherwise be misread as e.g. an "OK"/"ERROR" line or another URC prefix
+   * if it happened to start with one of those strings.
+   *
+   * UNVERIFIED: assumes the body never itself contains an embedded CRLF (a
+   * literal newline character inside the SMS text would split it across
+   * more than one buffer here, and only the first physical line would be
+   * captured) — flagged, not fixed: a genuine multi-line SMS body is rare,
+   * and concatenated/multipart SMS (V02_DESIGN.md §6: "each part is handled
+   * as its own message") is the mechanism real long messages actually use.
+   * A zero-length buffer (some modems emit a blank line before "OK") is
+   * ignored rather than consumed, so the real body line that follows is
+   * still captured correctly.
+   */
+  if(_smsCmgrAwaitingBody && cmd != NULL && buff->size > 0) {
+    size_t n = buff->size;
+    if(n > sizeof(cmd->rsp->data.smsRead.body) - 1) {
+      n = sizeof(cmd->rsp->data.smsRead.body) - 1;
+    }
+    memcpy(cmd->rsp->data.smsRead.body, buff->data, n);
+    cmd->rsp->data.smsRead.body[n] = '\0';
+    cmd->rsp->data.smsRead.bodyLen = (uint16_t) n;
+    cmd->rsp->data.smsRead.valid = true;
+    _smsCmgrAwaitingBody = false;
+    buff->free = true;
+    return;
+  }
 
 #pragma region RSP_PROC_GENERAL
 
@@ -2132,6 +2171,113 @@ void WalterModem::_processModemRSP(WalterModemCmd* cmd, WalterModemBuffer* buff)
     }
 
     result = WALTER_MODEM_STATE_ERROR;
+    goto after_processing_logic;
+  }
+
+  /* PAGER PATCH: (1.4, SMS) +CMS ERROR response (3GPP TS 27.005 §3.2.5): the
+   * SMS-specific error report, parallel to +CME ERROR above but for a failed
+   * SMS command (AT+CMGS/AT+CMGR/AT+CMGD/...). Treated identically: fail the
+   * command with WALTER_MODEM_STATE_ERROR (no separate rsp->data slot for
+   * the numeric CMS error code — main/sms.c only needs success/failure, and
+   * the raw response line is already visible in the DEBUG-level RX log
+   * above). UNVERIFIED whether this modem ever actually emits this instead
+   * of a plain "ERROR" for an SMS command failure. */
+  if(_buffStartsWith(buff, "+CMS ERROR: ")) {
+    if(cmd != NULL) {
+      cmd->rsp->type = WALTER_MODEM_RSP_DATA_TYPE_NO_DATA;
+      cmd->state = WALTER_MODEM_CMD_STATE_RETRY_AFTER_ERROR;
+    }
+    _smsCmgrAwaitingBody = false;
+
+    result = WALTER_MODEM_STATE_ERROR;
+    goto after_processing_logic;
+  }
+
+  /* PAGER PATCH: (1.4, SMS, docs/V02_DESIGN.md §6) `+CMTI: "<mem>",<index>`
+   * new-message URC (3GPP TS 27.005 §3.4.1). Dispatched as an event, same
+   * pattern as the +SQNSVMONS URC above; main/sms.c's own handler only
+   * copies the index/mem and defers the actual smsRead()/smsDelete() to
+   * modes_run()'s own task (never done from this event-processing task). */
+  if(_buffStartsWith(buff, "+CMTI: ")) {
+    const char* rspStr = _buffStr(buff);
+    char mem[8] = { 0 };
+    unsigned index = 0;
+    int parsed = sscanf(rspStr, "+CMTI: \"%7[^\"]\",%u", mem, &index);
+    if(parsed == 2) {
+      WalterModemEvent newEvent = {};
+      newEvent.type = WALTER_MODEM_EVENT_TYPE_SMS;
+      newEvent.sms.event = WALTER_MODEM_SMS_EVENT_RING;
+      newEvent.sms.data.index = (uint16_t) index;
+      strncpy(newEvent.sms.data.mem, mem, sizeof(newEvent.sms.data.mem) - 1);
+      xQueueSend(_eventQueue.handle, &newEvent, 0);
+    }
+
+    goto after_processing_logic;
+  }
+
+  /* PAGER PATCH: (1.4, SMS, coordinator fix #2 2026-09-20) First line of
+   * AT+CMGR's text-mode response, WITH the AT+CSDH=1 extra fields
+   * smsConfig() now requests (3GPP TS 27.005 §4.4):
+   * `+CMGR: <stat>,<oa>,[<alpha>],<scts>,<tooa>,<fo>,<pid>,<dcs>,<sca>,
+   * <tosca>,<length>` — 11 fields total when AT+CSDH=1 took effect, still
+   * just the original 4 (`<stat>,<oa>,[<alpha>],<scts>`) if it did not
+   * (older/odd firmware). `<alpha>` (field 2, the phonebook name, if any)
+   * is parsed but not used. `<dcs>` (field 7, 0-based) is what
+   * main/sms.c's sms_decode_received() uses to decide UCS-2 vs. 7-bit vs.
+   * 8-bit-undisplayable WITHOUT guessing from the body's own shape — left
+   * at -1 when the CSDH fields are absent, which main/sms.c treats as "fall
+   * back to the shape-based heuristic". Only matched while the command
+   * actually in flight is AT+CMGR= (`cmd->atCmd[0]`, the literal
+   * command-array element _runCmd()'s `arr()` puts the fixed prefix in,
+   * un-affected by the digit elements `_atNum()` appends after it) — a
+   * defensive check against ever mis-reading an unrelated "+CMGR: " line
+   * some other way. Sets `_smsCmgrAwaitingBody` so the very next
+   * non-empty line is captured as the body (see the top of this function).
+   * UNVERIFIED: whether an empty/never-used index answers with this header
+   * carrying empty fields, a bare "OK" (this line absent entirely), or a
+   * +CMS ERROR — all three are handled (the first two leave `valid` false
+   * only if `<oa>` came back empty; a +CMS ERROR is handled above).
+   * UNVERIFIED whether this modem actually honours AT+CSDH=1 at all. */
+  if(cmd != NULL && cmd->atCmd[0] != NULL && strcmp(cmd->atCmd[0], "AT+CMGR=") == 0 &&
+     _buffStartsWith(buff, "+CMGR: ")) {
+    const char* rspStr = _buffStr(buff) + _strLitLen("+CMGR: ");
+    char fields[11][32] = { { 0 } };
+    int n = _smsSplitCmgrFields(rspStr, fields, 32, 11);
+
+    cmd->rsp->type = WALTER_MODEM_RSP_DATA_TYPE_SMS;
+    cmd->rsp->data.smsRead.valid = false;
+    cmd->rsp->data.smsRead.bodyLen = 0;
+    cmd->rsp->data.smsRead.body[0] = '\0';
+    cmd->rsp->data.smsRead.index = 0; /* the caller already knows which index it asked for */
+    cmd->rsp->data.smsRead.dcs = (n >= 8 && fields[7][0] != '\0') ? atoi(fields[7]) : -1;
+    _strncpy_s(cmd->rsp->data.smsRead.sender, n >= 2 ? fields[1] : "",
+              sizeof(cmd->rsp->data.smsRead.sender));
+    _strncpy_s(cmd->rsp->data.smsRead.timestamp, n >= 4 ? fields[3] : "",
+              sizeof(cmd->rsp->data.smsRead.timestamp));
+    _smsCmgrAwaitingBody = true;
+
+    goto after_processing_logic;
+  }
+
+  /* PAGER PATCH: (1.4, SMS) AT+CPMS= (SET form) response, 3GPP TS 27.005
+   * §3.2.2: "+CPMS: <usedr>,<totalr>,<usedw>,<totalw>,<useds>,<totals>" —
+   * only used by smsConfig()'s own AT+CPMS="ME","ME","ME" step, to report
+   * real "ME" storage capacity/usage for main/sms.c's boot-drain scan bound
+   * (coordinator fix, smaller item a: "read the real capacity from
+   * AT+CPMS?" — this captures it from the SET command's own response
+   * instead, avoiding a second AT round trip for an explicit query).
+   * UNVERIFIED whether this modem's AT+CPMS SET response actually includes
+   * these counts (3GPP-optional in some implementations). */
+  if(cmd != NULL && cmd->atCmd[0] != NULL && strcmp(cmd->atCmd[0], "AT+CPMS=") == 0 &&
+     _buffStartsWith(buff, "+CPMS: ")) {
+    const char* rspStr = _buffStr(buff);
+    int usedr = -1, totalr = -1, usedw = 0, totalw = 0;
+    int parsed = sscanf(rspStr, "+CPMS: %d,%d,%d,%d", &usedr, &totalr, &usedw, &totalw);
+    if(parsed >= 2) {
+      cmd->rsp->type = WALTER_MODEM_RSP_DATA_TYPE_SMS_STORAGE;
+      cmd->rsp->data.smsStorage.usedr = usedr;
+      cmd->rsp->data.smsStorage.totalr = totalr;
+    }
     goto after_processing_logic;
   }
 
@@ -4067,6 +4213,219 @@ char WalterModem::_getLuhnChecksum(const char* imei)
 }
 
 #pragma endregion
+#pragma region SMS
+/* PAGER PATCH: (1.4, SMS, docs/V02_DESIGN.md §6) */
+
+/**
+ * @brief Splits a text-mode "+CMGR: " header's comma-separated, optionally
+ * quoted fields (3GPP TS 27.005 §4.4: `<stat>,<oa>,[<alpha>],<scts>[,...]`).
+ * Returns the number of fields found; `out[i]` is NUL-terminated and
+ * truncated to `outCap-1` bytes. A field not present (an empty `<alpha>`,
+ * i.e. ",,") comes back as an empty string, the expected common case (no
+ * phonebook name matched).
+ */
+static int _smsSplitCmgrFields(const char* s, char out[][32], int outCap, int maxFields)
+{
+  int n = 0;
+  while(*s != '\0' && n < maxFields) {
+    while(*s == ' ') {
+      s++;
+    }
+    int len = 0;
+    if(*s == '"') {
+      s++;
+      while(*s != '"' && *s != '\0' && len < outCap - 1) {
+        out[n][len++] = *s++;
+      }
+      if(*s == '"') {
+        s++;
+      }
+    } else {
+      while(*s != ',' && *s != '\0' && len < outCap - 1) {
+        out[n][len++] = *s++;
+      }
+    }
+    out[n][len] = '\0';
+    n++;
+    while(*s != ',' && *s != '\0') {
+      s++;
+    }
+    if(*s == ',') {
+      s++;
+    }
+  }
+  return n;
+}
+
+/**
+ * @brief Blocking helper used by smsConfig()/smsSend() to run one
+ * already-queued command to completion and report success/failure as a
+ * plain bool, WITHOUT the `_returnAfterReply()` macro's own unconditional
+ * `return` — both callers run several such commands in sequence and need to
+ * either bail out early (smsConfig(): fail-fast, no partially-applied
+ * config left behind) or run cleanup after the result is known
+ * (smsSend(): must restore the resting GSM charset before its own return,
+ * regardless of the send's own outcome). Async (`cmd->userCb != NULL`) is
+ * treated as "accepted for queueing" (true), exactly like
+ * `_returnAfterReply()` does for every other command in this library — this
+ * project only ever calls smsConfig()/smsSend() synchronously (net.cpp's
+ * own wrapper never passes a `cb`), so that branch is unreachable in
+ * practice but kept for consistency with the rest of the class's calling
+ * convention.
+ */
+static bool _waitCmdResult(WalterModemCmd* cmd, std::unique_lock<std::mutex>& lock)
+{
+  if(cmd->userCb != NULL) {
+    lock.unlock();
+    return true;
+  }
+  cmd->cmdLock.cond.wait(lock,
+                         [cmd] { return cmd->state == WALTER_MODEM_CMD_STATE_SYNC_LOCK_NOTIFIED; });
+  WalterModemState rspResult = cmd->rsp->result;
+  cmd->state = WALTER_MODEM_CMD_STATE_COMPLETE;
+  lock.unlock();
+  return rspResult == WALTER_MODEM_STATE_OK;
+}
+
+bool WalterModem::smsConfig(bool* outUsedIra, WalterModemRsp* rsp, walterModemCb cb, void* args)
+{
+  if(outUsedIra) {
+    *outUsedIra = false;
+  }
+  {
+    _runCmd(arr("AT+CMGF=1"), "OK", rsp, cb, args);
+    if(!_waitCmdResult(cmd, lock)) {
+      return false;
+    }
+  }
+
+  /* Coordinator fix (2026-09-20): try "IRA" first (the TE charset becomes
+   * plain ASCII, the modem does IRA<->GSM conversion itself — see this
+   * method's own header doc comment for why "GSM" as the resting charset
+   * was wrong); only fall back to "GSM" if "IRA" is rejected. */
+  bool usedIra = true;
+  {
+    _runCmd(arr("AT+CSCS=", _atStr("IRA")), "OK", (WalterModemRsp*) NULL, (walterModemCb) NULL,
+            (void*) NULL);
+    usedIra = _waitCmdResult(cmd, lock);
+  }
+  if(!usedIra) {
+    _runCmd(arr("AT+CSCS=", _atStr("GSM")), "OK", rsp, cb, args);
+    if(!_waitCmdResult(cmd, lock)) {
+      return false;
+    }
+  }
+  _strncpy_s(_smsRestingCharset, usedIra ? "IRA" : "GSM", sizeof(_smsRestingCharset));
+  if(outUsedIra) {
+    *outUsedIra = usedIra;
+  }
+
+  {
+    /* Coordinator fix #2: AT+CSDH=1 makes AT+CMGR's response carry the
+     * extra fields (including <dcs>) so main/sms.c never has to guess the
+     * data coding scheme of a received message. */
+    _runCmd(arr("AT+CSDH=1"), "OK", rsp, cb, args);
+    if(!_waitCmdResult(cmd, lock)) {
+      return false;
+    }
+  }
+  {
+    _runCmd(arr("AT+CSMP=17,167,0,0"), "OK", rsp, cb, args);
+    if(!_waitCmdResult(cmd, lock)) {
+      return false;
+    }
+  }
+  {
+    _runCmd(arr("AT+CNMI=2,1,0,0,0"), "OK", rsp, cb, args);
+    if(!_waitCmdResult(cmd, lock)) {
+      return false;
+    }
+  }
+  {
+    _runCmd(arr("AT+CPMS=", _atStr("ME"), ",", _atStr("ME"), ",", _atStr("ME")), "OK", rsp, cb, args);
+    return _waitCmdResult(cmd, lock);
+  }
+}
+
+bool WalterModem::smsSend(const char* number, const char* text, bool useUcs2, WalterModemRsp* rsp,
+                          walterModemCb cb, void* args)
+{
+  /* Coordinator fix: only touch AT+CSCS/AT+CSMP at all when sending UCS-2 —
+   * the resting charset (_smsRestingCharset, "IRA" or whatever smsConfig()
+   * fell back to) is already correct for a 7-bit send, so that path costs
+   * one AT+CMGS round trip only, no toggle. */
+  bool cfgOk = true;
+  if(useUcs2) {
+    {
+      _runCmd(arr("AT+CSCS=", _atStr("UCS2")), "OK", (WalterModemRsp*) NULL, (walterModemCb) NULL,
+              (void*) NULL);
+      cfgOk = _waitCmdResult(cmd, lock);
+    }
+    if(cfgOk) {
+      _runCmd(arr("AT+CSMP=17,167,0,", _digitStr(8)), "OK", (WalterModemRsp*) NULL,
+              (walterModemCb) NULL, (void*) NULL);
+      cfgOk = _waitCmdResult(cmd, lock);
+    }
+  }
+
+  bool sendOk = false;
+  if(cfgOk) {
+    /* PAGER PATCH note: a stack buffer, not `text` itself, since the payload
+     * must carry one extra trailing byte (Ctrl-Z, 0x1A) `text` does not
+     * have, and `cmd->payload` is non-const. Safe as a stack local: this
+     * whole function runs synchronously to completion (net.cpp never passes
+     * a `cb`) before returning, so the buffer's lifetime covers the whole
+     * DATA_TX_WAIT round trip — same reasoning tlsWriteCredential() relies
+     * on for using its own (caller-owned) `credential` pointer directly. */
+    uint8_t payload[282];
+    size_t textLen = strlen(text);
+    if(textLen > sizeof(payload) - 2) {
+      textLen = sizeof(payload) - 2; /* defensive cap; sms.c's own encoder never gets here */
+    }
+    memcpy(payload, text, textLen);
+    payload[textLen] = 0x1A; /* Ctrl-Z terminates a text-mode AT+CMGS body, 3GPP TS 27.005 §4.3 */
+
+    _runCmd(arr("AT+CMGS=", _atStr(number)), "OK", rsp, cb, args, NULL, NULL,
+            WALTER_MODEM_CMD_TYPE_DATA_TX_WAIT, payload, (uint16_t) (textLen + 1));
+    sendOk = _waitCmdResult(cmd, lock);
+  }
+
+  /* PAGER PATCH note: always restore the resting charset/DCS after a UCS-2
+   * send, regardless of the send's own outcome — main/sms.c's receive-side
+   * DCS-first decode (coordinator fix #2) still assumes AT+CSCS rests on
+   * whatever smsConfig() established whenever no send is in flight, for the
+   * fallback heuristic path. Best-effort: a failure here is logged by the
+   * generic ERROR/CME-ERROR handling above but does not change this
+   * function's own return value. */
+  if(useUcs2) {
+    {
+      _runCmd(arr("AT+CSCS=", _atStr(_smsRestingCharset)), "OK", (WalterModemRsp*) NULL,
+              (walterModemCb) NULL, (void*) NULL);
+      _waitCmdResult(cmd, lock);
+    }
+    {
+      _runCmd(arr("AT+CSMP=17,167,0,0"), "OK", (WalterModemRsp*) NULL, (walterModemCb) NULL,
+              (void*) NULL);
+      _waitCmdResult(cmd, lock);
+    }
+  }
+
+  return cfgOk && sendOk;
+}
+
+bool WalterModem::smsRead(int index, WalterModemRsp* rsp, walterModemCb cb, void* args)
+{
+  _runCmd(arr("AT+CMGR=", _atNum(index)), "OK", rsp, cb, args);
+  _returnAfterReply();
+}
+
+bool WalterModem::smsDelete(int index, WalterModemRsp* rsp, walterModemCb cb, void* args)
+{
+  _runCmd(arr("AT+CMGD=", _atNum(index)), "OK", rsp, cb, args);
+  _returnAfterReply();
+}
+
+#pragma endregion
 #pragma region EVENTS
 
 void WalterModem::_checkEventDuration(
@@ -4142,6 +4501,14 @@ void WalterModem::_dispatchEvent(WalterModemEvent* ev)
     handler += WALTER_MODEM_EVENT_TYPE_VOLTAGE;
     if(handler->voltageHandler != nullptr) {
       handler->voltageHandler(&ev->voltage, handler->args);
+    }
+    break;
+
+  /* PAGER PATCH: (1.4, SMS) */
+  case WALTER_MODEM_EVENT_TYPE_SMS:
+    handler += WALTER_MODEM_EVENT_TYPE_SMS;
+    if(handler->smsHandler != nullptr) {
+      handler->smsHandler(ev->sms.event, &ev->sms.data, handler->args);
     }
     break;
 
@@ -5114,6 +5481,13 @@ void WalterModem::setVoltageEventHandler(walterModemVoltageEventHandler handler,
 {
   _eventHandlers[WALTER_MODEM_EVENT_TYPE_VOLTAGE].voltageHandler = handler;
   _eventHandlers[WALTER_MODEM_EVENT_TYPE_VOLTAGE].args = args;
+}
+
+/* PAGER PATCH: (1.4, SMS) */
+void WalterModem::setSmsEventHandler(walterModemSmsEventHandler handler, void* args)
+{
+  _eventHandlers[WALTER_MODEM_EVENT_TYPE_SMS].smsHandler = handler;
+  _eventHandlers[WALTER_MODEM_EVENT_TYPE_SMS].args = args;
 }
 
 #pragma endregion

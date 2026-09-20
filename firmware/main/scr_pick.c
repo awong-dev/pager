@@ -24,24 +24,42 @@
 // chat (scr_chat.c, still one thread until F6.4's `to`-aware per-peer view
 // is exposed through a picker) with its composer already open, exactly as
 // today's only other way to reach it (Home's conversation row) — "picking"
-// a peer here is real navigation, just not yet a *targeted* send.
+// a peer here is real navigation, just not yet a *targeted* send. The same
+// applies to v0.2's SMS contacts (below): `enter` opens the same merged
+// chat, and an actual targeted send still goes through the composer's own
+// `@name` word (scr_chat.c) — this screen's job is discovery/visibility,
+// not yet a one-tap "compose to this contact" shortcut.
+//
+// v0.2 §6 (docs/V02_DESIGN.md, docs/DEVICE_PLAN.md §4.4): SMS contacts
+// (sms.c's own parent-managed allow-list, entirely separate from the
+// address book above) are listed as additional selectable rows after the
+// book's own approved contacts, each tagged "sms" in the same trailing
+// column book contacts already use for their `type` (web/sms/chat) —
+// visually identical presentation, different underlying list; see sms.h's
+// own module comment for why the two "sms" concepts (a book contact
+// reachable via the relay's SMS gateway vs. a device-direct SMS contact)
+// are unrelated data even though this column happens to render the same
+// three letters for both.
 
 #include "ui.h"
 #include "book.h"
+#include "sms.h"
 
 #include <stdio.h>
 #include <string.h>
 
 #define PICK_VISIBLE_ROWS 8 /* same 12px-pitch budget as scr_device.c's menu */
 
-static int s_sel = 0; /* index into the approved-contacts list only (0-based) */
+static int s_sel = 0; /* index into (book contacts ++ sms contacts), 0-based */
+
+static size_t selectable_count(void) { return book_contact_count() + sms_contact_count(); }
 
 static void pick_on_event(ui_evt_t evt)
 {
     if (evt != UI_EVT_ENTER) {
         return;
     }
-    size_t n = book_contact_count();
+    size_t n = selectable_count();
     if (s_sel < 0) {
         s_sel = 0;
     }
@@ -54,7 +72,7 @@ static void pick_on_event(ui_evt_t evt)
 
 static void pick_on_key(input_key_t key)
 {
-    size_t n = book_contact_count();
+    size_t n = selectable_count();
     switch (key.type) {
     case INPUT_KEY_UP:
         if (s_sel > 0) {
@@ -71,7 +89,7 @@ static void pick_on_key(input_key_t key)
         // range at all (§5.5: "greyed and are not selectable") — nothing
         // else to check here.
         if (n == 0) {
-            break; // "the book is empty" — no row to choose, esc is the only way out
+            break; // nothing to choose — esc is the only way out
         }
         // User-initiated open: same "opening a chat" rule as scr_home.c's
         // conversation row and scr_book.c's contact row use.
@@ -88,7 +106,9 @@ static void pick_on_key(input_key_t key)
 
 static void pick_render(void)
 {
-    size_t n_contacts = book_contact_count();
+    size_t n_book = book_contact_count();
+    size_t n_sms = sms_contact_count();
+    size_t n_contacts = n_book + n_sms; /* selectable rows: book contacts, then sms contacts */
     size_t n_requests = book_request_count();
 
     int y = UI_BODY_TOP + 2;
@@ -132,7 +152,7 @@ static void pick_render(void)
     bool have_default = book_get_default_alias(default_alias, sizeof(default_alias));
 
     for (int r = scroll_top; r < total_n && r < scroll_top + PICK_VISIBLE_ROWS; r++) {
-        if (r < (int) n_contacts) {
+        if (r < (int) n_book) {
             book_contact_t c;
             if (!book_contact_at((size_t) r, &c)) {
                 continue;
@@ -149,6 +169,21 @@ static void pick_render(void)
             (void) x;
             int tw = gfx_text_width(GFX_FONT_NORMAL, c.type);
             gfx_text(GFX_SCREEN_W - tw, y, GFX_FONT_NORMAL, c.type);
+        } else if (r < (int) n_contacts) {
+            // v0.2 §6: an SMS contact (sms.c's own allow-list) — same row
+            // shape as a book contact above, tagged "sms" in the trailing
+            // column (see this file's own module comment on the two
+            // unrelated "sms" concepts sharing that column's rendering).
+            sms_contact_t sc;
+            if (!sms_contact_at((size_t) (r - (int) n_book), &sc)) {
+                continue;
+            }
+            if (r == sel_abs) {
+                gfx_text(0, y, GFX_FONT_NORMAL, ">");
+            }
+            gfx_text(10, y, GFX_FONT_NORMAL, sc.name);
+            int tw = gfx_text_width(GFX_FONT_NORMAL, "sms");
+            gfx_text(GFX_SCREEN_W - tw, y, GFX_FONT_NORMAL, "sms");
         } else {
             // Pending/rejected requests: greyed (drawn plain, no `>` marker
             // — this gfx.c has no separate "dim" ink, so "greyed and

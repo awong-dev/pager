@@ -776,7 +776,15 @@ typedef enum {
   WALTER_MODEM_RSP_DATA_TYPE_COAP,
   WALTER_MODEM_RSP_DATA_TYPE_MQTT,
   WALTER_MODEM_RSP_DATA_TYPE_TEMPERATURE,
-  WALTER_MODEM_RSP_DATA_TYPE_VOLTAGE
+  WALTER_MODEM_RSP_DATA_TYPE_VOLTAGE,
+  /**
+   * @brief PAGER PATCH: (1.4, SMS, docs/V02_DESIGN.md §6) Result of smsRead().
+   */
+  WALTER_MODEM_RSP_DATA_TYPE_SMS,
+  /**
+   * @brief PAGER PATCH: (1.4, SMS) Result of AT+CPMS= (smsConfig()'s own storage step).
+   */
+  WALTER_MODEM_RSP_DATA_TYPE_SMS_STORAGE
 } WalterModemRspDataType;
 
 /**
@@ -1326,6 +1334,12 @@ typedef enum {
    * @brief Voltage related events.
    */
   WALTER_MODEM_EVENT_TYPE_VOLTAGE,
+
+  /**
+   * @brief PAGER PATCH: (1.4, SMS, docs/V02_DESIGN.md §6) `+CMTI` new-message
+   * related events.
+   */
+  WALTER_MODEM_EVENT_TYPE_SMS,
 
   /**
    * @brief The number of event types supported by the library.
@@ -2410,6 +2424,73 @@ struct WMGNSSEventData {
   WMGNSSAssistanceType assistance;
 };
 
+/**
+ * @brief PAGER PATCH: (1.4, SMS, docs/V02_DESIGN.md §6) The one event kind
+ * this patch dispatches: a `+CMTI: "<mem>",<index>` new-message URC. Named
+ * "RING" for consistency with WMSocketEventType's own naming of an
+ * unsolicited "something arrived" notification (there is currently nothing
+ * else an SMS event could be).
+ */
+typedef enum {
+  WALTER_MODEM_SMS_EVENT_RING = 0,
+} WMSmsEventType;
+
+/**
+ * @brief PAGER PATCH: (1.4, SMS) `mem` is the storage name the modem reports
+ * in the URC (e.g. "ME"/"SM") — this project always configures "ME" via
+ * smsConfig()'s AT+CPMS, but the URC's own value is passed through
+ * unconditionally rather than assumed, in case a future SIM/firmware
+ * combination reports otherwise. UNVERIFIED: the exact `mem` string this
+ * modem actually reports.
+ */
+struct WMSmsEventData {
+  uint16_t index;
+  char mem[8];
+};
+
+/**
+ * @brief PAGER PATCH: (1.4, SMS, docs/V02_DESIGN.md §6) One text-mode SMS
+ * record (3GPP TS 27.005 §4.4 AT+CMGR response, `AT+CSDH=1` set by
+ * smsConfig() so the extra header fields — including `dcs` — are present).
+ * `body` is either plain text (7-bit path, the resting AT+CSCS="IRA"/"GSM"
+ * charset smsConfig() leaves active whenever no send is in flight — see
+ * smsConfig()'s own doc comment) or a hex string of big-endian UTF-16 code
+ * units; `dcs` (3GPP TS 23.038 §4, -1 if the CSDH fields were absent from
+ * this particular response) is what main/sms.c uses to tell the two apart
+ * WITHOUT guessing (coordinator fix 2026-09-20) — main/sms.c's own
+ * sms_looks_like_ucs2_hex() heuristic is now only the fallback for when
+ * `dcs` is -1. This layer does not decode character encoding at all;
+ * `sender`/`timestamp` are the raw `<oa>`/`<scts>` fields, ASCII, never
+ * charset-converted by this modem in practice (the de-facto behaviour most
+ * AT stacks implement even under CSCS=UCS2 — see net.cpp's own module
+ * comment for why this project relies on that).
+ */
+struct WalterModemSmsReadData {
+  bool valid;
+  uint16_t index;
+  char sender[32];
+  char timestamp[32];
+  int dcs; /* PAGER PATCH: (1.4, SMS) 3GPP TS 23.038 §4 data coding scheme byte, or -1 if
+            * AT+CSDH=1's extra +CMGR fields were not present in this response. */
+  char body[281]; /* 160 GSM-7 chars, or 70 UCS-2 units hex-encoded (280 chars) + NUL */
+  uint16_t bodyLen;
+};
+
+/**
+ * @brief PAGER PATCH: (1.4, SMS) Storage usage/capacity reported by the
+ * `AT+CPMS=` SET command's own response (3GPP TS 27.005 §3.2.2:
+ * `+CPMS: <usedr>,<totalr>,<usedw>,<totalw>,<useds>,<totals>`) — captured
+ * from smsConfig()'s own `AT+CPMS="ME","ME","ME"` step so main/sms.c can
+ * bound its boot-drain index scan against the real "ME" read-storage
+ * capacity instead of an arbitrary guess. Only `<usedr>`/`<totalr>` (read
+ * storage, the first pair) are captured; write/SMS storage counts are not
+ * needed here.
+ */
+struct WalterModemSmsStorageInfo {
+  int usedr;
+  int totalr;
+};
+
 struct WMSocketEventData {
   uint8_t conn_id;
   WMURCSocketConnRC rc;
@@ -2514,6 +2595,16 @@ struct WalterModemEvent {
     } mqtt;
 
 #endif
+
+    /**
+     * @brief PAGER PATCH: (1.4, SMS) unconditional (no CONFIG_WALTER_MODEM_ENABLE_SMS
+     * guard exists — SMS is small enough, and this project needs it on every
+     * build), same as temperature/voltage above.
+     */
+    struct {
+      WMSmsEventType event;
+      WMSmsEventData data;
+    } sms;
   };
 };
 
@@ -2647,6 +2738,24 @@ typedef void (*walterModemSocketEventHandler)(WMSocketEventType ev, const WMSock
 #endif
 
 /**
+ * @brief PAGER PATCH: (1.4, SMS, docs/V02_DESIGN.md §6) Header of an SMS
+ * event handler. Runs on the same `_eventProcessingTask` every other event
+ * handler in this library runs on — keep it short (same rule
+ * walterModemMQTTEventHandler's own doc comment states). main/sms.c's own
+ * handler only copies `data` and sets a flag for modes_run()'s own task to
+ * act on, never touches the modem from here.
+ *
+ * @param event The type of SMS event (always WALTER_MODEM_SMS_EVENT_RING
+ * today).
+ * @param data The `+CMTI` URC's own memory/index.
+ * @param args Optional arguments set by the application layer.
+ *
+ * @return None.
+ */
+typedef void (*walterModemSmsEventHandler)(WMSmsEventType event, const WMSmsEventData* data,
+                                           void* args);
+
+/**
  * @brief This structure represents an event handler and it's metadata.
  */
 typedef struct {
@@ -2706,6 +2815,11 @@ typedef struct {
      * @brief Pointer to the voltage event handler.
      */
     walterModemVoltageEventHandler voltageHandler;
+
+    /**
+     * @brief PAGER PATCH: (1.4, SMS) Pointer to the SMS event handler.
+     */
+    walterModemSmsEventHandler smsHandler;
   };
 
   /**
@@ -2852,6 +2966,16 @@ union WalterModemRspData {
    * @brief Voltage data
    */
   WalterModemVoltageData voltage;
+
+  /**
+   * @brief PAGER PATCH: (1.4, SMS) One text-mode SMS record (smsRead()).
+   */
+  WalterModemSmsReadData smsRead;
+
+  /**
+   * @brief PAGER PATCH: (1.4, SMS) AT+CPMS= storage usage/capacity (smsConfig()).
+   */
+  WalterModemSmsStorageInfo smsStorage;
 };
 
 /**
@@ -3218,6 +3342,25 @@ private:
   static inline size_t currentCRLF = 0;
 
   static inline size_t _receivedPayloadSize = 0;
+
+  /**
+   * @brief PAGER PATCH: (1.4, SMS) True between a `+CMGR: ...` header line and
+   * the message-body line that follows it (see _processModemRSP()'s own
+   * comment) — one command in flight at a time in this library (`_curCmd`),
+   * so a single instance-wide flag is enough, same class of scratch state as
+   * `_receivingPayload` above.
+   */
+  static inline bool _smsCmgrAwaitingBody = false;
+
+  /**
+   * @brief PAGER PATCH: (1.4, SMS) The TE character set smsConfig() actually
+   * established at init ("IRA" preferred, "GSM" if the modem rejected
+   * "IRA") — smsSend()'s own UCS-2 send toggles AT+CSCS away from this and
+   * always restores it afterward, so it must know what to restore TO rather
+   * than assuming a fixed value. See smsConfig()'s own doc comment for why
+   * "IRA" is preferred (V02_DESIGN.md §6 coordinator fix, 2026-09-20).
+   */
+  static inline char _smsRestingCharset[8] = "IRA";
 
   /**
    * @brief We remember the configured watchdog timeout.
@@ -5906,6 +6049,148 @@ public:
   static bool getVoltage(WalterModemRsp* rsp = NULL, walterModemCb cb = NULL, void* args = NULL);
 
 #pragma endregion // CLASS PUBLIC METHODS VOLTAGE_MONITOR
+#pragma region CLASS PUBLIC METHODS SMS
+  /**
+   * @brief PAGER PATCH: (1.4, SMS, docs/V02_DESIGN.md §6) One-time text-mode
+   * SMS configuration.
+   *
+   * Coordinator fix (2026-09-20): AT+CSCS="GSM" makes the TE character set
+   * literally BE the GSM 03.38 alphabet, so a plain ASCII/UTF-8 send under
+   * that charset mangles every character whose GSM code differs from ASCII
+   * (`@`, `$`, `_`, the whole escape table, every accented letter) — `AT+CSCS=
+   * "IRA"` is tried FIRST instead, under which the TE charset is plain ASCII
+   * and the MODEM itself does the IRA<->GSM conversion. Only if "IRA" is
+   * rejected does this fall back to "GSM" (`*outUsedIra` reports which one
+   * actually won, and `main/sms.c`'s own `sms_charset_mode_t` narrows the
+   * eligible 7-bit send range accordingly — see sms.h's own module comment).
+   * The chosen charset is remembered in `_smsRestingCharset` for smsSend()'s
+   * own UCS-2-send-and-restore toggle.
+   *
+   * Full sequence, fail-fast on the first sub-command that errors (leaving
+   * no half-applied state, docs/V02_DESIGN.md §0): `AT+CMGF=1` (text mode);
+   * `AT+CSCS="IRA"`, falling back to `AT+CSCS="GSM"`; `AT+CSDH=1` (show the
+   * extra `+CMGR` header fields — `<dcs>` in particular, 3GPP TS 27.005
+   * §4.4 — coordinator fix #2: "do not guess the data coding scheme of a
+   * received message"); `AT+CSMP=17,167,0,0` (resting data coding scheme 0 =
+   * GSM 7-bit default; smsSend() overrides the last parameter to 8 — UCS-2 —
+   * immediately before a UCS-2 send and restores 0 immediately after);
+   * `AT+CNMI=2,1,0,0,0` (buffered new-message URCs, index only — `+CMTI:
+   * "<mem>",<index>`); `AT+CPMS="ME","ME","ME"` (device memory, not the SIM
+   * — its own SET-command response, 3GPP TS 27.005 §3.2.2, is captured into
+   * `rsp->data.smsStorage` when `rsp` is non-NULL, so main/sms.c can bound
+   * its boot-drain scan against the real reported capacity instead of an
+   * arbitrary guess).
+   *
+   * Every sub-command here is UNVERIFIED on the Sequans GM02SP: 3GPP TS
+   * 27.005/27.007 are the source, not a datasheet for this exact modem — in
+   * particular, whether SMS works on the production SIM at all is unknown
+   * (a data-only SIM may reject every one of these), and whether `AT+CSCS=
+   * "IRA"` is even a charset this modem recognises (vs. needing the
+   * fallback on every boot) is unknown until tested.
+   *
+   * @param[out] outUsedIra Set to true if `AT+CSCS="IRA"` was accepted,
+   * false if this had to fall back to `AT+CSCS="GSM"`. May be NULL.
+   * @param[out] rsp Pointer to the response structure to save the result in
+   * (ends up holding the AT+CPMS= step's own WALTER_MODEM_RSP_DATA_TYPE_SMS_STORAGE
+   * data on success, since that is the last sub-command).
+   * @param[in] cb Callback function, if not NULL this function will not block.
+   * @param[in] args Arguments to pass to the callback.
+   *
+   * @return True if every sub-command answered "OK", false on the first one
+   * that did not (later sub-commands are then skipped).
+   */
+  static bool smsConfig(bool* outUsedIra = NULL, WalterModemRsp* rsp = NULL,
+                        walterModemCb cb = NULL, void* args = NULL);
+
+  /**
+   * @brief PAGER PATCH: (1.4, SMS) Send one SMS (AT+CMGS, text mode).
+   *
+   * `text` is either plain text (7-bit path — the caller's job, main/sms.c's
+   * own encoding decision, restricted to characters eligible under whatever
+   * charset smsConfig() established, see sms.h's own module comment) or,
+   * when `useUcs2` is true, a hex string of big-endian UTF-16 code units the
+   * caller has already produced. When `useUcs2`, this toggles AT+CSCS to
+   * "UCS2" and AT+CSMP's data coding scheme to 8 for the duration of the
+   * send, then restores BOTH to the resting charset (`_smsRestingCharset` —
+   * "IRA" or "GSM", whichever smsConfig() established) and DCS 0 afterward,
+   * regardless of outcome; when NOT `useUcs2`, neither is touched at all
+   * (the resting charset is already correct — one fewer AT round trip pair
+   * than the UCS-2 path needs). Follows the same
+   * `WALTER_MODEM_CMD_TYPE_DATA_TX_WAIT` pattern tlsWriteCredential() uses
+   * (wait for the modem's "> " data prompt, then write the payload), with
+   * one SMS-specific addition: the payload is `text` followed by Ctrl-Z
+   * (0x1A), which terminates a text-mode AT+CMGS body (3GPP TS 27.005
+   * §4.3) — the command's own "OK"/"+CMGS: <mr>" response only arrives
+   * after that byte is sent. `text` is capped at 280 bytes (the UCS-2 hex
+   * ceiling; main/sms.c never produces anything longer) — anything longer is
+   * silently truncated to that cap rather than overflowing, since this is a
+   * defensive floor under a caller that is assumed to have already enforced
+   * the real GSM-7 (160 septet) / UCS-2 (70 unit) limit itself.
+   *
+   * UNVERIFIED: whether this modem needs the AT+CSCS/AT+CSMP toggle at all
+   * versus accepting UCS-2 hex text unconditionally; done anyway because
+   * 3GPP TS 27.005 says the TE charset and DCS govern how the message text
+   * is interpreted, and no production SIM had been tested when this was
+   * written.
+   *
+   * @param[in] number The destination phone number, E.164.
+   * @param[in] text The message body (plain text or UCS-2 hex, see above).
+   * @param[in] useUcs2 True to send `text` as UCS-2 hex; false for plain
+   * 7-bit text in the resting charset.
+   * @param[out] rsp Pointer to the response structure to save the result in.
+   * @param[in] cb Callback function, if not NULL this function will not block.
+   * @param[in] args Arguments to pass to the callback.
+   *
+   * @return True if the modem accepted and reported "OK" for the send.
+   */
+  static bool smsSend(const char* number, const char* text, bool useUcs2,
+                      WalterModemRsp* rsp = NULL, walterModemCb cb = NULL, void* args = NULL);
+
+  /**
+   * @brief PAGER PATCH: (1.4, SMS) AT+CMGR=<index> (text mode). Result in
+   * `rsp->data.smsRead` (WalterModemRsp::type ==
+   * WALTER_MODEM_RSP_DATA_TYPE_SMS), including `dcs` (3GPP TS 23.038 §4,
+   * -1 if AT+CSDH=1's extra header fields were absent from this response) —
+   * coordinator fix #2: the caller (main/sms.c) uses this to decide UCS-2
+   * vs. 7-bit vs. 8-bit-undisplayable without guessing from the body's own
+   * shape. `rsp->data.smsRead.valid` is false for
+   * an empty/nonexistent index that the modem answers with an empty header
+   * rather than an outright error — UNVERIFIED which of "+CMS ERROR:",
+   * "ERROR" or an empty-but-OK response this modem actually gives for that
+   * case; all three are handled (the first two fail this call outright via
+   * the library's own generic error handling, so the return value alone
+   * already distinguishes them from "read something").
+   *
+   * @param[in] index The 1-based storage index (from a `+CMTI` URC, or a
+   * boot-time scan).
+   * @param[out] rsp Pointer to the response structure to save the result in.
+   * @param[in] cb Callback function, if not NULL this function will not block.
+   * @param[in] args Arguments to pass to the callback.
+   *
+   * @return True if the modem answered "OK" (regardless of `valid` — a
+   * "read nothing" empty header is still a successful command; only an
+   * outright ERROR/+CMS ERROR returns false).
+   */
+  static bool smsRead(int index, WalterModemRsp* rsp = NULL, walterModemCb cb = NULL,
+                      void* args = NULL);
+
+  /**
+   * @brief PAGER PATCH: (1.4, SMS) AT+CMGD=<index> (text mode). Deletes one
+   * SMS from storage — main/sms.c always reads then deletes, never leaving a
+   * message in storage past one drain cycle (docs/V02_DESIGN.md §6: "read,
+   * delete from storage, then...").
+   *
+   * @param[in] index The 1-based storage index to delete.
+   * @param[out] rsp Pointer to the response structure to save the result in.
+   * @param[in] cb Callback function, if not NULL this function will not block.
+   * @param[in] args Arguments to pass to the callback.
+   *
+   * @return True on "OK", false otherwise.
+   */
+  static bool smsDelete(int index, WalterModemRsp* rsp = NULL, walterModemCb cb = NULL,
+                        void* args = NULL);
+
+#pragma endregion // CLASS PUBLIC METHODS SMS
 #pragma region CLASS PUBLIC METHODS EVENT_HANDLERS
 
   /**
@@ -5968,6 +6253,22 @@ public:
    */
   static void setVoltageEventHandler(walterModemVoltageEventHandler handler = nullptr,
                                      void* args = nullptr);
+
+  /**
+   * @brief PAGER PATCH: (1.4, SMS, docs/V02_DESIGN.md §6) Set the SMS event
+   * handler.
+   *
+   * This function sets the handler that is called when a `+CMTI`
+   * new-message URC is received. When this function is called multiple
+   * times, only the last handler will be set. To remove the SMS event
+   * handler, this function must be called with a nullptr as the handler.
+   *
+   * @param[in] handler The handler function.
+   * @param[in] args handler arguments.
+   *
+   * @return None.
+   */
+  static void setSmsEventHandler(walterModemSmsEventHandler handler = nullptr, void* args = nullptr);
 
 #if CONFIG_WALTER_MODEM_ENABLE_GNSS
 

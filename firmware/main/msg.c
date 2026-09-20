@@ -147,6 +147,11 @@ uint16_t msg_composer_codepoint_count(void) { return s_composer_codepoints; }
 #include "cbor.h"
 #include "ident.h"
 #include "net.h"
+// v0.2 §6 (device-direct SMS): msg_pump()'s own tail call into
+// sms_try_publish_one() (see its call site's own comment) is the ONLY
+// reason this file knows sms.c exists at all — every other SMS concern
+// (allow-list, encoding, the audit ring itself) is entirely sms.c's own.
+#include "sms.h"
 
 static const char *TAG = "msg";
 
@@ -1138,6 +1143,106 @@ bool msg_queue_reply(const char *to, const char *body, uint16_t len)
     return true;
 }
 
+// v0.2 §6 (docs/V02_DESIGN.md, sms.c): "x_" is a synthetic, non-wire id
+// namespace distinct from every id this codebase actually publishes ("u_"
+// replies, "l_" /loc, "s_" sms_log audit, "m_"/"b_" relay-issued down ids) —
+// see msg.h's own doc comments on msg_insert_sms_in()/
+// msg_insert_sms_out_pending() for why that separation matters (these ids
+// are never shown/read-acked, never published, purely a thread-row handle).
+static void gen_local_id(char *out, size_t cap)
+{
+    snprintf(out, cap, "x_%08x", (unsigned) esp_random());
+}
+
+bool msg_insert_sms_in(const char *from, const char *body, uint16_t body_len, char *out_id,
+                       size_t out_id_cap)
+{
+    if (!body || !body_rules_ok(body, body_len)) {
+        return false;
+    }
+    char id[MSG_ID_MAX];
+    gen_local_id(id, sizeof(id));
+
+    msg_t entry = { 0 };
+    entry.ts = 0; // best-effort clock fill not needed for a never-published entry
+    strncpy(entry.id, id, MSG_ID_MAX - 1);
+    strncpy(entry.from, from ? from : "", MSG_FROM_MAX - 1);
+    entry.to[0] = '\0';
+    memcpy(entry.body, body, body_len);
+    entry.body[body_len] = '\0';
+    entry.body_len = body_len;
+    entry.dir = (uint8_t) MSG_DIR_DOWN;
+    // MSG_ACK_READ from the start (not MSG_ACK_UNSHOWN then advanced) is
+    // what keeps msg_mark_all_unshown()'s burst-ack sweep from ever queuing
+    // a pending_ack for this id — see msg.h's own doc comment.
+    entry.ack_state = MSG_ACK_READ;
+    entry.flags = 0;
+    entry.in_use = true;
+
+    s_lock();
+    thread_insert_locked(&entry);
+    s_unlock();
+
+    if (out_id && out_id_cap > 0) {
+        strncpy(out_id, id, out_id_cap - 1);
+        out_id[out_id_cap - 1] = '\0';
+    }
+    return true;
+}
+
+bool msg_insert_sms_out_pending(const char *to, const char *body, uint16_t body_len, char *out_id,
+                                size_t out_id_cap)
+{
+    if (!body || !body_rules_ok(body, body_len)) {
+        return false;
+    }
+    char id[MSG_ID_MAX];
+    gen_local_id(id, sizeof(id));
+
+    msg_t entry = { 0 };
+    entry.ts = 0;
+    strncpy(entry.id, id, MSG_ID_MAX - 1);
+    strncpy(entry.from, "student", MSG_FROM_MAX - 1);
+    strncpy(entry.to, to ? to : "", MSG_TO_MAX - 1);
+    entry.to[MSG_TO_MAX - 1] = '\0';
+    memcpy(entry.body, body, body_len);
+    entry.body[body_len] = '\0';
+    entry.body_len = body_len;
+    entry.dir = (uint8_t) MSG_DIR_UP;
+    entry.ack_state = MSG_ACK_UP_PENDING;
+    entry.flags = 0;
+    entry.in_use = true;
+
+    s_lock();
+    thread_insert_locked(&entry);
+    s_unlock();
+
+    if (out_id && out_id_cap > 0) {
+        strncpy(out_id, id, out_id_cap - 1);
+        out_id[out_id_cap - 1] = '\0';
+    }
+    return true;
+}
+
+bool msg_finish_sms_out(const char *id, bool ok)
+{
+    if (!id || id[0] == '\0') {
+        return false;
+    }
+    s_lock();
+    msg_t *m = thread_find_locked(id, MSG_DIR_UP);
+    if (m) {
+        if (ok) {
+            m->ack_state = MSG_ACK_UP_SENT;
+        } else {
+            m->ack_state = MSG_ACK_UP_FAILED;
+            m->flags |= MSG_F_SEND_FAILED;
+        }
+    }
+    s_unlock();
+    return m != NULL;
+}
+
 // ---------------------------------------------------------------------------
 // Pump (§4.1 rule 6, §4.2). At most one publish per call.
 // ---------------------------------------------------------------------------
@@ -1381,6 +1486,13 @@ void msg_pump(void)
     }
 
     s_unlock();
+
+    // v0.2 §6 (device-direct SMS, sms.c): reached only when neither a
+    // pending ack nor a pending reply had anything to do this cycle — the
+    // "one publish per wake cycle" discipline this whole function
+    // implements, extended to the sms_log audit queue rather than adding a
+    // second, independent publisher (V02_DESIGN.md §6's own instruction).
+    sms_try_publish_one();
 }
 
 // ---------------------------------------------------------------------------

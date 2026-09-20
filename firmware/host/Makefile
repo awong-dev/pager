@@ -66,7 +66,7 @@ endif
 MAIN_SRC := ../main
 BUILD := build
 
-TESTS := test_cbor test_auth test_setup test_input test_msg test_lock test_loc test_cafetch test_catrust test_cfg
+TESTS := test_cbor test_auth test_setup test_input test_msg test_lock test_loc test_cafetch test_catrust test_cfg test_sms
 TEST_BINS := $(TESTS:%=$(BUILD)/%)
 
 # ASSETS: tools/mkassets.py's default output location (docs/DEVICE_TASKS.md
@@ -215,6 +215,20 @@ $(BUILD)/test_cfg.o: test_cfg.c $(MAIN_SRC)/cfg.h | $(BUILD)
 
 $(BUILD)/test_cfg: $(BUILD)/cfg.o $(BUILD)/cbor.o $(BUILD)/test_cfg.o
 	$(CC) $(CFLAGS) -o $@ $(BUILD)/cfg.o $(BUILD)/cbor.o $(BUILD)/test_cfg.o
+
+# test_sms: sms.c's pure section (allow-list validation/matching, cfg.sms
+# decode, GSM-7/UCS-2 encoding decision + encode/decode, the audit ring, the
+# sms_log CBOR encoder) + cbor.c + test_sms.c. No mbedtls needed: the pure
+# section never hashes/signs anything itself (auth_sign() is only ever
+# called from sms.c's device-only section).
+$(BUILD)/sms.o: $(MAIN_SRC)/sms.c $(MAIN_SRC)/sms.h $(MAIN_SRC)/cbor.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $(MAIN_SRC)/sms.c
+
+$(BUILD)/test_sms.o: test_sms.c $(MAIN_SRC)/sms.h $(MAIN_SRC)/cbor.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ test_sms.c
+
+$(BUILD)/test_sms: $(BUILD)/sms.o $(BUILD)/cbor.o $(BUILD)/test_sms.o
+	$(CC) $(CFLAGS) -o $@ $(BUILD)/sms.o $(BUILD)/cbor.o $(BUILD)/test_sms.o
 
 # render_png: gfx.c (the exact framebuffer/text/glyph module that ships
 # on-device, compiled for the host per its own #ifdef ESP_PLATFORM split)

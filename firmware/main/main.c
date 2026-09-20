@@ -18,6 +18,7 @@
 #include "net.h"
 #include "pins.h"
 #include "setup.h"
+#include "sms.h"
 #include "ui.h"
 
 static const char *TAG = "school_pager";
@@ -268,6 +269,35 @@ static int cmd_cafetch(int argc, char **argv)
     return ok ? 0 : 1;
 }
 
+// v0.2 §6 (docs/V02_DESIGN.md, this task): `smstest <number> <text>` -- sends
+// one SMS bypassing the allow-list (an arbitrary number), via
+// sms_debug_send() (main/sms.c). Blocks this console task (never
+// modes_run()'s) for the AT+CMGS round trip; still produces an audit entry
+// (sms_debug_send()'s own doc comment: the audit trail has no debug
+// carve-out).
+static int cmd_smstest(int argc, char **argv)
+{
+    if (argc != 3) {
+        printf("usage: smstest <number> <text>\n");
+        return 1;
+    }
+    bool ok = sms_debug_send(argv[1], argv[2]);
+    printf("smstest: %s (see the log above for the encoding chosen and the raw modem result)\n",
+           ok ? "OK" : "FAILED - see log");
+    return ok ? 0 : 1;
+}
+
+// v0.2 §6: `smslist` -- logs the allow-list and the audit queue depth
+// (sms.c's own sms_debug_list() does the ESP_LOGI calls).
+static int cmd_smslist(int argc, char **argv)
+{
+    (void) argc;
+    (void) argv;
+    sms_debug_list();
+    printf("smslist: see the log above\n");
+    return 0;
+}
+
 static void start_normal_console(void)
 {
     esp_console_repl_t *repl = NULL;
@@ -312,6 +342,22 @@ static void start_normal_console(void)
         .func = &cmd_cafetch,
     };
     ESP_ERROR_CHECK(esp_console_cmd_register(&cafetch_cmd));
+
+    const esp_console_cmd_t smstest_cmd = {
+        .command = "smstest",
+        .help = "smstest <number> <text> -- send one SMS bypassing the allow-list (V02_DESIGN.md §6)",
+        .hint = NULL,
+        .func = &cmd_smstest,
+    };
+    ESP_ERROR_CHECK(esp_console_cmd_register(&smstest_cmd));
+
+    const esp_console_cmd_t smslist_cmd = {
+        .command = "smslist",
+        .help = "smslist -- print the SMS allow-list and audit queue depth",
+        .hint = NULL,
+        .func = &cmd_smslist,
+    };
+    ESP_ERROR_CHECK(esp_console_cmd_register(&smslist_cmd));
 
     ESP_ERROR_CHECK(esp_console_start_repl(repl));
     ESP_LOGI(TAG, "debug console REPL started in normal mode (PAGER_DEBUG_NO_LIGHT_SLEEP)");

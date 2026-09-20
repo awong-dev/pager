@@ -66,6 +66,16 @@
 #include "accel.h"
 #include "loc.h"
 
+// v0.2 §6 (docs/V02_DESIGN.md, docs/PROTOCOL.md §3.6): sms.c's device-direct
+// SMS allow-list/audit/send-receive state machine, driven from this file's
+// own wake-and-drain loop (sms_service(), alongside loc_service()/
+// accel_poll()/catrust_service() above) and from cfg.c's `cfg.sms`
+// dispatch. No RTC sub-struct of its own (allow-list + audit queue both
+// live in NVS, per this task's own "prefer NVS/RAM" instruction) — sms_bind()
+// only hands over the shared cross-task mutex, same two-argument pattern
+// catrust_bind() uses.
+#include "sms.h"
+
 #include <assert.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -386,6 +396,7 @@ static void on_auth_epoch_wrap(void)
 #define STK_LOC_BACKOFF_S 43 // v0.2 §7
 #define STK_TLS 39           // v0.2 §4.3/§7: "unpinned"/"pinned"/"broken"
 #define STK_CA_FP 42         // v0.2 §4.3/§7: absent when unpinned
+#define STK_SMS_LOST 48      // v0.2 §6/§7: sms_log audit entries dropped for lack of NVS space
 
 // PROTOCOL.md §5.1: batt_mv must be in [2000, 4500] when state:"online".
 #define PAGER_BATT_MV_MIN 2000
@@ -502,7 +513,8 @@ static bool build_status_cbor(uint8_t *out, size_t cap, size_t *out_len, const c
     // v0.2 §5/§7: +3 for loc_period_s/loc_min_s/loc_backoff_s (loc.c's own
     // getters — plain reads of already-resident policy state, no AT round
     // trip of their own beyond what batt_mv/rssi above already cost).
-    uint32_t nfields = 9 + 3 + 1; // + tls; v,state,mode,batt_mv,rssi,session,ts,fw,bv,loc_period_s,loc_min_s,loc_backoff_s,tls
+    uint32_t nfields = 9 + 3 + 1 + 1; // + tls, + sms_lost; v,state,mode,batt_mv,rssi,session,ts,fw,bv,
+                                      // loc_period_s,loc_min_s,loc_backoff_s,tls,sms_lost
     if (have_ca_fp) {
         nfields += 1;
     }
@@ -529,6 +541,7 @@ static bool build_status_cbor(uint8_t *out, size_t cap, size_t *out_len, const c
     if (have_ca_fp) {
         cbor_w_tstr(&w, STK_CA_FP, ca_fp, strlen(ca_fp));              // v0.2 §4.3
     }
+    cbor_w_uint(&w, STK_SMS_LOST, sms_get_lost_count());               // v0.2 §6/§7 key 48
 
     if (!signed_env) {
         *out_len = w.len;
@@ -782,6 +795,38 @@ static void service_render_pending(void)
 // Incoming message hook — wired to msg.c's ingest/dedup/ack state machine.
 // ---------------------------------------------------------------------------
 
+// v0.2 §6 (device-direct SMS, sms.c): factored out of handle_ingest_result()'s
+// MSG_INGEST_NEW branch below so sms.c's own inbound-SMS path (an
+// allow-listed sender, msg_insert_sms_in() already run) can alert exactly
+// the same way a real `/down` message does, including the lock-screen rule,
+// without duplicating this logic or (worse) sms.c reaching into modes.c's
+// static render_pending_set()/set_mode() directly. See modes.h's own doc
+// comment for the full contract.
+void modes_alert_incoming(const char *id, const char *from)
+{
+    // Captured BEFORE set_mode(ACTIVE, ...) below flips it — this is the
+    // "was the device asleep" input ui_incoming()'s steal-the-screen policy
+    // needs (docs/DEVICE_PLAN.md §5.5). Unlocked read of g_rtc.mode, same as
+    // several other spots in this file already do.
+    bool was_asleep = (g_rtc.mode == (uint8_t) PAGER_MODE_SLEEP);
+    set_mode(PAGER_MODE_ACTIVE, MODE_REASON_INCOMING_MSG);
+    // F6.5 (docs/DEVICE_PLAN.md §5.8): "no `shown` is published" for a body
+    // received while locked — the message is already inserted into msg.c's
+    // s_thread by the caller regardless; skipping render_pending_set() here
+    // is what keeps it that way, rather than relying on ui_incoming()'s own
+    // screen-top check (was_asleep alone would otherwise force the "steal"
+    // branch and push Chat right over the Locked screen — see
+    // ui_incoming()'s `steal = was_asleep || ...`). msg_mark_all_unshown()
+    // (scr_lock.c, on a successful unlock) is what eventually surfaces
+    // these; for sms.c's own callers that call is a no-op for this id
+    // (ack_state is already MSG_ACK_READ, never MSG_ACK_UNSHOWN) but still
+    // correctly surfaces the render on unlock via ui_incoming()'s own
+    // "whole thread" redraw.
+    if (id && id[0] != '\0' && !lock_is_locked()) {
+        render_pending_set(id, from ? from : "", was_asleep);
+    }
+}
+
 static void handle_ingest_result(msg_ingest_t r, const msg_t *out, uint16_t len,
                                   const uint8_t *body)
 {
@@ -799,24 +844,7 @@ static void handle_ingest_result(msg_ingest_t r, const msg_t *out, uint16_t len,
             strncpy(id, out->id, sizeof(id) - 1);
             strncpy(from, out->from, sizeof(from) - 1);
         }
-        // Captured BEFORE set_mode(ACTIVE, ...) below flips it — this is
-        // the "was the device asleep" input ui_incoming()'s steal-the-
-        // screen policy needs (docs/DEVICE_PLAN.md §5.5). Unlocked read of
-        // g_rtc.mode, same as several other spots in this file already do.
-        bool was_asleep = (g_rtc.mode == (uint8_t) PAGER_MODE_SLEEP);
-        set_mode(PAGER_MODE_ACTIVE, MODE_REASON_INCOMING_MSG);
-        // F6.5 (docs/DEVICE_PLAN.md §5.8): "no `shown` is published" for a
-        // body received while locked — the message is already inserted into
-        // msg.c's s_thread (MSG_ACK_UNSHOWN) by msg_ingest_down_cbor() above
-        // regardless; skipping render_pending_set() here is what keeps it
-        // that way, rather than relying on ui_incoming()'s own screen-top
-        // check (was_asleep alone would otherwise force the "steal" branch
-        // and push Chat right over the Locked screen — see ui_incoming()'s
-        // `steal = was_asleep || ...`). msg_mark_all_unshown() (scr_lock.c,
-        // on a successful unlock) is what eventually acks these.
-        if (id[0] != '\0' && !lock_is_locked()) {
-            render_pending_set(id, from, was_asleep);
-        }
+        modes_alert_incoming(id, from);
         break;
     }
 
@@ -1234,6 +1262,18 @@ void modes_boot(void)
     loc_bind(&g_rtc.loc, &g_rtc.auth, rtc_lock, rtc_unlock, rtc_save, on_auth_epoch_wrap);
     loc_init();
 
+    // v0.2 §6 (device-direct SMS): runs after net_init() (sms_init() calls
+    // net_sms_config(), which needs the modem to exist) — a modem/SIM that
+    // rejects SMS setup entirely (§0/§6's own flag: a data-only SIM may not
+    // carry SMS at all) logs once at INFO and disables the feature for this
+    // boot; nothing here can block or fail boot. No RTC sub-struct of sms.c's
+    // own (sms.h's own module comment) — sms_bind() hands over the EXISTING
+    // g_rtc.auth (a signed sms_log shares the one /up,/status,/loc counter)
+    // plus the shared cross-task mutex, same pattern book_bind()/loc_bind()
+    // already use.
+    sms_bind(&g_rtc.auth, rtc_lock, rtc_unlock, rtc_save, on_auth_epoch_wrap);
+    sms_init();
+
     rtc_lock();
     g_rtc.mode = (uint8_t) PAGER_MODE_SLEEP; // firmware/README.md: boot in sleep mode
     rtc_save();
@@ -1554,6 +1594,17 @@ void modes_run(void)
         // bounded piece of work — see accel.h/loc.h's own doc comments.
         accel_poll();
         loc_service();
+
+        // v0.2 §6 (device-direct SMS, sms.c): one bounded step of the
+        // boot-drain scan / `+CMTI` drain / pending-send state machine (a
+        // no-op read if nothing is pending), same "never the whole thing in
+        // one call, unconditional every iteration" discipline as
+        // accel_poll()/loc_service() above. Deliberately NOT gated on
+        // `st.mqtt_connected`/pump_blocked: docs/V02_DESIGN.md §6's whole
+        // point is that SMS send/receive works without the relay — only the
+        // sms_log audit publish (msg_pump()'s own tail call into sms.c,
+        // above) needs the MQTT session up.
+        sms_service();
 
         // v0.2 §4.4: one step of the pending cfg.ca request / two-phase
         // apply state machine (a no-op read if nothing is pending or in

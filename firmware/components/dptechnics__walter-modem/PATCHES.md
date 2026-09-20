@@ -109,7 +109,71 @@ populated-or-empty by the `sscanf()` above, independent of `hasPsmInfo`);
 keep `hasPsmInfo` gating only `activeTime`/`periodicTau`, which really are
 absent unless that specific report type was requested.
 
-## Not applied here
+## Patch 1.4 — SMS (`src/WalterModem.h`, `src/WalterModem.cpp`)
 
-**Patch 1.4 (SMS)** — `smsSend()`, a `+CMTI` SMS event handler, `smsRead()`,
-`smsDelete()` — is `docs/V02_DESIGN.md` §6 territory and is left for that task.
+`docs/V02_DESIGN.md` §6 (device-direct SMS). Adds text-mode (3GPP TS 27.005)
+SMS send/read/delete/new-message-event support, following this library's own
+established patterns rather than introducing new ones:
+
+- **New event type** `WALTER_MODEM_EVENT_TYPE_SMS` (mirrors GNSS/network/
+  voltage: enum entry, `WMSmsEventType`/`WMSmsEventData`, a
+  `walterModemSmsEventHandler` typedef, a `smsHandler` union member, a
+  `WalterModemEvent.sms` union member, a `setSmsEventHandler()` method, and a
+  `_dispatchEvent()` case) — unconditional, no `CONFIG_WALTER_MODEM_ENABLE_SMS`
+  guard, same as temperature/voltage. Dispatches on `+CMTI: "<mem>",<index>`
+  (3GPP TS 27.005 §3.4.1), parsed the same way the existing `+SQNSVMONS` URC
+  handler builds and queues a `WalterModemEvent`.
+- **`smsConfig()`**: one-time text-mode setup, fail-fast on the first
+  sub-command that errors — `AT+CMGF=1` (text mode), `AT+CSCS="GSM"` (the
+  *resting* TE charset; `smsSend()` toggles to `"UCS2"` only for the duration
+  of a UCS-2 send and always restores `"GSM"` afterward, so a message read
+  while idle is always in the charset `main/sms.c`'s decoder assumes),
+  `AT+CSMP=17,167,0,0` (DCS 0 = GSM 7-bit default alphabet; `smsSend()`
+  overrides the last parameter to 8 for a UCS-2 send and restores 0
+  afterward), `AT+CNMI=2,1,0,0,0` (buffered new-message URCs, index only),
+  `AT+CPMS="ME","ME","ME"` (device memory, not the SIM). Each sub-command
+  runs as its own `_runCmd`/`WalterModemCmd` pair (a private free function,
+  `_waitCmdResult()`, blocks on the command's own condition variable and
+  returns a plain `bool` without the usual `_returnAfterReply()` macro's
+  unconditional `return`, so `smsConfig()`/`smsSend()` can bail out — or run
+  cleanup — between steps).
+- **`smsSend(number, text, useUcs2)`**: follows the
+  `WALTER_MODEM_CMD_TYPE_DATA_TX_WAIT` pattern `tlsWriteCredential()` already
+  uses (wait for the modem's `"> "` data prompt, then write the payload
+  raw), with the one SMS-specific addition that the payload is `text`
+  followed by Ctrl-Z (`0x1A`), which terminates a text-mode `AT+CMGS` body
+  (3GPP TS 27.005 §4.3). `useUcs2` selects the caller-pre-encoded form
+  (`main/sms.c` decides GSM-7 vs. UCS-2 and does the actual character
+  encoding — this layer never touches encoding beyond the `AT+CSCS`/`AT+CSMP`
+  toggle described above).
+- **`smsRead(index)`**: `AT+CMGR=<index>` (text mode). The response is two
+  physical lines (`+CMGR: <stat>,<oa>,[<alpha>],<scts>` then the message body)
+  which this library's line-at-a-time response processor does not otherwise
+  reassemble — `_processModemRSP()` gained a small two-step scratch state
+  (`_smsCmgrAwaitingBody`, checked *first*, ahead of every other prefix
+  match, precisely so an SMS body that happens to start with `"OK"` or
+  `"ERROR"` is never misread as the command's own terminator) plus a small
+  quoted-CSV field splitter (`_smsSplitCmgrFields()`) for the header line.
+  Result lands in `rsp->data.smsRead` (`WALTER_MODEM_RSP_DATA_TYPE_SMS`).
+- **`smsDelete(index)`**: `AT+CMGD=<index>` (text mode), single-line `"OK"`
+  response, no new parsing needed.
+- **`+CMS ERROR: `** (3GPP TS 27.005 §3.2.5, the SMS-specific error report)
+  is now handled the same way `+CME ERROR: ` already was: fails the in-flight
+  command with `WALTER_MODEM_STATE_ERROR`.
+
+Deliberate simplification vs. the rest of this library's public API:
+`smsConfig()`/`smsSend()`/`smsRead()`/`smsDelete()` all keep the usual
+`rsp`/`cb`/`args` parameters for consistency, but `net.cpp` (this project's
+only caller) never passes a `cb` — every call is synchronous. The async
+branch in `_waitCmdResult()` is therefore unreachable in practice; kept only
+so the class's calling convention stays uniform.
+
+Every AT command sequence and response shape above is **UNVERIFIED** on the
+Sequans GM02SP: 3GPP TS 27.005 is the source, not a datasheet for this exact
+modem, and no production SIM had SMS tested against it when this was
+written. In particular: whether SMS works on the production SIM at all
+(a data-only SIM may reject every one of these commands), the exact
+`+CMTI`/`+CMGR` wording and timing under eDRX, and whether the
+`AT+CSCS`/`AT+CSMP` toggle is even necessary for this modem to accept UCS-2
+text. `smstest`/`smslist` (the debug console commands, `main/main.c`) exist
+to settle these on real hardware.

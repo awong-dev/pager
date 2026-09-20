@@ -33,6 +33,7 @@
 #include "msg.h"
 #include "book.h"
 #include "ime.h"
+#include "sms.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -94,22 +95,31 @@ static void clamp_scroll(void)
     }
 }
 
-// §5.5 Nicknames paragraph: a leading `@word` (first char '@', word = up to
-// the next space or end of text) resolves against the approved contacts'
-// nickname first, then alias — matching either "@nick" or "@alias" per the
-// same paragraph. Returns true and fills `alias_out` on a match; false (and
-// leaves `alias_out` untouched) if the composer has no leading `@word` at
-// all (nothing to resolve — not an error) OR if the sentinel `*is_at_word`
-// is set true but no contact matched (the "unknown" case the caller toasts
-// on). `*word_len` is the byte length of the word (used by the caller to
-// strip "@word" plus one following space from the body).
-static bool resolve_at_word(const char *text, bool *is_at_word, size_t *word_len,
-                             char *alias_out, size_t alias_cap)
+// §5.5 Nicknames paragraph, extended by v0.2 §6 (docs/V02_DESIGN.md, SMS
+// contacts): a leading `@word` (first char '@', word = up to the next space
+// or end of text) resolves against the approved contacts' nickname/alias
+// first, then against sms.c's own SMS-contact allow-list by name — matching
+// "@nick"/"@alias" (book) or "@name" (SMS). A word that matches BOTH a book
+// contact and an SMS contact is deliberately never silently resolved to
+// either one (V02_DESIGN.md §6: "must be disambiguated, not silently
+// shadowed") — AT_AMBIGUOUS, same toast-and-leave-the-composer-alone
+// treatment as AT_UNKNOWN, pointing the student at New message (scr_pick.c)
+// instead, where both entries are visible as separate, distinctly tagged
+// rows.
+typedef enum {
+    AT_NONE,      // no leading "@word" at all — nothing to resolve, not an error
+    AT_BOOK,      // resolved to a book contact; `alias_out` filled
+    AT_SMS,       // resolved to an SMS contact; `sms_out` filled
+    AT_AMBIGUOUS, // matched both a book contact and an SMS contact
+    AT_UNKNOWN,   // "@word" present but nothing matched
+} at_word_result_t;
+
+static at_word_result_t resolve_at_word(const char *text, size_t *word_len, char *alias_out,
+                                         size_t alias_cap, sms_contact_t *sms_out)
 {
-    *is_at_word = false;
     *word_len = 0;
     if (text[0] != '@') {
-        return false;
+        return AT_NONE;
     }
     const char *p = text + 1;
     size_t wlen = 0;
@@ -117,11 +127,11 @@ static bool resolve_at_word(const char *text, bool *is_at_word, size_t *word_len
         wlen++;
     }
     if (wlen == 0) {
-        return false; // bare "@" with nothing after it — send literally, not a reference
+        return AT_NONE; // bare "@" with nothing after it — send literally, not a reference
     }
-    *is_at_word = true;
     *word_len = wlen;
 
+    bool book_matched = false;
     size_t n = book_contact_count();
     for (size_t i = 0; i < n; i++) {
         book_contact_t c;
@@ -134,10 +144,47 @@ static bool resolve_at_word(const char *text, bool *is_at_word, size_t *word_len
         if (nick_match || alias_match) {
             strncpy(alias_out, c.alias, alias_cap - 1);
             alias_out[alias_cap - 1] = '\0';
-            return true;
+            book_matched = true;
+            break;
         }
     }
-    return false; // *is_at_word stays true — caller toasts "unknown"
+
+    bool sms_matched = sms_find_by_name(p, wlen, sms_out) >= 0;
+
+    if (book_matched && sms_matched) {
+        return AT_AMBIGUOUS;
+    }
+    if (book_matched) {
+        return AT_BOOK;
+    }
+    if (sms_matched) {
+        return AT_SMS;
+    }
+    return AT_UNKNOWN;
+}
+
+// Render-time-only peek at the composer's own leading `@word` (no side
+// effects, never the authoritative resolution — try_send() below is) so
+// chat_render() can show the tighter SMS limit while composing, per
+// V02_DESIGN.md §6: "the composer shows the tighter limit ... when the
+// chosen recipient is an SMS contact". Deliberately reports false (no SMS
+// limit shown) for an ambiguous word — try_send() will reject it anyway,
+// and showing either limit for a word that resolves to two different
+// things would be misleading.
+static bool composer_targets_sms(const char *text, size_t *out_skip, sms_contact_t *out)
+{
+    size_t wlen = 0;
+    char alias_scratch[BOOK_ALIAS_MAX];
+    at_word_result_t r = resolve_at_word(text, &wlen, alias_scratch, sizeof(alias_scratch), out);
+    if (r != AT_SMS) {
+        return false;
+    }
+    size_t skip = 1 + wlen;
+    if (text[skip] == ' ') {
+        skip++;
+    }
+    *out_skip = skip;
+    return true;
 }
 
 static void try_send(void)
@@ -148,18 +195,20 @@ static void try_send(void)
     }
     const char *text = msg_composer_text();
 
-    bool is_at_word = false;
     size_t wlen = 0;
     char resolved_alias[BOOK_ALIAS_MAX] = "";
-    bool matched = resolve_at_word(text, &is_at_word, &wlen, resolved_alias, sizeof(resolved_alias));
+    sms_contact_t sms_target;
+    at_word_result_t at = resolve_at_word(text, &wlen, resolved_alias, sizeof(resolved_alias),
+                                          &sms_target);
 
-    if (is_at_word && !matched) {
+    if (at == AT_UNKNOWN || at == AT_AMBIGUOUS) {
         // §5.5: "picker error toast if unknown" — same ui_show_toast() path
         // every other composer error uses; the composer is left exactly as
         // typed so the student can fix the typo, same as "reply too long".
         char toast[48];
         int shown = (wlen > 16) ? 16 : (int) wlen;
-        snprintf(toast, sizeof(toast), "unknown @%.*s - use New message", shown, text + 1);
+        snprintf(toast, sizeof(toast), "%s @%.*s - use New message",
+                 at == AT_AMBIGUOUS ? "ambiguous" : "unknown", shown, text + 1);
         ui_show_toast(toast);
         return;
     }
@@ -167,6 +216,7 @@ static void try_send(void)
     const char *body = text;
     uint16_t body_len = len;
     char to[BOOK_ALIAS_MAX] = "";
+    bool is_at_word = (at == AT_BOOK || at == AT_SMS);
 
     if (is_at_word) {
         // Strip "@word" and one following space (if present) from the body.
@@ -176,7 +226,38 @@ static void try_send(void)
         }
         body = text + skip;
         body_len = (uint16_t) (len - skip);
+    }
 
+    if (body_len == 0) {
+        return; // "@word" consumed the whole composer — nothing left to send
+    }
+
+    if (at == AT_SMS) {
+        // v0.2 §6: goes out via smsSend(), NOT `/down`/`/up` — sms.c's own
+        // sms_queue_send() inserts the PENDING thread row and queues the
+        // actual send for sms_service() (modes_run()'s task) to perform;
+        // "send first, log second" also means the sms_log audit entry is
+        // written by sms.c once the send attempt itself completes, not
+        // here. The tighter GSM-7/UCS-2 limit is enforced here (not just
+        // shown, chat_render()'s own composer_targets_sms() peek) so a
+        // message that grew past the limit after the `@name` was typed
+        // cannot silently overflow into truncation.
+        sms_measure_t m;
+        sms_measure(body, body_len, sms_get_charset_mode(), &m);
+        if (sms_decide_encoding(&m) == SMS_ENC_TOO_LONG) {
+            ui_show_toast("message too long for SMS");
+            return;
+        }
+        if (sms_queue_send(&sms_target, body, body_len)) {
+            msg_composer_reset();
+            s_scroll = 0;
+        } else {
+            ui_show_toast("SMS unavailable or send queue full");
+        }
+        return;
+    }
+
+    if (at == AT_BOOK) {
         // §5.5: "except the default recipient, where `to` is omitted so the
         // wire stays identical to today's common case" — compare the
         // resolved alias against the book's own default, not the literal
@@ -187,10 +268,6 @@ static void try_send(void)
         if (!(have_default && strcmp(default_alias, resolved_alias) == 0)) {
             strncpy(to, resolved_alias, sizeof(to) - 1);
         }
-    }
-
-    if (body_len == 0) {
-        return; // "@word" consumed the whole composer — nothing left to send
     }
 
     if (msg_queue_reply(to, body, body_len)) {
@@ -333,8 +410,29 @@ static void chat_render(void)
     // a reply near the 160-byte cap runs off the visible edge (gfx_text()'s
     // own edge clip) while remaining fully intact in msg.c's buffer and
     // fully sent — a cosmetic viewport limitation, not a data limitation.
-    char counter[16];
-    snprintf(counter, sizeof(counter), "%u/160", (unsigned) msg_composer_len());
+    // v0.2 §6: tighter GSM-7/UCS-2 counter while the composer's leading
+    // `@word` resolves (unambiguously) to an SMS contact — a render-time-only
+    // peek (composer_targets_sms()), never the authoritative encoding
+    // decision (try_send() re-measures at send time).
+    char counter[24];
+    sms_contact_t sms_peek;
+    size_t sms_skip = 0;
+    if (composer_targets_sms(msg_composer_text(), &sms_skip, &sms_peek)) {
+        const char *counted = msg_composer_text();
+        size_t counted_len = msg_composer_len();
+        if (sms_skip <= counted_len) {
+            counted += sms_skip;
+            counted_len -= sms_skip;
+        }
+        sms_measure_t m;
+        sms_measure(counted, counted_len, sms_get_charset_mode(), &m);
+        sms_encoding_t enc = sms_decide_encoding(&m);
+        size_t limit = (enc == SMS_ENC_UCS2) ? SMS_UCS2_MAX_UNITS : SMS_GSM7_MAX_SEPTETS;
+        size_t used = (enc == SMS_ENC_UCS2) ? m.ucs2_units : m.gsm7_septets;
+        snprintf(counter, sizeof(counter), "%u/%u sms", (unsigned) used, (unsigned) limit);
+    } else {
+        snprintf(counter, sizeof(counter), "%u/160", (unsigned) msg_composer_len());
+    }
     int cw = gfx_text_width(GFX_FONT_NORMAL, counter);
     int x = gfx_text(0, y, GFX_FONT_NORMAL, "> ");
     gfx_text(x, y, GFX_FONT_NORMAL, msg_composer_text());

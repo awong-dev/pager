@@ -141,6 +141,7 @@ bool cfg_parse(const uint8_t *buf, uint16_t len, bool sig_pair_present, cfg_disp
 #include "ident.h"
 #include "lock.h"
 #include "msg.h"
+#include "sms.h"
 
 bool cfg_ingest_cbor(const uint8_t *buf, uint16_t len)
 {
@@ -156,11 +157,12 @@ bool cfg_ingest_cbor(const uint8_t *buf, uint16_t len)
     if (d.have_ca) {
         catrust_apply_cfg_submap(buf + d.ca_off, (uint16_t) d.ca_len, d.id);
     }
-    /* d.have_sms: recognised, not yet acted on (docs/V02_DESIGN.md §6, a
-     * later task) — deliberately neither applied nor acked here, so the
-     * relay's own "only the newest unacked cfg is re-published" rule keeps
-     * re-offering it once SMS support exists, rather than this firmware
-     * silently swallowing it now. */
+    if (d.have_sms) {
+        /* v0.2 §6 (device-direct SMS): applies + acks `shown` immediately
+         * (see sms_apply_cfg_submap()'s own doc comment) — same
+         * immediate-apply-and-ack timing `cfg.lock` already uses. */
+        sms_apply_cfg_submap(buf + d.sms_off, (uint16_t) d.sms_len, d.id);
+    }
 
     return true;
 }

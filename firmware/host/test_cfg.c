@@ -111,6 +111,64 @@ static void test_both_lock_and_ca(void)
     CHECK(d.have_lock && d.have_ca, "both have_lock and have_ca must be true (a single push can carry both)");
 }
 
+/* v0.2 §6 (docs/V02_DESIGN.md, device-direct SMS): a cfg envelope carrying
+ * only `sms` — cfg.c's own job is just the byte-span hand-off (sms.c's own
+ * sms_parse_cfg_submap(), tested in firmware/host/test_sms.c, does the real
+ * decode/validation); this only proves cfg_parse() extracts the right span. */
+static void test_sms_only(void)
+{
+    uint8_t buf[192];
+    cbor_w_t w;
+    cbor_w_init(&w, buf, sizeof(buf));
+    cbor_w_map(&w, 3);
+    cbor_w_tstr(&w, 1, "m_66666666", 10);
+    cbor_w_tstr(&w, 6, "cfg", 3);
+    cbor_w_map_key(&w, 38, 1);
+    cbor_w_array(&w, 2, 2); /* sms: [ {n,p}, {n,p} ] */
+    cbor_w_map(&w, 2);
+    cbor_w_tstr(&w, 0, "Mom", 3);
+    cbor_w_tstr(&w, 1, "+12065550100", 12);
+    cbor_w_map(&w, 2);
+    cbor_w_tstr(&w, 0, "Dad", 3);
+    cbor_w_tstr(&w, 1, "+12065550101", 12);
+    CHECK(!w.err, "test setup: encoding the sms-only fixture must not overflow");
+
+    cfg_dispatch_t d;
+    bool ok = cfg_parse(buf, (uint16_t) w.len, false, &d);
+    CHECK(ok, "a cfg envelope with only `sms` must be accepted");
+    CHECK(strcmp(d.id, "m_66666666") == 0, "id mismatch: %s", d.id);
+    CHECK(d.have_sms, "have_sms must be true");
+    CHECK(!d.have_lock && !d.have_ca, "have_lock/have_ca must both be false");
+
+    cbor_r_t r;
+    cbor_r_init(&r, buf + d.sms_off, d.sms_len);
+    uint32_t count;
+    CHECK(cbor_r_array(&r, &count) && count == 2, "captured sms span must decode as a 2-item array");
+}
+
+/* An empty `sms` array (V02_DESIGN.md §6: clearing the allow-list) must be
+ * a recognised, well-formed push too, not treated as unknown/malformed. */
+static void test_sms_empty_array(void)
+{
+    uint8_t buf[64];
+    cbor_w_t w;
+    cbor_w_init(&w, buf, sizeof(buf));
+    cbor_w_map(&w, 2);
+    cbor_w_tstr(&w, 6, "cfg", 3);
+    cbor_w_map_key(&w, 38, 1);
+    cbor_w_array(&w, 2, 0); /* sms: [] */
+    CHECK(!w.err, "test setup: encoding the empty-sms fixture must not overflow");
+
+    cfg_dispatch_t d;
+    CHECK(cfg_parse(buf, (uint16_t) w.len, false, &d), "an empty `sms` array must be accepted");
+    CHECK(d.have_sms, "have_sms must be true even for an empty array (it IS a legal push)");
+
+    cbor_r_t r;
+    cbor_r_init(&r, buf + d.sms_off, d.sms_len);
+    uint32_t count;
+    CHECK(cbor_r_array(&r, &count) && count == 0, "captured sms span must decode as an empty array");
+}
+
 static void test_unknown_key_skipped(void)
 {
     uint8_t buf[256];
@@ -197,6 +255,8 @@ int main(void)
 {
     test_lock_only();
     test_ca_only();
+    test_sms_only();
+    test_sms_empty_array();
     test_both_lock_and_ca();
     test_unknown_key_skipped();
     test_unpin_form();

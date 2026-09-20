@@ -185,6 +185,14 @@ static bool s_wake_sources_armed = false;
 static volatile bool s_gnss_event_pending = false;
 static net_gnss_event_t s_gnss_event;
 
+// v0.2 §6 (device-direct SMS, sms.c): same single-flag event handoff
+// pattern as s_gnss_event_pending above -- written only by
+// pager_sms_event_handler() (WalterModem's _eventProcessingTask), read/
+// cleared only by net_sms_poll_event() (sms.c's own task, via
+// sms_service() from modes_run()).
+static volatile bool s_sms_event_pending = false;
+static net_sms_event_t s_sms_event;
+
 // v0.2 §4.4 (CA trust, cafetch.c): same single-flag event handoff pattern as
 // s_gnss_event_pending above -- set only by pager_socket_event_handler()
 // (WalterModem's own _eventProcessingTask), read/cleared only by
@@ -401,6 +409,26 @@ static void pager_gnss_event_handler(WMGNSSEventType event, const WMGNSSEventDat
     s_gnss_event_pending = true;
 }
 
+// v0.2 §6 (device-direct SMS): `+CMTI` new-message event handoff. Runs on
+// WalterModem's _eventProcessingTask (same task pager_mqtt_event_handler/
+// pager_gnss_event_handler above run on) -- per V02_DESIGN.md §6's own rule
+// ("never do modem work in the event callback beyond what the library's own
+// patterns allow"), this function does nothing but copy the vendor's
+// WMSmsEventData into s_sms_event; the actual net_sms_read()/
+// net_sms_delete() calls happen from sms.c's own task via
+// net_sms_poll_event() and sms_service(), never from here.
+static void pager_sms_event_handler(WMSmsEventType event, const WMSmsEventData *data, void *args)
+{
+    (void) args;
+    if (event != WALTER_MODEM_SMS_EVENT_RING) {
+        return;
+    }
+    s_sms_event.index = data->index;
+    strncpy(s_sms_event.mem, data->mem, sizeof(s_sms_event.mem) - 1);
+    s_sms_event.mem[sizeof(s_sms_event.mem) - 1] = '\0';
+    s_sms_event_pending = true;
+}
+
 // v0.2 §4.4 (CA trust, cafetch.c): runs on WalterModem's _eventProcessingTask
 // (same task pager_mqtt_event_handler/pager_gnss_event_handler above run
 // on) -- per this task's own rule, does nothing but latch a flag; every
@@ -527,6 +555,12 @@ extern "C" bool net_init(void)
     WalterModem::setNetworkEventHandler(pager_network_event_handler, nullptr);
     WalterModem::setGNSSEventHandler(pager_gnss_event_handler, nullptr); // v0.2 §5
     WalterModem::setSocketEventHandler(pager_socket_event_handler, nullptr); // v0.2 §4.4
+    // v0.2 §6: registered unconditionally, same as the handlers above --
+    // harmless even if sms_init()'s own net_sms_config() later fails/is
+    // never called (a `+CMTI` URC cannot arrive if AT+CNMI was never
+    // configured, so this registration alone has no observable effect
+    // until smsConfig() succeeds).
+    WalterModem::setSmsEventHandler(pager_sms_event_handler, nullptr);
 
     // v0.2 §5 trigger 1 (cell/tracking-area change): the default CEREG
     // report type carries no lac/ci at all, so pager_network_event_handler()
@@ -1542,4 +1576,94 @@ extern "C" void net_ca_fetch_close(void)
     WalterModem::socketClose(PAGER_CA_FETCH_SOCKET_ID); // best-effort, power effect: one AT command
     s_ca_fetch_ring_pending = false;
     s_ca_fetch_closed = false;
+}
+
+// ---------------------------------------------------------------------------
+// v0.2 §6 (device-direct SMS, sms.c). See net.h's own doc comments for the
+// contract each of these follows; the vendor patch itself (PATCHES.md 1.4)
+// documents the AT command sequence.
+// ---------------------------------------------------------------------------
+
+extern "C" bool net_sms_config(net_sms_config_result_t *out)
+{
+    if (out) {
+        out->used_ira = false;
+        out->storage_used = -1;
+        out->storage_total = -1;
+    }
+    bool usedIra = false;
+    WalterModemRsp rsp = {};
+    if (!WalterModem::smsConfig(&usedIra, &rsp)) {
+        ESP_LOGI(TAG, "smsConfig() failed - SMS unavailable this boot (V02_DESIGN.md §0: fail open)");
+        return false;
+    }
+    ESP_LOGI(TAG, "smsConfig() OK, resting charset=%s", usedIra ? "IRA" : "GSM (fallback)");
+    if (out) {
+        out->used_ira = usedIra;
+        // rsp holds the LAST sub-command's own data (AT+CPMS=, smsConfig()'s
+        // final step) -- see WalterModem::smsConfig()'s own doc comment.
+        if (rsp.type == WALTER_MODEM_RSP_DATA_TYPE_SMS_STORAGE) {
+            out->storage_used = rsp.data.smsStorage.usedr;
+            out->storage_total = rsp.data.smsStorage.totalr;
+        }
+    }
+    return true;
+}
+
+extern "C" bool net_sms_send(const char *number, const char *text, bool use_ucs2)
+{
+    WalterModemRsp rsp = {};
+    if (!WalterModem::smsSend(number, text, use_ucs2, &rsp)) {
+        ESP_LOGI(TAG, "smsSend() failed (result=%s)", walter_state_name(rsp.result));
+        return false;
+    }
+    return true;
+}
+
+extern "C" bool net_sms_read(int index, net_sms_read_t *out)
+{
+    if (out) {
+        memset(out, 0, sizeof(*out));
+    }
+    WalterModemRsp rsp = {};
+    if (!WalterModem::smsRead(index, &rsp)) {
+        ESP_LOGI(TAG, "smsRead(%d) failed (result=%s)", index, walter_state_name(rsp.result));
+        return false;
+    }
+    if (out) {
+        out->valid = rsp.data.smsRead.valid;
+        out->dcs = rsp.data.smsRead.dcs;
+        strncpy(out->sender, rsp.data.smsRead.sender, sizeof(out->sender) - 1);
+        strncpy(out->timestamp, rsp.data.smsRead.timestamp, sizeof(out->timestamp) - 1);
+        uint16_t n = rsp.data.smsRead.bodyLen;
+        if (n > sizeof(out->body) - 1) {
+            n = sizeof(out->body) - 1;
+        }
+        memcpy(out->body, rsp.data.smsRead.body, n);
+        out->body[n] = '\0';
+        out->body_len = n;
+    }
+    return true;
+}
+
+extern "C" bool net_sms_delete(int index)
+{
+    WalterModemRsp rsp = {};
+    if (!WalterModem::smsDelete(index, &rsp)) {
+        ESP_LOGI(TAG, "smsDelete(%d) failed (result=%s)", index, walter_state_name(rsp.result));
+        return false;
+    }
+    return true;
+}
+
+extern "C" bool net_sms_poll_event(net_sms_event_t *out)
+{
+    if (!s_sms_event_pending) {
+        return false;
+    }
+    if (out) {
+        *out = s_sms_event;
+    }
+    s_sms_event_pending = false;
+    return true;
 }

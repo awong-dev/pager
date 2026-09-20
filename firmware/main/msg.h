@@ -307,6 +307,54 @@ void msg_mark_all_unshown(void);
  * here would be redundant, not a safety net for anything reachable today. */
 bool msg_queue_reply(const char *to, const char *body, uint16_t len);
 
+/* v0.2 §6 (docs/V02_DESIGN.md, sms.c): inserts a DOWN thread entry for an
+ * allow-listed inbound SMS. ack_state is set to MSG_ACK_READ IMMEDIATELY
+ * (never MSG_ACK_UNSHOWN) so this entry is never shown/read-acked to the
+ * relay — PROTOCOL.md §3.6: "those acks mean nothing for an SMS", and
+ * msg_mark_all_unshown()'s burst-ack sweep (modes.c) only ever touches
+ * MSG_ACK_UNSHOWN entries, so starting here at MSG_ACK_READ is what keeps
+ * this id out of that sweep for its entire lifetime. Generates its own id
+ * ("x_" + 8 lowercase hex from esp_random() — a namespace no relay-issued
+ * id, and no other id this codebase generates ("u_" replies, "l_" /loc,
+ * "s_" sms_log audit), ever produces, so it can never collide with or be
+ * mistaken for one). `from` is the SMS contact's display name (shown as the
+ * `from` column, same as any other down message). Rejects (returns false,
+ * nothing inserted) only if `body` fails the same body_rules_ok() every
+ * down message is held to — sms.c's own decoder is expected to have already
+ * produced valid text, so a false return here means a decoder bug, not
+ * something the caller should react to specially. On success, `out_id` is
+ * filled with the generated id (for the caller's own alert/audit
+ * bookkeeping — modes_alert_incoming(), modes.h). */
+bool msg_insert_sms_in(const char *from, const char *body, uint16_t body_len, char *out_id,
+                       size_t out_id_cap);
+
+/* v0.2 §6: inserts a PENDING ("...", MSG_ACK_UP_PENDING) UP thread entry for
+ * a direct SMS send — deliberately OUTSIDE msg.c's own pending_up/NVS
+ * `msgq` queue: this entry is NEVER retried by msg_pump() and NEVER
+ * published over MQTT (PROTOCOL.md §3.6: the whole point of this path is
+ * that it works without the relay). `to` is the SMS contact's display name
+ * (not shown anywhere today — chat_render()'s `who` column is "you" for
+ * every up entry regardless of `to`, same pre-existing limitation an
+ * ordinary `@alias` reply already has — kept for a future per-peer view).
+ * Same body validation and id-generation namespace as msg_insert_sms_in()
+ * above (a fresh, independent "x_" id — the two functions never share an
+ * id). On success, `out_id` is filled with the generated id, which the
+ * caller (sms.c's sms_service()) later hands to msg_finish_sms_out() once
+ * the actual smsSend() attempt completes. */
+bool msg_insert_sms_out_pending(const char *to, const char *body, uint16_t body_len, char *out_id,
+                                size_t out_id_cap);
+
+/* v0.2 §6: resolves a thread entry msg_insert_sms_out_pending() created to
+ * its final MSG_ACK_UP_SENT/MSG_ACK_UP_FAILED state (`ok`), by id — the
+ * same two terminal states (and the same "sent"/"FAILED" rendering,
+ * chat_render()) an ordinary `/up` reply's msg_pump() already produces, so
+ * no UI change was needed for this to show correctly. No-op (returns false)
+ * if `id` has already scrolled out of the 32-deep RAM thread by the time
+ * the send attempt finished — cosmetic only: the sms_log audit entry
+ * (sms.c's own audit ring) is the durable record of the outcome, not this
+ * UI row. */
+bool msg_finish_sms_out(const char *id, bool ok);
+
 /* Called once per wake cycle from modes_run() while the MQTT session is
  * connected. AT MOST ONE publish per call. Priority: pending acks
  * oldest-first (FIFO by array slot order — see msg.c), then pending

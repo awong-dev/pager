@@ -473,6 +473,83 @@ void net_set_cell_change_cb(void (*cb)(const char *cell_key));
  * the existing ~1 mA light-sleep floor. */
 void net_enable_accel_wake(void);
 
+/* ---------------------------------------------------------------------
+ * SMS (docs/V02_DESIGN.md §6). main/sms.c is the only caller; it owns the
+ * allow-list/audit/encoding policy and never calls WalterModem directly
+ * (this header is the boundary, same rule every other net.h entry point
+ * follows). Every power-effect comment here is PENDING_HW/UNVERIFIED: SMS
+ * on the production SIM has not been tested on real hardware while writing
+ * this (V02_DESIGN.md §6's own flag) -- `smstest`/`smslist` exist to find
+ * out.
+ * --------------------------------------------------------------------- */
+
+typedef struct {
+    bool used_ira;      /* true: AT+CSCS="IRA" was accepted; false: fell back to AT+CSCS="GSM" */
+    int storage_used;   /* AT+CPMS's own <usedr> (read storage), from its SET-command response;
+                         * -1 if unknown/unavailable (coordinator fix, smaller item a) */
+    int storage_total;  /* AT+CPMS's own <totalr>; -1 if unknown/unavailable */
+} net_sms_config_result_t;
+
+/* One-time text-mode SMS setup (WalterModem::smsConfig(): AT+CMGF/AT+CSCS
+ * ("IRA", falling back to "GSM")/AT+CSDH/AT+CSMP/AT+CNMI/AT+CPMS, see the
+ * vendor patch's own PATCHES.md entry). Call once from sms_init(); a false
+ * return means SMS is unsupported/unavailable this boot (docs/V02_DESIGN.md
+ * §0: log once at INFO, disable the feature, never touch paging) -- sms.c,
+ * not this file, decides what to do with that. `out` (nullable) reports
+ * which charset actually won and the AT+CPMS-reported "ME" storage usage/
+ * capacity (both -1 if that response did not include them) -- sms.c uses
+ * the latter to bound its boot-drain scan instead of a hardcoded guess.
+ * Power effect: up to six AT round trips, no RRC of their own. */
+bool net_sms_config(net_sms_config_result_t *out);
+
+/* Sends one SMS via WalterModem::smsSend(). `text` is either plain text
+ * (7-bit path, `use_ucs2` false -- sms.c's own sms_charset_mode_t decides
+ * which characters are eligible, see sms.h's own module comment) or a hex
+ * string of big-endian UTF-16 code units (`use_ucs2` true) -- sms.c's own
+ * encoding decision; this facade never touches character encoding itself.
+ * Power effect: an AT+CSCS/AT+CSMP toggle (two round trips) either side of
+ * the send ONLY when `use_ucs2` (a plain 7-bit send costs one AT+CMGS
+ * transaction only, RRC-active for its duration, PENDING_HW/UNVERIFIED). */
+bool net_sms_send(const char *number, const char *text, bool use_ucs2);
+
+typedef struct {
+    bool valid;         /* false: the index was empty/nonexistent (still "OK", not a command failure) */
+    char sender[32];    /* raw <oa>, ASCII digits, not charset-decoded (net.cpp's own module comment) */
+    char timestamp[32]; /* raw <scts>, ASCII */
+    int dcs;            /* 3GPP TS 23.038 §4 data coding scheme, or -1 if AT+CSDH=1's extra
+                         * +CMGR fields were absent from this response (coordinator fix #2:
+                         * sms.c uses this to decide the body's encoding instead of guessing) */
+    char body[281];     /* GSM-7 text, or UCS-2 hex -- sms.c's decoder tells them apart via `dcs` */
+    uint16_t body_len;
+} net_sms_read_t;
+
+/* Reads one SMS record (WalterModem::smsRead(), AT+CMGR, text mode).
+ * Returns false only on an outright command failure (ERROR/+CMS ERROR) --
+ * an empty/nonexistent index is reported via `out->valid == false`, not a
+ * false return (mirrors the vendor command's own "OK but nothing there" vs.
+ * "ERROR" distinction, UNVERIFIED which this modem actually does). Power
+ * effect: one AT+CMGR round trip. */
+bool net_sms_read(int index, net_sms_read_t *out);
+
+/* Deletes one SMS record (WalterModem::smsDelete(), AT+CMGD). Power effect:
+ * one AT round trip. */
+bool net_sms_delete(int index);
+
+typedef struct {
+    uint16_t index;
+    char mem[8]; /* storage name the modem reported, e.g. "ME" */
+} net_sms_event_t;
+
+/* Non-blocking: true and fills *out at most once per `+CMTI` URC observed
+ * since the last call -- same single-flag event handoff pattern as
+ * net_gnss_poll_event() (the event handler itself only copies the struct
+ * and sets a flag; every subsequent modem call -- net_sms_read()/
+ * net_sms_delete() -- happens here, on the caller's own task, sms.c's
+ * sms_service() from modes_run(), never from the event handler itself).
+ * Call every sms_service() iteration. Power effect: none when it returns
+ * false. */
+bool net_sms_poll_event(net_sms_event_t *out);
+
 #ifdef __cplusplus
 }
 #endif

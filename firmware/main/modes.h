@@ -84,4 +84,21 @@ void modes_set_loc_suppress(bool suppress);
  * trial back. No modem/sleep-state effect of its own: a single RAM flag. */
 void modes_set_ca_apply_suppress(bool suppress);
 
+/* v0.2 §6 (device-direct SMS, sms.c): alerts exactly like an incoming page
+ * (docs/V02_DESIGN.md §6) for an inbound SMS from an allow-listed sender
+ * that `msg_insert_sms_in()` has already put in the RAM thread — the same
+ * set_mode(ACTIVE)+render_pending_set() pair handle_ingest_result()'s
+ * MSG_INGEST_NEW branch uses for a real `/down` message, respecting the
+ * exact same lock-screen rule (`lock_is_locked()`: never steals the screen
+ * out from under Locked; the message is already inserted into the thread
+ * regardless and is picked up on unlock, same as a page received while
+ * locked). Unlike a real `/down` message this never queues a `shown` ack
+ * (there is nothing to ack — `id` is sms.c's own synthetic "x_..." id, never
+ * a relay-issued one). `from` is the SMS contact's display name. Call from
+ * sms.c's own task (modes_run(), via sms_service()) only — never from an
+ * event/URC callback. No modem effect of its own; may flip the mode to
+ * active (same power effect set_mode() already documents) and, if not
+ * locked, trigger the next render_pending drain to wake the panel. */
+void modes_alert_incoming(const char *id, const char *from);
+
 #endif /* MODES_H */
