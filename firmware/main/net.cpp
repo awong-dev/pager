@@ -436,13 +436,32 @@ extern "C" bool net_init(void)
 
     // §3.5: seed ts from the network clock (NITZ via getClock()). On
     // failure the device publishes ts:0 forever - no SNTP path is added.
-    WalterModemRsp rsp = {};
-    if (WalterModem::getClock(&rsp)) {
-        s_clock_epoch = rsp.data.clock.epochTime;
-        s_clock_epoch_us = esp_timer_get_time();
+    //
+    // Sanity window, found live: right after attach the modem's RTC can still
+    // be unset and AT+CCLK? answers "70/01/01,00:00:08". The library reads the
+    // two-digit year as 20YY, giving 2070 (epoch 3155760008), and the relay
+    // rejects every envelope carrying it ("ts out of range"). NITZ normally
+    // lands within a few seconds of attach, so retry briefly, and fall back
+    // to the documented ts:0 rather than ever publishing a bogus time.
+    static constexpr int64_t PAGER_CLOCK_MIN = 1704067200LL; // 2024-01-01
+    static constexpr int64_t PAGER_CLOCK_MAX = 3124224000LL; // 2069-01-01, below the "70" artefact
+    s_clock_epoch = 0;
+    for (int attempt = 0; attempt < 10; attempt++) {
+        WalterModemRsp rsp = {};
+        if (WalterModem::getClock(&rsp)) {
+            int64_t t = rsp.data.clock.epochTime;
+            if (t >= PAGER_CLOCK_MIN && t < PAGER_CLOCK_MAX) {
+                s_clock_epoch = t;
+                s_clock_epoch_us = esp_timer_get_time();
+                break;
+            }
+            ESP_LOGI(TAG, "modem clock not set yet (epoch=%lld), retrying", (long long) t);
+        }
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+    if (s_clock_epoch != 0) {
         ESP_LOGI(TAG, "clock seeded from network: epoch=%lld", (long long) s_clock_epoch);
     } else {
-        s_clock_epoch = 0;
         ESP_LOGI(TAG, "no network clock available; ts will read 0 (PROTOCOL.md §3.5)");
     }
 

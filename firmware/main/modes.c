@@ -932,6 +932,14 @@ void modes_boot(void)
     } else {
         rtc_cold_init();
         ESP_LOGI(TAG, "cold boot, new session=%s", g_rtc.session_id);
+        // docs/DEVICE_PLAN.md section 2.5: `n = (epoch << 20) | lo`. `lo` lives in RTC
+        // memory, which a cold boot just lost, so it restarts at 0; the epoch
+        // "increments only on a cold boot or when lo wraps". Without this
+        // bump every cold boot re-issued n values the relay had already
+        // accepted and the relay dropped everything as a replay -- including
+        // the very first publish after setup (n=0 against the relay's initial
+        // upN=0). Found live 2026-09-20. One NVS write per cold boot.
+        on_auth_epoch_wrap();
     }
     rtc_save();
 
@@ -1076,9 +1084,15 @@ void modes_run(void)
         bool btn_stuck = input_button_stuck();
         bool ui_awake = input_awake();
         bool skip_sleep = btn_busy || btn_stuck || ui_awake || net_modem_busy();
+        // What the pump gate below keys on: the real reasons not to sleep,
+        // before any debug override.
+        bool pump_blocked = skip_sleep;
 #ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
         // Debug builds only (see main/CMakeLists.txt): behave as if the UI
         // were permanently awake -- no light sleep, RTS held asserted, log alive.
+        // pump_blocked deliberately keeps the pre-override value: forcing it
+        // true too meant msg_pump() never ran, so this build never published
+        // a single ack and the web app sat on "sent" forever (found live).
         skip_sleep = true;
 #endif
         if (!skip_sleep) {
@@ -1241,7 +1255,7 @@ void modes_run(void)
         // cadence used while the composer/button FSM keep us from
         // sleeping) - PROTOCOL.md §9.5's rationale against turning a 50ms
         // wake into a multi-second one.
-        if (!skip_sleep && st.mqtt_connected) {
+        if (!pump_blocked && st.mqtt_connected) {
             msg_pump();
         }
 
