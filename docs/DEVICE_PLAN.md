@@ -714,8 +714,12 @@ but the screen stays" free.
 `replace`. Every render draws the status bar, the screen's body, and a footer of key hints, into
 the framebuffer, then calls the existing diff-based partial refresh — only rows that changed are
 sent, so a status-bar-only change costs one 10-row window. The 20-partial/1-full cadence stays but
-the full refresh is **never taken on the inbound-message path** (README R9): it is deferred to the
-moment the UI-awake window lapses.
+the full refresh is **not taken for messages arriving into an already-open Chat** (README R9): it
+is deferred to the moment the UI-awake window lapses. *(Amended 2026-09-20 from the first look at
+real hardware: the one exception is a message that **changes the screen**, e.g. greeting → Chat.
+A partial refresh there left the greeting's large type ghosted under the message, so
+`ui_incoming()` takes a full refresh for that first message only. The Chat screen's key-hint
+footer was also dropped in favour of 2 px of leading between rows.)*
 
 **Status bar** (10 px, always 1×): `[signal 0–4 bars] [link ok|x] [unsent n] [lock if sig on]
 … [unread n] [battery 0–4]`. No clock *(see rationale: a clock would need a refresh every minute

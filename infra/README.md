@@ -96,6 +96,10 @@ gcloud secrets versions add WEBHOOK_KEY       --project <PROJECT_ID> --data-file
 
 (each command reads the secret value from stdin — type/paste it and press Ctrl-D, or pipe it
 from a password manager's CLI; never leave it in shell history or a file that gets committed).
+**Do not let a trailing newline into the value**: pipe with `printf '%s' "$VALUE"`, never `echo`.
+Secret Manager stores exactly the bytes it is given, an HTTP header can never carry a newline, and
+a `WEBHOOK_KEY` stored with one made every broker webhook fail with 401 on the first real
+deployment. The relay now strips whitespace from these three values, but fix it at the source.
 `BROKER_API_KEY`/`BROKER_API_SECRET` must be the **exact same pair** you configure as EMQX
 Cloud's REST API key in step 10 below — do steps 6 and 10 together, in whichever order is
 convenient, but make sure the values end up identical on both sides. Generate a `WEBHOOK_KEY`
@@ -187,9 +191,18 @@ console/API work, by hand:
      too short for production).
 3. Replicate the exact rule/connector/action shape `tools/emqx_setup.py` creates locally
    (`CONNECTOR_NAME = relay_webhook`, `ACTION_NAME = relay_webhook_action`, `RULE_ID =
-   pager_to_relay`, topics `pager/+/up`, `pager/+/status`, `pager/+/loc`), pointed at this
+   pager_to_relay`, topics `pager/+/up`, `pager/+/status`, `pager/+/loc` **and**
+   `pager/boot/+/up`), pointed at this
    deployment's real `<relay_service_url>/webhooks/mqtt` instead of the compose network address,
    with the `X-Relay-Webhook-Key` header set to the same value you put in `WEBHOOK_KEY` (step 6).
+   The rule SQL **must** carry a base64 copy of the payload, because devices speak CBOR and EMQX's
+   JSON encoder destroys non-text bytes:
+   `SELECT topic, payload, base64_encode(payload) as payload_b64, qos, clientid FROM "pager/+/up",
+   "pager/+/status", "pager/+/loc", "pager/boot/+/up"`. Action: `POST`, header `content-type:
+   application/json`, body `${.}`. This was done by hand in the console for the production
+   deployment on 2026-09-20 and **exists nowhere else**: a rebuilt deployment has to redo it.
+   To check it, restart a pager and look for a `POST /webhooks/mqtt` `200` in the relay's logs
+   (`401` = the key header does not match the secret).
    `infra/modules/broker-gce/startup-script.sh.tpl` is a worked example of this same shape
    re-implemented in curl, in case the EMQX Cloud console makes it easier to look at a script
    than reconstruct it purely from the dashboard.
