@@ -345,6 +345,11 @@ static void pager_network_event_handler(WMNetworkEventType event, const WMNetwor
 
 extern "C" bool net_init(void)
 {
+#ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
+    // Debug builds only (main/CMakeLists.txt): raw AT TX:/RX: trace, so URCs
+    // such as +SQNSMQTTONMESSAGE are visible on the console.
+    esp_log_level_set("WalterModem", ESP_LOG_DEBUG);
+#endif
     // Power effect: WalterModem::begin() only calls reset() when
     // esp_sleep_get_wakeup_cause() == UNDEFINED (L5) - i.e. on a real
     // reboot, not a light-sleep continuation. This design never deep

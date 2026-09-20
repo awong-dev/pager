@@ -1076,6 +1076,11 @@ void modes_run(void)
         bool btn_stuck = input_button_stuck();
         bool ui_awake = input_awake();
         bool skip_sleep = btn_busy || btn_stuck || ui_awake || net_modem_busy();
+#ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
+        // Debug builds only (see main/CMakeLists.txt): behave as if the UI
+        // were permanently awake -- no light sleep, RTS held asserted, log alive.
+        skip_sleep = true;
+#endif
         if (!skip_sleep) {
             net_sleep(interval_ms);
             // L4/F7: the event task ticks at 10ms + settles for 10ms; give
