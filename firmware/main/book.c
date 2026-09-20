@@ -330,7 +330,7 @@ void book_bind(auth_rtc_t *auth_rtc, book_lock_fn lock, book_unlock_fn unlock, b
 
 // Same pattern as msg.c's next_up_n_locked() (F3.6) — every signed
 // /up,/status,/loc envelope shares one strictly-increasing counter.
-static uint32_t next_up_n_locked(bool *wrapped)
+static uint64_t next_up_n_locked(bool *wrapped)
 {
     if (wrapped) {
         *wrapped = false;
@@ -339,7 +339,7 @@ static uint32_t next_up_n_locked(bool *wrapped)
         return 0;
     }
     s_lock();
-    uint32_t n = auth_next_up_n(s_auth_rtc, ident_get_n_epoch(), wrapped);
+    uint64_t n = auth_next_up_n(s_auth_rtc, ident_get_n_epoch(), wrapped);
     s_rtc_save();
     s_unlock();
     return n;
@@ -627,7 +627,7 @@ bool book_request(const char *name, const char *ph_or_alias)
     }
 
     bool wrapped = false;
-    uint32_t n = next_up_n_locked(&wrapped);
+    uint64_t n = next_up_n_locked(&wrapped);
     cbor_w_uint(&w, BK_N, n);
     if (w.err) {
         return false;

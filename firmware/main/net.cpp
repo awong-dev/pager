@@ -14,6 +14,7 @@
 #include "net.h"
 #include "pins.h"
 #include "ident.h"
+#include "placeholder_ca.h"
 
 #include "WalterModem.h"
 
@@ -340,6 +341,44 @@ static void pager_network_event_handler(WMNetworkEventType event, const WMNetwor
 }
 
 // ---------------------------------------------------------------------------
+// v0.2 bug fix #4 (docs/V02_DESIGN.md §2.4, "Empty CA slot"). UNVERIFIED
+// whether the MQTT engine does TLS at all when the cert slot a profile names
+// is *empty* -- BRINGUP_NOTES.md only confirmed that a profile which does
+// not name a slot at all silently falls back to a plaintext CONNECT. Every
+// TLS profile this file configures for MQTT already names PAGER_TLS_CA_SLOT
+// even with validation off, so the "unnamed" case cannot happen here; this
+// closes the "named but empty" one, which a factory-fresh modem or a device
+// whose identity has never pinned a CA (DEVICE_PLAN.md §3.3: "the CA is
+// optional") can hit. Writing the ISRG Root X2 placeholder (placeholder_ca.h)
+// makes the slot never actually empty. It is never validated against: the
+// only callers of this function are branches that are about to configure
+// (or already run) WALTER_MODEM_TLS_VALIDATION_NONE.
+// ---------------------------------------------------------------------------
+static void ensure_ca_slot_populated(void)
+{
+    if (s_ca_written) {
+        return; // a real CA or the placeholder was already written this power session
+    }
+    if (ident_get_slot12_populated()) {
+        // Known good from a prior boot (NVS "ident"/"slot12") - one NVRAM
+        // write per device lifetime in practice, per the design's own note.
+        s_ca_written = true;
+        return;
+    }
+    if (!WalterModem::tlsWriteCredential(false, PAGER_TLS_CA_SLOT, PAGER_PLACEHOLDER_CA_PEM)) {
+        ESP_LOGI(TAG, "failed to write placeholder CA to slot %u - MQTT TLS behaviour with an "
+                      "empty named slot stays UNVERIFIED (BRINGUP_NOTES.md)",
+                 (unsigned) PAGER_TLS_CA_SLOT);
+        return;
+    }
+    s_ca_written = true;
+    ident_set_slot12_populated();
+    ESP_LOGI(TAG, "placeholder CA (ISRG Root X2) written to modem slot %u - never validated "
+                  "against, only keeps the slot non-empty",
+             (unsigned) PAGER_TLS_CA_SLOT);
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
@@ -492,6 +531,11 @@ extern "C" bool net_init(void)
         } else {
             ESP_LOGD(TAG, "CA unchanged, skipping NVRAM write to slot %u", (unsigned) PAGER_TLS_CA_SLOT);
         }
+    } else {
+        // v0.2 bug fix #4 (§2.4): no CA pinned -- this is exactly the
+        // VALIDATION_NONE branch below, so make sure slot PAGER_TLS_CA_SLOT
+        // is not left empty (UNVERIFIED what the MQTT engine does then).
+        ensure_ca_slot_populated();
     }
     if (!WalterModem::tlsConfigProfile(PAGER_TLS_PROFILE_ID,
                                        pin_ca ? WALTER_MODEM_TLS_VALIDATION_CA
@@ -535,8 +579,12 @@ extern "C" bool net_tls_profile_bootstrap(void)
     // (AT+SQNSPCFG=2,2,"",0,12,,,) the same engine sends a normal TLS 1.2
     // ClientHello with SNI. The generic socket layer (AT+SQNSD) does TLS
     // either way, which is why nettest never reproduced this.
-    // UNVERIFIED: behaviour when slot PAGER_TLS_CA_SLOT is empty, as on a
-    // factory-fresh modem -- every test so far had a cert in it.
+    // v0.2 bug fix #4 (§2.4): behaviour when slot PAGER_TLS_CA_SLOT is empty
+    // (as on a factory-fresh modem -- every test so far had a cert in it)
+    // was UNVERIFIED and stayed that way; this makes it not matter, the
+    // same way net_init()'s own VALIDATION_NONE branch does.
+    ensure_ca_slot_populated();
+
     WalterModemRsp rsp = {};
     if (!WalterModem::tlsConfigProfile(PAGER_TLS_BOOTSTRAP_PROFILE_ID,
                                        WALTER_MODEM_TLS_VALIDATION_NONE,

@@ -255,32 +255,36 @@ msg_ingest_t msg_ingest_down_cbor(const uint8_t *buf, uint16_t len, const msg_t 
 const char *msg_last_ingest_id(void);
 
 /* down message: state -> shown, queues a pending_ack entry. Returns false
- * only if the pending_acks table was full and the ack could not be queued
- * (the ack_state is still updated in the RAM thread when found). */
+ * only if the pending_acks table was full and the ack could not be queued.
+ * v0.2 bug fix #1 (docs/V02_DESIGN.md §2.1): unlike v0.1, the RAM ack_state
+ * is NOT advanced when queuing fails -- it stays at whatever it was, so a
+ * later call (msg_mark_all_unshown(), a re-render, or scr_chat.c's
+ * mark_visible_read()) sees it as still outstanding and retries once a
+ * pending_acks slot frees up, instead of the ack being silently lost while
+ * the local UI believes it already went out. */
 bool msg_mark_shown(const char *id);
 
 /* down message: state -> read, queues a pending_ack entry, clears rtc
- * unread[0] (and its NVS msgq body) if it matches this id. */
+ * unread[0] (and its NVS msgq body) if it matches this id. Same
+ * queued-before-advanced contract as msg_mark_shown() above. */
 bool msg_mark_read(const char *id);
 
-/* F6.5 (docs/DEVICE_PLAN.md §5.8): queues a `shown` ack (msg_mark_shown())
- * for every down message currently at exactly MSG_ACK_UNSHOWN — i.e. every
- * message that arrived while the device was locked and was therefore never
- * displayed (modes.c's handle_ingest_result() skips render_pending_set()
- * for those, so they never reach the render-then-mark-shown path
- * ui_incoming() otherwise guarantees). Called once, right after a
- * successful unlock (scr_lock.c), on modes_run()'s own task — see
- * scr_lock.c's own comment for why that ordering is safe without
- * ui_incoming()'s explicit two-step. A message the student had already seen
- * (shown or read) before locking is untouched: only ack_state ==
- * MSG_ACK_UNSHOWN entries qualify, so this never re-acks something already
- * acked. Subject to the same MSG_PENDING_ACKS_MAX (8) queue depth as any
- * other ack burst (msg.h's own doc comment on msg_mark_shown()/
- * msg_mark_read()) — more than 8 messages accumulated while locked is a
- * documented edge case, not a crash: the 9th+ simply does not get queued by
- * this pass (pending_ack_upsert_locked() returning false is not surfaced
- * here, matching scr_chat_mark_visible_read()'s own no-return-value
- * precedent for the identical burst-queueing situation). */
+/* F6.5 (docs/DEVICE_PLAN.md §5.8) / v0.2 bug fix #1 (docs/V02_DESIGN.md
+ * §2.1): queues a `shown` ack (msg_mark_shown()) for every down message
+ * currently at exactly MSG_ACK_UNSHOWN — i.e. every message that arrived
+ * while the device was locked and was therefore never displayed (modes.c's
+ * handle_ingest_result() skips render_pending_set() for those), AND every
+ * message from an incoming burst that overwrote modes.c's single-slot
+ * render_pending_t before its own `shown` could be queued (modes.c's
+ * service_render_pending() now calls this instead of acking only the last
+ * remembered id). Called after a successful unlock (scr_lock.c) and after
+ * every successful ui_incoming() render (modes.c). A message the student
+ * had already seen (shown or read) is untouched: only ack_state ==
+ * MSG_ACK_UNSHOWN entries qualify. Subject to the same MSG_PENDING_ACKS_MAX
+ * (8) queue depth as any other ack burst; entries that do not fit are NOT
+ * lost (msg_mark_shown()'s new contract above keeps them at UNSHOWN), so
+ * the next call — the next unlock, or the next incoming message's render —
+ * retries them. */
 void msg_mark_all_unshown(void);
 
 /* Student reply. REJECTS (returns false) if the body fails PROTOCOL.md

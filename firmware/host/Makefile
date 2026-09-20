@@ -98,16 +98,20 @@ $(BUILD)/test_cbor.o: test_cbor.c $(MAIN_SRC)/cbor.h | $(BUILD)
 $(BUILD)/test_cbor: $(BUILD)/cbor.o $(BUILD)/test_cbor.o
 	$(CC) $(CFLAGS) -o $@ $(BUILD)/cbor.o $(BUILD)/test_cbor.o
 
-# test_auth: auth.c + test_auth.c (no cbor.c needed: auth.c signs/verifies
-# raw byte buffers, agnostic to what is encoded inside them)
+# test_auth: auth.c + test_auth.c. auth.c itself signs/verifies raw byte
+# buffers, agnostic to what is encoded inside them, but v0.2 (docs/
+# V02_DESIGN.md §3) adds a large-`n` (>= 2^32) check that decodes the
+# verified/trimmed buffer with cbor_r_uint() to confirm cbor.c's minimal-
+# length uint64 decode agrees with the value the vector was signed with —
+# hence cbor.c/cbor.h join the link here too.
 $(BUILD)/auth.o: $(MAIN_SRC)/auth.c $(MAIN_SRC)/auth.h | $(BUILD)
 	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $(MAIN_SRC)/auth.c
 
-$(BUILD)/test_auth.o: test_auth.c $(MAIN_SRC)/auth.h | $(BUILD)
+$(BUILD)/test_auth.o: test_auth.c $(MAIN_SRC)/auth.h $(MAIN_SRC)/cbor.h | $(BUILD)
 	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ test_auth.c
 
-$(BUILD)/test_auth: $(BUILD)/auth.o $(BUILD)/test_auth.o
-	$(CC) $(CFLAGS) -o $@ $(BUILD)/auth.o $(BUILD)/test_auth.o
+$(BUILD)/test_auth: $(BUILD)/auth.o $(BUILD)/cbor.o $(BUILD)/test_auth.o
+	$(CC) $(CFLAGS) -o $@ $(BUILD)/auth.o $(BUILD)/cbor.o $(BUILD)/test_auth.o
 
 # test_setup: setup.c (host-only top section, ESP_PLATFORM-guarded bottom
 # section excluded) + cbor.c (test_setup.c CBOR-decodes the plaintext bundle

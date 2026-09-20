@@ -126,9 +126,12 @@ bool net_write_ca(const char *ca_pem);
  * RRC time it takes (PENDING_HW for the current draw). */
 bool net_session_up(void);
 
-/* Explicit MQTT disconnect. ONLY legal from the F3 "permanent failure"
- * recovery path, to force a clean modem-side teardown before the 300s
- * steady backoff. Power effect: one AT command, no RRC of its own. */
+/* Explicit MQTT disconnect. Legal from the F3 "permanent failure" recovery
+ * path (to force a clean modem-side teardown before the 300s steady
+ * backoff) and from the v0.2 §2.3 connect watchdog (modes.c) when a connect
+ * has produced neither CONNECTED nor DISCONNECTED within 60s - same "force
+ * a clean modem-side teardown" reasoning, just a different trigger.
+ * Power effect: one AT command, no RRC of its own. */
 void net_session_down(void);
 
 /* Publish `len` bytes of `buf` on `topic` at the given QoS. `buf` must be

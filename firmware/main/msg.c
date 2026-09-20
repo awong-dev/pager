@@ -915,12 +915,24 @@ msg_ingest_t msg_ingest_down_cbor(const uint8_t *buf, uint16_t len, const msg_t 
             break;
         }
         case MK_N: {
+            // v0.2 (docs/V02_DESIGN.md §3, §7): `n` is now up to 2^53-1 on
+            // the wire ("uint, now up to 2^53-1"). The down path's replay
+            // window (auth_accept_down_n(), auth_rtc_t.down_n) stays a
+            // uint32_t by design -- the relay's own downN counts by one, so
+            // reaching 2^32 is not a realistic device lifetime -- but this
+            // parser MUST still *parse* a wider value without rejecting the
+            // whole envelope as malformed (a v0.1 firmware bug: rejecting
+            // here previously meant a relay that ever legitimately sent a
+            // wide `n` would get every /down silently dropped). Saturate
+            // instead of reject; a value that actually reaches UINT32_MAX
+            // fails the replay window on its own merits, the same way any
+            // other implausible `n` would.
             uint64_t v;
-            if (!cbor_r_uint(&r, &v) || v > 0xFFFFFFFFu) {
+            if (!cbor_r_uint(&r, &v)) {
                 msg_count_malformed();
                 return MSG_INGEST_MALFORMED;
             }
-            n = (uint32_t) v;
+            n = (v > 0xFFFFFFFFu) ? 0xFFFFFFFFu : (uint32_t) v;
             have_n = true;
             break;
         }
@@ -994,16 +1006,25 @@ static bool mark_common(const char *id, uint8_t ack_state, uint8_t pending_state
 {
     s_lock();
     msg_t *m = thread_find_locked(id, MSG_DIR_DOWN);
-    if (m && m->ack_state < ack_state) {
+    // v0.2 bug fix #1 (docs/V02_DESIGN.md §2.1): only advance the RAM
+    // ack_state when the ack actually got queued. The old code bumped
+    // ack_state unconditionally, so a message that lost the race for the
+    // MSG_PENDING_ACKS_MAX (8) deep queue during a burst was marked SHOWN/READ
+    // locally forever with its `shown`/`read` ack silently dropped -- a later
+    // msg_mark_all_unshown() pass (or a re-render) would never retry it,
+    // because it no longer looked UNSHOWN. Leaving ack_state where it was
+    // when queuing fails means the next successful pass sees it as still
+    // outstanding and retries. No power/modem effect: RAM bookkeeping only.
+    bool queued = pending_ack_upsert_locked(id, pending_state);
+    if (queued && m && m->ack_state < ack_state) {
         m->ack_state = ack_state;
     }
     bool clear_unread = false;
-    if (ack_state == MSG_ACK_READ && s_rtc->unread[0].in_use &&
+    if (queued && ack_state == MSG_ACK_READ && s_rtc->unread[0].in_use &&
         strncmp(s_rtc->unread[0].id, id, MSG_ID_MAX) == 0) {
         s_rtc->unread[0].in_use = false;
         clear_unread = true;
     }
-    bool queued = pending_ack_upsert_locked(id, pending_state);
     s_save();
     s_unlock();
 
@@ -1127,7 +1148,7 @@ bool msg_queue_reply(const char *to, const char *body, uint16_t len)
 // lock (it does an NVS write via ident_store(), modes.c's on_auth_epoch_
 // wrap()). Returns 0 / *wrapped=false if auth was never bound (defensive;
 // modes_boot() always calls msg_bind_auth() before net is up).
-static uint32_t next_up_n_locked(bool *wrapped)
+static uint64_t next_up_n_locked(bool *wrapped)
 {
     if (wrapped) {
         *wrapped = false;
@@ -1136,7 +1157,7 @@ static uint32_t next_up_n_locked(bool *wrapped)
         return 0;
     }
     s_lock();
-    uint32_t n = auth_next_up_n(s_auth_rtc, ident_get_n_epoch(), wrapped);
+    uint64_t n = auth_next_up_n(s_auth_rtc, ident_get_n_epoch(), wrapped);
     s_save();
     s_unlock();
     return n;
@@ -1177,7 +1198,7 @@ static bool publish_ack(const char *id, const char *ack_str)
     }
 
     bool wrapped = false;
-    uint32_t n = next_up_n_locked(&wrapped);
+    uint64_t n = next_up_n_locked(&wrapped);
     cbor_w_uint(&w, MK_N, n);
     if (w.err) {
         return false;
@@ -1232,7 +1253,7 @@ static bool publish_reply(const char *id, const char *to, const char *body, uint
     }
 
     bool wrapped = false;
-    uint32_t n = next_up_n_locked(&wrapped);
+    uint64_t n = next_up_n_locked(&wrapped);
     cbor_w_uint(&w, MK_N, n);
     if (w.err) {
         return false;

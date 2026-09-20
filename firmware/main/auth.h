@@ -59,11 +59,22 @@ extern "C" {
  * PROTOCOL.md §14.3 / DEVICE_PLAN.md §2.4. */
 #define AUTH_SIG_SUFFIX_LEN (2 + AUTH_TAG_LEN)
 
-/* §2.5: n = (epoch << AUTH_UP_LO_BITS) | lo, 12-bit epoch / 20-bit lo. */
+/* §2.5: n = (epoch << AUTH_UP_LO_BITS) | lo, originally a 12-bit epoch /
+ * 20-bit lo split.
+ *
+ * v0.2 (docs/V02_DESIGN.md §3, "owner question, decided"): the 12-bit epoch
+ * was a guaranteed-exhaustion failure mode (4096 cold boots). `epoch` is now
+ * the full 32 bits of ident_t.n_epoch (4 billion cold boots), so `n` is up
+ * to 52 bits — still < 2^53, exact in JSON and in a Firestore int64 — and is
+ * `uint64_t` end to end on the up path (auth_next_up_n()'s return type,
+ * every cbor_w_uint(..., n) call site). CBOR already encodes at minimal
+ * length (cbor.c's put_head()), so the wire size does not grow until epoch
+ * passes 4095, same as before. AUTH_UP_EPOCH_MASK is now a full-width no-op
+ * mask, kept only so auth.c's shift expression still reads the same way. */
 #define AUTH_UP_LO_BITS 20u
 #define AUTH_UP_LO_MASK ((1u << AUTH_UP_LO_BITS) - 1u) /* 0xFFFFF */
-#define AUTH_UP_EPOCH_BITS 12u
-#define AUTH_UP_EPOCH_MASK ((1u << AUTH_UP_EPOCH_BITS) - 1u) /* 0xFFF */
+#define AUTH_UP_EPOCH_BITS 32u
+#define AUTH_UP_EPOCH_MASK 0xFFFFFFFFu
 
 /* §2.5/§2.7: device-side /down replay window width. Deliberately narrower
  * than the relay's 64-wide /up window (relay/app/store/device_secrets.py's
@@ -138,12 +149,12 @@ bool auth_verify(const char *topic, uint8_t *buf, size_t *len);
  * Replay counters (docs/DEVICE_PLAN.md §2.5).
  * --------------------------------------------------------------------- */
 
-/* Computes the next 32-bit `n = (epoch << AUTH_UP_LO_BITS) | lo` for a /up,
- * /status, or /loc publish, using `rtc->up_lo` for `lo` and the caller-
- * supplied `epoch` (the real caller reads this from ident_get_n_epoch();
- * see the header note on why it is a parameter here, not a direct call).
- * Advances `rtc->up_lo` by one afterward, wrapping at AUTH_UP_LO_MASK back
- * to 0.
+/* Computes the next `n = (epoch << AUTH_UP_LO_BITS) | lo` (uint64_t, up to
+ * 52 bits — docs/V02_DESIGN.md §3) for a /up, /status, or /loc publish,
+ * using `rtc->up_lo` for `lo` and the caller-supplied `epoch` (the real
+ * caller reads this from ident_get_n_epoch(); see the header note on why it
+ * is a parameter here, not a direct call). Advances `rtc->up_lo` by one
+ * afterward, wrapping at AUTH_UP_LO_MASK back to 0.
  *
  * If `wrapped` is non-NULL, `*wrapped` is set true exactly when `up_lo`
  * just wrapped — docs/DEVICE_PLAN.md §2.5: the caller MUST then increment
@@ -154,7 +165,7 @@ bool auth_verify(const char *topic, uint8_t *buf, size_t *len);
  * here — not something this per-publish function can detect.)
  *
  * No modem or sleep-state effect: RTC/argument memory only. */
-uint32_t auth_next_up_n(auth_rtc_t *rtc, uint16_t epoch, bool *wrapped);
+uint64_t auth_next_up_n(auth_rtc_t *rtc, uint32_t epoch, bool *wrapped);
 
 /* Device-side mirror of the relay's replay window (docs/DEVICE_PLAN.md
  * §2.5), but AUTH_DOWN_WINDOW (32) wide instead of the relay's 64 — see the

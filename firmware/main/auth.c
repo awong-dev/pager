@@ -291,10 +291,13 @@ bool auth_verify(const char *topic, uint8_t *buf, size_t *len)
  * Replay counters.
  * --------------------------------------------------------------------- */
 
-uint32_t auth_next_up_n(auth_rtc_t *rtc, uint16_t epoch, bool *wrapped)
+uint64_t auth_next_up_n(auth_rtc_t *rtc, uint32_t epoch, bool *wrapped)
 {
     uint32_t lo = rtc->up_lo & AUTH_UP_LO_MASK;
-    uint32_t n = (((uint32_t) (epoch & AUTH_UP_EPOCH_MASK)) << AUTH_UP_LO_BITS) | lo;
+    /* v0.2 (docs/V02_DESIGN.md §3): epoch is the full 32 bits now, so the
+     * shift must happen in 64-bit arithmetic (a plain uint32_t << 20 would
+     * silently drop the top 20 bits of a large epoch). */
+    uint64_t n = (((uint64_t) (epoch & AUTH_UP_EPOCH_MASK)) << AUTH_UP_LO_BITS) | lo;
 
     uint32_t next_lo = (lo + 1u) & AUTH_UP_LO_MASK;
     bool did_wrap = (next_lo == 0u); /* wrapped past AUTH_UP_LO_MASK back to 0 */

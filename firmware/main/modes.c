@@ -208,6 +208,21 @@ static void rtc_unlock(void) { xSemaphoreGive(s_rtc_mutex); }
 static bool s_was_mqtt_connected = false;
 static bool s_ui_awake_prev = false; // F6.3: edge-detects input_awake() for ui_wake_status_refresh()
 
+// v0.2 bug fix #3 (docs/V02_DESIGN.md §2.3): connect watchdog. mqttConnect()
+// can "wedge silently" -- neither CONNECTED nor DISCONNECTED ever fires
+// (BRINGUP_NOTES.md documents this engine doing exactly that for the
+// original `setup` hang). s_connect_attempt_us records when the outstanding
+// attempt was issued (0 = none outstanding) so modes_run() can notice 60s
+// of silence and force the issue instead of retrying (or doing nothing)
+// forever. s_connect_watchdog_count is consecutive silent timeouts, reset by
+// any real CONNECTED/DISCONNECTED event. Both RAM-only, same reasoning as
+// s_was_mqtt_connected above: this design never deep sleeps, and a watchdog
+// timeout mid-boot after a real reset just becomes an ordinary F3 backoff
+// retry, nothing needs to survive a reset here.
+static int64_t s_connect_attempt_us = 0;
+static uint32_t s_connect_watchdog_count = 0;
+#define PAGER_CONNECT_WATCHDOG_US ((int64_t) 60 * 1000000) // §2.3: 60s
+
 // ---------------------------------------------------------------------------
 // RTC helpers
 // ---------------------------------------------------------------------------
@@ -440,7 +455,7 @@ static bool build_status_cbor(uint8_t *out, size_t cap, size_t *out_len, const c
     // msg_bind_auth() pointer).
     bool wrapped = false;
     rtc_lock();
-    uint32_t n = auth_next_up_n(&g_rtc.auth, ident_get_n_epoch(), &wrapped);
+    uint64_t n = auth_next_up_n(&g_rtc.auth, ident_get_n_epoch(), &wrapped);
     rtc_save();
     rtc_unlock();
     cbor_w_uint(&w, STK_N, n);
@@ -654,7 +669,20 @@ static void service_render_pending(void)
         // §4: "after the e-paper refresh completes (BUSY deasserted), never
         // before" - ui_incoming() only returns true once that render has
         // already happened.
-        msg_mark_shown(p.id);
+        //
+        // v0.2 bug fix #1 (docs/V02_DESIGN.md §2.1): this used to be
+        // msg_mark_shown(p.id), acking only the single id this render_pending_t
+        // slot remembered. render_pending_set() is a single slot: a burst of
+        // messages arriving faster than this task drains it collapses down to
+        // "render the last one", and every earlier MSG_ACK_UNSHOWN message in
+        // that burst was never acked at all (p.id was already overwritten).
+        // ui_incoming() shows the current state of the whole thread, not just
+        // `p.from`, so once it renders, every still-UNSHOWN down message is
+        // fair to ack in one pass. msg_mark_shown()'s new queued-before-
+        // advanced contract (msg.h) means anything that does not fit this
+        // pass's MSG_PENDING_ACKS_MAX (8) queue stays UNSHOWN and is retried
+        // on the next successful render instead of being lost.
+        msg_mark_all_unshown();
     }
     // displayed == false: §5.5's "incoming while typing/on another screen"
     // toast-only path - the message stays MSG_ACK_UNSHOWN on purpose.
@@ -669,7 +697,8 @@ static void service_render_pending(void)
 // Incoming message hook — wired to msg.c's ingest/dedup/ack state machine.
 // ---------------------------------------------------------------------------
 
-static void handle_ingest_result(msg_ingest_t r, const msg_t *out, uint16_t len)
+static void handle_ingest_result(msg_ingest_t r, const msg_t *out, uint16_t len,
+                                  const uint8_t *body)
 {
     switch (r) {
     case MSG_INGEST_NEW: {
@@ -731,7 +760,14 @@ static void handle_ingest_result(msg_ingest_t r, const msg_t *out, uint16_t len)
         // §3.4: log, count (already counted by whichever of
         // msg_ingest_down_cbor()/msg_count_malformed() rejected it), do not
         // ack, do not render, do not reboot.
-        ESP_LOGD(TAG, "malformed down message dropped (%u bytes)", (unsigned) len);
+        // v0.2 bug fix #6 (docs/V02_DESIGN.md §2.6): this was ESP_LOGD, which
+        // meant a run of malformed drops was invisible unless debug logging
+        // was already on — "cost an evening" on real hardware. INFO plus the
+        // length and first byte gives enough to tell "truncated CBOR" from
+        // "not CBOR at all" without turning on full chatter. No power/modem
+        // effect: logging only.
+        ESP_LOGI(TAG, "malformed down message dropped (%u bytes, first byte 0x%02x)",
+                 (unsigned) len, (unsigned) ((len > 0 && body) ? body[0] : 0));
         break;
     }
 }
@@ -789,7 +825,7 @@ static void on_incoming_message(const char *topic, const char *body, uint16_t le
 
     const msg_t *out = NULL;
     msg_ingest_t r = msg_ingest_down_cbor((const uint8_t *) body, (uint16_t) vlen, &out);
-    handle_ingest_result(r, out, (uint16_t) vlen);
+    handle_ingest_result(r, out, (uint16_t) vlen, (const uint8_t *) body);
 }
 
 // ---------------------------------------------------------------------------
@@ -838,8 +874,48 @@ static void handle_mqtt_loss(const net_mqtt_status_t *st, uint32_t *backoff_inde
 }
 
 // ---------------------------------------------------------------------------
-// F4: modem health check
+// F4: modem health check / recovery, shared with the §2.3 connect watchdog
+// below (both are "the modem engine looks wedged" triggers and must share
+// one rate limit, not each get their own 1-per-10-min budget).
 // ---------------------------------------------------------------------------
+
+// Records that net_session_up() was just called, so the watchdog below knows
+// when to start counting; `ok` is net_session_up()'s own return value (only
+// "the AT command was queued", not "it connected" -- that is exactly what
+// the watchdog is for). Power effect: none of its own, bookkeeping only.
+static void note_session_up_attempt(bool ok)
+{
+    s_connect_attempt_us = ok ? esp_timer_get_time() : 0;
+}
+
+// Shared F4 recovery action: rate-limited (1 per PAGER_MODEM_RESET_MIN_INTERVAL_US,
+// "a wedged modem being reset in a loop is a battery fire") full modem reset
+// via net_recover_modem(). `reason` is a human-readable trigger name for the
+// log line only. Returns true if a reset was actually attempted (regardless
+// of whether net_recover_modem() itself succeeded), so the caller knows
+// whether to also try net_session_up() again.
+static bool rate_limited_modem_recover(const char *reason)
+{
+    int64_t now_us = esp_timer_get_time();
+    if (g_rtc.last_modem_reset_us != 0 &&
+        (now_us - g_rtc.last_modem_reset_us) < PAGER_MODEM_RESET_MIN_INTERVAL_US) {
+        ESP_LOGI(TAG, "%s but reset is rate-limited (last reset %lld s ago) - not resetting again yet",
+                 reason, (long long) ((now_us - g_rtc.last_modem_reset_us) / 1000000));
+        return false;
+    }
+
+    ESP_LOGI(TAG, "%s; resetting (F4)", reason);
+    rtc_lock();
+    g_rtc.modem_resets++;
+    g_rtc.last_modem_reset_us = now_us;
+    rtc_save();
+    rtc_unlock();
+
+    if (!net_recover_modem()) {
+        ESP_LOGI(TAG, "modem recovery failed");
+    }
+    return true;
+}
 
 static void run_modem_health_check(void)
 {
@@ -850,27 +926,9 @@ static void run_modem_health_check(void)
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
 
-    int64_t now_us = esp_timer_get_time();
-    if (g_rtc.last_modem_reset_us != 0 &&
-        (now_us - g_rtc.last_modem_reset_us) < PAGER_MODEM_RESET_MIN_INTERVAL_US) {
-        ESP_LOGI(TAG, "modem unresponsive but reset is rate-limited (last reset %lld s ago) - "
-                      "not resetting again yet",
-                 (long long) ((now_us - g_rtc.last_modem_reset_us) / 1000000));
-        return;
+    if (rate_limited_modem_recover("modem unresponsive after 3 retries over 3s")) {
+        note_session_up_attempt(net_session_up());
     }
-
-    ESP_LOGI(TAG, "modem unresponsive after 3 retries over 3s; resetting (F4)");
-    rtc_lock();
-    g_rtc.modem_resets++;
-    g_rtc.last_modem_reset_us = now_us;
-    rtc_save();
-    rtc_unlock();
-
-    if (!net_recover_modem()) {
-        ESP_LOGI(TAG, "modem recovery failed");
-        return;
-    }
-    net_session_up();
 }
 
 // ---------------------------------------------------------------------------
@@ -1009,7 +1067,9 @@ void modes_boot(void)
         rtc_lock();
         g_rtc.attach_fail_cycles = 0;
         rtc_unlock();
-        if (!net_session_up()) {
+        bool up_ok = net_session_up();
+        note_session_up_attempt(up_ok); // §2.3: arms the connect watchdog
+        if (!up_ok) {
             ESP_LOGI(TAG, "net_session_up() failed at boot; will retry per F3 backoff");
         }
     }
@@ -1235,12 +1295,50 @@ void modes_run(void)
         }
         s_was_mqtt_connected = st.mqtt_connected;
 
+        if (st.mqtt_connected || st.disconnect_edge) {
+            // v0.2 bug fix #3 (docs/V02_DESIGN.md §2.3): a real CONNECTED or
+            // DISCONNECTED event proves the engine answered at all, i.e. it
+            // is not the "silently wedged" failure the watchdog below
+            // exists for - clear it.
+            s_connect_attempt_us = 0;
+            s_connect_watchdog_count = 0;
+        }
+
         if (st.disconnect_edge) {
             handle_mqtt_loss(&st, &backoff_index, &next_session_retry_us);
+        } else if (!st.mqtt_connected && s_connect_attempt_us != 0 &&
+                   (esp_timer_get_time() - s_connect_attempt_us) >= PAGER_CONNECT_WATCHDOG_US) {
+            // v0.2 bug fix #3 (docs/V02_DESIGN.md §2.3): mqttConnect() has
+            // produced neither CONNECTED nor DISCONNECTED within 60s - the
+            // "wedge silently" failure mode BRINGUP_NOTES.md's forum-thread
+            // note warns this engine has. Left alone, the branch below would
+            // just re-issue mqttConnect() every wake cycle with no backoff
+            // at all (net_session_up() returning true only means the AT
+            // command was queued, never that it actually connected) -
+            // hammering the modem. Force a clean disconnect, count it as a
+            // transient failure so F1/F3 backoff applies, and escalate to a
+            // full modem reset after 3 in a row.
+            s_connect_attempt_us = 0;
+            s_connect_watchdog_count++;
+            ESP_LOGI(TAG,
+                     "MQTT connect watchdog: no CONNECTED/DISCONNECTED within 60s (count=%u) - "
+                     "disconnecting and backing off",
+                     (unsigned) s_connect_watchdog_count);
+            net_session_down(); // power effect: one AT command (mqttDisconnect), no RRC of its own
+            if (s_connect_watchdog_count >= 3) {
+                s_connect_watchdog_count = 0;
+                if (rate_limited_modem_recover("MQTT connect watchdog fired 3x in a row")) {
+                    note_session_up_attempt(net_session_up());
+                }
+            } else {
+                schedule_backoff(&backoff_index, &next_session_retry_us);
+            }
         } else if (!st.mqtt_connected) {
             if (esp_timer_get_time() >= next_session_retry_us) {
                 ESP_LOGI(TAG, "retrying MQTT session (backoff idx=%u)", (unsigned) backoff_index);
-                if (!net_session_up()) {
+                bool up_ok = net_session_up();
+                note_session_up_attempt(up_ok); // §2.3: arms the connect watchdog
+                if (!up_ok) {
                     schedule_backoff(&backoff_index, &next_session_retry_us);
                 }
             }

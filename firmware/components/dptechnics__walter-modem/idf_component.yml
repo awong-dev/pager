@@ -1,0 +1,17 @@
+description: Walter Modem Driver
+discussion: https://discord.gg/RH7qCfRmkx
+documentation: https://www.quickspot.io/documentation.html#/esp_idf
+issues: https://github.com/QuickSpot/walter-esp-idf/issues
+license: LICENSE
+repository: git://github.com/QuickSpot/walter-esp-idf.git
+repository_info:
+  commit_sha: 51b16ce0627647acc8106c2c0d93b074fd98ea88
+  path: .
+tags:
+- IoT
+- cellular
+- Communication
+targets:
+- esp32s3
+url: https://github.com/QuickSpot/walter-esp-idf
+version: 1.5.0

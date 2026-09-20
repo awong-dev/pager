@@ -53,7 +53,11 @@ typedef struct {
     uint32_t flags;
     char label[IDENT_LABEL_MAX];
     uint8_t ca_hash[IDENT_CA_HASH_LEN];
-    uint16_t n_epoch; /* docs/DEVICE_PLAN.md §2.5 counter epoch */
+    /* docs/DEVICE_PLAN.md §2.5 counter epoch. Widened u16 -> u32 in
+     * docs/V02_DESIGN.md §3 (4096 cold boots was a guaranteed exhaustion
+     * failure mode); see ident.c's ident_load() for the one-time "n_epoch"
+     * (u16) -> "n_epoch32" (u32) NVS migration. */
+    uint32_t n_epoch;
     uint8_t claimed;  /* set on the first verified `book`, §4.3 — display only */
 } ident_t;
 
@@ -66,10 +70,15 @@ typedef struct {
  * absent. No modem or radio access; NVS reads only. */
 bool ident_load(void);
 
-/* Writes every field of `id` to the "ident" namespace and commits.
- * Caller-validated: does not re-check the dev_id regex. Used by setup.c
- * (F3.5) after a bootstrap fetch and by the rotate/re-home path (§3.5).
- * No modem or radio access. */
+/* Writes every field of `id` to the "ident" namespace and commits, then (on
+ * success only) copies `*id` into the in-memory copy the ident_get_*()
+ * getters read from. v0.2 bug fix #2 (docs/V02_DESIGN.md §2.2): earlier this
+ * only wrote NVS, so e.g. ident_get_n_epoch() kept returning the pre-bump
+ * value for the rest of the power session after modes.c's
+ * on_auth_epoch_wrap() ran — every subsequent signed publish that boot used
+ * a stale (already-persisted-as-superseded) epoch. Caller-validated: does
+ * not re-check the dev_id regex. Used by setup.c (F3.5) after a bootstrap
+ * fetch and by the rotate/re-home path (§3.5). No modem or radio access. */
 bool ident_store(const ident_t *id);
 
 /* Erases the entire "ident" namespace, so the next ident_load() returns
@@ -89,8 +98,27 @@ const char *ident_get_apn(void); /* empty string = carrier default */
 uint32_t ident_get_flags(void);
 const char *ident_get_label(void);
 const uint8_t *ident_get_ca_hash(void); /* IDENT_CA_HASH_LEN bytes */
-uint16_t ident_get_n_epoch(void);
+uint32_t ident_get_n_epoch(void); /* v0.2/§3: widened from uint16_t */
 uint8_t ident_get_claimed(void);
+
+/* v0.2 §2.4 ("Empty CA slot" bug fix): whether modem TLS cert slot 12 is
+ * known, from a prior boot, to already hold a certificate (a real pinned
+ * CA, or net.cpp's ISRG Root X2 placeholder when none is pinned) — lets
+ * net_init()/net_tls_profile_bootstrap() skip the NVRAM write once it has
+ * happened once in the device's lifetime. Independent of ident_load()'s
+ * "required fields" contract: this reads NVS key "slot12" (u8) directly,
+ * on its own nvs_open(), so it works even when no full identity exists yet
+ * (the bootstrap path, before setup.c's first ident_store()). Returns false
+ * (never "unreadable") if the namespace/key does not exist or on any read
+ * error — a false negative here just costs one extra (harmless, idempotent)
+ * NVRAM write, whereas a false positive would leave slot 12 believed
+ * populated when it is not. No modem or radio access. */
+bool ident_get_slot12_populated(void);
+
+/* Records that slot 12 now holds a certificate (docs/V02_DESIGN.md §2.4).
+ * Same "own nvs_open(), no full identity required" independence as
+ * ident_get_slot12_populated() above. No modem or radio access. */
+bool ident_set_slot12_populated(void);
 
 #ifdef __cplusplus
 }

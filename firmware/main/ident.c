@@ -166,8 +166,24 @@ bool ident_load(void)
     st = read_blob(h, "ca_hash", tmp.ca_hash, sizeof(tmp.ca_hash));
     ok = ok && st != FIELD_ERROR;
 
-    st = read_u16(h, "n_epoch", &tmp.n_epoch);
-    ok = ok && st != FIELD_ERROR;
+    /* v0.2 (docs/V02_DESIGN.md §3): "n_epoch32" (u32) is the current key.
+     * A v0.1 device only ever wrote "n_epoch" (u16, 12-bit-epoch era) —
+     * read that instead, once, so an existing device's replay counter
+     * continues from where it left off rather than silently resetting to 0
+     * (which the relay would otherwise see as `n` going backwards / a
+     * replay). ident_store() only ever writes "n_epoch32" from here on;
+     * the next epoch bump (modes.c's on_auth_epoch_wrap()) persists the
+     * migrated value there and the legacy key is simply never touched
+     * again. */
+    st = read_u32(h, "n_epoch32", &tmp.n_epoch);
+    if (st == FIELD_MISSING) {
+        uint16_t legacy_epoch = 0;
+        field_status_t legacy_st = read_u16(h, "n_epoch", &legacy_epoch);
+        ok = ok && legacy_st != FIELD_ERROR;
+        tmp.n_epoch = legacy_epoch; /* 0 if legacy_st == FIELD_MISSING too */
+    } else {
+        ok = ok && st != FIELD_ERROR;
+    }
 
     st = read_u8(h, "claimed", &tmp.claimed);
     ok = ok && st != FIELD_ERROR;
@@ -203,13 +219,27 @@ bool ident_store(const ident_t *id)
     ok = ok && nvs_set_u32(h, "flags", id->flags) == ESP_OK;
     ok = ok && nvs_set_str(h, "label", id->label) == ESP_OK;
     ok = ok && nvs_set_blob(h, "ca_hash", id->ca_hash, sizeof(id->ca_hash)) == ESP_OK;
-    ok = ok && nvs_set_u16(h, "n_epoch", id->n_epoch) == ESP_OK;
+    /* v0.2 (docs/V02_DESIGN.md §3): "n_epoch32" (u32) replaces the old
+     * "n_epoch" (u16) key. The legacy key is simply left alone (unused,
+     * harmless) rather than erased — ident_load()'s migration only reads it
+     * when "n_epoch32" is absent. */
+    ok = ok && nvs_set_u32(h, "n_epoch32", id->n_epoch) == ESP_OK;
     ok = ok && nvs_set_u8(h, "claimed", id->claimed) == ESP_OK;
 
     if (ok) {
         ok = nvs_commit(h) == ESP_OK;
     }
     nvs_close(h);
+
+    if (ok) {
+        /* v0.2 bug fix #2 (docs/V02_DESIGN.md §2.2): keep the in-memory
+         * copy current so ident_get_*() (e.g. ident_get_n_epoch(), read on
+         * every signed publish) reflects what was just committed, not only
+         * after the next reboot's ident_load(). Same ca_len derivation
+         * ident_load() uses. */
+        s_ident = *id;
+        s_ident.ca_len = strlen(s_ident.ca);
+    }
     return ok;
 }
 
@@ -238,5 +268,35 @@ const char *ident_get_apn(void) { return s_ident.apn; }
 uint32_t ident_get_flags(void) { return s_ident.flags; }
 const char *ident_get_label(void) { return s_ident.label; }
 const uint8_t *ident_get_ca_hash(void) { return s_ident.ca_hash; }
-uint16_t ident_get_n_epoch(void) { return s_ident.n_epoch; }
+uint32_t ident_get_n_epoch(void) { return s_ident.n_epoch; }
 uint8_t ident_get_claimed(void) { return s_ident.claimed; }
+
+/* v0.2 §2.4: standalone NVS accessors for the "slot12" flag — deliberately
+ * not folded into ident_t/ident_load()/ident_store() (which require a full
+ * identity's worth of required fields to succeed): the bootstrap path calls
+ * these before any identity exists. */
+bool ident_get_slot12_populated(void)
+{
+    nvs_handle_t h;
+    if (nvs_open(NVS_NS, NVS_READONLY, &h) != ESP_OK) {
+        return false;
+    }
+    uint8_t v = 0;
+    esp_err_t err = nvs_get_u8(h, "slot12", &v);
+    nvs_close(h);
+    return err == ESP_OK && v != 0;
+}
+
+bool ident_set_slot12_populated(void)
+{
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(NVS_NS, NVS_READWRITE, &h);
+    if (err != ESP_OK) {
+        ESP_LOGD(TAG, "nvs_open(\"%s\", RW) failed: 0x%x", NVS_NS, err);
+        return false;
+    }
+    bool ok = nvs_set_u8(h, "slot12", 1) == ESP_OK;
+    ok = ok && nvs_commit(h) == ESP_OK;
+    nvs_close(h);
+    return ok;
+}

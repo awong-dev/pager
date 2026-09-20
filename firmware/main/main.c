@@ -190,6 +190,79 @@ static void start_setup_console(void)
     ESP_ERROR_CHECK(esp_console_start_repl(repl));
 }
 
+#ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
+// v0.2 §2.7 (docs/V02_DESIGN.md item 7): the same USB-serial REPL Setup mode
+// uses (start_setup_console()), but reachable in normal (provisioned) mode
+// too -- PAGER_DEBUG_NO_LIGHT_SLEEP builds only -- so `nettest`/`mqtttest`
+// diagnostics can run against a provisioned pager's real SIM/APN without
+// erasing its identity to get back into Setup mode first. Deliberately does
+// NOT register `setup`: re-running it here would overwrite the very
+// identity being diagnosed.
+//
+// Caveat, debug-build-only and worth stating plainly: nettest/mqtttest both
+// call net_bootstrap_attach() (net.cpp), which is documented as safe to
+// share process-global state with the production session (s_down_topic,
+// the MQTT event handler registration) only because bootstrap and
+// production "never run in the same power cycle" outside of this REPL. Once
+// this REPL exists in normal mode, that stops being strictly true: running
+// either command while the production MQTT session is up re-attaches the
+// modem (setOpState(NO_RF) then FULL) and, for mqtttest, repoints
+// s_down_topic at a test topic, which will disrupt (and, for mqtttest,
+// mis-subscribe) live paging until the next full reconnect. Acceptable for
+// a debug build that already carries CMakeLists.txt's "never ship a build
+// made this way" warning and is only ever run by a person deliberately
+// diagnosing a bench unit, not for anything that reaches a real pager in
+// the field.
+//
+// Own task (esp_console_start_repl() spawns one internally and returns;
+// this function does not block app_main()), 16 kB stack -- same overflow
+// finding start_setup_console() documents (ui_init()/gfx_init()'s first
+// ESP_LOGI call overflowed the default 4 kB stack).
+//
+// `gnsstest <seconds>`, `cafetch <url> <sha256hex>`, `smstest <number>
+// <text>` are named in docs/V02_DESIGN.md §2.7 alongside this REPL but each
+// depends on a feature this task does not implement (§5 location/GNSS, §4.4
+// CA fetch, §6 SMS respectively) -- left for the tasks that add those
+// features; only the REPL itself plus the pre-existing nettest/mqtttest are
+// added here.
+//
+// Power effect: none beyond the idle CPU/UART-RX floor until a command is
+// typed, same as start_setup_console(); nettest/mqtttest's own modem use is
+// documented at their definitions above.
+static void start_normal_console(void)
+{
+    esp_console_repl_t *repl = NULL;
+    esp_console_repl_config_t repl_config = ESP_CONSOLE_REPL_CONFIG_DEFAULT();
+    repl_config.prompt = "pager>";
+    repl_config.task_stack_size = 16384;
+
+    esp_console_dev_usb_serial_jtag_config_t usb_config =
+        ESP_CONSOLE_DEV_USB_SERIAL_JTAG_CONFIG_DEFAULT();
+    ESP_ERROR_CHECK(esp_console_new_repl_usb_serial_jtag(&usb_config, &repl_config, &repl));
+
+    esp_console_register_help_command();
+
+    const esp_console_cmd_t nettest_cmd = {
+        .command = "nettest",
+        .help = "nettest <host> <port> -- TEMPORARY: plain TCP (no TLS) connectivity probe",
+        .hint = NULL,
+        .func = &cmd_nettest,
+    };
+    ESP_ERROR_CHECK(esp_console_cmd_register(&nettest_cmd));
+
+    const esp_console_cmd_t mqtttest_cmd = {
+        .command = "mqtttest",
+        .help = "mqtttest <host> <port> -- TEMPORARY: modem MQTT-engine TLS connect probe",
+        .hint = NULL,
+        .func = &cmd_mqtttest,
+    };
+    ESP_ERROR_CHECK(esp_console_cmd_register(&mqtttest_cmd));
+
+    ESP_ERROR_CHECK(esp_console_start_repl(repl));
+    ESP_LOGI(TAG, "debug console REPL started in normal mode (PAGER_DEBUG_NO_LIGHT_SLEEP)");
+}
+#endif
+
 void app_main(void)
 {
     ESP_LOGI(TAG, "school_pager boot");
@@ -270,6 +343,14 @@ void app_main(void)
     }
     ESP_LOGI(TAG, "IDENT %s sig=%d claimed=%d", ident_get_dev_id(),
              (ident_get_flags() & IDENT_FLAG_REQ_SIG) ? 1 : 0, ident_get_claimed() ? 1 : 0);
+
+#ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
+    // v0.2 §2.7: see start_normal_console()'s own comment. Started before
+    // modes_boot()/modes_run() (which never returns) so the console task
+    // exists for the rest of the device's life; esp_console_start_repl()
+    // does not block here.
+    start_normal_console();
+#endif
 
     // modes_boot() decides cold-boot vs. reset-recovery internally by
     // validating the RTC struct (PROTOCOL.md §9); it is the only wake-cause
