@@ -15,6 +15,7 @@
 
 #include "catrust.h"
 #include "ident.h"
+#include "carrier.h"
 #include "loc.h"
 #include "modes.h"
 #include "net.h"
@@ -138,30 +139,80 @@ static int cmd_mqtttest(int argc, char **argv)
 }
 
 #ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
-// Debug build only: `setapn <name>` stores an APN override in NVS (dbg/apn)
-// and restarts; `setapn -` clears it. See net.cpp's effective_apn().
-static int cmd_setapn(int argc, char **argv)
+// Debug build only: raw AT passthrough.
+static int cmd_at(int argc, char **argv)
 {
-    if (argc != 2) {
-        printf("usage: setapn <apn>   (setapn - clears the override)\n");
+    if (argc < 2) {
+        printf("usage: at <command>   e.g. at AT+CIMI  (quote arguments containing commas or spaces)\n");
         return 1;
     }
-    nvs_handle_t h;
-    if (nvs_open("dbg", NVS_READWRITE, &h) != ESP_OK) {
-        printf("setapn: nvs_open failed\n");
+    char line[160];
+    size_t n = 0;
+    for (int i = 1; i < argc && n + 1 < sizeof(line); i++) {
+        n += (size_t) snprintf(line + n, sizeof(line) - n, "%s%s", (i > 1) ? " " : "", argv[i]);
+    }
+    esp_log_level_set("WalterModem", ESP_LOG_DEBUG);
+    bool ok = net_debug_at(line);
+    printf("at: %s\n", ok ? "OK" : "ERROR/timeout");
+    return ok ? 0 : 1;
+}
+
+#endif
+
+// `carrier` -- the pager-side APN choice (carrier.h). Available in Setup mode
+// (it must be, the APN is needed before anything can be fetched) and in the
+// debug build's normal-mode console.
+//   carrier              list the presets, mark the current one
+//   carrier <n>          choose preset n
+//   carrier custom <apn> any other APN
+static int cmd_carrier(int argc, char **argv)
+{
+    if (argc == 1) {
+        bool is_auto = carrier_get_mode() == CARRIER_MODE_AUTO;
+        int cur = is_auto ? CARRIER_PRESET_AUTO
+                          : (carrier_get_apn()[0] == '\0' ? CARRIER_PRESET_BLANK
+                                                          : carrier_preset_index_for(carrier_get_apn()));
+        for (size_t i = 0; i < carrier_preset_count(); i++) {
+            const carrier_preset_t *p = carrier_preset_at(i);
+            printf(" %c %u  %-22s %s\n", ((int) i == cur) ? '*' : ' ', (unsigned) i, p->label,
+                   i == CARRIER_PRESET_AUTO ? "(detect from the SIM)" : (p->apn[0] ? p->apn : "(blank)"));
+        }
+        if (cur < 0) {
+            printf(" *    custom                 %s\n", carrier_get_apn());
+        }
+        if (is_auto && carrier_last_detected()[0]) {
+            printf("detected: %s\n", carrier_last_detected());
+        }
+        printf("carrier <n> | carrier custom <apn>\n");
+        return 0;
+    }
+    bool ok = false;
+    if (argc == 3 && strcmp(argv[1], "custom") == 0) {
+        ok = carrier_set_custom(argv[2]);
+    } else if (argc == 2) {
+        char *end = NULL;
+        long n = strtol(argv[1], &end, 10);
+        ok = (end && *end == '\0' && n >= 0) && carrier_select_preset((size_t) n);
+    }
+    if (!ok) {
+        printf("carrier: not a preset number or a valid APN\n");
         return 1;
     }
-    esp_err_t err = (strcmp(argv[1], "-") == 0) ? nvs_erase_key(h, "apn") : nvs_set_str(h, "apn", argv[1]);
-    if (err == ESP_OK || err == ESP_ERR_NVS_NOT_FOUND) {
-        nvs_commit(h);
-    }
-    nvs_close(h);
-    printf("setapn: %s; restarting\n", strcmp(argv[1], "-") == 0 ? "override cleared" : argv[1]);
-    vTaskDelay(pdMS_TO_TICKS(300));
-    esp_restart();
+    printf("carrier: %s. Used from the next attach: run `setup <code>` now, or restart.\n",
+           carrier_get_label());
     return 0;
 }
-#endif
+
+static void register_carrier_cmd(void)
+{
+    const esp_console_cmd_t carrier_cmd = {
+        .command = "carrier",
+        .help = "carrier [<n> | custom <apn>] -- choose the carrier APN (presets are built in)",
+        .hint = NULL,
+        .func = &cmd_carrier,
+    };
+    ESP_ERROR_CHECK(esp_console_cmd_register(&carrier_cmd));
+}
 
 // No modem/radio access of its own; starts the USB-serial REPL task that
 // waits for a person to type `setup <code>` (docs/DEVICE_PLAN.md §3.2 step
@@ -203,6 +254,7 @@ static void start_setup_console(void)
         .func = &cmd_setup,
     };
     ESP_ERROR_CHECK(esp_console_cmd_register(&setup_cmd));
+    register_carrier_cmd();
 
     const esp_console_cmd_t nettest_cmd = {
         .command = "nettest",
@@ -357,13 +409,15 @@ static void start_normal_console(void)
     };
     ESP_ERROR_CHECK(esp_console_cmd_register(&mqtttest_cmd));
 
-    const esp_console_cmd_t setapn_cmd = {
-        .command = "setapn",
-        .help = "setapn <apn|-> -- debug APN override stored in NVS, then restart",
+    const esp_console_cmd_t at_cmd = {
+        .command = "at",
+        .help = "at <command> -- send one raw AT command; the reply shows in the AT trace",
         .hint = NULL,
-        .func = &cmd_setapn,
+        .func = &cmd_at,
     };
-    ESP_ERROR_CHECK(esp_console_cmd_register(&setapn_cmd));
+    ESP_ERROR_CHECK(esp_console_cmd_register(&at_cmd));
+
+    register_carrier_cmd();
 
     const esp_console_cmd_t gnsstest_cmd = {
         .command = "gnsstest",

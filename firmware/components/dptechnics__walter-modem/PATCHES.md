@@ -194,3 +194,10 @@ followed by exactly `OK` is now normalised to `OK`. Found on hardware 2026-09-20
 miscount in the payload parser that causes it is not fixed; the last payload byte (the `\n`) is
 lost from such a read, which the CA fetch tolerates only because it hashes what the relay serves
 ... see `cafetch.c`: if a hash mismatch is ever seen on a body ending in `\n`, look here first.
+
+## 1.8 Restricted SIM access (`+CRSM`) (`src/WalterModem.cpp`, `src/WalterModem.h`)
+
+The library has no `AT+CRSM` support and `sendCmd()` returns no response text. The response
+processor now keeps the last `+CRSM: <sw1>,<sw2>[,<hex>]` line, readable through
+`WalterModem::simLastCRSM()`. The pager uses it to read `EF_GID1` and recognise an MVNO SIM so it
+can choose the right APN (`firmware/main/carrier.c`).

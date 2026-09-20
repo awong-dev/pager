@@ -14,6 +14,7 @@
 #include "net.h"
 #include "pins.h"
 #include "ident.h"
+#include "carrier.h"
 #include "placeholder_ca.h"
 
 #include "WalterModem.h"
@@ -535,39 +536,82 @@ static void ensure_ca_slot_populated(void)
 // Public API
 // ---------------------------------------------------------------------------
 
-// Debug-build-only APN override (console `setapn <name>`, NVS dbg/apn): a
-// pager's real APN comes from the setup bundle (ident), but an already
-// provisioned bench unit has none, and on at least one carrier (US Mobile
-// "Dark Star" = AT&T, APN "ereseller") attaching with a blank APN yields a
-// data path where small plain TCP works and TLS / larger exchanges stall.
-// Returns `apn` unchanged when it is non-empty or no override is stored.
-#include "nvs.h"
-static const char *effective_apn(const char *apn)
+// Reads what automatic carrier detection needs from the SIM: the IMSI and
+// EF_GID1 (file 0x6F3E = 28478) as hex. The SIM must be powered (CFUN 1 or 4)
+// and, as net_check_sim() found, may need a moment after CFUN=4.
+// Power effect: a handful of AT round trips, no RRC. Runs once per attach and
+// only in automatic mode.
+static bool read_sim_identity(char *imsi, size_t imsi_cap, char *gid1_hex, size_t gid_cap)
 {
-#ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
-    static char s_override[48];
-    static bool s_loaded = false;
-    if (apn && apn[0] != '\0') {
-        return apn;
+    imsi[0] = '\0';
+    gid1_hex[0] = '\0';
+    for (int attempt = 0; attempt < 6 && imsi[0] == '\0'; attempt++) {
+        WalterModemRsp rsp = {};
+        if (WalterModem::getSIMCardIMSI(&rsp) && rsp.data.imsi[0] != '\0') {
+            snprintf(imsi, imsi_cap, "%s", rsp.data.imsi);
+            break;
+        }
+        vTaskDelay(pdMS_TO_TICKS(1000));
     }
-    if (!s_loaded) {
-        s_loaded = true;
-        s_override[0] = '\0';
-        nvs_handle_t h;
-        if (nvs_open("dbg", NVS_READONLY, &h) == ESP_OK) {
-            size_t len = sizeof(s_override);
-            if (nvs_get_str(h, "apn", s_override, &len) != ESP_OK) {
-                s_override[0] = '\0';
-            }
-            nvs_close(h);
+    if (imsi[0] == '\0') {
+        return false;
+    }
+    // EF_GID1's length is operator-defined and a READ BINARY with the wrong
+    // length fails (sw1 0x67), so try the plausible lengths, longest first.
+    static const int k_lens[] = { 16, 8, 4, 2, 1 };
+    for (size_t i = 0; i < sizeof(k_lens) / sizeof(k_lens[0]); i++) {
+        char cmd[40];
+        snprintf(cmd, sizeof(cmd), "AT+CRSM=176,28478,0,0,%d", k_lens[i]);
+        if (!WalterModem::sendCmd(cmd)) {
+            continue; // +CME ERROR: the file does not exist on this SIM
+        }
+        const char *r = WalterModem::simLastCRSM(); // "+CRSM: 144,0,20FF"
+        int sw1 = 0, sw2 = 0;
+        char hex[40] = "";
+        if (sscanf(r, "+CRSM: %d,%d,%39[0-9A-Fa-f]", &sw1, &sw2, hex) >= 2 && sw1 == 144 && hex[0]) {
+            snprintf(gid1_hex, gid_cap, "%s", hex);
+            break;
         }
     }
-    if (s_override[0] != '\0') {
-        ESP_LOGI(TAG, "DEBUG APN override in effect: '%s'", s_override);
-        return s_override;
+    return true;
+}
+
+// Which APN to attach with. See carrier.h for the precedence and why a blank
+// APN is not a safe default. `typed` is an APN given explicitly as part of a
+// typed setup code; `stored` is the one the setup bundle carried (ident).
+static const char *effective_apn(const char *typed, const char *stored)
+{
+    static char s_detected_apn[CARRIER_APN_MAX];
+    const char *apn = nullptr;
+    const char *why = "network's choice (blank)";
+    if (typed && typed[0] != '\0') {
+        apn = typed;
+        why = "typed with the setup code";
+    } else if (carrier_get_mode() == CARRIER_MODE_FIXED) {
+        apn = carrier_get_apn()[0] ? carrier_get_apn() : nullptr;
+        why = carrier_get_label();
+    } else {
+        char imsi[20], gid1[40];
+        const carrier_preset_t *p = nullptr;
+        if (read_sim_identity(imsi, sizeof(imsi), gid1, sizeof(gid1))) {
+            p = carrier_detect(imsi, gid1);
+            ESP_LOGI(TAG, "SIM: network %.6s, GID1 %s -> %s", imsi, gid1[0] ? gid1 : "(none)",
+                     p ? p->label : "not in the carrier table");
+        } else {
+            ESP_LOGI(TAG, "SIM identity could not be read; no automatic APN");
+        }
+        carrier_note_detected(p ? p->label : "");
+        if (p) {
+            snprintf(s_detected_apn, sizeof(s_detected_apn), "%s", p->apn);
+            apn = s_detected_apn[0] ? s_detected_apn : nullptr;
+            why = "detected from the SIM";
+        } else if (stored && stored[0] != '\0') {
+            apn = stored;
+            why = "from the setup bundle";
+        }
     }
-#endif
-    return (apn && apn[0] != '\0') ? apn : nullptr;
+    ESP_LOGI(TAG, "APN: '%s' (%s)", apn ? apn : "", why);
+    return apn;
 }
 
 extern "C" bool net_init(void)
@@ -615,7 +659,7 @@ extern "C" bool net_init(void)
 
     // ident's apn is "" for carrier default (ident.h); definePDPContext()
     // wants NULL for that case, not an empty string.
-    const char *apn = effective_apn(ident_get_apn());
+    const char *apn = effective_apn(nullptr, ident_get_apn());
     if (!WalterModem::definePDPContext(PAGER_PDP_CTX_ID, apn)) {
         ESP_LOGI(TAG, "definePDPContext() failed");
         return false;
@@ -831,7 +875,7 @@ extern "C" bool net_bootstrap_attach(const char *apn)
 
     // DEVICE_PLAN.md §3.2 step 2: "the code's APN or the carrier default" —
     // same NULL-for-empty convention net_init() uses for ident's apn.
-    const char *use_apn = effective_apn(apn);
+    const char *use_apn = effective_apn(apn, nullptr);
     if (!WalterModem::definePDPContext(PAGER_PDP_CTX_ID, use_apn)) {
         ESP_LOGI(TAG, "definePDPContext() failed (bootstrap)");
         return false;
@@ -1255,6 +1299,13 @@ extern "C" bool net_check_sim(void)
 }
 
 static size_t s_nettest_pad_bytes = 0;
+
+// Debug console `at <command>`: sends one raw AT command and relies on the
+// WalterModem debug trace to show the reply. Debug build only.
+extern "C" bool net_debug_at(const char *cmd)
+{
+    return WalterModem::sendCmd(cmd);
+}
 
 extern "C" bool net_check_tcp_sized(const char *host, uint16_t port, size_t bytes)
 {

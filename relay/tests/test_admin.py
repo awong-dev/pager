@@ -504,3 +504,81 @@ def test_non_admin_cannot_reach_admin_routes(client: TestClient):
     users_store.create_user(uid=auth_user.uid, alias="plain1", display_name="Plain")
     resp = client.get("/api/admin/users", headers=auth_header(auth_user.uid))
     assert resp.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# Carrier APN (app/apn_presets.py): stored on the device, carried by the typed
+# setup code and the bundle, changeable by an admin.
+# ---------------------------------------------------------------------------
+
+
+def test_apn_presets_lists_us_mobile_dark_star(client: TestClient, admin_headers: dict[str, str]):
+    resp = client.get("/api/admin/apn-presets", headers=admin_headers)
+    assert resp.status_code == 200, resp.text
+    presets = {p["id"]: p for p in resp.json()}
+    assert presets["us-mobile-dark-star"]["apn"] == "ereseller"
+
+
+def test_create_device_with_apn_puts_it_in_the_setup_code_and_keeps_it_for_rotation(
+    client: TestClient, admin_headers: dict[str, str], monkeypatch
+):
+    from app import devsetup
+
+    seen: list[str | None] = []
+    real_issue = devsetup.issue
+
+    def spy(*args, **kwargs):
+        seen.append(kwargs.get("apn"))
+        return real_issue(*args, **kwargs)
+
+    monkeypatch.setattr(devsetup, "issue", spy)
+    client.post(
+        "/api/admin/users",
+        json={"alias": "owner-apn", "displayName": "Owner", "email": "owner-apn@example.com"},
+        headers=admin_headers,
+    )
+    resp = client.post(
+        "/api/admin/devices",
+        json={"deviceId": "pgr-apn1", "ownerAlias": "owner-apn", "label": "apn", "apn": " ereseller "},
+        headers=admin_headers,
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["setupCode"].endswith(";apn=ereseller")
+    assert devices_store.get_device("pgr-apn1").apn == "ereseller"
+
+    resp = client.post("/api/admin/devices/pgr-apn1/rotate-credentials", headers=admin_headers)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["setupCode"].endswith(";apn=ereseller")
+    assert seen == ["ereseller", "ereseller"]
+
+
+def test_set_device_apn_validates_and_clears(client: TestClient, admin_headers: dict[str, str]):
+    client.post(
+        "/api/admin/users",
+        json={"alias": "owner-apn2", "displayName": "Owner", "email": "owner-apn2@example.com"},
+        headers=admin_headers,
+    )
+    resp = client.post(
+        "/api/admin/devices",
+        json={"deviceId": "pgr-apn2", "ownerAlias": "owner-apn2", "label": "apn"},
+        headers=admin_headers,
+    )
+    assert resp.status_code == 200, resp.text
+    assert ";apn=" not in resp.json()["setupCode"]
+    assert devices_store.get_device("pgr-apn2").apn is None
+
+    ok = client.put("/api/admin/devices/pgr-apn2/apn", json={"apn": "ereseller"}, headers=admin_headers)
+    assert ok.status_code == 200 and ok.json() == {"apn": "ereseller"}
+    assert devices_store.get_device("pgr-apn2").apn == "ereseller"
+
+    for bad in ["has space", "semi;colon", "x" * 40, "-lead", "a..b"]:
+        r = client.put("/api/admin/devices/pgr-apn2/apn", json={"apn": bad}, headers=admin_headers)
+        assert r.status_code == 422, (bad, r.text)
+    assert devices_store.get_device("pgr-apn2").apn == "ereseller"
+
+    cleared = client.put("/api/admin/devices/pgr-apn2/apn", json={"apn": ""}, headers=admin_headers)
+    assert cleared.status_code == 200 and cleared.json() == {"apn": None}
+    assert devices_store.get_device("pgr-apn2").apn is None
+
+    missing = client.put("/api/admin/devices/nope/apn", json={"apn": "ereseller"}, headers=admin_headers)
+    assert missing.status_code == 404

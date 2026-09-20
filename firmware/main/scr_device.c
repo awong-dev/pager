@@ -54,6 +54,7 @@
 #include "ui.h"
 #include "modes.h"
 #include "ident.h"
+#include "carrier.h"
 #include "lock.h" /* F6.5: passcode/auto-lock/senders rows, docs/DEVICE_PLAN.md §5.8 */
 
 #include <stdio.h>
@@ -67,6 +68,7 @@ typedef enum {
     MROW_PASSCODE,
     MROW_AUTOLOCK,
     MROW_SENDERS,
+    MROW_CARRIER,
     MROW_SETUP_AGAIN,
     MROW_FACTORY_RESET,
     MROW_COUNT,
@@ -269,6 +271,20 @@ static void device_on_key(input_key_t key)
         case MROW_SENDERS:
             lock_set_preview(!lock_preview());
             break;
+        case MROW_CARRIER: {
+            // Cycle Automatic -> Carrier default -> each built-in carrier
+            // (carrier.h). A custom APN set from the console is replaced by
+            // Automatic on the first press. Applied at the next attach.
+            size_t cur = CARRIER_PRESET_AUTO;
+            if (carrier_get_mode() == CARRIER_MODE_FIXED) {
+                int idx = carrier_get_apn()[0] == '\0' ? CARRIER_PRESET_BLANK
+                                                       : carrier_preset_index_for(carrier_get_apn());
+                cur = (idx < 0) ? carrier_preset_count() - 1 : (size_t) idx;
+            }
+            carrier_select_preset((cur + 1) % carrier_preset_count());
+            ui_show_toast("carrier saved - restart to apply");
+            break;
+        }
         case MROW_SETUP_AGAIN:
             ui_show_toast("use the USB console: setup <code> (see F6.3 report)");
             break;
@@ -386,6 +402,12 @@ static void device_render_normal(void)
     selectable[n++] = true;
     snprintf(lines[n], DEVICE_LINE_LEN, "Show senders when locked: %s",
              lock_preview() ? "on" : "off");
+    selectable[n++] = true;
+    if (carrier_get_mode() == CARRIER_MODE_AUTO && carrier_last_detected()[0]) {
+        snprintf(lines[n], DEVICE_LINE_LEN, "Carrier: auto (%s)", carrier_last_detected());
+    } else {
+        snprintf(lines[n], DEVICE_LINE_LEN, "Carrier: %s", carrier_get_label());
+    }
     selectable[n++] = true;
     snprintf(lines[n], DEVICE_LINE_LEN, "Set up again (see report)");
     selectable[n++] = true;

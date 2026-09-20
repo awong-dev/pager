@@ -35,7 +35,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from firebase_admin import auth as fb_auth
 from pydantic import BaseModel, ConfigDict, Field
 
-from app import ca_resolve, devcfg, devsetup
+from app import apn_presets, ca_resolve, devcfg, devsetup
 from app.auth import AuthedUser, require_admin
 from app.backends.sms_twilio import normalize_e164
 from app.broker import BrokerClient
@@ -323,6 +323,12 @@ class CreateDeviceRequest(BaseModel):
     ownerAlias: str
     label: str
     defaultToAlias: str | None = None
+    # Carrier APN (app/apn_presets.py). Omitted/empty = carrier default.
+    apn: str | None = None
+
+
+class SetApnRequest(BaseModel):
+    apn: str | None = None
 
 
 class DeviceSetupCodeResponse(BaseModel):
@@ -408,6 +414,10 @@ def create_device(
 ) -> DeviceSetupCodeResponse:
     owner_uid = _resolve_uid(req.ownerAlias)
     default_to_uid = _resolve_uid(req.defaultToAlias) if req.defaultToAlias else None
+    try:
+        apn = apn_presets.validate_apn(req.apn)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
     if devices_store.get_device(req.deviceId) is not None:
         raise HTTPException(status_code=409, detail="device already exists")
 
@@ -426,6 +436,7 @@ def create_device(
         mqtt_username=req.deviceId,
         mqtt_password_hash=password_hash,
         default_to_uid=default_to_uid,
+        apn=apn,
     )
     device_secrets_store.create(req.deviceId, hmac_key=hmac_key, mqtt_password_hash=password_hash)
     # docs/SERVER_PLAN.md §2 decision 4: "the pager device is modelled as
@@ -460,6 +471,7 @@ def create_device(
             ca_pem=ca,
             flags=_bootstrap_flags("hmac"),  # create_device()'s default authMode
             label=req.label,
+            apn=apn,
             settings=settings,
             broker=broker,
             emqx=emqx,
@@ -548,6 +560,7 @@ def rotate_credentials(
             ca_pem=ca,
             flags=_bootstrap_flags(device.authMode),
             label=device.label,
+            apn=device.apn,
             settings=settings,
             broker=broker,
             emqx=emqx,
@@ -763,6 +776,28 @@ def push_cfg(
 
 class PushCaRequest(BaseModel):
     action: Literal["push", "unpin"]
+
+
+@router.get("/apn-presets")
+def list_apn_presets() -> list[apn_presets.ApnPreset]:
+    """Carrier APN choices for the device forms (app/apn_presets.py)."""
+    return apn_presets.PRESETS
+
+
+@router.put("/devices/{device_id}/apn", dependencies=[Depends(require_admin_write_rate_limit)])
+def set_device_apn(device_id: str, req: SetApnRequest) -> dict[str, str | None]:
+    """Stores the carrier APN used for this device's setup codes and bundles.
+    Nothing is pushed to the pager: an APN only changes when the pager is set
+    up again (rotate credentials, then type the new code), because a wrong
+    APN pushed over the air would cut the pager off with no way back."""
+    if devices_store.get_device(device_id) is None:
+        raise HTTPException(status_code=404, detail="no such device")
+    try:
+        apn = apn_presets.validate_apn(req.apn)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+    devices_store.set_apn(device_id, apn)
+    return {"apn": apn}
 
 
 @router.post("/devices/{device_id}/ca", dependencies=[Depends(require_admin_write_rate_limit)])

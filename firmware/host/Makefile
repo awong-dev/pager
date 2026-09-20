@@ -66,7 +66,7 @@ endif
 MAIN_SRC := ../main
 BUILD := build
 
-TESTS := test_cbor test_auth test_setup test_input test_msg test_lock test_loc test_cafetch test_catrust test_cfg test_sms
+TESTS := test_cbor test_auth test_setup test_input test_msg test_lock test_loc test_cafetch test_catrust test_cfg test_sms test_carrier
 TEST_BINS := $(TESTS:%=$(BUILD)/%)
 
 # ASSETS: tools/mkassets.py's default output location (docs/DEVICE_TASKS.md
@@ -247,3 +247,13 @@ png: $(BUILD)/render_png
 
 clean:
 	rm -rf $(BUILD)
+
+# test_carrier: carrier.c's pure half (APN validation, SIM-based detection).
+$(BUILD)/carrier.o: $(MAIN_SRC)/carrier.c $(MAIN_SRC)/carrier.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $(MAIN_SRC)/carrier.c
+
+$(BUILD)/test_carrier.o: test_carrier.c $(MAIN_SRC)/carrier.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ test_carrier.c
+
+$(BUILD)/test_carrier: $(BUILD)/carrier.o $(BUILD)/test_carrier.o
+	$(CC) $(CFLAGS) -o $@ $^

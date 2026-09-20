@@ -5720,6 +5720,10 @@ public:
    *
    * @return True on "OK" response, false otherwise.
    */
+  /* PAGER PATCH: (1.8) the last "+CRSM: ..." response line seen, "" if none. */
+  static inline char _lastCrsm[96] = { 0 };
+  static const char* simLastCRSM() { return _lastCrsm; }
+
   static bool getSIMCardIMSI(WalterModemRsp* rsp = NULL, walterModemCb cb = NULL,
                              void* args = NULL);
 

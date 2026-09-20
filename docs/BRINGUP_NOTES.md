@@ -73,9 +73,19 @@ envelope it keeps sending JSON, which the firmware cannot parse and drops at deb
   the requested eDRX. With the APN set to **`ereseller`** (US Mobile's documented Dark Star APN,
   lowercase) the same SIM connects MQTT over TLS in 5 s, is granted the requested 20.48 s eDRX,
   and fetches over HTTPS normally. Registration still takes about two minutes at this location.
-  A provisioned pager gets its APN from the setup bundle (`apn`, key 37) or from the typed code
-  (`...;apn=ereseller`); the debug build also has `setapn <name>` (NVS `dbg/apn`).
-  **Lesson: never attach with a blank APN and trust the result.**
+  **Lesson: never attach with a blank APN and trust the result.** The APN is needed before anything
+  can be fetched, so the choice lives **on the pager** (`firmware/main/carrier.c`), the way
+  Android does it: a table in the firmware keyed on the SIM's network code (first six digits of
+  the IMSI) plus a prefix of its `EF_GID1`. US Mobile documents "MVNO type GID, value 20FF" for
+  Dark Star; the bench SIM reads network `310280`, GID1 `20FF`, and the pager now picks
+  `ereseller` by itself (seen on hardware: `SIM: network 310280, GID1 20FF -> US Mobile Dark
+  Star`). The SIM holds no APN of its own (no `EF_ACL`, no operator-name file). Precedence: an
+  `;apn=` typed with the setup code, then a fixed choice made on the pager (`carrier` console
+  command in Setup mode and in the debug console, or Device → Carrier), then automatic detection,
+  then the APN from the setup bundle, then blank. The relay can also store an APN per device
+  (`PUT /api/admin/devices/{id}/apn`, presets at `GET /api/admin/apn-presets`), which goes into
+  that device's typed code and bundle. Adding a carrier = one line in `carrier.c`'s table, with a
+  source for the APN and its match data.
 - Vendor library: a stray `NO CARRIER` with no command pending dereferences a null command and
   reboots (`WalterModem.cpp`, `_finishModemCMD`); receive buffers are 1540 bytes and
   `mqttReceive()` copies out of them unchecked (the setup bundle with the DigiCert root is 1468).

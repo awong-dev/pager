@@ -141,6 +141,9 @@ class Device(BaseModel):
     # applied/acked (`devices/{d}.pendingCfgSms` tracks that, same shape as
     # `pendingBook`/`pendingCfg`/`pendingCfgCa`).
     smsContacts: list[SmsContact] = []
+    # Carrier APN baked into this device's setup codes and bundles
+    # (app/apn_presets.py). None = carrier default.
+    apn: str | None = None
     # docs/DEVICE_PLAN.md §2.6/§14: "password" is the v1, unsigned device;
     # "hmac" is a device provisioned with a `deviceSecrets/{d}` key that
     # signs every `/up`, `/status` and `/loc` envelope (app/devauth.py).
@@ -177,6 +180,7 @@ def create_device(
     mqtt_password_hash: str,
     default_to_uid: str | None = None,
     auth_mode: Literal["password", "hmac"] = "hmac",
+    apn: str | None = None,
 ) -> Device:
     """`mqtt_password_hash` is accepted but no longer written anywhere
     (docs/DEVICE_TASKS.md S2.2, per S1.1's own note that `devices/{d}`
@@ -197,6 +201,7 @@ def create_device(
         {
             "ownerUid": owner_uid,
             "label": label,
+            "apn": apn,
             "mqttUsername": mqtt_username,
             "defaultToUid": default_to_uid,
             "revokedAt": None,
@@ -256,6 +261,12 @@ def set_sms_contacts(device_id: str, contacts: list[SmsContact]) -> None:
     _devices().document(device_id).set(
         {"smsContacts": [c.model_dump() for c in contacts]}, merge=True
     )
+
+
+def set_apn(device_id: str, apn: str | None) -> None:
+    """The caller has validated `apn` (app/apn_presets.validate_apn). Takes
+    effect at the device's next setup code; nothing is pushed to the pager."""
+    _devices().document(device_id).set({"apn": apn}, merge=True)
 
 
 def set_provision_state(device_id: str, state: Literal["issued", "provisioned"]) -> None:

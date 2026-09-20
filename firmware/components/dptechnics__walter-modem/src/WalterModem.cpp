@@ -3738,6 +3738,19 @@ void WalterModem::_processModemRSP(WalterModemCmd* cmd, WalterModemBuffer* buff)
 #pragma endregion // RSP_PROC_MQTT
 #pragma region RSP_PROC_SIM_CARD
 
+  /*
+   * PAGER PATCH: (1.8, restricted SIM access) The library has no AT+CRSM support, and
+   * sendCmd() returns no response text. Keep the last "+CRSM: <sw1>,<sw2>[,<hex>]" line so a
+   * caller can read a SIM elementary file (the pager reads EF_GID1 to recognise an MVNO SIM
+   * and pick its APN, the way Android does). Falls through to the normal OK handling.
+   */
+  if(_buffStartsWith(buff, "+CRSM: ")) {
+    size_t n = buff->size < sizeof(_lastCrsm) - 1 ? buff->size : sizeof(_lastCrsm) - 1;
+    memcpy(_lastCrsm, buff->data, n);
+    _lastCrsm[n] = '\0';
+    goto after_processing_logic;
+  }
+
   /* SIM card IMSI response */
   if(_buffStartsWithDigit(buff)) {
     if(cmd == NULL) {
