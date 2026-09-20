@@ -126,9 +126,16 @@ devices/{deviceId}             {ownerUid, label, mqttUsername, defaultToUid|null
                                 locatableBy: [uid…],                  derived from allow.locate
                                 smsContacts: [{name, phone}…],        v0.2 §6, max 8, owner/admin-managed
                                 status: {state, mode, battMv, rssi, session, ts, fw, locPeriodS, locMinS,
-                                         authAlarm, updatedAt}}
+                                         authAlarm, updatedAt,
+                                         tls, caFp, locBackoffS, smsLost},   v0.2 §4.3/§5/§6, all optional
+                                smsContacts: [{name, phone}],                 v0.2 §6, max 8
+                                pendingCfg, pendingCfgCa, pendingCfgSms}     newest unacked cfg per kind
 devices/{deviceId}/locations/{autoId}
                                {ts, fixTs, lat, lon, accM, src, cached, reqId|null, createdAt}
+cas/{sha256hex}                {pem, createdAt}       v0.2 §4.4: every CA the relay has ever pointed a
+                                                        device at, so an old `ca_url` keeps resolving.
+                                                        Server-only (rules: default deny); served by the
+                                                        public `GET /ca/{sha256hex}.pem`.
 devices/{deviceId}/smsLog/{logId}
                                {ts, smsTs, dir: 'out'|'in', peer, st: 'sent'|'failed'|'recv'|'blocked',
                                 body, receivedAt}      v0.2 §6/§7 (device-direct SMS audit log; `logId` is
@@ -354,7 +361,11 @@ relay/app/
   config.py          Settings (env only) — grows; see relay/.env.example
   db/firestore.py    firebase-admin init (emulator-aware), typed collection helpers, txn helpers;
   store/             users.py, devices.py, backends.py, allow.py, messages.py, locations.py, settings.py,
-                     sms.py (devices/{id}/smsLog/{logId} — v0.2 §6/§7, device-direct SMS audit log)
+                     sms.py (devices/{id}/smsLog/{logId} — v0.2 §6/§7, device-direct SMS audit log),
+                     cas.py (cas/{sha256hex} — v0.2 §4.4)
+  ca_resolve.py      the broker's CA: BROKER_CA_PEM wins, else resolved from the served chain;
+                     ca_pointer() -> (url, sha) for bundles and pushes; needs PUBLIC_BASE_URL
+  devcfg.py          /down cfg pushes: lock, ca (push/un-pin), sms contacts; one pending slot each
   wire.py            + kind, to, alias regex, LocEnvelope
   broker.py          BrokerClient: publish(topic, payload, qos, retain) over the broker REST API;
                      verify_webhook(request); parse_webhook(body) → (topic, payload, qos)
@@ -367,7 +378,8 @@ relay/app/
   jobs.py            tick(): retry queued publishes + failed adapter deliveries; sweep(): retention
   tasks.py           Cloud Tasks enqueue (prod) / inline thread (dev) for delivery retries
   routers/           me.py, conversations.py, admin.py, devices.py (GET /api/devices, owner/admin
-                     sms-contacts + sms-log — v0.2 §6), webhooks.py (mqtt, twilio, gchat),
+                     sms-contacts + sms-log — v0.2 §6), ca.py (public GET /ca/{sha}.pem — v0.2 §4.4),
+                     webhooks.py (mqtt, twilio, gchat),
                      internal.py (tick, sweep, task handler — OIDC-authenticated), dev.py, legacy.py
   notify/            sms.py (Twilio) — used by the sms backend and its link flow
 ```
@@ -397,6 +409,8 @@ GET  /api/admin/contacts?status=pending                → list pending contact 
 POST /api/admin/contacts/{key}/approve {mode, alias?, locate?} → approve and create user/backend if needed
 POST /api/admin/contacts/{key}/reject {reason}         → reject request
 PUT  /api/admin/settings                               → retention {n, unit} per class
+POST /api/admin/devices/{id}/ca {action: push|unpin}   → /down cfg.ca; 400 if no CA is configured  (v0.2 §4.4)
+GET  /ca/{sha256hex}.pem                               → public, no auth, immutable; 404 for an unknown hash
 GET  /api/devices                                      → caller's own devices: [{id, label, status}]
 GET  /api/devices/{id}/sms-contacts                    → {contacts: [{name, phone}], pending}  (v0.2 §6)
 PUT  /api/devices/{id}/sms-contacts {contacts}         → validate, store, push cfg.sms; same response shape

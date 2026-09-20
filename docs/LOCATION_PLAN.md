@@ -1,6 +1,11 @@
 # Location on the pager (future work)
 
-Status: **planned, nothing here is implemented.** Written 2026-09-20 after a location request from
+Status: **tasks L1, L3 and L4 are implemented on branch `v0.2-dev` (2026-09-20), not yet run on
+hardware; L2's measurements are still to do (`gnsstest`).** `V02_DESIGN.md` §5 is the spec that
+was built, including the numbers chosen (20 s attempts, 40 s for the first after a cold boot,
+5 min → 12 h backoff, a 10 min floor, resets on cell change and sustained motion, no GNSS below
+3.3 V). The rest of this file is kept for its reasoning. Originally:
+**planned, nothing here is implemented.** Written 2026-09-20 after a location request from
 the web app got no answer. The wire contract already exists and is normative: read `PROTOCOL.md`
 §3.2 (`kind:"loc_req"`) and all of §13 first. This file does not restate them; it covers what the
 firmware has to do to meet them on this hardware, and the order to build it in.

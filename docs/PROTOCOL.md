@@ -270,20 +270,21 @@ sums each field's independent maximum, and several of those maxima are mutually 
   ----
   444 up msg with to
 
-"sig":"<44 base64url chars>", 50
+"sig":"<11 base64url chars>", 20   (corrected 2026-09-20: the tag is 8 bytes, §3.1, which is 11
+                                    base64url characters, not 44; the totals below were 30 B high)
   ----
-  494 up msg with to and sig (signed)
+  464 up msg with to and sig (signed)
 ```
 
 **JSON, signed (with `n` and `sig`):**
 ```
 "n":9007199254740991, 19  (v0.2: n's max grew from 2^32-1 (10 digits) to 2^53-1 (16 digits), +6 B)
-"sig":"<44 base64url>", 50
+"sig":"<11 base64url>", 20
   ----
-  479 down msg, signed
+  449 down msg, signed
   
   ----
-  455 up msg without to, signed
+  425 up msg without to, signed
 ```
 
 **CBOR, signed (with `n` and `sig`):**
@@ -511,7 +512,7 @@ broker-generated LWT.
 | `fw` | string | no | ≤16 chars | Firmware version |
 | `bv` | int | no | 0…2³²-1 | Book version (§4.3). Reported so the relay can detect a factory reset or a lost book message and re-publish. |
 | `loc_period_s` | int | no | 0…86400 | The periodic `/loc` interval **the device has chosen** (§13); `0` = periodic location off. |
-| `loc_min_s` | int | no | 0…86400 | The device's own minimum gap between on-demand fixes (§13.3); default 120. |
+| `loc_min_s` | int | no | 0…86400 | The device's own minimum gap between on-demand fixes (§13.3); default 120. v0.2 firmware, which uses the growing backoff of §13.3's amendment, reports **600**: the floor it keeps since its last attempt even after a backoff reset. |
 | `tls` | string | no | `unpinned` \| `pinned` \| `broken` | *(v0.2, `CA_TRUST_PLAN.md` §3.1)* CA trust state: `unpinned` (no CA in the identity, validation off, by choice, not a fault), `pinned` (CA set, last connect validated), `broken` (CA set, last validated connect failed, running with validation off as a reachability fallback — §13.3's "pages still arrive" rule applies here too). Absent means firmware older than v0.2. |
 | `ca_fp` | string | no | 16 lowercase hex chars | *(v0.2)* First 16 hex characters of the SHA-256 of the pinned CA PEM (the same digest carried in the bootstrap bundle's `ca_sha`/a `cfg.ca.sha` push, §4.4). Absent when `tls` is `unpinned` or absent. |
 | `loc_backoff_s` | int | no | 0…86400 | *(v0.2, §13.3)* Seconds until the device's own growing location-attempt backoff next allows a fresh fix attempt; `0` = an attempt is allowed now. See §13.3's amendment for how this relates to `loc_min_s`. |

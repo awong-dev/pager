@@ -1,12 +1,12 @@
 # CA trust: graceful failure and over-the-air CA push (future work)
 
-Status: **planned and deliberately parked. Nothing here is implemented.** The owner's priority
-is one message working end to end (web app → relay → broker → pager, and a reply back) on the
-current design first. Do not start any task below until that has been seen working on hardware.
-The current design is enough for that: the CA travels inside the bootstrap bundle, which works
-for EMQX Cloud Serverless (DigiCert root, 1468-byte bundle). Written 2026-09-19 after the first
-real pinned-CA setup. Read `DEVICE_PLAN.md` §3.3 first; it records why the CA is optional, and the
-hardware finding that every MQTT TLS profile must name the CA slot or the modem sends plaintext.
+Status: **implemented on branch `v0.2-dev` (2026-09-20), not yet run on hardware.** The owner
+lifted the park once v0.1 delivered end to end. `V02_DESIGN.md` §4 is the spec that was built and
+is authoritative where it differs from this file: the CA travels as a URL plus SHA-256 (task C1's
+"prove the fetch on hardware" became a debug console command, `cafetch`, instead of a gate), the
+bootstrap bundle carries the same pointer, and the fallback, padlock, `/status` fields, push and
+two-phase apply are all in. Kept for its reasoning. If the project moves to Soracom
+(`SORACOM_EVAL.md`), none of this is needed there.
 
 ## 1. Problem
 
