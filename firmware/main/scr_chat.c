@@ -256,7 +256,11 @@ static void chat_on_key(input_key_t key)
 static void chat_render(void)
 {
     gfx_font_t sz = ui_text_size();
-    int pitch = (sz == GFX_FONT_LARGE) ? 16 : 12;
+    // Glyph height plus 2 px of leading (owner decision 2026-09-20, from real
+    // hardware: rows set solid at the glyph height read as cramped). Budget
+    // at 128 px: body starts at y=17; normal 6 x 14 = 84, large 4 x 18 = 72;
+    // then the rule (2 px) and the 12 px composer row end at 115 / 103.
+    int pitch = ((sz == GFX_FONT_LARGE) ? 16 : 12) + 2;
     int rows = visible_rows();
     clamp_scroll();
     size_t count = msg_thread_count();
@@ -335,8 +339,8 @@ static void chat_render(void)
     int x = gfx_text(0, y, GFX_FONT_NORMAL, "> ");
     gfx_text(x, y, GFX_FONT_NORMAL, msg_composer_text());
     gfx_text(GFX_SCREEN_W - cw, y, GFX_FONT_NORMAL, counter);
-
-    gfx_text(0, UI_FOOTER_Y, GFX_FONT_NORMAL, "enter send  esc back  ^v history");
+    // No key-hint footer (owner decision 2026-09-20): the space goes to the
+    // message rows' leading instead.
 }
 
 const ui_screen_t g_scr_chat = {

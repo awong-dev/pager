@@ -369,7 +369,12 @@ void ui_on_button_long(void)
 bool ui_incoming(const char *from, bool was_asleep)
 {
     const ui_screen_t *top = ui_top();
-    bool steal = was_asleep || top == NULL || top == &g_scr_home;
+    // Chat already on top counts as "steal" too: the new message belongs in
+    // the view the person is looking at, so repaint it. It used to fall to
+    // the toast branch, which on real hardware meant a burst of messages
+    // painted nine toasts over the chat instead of showing them.
+    bool steal = was_asleep || top == NULL || top == &g_scr_home || top == &g_scr_greeting ||
+                 top == &g_scr_chat;
 
     if (!steal) {
         char toast[40];
@@ -382,7 +387,12 @@ bool ui_incoming(const char *from, bool was_asleep)
     // bottom, the partial refresh completes, shown is published." No
     // scr_chat_mark_visible_read() here — see this file's/ui.h's own
     // comment on why that ack stays `shown`, not `read`, on this path.
-    if (top != &g_scr_chat) {
+    bool screen_changed = (top != &g_scr_chat);
+    if (top == &g_scr_greeting) {
+        // Replace, not push: the greeting is a sleep splash, not somewhere
+        // to come back to. Popping Chat should land on Home.
+        ui_replace(&g_scr_chat);
+    } else if (top != &g_scr_chat) {
         ui_push(&g_scr_chat);
     }
     gfx_clear();
@@ -390,10 +400,19 @@ bool ui_incoming(const char *from, bool was_asleep)
     if (g_scr_chat.render) {
         g_scr_chat.render();
     }
-    // §5.4: "never taken on the inbound-message path" — bypass the
-    // full-refresh cadence entirely, same as the pre-F6.3 ui.c's
-    // ui_render_message_pane() did.
-    disp_partial_refresh();
+    if (screen_changed) {
+        // Owner decision 2026-09-20, from real hardware: going from the
+        // greeting (large "Hi <name>!" type) to Chat with only a partial
+        // refresh left the greeting visibly ghosted under the message. A
+        // change of screen gets a full clear-and-redraw. This overrides
+        // DEVICE_PLAN.md §5.4's "the full refresh is never taken on the
+        // inbound-message path", but only for the first message that wakes
+        // the screen; further messages into an open Chat stay partial.
+        // Power effect: ~2-4 s full refresh instead of ~0.3-0.8 s, PENDING_HW.
+        disp_full_refresh();
+    } else {
+        disp_partial_refresh();
+    }
     return true;
 }
 
@@ -405,12 +424,16 @@ void ui_show_toast(const char *text)
     }
     // Overlay just the bottom text row; the next ui_render() overwrites it —
     // same contract the pre-F6.3 ui.c's ui_show_toast() documented.
+    // The row is the font's full height: GFX_FONT_NORMAL is 12 px, and the
+    // 8 px row this used to clear drew the toast with its lower third cut
+    // off (seen on hardware).
+    const int toast_h = 12;
     for (int x = 0; x < GFX_SCREEN_W; x++) {
-        for (int bit = 0; bit < 8; bit++) {
-            gfx_set_pixel(x, GFX_SCREEN_H - 8 + bit, false);
+        for (int row = 0; row < toast_h; row++) {
+            gfx_set_pixel(x, GFX_SCREEN_H - toast_h + row, false);
         }
     }
-    gfx_text(0, GFX_SCREEN_H - 8, GFX_FONT_NORMAL, text);
+    gfx_text(0, GFX_SCREEN_H - toast_h, GFX_FONT_NORMAL, text);
     disp_partial_refresh(); // power effect: ~0.3-0.8s, PENDING_HW
 }
 

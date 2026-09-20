@@ -337,7 +337,7 @@ static void render_screen_chat(void)
             int tw = gfx_text_width(GFX_FONT_NORMAL, rows[i].tag);
             gfx_text(GFX_SCREEN_W - tw, y, GFX_FONT_NORMAL, rows[i].tag);
         }
-        y += 12;
+        y += 14; /* 12 px glyph + 2 px leading, matches scr_chat.c */
     }
     gfx_hline(0, GFX_SCREEN_W - 1, y);
     y += 2;
@@ -348,7 +348,7 @@ static void render_screen_chat(void)
     (void) x;
     gfx_text(GFX_SCREEN_W - cw, y, GFX_FONT_NORMAL, counter);
 
-    gfx_text(0, FIXTURE_FOOTER_Y, GFX_FONT_NORMAL, "enter send  esc back  ^v history");
+    /* no key-hint footer, matches scr_chat.c */
 }
 
 static void render_screen_device(void)
