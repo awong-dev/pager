@@ -300,3 +300,31 @@ bool ident_set_slot12_populated(void)
     nvs_close(h);
     return ok;
 }
+
+/* v0.2 §4.1: standalone "tls_broken" byte — same independence rationale as
+ * slot12 above. */
+bool ident_get_tls_broken(void)
+{
+    nvs_handle_t h;
+    if (nvs_open(NVS_NS, NVS_READONLY, &h) != ESP_OK) {
+        return false;
+    }
+    uint8_t v = 0;
+    esp_err_t err = nvs_get_u8(h, "tls_broken", &v);
+    nvs_close(h);
+    return err == ESP_OK && v != 0;
+}
+
+bool ident_set_tls_broken(bool broken)
+{
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(NVS_NS, NVS_READWRITE, &h);
+    if (err != ESP_OK) {
+        ESP_LOGD(TAG, "nvs_open(\"%s\", RW) failed: 0x%x", NVS_NS, err);
+        return false;
+    }
+    bool ok = nvs_set_u8(h, "tls_broken", broken ? 1 : 0) == ESP_OK;
+    ok = ok && nvs_commit(h) == ESP_OK;
+    nvs_close(h);
+    return ok;
+}

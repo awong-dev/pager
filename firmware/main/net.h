@@ -117,6 +117,75 @@ bool net_bootstrap_connect(const char *client_id, const char *password, const ch
  * the ESP32's), no RRC. */
 bool net_write_ca(const char *ca_pem);
 
+/* v0.2 §4.4 (CA trust: two-phase apply). The scratch slot production
+ * profile 2 must never be left pointed at after a failed apply (this design
+ * rule): 12 is NET_TLS_CA_SLOT (the same value PAGER_TLS_CA_SLOT names
+ * internally), 13 is NET_TLS_CA_SCRATCH_SLOT. */
+#define NET_TLS_CA_SLOT 12
+#define NET_TLS_CA_SCRATCH_SLOT 13
+
+/* Writes `ca_pem` to modem NVRAM cert slot `slot` — generalises net_write_ca()
+ * (which is really just this called with slot=NET_TLS_CA_SLOT) so catrust.c's
+ * two-phase apply can write a candidate CA to the scratch slot
+ * (NET_TLS_CA_SCRATCH_SLOT) without disturbing whatever is already in slot
+ * 12, and reuse this same call for slot 12 on commit (no modem-side "copy"
+ * operation exists or is needed: the caller already holds the plaintext PEM
+ * from the fetch).
+ * Power effect: one NVRAM write, no RRC. */
+bool net_write_ca_slot(uint8_t slot, const char *ca_pem);
+
+/* v0.2 §4.2/§4.4: reconfigures MQTT profile 2 (PAGER_TLS_PROFILE_ID) to name
+ * `ca_slot` with validation on/off — ALWAYS naming a slot, never omitting
+ * one (BRINGUP_NOTES.md's rule: an unnamed slot makes the MQTT engine send a
+ * plaintext CONNECT). Used for: the daily/cold-boot revalidation attempt
+ * while `broken` (ca_slot=NET_TLS_CA_SLOT), the fallback into `broken`
+ * itself (ca_slot=NET_TLS_CA_SLOT, validated=false), the two-phase apply's
+ * scratch trial (ca_slot=NET_TLS_CA_SCRATCH_SLOT, validated=true) and its
+ * rollback (ca_slot=NET_TLS_CA_SLOT, back to whatever validation state
+ * applied before the trial). Call before net_session_up() (or after
+ * net_session_down() and before the next net_session_up()) — never touches
+ * a live session itself.
+ * Power effect: one AT command, no RRC of its own. */
+bool net_tls_configure(uint8_t ca_slot, bool validated);
+
+/* v0.2 §4.4 (CA fetch): a dedicated socket (distinct from nettest's) on TLS
+ * profile 3 (validation off, NET_TLS_CA_SLOT still named — the same
+ * "every TLS profile names a slot, even with validation off" rule applies
+ * here too, even though nothing validates against it: trust comes from
+ * cafetch.c's own SHA-256 check, not from this transport). Opens the socket
+ * and dials `host:port` — BLOCKING (the AT+SQNSD dial, including the TLS
+ * handshake, completes before this returns; "OK means dialled", same
+ * contract net_check_tcp() already documents). Call from a task that can
+ * afford a few seconds — never from modes_run()'s own task directly (see
+ * cafetch.h's module comment for how catrust.c avoids that: the *fetch's*
+ * own byte-by-byte progress is polled non-blockingly via
+ * net_ca_fetch_poll() below, but the initial dial is not).
+ * Power effect: one TLS handshake (~5 kB, VALIDATION_NONE, no CA round trip)
+ * plus the RRC time it takes — same class as net_session_up(). */
+bool net_ca_fetch_open(const char *host, uint16_t port);
+
+/* Sends `len` bytes (the HTTP GET request line + headers) on the cafetch
+ * socket. Power effect: the RRC time for one send if the modem was idle. */
+bool net_ca_fetch_send(const uint8_t *buf, uint16_t len);
+
+/* Non-blocking poll for ONE event on the cafetch socket since the last call:
+ * either a `+SQNSRING` URC (issues one bounded socketReceive() AT round
+ * trip, <=1500 bytes, and copies whatever was actually delivered into
+ * `buf`/`*out_len` — bounded by the modem's own claim, the bytes actually
+ * present, and `cap`, exactly like the vendor receive-bounds patch
+ * (PATCHES.md 1.2) already guarantees for every socketReceive() caller) or
+ * the socket closing (`*out_closed`, e.g. the server's `Connection: close`).
+ * Returns false (`*out_len`/`*out_closed` untouched) if neither has happened
+ * since the last poll — call this every cafetch_poll() iteration (which
+ * itself is called every catrust_service() iteration), like
+ * net_gnss_poll_event(). Power effect: none when it returns false; one AT
+ * round trip (socketReceive()) when it returns a RING. */
+bool net_ca_fetch_poll(uint8_t *buf, size_t cap, uint16_t *out_len, bool *out_closed);
+
+/* Tears down the cafetch socket (best-effort AT+SQNSH). Power effect: one AT
+ * command, no RRC of its own. */
+void net_ca_fetch_close(void);
+
 /* TLS profile already configured by net_init(); this issues mqttConnect().
  * Call once after net_init() succeeds, and again (after F1/F3 backoff) any
  * time net_get_mqtt_status() reports the session down. Never call on a

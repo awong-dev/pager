@@ -119,6 +119,15 @@ typedef enum {
     GFX_ICON_SMS,
     GFX_ICON_WEB,
     GFX_ICON_CHAT,
+    /* v0.2 §4.3 (CA trust, docs/V02_DESIGN.md/docs/CA_TRUST_PLAN.md §3.3):
+     * TLS trust-state indicators, drawn from code (gfx.c's own
+     * primitives) exactly like every other icon here, NOT from the assets
+     * partition — see gfx.c's icon_padlock() for the shape. Distinct from
+     * GFX_ICON_LOCK above, which is envelope-signing's own "[lock if sig
+     * on]" indicator (docs/DEVICE_PLAN.md §5.4), a different meaning that
+     * happens to use a similar glyph. */
+    GFX_ICON_TLS_PINNED,  /* closed padlock: CA pinned, last connect validated */
+    GFX_ICON_TLS_BROKEN,  /* broken padlock: CA pinned, running unvalidated */
     GFX_ICON_COUNT,
 } gfx_icon_t;
 #define GFX_ICON_W 12

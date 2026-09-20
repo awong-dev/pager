@@ -11,6 +11,7 @@
 
 #include <stdio.h>
 
+#include "catrust.h"
 #include "ident.h"
 #include "loc.h"
 #include "modes.h"
@@ -220,10 +221,10 @@ static void start_setup_console(void)
 // finding start_setup_console() documents (ui_init()/gfx_init()'s first
 // ESP_LOGI call overflowed the default 4 kB stack).
 //
-// `gnsstest <seconds>` (docs/V02_DESIGN.md §2.7/§5) is added below, now that
-// §5 (location) is implemented. `cafetch <url> <sha256hex>` and `smstest
-// <number> <text>` still depend on features this task does not implement
-// (§4.4 CA fetch, §6 SMS respectively) -- left for the tasks that add them.
+// `gnsstest <seconds>` (docs/V02_DESIGN.md §2.7/§5) and `cafetch <url>
+// <sha256hex>` (§4.4, this task) are added below. `smstest <number> <text>`
+// still depends on §6 (SMS), not started by this task -- left for the task
+// that adds it.
 //
 // Power effect: none beyond the idle CPU/UART-RX floor until a command is
 // typed, same as start_setup_console(); nettest/mqtttest's own modem use is
@@ -251,6 +252,22 @@ static int cmd_gnsstest(int argc, char **argv)
            ok ? "FIX" : "no fix / refused / already running - see log");
     return ok ? 0 : 1;
 }
+// v0.2 §4.4: `cafetch <url> <sha256hex>` -- runs the CA fetch only (no
+// apply), via catrust_debug_cafetch()/cafetch_run_blocking(). Blocks this
+// console task (never modes_run()'s -- see catrust_debug_cafetch()'s own
+// doc comment) for up to the fetch's own 30s budget.
+static int cmd_cafetch(int argc, char **argv)
+{
+    if (argc != 3) {
+        printf("usage: cafetch <url> <sha256hex>\n");
+        return 1;
+    }
+    bool ok = catrust_debug_cafetch(argv[1], argv[2]);
+    printf("cafetch: %s (see the log above for bytes/http_status/elapsed/mqtt_survived detail)\n",
+           ok ? "OK (hash matched)" : "FAILED - see log");
+    return ok ? 0 : 1;
+}
+
 static void start_normal_console(void)
 {
     esp_console_repl_t *repl = NULL;
@@ -287,6 +304,14 @@ static void start_normal_console(void)
         .func = &cmd_gnsstest,
     };
     ESP_ERROR_CHECK(esp_console_cmd_register(&gnsstest_cmd));
+
+    const esp_console_cmd_t cafetch_cmd = {
+        .command = "cafetch",
+        .help = "cafetch <url> <sha256hex> -- fetch-only CA-over-HTTPS probe (V02_DESIGN.md §4.4), no apply",
+        .hint = NULL,
+        .func = &cmd_cafetch,
+    };
+    ESP_ERROR_CHECK(esp_console_cmd_register(&cafetch_cmd));
 
     ESP_ERROR_CHECK(esp_console_start_repl(repl));
     ESP_LOGI(TAG, "debug console REPL started in normal mode (PAGER_DEBUG_NO_LIGHT_SLEEP)");

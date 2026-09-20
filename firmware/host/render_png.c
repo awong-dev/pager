@@ -562,6 +562,69 @@ static void render_screen_greeting_shutting_down(void)
     draw_status_footer("shutting down");
 }
 
+// v0.2 §4.3 (CA trust, docs/V02_DESIGN.md/docs/CA_TRUST_PLAN.md §3.3): the
+// two new padlock icons, drawn directly (this file links only gfx.c, not
+// ui.c's real draw_status_bar() — see this file's own module comment) at
+// three, one-per-row scales so both shapes are easy to tell apart at a
+// glance: 1x (the actual 12x12 status-bar size ui.c uses) plus a couple of
+// larger copies, since a 12px glyph is hard to eyeball for "which one is
+// broken" in a code review without hardware to look at.
+static void draw_padlock_scaled(int x0, int y0, gfx_icon_t id, int scale)
+{
+    // Re-render via a small offscreen sampling of gfx_icon()'s own 12x12
+    // output: draw it once at (0, GFX_SCREEN_H - GFX_ICON_H) (a scratch row
+    // temporarily below the visible fixture content this frame has drawn so
+    // far), read back which of its pixels are set, then blit each set pixel
+    // as a `scale`x`scale` block at the real (x0,y0) — avoids needing a
+    // second gfx_icon() variant that already understands scaling.
+    int scratch_y = GFX_SCREEN_H - GFX_ICON_H;
+    gfx_icon(0, scratch_y, id);
+    for (int iy = 0; iy < GFX_ICON_H; iy++) {
+        for (int ix = 0; ix < GFX_ICON_W; ix++) {
+            // gfx_set_pixel()'s own native-row mirroring (see
+            // snapshot_framebuffer()'s comment) makes reading a pixel back
+            // out through the same coordinate space it was written in
+            // (gfx_set_pixel(ix, scratch_y+iy, ...) internally) awkward to
+            // invert here; simplest robust readback is the public
+            // gfx_fb_native_row() accessor snapshot_framebuffer() already
+            // uses, applying the identical mirroring.
+            const uint8_t *row = gfx_fb_native_row((GFX_FB_ROWS - 1) - ix);
+            int y = scratch_y + iy;
+            int bit = (row[y / 8] >> (7 - (y % 8))) & 1; // 1 = white/unset, 0 = black/ink
+            if (bit == 0) {
+                for (int sy = 0; sy < scale; sy++) {
+                    for (int sx = 0; sx < scale; sx++) {
+                        gfx_set_pixel(x0 + ix * scale + sx, y0 + iy * scale + sy, true);
+                    }
+                }
+            }
+        }
+    }
+    // Erase the scratch row so it never shows up in the real frame.
+    for (int ix = 0; ix < GFX_ICON_W; ix++) {
+        for (int iy = 0; iy < GFX_ICON_H; iy++) {
+            gfx_set_pixel(ix, scratch_y + iy, false);
+        }
+    }
+}
+
+static void render_screen_tls_icons(void)
+{
+    gfx_clear();
+    draw_fixture_status_bar(3, true, 0, false, 0, 3);
+
+    int y = FIXTURE_BODY_TOP + 2;
+    gfx_text(0, y, GFX_FONT_NORMAL, "pinned (1x, 3x, 6x):");
+    draw_padlock_scaled(140, y - 2, GFX_ICON_TLS_PINNED, 1);
+    draw_padlock_scaled(160, y - 6, GFX_ICON_TLS_PINNED, 3);
+    draw_padlock_scaled(200, y - 10, GFX_ICON_TLS_PINNED, 6);
+    y += 40;
+    gfx_text(0, y, GFX_FONT_NORMAL, "broken (1x, 3x, 6x):");
+    draw_padlock_scaled(140, y - 2, GFX_ICON_TLS_BROKEN, 1);
+    draw_padlock_scaled(160, y - 6, GFX_ICON_TLS_BROKEN, 3);
+    draw_padlock_scaled(200, y - 10, GFX_ICON_TLS_BROKEN, 6);
+}
+
 static void render_screen_sleeping(void)
 {
     gfx_clear();
@@ -602,6 +665,7 @@ int main(int argc, char **argv)
         { "screen_greeting_booting", render_screen_greeting_booting },
         { "screen_greeting_sim_missing", render_screen_greeting_sim_missing },
         { "screen_greeting_shutting_down", render_screen_greeting_shutting_down },
+        { "screen_tls_icons", render_screen_tls_icons },
     };
 
     int status = 0;

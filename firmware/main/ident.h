@@ -120,6 +120,20 @@ bool ident_get_slot12_populated(void);
  * ident_get_slot12_populated() above. No modem or radio access. */
 bool ident_set_slot12_populated(void);
 
+/* v0.2 §4.1 (CA trust): "`broken` is one byte in NVS (`ident` namespace, key
+ * `tls_broken`), cleared only by a connect that validates." Same standalone
+ * "own nvs_open(), no full identity required" independence as
+ * ident_get_slot12_populated()/ident_set_slot12_populated() above — catrust.c
+ * reads/writes this before any identity may exist yet (there is none until
+ * setup completes) and it must survive independently of ident_store()'s
+ * whole-struct read/modify/write cycle (which every other ident field goes
+ * through). Absent/unreadable reads as false (unbroken/pinned), the safe
+ * default — a false negative here just means one extra validated attempt
+ * that will fail and re-set it, not a device stuck reporting "broken" when
+ * it never pinned anything. No modem or radio access. */
+bool ident_get_tls_broken(void);
+bool ident_set_tls_broken(bool broken);
+
 #ifdef __cplusplus
 }
 #endif

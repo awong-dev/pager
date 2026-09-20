@@ -20,6 +20,7 @@
 #include "gfx.h"
 #include "ident.h"
 #include "lock.h" /* F6.5: gates ui_on_button_short()/ui_on_button_long() below, docs/DEVICE_PLAN.md §5.8 */
+#include "catrust.h" /* v0.2 §4.3: TLS trust-state padlock in draw_status_bar() below */
 
 #include <string.h>
 #include <stdio.h>
@@ -243,6 +244,27 @@ static void draw_status_bar(void)
     // the counts, its old adjacency.
     if (ident_get_flags() & IDENT_FLAG_REQ_SIG) {
         gfx_icon(x, 0, GFX_ICON_LOCK);
+        x += GFX_ICON_W + UI_STATUS_ICON_GAP;
+    }
+
+    // v0.2 §4.3: TLS trust-state padlock — closed while pinned, broken while
+    // broken, nothing at all while unpinned (docs/V02_DESIGN.md §4.3's own
+    // "none (this is the chosen default, not a fault)"). Redrawn every
+    // partial refresh like every other status-bar icon; no dedicated
+    // "redraw on state change" tracking of its own (disp.c's own
+    // no-op-if-unchanged partial refresh already makes a steady state free).
+    switch (catrust_get_state()) {
+    case CATRUST_PINNED:
+        gfx_icon(x, 0, GFX_ICON_TLS_PINNED);
+        x += GFX_ICON_W + UI_STATUS_ICON_GAP;
+        break;
+    case CATRUST_BROKEN:
+        gfx_icon(x, 0, GFX_ICON_TLS_BROKEN);
+        x += GFX_ICON_W + UI_STATUS_ICON_GAP;
+        break;
+    case CATRUST_UNPINNED:
+    default:
+        break;
     }
 
     // Right, at the user's request: MQTT link, then signal bars, then

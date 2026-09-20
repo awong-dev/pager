@@ -227,26 +227,28 @@ void lock_check_autolock(int64_t now_us);
  * passcode is configured. */
 void lock_now(void);
 
-/* `cfg` `lock` map handler (docs/PROTOCOL.md §3.2/§5.8/§10). Called from
- * modes.c's on_incoming_message() BEFORE msg_ingest_down_cbor() — `cfg` is
- * not a thread entry and carries neither `from` nor `body`, which msg.c's
- * content-message parser requires, so it must never reach that function.
- * `buf`/`len` are exactly msg_ingest_down_cbor()'s own parameters (same
- * already-verified-if-signed buffer). Returns true iff `buf` decoded as a
- * `kind:"cfg"` envelope and was handled here (caller MUST NOT also pass it
- * to msg_ingest_down_cbor()); false means "not cfg (or malformed) — fall
- * through to the normal ingest path" (see lock_parse_cfg()'s own doc
- * comment for why those two cases share one return value).
+/* `cfg.lock` sub-map handler (docs/PROTOCOL.md §3.2/§5.8/§10). Called from
+ * cfg.c's cfg_ingest_cbor() (v0.2 §4.4: a single `cfg` push can now also
+ * carry `ca`, and possibly both in one envelope, so the old
+ * whole-envelope-decoding lock_ingest_cfg_cbor() — which owned the
+ * `kind:"cfg"`/`id` decode itself and would have silently swallowed any
+ * `ca` sharing the same push — was replaced by cfg.c's own single decode
+ * pass; this function only ever sees the `lock` sub-map's own raw CBOR
+ * bytes, already isolated by cfg.c). `buf`/`len` are that sub-map's byte
+ * span (starting at its own map header); `id` is the envelope's own id, for
+ * the ack.
  *
  * Applies `clear`/`auto` (queueing an admin-clear toast via the
  * lock_take_toast() handoff below, on `clear`), then acks `shown` itself
  * (msg_mark_shown()) once applied — regardless of lock state
  * (docs/DEVICE_PLAN.md §5.8: "the lock is about the screen", not about
  * config messages; contrast with the deferred-shown rule for ordinary
- * content messages, msg.c). No modem/sleep-state effect beyond the ack
+ * content messages, msg.c). A malformed `lock` sub-map is logged and
+ * dropped (no ack, no crash), same fail-safe rule every other malformed
+ * `/down` content follows. No modem/sleep-state effect beyond the ack
  * queued for msg_pump()'s next publish and (on `clear`) the NVS erase
  * lock_clear_passcode() already documents. */
-bool lock_ingest_cfg_cbor(const uint8_t *buf, uint16_t len);
+void lock_apply_cfg_submap(const uint8_t *buf, uint16_t len, const char *id);
 
 /* Drains a toast queued by lock_ingest_cfg_cbor() (currently only "passcode
  * cleared by admin"). MUST be called only from modes_run()'s own task, same

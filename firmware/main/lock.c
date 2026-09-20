@@ -230,9 +230,12 @@ bool lock_parse_cfg(const uint8_t *buf, uint16_t len, bool sig_pair_present, cha
 #include "ident.h"
 #include "msg.h"
 
+#include "esp_log.h"
 #include "esp_random.h"
 #include "esp_timer.h"
 #include "nvs.h"
+
+static const char *TAG = "lock";
 
 // ---------------------------------------------------------------------------
 // RTC wiring (lock.h: lock_bind_rtc()) — same pattern as msg_bind_rtc().
@@ -583,16 +586,16 @@ bool lock_take_toast(char *out, size_t cap)
     return pending;
 }
 
-bool lock_ingest_cfg_cbor(const uint8_t *buf, uint16_t len)
+void lock_apply_cfg_submap(const uint8_t *buf, uint16_t len, const char *id)
 {
-    bool sig_present = (ident_get_flags() & IDENT_FLAG_REQ_SIG) != 0;
-    char id[MSG_ID_MAX] = "";
+    cbor_r_t r;
+    cbor_r_init(&r, buf, len);
     bool have_clear = false, clear = false, have_auto = false;
     uint8_t auto_min = 0;
 
-    if (!lock_parse_cfg(buf, len, sig_present, id, sizeof(id), &have_clear, &clear, &have_auto,
-                         &auto_min)) {
-        return false; // not cfg, or malformed cfg — caller falls through to msg.c's own ingest
+    if (!parse_lock_submap(&r, &have_clear, &clear, &have_auto, &auto_min)) {
+        ESP_LOGI(TAG, "malformed cfg.lock sub-map dropped (id=%s)", id ? id : "");
+        return;
     }
 
     if (have_clear && clear) {
@@ -602,7 +605,7 @@ bool lock_ingest_cfg_cbor(const uint8_t *buf, uint16_t len)
     if (have_auto) {
         lock_set_auto_min(auto_min);
     }
-    if (id[0] != '\0') {
+    if (id && id[0] != '\0') {
         // §3.2/§5.8: "acked shown on apply", not a thread entry, regardless
         // of lock state. msg_mark_shown() only needs the id string — see
         // msg.c's mark_common(): thread_find_locked() returning NULL (this
@@ -610,7 +613,6 @@ bool lock_ingest_cfg_cbor(const uint8_t *buf, uint16_t len)
         // still gets queued.
         msg_mark_shown(id);
     }
-    return true;
 }
 
 #endif /* ESP_PLATFORM */

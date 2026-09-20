@@ -32,10 +32,22 @@
 #include "cbor.h"
 #include "ident.h"
 
-// F6.5 (docs/DEVICE_PLAN.md §5.8): the passcode lock — RTC fields, the
-// restart->locked and defer-shown-while-locked wiring below, and the `cfg`
-// `lock` map dispatch ahead of msg_ingest_down_cbor().
+// F6.5 (docs/DEVICE_PLAN.md §5.8): the passcode lock — RTC fields and the
+// restart->locked and defer-shown-while-locked wiring below. Its `cfg.lock`
+// sub-map handler is now reached through cfg.c's dispatcher (below), not
+// called directly from this file (v0.2 §4.4: a single `cfg` push can also
+// carry `ca`, cfg.c is what decodes the envelope once and hands each
+// sub-map to its own owner).
 #include "lock.h"
+
+// v0.2 §4.4 (docs/V02_DESIGN.md, docs/CA_TRUST_PLAN.md): the `cfg` envelope
+// dispatcher (cfg.c) and CA trust state/fallback/two-phase-apply (catrust.c)
+// — the `cfg` interception ahead of msg_ingest_down_cbor() (same slot the
+// old direct lock_ingest_cfg_cbor() call used to occupy), the `/status`
+// `tls`/`ca_fp` fields below, and catrust_service() driven from this file's
+// own wake-and-drain loop, alongside loc_service()/accel_poll().
+#include "cfg.h"
+#include "catrust.h"
 
 // F7.1 (docs/DEVICE_PLAN.md §4.3): book.c's NVS-backed address book — the
 // `kind:"book"` dispatch ahead of msg_ingest_down_cbor() (alongside lock.c's
@@ -254,6 +266,20 @@ void modes_set_loc_suppress(bool suppress)
     s_loc_suppress = suppress;
 }
 
+// v0.2 §4.4: catrust.c's own independent suppression window, same reasoning
+// and same two call sites as s_loc_suppress above — see modes.h's own doc
+// comment.
+static volatile bool s_ca_apply_suppress = false;
+
+void modes_set_ca_apply_suppress(bool suppress)
+{
+    if (suppress != s_ca_apply_suppress) {
+        ESP_LOGI(TAG, "CA apply %s the ordinary MQTT reconnect/F4 health-check machinery",
+                 suppress ? "suppressing" : "releasing");
+    }
+    s_ca_apply_suppress = suppress;
+}
+
 // ---------------------------------------------------------------------------
 // RTC helpers
 // ---------------------------------------------------------------------------
@@ -358,6 +384,8 @@ static void on_auth_epoch_wrap(void)
 #define STK_LOC_PERIOD_S 27
 #define STK_LOC_MIN_S 28
 #define STK_LOC_BACKOFF_S 43 // v0.2 §7
+#define STK_TLS 39           // v0.2 §4.3/§7: "unpinned"/"pinned"/"broken"
+#define STK_CA_FP 42         // v0.2 §4.3/§7: absent when unpinned
 
 // PROTOCOL.md §5.1: batt_mv must be in [2000, 4500] when state:"online".
 #define PAGER_BATT_MV_MIN 2000
@@ -461,10 +489,23 @@ static bool build_status_cbor(uint8_t *out, size_t cap, size_t *out_len, const c
     int rssi_dbm = refresh_rssi_dbm();
 
     bool signed_env = (ident_get_flags() & IDENT_FLAG_REQ_SIG) != 0;
+
+    // v0.2 §4.3: `tls` is always present (one of unpinned/pinned/broken);
+    // `ca_fp` only when a CA is actually pinned (PINNED or BROKEN) — "absent
+    // when unpinned". Both are plain reads of already-resident state (ident's
+    // cached ca_len/ca_hash and catrust.c's own RAM-cached broken flag), no
+    // AT round trip or NVS I/O of their own.
+    const char *tls_str = catrust_state_name(catrust_get_state());
+    char ca_fp[17];
+    bool have_ca_fp = catrust_get_ca_fp(ca_fp);
+
     // v0.2 §5/§7: +3 for loc_period_s/loc_min_s/loc_backoff_s (loc.c's own
     // getters — plain reads of already-resident policy state, no AT round
     // trip of their own beyond what batt_mv/rssi above already cost).
-    uint32_t nfields = 9 + 3; // v,state,mode,batt_mv,rssi,session,ts,fw,bv,loc_period_s,loc_min_s,loc_backoff_s
+    uint32_t nfields = 9 + 3 + 1; // + tls; v,state,mode,batt_mv,rssi,session,ts,fw,bv,loc_period_s,loc_min_s,loc_backoff_s,tls
+    if (have_ca_fp) {
+        nfields += 1;
+    }
     if (signed_env) {
         nfields += 2; // n (written below) + sig (appended by auth_sign())
     }
@@ -484,6 +525,10 @@ static bool build_status_cbor(uint8_t *out, size_t cap, size_t *out_len, const c
     cbor_w_uint(&w, STK_LOC_PERIOD_S, loc_get_period_s()); // v0.2 §5: always 0, periodic fixes parked
     cbor_w_uint(&w, STK_LOC_MIN_S, loc_get_min_s());        // v0.2 §5: the 10-minute trigger floor
     cbor_w_uint(&w, STK_LOC_BACKOFF_S, loc_get_backoff_remaining_s()); // v0.2 §7 key 43
+    cbor_w_tstr(&w, STK_TLS, tls_str, strlen(tls_str));                // v0.2 §4.3
+    if (have_ca_fp) {
+        cbor_w_tstr(&w, STK_CA_FP, ca_fp, strlen(ca_fp));              // v0.2 §4.3
+    }
 
     if (!signed_env) {
         *out_len = w.len;
@@ -840,15 +885,18 @@ static void on_incoming_message(const char *topic, const char *body, uint16_t le
         }
     }
 
-    // F6.5 (docs/PROTOCOL.md §3.2/§5.8): `cfg` is not a content message —
-    // it has neither `from` nor `body`, which msg_ingest_down_cbor() below
-    // requires — so it must be intercepted here, before that call, exactly
-    // like auth_verify() already gates what reaches it. Returns true only
-    // for a well-formed `kind:"cfg"` envelope (applied + acked already);
-    // false covers both "not cfg" and "cfg but malformed", both of which
-    // correctly fall through to the normal path below (msg.c's own
-    // MSG_INGEST_MALFORMED handling covers the latter).
-    if (lock_ingest_cfg_cbor((const uint8_t *) body, (uint16_t) vlen)) {
+    // F6.5/v0.2 §4.4 (docs/PROTOCOL.md §3.2/§5.8, docs/V02_DESIGN.md §4.4):
+    // `cfg` is not a content message — it has neither `from` nor `body`,
+    // which msg_ingest_down_cbor() below requires — so it must be
+    // intercepted here, before that call, exactly like auth_verify() already
+    // gates what reaches it. cfg.c's cfg_ingest_cbor() decodes the envelope
+    // once and dispatches whichever of `lock`/`ca` sub-maps it carries (a
+    // single push can carry both) to lock.c/catrust.c respectively. Returns
+    // true only for a well-formed `kind:"cfg"` envelope; false covers both
+    // "not cfg" and "cfg but malformed", both of which correctly fall
+    // through to the normal path below (msg.c's own MSG_INGEST_MALFORMED
+    // handling covers the latter).
+    if (cfg_ingest_cbor((const uint8_t *) body, (uint16_t) vlen)) {
         return;
     }
 
@@ -912,12 +960,51 @@ static void handle_mqtt_loss(const net_mqtt_status_t *st, uint32_t *backoff_inde
                  st->last_rc);
         pin_to_steady_backoff(backoff_index, next_retry_us);
         break;
-    case NET_MQTT_RC_TLS_FAIL:
-        ESP_LOGI(TAG, "MQTT TLS handshake failed (rc=%d): provisioning bug, not transient - "
-                      "steady 300s backoff, check cert slot / TLS profile id (PROTOCOL.md §6.1)",
-                 st->last_rc);
-        pin_to_steady_backoff(backoff_index, next_retry_us);
+    case NET_MQTT_RC_TLS_FAIL: {
+        // v0.2 §4.2 (docs/V02_DESIGN.md, docs/CA_TRUST_PLAN.md §3.2): a
+        // pinned device gets one more validated attempt before falling back
+        // to unvalidated (state -> broken) — "no CA problem may ever stop
+        // pages arriving" (§0), so both of those cases use the ordinary
+        // backoff schedule, not the steady 300s this branch used
+        // unconditionally before. The steady 300s reasoning ("provisioning
+        // bug") only still holds where there is nothing left to fall back to:
+        // already unpinned, or already broken and still failing TLS.
+        if (catrust_apply_in_progress()) {
+            // A two-phase CA-push apply's own scratch-slot trial failing is a
+            // different event from the pinned production CA breaking —
+            // catrust_service() (called later this same iteration) resolves
+            // it directly; conflating the two would let a bad *pushed* CA
+            // incorrectly mark the still-working, currently-pinned CA broken.
+            schedule_backoff(backoff_index, next_retry_us);
+            ESP_LOGI(TAG, "TLS handshake failed during a CA apply trial (rc=%d) - "
+                          "catrust_service() will resolve it",
+                     st->last_rc);
+            break;
+        }
+        catrust_tls_action_t action = catrust_on_mqtt_tls_fail();
+        switch (action) {
+        case CATRUST_TLS_RETRY_VALIDATED:
+            schedule_backoff(backoff_index, next_retry_us);
+            ESP_LOGI(TAG, "TLS handshake failed while pinned (rc=%d): one more validated attempt "
+                          "before falling back",
+                     st->last_rc);
+            break;
+        case CATRUST_TLS_FALL_BACK:
+            schedule_backoff(backoff_index, next_retry_us);
+            ESP_LOGI(TAG, "TLS handshake failed twice while pinned (rc=%d): falling back to "
+                          "unvalidated MQTT (state -> broken)",
+                     st->last_rc);
+            break;
+        case CATRUST_TLS_STEADY:
+        default:
+            pin_to_steady_backoff(backoff_index, next_retry_us);
+            ESP_LOGI(TAG, "TLS handshake failed (rc=%d), already unpinned or broken - steady 300s "
+                          "backoff, nothing left to fall back to",
+                     st->last_rc);
+            break;
+        }
         break;
+    }
     case NET_MQTT_RC_TRANSIENT:
     default:
         schedule_backoff(backoff_index, next_retry_us);
@@ -1078,6 +1165,14 @@ void modes_boot(void)
     // see lock_init()'s own doc comment (lock.h) for the full reasoning.
     lock_bind_rtc(&g_rtc.lock, rtc_lock, rtc_unlock, rtc_save);
     lock_init(was_valid);
+
+    // v0.2 §4.1 (CA trust): NVS-only, no RTC sub-struct of its own (see
+    // catrust.h's own module comment) — catrust_bind() only hands over the
+    // cross-task mutex (the same pattern lock_bind_rtc()/lock_init() above
+    // uses their own RTC pointer for). No modem or sleep-state effect: a
+    // couple of NVS reads.
+    catrust_bind(rtc_lock, rtc_unlock);
+    catrust_init();
 
     // F7.1 (docs/DEVICE_PLAN.md §4.3): book.c has no RTC sub-struct of its
     // own (book.h's module comment) — book_bind() hands it the EXISTING
@@ -1357,6 +1452,11 @@ void modes_run(void)
             // Edge: session just became usable. §5.4a - drives the relay's
             // re-publish of unacked messages (§5.3).
             publish_status_online();
+            // v0.2 §4.2: clears the TLS-fail retry streak and, if this was a
+            // validated reconnect attempted while broken, heals state back
+            // to pinned. No modem/sleep-state effect: RAM/NVS bookkeeping
+            // only (ident_set_tls_broken() is a single NVS write, at most).
+            catrust_on_mqtt_connected();
         }
         s_was_mqtt_connected = st.mqtt_connected;
 
@@ -1399,14 +1499,21 @@ void modes_run(void)
                 schedule_backoff(&backoff_index, &next_session_retry_us);
             }
         } else if (!st.mqtt_connected) {
-            // v0.2 §5: skip entirely while location's route 2 (CFUN=4
-            // window) owns the session on purpose — see
-            // modes_set_loc_suppress()'s own doc comment. Once it releases
-            // the flag, next_session_retry_us is normally already in the
-            // past (the session was healthy, backoff_index==0, right up
-            // until loc.c tore it down), so this reconnects on the very
-            // next iteration with no special-casing needed here.
-            if (!s_loc_suppress && esp_timer_get_time() >= next_session_retry_us) {
+            // v0.2 §5/§4.4: skip entirely while location's route 2 (CFUN=4
+            // window) or a CA two-phase apply's own scratch-slot reconnect
+            // trial owns the session on purpose — see
+            // modes_set_loc_suppress()'s/modes_set_ca_apply_suppress()'s own
+            // doc comments. Once either releases its flag,
+            // next_session_retry_us is normally already in the past (the
+            // session was healthy, backoff_index==0, right up until it was
+            // torn down), so this reconnects on the very next iteration with
+            // no special-casing needed here.
+            if (!s_loc_suppress && !s_ca_apply_suppress && esp_timer_get_time() >= next_session_retry_us) {
+                // v0.2 §4.2: no-op unless currently `broken` — decides
+                // validated vs. unvalidated for this attempt (the
+                // cold-boot/24h revalidation window) and reconfigures
+                // profile 2 accordingly before the connect below.
+                catrust_before_reconnect();
                 ESP_LOGI(TAG, "retrying MQTT session (backoff idx=%u)", (unsigned) backoff_index);
                 bool up_ok = net_session_up();
                 note_session_up_attempt(up_ok); // §2.3: arms the connect watchdog
@@ -1429,12 +1536,13 @@ void modes_run(void)
             msg_pump();
         }
 
-        // F4: checkComm() every 60 wake cycles in sleep mode. v0.2 §5:
-        // skipped during location's route-2 window (see
-        // modes_set_loc_suppress()'s own doc comment) — net_check() would
-        // read NO_RF as "modem unresponsive" and force a real, unwanted
-        // modem reset in the middle of a deliberate radio-off window.
-        if (!s_loc_suppress && g_rtc.mode == (uint8_t) PAGER_MODE_SLEEP &&
+        // F4: checkComm() every 60 wake cycles in sleep mode. v0.2 §5/§4.4:
+        // skipped during location's route-2 window or a CA apply's own
+        // reconnect trial (see modes_set_loc_suppress()'s/
+        // modes_set_ca_apply_suppress()'s own doc comments) — net_check()
+        // would read NO_RF, or a mid-trial disconnected state, as "modem
+        // unresponsive" and force a real, unwanted modem reset.
+        if (!s_loc_suppress && !s_ca_apply_suppress && g_rtc.mode == (uint8_t) PAGER_MODE_SLEEP &&
             (wake_cycle_count % PAGER_CHECKCOMM_EVERY_N_WAKES) == 0) {
             run_modem_health_check();
         }
@@ -1446,6 +1554,15 @@ void modes_run(void)
         // bounded piece of work — see accel.h/loc.h's own doc comments.
         accel_poll();
         loc_service();
+
+        // v0.2 §4.4: one step of the pending cfg.ca request / two-phase
+        // apply state machine (a no-op read if nothing is pending or in
+        // progress) — same "never the whole thing in one call" discipline
+        // loc_service() documents. `st` is THIS iteration's own snapshot
+        // (see catrust_service()'s own doc comment for why it must be the
+        // same one handle_mqtt_loss()/the reconnect branch above already
+        // saw, not a fresh net_get_mqtt_status() call).
+        catrust_service(&st);
 
         maybe_publish_heartbeat();
 

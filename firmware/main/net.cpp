@@ -74,6 +74,14 @@ static constexpr const char *PAGER_EDRX_PTW = "0001";
 static constexpr uint8_t PAGER_TLS_CA_SLOT = 12;
 static constexpr int PAGER_TLS_PROFILE_ID = 2;
 
+// v0.2 §4.4 (CA trust, cafetch.c): profile 3 is reserved for the CA fetch
+// per docs/V02_DESIGN.md §1 patch 3 / PATCHES.md 1.3. Socket id 4 is chosen
+// simply to sit clear of nettest's own PAGER_TCP_TEST_SOCKET_ID (1) — the
+// vendor's WALTER_MODEM_MAX_SOCKETS default is 6 (ids 1-6), so both fit
+// comfortably with no risk of colliding with a diagnostic run left active.
+static constexpr int PAGER_CA_FETCH_TLS_PROFILE_ID = 3;
+static constexpr int PAGER_CA_FETCH_SOCKET_ID = 4;
+
 // DEVICE_PLAN.md §3.2 step 3: the one-time bootstrap MQTT hop (setup.c,
 // F3.5) reuses PAGER_TLS_PROFILE_ID rather than a separate profile --
 // bootstrap and production never run in the same power cycle (main.c only
@@ -176,6 +184,18 @@ static bool s_wake_sources_armed = false;
 // one writer, one reader, same reasoning s_msg_cb's buffer already relies on.
 static volatile bool s_gnss_event_pending = false;
 static net_gnss_event_t s_gnss_event;
+
+// v0.2 §4.4 (CA trust, cafetch.c): same single-flag event handoff pattern as
+// s_gnss_event_pending above -- set only by pager_socket_event_handler()
+// (WalterModem's own _eventProcessingTask), read/cleared only by
+// net_ca_fetch_poll() (cafetch.c's own caller, via catrust_service() from
+// modes_run()'s task). Only ever meaningful for PAGER_CA_FETCH_SOCKET_ID:
+// this project has exactly one other socket user (nettest's
+// PAGER_TCP_TEST_SOCKET_ID), which does not register for socket events at
+// all (it polls send()'s own AT-level OK/FAILED instead), so filtering by
+// conn_id in the handler is defense in depth, not load-bearing today.
+static volatile bool s_ca_fetch_ring_pending = false;
+static volatile bool s_ca_fetch_closed = false;
 
 // Cell-change trigger (V02_DESIGN.md §5 trigger 1): the callback loc.c
 // registers, plus the last "lac:ci" key seen, so this file only invokes the
@@ -381,6 +401,28 @@ static void pager_gnss_event_handler(WMGNSSEventType event, const WMGNSSEventDat
     s_gnss_event_pending = true;
 }
 
+// v0.2 §4.4 (CA trust, cafetch.c): runs on WalterModem's _eventProcessingTask
+// (same task pager_mqtt_event_handler/pager_gnss_event_handler above run
+// on) -- per this task's own rule, does nothing but latch a flag; every
+// subsequent modem call (socketReceive(), socketClose()) happens from
+// cafetch.c's own caller via net_ca_fetch_poll()/net_ca_fetch_close(), never
+// from here.
+static void pager_socket_event_handler(WMSocketEventType event, const WMSocketEventData *data, void *args)
+{
+    (void) args;
+    if (data->conn_id != PAGER_CA_FETCH_SOCKET_ID) {
+        return; // not our socket (nettest's own socket does not use this event path)
+    }
+    switch (event) {
+    case WALTER_MODEM_SOCKET_EVENT_RING:
+        s_ca_fetch_ring_pending = true;
+        break;
+    case WALTER_MODEM_SOCKET_EVENT_DISCONNECTED:
+        s_ca_fetch_closed = true;
+        break;
+    }
+}
+
 static void pager_network_event_handler(WMNetworkEventType event, const WMNetworkEventData *data, void *args)
 {
     (void) args;
@@ -484,6 +526,7 @@ extern "C" bool net_init(void)
     WalterModem::setMQTTEventHandler(pager_mqtt_event_handler, nullptr);
     WalterModem::setNetworkEventHandler(pager_network_event_handler, nullptr);
     WalterModem::setGNSSEventHandler(pager_gnss_event_handler, nullptr); // v0.2 §5
+    WalterModem::setSocketEventHandler(pager_socket_event_handler, nullptr); // v0.2 §4.4
 
     // v0.2 §5 trigger 1 (cell/tracking-area change): the default CEREG
     // report type carries no lac/ci at all, so pager_network_event_handler()
@@ -803,18 +846,44 @@ extern "C" bool net_bootstrap_connect(const char *client_id, const char *passwor
     return true;
 }
 
+extern "C" bool net_write_ca_slot(uint8_t slot, const char *ca_pem)
+{
+    // v0.2 §4.4: generalises the bootstrap-only net_write_ca() below so
+    // catrust.c's two-phase apply can target the scratch slot too.
+    // Power effect: one NVRAM write on the modem's own storage, no RRC.
+    if (!WalterModem::tlsWriteCredential(false, slot, ca_pem)) {
+        ESP_LOGI(TAG, "tlsWriteCredential() failed (slot %u)", (unsigned) slot);
+        return false;
+    }
+    ESP_LOGI(TAG, "CA written to modem slot %u", (unsigned) slot);
+    return true;
+}
+
 extern "C" bool net_write_ca(const char *ca_pem)
 {
     // DEVICE_PLAN.md §3.2 step 4's "CA to slot 12": same slot/call net_init()
     // uses for the production CA, called unconditionally here (no ca_hash
     // short-circuit — this runs at most once per device lifetime, unlike
     // net_init()'s per-boot/per-F4-recovery calls).
-    // Power effect: one NVRAM write on the modem's own storage, no RRC.
-    if (!WalterModem::tlsWriteCredential(false, PAGER_TLS_CA_SLOT, ca_pem)) {
-        ESP_LOGI(TAG, "tlsWriteCredential() failed (bootstrap CA write)");
+    return net_write_ca_slot(PAGER_TLS_CA_SLOT, ca_pem);
+}
+
+extern "C" bool net_tls_configure(uint8_t ca_slot, bool validated)
+{
+    // v0.2 §4.2/§4.4: reconfigures the PRODUCTION profile (PAGER_TLS_PROFILE_ID)
+    // to name `ca_slot`, validated or not -- ALWAYS naming a slot (never the
+    // BRINGUP_NOTES.md plaintext-fallback shape). Power effect: one AT
+    // command, no RRC of its own.
+    if (!WalterModem::tlsConfigProfile(PAGER_TLS_PROFILE_ID,
+                                       validated ? WALTER_MODEM_TLS_VALIDATION_CA
+                                                 : WALTER_MODEM_TLS_VALIDATION_NONE,
+                                       WALTER_MODEM_TLS_VERSION_12, ca_slot)) {
+        ESP_LOGI(TAG, "net_tls_configure(): tlsConfigProfile() failed (slot=%u validated=%d)",
+                 (unsigned) ca_slot, (int) validated);
         return false;
     }
-    ESP_LOGI(TAG, "CA written to modem slot %u (bootstrap)", (unsigned) PAGER_TLS_CA_SLOT);
+    ESP_LOGI(TAG, "TLS profile %d reconfigured: slot=%u %s", PAGER_TLS_PROFILE_ID, (unsigned) ca_slot,
+             validated ? "VALIDATION_CA" : "VALIDATION_NONE");
     return true;
 }
 
@@ -1381,4 +1450,96 @@ extern "C" void net_set_cell_change_cb(void (*cb)(const char *cell_key))
 extern "C" void net_enable_accel_wake(void)
 {
     s_accel_wake_enabled = true;
+}
+
+// ---------------------------------------------------------------------------
+// v0.2 §4.4 (CA trust, cafetch.c). See net.h's own doc comments for the
+// contract each of these follows.
+// ---------------------------------------------------------------------------
+
+extern "C" bool net_ca_fetch_open(const char *host, uint16_t port)
+{
+    // v0.2 bug fix #4 (§2.4)/BRINGUP_NOTES.md's rule applies to this profile
+    // too: never leave PAGER_TLS_CA_SLOT empty before naming it in a TLS
+    // profile, even one that never validates against it.
+    ensure_ca_slot_populated();
+
+    if (!WalterModem::tlsConfigProfile(PAGER_CA_FETCH_TLS_PROFILE_ID, WALTER_MODEM_TLS_VALIDATION_NONE,
+                                       WALTER_MODEM_TLS_VERSION_12, PAGER_TLS_CA_SLOT)) {
+        ESP_LOGI(TAG, "cafetch: tlsConfigProfile(profile %d) failed", PAGER_CA_FETCH_TLS_PROFILE_ID);
+        return false;
+    }
+    if (!WalterModem::socketConfig(PAGER_CA_FETCH_SOCKET_ID)) {
+        ESP_LOGI(TAG, "cafetch: socketConfig() failed");
+        return false;
+    }
+    if (!WalterModem::socketConfigSecure(PAGER_CA_FETCH_SOCKET_ID, true, PAGER_CA_FETCH_TLS_PROFILE_ID)) {
+        ESP_LOGI(TAG, "cafetch: socketConfigSecure() failed");
+        return false;
+    }
+
+    s_ca_fetch_ring_pending = false;
+    s_ca_fetch_closed = false;
+
+    WalterModemRsp rsp = {};
+    if (!WalterModem::socketDial(PAGER_CA_FETCH_SOCKET_ID, WALTER_MODEM_SOCKET_PROTO_TCP, port, host, 0,
+                                 WALTER_MODEM_ACCEPT_ANY_REMOTE_DISABLED, &rsp)) {
+        ESP_LOGI(TAG, "cafetch: socketDial() failed (result=%s)", walter_state_name(rsp.result));
+        return false;
+    }
+    ESP_LOGI(TAG, "cafetch: socket %d dialed to %s:%u (TLS profile %d, VALIDATION_NONE)",
+             PAGER_CA_FETCH_SOCKET_ID, host, (unsigned) port, PAGER_CA_FETCH_TLS_PROFILE_ID);
+    return true;
+}
+
+extern "C" bool net_ca_fetch_send(const uint8_t *buf, uint16_t len)
+{
+    // L6-style cast (net_publish_raw() above): the vendor's socketSend()
+    // takes uint8_t*, not const, but never mutates the caller's buffer (it
+    // only reads it onto the wire after the modem's own framing).
+    return WalterModem::socketSend(PAGER_CA_FETCH_SOCKET_ID, (uint8_t *) (uintptr_t) buf, len);
+}
+
+extern "C" bool net_ca_fetch_poll(uint8_t *buf, size_t cap, uint16_t *out_len, bool *out_closed)
+{
+    if (s_ca_fetch_closed) {
+        s_ca_fetch_closed = false;
+        if (out_closed) {
+            *out_closed = true;
+        }
+        if (out_len) {
+            *out_len = 0;
+        }
+        return true;
+    }
+    if (!s_ca_fetch_ring_pending) {
+        return false;
+    }
+    s_ca_fetch_ring_pending = false;
+
+    WalterModemRsp rsp = {};
+    if (!WalterModem::socketReceive(PAGER_CA_FETCH_SOCKET_ID, buf, cap, &rsp)) {
+        ESP_LOGI(TAG, "cafetch: socketReceive() failed");
+        if (out_closed) {
+            *out_closed = false;
+        }
+        if (out_len) {
+            *out_len = 0;
+        }
+        return true; // an event did happen (a RING); the caller's parser sees zero new bytes this poll
+    }
+    if (out_closed) {
+        *out_closed = false;
+    }
+    if (out_len) {
+        *out_len = rsp.data.socketResponse.bytesReceived;
+    }
+    return true;
+}
+
+extern "C" void net_ca_fetch_close(void)
+{
+    WalterModem::socketClose(PAGER_CA_FETCH_SOCKET_ID); // best-effort, power effect: one AT command
+    s_ca_fetch_ring_pending = false;
+    s_ca_fetch_closed = false;
 }

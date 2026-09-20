@@ -527,6 +527,38 @@ static void icon_battery(int x, int y, int filled /* 0..4 */)
     }
 }
 
+// v0.2 §4.3 (CA trust): closed/broken padlock, drawn from code exactly like
+// every other icon in this function — "if icons live in the assets
+// partition image, do NOT change the asset format: draw these two from a
+// small const bitmap in code instead" does not apply here, since every
+// existing icon (including GFX_ICON_LOCK, whose shape this borrows for the
+// closed case) is already hand-drawn with gfx_rect()/gfx_hline()/
+// gfx_set_pixel() rather than blitted from a bitmap asset. `broken` draws
+// the shackle with a gap on the right (open) and a short displaced stub
+// instead of the closed top-plus-two-sides shape — meant to read as "the
+// shackle popped open", distinct at a glance from GFX_ICON_LOCK's closed
+// shape used for envelope-signing.
+static void icon_padlock(int x, int y, bool broken)
+{
+    gfx_rect(x + 1, y + 5, 10, 7); // body
+    if (!broken) {
+        gfx_hline(x + 3, x + 8, y + 2);
+        gfx_set_pixel(x + 3, y + 3, true);
+        gfx_set_pixel(x + 3, y + 4, true);
+        gfx_set_pixel(x + 8, y + 3, true);
+        gfx_set_pixel(x + 8, y + 4, true);
+    } else {
+        gfx_hline(x + 3, x + 6, y + 2); // shackle: left side + top stub only
+        gfx_set_pixel(x + 3, y + 3, true);
+        gfx_set_pixel(x + 3, y + 4, true);
+        gfx_set_pixel(x + 9, y + 1, true); // the right side, displaced/open
+        gfx_set_pixel(x + 9, y + 2, true);
+        gfx_set_pixel(x + 9, y + 3, true);
+    }
+    gfx_set_pixel(x + 5, y + 8, true); // keyhole
+    gfx_set_pixel(x + 6, y + 8, true);
+}
+
 void gfx_icon(int x, int y, gfx_icon_t id)
 {
     switch (id) {
@@ -622,6 +654,12 @@ void gfx_icon(int x, int y, gfx_icon_t id)
         gfx_set_pixel(x + 2, y + GFX_ICON_H - 3, true);
         gfx_set_pixel(x + 3, y + GFX_ICON_H - 3, true);
         gfx_set_pixel(x + 2, y + GFX_ICON_H - 2, true);
+        break;
+    case GFX_ICON_TLS_PINNED:
+        icon_padlock(x, y, false);
+        break;
+    case GFX_ICON_TLS_BROKEN:
+        icon_padlock(x, y, true);
         break;
     default:
         gfx_rect(x, y, GFX_ICON_W, GFX_ICON_H);

@@ -71,4 +71,17 @@ bool modes_publish_status_now(void);
  * there. No modem/sleep-state effect of its own: a single RAM flag. */
 void modes_set_loc_suppress(bool suppress);
 
+/* v0.2 §4.4 (CA trust, catrust.c): the two-phase apply's own deliberate
+ * session teardown/scratch-slot reconnect trial — same reasoning and same
+ * two call sites' worth of gating as modes_set_loc_suppress() above (the
+ * ordinary reconnect-retry loop and the F4 modem-health check), just a
+ * second, independent flag rather than reusing loc.c's (each module owns
+ * its own suppression window; both can be OR'd together where modes_run()
+ * checks them, since only one is ever expected active at a time in
+ * practice but neither needs to know about the other). catrust.c is the
+ * only caller: true right before net_session_down() (the scratch-slot
+ * trial connect), false once catrust_service() has committed or rolled the
+ * trial back. No modem/sleep-state effect of its own: a single RAM flag. */
+void modes_set_ca_apply_suppress(bool suppress);
+
 #endif /* MODES_H */

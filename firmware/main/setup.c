@@ -366,6 +366,8 @@ bool setup_decrypt_bundle(const uint8_t bkey[32], const uint8_t *blob, size_t bl
 #include "freertos/task.h"
 #include "mbedtls/sha256.h"
 
+#include "cafetch.h" /* v0.2 §4.4: the bootstrap-time CA pointer fetch */
+#include "catrust.h" /* v0.2 §4.4: CATRUST_URL_MAX, CAFETCH_PEM_MAX (via cafetch.h) */
 #include "cbor.h"
 #include "ident.h"
 #include "net.h"
@@ -380,7 +382,9 @@ static const char *TAG = "setup";
 #define SETUP_BUNDLE_MAX 4096
 
 /* docs/PROTOCOL.md §10 boot keymap: 0=v, 1=id, 30=pw, 31=k, 32=host,
- * 33=port, 34=ca, 35=flags, 36=label, 37=apn. */
+ * 33=port, 34=ca, 35=flags, 36=label, 37=apn, 40=ca_url, 41=ca_sha
+ * (v0.2 §4.4: the CA pointer that replaces 34 in a v0.2-era bundle — 34 is
+ * still accepted for one release, "prefer the pointer" when both appear). */
 #define BOOT_KEY_V 0
 #define BOOT_KEY_ID 1
 #define BOOT_KEY_PW 30
@@ -391,6 +395,8 @@ static const char *TAG = "setup";
 #define BOOT_KEY_FLAGS 35
 #define BOOT_KEY_LABEL 36
 #define BOOT_KEY_APN 37
+#define BOOT_KEY_CA_URL 40
+#define BOOT_KEY_CA_SHA 41
 
 /* Timeouts: vTaskDelay-based polling (no busy-wait), matching net_init()'s
  * own 1s-poll attach loop style. */
@@ -421,15 +427,35 @@ static bool valid_dev_id(const char *s, size_t len)
     return true;
 }
 
+/* v0.2 §4.4: the pointer half of a bundle (`ca_url`/`ca_sha`, boot keys
+ * 40/41), decoded separately from `out->ca` — the pointer is fetched over
+ * the still-attached bootstrap session AFTER this function returns
+ * (setup_run() itself calls cafetch_run_blocking()); this function only
+ * decodes and shape-validates the two fields. */
+typedef struct {
+    bool have_ptr; /* both ca_url and ca_sha were present (V02_DESIGN.md §4.4: "both present or both absent") */
+    char url[CATRUST_URL_MAX];
+    uint8_t sha[32];
+} setup_ca_ptr_t;
+
 /* CBOR-decode + validate the plaintext bundle into an ident_t. Every
  * required field (docs/DEVICE_PLAN.md §3.2 step 4's plaintext shape) must be
  * present and within ident.h's own field sizes; `apn`/`flags` are optional
- * (default empty/0). Computes `ca_hash` (SHA-256 of the CA PEM) for
- * ident.h's own field, which net.cpp's net_init() uses on later boots to
- * skip a redundant NVRAM rewrite (DEVICE_PLAN.md §3.3). */
-static bool decode_and_validate_bundle(const uint8_t *plain, size_t plain_len, ident_t *out)
+ * (default empty/0). Does NOT compute `ca_hash` — that happens in
+ * setup_run() once the final CA content (inline `ca`, or the pointer fetch's
+ * result) is known; `out->ca`/`out->ca_len` are only ever populated here
+ * from the inline `ca` (boot key 34, a v0.1-era bundle or a v0.2 bundle that
+ * carries no pointer). `out_ptr->have_ptr` tells the caller whether to
+ * prefer the pointer instead ("if both forms are present prefer the
+ * pointer", V02_DESIGN.md §4.4) — both `ca_url` and `ca_sha` must be present
+ * together or the bundle is malformed (rejected here, not silently treated
+ * as "no pointer"). */
+static bool decode_and_validate_bundle(const uint8_t *plain, size_t plain_len, ident_t *out,
+                                       setup_ca_ptr_t *out_ptr)
 {
     memset(out, 0, sizeof(*out));
+    memset(out_ptr, 0, sizeof(*out_ptr));
+    bool have_ca_url = false, have_ca_sha = false;
 
     cbor_r_t r;
     cbor_r_init(&r, plain, plain_len);
@@ -550,6 +576,27 @@ static bool decode_and_validate_bundle(const uint8_t *plain, size_t plain_len, i
             out->apn[slen] = '\0';
             break;
         }
+        case BOOT_KEY_CA_URL: {
+            const char *s;
+            size_t slen;
+            if (!cbor_r_tstr(&r, &s, &slen) || slen >= sizeof(out_ptr->url)) {
+                return false;
+            }
+            memcpy(out_ptr->url, s, slen);
+            out_ptr->url[slen] = '\0';
+            have_ca_url = true;
+            break;
+        }
+        case BOOT_KEY_CA_SHA: {
+            const uint8_t *b;
+            size_t blen;
+            if (!cbor_r_bstr(&r, &b, &blen) || blen != sizeof(out_ptr->sha)) {
+                return false;
+            }
+            memcpy(out_ptr->sha, b, blen);
+            have_ca_sha = true;
+            break;
+        }
         default:
             if (!cbor_r_skip(&r)) {
                 return false;
@@ -563,8 +610,13 @@ static bool decode_and_validate_bundle(const uint8_t *plain, size_t plain_len, i
     if (!(have_id && have_pw && have_k && have_host && have_port && have_label)) {
         return false;
     }
+    /* V02_DESIGN.md §4.4: "Both present or both absent." — a bundle with
+     * only one of the two is malformed, not "no pointer". */
+    if (have_ca_url != have_ca_sha) {
+        return false;
+    }
+    out_ptr->have_ptr = have_ca_url && have_ca_sha;
 
-    mbedtls_sha256((const unsigned char *) out->ca, out->ca_len, out->ca_hash, 0);
     out->n_epoch = 0;
     out->claimed = 0;
     return true;
@@ -698,12 +750,52 @@ bool setup_run(const char *code)
     }
 
     static ident_t id; /* static: 4 kB+ struct, keep it off the task stack (see ident_load()) */
-    if (!decode_and_validate_bundle(plain, plain_len, &id)) {
+    static setup_ca_ptr_t ca_ptr;
+    if (!decode_and_validate_bundle(plain, plain_len, &id, &ca_ptr)) {
         net_session_down();
         ESP_LOGI(TAG, "bundle decrypted (%u bytes) but CBOR decode/validate failed",
                  (unsigned) plain_len);
         return fail(ui_ok, "code damaged");
     }
+
+    // v0.2 §4.4: "the same fetch, over the bootstrap attach, before the
+    // identity is stored" — the bootstrap MQTT session (still up at this
+    // point; the ack has not been sent yet) is left connected while this
+    // opens the cafetch socket, deliberately exercising the same "second
+    // socket while MQTT is up" question the `cafetch` debug command's
+    // mqtt_survived flag checks at runtime (docs/CA_TRUST_PLAN.md §3.4's
+    // UNVERIFIED item). "Both present or both absent" was already enforced
+    // by decode_and_validate_bundle(); "prefer the pointer" when an inline
+    // `ca` was ALSO present just falls out of overwriting id.ca/id.ca_len
+    // below with the fetched PEM.
+    if (ca_ptr.have_ptr) {
+        static char fetched_pem[CAFETCH_PEM_MAX];
+        size_t fetched_len = 0;
+        int http_status = 0;
+        size_t bytes = 0;
+        uint32_t elapsed_ms = 0;
+        bool mqtt_survived = false;
+        bool fetch_ok = cafetch_run_blocking(ca_ptr.url, ca_ptr.sha, fetched_pem, sizeof(fetched_pem),
+                                             &fetched_len, &http_status, &bytes, &elapsed_ms,
+                                             &mqtt_survived);
+        ESP_LOGI(TAG,
+                 "SETUP CA fetch: url=%s http_status=%d bytes=%u elapsed=%ums ok=%d "
+                 "mqtt_survived_second_socket=%d",
+                 ca_ptr.url, http_status, (unsigned) bytes, (unsigned) elapsed_ms, (int) fetch_ok,
+                 (int) mqtt_survived);
+        if (!fetch_ok || fetched_len >= sizeof(id.ca)) {
+            net_session_down();
+            return fail(ui_ok, "cannot reach broker");
+        }
+        memcpy(id.ca, fetched_pem, fetched_len);
+        id.ca[fetched_len] = '\0';
+        id.ca_len = fetched_len;
+    }
+    // ident.h's own field doc: "SHA-256 of the CA currently written to modem
+    // slot 12" — computed here, once, over whatever ended up in id.ca
+    // (empty/inline/fetched), rather than inside decode_and_validate_bundle()
+    // (which no longer has the final answer once a pointer is involved).
+    mbedtls_sha256((const unsigned char *) id.ca, id.ca_len, id.ca_hash, 0);
 
     if (!ident_store(&id)) {
         net_session_down();
