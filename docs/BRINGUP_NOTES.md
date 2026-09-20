@@ -66,8 +66,16 @@ envelope it keeps sending JSON, which the firmware cannot parse and drops at deb
 - Delivery while the pager is in light sleep has never been tested (`PROTOCOL.md` §8.3, M5). All
   testing used the `PAGER_DEBUG_NO_LIGHT_SLEEP` build. A sleeping pager's USB port is dead, so
   reflashing one needs BOOT+RESET or a lucky retry.
-- US Mobile "Dark Star" (AT&T) SIM: plain TCP worked, TLS sockets did not, against any server; the
-  network also refused the requested eDRX and took ~110 s to register. Unexplained. Use Google Fi.
+- ~~US Mobile "Dark Star" (AT&T) SIM: TLS sockets did not work.~~ **Explained 2026-09-20: it was
+  the APN.** The firmware attached with a blank APN and the network picked a default one that
+  gives a crippled data path: a 13-byte plain TCP send works, a 300-byte HTTP request gets no
+  reply, and every TLS handshake (port 443 to Google included) stalls for 30 s. It also refused
+  the requested eDRX. With the APN set to **`ereseller`** (US Mobile's documented Dark Star APN,
+  lowercase) the same SIM connects MQTT over TLS in 5 s, is granted the requested 20.48 s eDRX,
+  and fetches over HTTPS normally. Registration still takes about two minutes at this location.
+  A provisioned pager gets its APN from the setup bundle (`apn`, key 37) or from the typed code
+  (`...;apn=ereseller`); the debug build also has `setapn <name>` (NVS `dbg/apn`).
+  **Lesson: never attach with a blank APN and trust the result.**
 - Vendor library: a stray `NO CARRIER` with no command pending dereferences a null command and
   reboots (`WalterModem.cpp`, `_finishModemCMD`); receive buffers are 1540 bytes and
   `mqttReceive()` copies out of them unchecked (the setup bundle with the DigiCert root is 1468).

@@ -353,6 +353,10 @@ bool net_check_sim(void);
  * once the broker-connect issue is root-caused. */
 bool net_check_tcp(const char *host, uint16_t port, bool udp, bool tls);
 
+/* TEMPORARY diagnostic: plain TCP like net_check_tcp(), but sends a valid HTTP/1.0 GET padded to
+ * `bytes` and then waits 12 s so the AT trace shows whether a reply rings (+SQNSRING). */
+bool net_check_tcp_sized(const char *host, uint16_t port, size_t bytes);
+
 /* TEMPORARY diagnostic (main.c's `mqtttest` console command): attaches like
  * net_bootstrap_attach(), then issues a real AT+SQNSMQTTCONNECT to host:port
  * over the VALIDATION_NONE bootstrap TLS profile with dummy credentials, and

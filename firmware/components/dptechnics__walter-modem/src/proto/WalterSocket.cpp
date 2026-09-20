@@ -74,10 +74,21 @@ WalterModemSocket* WalterModem::_socketReserve()
 
 WalterModemSocket* WalterModem::_socketGet(int id)
 {
-  for(int i = 0; i < WALTER_MODEM_MAX_SOCKETS; ++i) {
-    if(_socketSet[i].id == id) {
-      return _socketSet + i;
+  /*
+   * PAGER PATCH: (1.6, explicit socket ids) WalterModemSocket::id defaults to 1 for EVERY entry
+   * of _socketSet, and only _socketReserve() ever assigns a real id. The public API takes an
+   * explicit socket_id (socketConfig(4), socketDial(4), ...), but a lookup by id only ever
+   * matched id 1 (the first entry), so any other id failed locally with NO_FREE_SOCKET before a
+   * single AT command was sent. Found on hardware: the CA fetch uses socket 4 so that it cannot
+   * collide with the diagnostics' socket 1. Map id N onto slot N-1 (the modem's own connection
+   * ids are 1..6, one per slot) and claim it when it is still carrying the default id.
+   */
+  if(id >= 1 && id <= WALTER_MODEM_MAX_SOCKETS) {
+    WalterModemSocket* slot = _socketSet + (id - 1);
+    if(slot->id != id) {
+      slot->id = id;
     }
+    return slot;
   }
 
   return NULL;

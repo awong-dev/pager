@@ -279,7 +279,24 @@ are used; `ca_sha`/`sha` are base64url without padding, like `sig`.
 - Web: `npm run build`, lint.
 - Hardware, by a person: everything marked `UNVERIFIED`, using the debug console.
 
-## 9. Bringing v0.2 up on hardware (for a person; nothing here has been done)
+## 9. Bringing v0.2 up on hardware
+
+**Done on 2026-09-20** (debug build, US Mobile Dark Star SIM with APN `ereseller`, relay deployed
+from `main`): boots with no panic; identity and epoch migrate (`IDENT … sig=1`, epoch keeps
+rising); GNSS config accepted; LIS3DH absent handled; SMS init accepted including `CSCS="IRA"` and
+`CSDH=1` (storage 0/10); MQTT over TLS with the pinned CA; `/status` with the new fields accepted
+by the relay (no `malformed`/`replay`/`bad-sig`); the console works on a provisioned pager; a
+stray `NO CARRIER` no longer crashes (patch 1.1); the trust fallback ran for real (a broken data
+path produced `-8`, the pager went `broken`, and healed to `pinned` on the next validated
+connect); **a second TLS socket opens while MQTT stays connected** and `cafetch` retrieved a
+790-byte and a 1939-byte certificate over HTTPS in about 3 s each with matching hashes.
+Bugs that only hardware could find, all fixed: `CONFIG_WALTER_MODEM_MAX_TLS_PROFILES` stayed 3
+in an existing `sdkconfig` (now pinned in `sdkconfig.defaults`); the vendor library could only
+look up socket id 1 (patch 1.6); a reply and the peer's close arriving together discarded the
+reply; a payload ending in `\n` left the final `OK` unmatched and the read timed out (patch
+1.7); HTTP header lines over 512 bytes were fatal; the trust state healed 70 ms *after* the
+status that reported it. **Still not done:** everything below that needs a page sent from the web
+app, a CA push, GNSS outdoors, an SMS, and the light-sleep test.
 
 Images for a quick flash or a quick retreat are in the untracked `build/images/`:
 `v0.2-dev-debug-app.bin` and `v0.1-debug-app.bin`, both the no-sleep debug build, both written to

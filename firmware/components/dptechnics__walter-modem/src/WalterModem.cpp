@@ -1832,6 +1832,33 @@ void WalterModem::_processModemRSP(WalterModemCmd* cmd, WalterModemBuffer* buff)
     buff->size -= 2;
   }
 
+  /*
+   * PAGER PATCH: (1.7, stray line break before a final OK) Found on hardware with
+   * AT+SQNSRECV on a TLS socket: when the received payload ends in a bare '\n' (a PEM file
+   * does), the parser queues the payload buffer one byte early and the final result arrives
+   * as "\n\r\nOK\r\n". After the single leading-CRLF strip above that is "\nOK" -- wait, the
+   * strip does not even fire, because the buffer starts with '\n', not "\r\n" -- so it never
+   * matches the command's expected "OK", the command never completes, and it times out after
+   * 30 s although the data arrived in 100 ms. If what is left is nothing but CR/LF characters
+   * followed by exactly "OK", normalise it to "OK". Deliberately narrow: a payload buffer can
+   * legitimately begin with line breaks and must not be touched.
+   */
+  if(buff->size >= 3 && buff->size <= 8 && buff->data[buff->size - 2] == 'O' &&
+     buff->data[buff->size - 1] == 'K') {
+    bool onlyBreaks = true;
+    for(size_t i = 0; i + 2 < buff->size; ++i) {
+      if(buff->data[i] != '\r' && buff->data[i] != '\n') {
+        onlyBreaks = false;
+        break;
+      }
+    }
+    if(onlyBreaks) {
+      buff->data[0] = 'O';
+      buff->data[1] = 'K';
+      buff->size = 2;
+    }
+  }
+
   WalterModemState result = WALTER_MODEM_STATE_OK;
 
   /**

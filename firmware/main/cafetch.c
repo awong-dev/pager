@@ -102,7 +102,17 @@ static void set_error(cafetch_parser_t *p, bool oversize, bool malformed, bool n
 static bool line_push(cafetch_parser_t *p, uint8_t c)
 {
     if (p->line_len >= sizeof(p->line) - 1) {
-        set_error(p, false, true, false); /* a header/status/chunk line too long to be real */
+        if (p->phase == CAFETCH_PHASE_HEADER_LINE) {
+            /* An over-long HEADER line is dropped from here to its LF, not
+             * treated as malformed. Found on hardware: real servers send
+             * Content-Security-Policy headers of well over 1 kB, and the only
+             * headers this parser acts on (Content-Length, Transfer-Encoding,
+             * Location) are short. The kept prefix is non-empty, so a
+             * truncated line can never be mistaken for the blank line that
+             * ends the headers. Status and chunk-size lines stay strict. */
+            return true;
+        }
+        set_error(p, false, true, false); /* a status/chunk line too long to be real */
         return false;
     }
     p->line[p->line_len++] = (char) c;

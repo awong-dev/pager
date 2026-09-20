@@ -177,3 +177,20 @@ written. In particular: whether SMS works on the production SIM at all
 `AT+CSCS`/`AT+CSMP` toggle is even necessary for this modem to accept UCS-2
 text. `smstest`/`smslist` (the debug console commands, `main/main.c`) exist
 to settle these on real hardware.
+
+## 1.6 Explicit socket ids (`src/proto/WalterSocket.cpp`, `_socketGet()`)
+
+`WalterModemSocket::id` defaults to `1` for every entry of `_socketSet` and only
+`_socketReserve()` assigns a real id, so a lookup for any explicit id other than 1 returned NULL
+and `socketConfig(4)` failed locally with `NO_FREE_SOCKET`. `_socketGet(id)` now maps id N onto
+slot N-1 and claims it. Found on hardware 2026-09-20 (the CA fetch uses socket 4).
+
+## 1.7 Stray line break before a final `OK` (`src/WalterModem.cpp`, response pre-processing)
+
+With `AT+SQNSRECV` on a TLS socket, a payload ending in a bare `\n` (a PEM file) left the final
+result queued as `\n\r\nOK\r\n`. It never matched the expected `OK`, so the command timed out
+after 30 s although the data had arrived in 100 ms. A buffer that is only CR/LF characters
+followed by exactly `OK` is now normalised to `OK`. Found on hardware 2026-09-20. The one-byte
+miscount in the payload parser that causes it is not fixed; the last payload byte (the `\n`) is
+lost from such a read, which the CA fetch tolerates only because it hashes what the relay serves
+... see `cafetch.c`: if a hash mismatch is ever seen on a body ending in `\n`, look here first.

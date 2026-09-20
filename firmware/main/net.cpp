@@ -535,6 +535,41 @@ static void ensure_ca_slot_populated(void)
 // Public API
 // ---------------------------------------------------------------------------
 
+// Debug-build-only APN override (console `setapn <name>`, NVS dbg/apn): a
+// pager's real APN comes from the setup bundle (ident), but an already
+// provisioned bench unit has none, and on at least one carrier (US Mobile
+// "Dark Star" = AT&T, APN "ereseller") attaching with a blank APN yields a
+// data path where small plain TCP works and TLS / larger exchanges stall.
+// Returns `apn` unchanged when it is non-empty or no override is stored.
+#include "nvs.h"
+static const char *effective_apn(const char *apn)
+{
+#ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
+    static char s_override[48];
+    static bool s_loaded = false;
+    if (apn && apn[0] != '\0') {
+        return apn;
+    }
+    if (!s_loaded) {
+        s_loaded = true;
+        s_override[0] = '\0';
+        nvs_handle_t h;
+        if (nvs_open("dbg", NVS_READONLY, &h) == ESP_OK) {
+            size_t len = sizeof(s_override);
+            if (nvs_get_str(h, "apn", s_override, &len) != ESP_OK) {
+                s_override[0] = '\0';
+            }
+            nvs_close(h);
+        }
+    }
+    if (s_override[0] != '\0') {
+        ESP_LOGI(TAG, "DEBUG APN override in effect: '%s'", s_override);
+        return s_override;
+    }
+#endif
+    return (apn && apn[0] != '\0') ? apn : nullptr;
+}
+
 extern "C" bool net_init(void)
 {
 #ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
@@ -580,10 +615,7 @@ extern "C" bool net_init(void)
 
     // ident's apn is "" for carrier default (ident.h); definePDPContext()
     // wants NULL for that case, not an empty string.
-    const char *apn = ident_get_apn();
-    if (apn[0] == '\0') {
-        apn = nullptr;
-    }
+    const char *apn = effective_apn(ident_get_apn());
     if (!WalterModem::definePDPContext(PAGER_PDP_CTX_ID, apn)) {
         ESP_LOGI(TAG, "definePDPContext() failed");
         return false;
@@ -799,7 +831,7 @@ extern "C" bool net_bootstrap_attach(const char *apn)
 
     // DEVICE_PLAN.md §3.2 step 2: "the code's APN or the carrier default" —
     // same NULL-for-empty convention net_init() uses for ident's apn.
-    const char *use_apn = (apn && apn[0] != '\0') ? apn : nullptr;
+    const char *use_apn = effective_apn(apn);
     if (!WalterModem::definePDPContext(PAGER_PDP_CTX_ID, use_apn)) {
         ESP_LOGI(TAG, "definePDPContext() failed (bootstrap)");
         return false;
@@ -1222,6 +1254,16 @@ extern "C" bool net_check_sim(void)
     return ok;
 }
 
+static size_t s_nettest_pad_bytes = 0;
+
+extern "C" bool net_check_tcp_sized(const char *host, uint16_t port, size_t bytes)
+{
+    s_nettest_pad_bytes = bytes;
+    bool ok = net_check_tcp(host, port, false, false);
+    s_nettest_pad_bytes = 0;
+    return ok;
+}
+
 extern "C" bool net_check_tcp(const char *host, uint16_t port, bool udp, bool tls)
 {
     if (!net_bootstrap_attach(NULL)) {
@@ -1285,10 +1327,34 @@ extern "C" bool net_check_tcp(const char *host, uint16_t port, bool udp, bool tl
     // payload and getting AT-level "OK" back is a much more direct test of
     // whether the socket actually works than guessing at the right
     // state enum.
+    // Optional sized payload (s_nettest_pad_bytes, set by net_check_tcp_sized()):
+    // a valid HTTP/1.0 GET padded with a dummy header to the requested size,
+    // after which we wait and let the AT trace show whether the modem rings
+    // with a reply (+SQNSRING). Separates "the carrier/path mishandles larger
+    // uplink segments" from "TLS specifically fails": last night's plain test
+    // only ever sent 13 bytes, a TLS ClientHello is ~215.
+    static char big[1400];
     const char *test_payload = "pager nettest";
+    size_t test_len = strlen(test_payload);
+    if (s_nettest_pad_bytes > 0) {
+        int n = snprintf(big, sizeof(big), "GET / HTTP/1.0\r\nHost: %s\r\nX-Pad: ", host);
+        size_t want = s_nettest_pad_bytes > sizeof(big) - 8 ? sizeof(big) - 8 : s_nettest_pad_bytes;
+        while ((size_t) n + 4 < want) {
+            big[n++] = 'a';
+        }
+        memcpy(big + n, "\r\n\r\n", 4);
+        n += 4;
+        test_payload = big;
+        test_len = (size_t) n;
+    }
     bool sent = WalterModem::socketSend(PAGER_TCP_TEST_SOCKET_ID, (uint8_t *) test_payload,
-                                        (uint16_t) strlen(test_payload));
-    ESP_LOGI(TAG, "nettest: socketSend: %s", sent ? "OK" : "FAILED");
+                                        (uint16_t) test_len);
+    ESP_LOGI(TAG, "nettest: socketSend (%u bytes): %s", (unsigned) test_len, sent ? "OK" : "FAILED");
+    if (s_nettest_pad_bytes > 0) {
+        ESP_LOGI(TAG, "nettest: waiting 12 s for a reply; look for '+SQNSRING: %d,<bytes>' in the trace",
+                 PAGER_TCP_TEST_SOCKET_ID);
+        vTaskDelay(pdMS_TO_TICKS(12000));
+    }
     WalterModem::socketClose(PAGER_TCP_TEST_SOCKET_ID);
     return sent;
 }
@@ -1536,39 +1602,48 @@ extern "C" bool net_ca_fetch_send(const uint8_t *buf, uint16_t len)
 
 extern "C" bool net_ca_fetch_poll(uint8_t *buf, size_t cap, uint16_t *out_len, bool *out_closed)
 {
-    if (s_ca_fetch_closed) {
-        s_ca_fetch_closed = false;
-        if (out_closed) {
-            *out_closed = true;
-        }
-        if (out_len) {
-            *out_len = 0;
-        }
-        return true;
-    }
-    if (!s_ca_fetch_ring_pending) {
-        return false;
-    }
-    s_ca_fetch_ring_pending = false;
-
-    WalterModemRsp rsp = {};
-    if (!WalterModem::socketReceive(PAGER_CA_FETCH_SOCKET_ID, buf, cap, &rsp)) {
-        ESP_LOGI(TAG, "cafetch: socketReceive() failed");
-        if (out_closed) {
-            *out_closed = false;
-        }
-        if (out_len) {
-            *out_len = 0;
-        }
-        return true; // an event did happen (a RING); the caller's parser sees zero new bytes this poll
-    }
     if (out_closed) {
         *out_closed = false;
     }
     if (out_len) {
-        *out_len = rsp.data.socketResponse.bytesReceived;
+        *out_len = 0;
     }
-    return true;
+
+    // Data first, close second. Found on hardware: with `Connection: close`
+    // the reply's +SQNSRING and the peer's +SQNSH arrive in the same few
+    // milliseconds, and reporting the close first threw the whole response
+    // away unread ("parse failed, 0 body bytes"). So: while a ring is pending
+    // OR the peer has closed, try to read; only report the close once a read
+    // comes back empty. The modem keeps received bytes readable after +SQNSH
+    // (UNVERIFIED beyond the single-segment responses tested).
+    if (s_ca_fetch_ring_pending || s_ca_fetch_closed) {
+        WalterModemRsp rsp = {};
+        uint16_t got = 0;
+        if (WalterModem::socketReceive(PAGER_CA_FETCH_SOCKET_ID, buf, cap, &rsp)) {
+            got = rsp.data.socketResponse.bytesReceived;
+        } else if (!s_ca_fetch_closed) {
+            ESP_LOGI(TAG, "cafetch: socketReceive() failed");
+        }
+        if (got > 0) {
+            // More may be waiting than one read returns (<=1500 B per
+            // AT+SQNSRECV), and the modem does not always ring again: keep
+            // the ring armed until a read comes back empty.
+            s_ca_fetch_ring_pending = true;
+            if (out_len) {
+                *out_len = got;
+            }
+            return true;
+        }
+        s_ca_fetch_ring_pending = false;
+        if (s_ca_fetch_closed) {
+            s_ca_fetch_closed = false;
+            if (out_closed) {
+                *out_closed = true;
+            }
+        }
+        return true;
+    }
+    return false;
 }
 
 extern "C" void net_ca_fetch_close(void)

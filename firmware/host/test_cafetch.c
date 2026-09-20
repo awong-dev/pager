@@ -296,8 +296,38 @@ static void test_validate_body_zero_pem_blocks(void)
           "a body with no PEM markers at all must be rejected");
 }
 
+/* Found on hardware (letsencrypt.org behind Netlify): a Content-Security-Policy
+ * header well over 1 kB used to fail the whole fetch as malformed. An over-long
+ * header line must be skipped; Content-Length after it must still be honoured. */
+static void test_overlong_header_line_is_skipped(void)
+{
+    static char resp[4096];
+    size_t n = 0;
+    n += (size_t) snprintf(resp + n, sizeof(resp) - n, "HTTP/1.1 200 OK\r\nContent-Security-Policy: ");
+    for (int i = 0; i < 2000; i++) {
+        resp[n++] = 'x';
+    }
+    n += (size_t) snprintf(resp + n, sizeof(resp) - n, "\r\nContent-Length: 5\r\n\r\nhello");
+    cafetch_parser_t p;
+    cafetch_parser_init(&p);
+    for (size_t i = 0; i < n; i += 7) { /* odd-sized pieces */
+        size_t k = (n - i < 7) ? n - i : 7;
+        CHECK(cafetch_parser_feed(&p, (const uint8_t *) resp + i, k), "feed() failed on a long header");
+    }
+    CHECK(p.phase == CAFETCH_PHASE_DONE, "long header: expected DONE, got phase=%d", (int) p.phase);
+    CHECK(p.body_len == 5 && memcmp(p.body, "hello", 5) == 0, "long header: body mismatch");
+
+    /* A status line that long is still malformed. */
+    cafetch_parser_init(&p);
+    memset(resp, 'y', 1500);
+    resp[1500] = '\0';
+    feed_whole(&p, resp);
+    CHECK(p.phase == CAFETCH_PHASE_ERROR && p.err_malformed, "over-long status line must stay malformed");
+}
+
 int main(void)
 {
+    test_overlong_header_line_is_skipped();
     test_url_parse();
     test_content_length_split_headers();
     test_header_line_split_byte_by_byte();

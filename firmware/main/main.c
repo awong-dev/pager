@@ -4,6 +4,8 @@
 #include "esp_console.h"
 #include "esp_log.h"
 #include "nvs_flash.h"
+#include "nvs.h"
+#include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -94,7 +96,7 @@ static int cmd_nettest(int argc, char **argv)
 {
     esp_log_level_set("WalterModem", ESP_LOG_DEBUG); // raw AT TX:/RX: trace
     if (argc < 3 || argc > 4) {
-        printf("usage: nettest <host> <port> [udp|tls]\n");
+        printf("usage: nettest <host> <port> [udp|tls|<bytes>]\n");
         return 1;
     }
     long port = strtol(argv[2], NULL, 10);
@@ -104,7 +106,9 @@ static int cmd_nettest(int argc, char **argv)
     }
     bool udp = (argc == 4) && (strcmp(argv[3], "udp") == 0);
     bool tls = (argc == 4) && (strcmp(argv[3], "tls") == 0);
-    bool ok = net_check_tcp(argv[1], (uint16_t) port, udp, tls);
+    long pad = (argc == 4 && !udp && !tls) ? strtol(argv[3], NULL, 10) : 0;
+    bool ok = (pad > 0) ? net_check_tcp_sized(argv[1], (uint16_t) port, (size_t) pad)
+                        : net_check_tcp(argv[1], (uint16_t) port, udp, tls);
     printf("nettest: %s\n", ok ? "CONNECTED" : "FAILED (see log above)");
     return ok ? 0 : 1;
 }
@@ -132,6 +136,32 @@ static int cmd_mqtttest(int argc, char **argv)
     printf("mqtttest: %s\n", ok ? "CONNECTED" : "NOT CONNECTED (see log above)");
     return ok ? 0 : 1;
 }
+
+#ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
+// Debug build only: `setapn <name>` stores an APN override in NVS (dbg/apn)
+// and restarts; `setapn -` clears it. See net.cpp's effective_apn().
+static int cmd_setapn(int argc, char **argv)
+{
+    if (argc != 2) {
+        printf("usage: setapn <apn>   (setapn - clears the override)\n");
+        return 1;
+    }
+    nvs_handle_t h;
+    if (nvs_open("dbg", NVS_READWRITE, &h) != ESP_OK) {
+        printf("setapn: nvs_open failed\n");
+        return 1;
+    }
+    esp_err_t err = (strcmp(argv[1], "-") == 0) ? nvs_erase_key(h, "apn") : nvs_set_str(h, "apn", argv[1]);
+    if (err == ESP_OK || err == ESP_ERR_NVS_NOT_FOUND) {
+        nvs_commit(h);
+    }
+    nvs_close(h);
+    printf("setapn: %s; restarting\n", strcmp(argv[1], "-") == 0 ? "override cleared" : argv[1]);
+    vTaskDelay(pdMS_TO_TICKS(300));
+    esp_restart();
+    return 0;
+}
+#endif
 
 // No modem/radio access of its own; starts the USB-serial REPL task that
 // waits for a person to type `setup <code>` (docs/DEVICE_PLAN.md §3.2 step
@@ -326,6 +356,14 @@ static void start_normal_console(void)
         .func = &cmd_mqtttest,
     };
     ESP_ERROR_CHECK(esp_console_cmd_register(&mqtttest_cmd));
+
+    const esp_console_cmd_t setapn_cmd = {
+        .command = "setapn",
+        .help = "setapn <apn|-> -- debug APN override stored in NVS, then restart",
+        .hint = NULL,
+        .func = &cmd_setapn,
+    };
+    ESP_ERROR_CHECK(esp_console_cmd_register(&setapn_cmd));
 
     const esp_console_cmd_t gnsstest_cmd = {
         .command = "gnsstest",

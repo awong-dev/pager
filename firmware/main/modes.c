@@ -1491,12 +1491,17 @@ void modes_run(void)
         if (st.mqtt_connected && !s_was_mqtt_connected) {
             // Edge: session just became usable. §5.4a - drives the relay's
             // re-publish of unacked messages (§5.3).
-            publish_status_online();
             // v0.2 §4.2: clears the TLS-fail retry streak and, if this was a
             // validated reconnect attempted while broken, heals state back
             // to pinned. No modem/sleep-state effect: RAM/NVS bookkeeping
             // only (ident_set_tls_broken() is a single NVS write, at most).
+            // MUST run before the status publish below: found on hardware,
+            // the other order reported `tls:"broken"` 70 ms before healing to
+            // pinned, so the relay logged SECURITY tls-broken for a session
+            // that had just validated, and kept showing it until the next
+            // heartbeat an hour later.
             catrust_on_mqtt_connected();
+            publish_status_online();
         }
         s_was_mqtt_connected = st.mqtt_connected;
 
