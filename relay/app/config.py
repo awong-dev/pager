@@ -66,9 +66,14 @@ class Settings:
             broker_api_url=os.environ.get(
                 "BROKER_API_URL", "http://localhost:18083/api/v5"
             ),
-            broker_api_key=os.environ.get("BROKER_API_KEY") or None,
-            broker_api_secret=os.environ.get("BROKER_API_SECRET") or None,
-            webhook_key=os.environ.get("WEBHOOK_KEY", ""),
+            # .strip(): Secret Manager hands back exactly the bytes that were
+            # stored, and `echo value | gcloud secrets versions add` stores a
+            # trailing newline. An HTTP header can never carry one, so an
+            # unstripped WEBHOOK_KEY could never match and every broker
+            # webhook got 401 (found live, 2026-09-20).
+            broker_api_key=(os.environ.get("BROKER_API_KEY") or "").strip() or None,
+            broker_api_secret=(os.environ.get("BROKER_API_SECRET") or "").strip() or None,
+            webhook_key=os.environ.get("WEBHOOK_KEY", "").strip(),
             dev_mode=os.environ.get("DEV_MODE", "") == "1",
             google_cloud_project=os.environ.get("GOOGLE_CLOUD_PROJECT") or None,
             firestore_emulator_host=os.environ.get("FIRESTORE_EMULATOR_HOST") or None,

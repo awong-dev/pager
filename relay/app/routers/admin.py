@@ -358,6 +358,20 @@ def _bootstrap_host_and_ca() -> tuple[str, str]:
     return host, ca
 
 
+# docs/DEVICE_PLAN.md section 3.4 / section 10 H2: bit 0 of the bundle's `flags` is the
+# device's `req_sig` -- "sign every publish, verify every /down". H2's answer
+# is "on by default; the relay sets the flag". It MUST track the device's
+# `authMode`: an `hmac` device whose bundle said flags=0 publishes unsigned,
+# and `ingest.py` then drops every one of its envelopes as `bad-sig` (found
+# live 2026-09-20: /status rejected, so the relay never learned the device
+# speaks CBOR and kept sending it JSON it cannot parse).
+_FLAG_REQ_SIG = 1
+
+
+def _bootstrap_flags(auth_mode: str) -> int:
+    return _FLAG_REQ_SIG if auth_mode == "hmac" else 0
+
+
 def _manual_acl_lines(device_id: str) -> list[str]:
     """Human-readable mirror of `app/emqx_admin.py`'s (module-private)
     `_device_rules(device_id)` ACL -- that module is outside this task's
@@ -441,6 +455,7 @@ def create_device(
         hmac_key=hmac_key,
         host=host,
         ca=ca,
+        flags=_bootstrap_flags("hmac"),  # create_device()'s default authMode
         label=req.label,
         settings=settings,
         broker=broker,
@@ -525,6 +540,7 @@ def rotate_credentials(
         hmac_key=hmac_key,
         host=host,
         ca=ca,
+        flags=_bootstrap_flags(device.authMode),
         label=device.label,
         settings=settings,
         broker=broker,

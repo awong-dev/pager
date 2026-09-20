@@ -228,6 +228,41 @@ def test_create_device_returns_a_setup_code_and_stores_only_a_hash(
     assert secret.hmacKey and len(secret.hmacKey) == 32
 
 
+def test_setup_bundle_sets_req_sig_flag_for_an_hmac_device(
+    client: TestClient, admin_headers: dict[str, str], monkeypatch
+):
+    """docs/DEVICE_PLAN.md section 10 H2: an `authMode: "hmac"` device's bundle
+    must carry flags bit 0 (req_sig). With flags=0 the device publishes
+    unsigned and ingest drops every envelope as bad-sig (found live)."""
+    from app import devsetup
+
+    seen: list[int] = []
+    real_issue = devsetup.issue
+
+    def spy(*args, **kwargs):
+        seen.append(kwargs.get("flags", 0))
+        return real_issue(*args, **kwargs)
+
+    monkeypatch.setattr(devsetup, "issue", spy)
+    client.post(
+        "/api/admin/users",
+        json={"alias": "owner9", "displayName": "Owner", "email": "owner9@example.com"},
+        headers=admin_headers,
+    )
+    resp = client.post(
+        "/api/admin/devices",
+        json={"deviceId": "pgr-1009", "ownerAlias": "owner9", "label": "flag test"},
+        headers=admin_headers,
+    )
+    assert resp.status_code == 200, resp.text
+    assert devices_store.get_device("pgr-1009").authMode == "hmac"
+
+    resp = client.post("/api/admin/devices/pgr-1009/rotate-credentials", headers=admin_headers)
+    assert resp.status_code == 200, resp.text
+
+    assert seen == [1, 1]  # create, then rotate
+
+
 def test_create_device_picks_up_locatable_by_from_a_pre_existing_allow_edge(
     client: TestClient, admin_headers: dict[str, str]
 ):
