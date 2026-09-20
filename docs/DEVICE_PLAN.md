@@ -409,6 +409,36 @@ ever exposes ciphertext.
 
 ### 3.3 The broker CA
 
+**Decision (2026-09-19): the CA is optional and the default is to pin none.** The relay sends an
+empty `ca` unless `BROKER_CA_PEM` is set; the device then runs the production session with
+certificate validation off. A bundle that does carry a CA still pins it, exactly as described
+below, so pinning is an operator opt-in rather than something the device requires. Reasons:
+
+- A pinned CA is a way to brick pagers. If the broker moves to a different root, every device fails
+  TLS until a person types a new setup code on it. For a device whose job is to be reachable, that
+  cost outweighs the attack described below, which needs an active attacker on the LTE→broker path
+  (LTE-M authenticates the network and has no 2G fallback).
+- Envelopes stay HMAC-authenticated either way (`PROTOCOL.md` §2.4), so pages cannot be forged or
+  altered. What is given up is confidentiality of bodies and location fixes against that attacker,
+  and the MQTT password. If that ever matters, §2.2's option E (AEAD bodies under `K_dev`) is the
+  better fix: it protects against the broker too and cannot brick anything.
+- "DNS guarantees the server" is **not** the justification: the modem does no DNSSEC validation.
+  The trust placed here is in the network path.
+
+**Hardware finding that constrains the implementation (GM02SP `LR8.2.1.0-61488`, verified by
+capturing wire bytes on a server we control):** the modem's dedicated `AT+SQNSMQTT*` engine
+**silently sends a plaintext MQTT CONNECT, credentials included, to the TLS port** when its TLS
+profile names no CA slot (`AT+SQNSPCFG=2,2,"",0,,,,`). A TLS-only broker then waits for a
+ClientHello forever and `+SQNSMQTTONCONNECT` never fires; this, not missing SNI, was the original
+`setup` hang. With the slot named (`AT+SQNSPCFG=2,2,"",0,12,,,`) the same engine sends a normal
+TLS 1.2 ClientHello **with SNI**, at validation level 0 or 1. The generic socket layer
+(`AT+SQNSD`) does TLS either way. So every profile used for MQTT **MUST name the CA slot, even
+with validation off**. `UNVERIFIED`: behaviour when the named slot is empty, as on a factory-fresh
+modem; `mqtttest <host> <port> emptyca` exists to test it, and if it falls back to plaintext the
+firmware must write a placeholder certificate into the slot.
+
+The rest of this section describes the opt-in pinned mode and the original rationale for it.
+
 **Why a CA is involved at all.** The bootstrap hop uses none: the token authenticates the bundle.
 The CA is cargo for the *production* session, which pins one today (`net.cpp`'s hardcoded DigiCert
 root, `PROTOCOL.md` §6.1) and must keep doing so once every household's broker chains to a
