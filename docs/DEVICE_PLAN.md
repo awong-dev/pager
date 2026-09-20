@@ -216,6 +216,28 @@ in NVS and increments **only** on a cold boot (RTC CRC invalid) or when `lo` wra
 a handful of times over the device's life. 12 bits of epoch = 4096 cold boots; 20 bits of `lo` = 1 M
 envelopes per epoch. The relay's window absorbs the jump at each cold boot. RTC cost: 4 bytes.
 
+*(To think about later, raised by the owner 2026-09-20; nothing here is decided or built.)* Should
+the relay tell the device the last sequence number it saw, instead of the device bumping an epoch
+in NVS? It can be made safe, but only as a **signed, fresh handshake**: the device sends a signed
+hello carrying a random value, the relay answers with a signed message echoing that value plus its
+`upN`, and the device resumes from there. A bare, unchallenged "your last n was X" is not safe: an
+attacker replays an old one to wind the counter back, and every message captured after X becomes
+replayable. Trade against the epoch bump: the handshake costs one round trip of airtime per cold
+boot, new protocol and relay state, and the pager cannot send until the relay answers; the epoch
+bump costs one NVS write per cold boot and nothing on the air, but is capped at 4096 cold boots
+(12 bits), after which the device needs new credentials. About eleven years at one cold boot a
+day; much less for a pager whose battery dies several times a day. A reasonable end state is to
+keep the epoch and add the handshake only as the recovery path for epoch exhaustion. Ruled out:
+deriving `n` from the clock. The clock is seeded from the network, and the modem was seen
+reporting a year-2070 time once; one bad timestamp would push the relay's window decades ahead
+and lock the device out for good.
+
+*(Implementation note, 2026-09-20.)* The cold-boot bump described above was specified here but
+missing from the firmware until it was found live: every cold boot restarted `lo` at 0 under the
+same epoch, and the relay (initial `upN = 0`, accepts only `n > upN`) dropped everything as a
+replay, starting with the very first publish after setup. `modes_boot()` now bumps the epoch on
+every cold boot.
+
 **Device side, `n` for `/down`.** Mirror of the relay's window: `down_n` + 32-bit bitmap in RTC
 (8 bytes). Re-publishes on an online edge (`PROTOCOL.md` §5.3) reuse the message `id` but get a fresh
 `n` from the relay, so dedup (§4.1 rule 7) still suppresses the re-render and the counter still
