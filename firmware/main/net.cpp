@@ -221,6 +221,15 @@ static void (*s_cell_change_cb)(const char *) = nullptr;
 static char s_last_cell_key[40] = { 0 };
 static bool s_have_last_cell_key = false;
 
+// Serving-cell cache (PROTOCOL.md §13.2 `cell`, this task) -- net_get_cell_info()'s
+// own doc comment (net.h) explains the staleness policy: fetched once via
+// AT+SQNMONI on the first call, then again only after a genuine cell change
+// (s_cell_info_stale set alongside s_last_cell_key above, same "if changed"
+// branch). Starts stale (true) so the very first request-driven fetch always
+// runs, never a guess.
+static net_cell_info_t s_cell_cache = {};
+static bool s_cell_info_stale = true;
+
 // v0.2 §5: arms IO2 (LIS3DH INT1) as an ext1 light-sleep wake source, only
 // once accel.c has confirmed the chip is actually present (see
 // net_enable_accel_wake()'s own doc comment in net.h).
@@ -476,6 +485,11 @@ static void pager_network_event_handler(WMNetworkEventType event, const WMNetwor
                 strncpy(s_last_cell_key, key, sizeof(s_last_cell_key) - 1);
                 s_last_cell_key[sizeof(s_last_cell_key) - 1] = '\0';
                 s_have_last_cell_key = true;
+                // Just a flag write, not a modem call -- legal from an event
+                // callback (same class as s_disconnect_edge/s_gnss_event_pending
+                // elsewhere in this file). The actual AT+SQNMONI refresh happens
+                // in net_get_cell_info(), from loc.c's own task.
+                s_cell_info_stale = true;
                 if (s_cell_change_cb) {
                     s_cell_change_cb(s_last_cell_key);
                 }
@@ -1691,6 +1705,71 @@ extern "C" bool net_is_attached(void)
 extern "C" void net_set_cell_change_cb(void (*cb)(const char *cell_key))
 {
     s_cell_change_cb = cb;
+}
+
+// PROTOCOL.md §13.2 `cell` (this task): the ITU/3GPP convention behind "US
+// networks are 3 digits" -- NANP countries (Canada 302, USA 310-316, Puerto
+// Rico 330, US Virgin Islands 332) assign a 3-digit MNC; used only as a
+// fallback when PATCHES.md 1.9's ncDigits is unavailable/unparsed (0).
+// UNVERIFIED for every MCC outside this table -- most of the rest of the
+// world uses 2-digit MNCs, but this is not exhaustively confirmed, just the
+// conventional default.
+static bool is_nanp_mcc(uint16_t mcc)
+{
+    return mcc == 302 || (mcc >= 310 && mcc <= 316) || mcc == 330 || mcc == 332;
+}
+
+extern "C" bool net_get_cell_info(net_cell_info_t *out)
+{
+    if (s_cell_info_stale) {
+        WalterModemRsp rsp = {};
+        if (WalterModem::getCellInformation(WALTER_MODEM_SQNMONI_REPORTS_SERVING_CELL, &rsp) &&
+            rsp.type == WALTER_MODEM_RSP_DATA_TYPE_CELL_INFO) {
+            const WalterModemCellInformation &ci = rsp.data.cellInformation;
+            uint8_t mnc_digits = ci.ncDigits; // PATCHES.md 1.9
+            if (mnc_digits != 2 && mnc_digits != 3) {
+                mnc_digits = is_nanp_mcc(ci.cc) ? 3 : 2; // fallback, see is_nanp_mcc()'s own comment
+            }
+            // `cc` is a uint16_t in the vendor struct (no narrower type is
+            // offered) even though a real MCC is always 3 digits; clamp so
+            // "%03u" can never need more than 3 digits, both to satisfy
+            // -Wformat-truncation and because a >=1000 reading is not a real
+            // MCC -- loc.c's cell_shape_ok() would reject it anyway once it
+            // is out of shape, so this only changes whether that happens
+            // silently or with a log line here.
+            unsigned cc = (unsigned) ci.cc;
+            if (cc > 999) {
+                ESP_LOGI(TAG, "cell info: implausible MCC %u from AT+SQNMONI (clamped)", cc);
+                cc %= 1000u;
+            }
+            snprintf(s_cell_cache.mcc, sizeof(s_cell_cache.mcc), "%03u", cc);
+            snprintf(s_cell_cache.mnc, sizeof(s_cell_cache.mnc), "%0*u", (int) mnc_digits,
+                     (unsigned) ci.nc);
+            s_cell_cache.tac = ci.tac;
+            s_cell_cache.ci = ci.cid & 0x0FFFFFFFu; // 28 bits, PROTOCOL.md §13.2
+            s_cell_cache.have_rsrp = (ci.rsrp <= -30.0f && ci.rsrp >= -156.0f);
+            s_cell_cache.rsrp = s_cell_cache.have_rsrp ? (int) (ci.rsrp - 0.5f) : 0;
+            s_cell_cache.valid = true;
+            s_cell_info_stale = false;
+            ESP_LOGI(TAG, "cell info refreshed: mcc=%s mnc=%s(%u digits, %s) tac=%u ci=%u rsrp=%d",
+                     s_cell_cache.mcc, s_cell_cache.mnc, (unsigned) mnc_digits,
+                     (ci.ncDigits == mnc_digits) ? "raw" : "NANP fallback", (unsigned) s_cell_cache.tac,
+                     (unsigned) s_cell_cache.ci, s_cell_cache.have_rsrp ? s_cell_cache.rsrp : 0);
+        } else {
+            // Deliberately NOT clearing s_cell_info_stale: retry on the next
+            // call rather than caching a failure. §13.2: "if the cell cannot
+            // be read, send the answer without it" -- if no earlier good
+            // reading exists, s_cell_cache.valid stays false and the caller
+            // omits `cell`; if one does exist, it is served stale rather than
+            // dropped (logged either way).
+            ESP_LOGI(TAG, "getCellInformation() failed; /loc will %s",
+                     s_cell_cache.valid ? "use the last known cell (stale)" : "omit cell");
+        }
+    }
+    if (out) {
+        *out = s_cell_cache;
+    }
+    return s_cell_cache.valid;
 }
 
 extern "C" void net_enable_accel_wake(void)

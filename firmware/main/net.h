@@ -477,6 +477,49 @@ bool net_is_attached(void);
  * which is this design's required fail-open behaviour). */
 void net_set_cell_change_cb(void (*cb)(const char *cell_key));
 
+/* Serving-cell snapshot for PROTOCOL.md §13.2's `/loc` `cell` sub-map (this
+ * task). Deliberately the SERVING network's own MCC/MNC (AT+SQNMONI, via
+ * WalterModem::getCellInformation()), NOT the SIM's home PLMN/IMSI: on the
+ * bench pager the SIM's IMSI starts 310280 but the serving network is
+ * 310/410, and the relay's cellgeo lookup only works with the serving pair
+ * (loc.c/main's own note, this task). */
+typedef struct {
+    bool valid;       /* false: never read successfully this power session -- omit `cell` entirely */
+    char mcc[4];       /* 3 ASCII digits + NUL, PROTOCOL.md §13.2 */
+    char mnc[4];       /* 2-3 ASCII digits + NUL, leading zeros kept */
+    uint16_t tac;      /* 0..65535 */
+    uint32_t ci;       /* 28-bit E-UTRAN cell id, 0..268435455 */
+    bool have_rsrp;
+    int rsrp;          /* dBm, -156..-30 when have_rsrp */
+} net_cell_info_t;
+
+/* Reads/returns the cached serving-cell snapshot, refreshing it with ONE
+ * AT+SQNMONI round trip only when the cache is stale (never fetched yet this
+ * power session, or a genuine cell change was observed via
+ * net_set_cell_change_cb()'s own de-duplicated URC) -- never on every call,
+ * so loc.c sharing one cached snapshot across several queued requesters
+ * (loc.h's own queue) or across a single /loc decision costs at most one AT
+ * round trip, not one per requester. Returns `out->valid` (also the return
+ * value): false if the cell has never been read successfully yet, in which
+ * case the caller must omit `cell` from the wire entirely (PROTOCOL.md
+ * §13.2: "if the cell cannot be read, send the answer without it") -- on a
+ * refresh failure with an earlier good reading cached, the stale reading is
+ * returned rather than dropped (logged either way).
+ *
+ * MNC digit count (2 vs 3): read from the raw `+SQNMONI` response width via
+ * the vendored library's `ncDigits` field (PATCHES.md 1.9) when available
+ * (`ncDigits` 2 or 3); otherwise (patch absent, or the field was
+ * unparseable) falls back to a small NANP-MCC table (302, 310-316, 330,
+ * 332 -> 3 digits, the ITU/3GPP convention behind "US networks are 3
+ * digits" -- everything else assumed 2 digits, UNVERIFIED outside NANP, see
+ * net.cpp's own `is_nanp_mcc()` comment).
+ *
+ * Called only from loc.c's own task (never from an event callback -- this
+ * file's own "modem calls only through this facade, never from a callback"
+ * rule). Power effect: 0 or 1 AT round trip, no RRC of its own -- same class
+ * as net_check()/net_get_rssi(). */
+bool net_get_cell_info(net_cell_info_t *out);
+
 /* Arms LIS3DH INT1 (pins.h PAGER_PIN_LIS3DH_INT1) as a second light-sleep
  * wake source alongside the button's ext0 (net_sleep()). Call once, from
  * accel.c, only after a successful WHO_AM_I probe — never call this if the

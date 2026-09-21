@@ -201,3 +201,15 @@ The library has no `AT+CRSM` support and `sendCmd()` returns no response text. T
 processor now keeps the last `+CRSM: <sw1>,<sw2>[,<hex>]` line, readable through
 `WalterModem::simLastCRSM()`. The pager uses it to read `EF_GID1` and recognise an MVNO SIM so it
 can choose the right APN (`firmware/main/carrier.c`).
+
+## 1.9 Serving-cell MNC digit width (`src/WalterModem.cpp`, `src/WalterModem.h`)
+
+`docs/PROTOCOL.md` §13.2's `cell.mnc` is a **string**, 2 or 3 digits, specifically so a leading
+zero survives (`"05"` vs `"5"`). `getCellInformation()`'s `+SQNMONI` parser already converts the
+`Nc:` field straight to a `uint8_t` (`WalterModemCellInformation.nc`) via `strToUint8()`, which
+throws the original digit width away — `nc=5` is indistinguishable from a raw `"05"` and a raw
+`"5"`. Added `WalterModemCellInformation.ncDigits`, set from the same `value_len` the existing
+`Nc:` parse already computes (0 if the field was empty/longer than 3 digits, i.e. "unknown" —
+never guessed). `firmware/main/net.cpp`'s `net_get_cell_info()` uses it to zero-pad correctly, and
+falls back to an MCC-based NANP heuristic only when `ncDigits` is 0 (e.g. against an unpatched
+component) — see that function's own doc comment.

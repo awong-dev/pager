@@ -78,6 +78,12 @@ extern "C" {
 #define LOC_CELL_KEY_MAX 24 /* "lac:ci" opaque string, net.cpp's own field widths */
 #define LOC_MOTION_RING 16  /* motion-event timestamps kept for the 3-min span check */
 
+/* PROTOCOL.md §13.2 `cell` (this task): attach `cell` to a *cached* (not
+ * no_fix) /loc answer once the fix behind it is this old. This is a product
+ * decision on top of §13.2, which only requires `cell` on a no_fix answer;
+ * it is not itself a protocol minimum. */
+#define LOC_CELL_STALE_FIX_S 600u
+
 /* Where a cached/answered fix came from (PROTOCOL.md §10 `loc.src`: gnss/cell). */
 typedef enum {
     LOC_SRC_GNSS = 0,
@@ -149,6 +155,23 @@ typedef struct {
     char queued_ids[LOC_MAX_QUEUED][LOC_ID_MAX];
     int queued_count;
 } loc_policy_t;
+
+/* Serving-cell snapshot for the `cell` sub-map (PROTOCOL.md §13.2, key 49,
+ * this task) — a pure, host-testable value type so loc_build_cbor() below
+ * stays host-testable; the ESP-IDF-side mapping from net.h's
+ * net_cell_info_t (the modem-backed cache) lives in loc.c's own device
+ * section, never here. `mcc`/`mnc` are NUL-terminated ASCII digit strings,
+ * written to the wire verbatim (leading zeros kept) — loc_build_cbor() does
+ * not pad or trim them; the caller is responsible for their shape (net.cpp's
+ * net_get_cell_info() already produces the right widths). */
+typedef struct {
+    char mcc[4];     /* 3 digits + NUL */
+    char mnc[4];     /* 2-3 digits + NUL */
+    uint32_t tac;    /* 0..65535 */
+    uint32_t ci;     /* 0..268435455 (28 bits) */
+    bool have_rsrp;
+    int32_t rsrp;    /* dBm, -156..-30, when have_rsrp */
+} loc_cell_t;
 
 /* What the caller of loc_on_request() must do next. */
 typedef enum {
@@ -222,12 +245,16 @@ bool loc_trigger_cell_change(loc_policy_t *p, int64_t now_us, const char *cell_k
 bool loc_trigger_motion_event(loc_policy_t *p, int64_t now_us);
 
 /* Builds the unsigned `/loc` envelope body (PROTOCOL.md §13.2, keymap §10):
- * `v,id,ts,loc,req[,cached][,err]`, ascending key order, and — when
- * `signed_env` — an `n` field sized into the map header's pair count but
- * appended as the LAST body field so the caller can immediately follow with
- * auth_sign() (docs/DEVICE_PLAN.md §2.4's "no re-serialisation" rule; same
- * convention modes.c's build_status_cbor()/book.c's book_request() use —
- * the header count includes both `n` and the not-yet-written `sig` pair).
+ * `v,id,ts,loc,req[,cached][,err][,cell]`, ascending key order except `cell`
+ * (key 49) which — like `n`/`sig` — is written where PROTOCOL.md §13.2's own
+ * field table lists it (right before `n`), not where its numeric key would
+ * otherwise sort it; only `sig` (appended by the caller) has a HARD
+ * last-place rule (§3.1). When `signed_env` an `n` field is sized into the
+ * map header's pair count but appended as the LAST body field so the caller
+ * can immediately follow with auth_sign() (docs/DEVICE_PLAN.md §2.4's "no
+ * re-serialisation" rule; same convention modes.c's build_status_cbor()/
+ * book.c's book_request() use — the header count includes both `n` and the
+ * not-yet-written `sig` pair).
  *
  * Exactly one of (`have_fix` true) or (`err` non-NULL) must hold — §13.2:
  * `err` only when `loc` is null. `have_acc`/`src_cell` are the two optional
@@ -235,14 +262,20 @@ bool loc_trigger_motion_event(loc_policy_t *p, int64_t now_us);
  * false, matching the wire's own "absent = unknown/default" rule. `req`
  * NULL writes `req:null` (an unsolicited fix — never actually produced by
  * this task, since `loc_period_s` stays 0, but kept general). `cached` is
- * written only when true (default false, PROTOCOL.md §13.2).
+ * written only when true (default false, PROTOCOL.md §13.2). `cell` (this
+ * task): NULL omits the sub-map entirely (no reading available, or the
+ * caller decided not to attach one); non-NULL writes `mcc`/`mnc`/`tac`/`ci`
+ * always, `rsrp` only when `cell->have_rsrp`. A malformed `cell` (`mcc` not
+ * exactly 3 digits, or `mnc` not 2-3 digits) is silently treated as NULL —
+ * the same "absent, not a reason to drop the envelope" tolerance §13.2 asks
+ * of the *relay's* parser, applied defensively on the encode side too.
  *
  * Returns false (out_len untouched) on a buffer overflow or a
  * have_fix/err contract violation — never partial output. */
 bool loc_build_cbor(uint8_t *out, size_t cap, size_t *out_len, bool signed_env, uint64_t n,
                      const char *id, int64_t ts, bool have_fix, double lat, double lon,
                      bool have_acc, int32_t acc_m, int64_t fix_ts, bool src_cell, const char *req,
-                     bool cached, const char *err);
+                     bool cached, const char *err, const loc_cell_t *cell);
 
 /* Parses a `/down` envelope already reduced to `count` map pairs the same
  * way msg.c's/lock.c's own MK_ and CFGK_ readers do (`sig_pair_present` stands
@@ -312,6 +345,14 @@ void loc_init(void);
  * a thread entry, never shown/read-acked, works identically locked or
  * unlocked, active or asleep, and never changes mode or wakes the display. */
 bool loc_ingest_req_cbor(const uint8_t *buf, uint16_t len);
+
+/* True while a GNSS attempt (real loc_req or `gnsstest`) is in flight — the
+ * one fact coverage.c's duty-cycle policy needs from this module for its own
+ * radio-ownership rule (coverage.h's own module comment): the duty cycle
+ * must never take the radio while this is true. Cheap, lock-guarded read of
+ * the same flag loc_on_request()/loc_debug_run() already use for "one
+ * attempt at a time" (this task). */
+bool loc_attempt_in_progress(void);
 
 /* One step of the GNSS attempt state machine, called every modes_run() loop
  * iteration regardless of whether an attempt is in progress (a few RAM

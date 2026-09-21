@@ -67,6 +67,12 @@
 #include "accel.h"
 #include "loc.h"
 
+// Owner request, 2026-09-20: coverage.c's own duty-cycle policy (pure,
+// host-tested, see coverage.h's own module comment) — this file is the only
+// caller of net_radio_off()/net_radio_on()/net_session_down() on its behalf,
+// same "policy decides, modes.c/net.c act" split loc.c's route 2 established.
+#include "coverage.h"
+
 // v0.2 §6 (docs/V02_DESIGN.md, docs/PROTOCOL.md §3.6): sms.c's device-direct
 // SMS allow-list/audit/send-receive state machine, driven from this file's
 // own wake-and-drain loop (sms_service(), alongside loc_service()/
@@ -107,6 +113,13 @@ static const char *TAG = "modes";
 
 #define PAGER_WAKE_INTERVAL_SLEEP_MS 5000u  // T=5s sleep mode, PROTOCOL.md §8.2
 #define PAGER_WAKE_INTERVAL_ACTIVE_MS 2000u // T=2s active mode
+// Owner request, 2026-09-20: nothing to receive while unregistered (no MQTT
+// session at all) -- sleep mode's own wake interval can lengthen well past
+// the registered T=5s without costing any latency that matters, since there
+// is nothing to poll for. Still keeps the button (ext0) wake via net_sleep()
+// unchanged. UNVERIFIED exact current saving (see coverage.h's own estimate
+// block); 30s is a conservative middle ground, not a measured optimum.
+#define PAGER_WAKE_INTERVAL_UNREGISTERED_MS 30000u
 #define PAGER_POST_WAKE_YIELD_MS 50u        // >=30ms floor (L4); 50ms per §8.2's own margin
 #define PAGER_ACTIVE_IDLE_TIMEOUT_S (10 * 60) // 10 min, firmware/README.md
 #define PAGER_STATUS_HEARTBEAT_S 3600u         // §5.4(d)
@@ -292,6 +305,37 @@ void modes_set_ca_apply_suppress(bool suppress)
                  suppress ? "suppressing" : "releasing");
     }
     s_ca_apply_suppress = suppress;
+}
+
+// Owner request, 2026-09-20: coverage.c's duty-cycle policy state + the one
+// RAM flag that mirrors "the radio is deliberately off right now" for every
+// other module to check (modes_coverage_owns_radio(), modes.h). RAM-only,
+// same reasoning as s_loc_suppress/s_ca_apply_suppress above: this design
+// never deep sleeps, so nothing here needs to survive a reset — a reboot
+// mid-cycle just restarts the policy from GRACE_S, the same conservative
+// default coverage_policy_init() gives a cold boot anyway.
+static coverage_policy_t s_coverage;
+static volatile bool s_coverage_owns_radio = false;
+
+bool modes_coverage_owns_radio(void) { return s_coverage_owns_radio; }
+
+void modes_note_motion_reset(void) { coverage_on_motion(&s_coverage); }
+
+void modes_coverage_debug_print(void)
+{
+    bool registered = (net_unregistered_for_s() == 0);
+    uint32_t dark_s = net_unregistered_for_s();
+    uint32_t remaining_s = coverage_phase_remaining_s(&s_coverage, esp_timer_get_time());
+    const char *phase_str = (s_coverage.phase == COVERAGE_PHASE_OFF)
+                                 ? "OFF (radio deliberately off)"
+                             : (s_coverage.phase == COVERAGE_PHASE_SEARCH)
+                                 ? "SEARCH (radio full, hunting)"
+                                 : "NONE (registered, or still inside the grace window)";
+    printf("coverage: registered=%d dark_for=%us phase=%s off_step=%u/3 (%us) next_action_in=%us "
+           "owns_radio=%d last_dark=%us cycles=%u\n",
+           (int) registered, (unsigned) dark_s, phase_str, (unsigned) coverage_off_step_index(&s_coverage),
+           (unsigned) s_coverage.off_period_s, (unsigned) remaining_s, (int) s_coverage_owns_radio,
+           (unsigned) coverage_last_dark_s(&s_coverage), (unsigned) s_coverage.cycles);
 }
 
 // ---------------------------------------------------------------------------
@@ -812,6 +856,7 @@ typedef struct {
     char kind;       // 'M' new message, 'D' duplicate, 'X' malformed, 'C' connected, 'L' session lost
     int32_t a;       // 'M'/'D': seconds between the relay stamping it and the pager parsing it
     char id[12];
+    bool after_window; // task 3: noted during the post-close grace, not the window itself
 } st_event_t;
 
 #define ST_EVENTS_MAX 48
@@ -820,6 +865,18 @@ static volatile uint32_t s_st_n_events = 0;
 static volatile int64_t s_st_start_us = 0;
 static volatile int64_t s_st_until_us = 0;
 static volatile bool s_st_report_due = false;
+// Task 3 (how long must the pager stay awake after a wake to receive a held
+// URC): 0 = use the build's normal PAGER_POST_WAKE_YIELD_MS / active-or-sleep
+// interval; sleeptest <minutes> <yield_ms> <interval_ms> overrides both for
+// the window's duration.
+static uint32_t s_st_yield_ms = 0;
+static uint32_t s_st_interval_ms = 0;
+// 0 until the window closes; then window-close + ST_GRACE_S, so events that
+// arrive right after closure (the modem catching up once the pager stays
+// awake) are still recorded, and the deliberate restart waits for them and
+// their acks instead of cutting them off.
+static volatile int64_t s_st_grace_until_us = 0;
+#define ST_GRACE_S 25
 static uint32_t s_st_sleeps = 0, s_st_wake_timer = 0, s_st_wake_other = 0;
 // Where the awake time goes, per wake: cumulative microseconds per loop segment.
 #define ST_SEG_N 7
@@ -857,20 +914,34 @@ static bool sleeptest_active(void)
     return s_st_until_us != 0 && esp_timer_get_time() < s_st_until_us;
 }
 
+// True during the window itself AND during the ST_GRACE_S after it closes
+// (once armed by modes_run() -- see the !sleeptest_active() block there).
+// sleeptest_note() uses this instead of sleeptest_active() so a URC that
+// only arrives once the pager stays fully awake after closure is still
+// recorded, not silently dropped.
+static bool sleeptest_recording(void)
+{
+    if (s_st_grace_until_us != 0) {
+        return esp_timer_get_time() < s_st_grace_until_us;
+    }
+    return sleeptest_active();
+}
+
 static void sleeptest_note(char kind, int32_t a, const char *id)
 {
-    if (!sleeptest_active() || s_st_n_events >= ST_EVENTS_MAX) {
+    if (!sleeptest_recording() || s_st_n_events >= ST_EVENTS_MAX) {
         return;
     }
     st_event_t *e = &s_st_events[s_st_n_events];
     e->t_s = (int32_t) ((esp_timer_get_time() - s_st_start_us) / 1000000);
     e->kind = kind;
     e->a = a;
+    e->after_window = !sleeptest_active();
     snprintf(e->id, sizeof(e->id), "%s", id ? id : "");
     s_st_n_events = s_st_n_events + 1;
 }
 
-void modes_debug_sleeptest_start(uint32_t minutes)
+void modes_debug_sleeptest_start(uint32_t minutes, uint32_t yield_ms_override, uint32_t interval_ms_override)
 {
     s_st_n_events = 0;
     s_st_sleeps = s_st_wake_timer = s_st_wake_other = 0;
@@ -881,14 +952,20 @@ void modes_debug_sleeptest_start(uint32_t minutes)
     memset(s_st_seg_max_us, 0, sizeof(s_st_seg_max_us));
     s_st_start_us = esp_timer_get_time();
     s_st_until_us = s_st_start_us + (int64_t) minutes * 60 * 1000000;
+    s_st_grace_until_us = 0;
+    s_st_yield_ms = yield_ms_override;
+    s_st_interval_ms = interval_ms_override;
     s_st_report_due = true;
     // The AT trace is hundreds of lines a minute, and a USB console with no
     // host listening (the port dies in light sleep) can stall each write;
     // that would stretch the short wake window this test is measuring.
     esp_log_level_set("WalterModem", ESP_LOG_WARN);
-    ESP_LOGI(TAG, "sleeptest: light sleep ENABLED for %u min. The USB log goes quiet now. "
-                  "Send pages; a report prints when the window closes.",
-             (unsigned) minutes);
+    ESP_LOGI(TAG,
+             "sleeptest: light sleep ENABLED for %u min (yield=%u ms, interval=%u ms, "
+             "0=build default). The USB log goes quiet now. Send pages; a report prints "
+             "%u s after the window closes.",
+             (unsigned) minutes, (unsigned) yield_ms_override, (unsigned) interval_ms_override,
+             (unsigned) ST_GRACE_S);
 }
 
 // The report as text, so it can be kept in NVS: after a sleep window the USB
@@ -948,9 +1025,11 @@ void modes_debug_sleeptest_report(void)
     int64_t now = esp_timer_get_time();
     int64_t end = (now < s_st_until_us) ? now : s_st_until_us;
     int64_t span_us = end - s_st_start_us;
-    st_appendf(&n, "window %lld s%s, %u light sleeps, asleep %lld s (%d%%), wakes: %u timer / %u other\n",
+    st_appendf(&n, "window %lld s%s, yield=%u ms interval=%u ms (0=build default), %u light sleeps, "
+                    "asleep %lld s (%d%%), wakes: %u timer / %u other\n",
                (long long) (span_us / 1000000), (now < s_st_until_us) ? " (still open)" : "",
-               (unsigned) s_st_sleeps, (long long) (s_st_asleep_us / 1000000),
+               (unsigned) s_st_yield_ms, (unsigned) s_st_interval_ms, (unsigned) s_st_sleeps,
+               (long long) (s_st_asleep_us / 1000000),
                span_us > 0 ? (int) (s_st_asleep_us * 100 / span_us) : 0, (unsigned) s_st_wake_timer,
                (unsigned) s_st_wake_other);
     for (int i = 0; i < ST_SEG_N && s_st_sleeps > 0; i++) {
@@ -970,11 +1049,12 @@ void modes_debug_sleeptest_report(void)
         const st_event_t *e = &s_st_events[i];
         switch (e->kind) {
         case 'M':
-            st_appendf(&n, "  +%4d s  page %s received, %d s after the relay stamped it\n", (int) e->t_s,
-                       e->id, (int) e->a);
+            st_appendf(&n, "  +%4d s  page %s received, %d s after the relay stamped it%s\n", (int) e->t_s,
+                       e->id, (int) e->a, e->after_window ? "  (after the window closed)" : "");
             break;
         case 'D':
-            st_appendf(&n, "  +%4d s  duplicate of %s (a re-publish)\n", (int) e->t_s, e->id);
+            st_appendf(&n, "  +%4d s  duplicate of %s (a re-publish)%s\n", (int) e->t_s, e->id,
+                       e->after_window ? "  (after the window closed)" : "");
             break;
         case 'X':
             st_appendf(&n, "  +%4d s  malformed /down dropped\n", (int) e->t_s);
@@ -990,7 +1070,8 @@ void modes_debug_sleeptest_report(void)
         }
     }
     if (ne == 0) {
-        st_appendf(&n, "  no events: nothing was received during the window\n");
+        st_appendf(&n, "  no events: nothing was received during the window or the %u s after it closed\n",
+                   (unsigned) ST_GRACE_S);
     }
     ESP_LOGI(TAG, "sleeptest report:\n%s", s_st_text);
     if (now >= s_st_until_us) {
@@ -1500,6 +1581,11 @@ void modes_boot(void)
     loc_bind(&g_rtc.loc, &g_rtc.auth, rtc_lock, rtc_unlock, rtc_save, on_auth_epoch_wrap);
     loc_init();
 
+    // Owner request, 2026-09-20: coverage.c's duty-cycle policy starts
+    // inactive (registered, or not-yet-known-unregistered) — a cold boot is
+    // exactly the conservative default it already gives on a policy reset.
+    coverage_policy_init(&s_coverage);
+
     // v0.2 §6 (device-direct SMS): runs after net_init() (sms_init() calls
     // net_sms_config(), which needs the modem to exist) — a modem/SIM that
     // rejects SMS setup entirely (§0/§6's own flag: a data-only SIM may not
@@ -1531,6 +1617,20 @@ void modes_run(void)
         uint32_t interval_ms = (g_rtc.mode == (uint8_t) PAGER_MODE_ACTIVE)
                                     ? PAGER_WAKE_INTERVAL_ACTIVE_MS
                                     : PAGER_WAKE_INTERVAL_SLEEP_MS;
+        // Owner request, 2026-09-20: lengthen the sleep-mode wake interval
+        // while unregistered (net_unregistered_for_s(): a plain RAM read,
+        // not an AT round trip). Active mode is left alone -- a person is
+        // interacting with the pager right then, regardless of coverage.
+        if (g_rtc.mode != (uint8_t) PAGER_MODE_ACTIVE && net_unregistered_for_s() > 0) {
+            interval_ms = PAGER_WAKE_INTERVAL_UNREGISTERED_MS;
+        }
+#ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
+        // Task 3: sleeptest <minutes> <yield_ms> <interval_ms> overrides the
+        // wake interval for the window's duration only.
+        if (sleeptest_active() && s_st_interval_ms) {
+            interval_ms = s_st_interval_ms;
+        }
+#endif
 
         // F5: a non-zero MEMORY_FULL count is direct evidence the drain
         // cycle is falling behind. Shorten T defensively rather than let
@@ -1596,9 +1696,22 @@ void modes_run(void)
         // ... except inside a `sleeptest` window, where the real decision stands.
         if (!sleeptest_active()) {
             skip_sleep = true;
-            if (s_st_report_due && s_st_until_us != 0) {
-                s_st_report_due = false;
+            if (s_st_until_us != 0 && s_st_grace_until_us == 0) {
+                // The window just closed. Task 3: stay fully awake (no more
+                // light sleep - skip_sleep is already true above) for
+                // ST_GRACE_S instead of restarting immediately, so a URC the
+                // modem was still holding has time to arrive and be
+                // processed, and msg_pump() below (still called every loop,
+                // ~100ms cadence, pump_blocked keeps its pre-override value)
+                // has time to publish its ack before the restart that
+                // recovers the USB port. Turn the AT trace back on now,
+                // not just before the report, so this catch-up is visible
+                // live too.
+                s_st_grace_until_us = esp_timer_get_time() + (int64_t) ST_GRACE_S * 1000000;
                 esp_log_level_set("WalterModem", ESP_LOG_DEBUG);
+            }
+            if (s_st_report_due && s_st_grace_until_us != 0 && esp_timer_get_time() >= s_st_grace_until_us) {
+                s_st_report_due = false;
                 vTaskDelay(pdMS_TO_TICKS(4000)); // let the host re-enumerate the USB port
                 modes_debug_sleeptest_report();
                 // Proof of life that does not depend on USB: the relay logs this webhook.
@@ -1640,8 +1753,17 @@ void modes_run(void)
             // L4/F7: the event task ticks at 10ms + settles for 10ms; give
             // it >=30ms of awake time before looking at anything it may
             // have produced.
-            vTaskDelay(pdMS_TO_TICKS(PAGER_POST_WAKE_YIELD_MS));
-            assert(PAGER_POST_WAKE_YIELD_MS >= 30); // F7, debug builds only
+            uint32_t yield_ms = PAGER_POST_WAKE_YIELD_MS;
+#ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
+            // Task 3: sleeptest <minutes> <yield_ms> overrides this for the
+            // window's duration only, to find the minimum stay-awake time
+            // that lets a held URC actually reach the ESP32.
+            if (sleeptest_active() && s_st_yield_ms) {
+                yield_ms = s_st_yield_ms;
+            }
+#endif
+            vTaskDelay(pdMS_TO_TICKS(yield_ms));
+            assert(yield_ms >= 30); // F7, debug builds only
         } else if (btn_busy) {
             vTaskDelay(pdMS_TO_TICKS(PAGER_BTN_POLL_MS)); // button FSM debounce/timing granularity
         } else if (btn_stuck) {
@@ -1777,6 +1899,50 @@ void modes_run(void)
         net_mqtt_status_t st;
         net_get_mqtt_status(&st);
 
+        // Owner request, 2026-09-20: coverage.c's duty-cycle policy, one step
+        // per iteration (same "never more than one small step per call"
+        // discipline loc_service()/catrust_service() use). Deliberately
+        // called BEFORE net_take_registered_edge() below so coverage_step()
+        // observes the same "just registered" transition and can latch how
+        // long the pager was dark (coverage_last_dark_s()) before its own
+        // internal bookkeeping resets.
+        coverage_action_t cov_action =
+            coverage_step(&s_coverage, esp_timer_get_time(), net_unregistered_for_s() == 0,
+                          loc_attempt_in_progress());
+        switch (cov_action) {
+        case COVERAGE_ACTION_ENTER_OFF:
+            ESP_LOGI(TAG,
+                     "coverage: no network for %u s - radio off for %u s (step %u) to save "
+                     "battery (power effect: LTE radio off, no MQTT connect attempts until the "
+                     "next search window)",
+                     (unsigned) net_unregistered_for_s(), (unsigned) s_coverage.off_period_s,
+                     (unsigned) coverage_off_step_index(&s_coverage));
+            if (st.mqtt_connected) {
+                net_session_down();
+                net_get_mqtt_status(&st);
+            }
+            if (net_radio_off()) {
+                s_coverage_owns_radio = true;
+            } else {
+                ESP_LOGI(TAG, "coverage: net_radio_off() failed - staying in normal (registered-"
+                              "search) mode this cycle, will retry next wake");
+            }
+            break;
+        case COVERAGE_ACTION_ENTER_SEARCH:
+            ESP_LOGI(TAG,
+                     "coverage: radio back on, searching up to %u s before going dark again "
+                     "(power effect: LTE radio FULL, normal MQTT reconnect resumes)",
+                     (unsigned) COVERAGE_SEARCH_S);
+            s_coverage_owns_radio = false;
+            if (!net_radio_on()) {
+                ESP_LOGI(TAG, "coverage: net_radio_on() failed - will retry next wake");
+            }
+            break;
+        case COVERAGE_ACTION_NONE:
+        default:
+            break;
+        }
+
         if (net_take_registered_edge() && !s_loc_suppress && !s_ca_apply_suppress) {
             // Coverage is back. Retry at once instead of waiting out a backoff
             // that grew while there was no network. And a session that was
@@ -1785,7 +1951,8 @@ void modes_run(void)
             // keepalive expires, up to 45 minutes of silently missed pages
             // (Sequans forum thread 400). Tear it down and reconnect: one TLS
             // handshake (~5 kB) per coverage loss.
-            ESP_LOGI(TAG, "network coverage regained - reconnecting the MQTT session now");
+            ESP_LOGI(TAG, "network coverage regained - dark for %u s - reconnecting the MQTT session now",
+                     (unsigned) coverage_last_dark_s(&s_coverage));
             if (st.mqtt_connected) {
                 net_session_down();
                 net_get_mqtt_status(&st);
@@ -1828,7 +1995,18 @@ void modes_run(void)
             sleeptest_note('L', st.last_rc, "");
         }
 #endif
-        if (st.disconnect_edge) {
+        if (s_coverage_owns_radio) {
+            // Owner request, 2026-09-20: the duty cycle deliberately owns the
+            // radio right now (NO_RF) — no MQTT connect attempts at all, not
+            // even logging one per retry, and no backoff bookkeeping. Just
+            // silently absorb whatever async DISCONNECTED our own
+            // net_session_down() above produced (net_ack_disconnect_edge()
+            // is otherwise only called from inside handle_mqtt_loss(), which
+            // this branch deliberately never reaches).
+            if (st.disconnect_edge) {
+                net_ack_disconnect_edge();
+            }
+        } else if (st.disconnect_edge) {
             handle_mqtt_loss(&st, &backoff_index, &next_session_retry_us);
         } else if (!st.mqtt_connected && s_connect_attempt_us != 0 &&
                    (esp_timer_get_time() - s_connect_attempt_us) >= PAGER_CONNECT_WATCHDOG_US) {
@@ -1904,8 +2082,13 @@ void modes_run(void)
         // reconnect trial (see modes_set_loc_suppress()'s/
         // modes_set_ca_apply_suppress()'s own doc comments) — net_check()
         // would read NO_RF, or a mid-trial disconnected state, as "modem
-        // unresponsive" and force a real, unwanted modem reset.
-        if (!s_loc_suppress && !s_ca_apply_suppress && g_rtc.mode == (uint8_t) PAGER_MODE_SLEEP &&
+        // unresponsive" and force a real, unwanted modem reset. Same
+        // reasoning for s_coverage_owns_radio (owner request, 2026-09-20):
+        // NO_RF is deliberate here too, and the 30-minute "no network" reset
+        // this health check owns must not fire while the duty cycle is the
+        // one keeping it dark on purpose.
+        if (!s_loc_suppress && !s_ca_apply_suppress && !s_coverage_owns_radio &&
+            g_rtc.mode == (uint8_t) PAGER_MODE_SLEEP &&
             (wake_cycle_count % PAGER_CHECKCOMM_EVERY_N_WAKES) == 0) {
             run_modem_health_check();
         }

@@ -232,17 +232,45 @@ bool loc_trigger_motion_event(loc_policy_t *p, int64_t now_us)
 #define LK_CACHED 10
 #define LK_ERR 11
 #define LK_N 12
+#define LK_CELL 49 // this task, §13.2 -- see loc.h's own note on why this is written out of
+                   // ascending-key order (right before `n`, matching §13.2's field table)
 // `loc` sub-map (docs/PROTOCOL.md §10 "Sub-map keys").
 #define LOCSUB_LAT 0
 #define LOCSUB_LON 1
 #define LOCSUB_ACC 2
 #define LOCSUB_FIXTS 3
 #define LOCSUB_SRC 4
+// `cell` sub-map (docs/PROTOCOL.md §10 "Sub-map keys", this task).
+#define CELLSUB_MCC 0
+#define CELLSUB_MNC 1
+#define CELLSUB_TAC 2
+#define CELLSUB_CI 3
+#define CELLSUB_RSRP 4
+
+// `v` MUST be non-negative for cbor_w_uint(); rsrp is not -- same tiny local
+// wrapper modes.c's build_status_cbor() defines for the same reason (rssi).
+static bool cbor_w_int(cbor_w_t *w, uint32_t key, int64_t v)
+{
+    return (v < 0) ? cbor_w_nint(w, key, v) : cbor_w_uint(w, key, (uint64_t) v);
+}
+
+// NULL if `cell` is NULL or malformed (mcc not exactly 3 digits, mnc not
+// 2-3 digits) -- loc_build_cbor()'s own doc comment explains why this is a
+// silent downgrade to "no cell" rather than a build failure.
+static bool cell_shape_ok(const loc_cell_t *cell)
+{
+    if (!cell) {
+        return false;
+    }
+    size_t mcc_len = strlen(cell->mcc), mnc_len = strlen(cell->mnc);
+    return mcc_len == 3 && (mnc_len == 2 || mnc_len == 3) && cell->tac <= 65535u &&
+           cell->ci <= 268435455u;
+}
 
 bool loc_build_cbor(uint8_t *out, size_t cap, size_t *out_len, bool signed_env, uint64_t n,
                      const char *id, int64_t ts, bool have_fix, double lat, double lon,
                      bool have_acc, int32_t acc_m, int64_t fix_ts, bool src_cell, const char *req,
-                     bool cached, const char *err)
+                     bool cached, const char *err, const loc_cell_t *cell)
 {
     if (!out || !out_len || !id) {
         return false;
@@ -251,6 +279,7 @@ bool loc_build_cbor(uint8_t *out, size_t cap, size_t *out_len, bool signed_env, 
         // §13.2: `err` present iff `loc` is null — these two must disagree.
         return false;
     }
+    bool have_cell = cell_shape_ok(cell);
 
     uint32_t nfields = 3; // v, id, ts
     nfields += 1;         // loc (map or null)
@@ -260,6 +289,9 @@ bool loc_build_cbor(uint8_t *out, size_t cap, size_t *out_len, bool signed_env, 
     }
     if (!have_fix) {
         nfields += 1; // err
+    }
+    if (have_cell) {
+        nfields += 1; // cell (this task)
     }
     if (signed_env) {
         nfields += 2; // n (written below) + sig (appended by the caller's auth_sign())
@@ -305,6 +337,16 @@ bool loc_build_cbor(uint8_t *out, size_t cap, size_t *out_len, bool signed_env, 
     }
     if (!have_fix) {
         cbor_w_tstr(&w, LK_ERR, err, strlen(err));
+    }
+    if (have_cell) {
+        cbor_w_map_key(&w, LK_CELL, cell->have_rsrp ? 5 : 4);
+        cbor_w_tstr(&w, CELLSUB_MCC, cell->mcc, strlen(cell->mcc));
+        cbor_w_tstr(&w, CELLSUB_MNC, cell->mnc, strlen(cell->mnc));
+        cbor_w_uint(&w, CELLSUB_TAC, cell->tac);
+        cbor_w_uint(&w, CELLSUB_CI, cell->ci);
+        if (cell->have_rsrp) {
+            cbor_w_int(&w, CELLSUB_RSRP, cell->rsrp);
+        }
     }
     if (signed_env) {
         cbor_w_uint(&w, LK_N, n);
@@ -435,6 +477,17 @@ static loc_policy_t s_policy;
 uint32_t loc_get_min_s(void) { return LOC_STATUS_MIN_S; }
 uint32_t loc_get_period_s(void) { return LOC_STATUS_PERIOD_S; }
 
+// coverage.c's own radio-ownership rule (this task, coverage.h's module
+// comment): read every modes_run() iteration, so this must stay a cheap
+// lock-guarded flag read, never an AT round trip.
+bool loc_attempt_in_progress(void)
+{
+    s_lock();
+    bool b = s_policy.attempt_in_progress;
+    s_unlock();
+    return b;
+}
+
 uint32_t loc_get_backoff_remaining_s(void)
 {
     s_lock();
@@ -458,12 +511,58 @@ static void begin_attempt(uint32_t budget_s, bool extendable);
 // /loc publish (docs/PROTOCOL.md §13.1/§13.2, §14 signing).
 // ---------------------------------------------------------------------------
 
+// Converts net.h's modem-backed cache (net_cell_info_t) into loc.h's pure
+// loc_cell_t, this module's own boundary between ESP-IDF and host-testable
+// code (same split loc_build_cbor()/loc.h document). Returns false (out
+// untouched) if the cell has never been read successfully this power
+// session -- callers must then omit `cell` (net_get_cell_info()'s own doc
+// comment, PROTOCOL.md §13.2: "if the cell cannot be read, send the answer
+// without it").
+static bool get_cell_snapshot(loc_cell_t *out)
+{
+    net_cell_info_t nci;
+    if (!net_get_cell_info(&nci)) {
+        return false;
+    }
+    strncpy(out->mcc, nci.mcc, sizeof(out->mcc) - 1);
+    out->mcc[sizeof(out->mcc) - 1] = '\0';
+    strncpy(out->mnc, nci.mnc, sizeof(out->mnc) - 1);
+    out->mnc[sizeof(out->mnc) - 1] = '\0';
+    out->tac = nci.tac;
+    out->ci = nci.ci;
+    out->have_rsrp = nci.have_rsrp;
+    out->rsrp = nci.rsrp;
+    return true;
+}
+
+// This task's own product decision (LOC_CELL_STALE_FIX_S's own comment,
+// loc.h): attach `cell` to a *cached* /loc answer once the fix behind it is
+// old enough that it may no longer reflect where the pager actually is.
+// "Don't know" (no wall clock yet, or the fix carries no timestamp) is
+// deliberately NOT treated as stale -- never guess into extra AT traffic.
+static bool cell_fix_is_stale(int64_t fix_ts_epoch_s)
+{
+    if (fix_ts_epoch_s <= 0) {
+        return false;
+    }
+    int64_t now_epoch = 0;
+    if (!net_get_clock(&now_epoch)) {
+        return false;
+    }
+    return (now_epoch - fix_ts_epoch_s) > (int64_t) LOC_CELL_STALE_FIX_S;
+}
+
 // req_id may be NULL for an unsolicited fix (never actually produced by this
 // task — loc_period_s stays 0 — kept general per loc_build_cbor()'s own
-// comment). QoS 1 iff req_id is non-NULL, PROTOCOL.md §13.1.
+// comment). QoS 1 iff req_id is non-NULL, PROTOCOL.md §13.1. `cell` (this
+// task, §13.2): NULL to omit the sub-map, otherwise a snapshot the caller
+// already decided belongs on this answer (loc_ingest_req_cbor()/
+// finish_attempt() below own that decision; this function never queries
+// net_get_cell_info() itself, so a shared queue-drain fetches the cell at
+// most once per decision instead of once per queued requester).
 static void publish_loc_answer(const char *req_id, bool success, double lat, double lon,
                                 bool have_acc, int32_t acc_m, int64_t fix_ts, uint8_t src,
-                                bool cached)
+                                bool cached, const loc_cell_t *cell)
 {
     char id[LOC_ID_MAX];
     snprintf(id, sizeof(id), "l_%08x", (unsigned) esp_random());
@@ -487,7 +586,7 @@ static void publish_loc_answer(const char *req_id, bool success, double lat, dou
     size_t len;
     bool src_cell = (src == LOC_SRC_CELL);
     if (!loc_build_cbor(buf, sizeof(buf), &len, signed_env, n, id, ts, success, lat, lon, have_acc,
-                        acc_m, fix_ts, src_cell, req_id, cached, success ? NULL : "no_fix")) {
+                        acc_m, fix_ts, src_cell, req_id, cached, success ? NULL : "no_fix", cell)) {
         ESP_LOGI(TAG, "/loc CBOR build failed for req=%s", req_id ? req_id : "(none)");
         return;
     }
@@ -507,24 +606,28 @@ static void publish_loc_answer(const char *req_id, bool success, double lat, dou
 
     uint8_t qos = (req_id != NULL) ? 1 : 0; // §13.1
     if (net_publish_raw(topic, buf, (uint16_t) len, qos)) {
-        ESP_LOGI(TAG, "/loc %s published: req=%s %s cached=%d", id, req_id ? req_id : "(none)",
-                 success ? "fix" : "no_fix", (int) cached);
+        ESP_LOGI(TAG, "/loc %s published: req=%s %s cached=%d cell=%d", id,
+                 req_id ? req_id : "(none)", success ? "fix" : "no_fix", (int) cached,
+                 (int) (cell != NULL));
     } else {
         ESP_LOGI(TAG, "/loc publish failed for req=%s", req_id ? req_id : "(none)");
     }
 }
 
 // Drains every queued request id and gives each its own /loc, all carrying
-// the one shared result just obtained (PROTOCOL.md §13.3 item 3).
+// the one shared result just obtained (PROTOCOL.md §13.3 item 3) and the one
+// shared `cell` snapshot (this task) — fetched at most once by the caller,
+// never re-fetched per queued requester here.
 static void drain_queue_and_publish(bool success, double lat, double lon, bool have_acc,
-                                     int32_t acc_m, int64_t fix_ts, uint8_t src)
+                                     int32_t acc_m, int64_t fix_ts, uint8_t src,
+                                     const loc_cell_t *cell)
 {
     char id[LOC_ID_MAX];
     s_lock();
     bool have = loc_take_queued_id(&s_policy, id, sizeof(id));
     s_unlock();
     while (have) {
-        publish_loc_answer(id, success, lat, lon, have_acc, acc_m, fix_ts, src, false);
+        publish_loc_answer(id, success, lat, lon, have_acc, acc_m, fix_ts, src, false, cell);
         s_lock();
         have = loc_take_queued_id(&s_policy, id, sizeof(id));
         s_unlock();
@@ -541,6 +644,28 @@ bool loc_ingest_req_cbor(const uint8_t *buf, uint16_t len)
     char id[LOC_ID_MAX] = "";
     if (!loc_parse_req_cbor(buf, len, sig_present, id, sizeof(id))) {
         return false; // not loc_req (or malformed) — caller falls through
+    }
+
+    if (modes_coverage_owns_radio()) {
+        // Radio-ownership rule (coverage.h's own module comment, this task):
+        // a location attempt must never start while the coverage duty cycle
+        // owns the radio. In practice this path is close to unreachable —
+        // MQTT (and therefore this loc_req) cannot even arrive while the
+        // radio is deliberately NO_RF — but answer defensively from cache
+        // rather than assume that can never change, and without touching
+        // s_policy's attempt bookkeeping at all.
+        s_lock();
+        double lat = 0, lon = 0;
+        bool have_acc = false;
+        int32_t acc_m = 0;
+        int64_t fix_ts = 0;
+        uint8_t src = LOC_SRC_GNSS;
+        bool have_cached = loc_get_cached(&s_policy, &lat, &lon, &have_acc, &acc_m, &fix_ts, &src);
+        s_unlock();
+        ESP_LOGI(TAG, "loc_req %s answered from %s -- coverage duty cycle owns the radio right now",
+                 id, have_cached ? "cache" : "no_fix");
+        publish_loc_answer(id, have_cached, lat, lon, have_acc, acc_m, fix_ts, src, have_cached, NULL);
+        return true;
     }
 
     int batt_mv = modes_get_batt_mv();
@@ -562,11 +687,20 @@ bool loc_ingest_req_cbor(const uint8_t *buf, uint16_t len)
     case LOC_ANSWER_NONE:
         ESP_LOGI(TAG, "loc_req %s queued behind an in-flight attempt", id);
         break;
-    case LOC_ANSWER_CACHED:
-        ESP_LOGI(TAG, "loc_req %s answered from %s (batt=%dmV) without powering GNSS", id,
-                 have_cached ? "cache" : "no_fix", batt_mv);
-        publish_loc_answer(id, have_cached, lat, lon, have_acc, acc_m, fix_ts, src, have_cached);
+    case LOC_ANSWER_CACHED: {
+        // §13.2/this task: cell rides on every no-fix answer, and on a
+        // cached-fix answer once that fix is stale (LOC_CELL_STALE_FIX_S) --
+        // never on a fresh cached fix, so the common "just asked, backoff
+        // still fresh" case costs no extra AT traffic at all.
+        bool want_cell = !have_cached || cell_fix_is_stale(fix_ts);
+        loc_cell_t cellbuf;
+        const loc_cell_t *cellp = (want_cell && get_cell_snapshot(&cellbuf)) ? &cellbuf : NULL;
+        ESP_LOGI(TAG, "loc_req %s answered from %s (batt=%dmV) without powering GNSS%s", id,
+                 have_cached ? "cache" : "no_fix", batt_mv, cellp ? ", cell attached" : "");
+        publish_loc_answer(id, have_cached, lat, lon, have_acc, acc_m, fix_ts, src, have_cached,
+                            cellp);
         break;
+    }
     case LOC_ANSWER_START_ATTEMPT:
         // loc_on_request() already marked s_policy.attempt_in_progress and
         // queued `id`; begin_attempt() below only arms the GNSS
@@ -608,6 +742,12 @@ void loc_on_motion_event(void)
     s_unlock();
     if (reset) {
         ESP_LOGI(TAG, "sustained motion: backoff reset, 10min floor since last attempt applies");
+        // Owner request, 2026-09-20: the same sustained-motion trigger also
+        // resets coverage.c's off-period backoff to its first step (moving
+        // is when coverage changes) -- modes.c owns the coverage policy
+        // instance, this is a one-line cross-module hook, same pattern
+        // modes_set_loc_suppress() already establishes the other direction.
+        modes_note_motion_reset();
     }
 }
 
@@ -753,7 +893,13 @@ static void finish_attempt(bool success)
     s_unlock();
 
     if (!s_debug_mode) {
-        drain_queue_and_publish(success, lat, lon, have_acc, acc_m, fix_ts, LOC_SRC_GNSS);
+        // §13.2/this task: a GNSS attempt that ended in no_fix attaches the
+        // serving cell (fetched at most once here, shared by every drained
+        // requester); a real fix needs none (only a *cached*, stale fix
+        // does, handled in loc_ingest_req_cbor()'s own branch above).
+        loc_cell_t cellbuf;
+        const loc_cell_t *cellp = (!success && get_cell_snapshot(&cellbuf)) ? &cellbuf : NULL;
+        drain_queue_and_publish(success, lat, lon, have_acc, acc_m, fix_ts, LOC_SRC_GNSS, cellp);
     }
     s_phase = LOC_PH_IDLE; // same-task write; the only cross-task readers use attempt_in_progress
 }
@@ -938,6 +1084,17 @@ bool loc_debug_run(uint32_t seconds)
 {
     if (seconds == 0 || seconds > 120) {
         ESP_LOGI(TAG, "gnsstest: seconds must be 1..120");
+        return false;
+    }
+
+    if (modes_coverage_owns_radio()) {
+        // Radio-ownership rule (coverage.h's own module comment, this task):
+        // the debug console is the one realistic way to race the duty
+        // cycle's own radio-off window (a real loc_req cannot arrive without
+        // MQTT, which is down for the whole window) -- refuse outright
+        // rather than fight it for the radio.
+        ESP_LOGI(TAG, "gnsstest: coverage duty cycle owns the radio right now (deliberately off) "
+                      "-- refusing to start an attempt");
         return false;
     }
 

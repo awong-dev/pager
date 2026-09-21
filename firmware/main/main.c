@@ -141,8 +141,12 @@ static int cmd_mqtttest(int argc, char **argv)
 
 #ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
 // Debug build only: raw AT passthrough.
-// Debug build only: `sleeptest <minutes>` opens a window of real light sleep
-// (modes.c); `sleeptest` alone prints the report again.
+// Debug build only: `sleeptest <minutes> [yield_ms] [interval_ms]` opens a
+// window of real light sleep (modes.c); `sleeptest` alone prints the report
+// again. yield_ms overrides the post-wake yield (default
+// PAGER_POST_WAKE_YIELD_MS, 50); interval_ms overrides the wake interval
+// (default: 2000/5000 by mode) -- task 3's "how long must the pager stay
+// awake after a wake to receive a held URC" question.
 static int cmd_sleeptest(int argc, char **argv)
 {
     if (argc == 1) {
@@ -151,10 +155,26 @@ static int cmd_sleeptest(int argc, char **argv)
     }
     long m = strtol(argv[1], NULL, 10);
     if (m < 1 || m > 120) {
-        printf("usage: sleeptest [<minutes 1..120>]\n");
+        printf("usage: sleeptest [<minutes 1..120> [yield_ms 30..10000] [interval_ms 200..60000]]\n");
         return 1;
     }
-    modes_debug_sleeptest_start((uint32_t) m);
+    long yield_ms = 0;    // 0 = use PAGER_POST_WAKE_YIELD_MS
+    long interval_ms = 0; // 0 = use the normal active/sleep interval
+    if (argc >= 3) {
+        yield_ms = strtol(argv[2], NULL, 10);
+        if (yield_ms < 30 || yield_ms > 10000) {
+            printf("usage: sleeptest <minutes> [yield_ms 30..10000] [interval_ms 200..60000]\n");
+            return 1;
+        }
+    }
+    if (argc >= 4) {
+        interval_ms = strtol(argv[3], NULL, 10);
+        if (interval_ms < 200 || interval_ms > 60000) {
+            printf("usage: sleeptest <minutes> [yield_ms] [interval_ms 200..60000]\n");
+            return 1;
+        }
+    }
+    modes_debug_sleeptest_start((uint32_t) m, (uint32_t) yield_ms, (uint32_t) interval_ms);
     return 0;
 }
 
@@ -353,6 +373,16 @@ static int cmd_gnsstest(int argc, char **argv)
            ok ? "FIX" : "no fix / refused / already running - see log");
     return ok ? 0 : 1;
 }
+// Owner request, 2026-09-20: `coverage` -- prints the coverage duty-cycle
+// policy's current state. Plain reads only, no modem/sleep-state effect.
+static int cmd_coverage(int argc, char **argv)
+{
+    (void) argc;
+    (void) argv;
+    modes_coverage_debug_print();
+    return 0;
+}
+
 // v0.2 §4.4: `cafetch <url> <sha256hex>` -- runs the CA fetch only (no
 // apply), via catrust_debug_cafetch()/cafetch_run_blocking(). Blocks this
 // console task (never modes_run()'s -- see catrust_debug_cafetch()'s own
@@ -429,7 +459,9 @@ static void start_normal_console(void)
 
     const esp_console_cmd_t sleeptest_cmd = {
         .command = "sleeptest",
-        .help = "sleeptest [<minutes>] -- really light-sleep for a while, then report what arrived",
+        .help = "sleeptest [<minutes> [yield_ms] [interval_ms]] -- really light-sleep for a "
+                 "while (optionally overriding the post-wake yield and the wake interval), "
+                 "then report what arrived",
         .hint = NULL,
         .func = &cmd_sleeptest,
     };
@@ -452,6 +484,15 @@ static void start_normal_console(void)
         .func = &cmd_gnsstest,
     };
     ESP_ERROR_CHECK(esp_console_cmd_register(&gnsstest_cmd));
+
+    const esp_console_cmd_t coverage_cmd = {
+        .command = "coverage",
+        .help = "coverage -- print the coverage duty-cycle policy's state (registered/dark-for/"
+                "phase/step/next-action)",
+        .hint = NULL,
+        .func = &cmd_coverage,
+    };
+    ESP_ERROR_CHECK(esp_console_cmd_register(&coverage_cmd));
 
     const esp_console_cmd_t cafetch_cmd = {
         .command = "cafetch",

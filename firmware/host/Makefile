@@ -66,7 +66,7 @@ endif
 MAIN_SRC := ../main
 BUILD := build
 
-TESTS := test_cbor test_auth test_setup test_input test_msg test_lock test_loc test_cafetch test_catrust test_cfg test_sms test_carrier test_chat_layout
+TESTS := test_cbor test_auth test_setup test_input test_msg test_lock test_loc test_cafetch test_catrust test_cfg test_sms test_carrier test_chat_layout test_coverage
 TEST_BINS := $(TESTS:%=$(BUILD)/%)
 
 # ASSETS: tools/mkassets.py's default output location (docs/DEVICE_TASKS.md
@@ -271,4 +271,15 @@ $(BUILD)/test_carrier.o: test_carrier.c $(MAIN_SRC)/carrier.h | $(BUILD)
 	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ test_carrier.c
 
 $(BUILD)/test_carrier: $(BUILD)/carrier.o $(BUILD)/test_carrier.o
+	$(CC) $(CFLAGS) -o $@ $^
+
+# test_coverage: coverage.c (whole file -- no ESP-IDF dependency at all, see
+# coverage.h's own module comment) + test_coverage.c.
+$(BUILD)/coverage.o: $(MAIN_SRC)/coverage.c $(MAIN_SRC)/coverage.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $(MAIN_SRC)/coverage.c
+
+$(BUILD)/test_coverage.o: test_coverage.c $(MAIN_SRC)/coverage.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ test_coverage.c
+
+$(BUILD)/test_coverage: $(BUILD)/coverage.o $(BUILD)/test_coverage.o
 	$(CC) $(CFLAGS) -o $@ $^

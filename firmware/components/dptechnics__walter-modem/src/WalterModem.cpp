@@ -2576,6 +2576,11 @@ void WalterModem::_processModemRSP(WalterModemCmd* cmd, WalterModemBuffer* buff)
             strToUint16(value, value_len, &(cmd->rsp->data.cellInformation.cc));
           } else if(strncmp("Nc", key, key_len) == 0) {
             strToUint8(value, value_len, &(cmd->rsp->data.cellInformation.nc));
+            /* PAGER PATCH (PATCHES.md 1.9): remember the raw digit count so a
+             * caller can tell "05" (2 digits) from "5" (1 digit) after
+             * strToUint8() has already thrown that away. */
+            cmd->rsp->data.cellInformation.ncDigits =
+                (value_len > 0 && value_len <= 3) ? (uint8_t) value_len : 0;
           } else if(strncmp("RSRP", key, key_len) == 0) {
             strToFloat(value, value_len, &(cmd->rsp->data.cellInformation.rsrp));
           } else if(strncmp("CINR", key, key_len) == 0) {

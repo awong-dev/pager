@@ -59,8 +59,13 @@ uint32_t modes_get_modem_resets(void);
 bool modes_publish_status_now(void);
 
 /* Debug build only (PAGER_DEBUG_NO_LIGHT_SLEEP): open a timed window in which
- * the pager really light-sleeps, and print what was received during it. */
-void modes_debug_sleeptest_start(uint32_t minutes);
+ * the pager really light-sleeps, and print what was received during it.
+ * yield_ms_override/interval_ms_override: 0 = use the normal
+ * PAGER_POST_WAKE_YIELD_MS / active-or-sleep interval; otherwise override
+ * both for the duration of the window (main.c's `sleeptest <minutes>
+ * [yield_ms] [interval_ms]`, task 3's "how long must the pager stay awake to
+ * receive a held URC" question). */
+void modes_debug_sleeptest_start(uint32_t minutes, uint32_t yield_ms_override, uint32_t interval_ms_override);
 void modes_debug_sleeptest_report(void);
 void modes_debug_sleeptest_print_saved(void);
 
@@ -89,6 +94,32 @@ void modes_set_loc_suppress(bool suppress);
  * trial connect), false once catrust_service() has committed or rolled the
  * trial back. No modem/sleep-state effect of its own: a single RAM flag. */
 void modes_set_ca_apply_suppress(bool suppress);
+
+/* Owner request, 2026-09-20 (coverage.c's duty-cycle policy): true whenever
+ * the pager has deliberately switched the radio off to save battery while
+ * out of coverage (coverage_owns_radio(), driven from modes_run()'s own
+ * loop). loc.c checks this before starting ANY GNSS attempt, real or
+ * `gnsstest` — coverage.h's own module comment states the ownership rule
+ * both directions: this policy never takes the radio while a location
+ * attempt is in flight (loc_attempt_in_progress()), and a location attempt
+ * never starts while this policy owns it. Read-only; modes.c is the only
+ * writer (via coverage_step()'s own return value, never set directly). */
+bool modes_coverage_owns_radio(void);
+
+/* Owner request, 2026-09-20: loc.c's own sustained-motion trigger
+ * (loc_on_motion_event(), fired by its accelerometer classifier) also resets
+ * coverage.c's off-period backoff to its first step — moving is when
+ * coverage changes. loc.c is the only caller, exactly once per
+ * motion-triggered backoff reset (never once per raw accelerometer
+ * interrupt). No modem/sleep-state effect of its own: RAM bookkeeping only. */
+void modes_note_motion_reset(void);
+
+/* Debug console (`coverage`, main.c, PAGER_DEBUG_NO_LIGHT_SLEEP builds
+ * only): prints the duty-cycle policy's current state -- registered?, dark
+ * for Ns, current phase, off-period step/duration, seconds until the next
+ * action, and whether it currently owns the radio. Plain reads of
+ * already-resident state, no AT round trip, no modem/sleep-state effect. */
+void modes_coverage_debug_print(void);
 
 /* v0.2 §6 (device-direct SMS, sms.c): alerts exactly like an incoming page
  * (docs/V02_DESIGN.md §6) for an inbound SMS from an allow-listed sender

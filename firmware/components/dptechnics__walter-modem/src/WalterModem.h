@@ -2336,6 +2336,15 @@ typedef struct {
   uint8_t nc;
 
   /**
+   * @brief PAGER PATCH (PATCHES.md 1.9): number of ASCII digits the "Nc:"
+   * field occupied in the raw +SQNMONI response (2 or 3), 0 if unknown/not
+   * parsed. `nc` alone cannot tell a 2-digit MNC with a leading zero (e.g.
+   * "05") from a 1-digit one ("5") once it is an integer -- this preserves
+   * that width so a caller can zero-pad correctly instead of guessing.
+   */
+  uint8_t ncDigits;
+
+  /**
    * @brief Reference Signal Received Power.
    */
   float rsrp;

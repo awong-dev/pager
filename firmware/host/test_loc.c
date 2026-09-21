@@ -338,7 +338,7 @@ static void test_loc_build_cbor_vs_relay(void)
     bool ok = loc_build_cbor(got, sizeof(got), &got_len, /*signed_env=*/false, 0, "l_3c9a11f0",
                              1757700000, /*have_fix=*/true, 37.774929, -122.419416,
                              /*have_acc=*/true, 14, 1757699991, /*src_cell=*/false, "m_7f3a2b10",
-                             /*cached=*/false, NULL);
+                             /*cached=*/false, NULL, /*cell=*/NULL);
     CHECK(ok, "loc_build_cbor() must succeed for the fix vector");
     hex_decode(FIX_HEX, want, sizeof(want), &want_len);
     CHECK(got_len == want_len, "fix vector length mismatch: got %zu want %zu", got_len, want_len);
@@ -348,7 +348,7 @@ static void test_loc_build_cbor_vs_relay(void)
     /* no_fix: loc:null, err:"no_fix", req set. */
     ok = loc_build_cbor(got, sizeof(got), &got_len, /*signed_env=*/false, 0, "l_deadbeef", 1757700000,
                         /*have_fix=*/false, 0, 0, /*have_acc=*/false, 0, 0, /*src_cell=*/false,
-                        "m_7f3a2b10", /*cached=*/false, "no_fix");
+                        "m_7f3a2b10", /*cached=*/false, "no_fix", /*cell=*/NULL);
     CHECK(ok, "loc_build_cbor() must succeed for the no_fix vector");
     hex_decode(NOFIX_HEX, want, sizeof(want), &want_len);
     CHECK(got_len == want_len, "no_fix vector length mismatch: got %zu want %zu", got_len, want_len);
@@ -358,11 +358,90 @@ static void test_loc_build_cbor_vs_relay(void)
     /* Contract check: have_fix and a non-NULL err must never both hold (or
      * both be absent). */
     CHECK(!loc_build_cbor(got, sizeof(got), &got_len, false, 0, "l_bad", 0, true, 0, 0, false, 0, 0,
-                          false, NULL, false, "no_fix"),
+                          false, NULL, false, "no_fix", NULL),
           "have_fix=true with a non-NULL err must be rejected");
     CHECK(!loc_build_cbor(got, sizeof(got), &got_len, false, 0, "l_bad", 0, false, 0, 0, false, 0, 0,
-                          false, NULL, false, NULL),
+                          false, NULL, false, NULL, NULL),
           "have_fix=false with no err must be rejected");
+}
+
+/* ---------------------------------------------------------------------
+ * `cell` sub-map (PROTOCOL.md §13.2 key 49, this task), byte-compared
+ * against relay/app/wirecbor.py the same way test_loc_build_cbor_vs_relay()
+ * above does.
+ *
+ * FIX_NOFIX_CELL_HEX is byte-identical to the vector the relay pins in
+ * relay/tests/test_devauth.py (test_loc_envelope_with_cell_example_cbor_hex):
+ * key 49 is the two bytes 0x18 0x31, directly after the text "no_fix".
+ * Generated from the real relay encoder with:
+ *   cd /Users/albert/src/pager && relay/.venv/bin/python - <<'EOF'
+ *   import sys; sys.path.insert(0, "relay")
+ *   from app import wirecbor
+ *   nofix_cell = {"v":1,"id":"l_3c9a11f0","ts":1757700000,"loc":None,
+ *                 "req":"m_7f3a2b10","err":"no_fix",
+ *                 "cell":{"mcc":"310","mnc":"410","tac":12345,"ci":87654321,"rsrp":-95}}
+ *   print(wirecbor.encode(nofix_cell).hex())
+ *   nofix_cell_pad = {"v":1,"id":"l_3c9a11f0","ts":1757700000,"loc":None,
+ *                      "req":None,"err":"no_fix",
+ *                      "cell":{"mcc":"234","mnc":"07","tac":1,"ci":1}}
+ *   print(wirecbor.encode(nofix_cell_pad).hex())
+ *   EOF
+ * (run 2026-09-21.)
+ * --------------------------------------------------------------------- */
+static void test_loc_build_cbor_cell_vs_relay(void)
+{
+    static const char *NOFIX_CELL_HEX =
+        "a70001016a6c5f3363396131316630021a68c45fa008f6096a6d5f37663361326231300b666e6f5f66697818"
+        "31a50063333130016334313002193039031a05397fb104385e";
+    /* Leading-zero MNC ("07"), rsrp absent, req:null -- the two edge cases
+     * the task brief's own test list calls out by name. */
+    static const char *NOFIX_CELL_PAD_HEX =
+        "a70001016a6c5f3363396131316630021a68c45fa008f609f60b666e6f5f6669781831a4006332333401623037"
+        "02010301";
+
+    uint8_t got[192];
+    size_t got_len;
+    uint8_t want[192];
+    size_t want_len;
+
+    loc_cell_t cell = { .mcc = "310", .mnc = "410", .tac = 12345, .ci = 87654321,
+                        .have_rsrp = true, .rsrp = -95 };
+    bool ok = loc_build_cbor(got, sizeof(got), &got_len, /*signed_env=*/false, 0, "l_3c9a11f0",
+                             1757700000, /*have_fix=*/false, 0, 0, /*have_acc=*/false, 0, 0,
+                             /*src_cell=*/false, "m_7f3a2b10", /*cached=*/false, "no_fix", &cell);
+    CHECK(ok, "loc_build_cbor() must succeed for the no_fix+cell vector");
+    hex_decode(NOFIX_CELL_HEX, want, sizeof(want), &want_len);
+    CHECK(got_len == want_len && memcmp(got, want, want_len) == 0,
+          "no_fix+cell vector bytes must match relay/app/wirecbor.py's own CBOR encoding exactly "
+          "(got %zu bytes, want %zu)",
+          got_len, want_len);
+
+    loc_cell_t cell_pad = { .mcc = "234", .mnc = "07", .tac = 1, .ci = 1, .have_rsrp = false };
+    ok = loc_build_cbor(got, sizeof(got), &got_len, /*signed_env=*/false, 0, "l_3c9a11f0", 1757700000,
+                        /*have_fix=*/false, 0, 0, /*have_acc=*/false, 0, 0, /*src_cell=*/false,
+                        /*req=*/NULL, /*cached=*/false, "no_fix", &cell_pad);
+    CHECK(ok, "loc_build_cbor() must succeed for the leading-zero-mnc/no-rsrp vector");
+    hex_decode(NOFIX_CELL_PAD_HEX, want, sizeof(want), &want_len);
+    CHECK(got_len == want_len && memcmp(got, want, want_len) == 0,
+          "leading-zero-mnc vector must preserve the leading zero and omit rsrp (got %zu bytes, "
+          "want %zu)",
+          got_len, want_len);
+
+    /* A malformed cell (bad mcc width) must be silently treated as absent --
+     * §13.2's own "malformed cell is treated as absent" tolerance, applied
+     * defensively on the encode side (net.cpp should never actually produce
+     * one, but loc_build_cbor() must not trust that blindly). */
+    loc_cell_t bad_cell = { .mcc = "31", .mnc = "410", .tac = 1, .ci = 1 };
+    ok = loc_build_cbor(got, sizeof(got), &got_len, false, 0, "l_3c9a11f0", 1757700000, false, 0, 0,
+                        false, 0, 0, false, NULL, false, "no_fix", &bad_cell);
+    CHECK(ok, "a malformed cell must not fail the whole build");
+    size_t got_len_nocell;
+    uint8_t got_nocell[192];
+    CHECK(loc_build_cbor(got_nocell, sizeof(got_nocell), &got_len_nocell, false, 0, "l_3c9a11f0",
+                         1757700000, false, 0, 0, false, 0, 0, false, NULL, false, "no_fix", NULL),
+          "test setup: the no-cell control build must succeed");
+    CHECK(got_len == got_len_nocell && memcmp(got, got_nocell, got_len) == 0,
+          "a malformed cell must encode identically to no cell at all");
 }
 
 /* ---------------------------------------------------------------------
@@ -414,6 +493,7 @@ int main(void)
     test_mid_attempt_requests_share_result();
     test_attempt_budget();
     test_loc_build_cbor_vs_relay();
+    test_loc_build_cbor_cell_vs_relay();
     test_parse_req_cbor();
 
     if (g_failures == 0) {
