@@ -1,5 +1,5 @@
 /* catrust.h — CA trust state, TLS-fail fallback and two-phase CA apply
- * (docs/V02_DESIGN.md §4, docs/CA_TRUST_PLAN.md).
+ * (docs/V02_DESIGN.md §4, docs/V02_DESIGN.md §4).
  *
  * Split the usual way (lock.c/loc.c/cfg.c): everything above the `#ifdef
  * ESP_PLATFORM` banner is pure C, no ESP-IDF dependency, driven by
@@ -46,7 +46,7 @@ extern "C" {
 #endif
 
 /* ---------------------------------------------------------------------
- * Trust states (docs/CA_TRUST_PLAN.md §3.1 / docs/V02_DESIGN.md §4.1).
+ * Trust states (docs/V02_DESIGN.md §4.1 / docs/V02_DESIGN.md §4.1).
  * --------------------------------------------------------------------- */
 typedef enum {
     CATRUST_UNPINNED = 0, /* no CA in the identity; validation off */

@@ -2,7 +2,7 @@
  * cert slot 12 when no real CA is pinned (docs/V02_DESIGN.md §2.4, "Empty CA
  * slot" bug fix).
  *
- * BRINGUP_NOTES.md found, on real hardware, that every TLS profile used for
+ * GOTCHAS.md found, on real hardware, that every TLS profile used for
  * MQTT must name a cert slot even with validation off, or the modem's
  * AT+SQNSMQTT* engine silently sends a plaintext CONNECT instead of TLS.
  * What was never tested is what happens when that *named* slot is empty

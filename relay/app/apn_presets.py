@@ -7,7 +7,7 @@ small plain TCP works but every TLS handshake stalls, until the APN is set to
 `ereseller`. The SIM cannot be identified reliably from the device: its IMSI
 and ICCID ranges are AT&T's own, it has no operator-name file, and its GID1
 (0x20) is shared by other AT&T resellers. So the person setting the pager up
-chooses. `docs/BRINGUP_NOTES.md` has the measurements.
+chooses. `docs/GOTCHAS.md` has the measurements.
 
 The APN travels in the typed setup code (`... @ host;apn=<apn>`, used for the
 bootstrap attach) and in the encrypted bundle (`apn`, used for ever after), so

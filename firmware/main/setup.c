@@ -763,7 +763,7 @@ bool setup_run(const char *code)
     // point; the ack has not been sent yet) is left connected while this
     // opens the cafetch socket, deliberately exercising the same "second
     // socket while MQTT is up" question the `cafetch` debug command's
-    // mqtt_survived flag checks at runtime (docs/CA_TRUST_PLAN.md §3.4's
+    // mqtt_survived flag checks at runtime (docs/V02_DESIGN.md §4.4's
     // UNVERIFIED item). "Both present or both absent" was already enforced
     // by decode_and_validate_bundle(); "prefer the pointer" when an inline
     // `ca` was ALSO present just falls out of overwriting id.ca/id.ca_len

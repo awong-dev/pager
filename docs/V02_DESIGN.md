@@ -1,17 +1,16 @@
-# v0.2 design: bug fixes, wider replay counter, CA trust, location, device SMS
+# v0.2: modem library, replay counter, CA trust, location, device SMS
 
-Status: **implemented on branch `v0.2-dev`** (2026-09-20, after tag `v0.1`); builds and tests pass;
-**nothing has run on hardware and nothing is deployed**. §9 is the checklist for that. This is
-the spec the firmware, relay and web work is built from. Where it disagrees with `PROTOCOL.md` or
-`DEVICE_PLAN.md`, this file records an **owner decision** and those documents are to be edited to
-match as part of the work. Read `BRINGUP_NOTES.md` first for what v0.1 learned on real hardware.
+The specification of what v0.2 added, cited by section number from the code. For the big picture
+read `OVERVIEW.md`; for what has been seen working on hardware, `HARDWARE_TESTING.md`; for what is
+missing, `ROADMAP.md`. Where this differs from `PROTOCOL.md` or `DEVICE_PLAN.md` it records an
+owner decision, and those documents have been edited to match.
 
 Conventions: `UNVERIFIED` means "could not be tested on hardware while writing this; the code must
 fail safe and log clearly". Hardware facts are for the Sequans GM02SP `LR8.2.1.0-61488`.
 
 ## 0. Ground rules
 
-- v0.1 works. Nothing here may break the receive path: attach → TLS → MQTT → verify → render →
+- Nothing here may break the receive path: attach → TLS → MQTT → verify → render →
   ack. Every new feature fails *open* for paging: if location, SMS or a CA push goes wrong, pages
   still arrive.
 - The relay must keep accepting a v0.1 pager (no new field is required from the device; unknown
@@ -56,8 +55,7 @@ Patches:
    `ident_get_n_epoch()` is current immediately after a bump.
 3. **Connect watchdog.** A connect that produces neither CONNECTED nor DISCONNECTED within 60 s:
    `mqttDisconnect()`, count it, back off as a transient failure. Three in a row:
-   `net_recover_modem()`. The forum threads in `BRINGUP_NOTES.md` show this engine can wedge
-   silently.
+   `net_recover_modem()`. This engine can wedge silently.
 4. **Empty CA slot.** `UNVERIFIED` whether the MQTT engine does TLS when the named slot is empty.
    Make it not matter: when no CA is pinned, make sure slot 12 holds *a* certificate. Embed ISRG
    Root X2 (790 bytes PEM, public, EC, long-lived) in the firmware as a placeholder; on
@@ -105,7 +103,7 @@ boots. CBOR encodes it at minimal length, so nothing grows until the epoch passe
 - Still parked: the signed resync handshake (`DEVICE_PLAN.md` §2.5 note). With a 32-bit epoch it
   is only needed if NVS itself is lost, and then the identity is gone too.
 
-## 4. CA trust (implements `CA_TRUST_PLAN.md`)
+## 4. CA trust
 
 ### 4.1 Trust states (firmware)
 
@@ -134,7 +132,7 @@ returns to `pinned`. `-8` also fires for non-certificate handshake failures, so 
 ### 4.4 CA delivery: a pointer, fetched and hash-checked
 
 The CA never travels inline again (a Let's Encrypt or Google root does not fit the modem
-library's 1540-byte buffer; see `CA_TRUST_PLAN.md` §3.4).
+library's 1540-byte buffer; see `GOTCHAS.md`).
 
 - **Relay** serves `GET /ca/{sha256hex}.pem`, public, no auth, `text/plain`, immutable cache
   headers, 404 unless the hash is one it knows. It knows the CA from `BROKER_CA_PEM`, else from
@@ -161,7 +159,7 @@ library's 1540-byte buffer; see `CA_TRUST_PLAN.md` §3.4).
 - Setup uses the same fetch, over the bootstrap attach, before the identity is stored. A fetch
   failure during setup fails setup with "cannot reach broker" (never silently unpinned).
 
-## 5. Location (implements `LOCATION_PLAN.md` L1-L4)
+## 5. Location
 
 Request-driven, short, always backed off. Owner guidance: the pager spends many hours a day inside
 a building with no sky; even one attempt an hour is wasted there without evidence of movement; a
@@ -278,64 +276,3 @@ are used; `ca_sha`/`sha` are base64url without padding, like `sig`.
   `locate`, `ca_push`, `sms_log` with `pager_client.py`.
 - Web: `npm run build`, lint.
 - Hardware, by a person: everything marked `UNVERIFIED`, using the debug console.
-
-## 9. Bringing v0.2 up on hardware
-
-**Done on 2026-09-20** (debug build, US Mobile Dark Star SIM with APN `ereseller`, relay deployed
-from `main`): boots with no panic; identity and epoch migrate (`IDENT … sig=1`, epoch keeps
-rising); GNSS config accepted; LIS3DH absent handled; SMS init accepted including `CSCS="IRA"` and
-`CSDH=1` (storage 0/10); MQTT over TLS with the pinned CA; `/status` with the new fields accepted
-by the relay (no `malformed`/`replay`/`bad-sig`); the console works on a provisioned pager; a
-stray `NO CARRIER` no longer crashes (patch 1.1); the trust fallback ran for real (a broken data
-path produced `-8`, the pager went `broken`, and healed to `pinned` on the next validated
-connect); **a second TLS socket opens while MQTT stays connected** and `cafetch` retrieved a
-790-byte and a 1939-byte certificate over HTTPS in about 3 s each with matching hashes.
-Bugs that only hardware could find, all fixed: `CONFIG_WALTER_MODEM_MAX_TLS_PROFILES` stayed 3
-in an existing `sdkconfig` (now pinned in `sdkconfig.defaults`); the vendor library could only
-look up socket id 1 (patch 1.6); a reply and the peer's close arriving together discarded the
-reply; a payload ending in `\n` left the final `OK` unmatched and the read timed out (patch
-1.7); HTTP header lines over 512 bytes were fatal; the trust state healed 70 ms *after* the
-status that reported it. **Still not done:** everything below that needs a page sent from the web
-app, a CA push, GNSS outdoors, an SMS, and the light-sleep test.
-
-Images for a quick flash or a quick retreat are in the untracked `build/images/`:
-`v0.2-dev-debug-app.bin` and `v0.1-debug-app.bin`, both the no-sleep debug build, both written to
-the app partition only: `esptool.py --chip esp32s3 write_flash 0x120000 <file>`. Identity, assets
-and messages are untouched by either, and the NVS changes are forward-only but harmless to v0.1
-(new keys it ignores; the epoch simply keeps rising).
-
-**Order matters.** Deploy the relay first, then flash. The v0.1 relay drops any envelope carrying
-a CBOR key it does not know, and v0.2 firmware adds keys to `/status`, so new firmware against
-the old relay loses its status and online edge (pages still arrive). The v0.2 relay accepts both.
-
-1. **Relay**: merge `v0.2-dev` to `main` (CI deploys). Repo variables `BROKER_CA_PEM_FILE` and
-   `PUBLIC_BASE_URL` are already set. Check `GET <relay>/ca/<sha256 of the DigiCert PEM>.pem`
-   returns the PEM after one setup code or CA push has been issued (that is what registers it).
-2. **Boot check** with the debug image: no panic, `IDENT … sig=1`, `n_epoch bumped`, `TLS profile
-   2: CA pinned`, `MQTT session usable`, `published /status`; then in the relay log **no**
-   `malformed`, `bad-sig` or `replay`. Expect `LIS3DH not found` and possibly `SMS init failed`
-   (a data-only SIM): both are fine. Send a page; check the chip reaches delivered.
-3. **The console now works on a provisioned pager** (debug build). Run, in this order, watching
-   that pages still arrive after each:
-   - `cafetch <relay>/ca/<sha>.pem <sha>`: answers whether a second socket can open while MQTT
-     is up (`mqtt_survived_second_socket=`), and whether the TLS socket receive path works.
-   - Web app → *Push CA* with the correct CA: expect fetch → scratch slot → validated reconnect →
-     commit, and the chip stays "Server verified". Then set a **wrong** `BROKER_CA_PEM` on a
-     test relay revision and push: expect rollback, pages still arriving, no ack; after three
-     tries, an ack and a log line.
-   - Fallback: there is no safe way to fake a bad broker certificate against production; test it
-     by pinning a wrong CA through a setup code on a scratch device id and watching for
-     `broken`, the broken padlock, and pages still arriving.
-   - `gnsstest 40` indoors (expect a clean `no_fix` and a live session afterwards), then
-     outdoors. The log says which radio route was accepted; if the in-place route is refused it
-     falls back to the `CFUN=4` window, and the re-attach time is the number to write down.
-   - `smstest <your number> hello`, then text the pager from a listed and an unlisted number.
-4. **Only then** the normal (sleeping) build, and the test that is still the biggest unknown in
-   the whole design and predates v0.2: does a page arrive while the pager is in light sleep
-   (`PROTOCOL.md` §8.3, M5). The same question now applies to `+CMTI` and to GNSS events.
-
-Known gaps carried forward: no retention sweep for `smsLog`; `ca_resolve.resolve_broker_ca()` is
-still not called at relay startup (the env var is the only CA source in practice); no e2e scenario
-for a CA push; SMS boot drain is an index scan, not `AT+CMGL`; a received SMS is held in RAM only;
-the web app has no test runner. If the project moves to Soracom (`SORACOM_EVAL.md`), §4 is
-unnecessary there and §6 cannot work as designed on a Soracom SIM.

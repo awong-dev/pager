@@ -608,7 +608,7 @@ class Ingest:
             smsLost=env.sms_lost,
         )
 
-        # docs/V02_DESIGN.md §4.3 / CA_TRUST_PLAN.md §3.3: "on a transition
+        # docs/V02_DESIGN.md §4.3: "on a transition
         # into `broken`, log a security event." `previous_status.tls` is
         # `None` for a device that predates this field or has never
         # reported it, which is correctly *not* "broken" already.

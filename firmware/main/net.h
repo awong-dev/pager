@@ -136,7 +136,7 @@ bool net_write_ca_slot(uint8_t slot, const char *ca_pem);
 
 /* v0.2 §4.2/§4.4: reconfigures MQTT profile 2 (PAGER_TLS_PROFILE_ID) to name
  * `ca_slot` with validation on/off — ALWAYS naming a slot, never omitting
- * one (BRINGUP_NOTES.md's rule: an unnamed slot makes the MQTT engine send a
+ * one (GOTCHAS.md's rule: an unnamed slot makes the MQTT engine send a
  * plaintext CONNECT). Used for: the daily/cold-boot revalidation attempt
  * while `broken` (ca_slot=NET_TLS_CA_SLOT), the fallback into `broken`
  * itself (ca_slot=NET_TLS_CA_SLOT, validated=false), the two-phase apply's
@@ -370,7 +370,7 @@ bool net_debug_at(const char *cmd);
 bool net_check_mqtt(const char *host, uint16_t port, int tls_mode);
 
 /* ---------------------------------------------------------------------
- * GNSS (docs/V02_DESIGN.md §5, docs/LOCATION_PLAN.md). Every power-effect
+ * GNSS (docs/V02_DESIGN.md §5, docs/V02_DESIGN.md §5). Every power-effect
  * comment here is PENDING_HW/UNVERIFIED: nothing in this section has run on
  * a real Walter yet. loc.c is the only caller; it owns the whole
  * request/backoff/route policy and never calls WalterModem directly (this

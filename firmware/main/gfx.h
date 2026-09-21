@@ -119,7 +119,7 @@ typedef enum {
     GFX_ICON_SMS,
     GFX_ICON_WEB,
     GFX_ICON_CHAT,
-    /* v0.2 §4.3 (CA trust, docs/V02_DESIGN.md/docs/CA_TRUST_PLAN.md §3.3):
+    /* v0.2 §4.3 (CA trust, docs/V02_DESIGN.md/docs/V02_DESIGN.md §4.3):
      * TLS trust-state indicators, drawn from code (gfx.c's own
      * primitives) exactly like every other icon here, NOT from the assets
      * partition — see gfx.c's icon_padlock() for the shape. Distinct from

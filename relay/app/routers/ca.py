@@ -1,11 +1,11 @@
-"""`GET /ca/{sha256hex}.pem` -- docs/V02_DESIGN.md §4.4 / docs/CA_TRUST_PLAN.md
+"""`GET /ca/{sha256hex}.pem` -- docs/V02_DESIGN.md §4.4
 §3.4.
 
 Public, unauthenticated, on purpose: the CA is trusted by its hash, not by
 this endpoint. The hash arrives at the device over a channel that is already
 signed (a `/down cfg.ca` push, HMAC-verified per §14) or already encrypted
 (the bootstrap bundle, §3.2), so "the download needs no server
-authentication at all" (`CA_TRUST_PLAN.md` §3.4) -- adding auth here would
+authentication at all" (`V02_DESIGN.md` §4.4) -- adding auth here would
 buy nothing but a second thing that can misconfigure and take pages down.
 
 404 unless the hash names a CA this relay has ever served (`app/store/

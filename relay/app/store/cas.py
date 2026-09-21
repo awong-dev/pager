@@ -1,4 +1,4 @@
-"""`cas/{sha256hex}` -- docs/V02_DESIGN.md §4.4 / docs/CA_TRUST_PLAN.md §3.4.
+"""`cas/{sha256hex}` -- docs/V02_DESIGN.md §4.4.
 
 Every CA PEM the relay has ever handed out a pointer for (in a bootstrap
 bundle's `ca_url`, or a `/down cfg.ca` push), keyed by the hex SHA-256 digest

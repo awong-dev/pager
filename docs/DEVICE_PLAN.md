@@ -224,30 +224,20 @@ device reads its old 12-bit-epoch NVS key (`n_epoch`, `uint16_t`) once, then kee
 forward in a new key (`n_epoch32`, `uint32_t`) — the two are never the same storage slot, so a
 partially-migrated device can never misread one width as the other.
 
-*(Why the widening, not the alternative below: raised by the owner 2026-09-20, decided
-2026-09-20.)* The 12-bit epoch's guaranteed exhaustion after 4096 cold boots — about eleven years
-at one cold boot a day, much less for a pager whose battery dies several times a day — was flagged
-as a real risk: the failure mode of a live device silently unable to authenticate once exhausted is
-worse than the wire-size cost of a wider field. Should the relay instead tell the device the last
-sequence number it saw, rather than the device bumping an epoch in NVS? It can be made safe, but
-only as a **signed, fresh handshake**: the device sends a signed hello carrying a random value, the
-relay answers with a signed message echoing that value plus its `upN`, and the device resumes from
-there. A bare, unchallenged "your last n was X" is not safe: an attacker replays an old one to wind
-the counter back, and every message captured after X becomes replayable. Trade against the epoch
-bump: the handshake costs one round trip of airtime per cold boot, new protocol and relay state, and
-the pager cannot send until the relay answers; the epoch bump costs one NVS write per cold boot and
-nothing on the air. With a 32-bit epoch the handshake is **still parked**: it is only needed if NVS
-itself is lost outright, and at that point the whole device identity (not just this counter) is gone
-and re-provisioning is required anyway — the same "still parked" note now made explicit rather than
-left as a future trade to reconsider. Ruled out: deriving `n` from the clock. The clock is seeded
-from the network, and the modem was seen reporting a year-2070 time once; one bad timestamp would
-push the relay's window decades ahead and lock the device out for good.
+*(see rationale: the epoch is 32 bits because a narrower one guarantees exhaustion. At 12 bits a
+pager whose battery dies a few times a day would run out within a year or two, and the failure is
+a live device that silently can no longer authenticate. The alternative considered is a resync
+handshake, in which the relay tells the device the last counter it saw. It is safe only as a
+signed, challenged exchange: the device sends a signed hello with a random value and the relay
+echoes it together with its `upN`. An unchallenged "your last n was X" can be replayed to wind the
+counter back. The handshake costs a round trip per cold boot and makes the pager wait for the
+relay before it can send; the epoch costs one flash write and nothing on the air. With a 32-bit
+epoch the handshake would matter only if flash were lost, and then the identity is gone too, so it
+is not built. Deriving `n` from the clock is ruled out: the clock comes from the network and the
+modem has been seen reporting the year 2070; one such value would lock the device out for good.)*
 
-*(Implementation note, 2026-09-20.)* The cold-boot bump described above was specified here but
-missing from the firmware until it was found live: every cold boot restarted `lo` at 0 under the
-same epoch, and the relay (initial `upN = 0`, accepts only `n > upN`) dropped everything as a
-replay, starting with the very first publish after setup. `modes_boot()` now bumps the epoch on
-every cold boot.
+**The epoch MUST rise on every cold boot** (`modes_boot()`), not only when `lo` wraps: `lo` is in
+RTC memory and restarts at 0, and the relay accepts only `n` above the highest it has seen.
 
 **Device side, `n` for `/down`.** Mirror of the relay's window: `down_n` + 32-bit bitmap in RTC
 (8 bytes). Re-publishes on an online edge (`PROTOCOL.md` §5.3) reuse the message `id` but get a fresh
@@ -442,35 +432,24 @@ ever exposes ciphertext.
 
 ### 3.3 The broker CA
 
-**Decision (2026-09-19): the CA is optional and the default is to pin none.** The relay sends an
-empty `ca` unless `BROKER_CA_PEM` is set; the device then runs the production session with
-certificate validation off. A bundle that does carry a CA still pins it, exactly as described
-below, so pinning is an operator opt-in rather than something the device requires. Reasons:
+**The CA is optional.** A bundle with no CA pointer leaves the pager running with certificate
+validation off; one with a pointer pins that CA. Production pins the broker's root
+(`broker_ca_pem_file` in `infra/envs/prod`). What pinning buys is confidentiality against an
+active attacker on the LTE→broker path, and protection of the MQTT password; envelopes are
+HMAC-authenticated either way (`PROTOCOL.md` §2.4). What it costs is that a broker which changes
+its root would strand every pager, so a pinned pager whose validation fails falls back to an
+unvalidated connection, says so, and can be given a new CA from the web app (`V02_DESIGN.md` §4).
+"DNS guarantees the server" is not a justification for skipping validation: the modem does no
+DNSSEC.
 
-- A pinned CA is a way to brick pagers. If the broker moves to a different root, every device fails
-  TLS until a person types a new setup code on it. For a device whose job is to be reachable, that
-  cost outweighs the attack described below, which needs an active attacker on the LTE→broker path
-  (LTE-M authenticates the network and has no 2G fallback).
-- Envelopes stay HMAC-authenticated either way (`PROTOCOL.md` §2.4), so pages cannot be forged or
-  altered. What is given up is confidentiality of bodies and location fixes against that attacker,
-  and the MQTT password. If that ever matters, §2.2's option E (AEAD bodies under `K_dev`) is the
-  better fix: it protects against the broker too and cannot brick anything.
-- "DNS guarantees the server" is **not** the justification: the modem does no DNSSEC validation.
-  The trust placed here is in the network path.
+**Every TLS profile used for MQTT MUST name a CA slot, even with validation off.** Without one the
+modem's MQTT client sends plaintext (`GOTCHAS.md`). The firmware keeps a placeholder certificate
+in the slot when nothing is pinned.
 
-**Hardware finding that constrains the implementation (GM02SP `LR8.2.1.0-61488`, verified by
-capturing wire bytes on a server we control):** the modem's dedicated `AT+SQNSMQTT*` engine
-**silently sends a plaintext MQTT CONNECT, credentials included, to the TLS port** when its TLS
-profile names no CA slot (`AT+SQNSPCFG=2,2,"",0,,,,`). A TLS-only broker then waits for a
-ClientHello forever and `+SQNSMQTTONCONNECT` never fires; this, not missing SNI, was the original
-`setup` hang. With the slot named (`AT+SQNSPCFG=2,2,"",0,12,,,`) the same engine sends a normal
-TLS 1.2 ClientHello **with SNI**, at validation level 0 or 1. The generic socket layer
-(`AT+SQNSD`) does TLS either way. So every profile used for MQTT **MUST name the CA slot, even
-with validation off**. `UNVERIFIED`: behaviour when the named slot is empty, as on a factory-fresh
-modem; `mqtttest <host> <port> emptyca` exists to test it, and if it falls back to plaintext the
-firmware must write a placeholder certificate into the slot.
+**The CA is delivered as a pointer**, a URL and a SHA-256, never inline: a single MQTT message
+larger than about 1.5 kB cannot be received, and common roots are larger than that.
 
-The rest of this section describes the opt-in pinned mode and the original rationale for it.
+The rest of this section is the original rationale for pinning.
 
 **Why a CA is involved at all.** The bootstrap hop uses none: the token authenticates the bundle.
 The CA is cargo for the *production* session, which pins one today (`net.cpp`'s hardcoded DigiCert
@@ -503,7 +482,7 @@ startup by a TLS handshake to the broker and matching the served chain's issuer 
 device is issued. A self-signed or private CA is just a different PEM in the same field; nothing on
 the device changes.
 
-**v0.2 (`V02_DESIGN.md` §4.4, `CA_TRUST_PLAN.md` §3.4): the CA no longer travels inline in the
+**v0.2 (`V02_DESIGN.md` §4.4, `V02_DESIGN.md` §4.4): the CA no longer travels inline in the
 bundle.** The measured sizes above were always going to be a problem for a broker behind a root
 other than DigiCert's — ISRG Root X1 (Let's Encrypt) is 1939 bytes PEM and GTS Root R1 is 1911,
 both larger than the vendor library's 1540-byte receive buffer even before the rest of the bundle's
@@ -534,7 +513,7 @@ CA and state, and do not ack (the relay re-publishes on the next online edge, pe
 unacked-`cfg` rule §5.8 already gives `cfg.lock` — a pending CA push and a pending lock push are
 independent and do not clobber each other). Admin-triggered from the web app
 (`POST /api/admin/devices/{id}/ca`), and this is also how a device stuck in the `broken` trust state
-(`CA_TRUST_PLAN.md` §3.1-3.2, `V02_DESIGN.md` §4.1-4.2 — `unpinned`/`pinned`/`broken`, entered when
+(`V02_DESIGN.md` §4.1-3.2, `V02_DESIGN.md` §4.1-4.2 — `unpinned`/`pinned`/`broken`, entered when
 a validated connect fails and the device falls back to running unvalidated so pages keep arriving)
 gets repaired without anyone touching it.
 
@@ -792,11 +771,10 @@ but the screen stays" free.
 the framebuffer, then calls the existing diff-based partial refresh — only rows that changed are
 sent, so a status-bar-only change costs one 10-row window. The 20-partial/1-full cadence stays but
 the full refresh is **not taken for messages arriving into an already-open Chat** (README R9): it
-is deferred to the moment the UI-awake window lapses. *(Amended 2026-09-20 from the first look at
-real hardware: the one exception is a message that **changes the screen**, e.g. greeting → Chat.
-A partial refresh there left the greeting's large type ghosted under the message, so
-`ui_incoming()` takes a full refresh for that first message only. The Chat screen's key-hint
-footer was also dropped in favour of 2 px of leading between rows.)*
+is deferred to the moment the UI-awake window lapses. The one exception is a message that **changes the screen**, e.g. greeting → Chat: a
+partial refresh there leaves the old screen ghosted under the message, so `ui_incoming()` takes a
+full refresh for that first message only. The Chat screen has no key-hint footer; rows have 2 px
+of leading instead.
 
 **Status bar** (10 px, always 1×): `[signal 0–4 bars] [link ok|x] [unsent n] [lock if sig on]
 … [unread n] [battery 0–4]`. No clock *(see rationale: a clock would need a refresh every minute

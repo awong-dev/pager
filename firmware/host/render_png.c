@@ -562,7 +562,7 @@ static void render_screen_greeting_shutting_down(void)
     draw_status_footer("shutting down");
 }
 
-// v0.2 §4.3 (CA trust, docs/V02_DESIGN.md/docs/CA_TRUST_PLAN.md §3.3): the
+// v0.2 §4.3 (CA trust, docs/V02_DESIGN.md/docs/V02_DESIGN.md §4.3): the
 // two new padlock icons, drawn directly (this file links only gfx.c, not
 // ui.c's real draw_status_bar() — see this file's own module comment) at
 // three, one-per-row scales so both shapes are easy to tell apart at a

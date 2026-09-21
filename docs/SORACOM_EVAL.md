@@ -53,8 +53,8 @@ What gets simpler:
   engine has already been seen speaking plaintext MQTT correctly.
 - **The whole CA trust plan disappears**: no pinning, no fallback, no broken padlock, no CA push, no
   fetch-by-URL. Server authentication is done by Beam with a real root store, which is *stronger*
-  than a pager that falls back to no validation. (The v0.2 work in `V02_DESIGN.md` §4 would be
-  dead code on a Beam deployment; keep it for non-Soracom SIMs or drop it.)
+  than a pager that falls back to no validation. (`V02_DESIGN.md` §4 would be dead code on a
+  Soracom SIM.)
 - **Credentials can leave the pager too.** Beam can inject the broker username/password keyed on the
   IMSI, so the setup bundle shrinks to the device id and the HMAC key.
 
@@ -64,12 +64,11 @@ What changes in the security model:
   rests on TLS to EMQX, and EMQX itself already sees everything in clear. So the honest delta is
   "three more parties can read pages and location fixes".
 - The **HMAC signature and counter become the only integrity protection** between the pager and
-  Soracom. Keep them. (This also settles last night's question about dropping the counter: not on
-  a Beam design.)
+  Soracom. Keep them.
 - The clean fix is `DEVICE_PLAN.md` §2.2's option E: **AEAD-encrypt bodies and location fixes under
   the device key**, pager↔relay. About 28 bytes per message. Then Soracom, the carrier *and* EMQX
   all see ciphertext, which is better confidentiality than today's design, with no certificates on
-  the pager at all. **I would make this a condition of moving to Beam.**
+  the pager at all. **This should be a condition of moving to Soracom.**
 - Identity becomes the SIM. A SIM moved into another device gets that pager's MQTT session; the
   HMAC key still stops it forging or reading (with AEAD) anything.
 
@@ -95,12 +94,12 @@ What breaks or needs care:
 - Lock-in: the pager's firmware would hard-code `beam.soracom.io`. Keep the TLS path buildable so a
   non-Soracom SIM remains an option.
 
-## Without a broker at all (owner's question: why is EMQX still there?)
+## Without a broker at all
 
 EMQX is in the Beam design above only because Beam's **MQTT** entry point is a proxy, not a
 broker: something behind it has to hold the pager's subscription and push a page down the open
-connection. That was the least-change option, not the only one. Soracom has the two pieces needed
-to drop the broker entirely:
+connection. That is the least-change option. Soracom also has the two pieces needed to drop the
+broker entirely:
 
 - **Uplink: Beam's UDP→HTTPS (or HTTP→HTTPS) entry point.** The pager sends one datagram to Beam;
   Beam POSTs it to an HTTPS URL of ours, i.e. **straight to the relay on Cloud Run**, adding the
@@ -147,16 +146,16 @@ because everything is plaintext through Soracom. The HMAC stays.
 
 **Verdict.** Architecturally this is the best fit a pager could ask for, and it would delete more
 code than it adds. It is also the riskiest change on the table: it discards a transport that was
-finally proven end to end two days ago, for one whose key behaviour (a paged UDP downlink waking a
+proven end to end, for one whose key behaviour (a paged UDP downlink waking a
 sleeping pager) nobody has seen work. Treat it as the long-term direction to *test towards*, not a
 switch to make now. The trial below is ordered so each step is cheap and can end the experiment.
 
-## Funk, reconsidered (owner's challenge, 2026-09-20: why not Funk over UDP?)
+## Funk or Beam for the uplink
 
-My first pass dismissed Funk for the wrong reason. "Funk cannot push" is true, but it is equally
-true of Beam's UDP entry point: in a broker-free design **the downlink is Remote Command either
-way**, and the only question is which service carries the *uplink*. For that job Funk over UDP is
-sensible, and on authentication it is the better of the two.
+"Funk cannot push" is true, and it is equally true of Beam's UDP entry point: in a broker-free
+design **the downlink is Remote Command either way**, and the only question is which service
+carries the *uplink*. For that job Funk over UDP is sensible, and on authentication it is the
+better of the two.
 
 How Funk authenticates, which is not quite what one would assume:
 
@@ -193,8 +192,8 @@ that verifies the token and forwards to the relay closes the gap (and *that* hop
 IAM properly). Also unverified: payload and response size limits on the UDP entry point, and how
 binary payloads are wrapped (the options are JSON, text or binary; our envelopes are CBOR).
 
-**Revised view: for a broker-free design, use Funk over UDP for the uplink.** What still argues
-against switching now has nothing to do with Funk. It is everything in the previous section:
+**For a broker-free design, use Funk over UDP for the uplink.** What argues against switching now
+has nothing to do with Funk. It is everything in the previous section:
 the downlink (`sendDownlinkUdp` waking a sleeping pager) has never been seen to work, reliability
 and presence move into our own protocol, device SMS to a phone is impossible on a Soracom SIM,
 the rewrite is large, and the lock-in is total. Those are reasons to run the trial first, not

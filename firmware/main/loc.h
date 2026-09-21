@@ -1,4 +1,4 @@
-/* loc.h — on-demand location (docs/V02_DESIGN.md §5, docs/LOCATION_PLAN.md,
+/* loc.h — on-demand location (docs/V02_DESIGN.md §5, docs/V02_DESIGN.md §5,
  * docs/PROTOCOL.md §3.2/§13).
  *
  * Split the same way lock.c/auth.c/msg.c already are: everything above the
@@ -68,7 +68,7 @@ extern "C" {
 #define LOC_MOTION_SUSTAIN_S 60u  /* interrupts must span at least this long inside the window */
 
 #define LOC_BATTERY_FLOOR_MV 3300 /* LiFePO4, docs/V02_DESIGN.md §5 */
-#define LOC_FIX_CONFIDENCE_MAX 100.0 /* vendor demo threshold, docs/LOCATION_PLAN.md §3 */
+#define LOC_FIX_CONFIDENCE_MAX 100.0 /* vendor demo threshold, docs/V02_DESIGN.md §5 */
 
 #define LOC_STATUS_MIN_S 600u    /* reported /status loc_min_s: the trigger floor above */
 #define LOC_STATUS_PERIOD_S 0u   /* reported /status loc_period_s: periodic fixes stay off */

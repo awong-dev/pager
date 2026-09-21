@@ -211,7 +211,7 @@ class StatusEnvelope(BaseModel):
     loc_min_s: int | None = None
     # docs/V02_DESIGN.md §4.3/§7 (CA trust, optional, absent = older
     # firmware): trust state and the first 16 hex chars of the pinned CA's
-    # SHA-256, per `CA_TRUST_PLAN.md` §3.3.
+    # SHA-256, per `V02_DESIGN.md` §4.3.
     tls: Literal["unpinned", "pinned", "broken"] | None = None
     ca_fp: str | None = None
     # docs/V02_DESIGN.md §5 (location, optional): seconds until the device's

@@ -11,27 +11,21 @@ one charge.
 
 ## Status
 
-**Server side: built and tested.** The relay, protocol, Firestore data model, routing and
-delivery backends (web app, SMS, Google Chat, the pager itself), location, the Next.js web app,
-the Python test client, device provisioning via setup codes, device authentication with per-device
-HMAC signing, device address book and passcode lock, and the Terraform deployment are all
-implemented, with unit tests and an end-to-end suite (11 scenarios) running against a real local
-stack in CI.
+**v0.1: a message typed in the web app reaches the pager's screen**, over LTE-M, MQTT on TLS with
+a pinned CA, signed in both directions, and acknowledged back. The relay is deployed (GCP Cloud
+Run, Firestore, Firebase Hosting); the broker is EMQX Cloud Serverless; pushing to `main`
+deploys.
 
-**Device provisioning workflow:** a household admin uses the web app's *Add device* page to
-create a new device (specifying the device ID, label, owner, and default recipient). The page
-displays a one-time setup code (40–55 characters) as text and QR code, with a live countdown
-expiring in 10 minutes. The device owner or admin types or scans this code into a physical pager
-over LTE, which fetches an encrypted bootstrap bundle from the relay, decrypts it using a
-key derived from the code, stores the device credentials and CA certificate, and publishes its
-first signed status message to come online. The page then shows `online` with no further action
-needed. The same flow works for credential rotation via *Rotate* and revocation via *Revoke*.
+**v0.2**, on `main` and running on the bench pager: the pager picks its carrier APN from the SIM;
+falls back gracefully if it cannot verify the broker's certificate, and can be given a new CA from
+the web app; answers location requests with short GNSS attempts and a backoff; and can text a
+parent-managed list of phone numbers directly, with every text logged for the parent.
 
-**Never deployed, never run on hardware.** Three things need a human before this is a real
-system: a Walter board to flash (see `firmware/README.md`'s measurement checklist and residual
-risks), a GCP project and EMQX Cloud account to deploy into (see `infra/README.md`'s runbook),
-and Twilio / Google Workspace accounts if you want the SMS and Google Chat backends (see
-`relay/README.md`). Nothing about those is code work.
+Not yet proven: a page arriving while the pager is asleep, which the whole power design rests on;
+replies, location fixes and SMS on real hardware. See `docs/HARDWARE_TESTING.md`.
+
+**Start with [`docs/OVERVIEW.md`](docs/OVERVIEW.md)**, then
+[`docs/GOTCHAS.md`](docs/GOTCHAS.md). [`docs/README.md`](docs/README.md) indexes the rest.
 
 ## Running the tests
 
@@ -64,13 +58,10 @@ Unit tests and the manual checklist (for web app and device provisioning flow) a
 
 | Path | What it is |
 |---|---|
-| `docs/PROTOCOL.md` | Authoritative wire contract — topics, message schema, ack state machine, location, power/latency budget. Code conforms to this, not the reverse. |
-| `docs/SERVER_PLAN.md` | Design reference for the server stack: user registry, allow-lists, location, multi-backend delivery, the web app, Firestore schema and security rules, cost analysis, and the Terraform layout. |
-| `docs/DEVICE_PLAN.md` | Design plan for SIM-only device provisioning via a typed setup code, per-device HMAC authentication of every CBOR envelope, the server-approved on-device address book, the passcode lock, and the multi-screen e-paper UI. |
-| `docs/DEVICE_TASKS.md` | The execution plan for `DEVICE_PLAN.md`: ordered, self-contained tasks per track (docs, server, tools, web, firmware) with files, steps and verification commands. |
+| `docs/` | Start at `docs/README.md`. `OVERVIEW.md` explains the system, `GOTCHAS.md` lists what bites, `PROTOCOL.md` is the authoritative wire contract that code conforms to. |
 | `relay/` | FastAPI relay: webhook ingest, routing, delivery backends, admin and conversation APIs, device provisioning, authentication, retention. See `relay/README.md` to run it locally. |
 | `web/` | Next.js + MUI web app on Firebase (Auth, Firestore listeners, FCM). Device provisioning UI, contact approval flow, and lock controls. See `web/README.md`. |
 | `firmware/` | ESP-IDF firmware for the Walter (ESP32-S3 + Sequans GM02SP) device. See `firmware/README.md` for hardware, build instructions, the measurement checklist, and known residual risks. |
 | `infra/` | Terraform for GCP (Cloud Run, Firestore, Firebase Hosting/Auth, Scheduler, Tasks, Secret Manager, WIF) plus the deployment runbook in `infra/README.md`. |
 | `tools/` | `pager_client.py` (simulated device + server driver with setup-code bootstrap support), `e2e_v2.py` (11-scenario end-to-end suite against the real docker-compose stack), `send.py` (send a message from the CLI), `provision.py` (type a setup code over USB serial or fetch one from the API), `emqx_setup.py`, `mocks/twilio_mock.py`. |
-| `.github/workflows/` | `ci.yml` runs the relay unit tests and the 11-scenario end-to-end suite on push; `deploy.yml` is the deploy pipeline, inert until a human wires up Workload Identity Federation. |
+| `.github/workflows/` | `ci.yml` runs the relay unit tests and the 11-scenario end-to-end suite on push; `deploy.yml` is the deploy pipeline, a push to `main` builds the relay image, applies Terraform and deploys. |

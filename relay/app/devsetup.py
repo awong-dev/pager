@@ -253,7 +253,7 @@ class BootstrapDevice(BaseModel):
     docs/V02_DESIGN.md §4.4: **the CA never travels inline again.** `ca_url`
     + `ca_sha` (a pointer, fetched and hash-checked) replace the old `ca`
     field (a full PEM, which does not fit the modem library's 1540-byte
-    receive buffer for a Let's Encrypt/Google root -- `CA_TRUST_PLAN.md`
+    receive buffer for a Let's Encrypt/Google root -- `V02_DESIGN.md` §4
     §3.4). Both absent means unpinned; `_check_ca_pair` below enforces they
     are never given one without the other, since a `ca_url` a device cannot
     hash-check is worse than no CA at all."""

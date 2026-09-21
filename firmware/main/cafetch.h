@@ -1,4 +1,4 @@
-/* cafetch.h — CA-over-HTTPS fetch (docs/V02_DESIGN.md §4.4, docs/CA_TRUST_PLAN.md §3.4).
+/* cafetch.h — CA-over-HTTPS fetch (docs/V02_DESIGN.md §4.4, docs/V02_DESIGN.md §4.4).
  *
  * Split the same way lock.c/loc.c/setup.c already are: everything above the
  * `#ifdef ESP_PLATFORM` banner is pure C, no ESP-IDF dependency — the HTTP/1.1
@@ -15,9 +15,9 @@
  *
  * Below the banner: the device-only socket driver, built on net.h's small
  * `net_ca_fetch_*()` facade (TLS profile 3, validation off, cert slot 12
- * still named — BRINGUP_NOTES.md's rule applies to this profile too, even
+ * still named — GOTCHAS.md's rule applies to this profile too, even
  * though nothing validates against it here: trust comes from the SHA-256
- * check above, not from the transport, docs/CA_TRUST_PLAN.md §3.4). The
+ * check above, not from the transport, docs/V02_DESIGN.md §4.4). The
  * non-blocking `cafetch_begin()`/`cafetch_poll()`/`cafetch_result()`/
  * `cafetch_end()` quartet is meant to be driven one small step per call from
  * modes_run()'s own loop (catrust.c's `catrust_service()`, mirroring
@@ -28,7 +28,7 @@
  * to block it: setup.c's one-shot bootstrap task and the `cafetch` debug
  * console command (main.c, PAGER_DEBUG_NO_LIGHT_SLEEP builds only).
  *
- * `UNVERIFIED` (docs/CA_TRUST_PLAN.md §3.4): a second socket (this one) while
+ * `UNVERIFIED` (docs/V02_DESIGN.md §4.4): a second socket (this one) while
  * the MQTT session is up. The `cafetch` debug command logs whether the MQTT
  * session survived — see cafetch_run_blocking()'s own doc comment.
  */
@@ -204,7 +204,7 @@ bool cafetch_in_progress(void);
  * *out_mqtt_survived is true iff the session was connected both times
  * (false if it was never connected to begin with) — the
  * `UNVERIFIED`/`cafetch` debug command's own "did opening a second socket
- * disturb the MQTT session" check (docs/CA_TRUST_PLAN.md §3.4). */
+ * disturb the MQTT session" check (docs/V02_DESIGN.md §4.4). */
 bool cafetch_run_blocking(const char *url, const uint8_t expected_sha[CAFETCH_SHA_LEN], char *pem_out,
                          size_t pem_cap, size_t *pem_len, int *out_http_status, size_t *out_bytes,
                          uint32_t *out_elapsed_ms, bool *out_mqtt_survived);

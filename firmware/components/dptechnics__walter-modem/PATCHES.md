@@ -30,7 +30,7 @@ if((cmd != NULL && cmd->atRsp != NULL && memcmp(...) == 0) || result != WALTER_M
 When `cmd == NULL` and `result != WALTER_MODEM_STATE_OK` (an error/URC with no
 command pending), this called `_finishModemCMD(NULL, result)`, which
 unconditionally dereferences `cmd->rsp` — a crash/reboot with no ATE0 command in
-flight. `BRINGUP_NOTES.md`: "a stray `NO CARRIER` with no command pending
+flight. `GOTCHAS.md`: "a stray `NO CARRIER` with no command pending
 dereferences a null command and reboots."
 
 **Fix**: an explicit `cmd == NULL && result != WALTER_MODEM_STATE_OK` branch
@@ -69,7 +69,7 @@ tracking how much is actually valid):
    `memcpy(cmd->payload, rspStr, cmd->payloadSize)` unconditionally — if the
    modem delivered fewer bytes than the caller asked to read
    (`buff->size < cmd->payloadSize`), this read past the end of `buff->data`.
-   `BRINGUP_NOTES.md`: "receive buffers are 1540 bytes and `mqttReceive()`
+   `GOTCHAS.md`: "receive buffers are 1540 bytes and `mqttReceive()`
    copies out of them unchecked (the setup bundle with the DigiCert root is
    1468)" — close enough to the 1540-byte cap that a slightly larger bundle
    would have silently read out of bounds. Fixed to bound the copy by the

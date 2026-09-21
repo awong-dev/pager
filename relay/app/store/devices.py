@@ -69,7 +69,7 @@ class DeviceStatus(BaseModel):
     locPeriodS: int | None = None
     locMinS: int | None = None
     # docs/V02_DESIGN.md §4.3/§7 (CA trust): trust state and the pinned CA's
-    # short fingerprint, per `CA_TRUST_PLAN.md` §3.3 ("Relay: persist both on
+    # short fingerprint, per `V02_DESIGN.md` §4.3 ("Relay: persist both on
     # devices/{id}").
     tls: Literal["unpinned", "pinned", "broken"] | None = None
     caFp: str | None = None

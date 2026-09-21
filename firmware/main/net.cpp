@@ -497,7 +497,7 @@ static void pager_network_event_handler(WMNetworkEventType event, const WMNetwor
 // ---------------------------------------------------------------------------
 // v0.2 bug fix #4 (docs/V02_DESIGN.md §2.4, "Empty CA slot"). UNVERIFIED
 // whether the MQTT engine does TLS at all when the cert slot a profile names
-// is *empty* -- BRINGUP_NOTES.md only confirmed that a profile which does
+// is *empty* -- GOTCHAS.md only confirmed that a profile which does
 // not name a slot at all silently falls back to a plaintext CONNECT. Every
 // TLS profile this file configures for MQTT already names PAGER_TLS_CA_SLOT
 // even with validation off, so the "unnamed" case cannot happen here; this
@@ -521,7 +521,7 @@ static void ensure_ca_slot_populated(void)
     }
     if (!WalterModem::tlsWriteCredential(false, PAGER_TLS_CA_SLOT, PAGER_PLACEHOLDER_CA_PEM)) {
         ESP_LOGI(TAG, "failed to write placeholder CA to slot %u - MQTT TLS behaviour with an "
-                      "empty named slot stays UNVERIFIED (BRINGUP_NOTES.md)",
+                      "empty named slot stays UNVERIFIED (GOTCHAS.md)",
                  (unsigned) PAGER_TLS_CA_SLOT);
         return;
     }
@@ -982,7 +982,7 @@ extern "C" bool net_tls_configure(uint8_t ca_slot, bool validated)
 {
     // v0.2 §4.2/§4.4: reconfigures the PRODUCTION profile (PAGER_TLS_PROFILE_ID)
     // to name `ca_slot`, validated or not -- ALWAYS naming a slot (never the
-    // BRINGUP_NOTES.md plaintext-fallback shape). Power effect: one AT
+    // GOTCHAS.md plaintext-fallback shape). Power effect: one AT
     // command, no RRC of its own.
     if (!WalterModem::tlsConfigProfile(PAGER_TLS_PROFILE_ID,
                                        validated ? WALTER_MODEM_TLS_VALIDATION_CA
@@ -1610,7 +1610,7 @@ extern "C" void net_enable_accel_wake(void)
 
 extern "C" bool net_ca_fetch_open(const char *host, uint16_t port)
 {
-    // v0.2 bug fix #4 (§2.4)/BRINGUP_NOTES.md's rule applies to this profile
+    // v0.2 bug fix #4 (§2.4)/GOTCHAS.md's rule applies to this profile
     // too: never leave PAGER_TLS_CA_SLOT empty before naming it in a TLS
     // profile, even one that never validates against it.
     ensure_ca_slot_populated();

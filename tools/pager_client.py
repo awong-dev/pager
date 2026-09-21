@@ -275,7 +275,7 @@ class DeviceClient:
         self.lock_auto_min: int | None = None
         self.lock_cleared_count: int = 0
         # docs/V02_DESIGN.md §4.3/§4.4 (CA trust): applied `cfg.ca` state,
-        # reported back in `/status` per `CA_TRUST_PLAN.md` §3.3. This
+        # reported back in `/status` per `V02_DESIGN.md` §4.3. This
         # simulator does not really fetch/hash-check a CA over HTTP (there
         # is no modem here) -- it "applies" a push by trusting the `sha` it
         # was handed directly, which is enough to exercise the relay's
@@ -630,7 +630,7 @@ class DeviceClient:
         the real firmware's two-phase apply -- but this simulator has no
         modem and no TLS socket to actually fetch/hash-check the CA over, so
         it "applies" a push unconditionally rather than modelling the real
-        fetch/verify/commit-or-rollback sequence (`CA_TRUST_PLAN.md` §3.4)."""
+        fetch/verify/commit-or-rollback sequence (`V02_DESIGN.md` §4.4)."""
         cfg = data.get("cfg") or {}
         lock = cfg.get("lock") or {}
         if lock.get("clear"):

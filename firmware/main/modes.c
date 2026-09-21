@@ -40,7 +40,7 @@
 // sub-map to its own owner).
 #include "lock.h"
 
-// v0.2 §4.4 (docs/V02_DESIGN.md, docs/CA_TRUST_PLAN.md): the `cfg` envelope
+// v0.2 §4.4 (docs/V02_DESIGN.md, docs/V02_DESIGN.md §4): the `cfg` envelope
 // dispatcher (cfg.c) and CA trust state/fallback/two-phase-apply (catrust.c)
 // — the `cfg` interception ahead of msg_ingest_down_cbor() (same slot the
 // old direct lock_ingest_cfg_cbor() call used to occupy), the `/status`
@@ -249,7 +249,7 @@ static bool s_ui_awake_prev = false; // F6.3: edge-detects input_awake() for ui_
 
 // v0.2 bug fix #3 (docs/V02_DESIGN.md §2.3): connect watchdog. mqttConnect()
 // can "wedge silently" -- neither CONNECTED nor DISCONNECTED ever fires
-// (BRINGUP_NOTES.md documents this engine doing exactly that for the
+// (GOTCHAS.md documents this engine doing exactly that for the
 // original `setup` hang). s_connect_attempt_us records when the outstanding
 // attempt was issued (0 = none outstanding) so modes_run() can notice 60s
 // of silence and force the issue instead of retrying (or doing nothing)
@@ -989,7 +989,7 @@ static void handle_mqtt_loss(const net_mqtt_status_t *st, uint32_t *backoff_inde
         pin_to_steady_backoff(backoff_index, next_retry_us);
         break;
     case NET_MQTT_RC_TLS_FAIL: {
-        // v0.2 §4.2 (docs/V02_DESIGN.md, docs/CA_TRUST_PLAN.md §3.2): a
+        // v0.2 §4.2 (docs/V02_DESIGN.md, docs/V02_DESIGN.md §4.2): a
         // pinned device gets one more validated attempt before falling back
         // to unvalidated (state -> broken) — "no CA problem may ever stop
         // pages arriving" (§0), so both of those cases use the ordinary
@@ -1520,7 +1520,7 @@ void modes_run(void)
                    (esp_timer_get_time() - s_connect_attempt_us) >= PAGER_CONNECT_WATCHDOG_US) {
             // v0.2 bug fix #3 (docs/V02_DESIGN.md §2.3): mqttConnect() has
             // produced neither CONNECTED nor DISCONNECTED within 60s - the
-            // "wedge silently" failure mode BRINGUP_NOTES.md's forum-thread
+            // "wedge silently" failure mode GOTCHAS.md's forum-thread
             // note warns this engine has. Left alone, the branch below would
             // just re-issue mqttConnect() every wake cycle with no backoff
             // at all (net_session_up() returning true only means the AT

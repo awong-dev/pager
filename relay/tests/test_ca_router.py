@@ -1,4 +1,4 @@
-"""`GET /ca/{sha256hex}.pem` -- docs/V02_DESIGN.md §4.4 / docs/CA_TRUST_PLAN.md
+"""`GET /ca/{sha256hex}.pem` -- docs/V02_DESIGN.md §4.4
 §3.4. Public, unauthenticated: no admin header, no webhook key, anywhere in
 this file."""
 
