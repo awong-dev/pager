@@ -41,3 +41,6 @@ firmware/dependencies.lock
 
 # unattended build transcript
 build-v2.log
+
+# host test build output
+firmware/host/build/
