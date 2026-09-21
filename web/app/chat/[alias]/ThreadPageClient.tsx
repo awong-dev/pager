@@ -60,6 +60,10 @@ import type { AllowEdgeDoc, DeviceDoc, LocationFixDoc, MessageDoc } from "@/lib/
 const BODY_MAX_CODEPOINTS = 160;
 const BODY_MAX_UTF8_BYTES = 320;
 const PAGE_SIZE_STEP = 50;
+// How many of a device's most recent `locations` docs to keep around for
+// the "last known location" card's faint trail (LocationMap) -- a plain
+// Firestore listener limit, not a new endpoint.
+const RECENT_FIXES_LIMIT = 8;
 
 interface MessageRow extends MessageDoc {
   id: string;
@@ -135,6 +139,7 @@ function LocMessageRow({ message, mine }: { message: MessageRow; mine: boolean }
         lon={message.loc.lon}
         accM={message.loc.accM}
         fixTsMs={message.loc.fixTs * 1000}
+        src={message.loc.src}
         title={mine ? "Location you shared" : "Location received"}
       />
     </Stack>
@@ -149,7 +154,7 @@ function ThreadInner({ alias }: { alias: string }) {
   const [messages, setMessages] = useState<MessageRow[]>([]);
   const [pageSize, setPageSize] = useState(PAGE_SIZE_STEP);
   const [device, setDevice] = useState<(DeviceDoc & { id: string }) | null>(null);
-  const [latestFix, setLatestFix] = useState<LocationFixDoc | null>(null);
+  const [recentFixes, setRecentFixes] = useState<LocationFixDoc[]>([]);
   const [allowLocate, setAllowLocate] = useState<boolean | null>(null);
 
   const [composer, setComposer] = useState("");
@@ -226,7 +231,9 @@ function ThreadInner({ alias }: { alias: string }) {
     return () => unsubscribers.forEach((u) => u());
   }, [me, peerUid]);
 
-  // Latest location fix for that device.
+  // Recent location fixes for that device -- newest first. The card shows
+  // only the newest as "the" fix; the rest (if any) become LocationMap's
+  // faint trail.
   useEffect(() => {
     if (!device) {
       return;
@@ -235,14 +242,29 @@ function ThreadInner({ alias }: { alias: string }) {
     const q = query(
       collection(db, "devices", device.id, "locations"),
       orderBy("createdAt", "desc"),
-      limit(1)
+      limit(RECENT_FIXES_LIMIT)
     );
     const unsubscribe = onSnapshot(q, (snap) => {
-      const first = snap.docs[0];
-      setLatestFix(first ? (first.data() as LocationFixDoc) : null);
+      setRecentFixes(snap.docs.map((d) => d.data() as LocationFixDoc));
     });
     return unsubscribe;
   }, [device]);
+
+  // Gated on `device` too (not just `recentFixes`), so switching to a peer
+  // with no device, or none at all, drops the previous device's stale fixes
+  // instead of the effect above having to reset state synchronously on
+  // every `device` change (react-hooks/set-state-in-effect).
+  const latestFix = device ? (recentFixes[0] ?? null) : null;
+  // Oldest to newest, for LocationMap's trail -- undefined (not just a
+  // single-point array) when there's nothing to show, so LocationCard can
+  // tell "no trail" from "trail of one".
+  const fixTrail = useMemo(
+    () =>
+      device && recentFixes.length > 1
+        ? [...recentFixes].reverse().map((f) => ({ lat: f.lat, lon: f.lon }))
+        : undefined,
+    [device, recentFixes]
+  );
 
   // allow.locate -- gates the "Request location" button.
   useEffect(() => {
@@ -364,6 +386,9 @@ function ThreadInner({ alias }: { alias: string }) {
           lon={latestFix.lon}
           accM={latestFix.accM}
           fixTsMs={latestFix.fixTs * 1000}
+          src={latestFix.src}
+          cached={latestFix.cached}
+          trail={fixTrail}
         />
       )}
 
