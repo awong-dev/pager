@@ -120,7 +120,18 @@ static const char *TAG = "modes";
 // unchanged. UNVERIFIED exact current saving (see coverage.h's own estimate
 // block); 30s is a conservative middle ground, not a measured optimum.
 #define PAGER_WAKE_INTERVAL_UNREGISTERED_MS 30000u
-#define PAGER_POST_WAKE_YIELD_MS 50u        // >=30ms floor (L4); 50ms per §8.2's own margin
+// How long the pager stays awake, with RTS asserted, after each timer wake.
+// Measured on hardware 2026-09-21 (`sleeptest`, GM02SP LR8.2.1.0): while RTS is
+// deasserted the modem HOLDS its URCs (nothing is lost), but with 50 ms awake
+// it never hands them over: pages sent to a sleeping pager were not received
+// at all, across a whole boot. With 150 ms they were delivered during real
+// light sleep (35 s and 136 s after sending, against a 20.48 s eDRX cycle, so
+// 150 is probably marginal). 200 ms until it has been bisected and the long
+// tail explained. Power effect: 200 ms per 5 s wake = 4% awake, against the
+// 1% the design assumed; this is now the dominant term of the sleep budget.
+// UNVERIFIED: the minimum, and whether an AT poke right after the wake would
+// let it be shorter (docs/ROADMAP.md).
+#define PAGER_POST_WAKE_YIELD_MS 200u
 #define PAGER_ACTIVE_IDLE_TIMEOUT_S (10 * 60) // 10 min, firmware/README.md
 #define PAGER_STATUS_HEARTBEAT_S 3600u         // §5.4(d)
 #define PAGER_CHECKCOMM_EVERY_N_WAKES 60u      // F4: ~5 min at T=5s
@@ -1720,8 +1731,7 @@ void modes_run(void)
                 // A restart always brings it back, and the report (saved to
                 // NVS above) is printed at boot. Unattended testing needs this.
                 vTaskDelay(pdMS_TO_TICKS(3000));
-                watchdog_kick(WD_DELIBERATE_RESTART);
-                esp_restart();
+                watchdog_hard_reset(); // not esp_restart(): that leaves a dead USB port dead
             }
         }
 #endif

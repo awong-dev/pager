@@ -55,6 +55,9 @@ void watchdog_boot(void)
     bool valid = (s_magic == WD_MAGIC);
     bool abnormal = (r == ESP_RST_PANIC || r == ESP_RST_INT_WDT || r == ESP_RST_TASK_WDT ||
                      r == ESP_RST_WDT || r == ESP_RST_BROWNOUT);
+    if (valid && s_stage == (uint32_t) WD_DELIBERATE_RESTART) {
+        abnormal = false; // watchdog_hard_reset(): a watchdog reset on purpose
+    }
     if (!valid) {
         s_magic = WD_MAGIC;
         s_resets = 0;
@@ -117,3 +120,18 @@ void watchdog_kick(wd_stage_t stage)
 }
 
 uint32_t watchdog_reset_count(void) { return (s_magic == WD_MAGIC) ? s_resets : 0; }
+
+void watchdog_hard_reset(void)
+{
+    s_stage = (uint32_t) WD_DELIBERATE_RESTART;
+    wdt_hal_context_t ctx = RWDT_HAL_CONTEXT_DEFAULT();
+    uint32_t ticks = (uint32_t) ((uint64_t) 200 * rtc_clk_slow_freq_get_hz() / 1000ULL); // 200 ms
+    wdt_hal_write_protect_disable(&ctx);
+    wdt_hal_init(&ctx, WDT_RWDT, 0, false);
+    wdt_hal_config_stage(&ctx, WDT_STAGE0, ticks, WDT_STAGE_ACTION_RESET_RTC);
+    wdt_hal_enable(&ctx);
+    wdt_hal_write_protect_enable(&ctx);
+    for (;;) {
+        // wait for the watchdog
+    }
+}

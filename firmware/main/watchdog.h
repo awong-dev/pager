@@ -49,6 +49,11 @@ void watchdog_loop_begin(void);
 void watchdog_kick(wd_stage_t stage);
 /* For long waits off the main loop's beaten path (network attach at boot). */
 void watchdog_feed(void);
+/* Reset the whole chip through the RTC watchdog, peripherals included. Unlike
+ * esp_restart() (a CPU reset), this also resets the USB-Serial-JTAG block:
+ * after light sleep the USB port was seen to stay dead for hours across
+ * esp_restart(). Does not return. */
+void watchdog_hard_reset(void);
 /* Watchdog or panic resets since power-on, for /status or the device screen. */
 uint32_t watchdog_reset_count(void);
 const char *watchdog_stage_name(uint32_t stage);

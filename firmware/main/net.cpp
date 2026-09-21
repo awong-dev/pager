@@ -109,7 +109,20 @@ static constexpr int PAGER_CA_FETCH_SOCKET_ID = 4;
 // silently breaks against.
 static constexpr int PAGER_TLS_BOOTSTRAP_PROFILE_ID = PAGER_TLS_PROFILE_ID;
 
-static constexpr uint16_t PAGER_MQTT_KEEPALIVE_S = 1800; // PROTOCOL.md §6.2
+// MQTT keepalive. It was 1800 s (PROTOCOL.md section 6.2's power arithmetic). Measured
+// on hardware 2026-09-21 on AT&T (US Mobile): an idle session died 10-13 min
+// after connecting, three times out of three. The broker no longer listed the
+// client, the modem reported nothing, the firmware believed it was connected,
+// and pages vanished until the modem's own keepalive finally failed ~45 min
+// later. That is a carrier NAT dropping an idle TCP flow. The keepalive must
+// be shorter than that timeout so the modem's PINGREQ keeps the flow alive,
+// and detects a dead one within 1.5 x the keepalive. 480 s leaves ~20% margin
+// under the shortest death seen. Power effect: 180 pings a day instead of 48
+// (modem-side only; the ESP32 does not wake for them); at the design's own
+// unmeasured ~0.1 mAh per ping that is ~18 mAh/day instead of ~5.
+// UNVERIFIED: that 480 s cures it (the pager was unreachable before it could
+// be tried), and the timeout on other carriers.
+static constexpr uint16_t PAGER_MQTT_KEEPALIVE_S = 480;
 
 static constexpr int PAGER_ATTACH_POLL_CAP_S = 300; // F1: single-attempt cap
 
