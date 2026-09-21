@@ -27,6 +27,7 @@ from firebase_admin import auth as fb_auth
 from app.store import allow as allow_store
 from app.store import backends as backends_store
 from app.store import cas as cas_store
+from app.store import cells as cells_store
 from app.store import device_secrets as device_secrets_store
 from app.store import devices as devices_store
 from app.store import messages as messages_store
@@ -495,6 +496,37 @@ def test_cas_is_default_deny(two_pairs):
     assert resp_unauth.status_code == 403
 
     resp_write = _write(f"cas/{sha_hex}", owner_token, {"pem": "hacked"})
+    assert resp_write.status_code == 403
+
+
+def test_cells_is_default_deny(two_pairs):
+    """`cells/{mcc}-{mnc}-{tac}-{ci}` (docs/PROTOCOL.md §13.2, this task):
+    the cell-tower geolocation cache. Nothing in it is useful to a client
+    directly (the web app reads resolved fixes through
+    `devices/{d}/locations`, not this collection), so it gets the same
+    default-deny-with-no-`match`-block posture as `cas`/`deviceSecrets`/
+    `phoneIndex` -- unreadable by an ordinary registered user and by an
+    admin alike."""
+    cells_store.remember_resolved(
+        "310", "410", 12345, 87654321, lat=1.0, lon=2.0, acc_m=1000, provider="google"
+    )
+    key = cells_store.cache_key("310", "410", 12345, 87654321)
+
+    owner_token = mint_id_token("u1")
+    resp = _get(f"cells/{key}", owner_token)
+    assert resp.status_code == 403
+
+    fb_auth.create_user(uid="admin-cells", email="admin-cells@example.com")
+    users_store.create_user(uid="admin-cells", alias="admincells", display_name="Admin", role="admin")
+    fb_auth.set_custom_user_claims("admin-cells", {"admin": True})
+    admin_token = mint_id_token("admin-cells")
+    resp_admin = _get(f"cells/{key}", admin_token)
+    assert resp_admin.status_code == 403
+
+    resp_unauth = _get(f"cells/{key}", None)
+    assert resp_unauth.status_code == 403
+
+    resp_write = _write(f"cells/{key}", owner_token, {"lat": 999.0})
     assert resp_write.status_code == 403
 
 

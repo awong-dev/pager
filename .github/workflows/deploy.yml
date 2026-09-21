@@ -146,7 +146,15 @@ jobs:
             -var "broker_api_url=${{ vars.BROKER_API_URL }}" \
             -var "broker_host=${{ vars.BROKER_HOST }}" \
             -var "broker_ca_pem_file=${{ vars.BROKER_CA_PEM_FILE }}" \
-            -var "public_base_url=${{ vars.PUBLIC_BASE_URL }}"
+            -var "public_base_url=${{ vars.PUBLIC_BASE_URL }}" \
+            -var "cell_geo_provider=${{ vars.CELL_GEO_PROVIDER != '' && vars.CELL_GEO_PROVIDER || 'none' }}" \
+            -var "enable_cell_geo_secret=${{ vars.ENABLE_CELL_GEO_SECRET == 'true' }}"
+        # docs/PROTOCOL.md section 13.2: the cell lookup provider, and whether the
+        # CELL_GEO_API_KEY secret (which must already hold a version: Cloud Run
+        # refuses a revision that references an empty secret) is bound into
+        # the service. Repo variables CELL_GEO_PROVIDER and
+        # ENABLE_CELL_GEO_SECRET=true; unset means the feature is off.
+        #
         # Every other variable (custom_domain, enable_sms_secrets, time_zone,
         # use_broker_gce, ...) is left at infra/envs/prod/variables.tf's
         # defaults unless also passed as a repo variable above -- add

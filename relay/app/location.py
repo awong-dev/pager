@@ -74,6 +74,7 @@ from google.cloud.firestore import (
     Transaction,
 )
 
+from app import cellgeo
 from app.db.firestore import get_db, run_transaction
 from app.ids import new_id
 from app.routing import Routing
@@ -84,7 +85,7 @@ from app.store import messages as messages_store
 from app.store.backends import Backend as BackendRow
 from app.store.locations import LocationFix
 from app.store.messages import Message
-from app.wire import LocEnvelope
+from app.wire import CellInfo, LocEnvelope, LocFix, resolve_ts
 
 logger = logging.getLogger("relay.location")
 
@@ -131,19 +132,53 @@ def _loc_wire_ids():
 # ---------------------------------------------------------------------------
 
 
-def _fix_doc(env: LocEnvelope) -> dict:
-    assert env.loc is not None
+def _fix_doc(env: LocEnvelope, loc: LocFix) -> dict:
     return {
         "ts": env.ts,
-        "fixTs": env.loc.fix_ts,
-        "lat": env.loc.lat,
-        "lon": env.loc.lon,
-        "accM": env.loc.acc,
-        "src": env.loc.src,
+        "fixTs": loc.fix_ts,
+        "lat": loc.lat,
+        "lon": loc.lon,
+        "accM": loc.acc,
+        "src": loc.src,
         "cached": env.cached,
         "reqId": env.req,
         "createdAt": SERVER_TIMESTAMP,
     }
+
+
+def _resolve_cell_fallback(cell: CellInfo, fix_ts: int) -> LocFix | None:
+    """docs/PROTOCOL.md §13.2 / this task: asks `app/cellgeo.py` to turn a
+    `cell` into a position. Called by `ingest_loc` only when `env.loc is
+    None` (no GNSS fix -- "the pager sends `cell` whenever it answers
+    without a GNSS fix"); recording `devices/{d}.status.lastCell` is a
+    separate, unconditional step in `ingest_loc` itself (§13.2: "the cell is
+    only recorded" even when a GNSS fix is also present, so that must happen
+    whether or not this function is even called). `fix_ts` is the envelope's
+    own `ts`, or the relay's receive time when `ts` is 0 (§3.5's usual rule,
+    reused here verbatim since a cell-resolved position has no
+    device-reported fix time of its own to fall back on). Returns `None`
+    (behave exactly like today's plain `no_fix`) when resolution fails for
+    any reason -- `cellgeo.resolve` itself never raises (it catches every
+    exception from the third-party HTTP call), and the `except` below is a
+    second line of defence around the whole call (including its own
+    Firestore cache reads/writes) so a bug anywhere in that path can never
+    turn into a 500 on `POST /webhooks/mqtt`."""
+    try:
+        resolved = cellgeo.resolve(cell)
+    except Exception as exc:  # noqa: BLE001 -- must never break /webhooks/mqtt ingest
+        logger.warning("cellgeo.resolve() raised unexpectedly: %r", exc)
+        resolved = None
+    if resolved is None:
+        return None
+    try:
+        return LocFix(lat=resolved.lat, lon=resolved.lon, acc=resolved.acc_m, fix_ts=fix_ts, src="cell")
+    except Exception as exc:  # noqa: BLE001 -- a malformed provider response must not break
+        # /webhooks/mqtt ingest -- cellgeo.resolve's own sanity check
+        # (accuracy, 0,0) catches the common cases, but LocFix's own
+        # stricter field bounds (e.g. a real lat/lon range) are the last
+        # line of defence.
+        logger.warning("cell-resolved fix failed validation, treated as unresolved: %r", exc)
+        return None
 
 
 def ingest_loc(device_id: str, env: LocEnvelope) -> None:
@@ -164,27 +199,51 @@ def ingest_loc(device_id: str, env: LocEnvelope) -> None:
     so a webhook redelivery after a partial failure retries the whole thing
     and reaches the same end state a first-try success would have. A
     periodic fix (`req: None`) that dedups clean simply updates
-    `locations`; nothing else happens."""
+    `locations`; nothing else happens.
+
+    **Cell-tower fallback (this task, §13.2):** when the device has no GNSS
+    fix but sent a `cell`, `_resolve_cell_fallback` (an HTTP call, so it must
+    run *before* the transaction below, same reasoning as the device lookup)
+    either produces a `LocFix` with `src:"cell"` -- treated exactly like a
+    real fix for the rest of this function, stored in `locations` and used
+    to fulfil `req` if set -- or `None`, in which case behaviour is
+    identical to today's `no_fix` handling. "The GNSS fix wins" when both
+    are present: the cell fallback is only ever attempted when `env.loc is
+    None`."""
     dedup_ref = _loc_wire_ids().document(env.id)
-    fix_ref = locations_store.new_location_ref(device_id) if env.loc is not None else None
-    fix_data = _fix_doc(env) if env.loc is not None else None
 
     # The device lookup (unlike everything `_fulfil_loc_req_in_txn` reads)
     # is not folded into the transaction: it is not part of any invariant
     # this function needs atomicity for (an unknown/renamed device is a
     # logged-and-dropped case either way, same as `_find_pager_backend`'s
     # non-transactional read in `Location.locate`), and reading it inside
-    # the transaction would gain nothing but an extra round trip.
+    # the transaction would gain nothing but an extra round trip. Looked up
+    # whenever there's a `req` to resolve *or* a `cell` to record/resolve
+    # (both need it -- `req` for `owner_uid`, `cell` for `set_last_cell`).
     owner_uid: str | None = None
-    if env.req is not None:
+    if env.req is not None or env.cell is not None:
         device = devices_store.get_device(device_id)
         if device is None:
-            logger.warning("/loc req=%s for unknown device=%s dropped", env.req, device_id)
+            if env.req is not None:
+                logger.warning("/loc req=%s for unknown device=%s dropped", env.req, device_id)
         else:
             owner_uid = device.ownerUid
 
+    effective_loc = env.loc
+    if env.cell is not None and owner_uid is not None:
+        # §13.2: "the cell is only recorded" even when a GNSS fix is also
+        # present -- this write happens regardless of whether resolution
+        # below is even attempted.
+        cell_fix_ts = resolve_ts(env.ts)
+        devices_store.set_last_cell(device_id, env.cell, cell_fix_ts)
+        if effective_loc is None:
+            effective_loc = _resolve_cell_fallback(env.cell, cell_fix_ts)
+
+    fix_ref = locations_store.new_location_ref(device_id) if effective_loc is not None else None
+    fix_data = _fix_doc(env, effective_loc) if effective_loc is not None else None
+
     req_ref = _loc_reqs().document(device_id) if owner_uid is not None else None
-    loc_field = _loc_message_field(env) if owner_uid is not None else None
+    loc_field = _loc_message_field(env, effective_loc) if owner_uid is not None else None
     ttl = loc_req_ttl_s()
 
     def _txn(transaction: Transaction) -> None:
@@ -283,26 +342,30 @@ def ingest_loc(device_id: str, env: LocEnvelope) -> None:
         return
 
 
-def _loc_message_field(env: LocEnvelope) -> dict:
+def _loc_message_field(env: LocEnvelope, loc: LocFix | None) -> dict:
     """The `loc` field of the `kind='loc'` thread message posted to each
-    requester -- a real fix's shape, or `{"err": ...}` when the device
-    answered `no_fix`/`disabled` (still worth telling the requester, rather
-    than leaving them to find out only from the 15-minute `expired` derived
-    state)."""
-    if env.loc is not None:
+    requester -- a real (or cell-resolved, `src:"cell"`) fix's shape, or
+    `{"err": ...}` when neither a GNSS fix nor a resolved cell position was
+    available (still worth telling the requester, rather than leaving them
+    to find out only from the 15-minute `expired` derived state)."""
+    if loc is not None:
         return {
-            "lat": env.loc.lat,
-            "lon": env.loc.lon,
-            "accM": env.loc.acc,
-            "fixTs": env.loc.fix_ts,
-            "src": env.loc.src,
+            "lat": loc.lat,
+            "lon": loc.lon,
+            "accM": loc.acc,
+            "fixTs": loc.fix_ts,
+            "src": loc.src,
             "cached": env.cached,
         }
     return {"err": env.err}
 
 
-def _loc_preview(env: LocEnvelope) -> str:
-    return "location" if env.loc is not None else f"location unavailable ({env.err})"
+def _loc_preview(loc_field: dict) -> str:
+    """`loc_field` is `_loc_message_field`'s own output -- a real shape
+    (including a cell-resolved one, `src:"cell"`) has no `err` key, so
+    checking for that key's absence is the one source of truth for "was
+    there a usable position" that already accounts for the cell fallback."""
+    return "location" if "err" not in loc_field else f"location unavailable ({loc_field['err']})"
 
 
 @dataclass(frozen=True, slots=True)
@@ -394,7 +457,7 @@ def _fulfil_loc_req_in_txn(
         conv_data = {
             "uids": uids_sorted,
             "lastMessageAt": SERVER_TIMESTAMP,
-            "lastPreview": _loc_preview(env),
+            "lastPreview": _loc_preview(loc_field),
             "unread": unread,
         }
         if conv_snap.exists:

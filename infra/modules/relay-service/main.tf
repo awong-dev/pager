@@ -66,6 +66,7 @@ locals {
       TWILIO_ACCOUNT_SID = var.twilio_account_sid_secret_id
       TWILIO_AUTH_TOKEN  = var.twilio_auth_token_secret_id
       TWILIO_FROM_NUMBER = var.twilio_from_number_secret_id
+      CELL_GEO_API_KEY   = var.cell_geo_api_key_secret_id
     } : k => v if v != null
   }
 }
@@ -159,6 +160,10 @@ resource "google_cloud_run_v2_service" "relay" {
       env {
         name  = "TWILIO_BASE_URL"
         value = var.twilio_base_url
+      }
+      env {
+        name  = "CELL_GEO_PROVIDER"
+        value = var.cell_geo_provider
       }
       env {
         name  = "OIDC_AUDIENCE"

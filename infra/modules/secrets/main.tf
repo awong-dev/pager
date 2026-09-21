@@ -75,6 +75,20 @@ resource "google_secret_manager_secret" "twilio_from_number" {
   }
 }
 
+# --- Cell-tower location fallback (docs/PROTOCOL.md §13.2, this task) --
+# CELL_GEO_PROVIDER itself is not a secret (plain env var, relay-service
+# module) -- only the third-party API key needs a Secret Manager container.
+# Optional like the Twilio secrets above: a deployment with
+# CELL_GEO_PROVIDER=none (the default) never reads this at all.
+resource "google_secret_manager_secret" "cell_geo_api_key" {
+  project   = var.project_id
+  secret_id = "CELL_GEO_API_KEY" # relay/app/cellgeo.py api_key()
+  labels    = var.labels
+  replication {
+    auto {}
+  }
+}
+
 # --- Google Chat (gchat backend, docs/SERVER_PLAN.md §6.5) -------------
 # Deliberately NOT created: relay/app/backends/gchat.py needs no secret
 # material. Outbound uses the relay Cloud Run service account itself via ADC

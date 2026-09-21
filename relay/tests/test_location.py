@@ -18,7 +18,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from google.cloud.firestore import FieldFilter
 
-from app import location
+from app import cellgeo, location
 from app.ids import new_id
 from app.routing import Routing
 from app.store import allow as allow_store
@@ -28,7 +28,7 @@ from app.store import locations as locations_store
 from app.store import messages as messages_store
 from app.store import users as users_store
 from app.store.locations import LocationFix
-from app.wire import LocEnvelope, LocFix
+from app.wire import CellInfo, LocEnvelope, LocFix
 from tests.fake_transport import FakeBrokerClient
 
 
@@ -53,11 +53,22 @@ def _make_pager_device(device_id: str, owner_uid: str):
 
 
 def _loc_env(
-    *, req: str | None = None, lat: float = 37.7749, lon: float = -122.4194, err: str | None = None
+    *,
+    req: str | None = None,
+    lat: float = 37.7749,
+    lon: float = -122.4194,
+    err: str | None = None,
+    cell: CellInfo | None = None,
 ) -> LocEnvelope:
     ts = int(time.time())
     loc = None if err else LocFix(lat=lat, lon=lon, fix_ts=ts, src="gnss")
-    return LocEnvelope(id=new_id("l_"), ts=ts, loc=loc, req=req, cached=False, err=err)
+    return LocEnvelope(id=new_id("l_"), ts=ts, loc=loc, req=req, cached=False, err=err, cell=cell)
+
+
+def _cell_info(**overrides) -> CellInfo:
+    obj = {"mcc": "310", "mnc": "410", "tac": 12345, "ci": 87654321, "rsrp": -95}
+    obj.update(overrides)
+    return CellInfo.model_validate(obj)
 
 
 def _setup() -> tuple[Routing, FakeBrokerClient, location.Location]:
@@ -711,3 +722,161 @@ def test_tick_clears_stale_loc_reqs_and_a_fresh_locate_does_not_coalesce():
     second = loc.locate(requester_uid="mom", device=device)
     assert second.request_id != first.request_id
     assert len(broker.published) == 2
+
+
+# ---------------------------------------------------------------------------
+# Cell-tower location fallback (docs/PROTOCOL.md §13.2, this task)
+# ---------------------------------------------------------------------------
+
+
+def test_cell_answer_fulfils_loc_req_with_src_cell(monkeypatch: pytest.MonkeyPatch):
+    """A `no_fix` + `cell` answer resolves to a position, fulfils the
+    matching `loc_req`, and is stored exactly like a fix, `src:"cell"`."""
+    monkeypatch.setattr(
+        cellgeo, "resolve", lambda cell: cellgeo.CellFix(lat=1.5, lon=2.5, acc_m=1200, provider="google")
+    )
+    _make_user("mom", "mom")
+    _make_user("student", "student")
+    allow_store.set_edge("mom", "student", message=True, locate=True)
+    _make_pager_device("pgr-loc-cell-1", "student")
+    device = devices_store.get_device("pgr-loc-cell-1")
+
+    _routing, _broker, loc = _setup()
+    outcome = loc.locate(requester_uid="mom", device=device)
+
+    answer = _loc_env(req=outcome.request_id, err="no_fix", cell=_cell_info())
+    location.ingest_loc("pgr-loc-cell-1", answer)
+
+    loc_req_msg = messages_store.get_message(outcome.request_id)
+    pager_bid = next(bid for bid, d in loc_req_msg.deliveries.items() if d.kind == "pager")
+    assert loc_req_msg.deliveries[pager_bid].state == "fulfilled"
+
+    fixes = locations_store.list_locations("pgr-loc-cell-1")
+    assert len(fixes) == 1
+    assert fixes[0].src == "cell"
+    assert fixes[0].lat == 1.5
+    assert fixes[0].lon == 2.5
+    assert fixes[0].accM == 1200
+
+    thread = messages_store.list_thread(messages_store.conv_key("mom", "student"))
+    loc_msgs = [m for m in thread if m.kind == "loc"]
+    assert len(loc_msgs) == 1
+    assert loc_msgs[0].loc["src"] == "cell"
+    assert loc_msgs[0].loc["lat"] == 1.5
+    assert "err" not in loc_msgs[0].loc
+
+
+def test_cell_unresolvable_records_last_cell_and_behaves_like_no_fix(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """docs/PROTOCOL.md §13.2: "If it cannot be resolved, behave as today
+    for no_fix, but record the raw cell and the time on the device
+    document"."""
+    monkeypatch.setattr(cellgeo, "resolve", lambda cell: None)
+    _make_user("mom", "mom")
+    _make_user("student", "student")
+    allow_store.set_edge("mom", "student", message=True, locate=True)
+    _make_pager_device("pgr-loc-cell-2", "student")
+    device = devices_store.get_device("pgr-loc-cell-2")
+
+    _routing, _broker, loc = _setup()
+    outcome = loc.locate(requester_uid="mom", device=device)
+
+    answer = _loc_env(req=outcome.request_id, err="no_fix", cell=_cell_info(tac=999, ci=42))
+    location.ingest_loc("pgr-loc-cell-2", answer)
+
+    # Same as a plain no_fix answer -- no location fix stored.
+    assert locations_store.list_locations("pgr-loc-cell-2") == []
+    thread = messages_store.list_thread(messages_store.conv_key("mom", "student"))
+    loc_msgs = [m for m in thread if m.kind == "loc"]
+    assert len(loc_msgs) == 1
+    assert loc_msgs[0].loc == {"err": "no_fix"}
+
+    device_after = devices_store.get_device("pgr-loc-cell-2")
+    assert device_after.status.lastCell is not None
+    assert device_after.status.lastCell.tac == 999
+    assert device_after.status.lastCell.ci == 42
+
+
+def test_cell_alongside_gnss_fix_is_only_recorded_gnss_wins(monkeypatch: pytest.MonkeyPatch):
+    """docs/PROTOCOL.md §13.2: "It may also send it alongside a real GNSS
+    fix (then the GNSS fix wins and the cell is only recorded)." -- the
+    resolver must not even be called."""
+    called = {"n": 0}
+
+    def _resolve(cell):
+        called["n"] += 1
+        return cellgeo.CellFix(lat=9.0, lon=9.0, acc_m=100, provider="google")
+
+    monkeypatch.setattr(cellgeo, "resolve", _resolve)
+    _make_user("student", "student")
+    _make_pager_device("pgr-loc-cell-3", "student")
+
+    env = _loc_env(lat=37.0, lon=-122.0, cell=_cell_info())
+    location.ingest_loc("pgr-loc-cell-3", env)
+
+    assert called["n"] == 0
+    fixes = locations_store.list_locations("pgr-loc-cell-3")
+    assert len(fixes) == 1
+    assert fixes[0].src == "gnss"
+    assert fixes[0].lat == 37.0
+
+    device_after = devices_store.get_device("pgr-loc-cell-3")
+    assert device_after.status.lastCell is not None  # recorded anyway
+
+
+def test_cell_absent_is_backward_compatible_no_lastcell_written():
+    """A pager that never sends `cell` (today's firmware) leaves
+    `status.lastCell` untouched."""
+    _make_user("student", "student")
+    _make_pager_device("pgr-loc-cell-4", "student")
+
+    location.ingest_loc("pgr-loc-cell-4", _loc_env())
+
+    device_after = devices_store.get_device("pgr-loc-cell-4")
+    assert device_after.status.lastCell is None
+
+
+def test_cell_resolver_failure_does_not_break_ingest(monkeypatch: pytest.MonkeyPatch):
+    """A bug or outage in the third-party resolver must never break `/loc`
+    ingest -- the envelope is still processed exactly like a plain
+    `no_fix`."""
+
+    def _boom(cell):
+        raise RuntimeError("simulated resolver crash")
+
+    monkeypatch.setattr(cellgeo, "resolve", _boom)
+    _make_user("mom", "mom")
+    _make_user("student", "student")
+    allow_store.set_edge("mom", "student", message=True, locate=True)
+    _make_pager_device("pgr-loc-cell-5", "student")
+    device = devices_store.get_device("pgr-loc-cell-5")
+
+    _routing, _broker, loc = _setup()
+    outcome = loc.locate(requester_uid="mom", device=device)
+
+    answer = _loc_env(req=outcome.request_id, err="no_fix", cell=_cell_info())
+    location.ingest_loc("pgr-loc-cell-5", answer)  # must not raise
+
+    loc_req_msg = messages_store.get_message(outcome.request_id)
+    pager_bid = next(bid for bid, d in loc_req_msg.deliveries.items() if d.kind == "pager")
+    assert loc_req_msg.deliveries[pager_bid].state == "fulfilled"
+    assert locations_store.list_locations("pgr-loc-cell-5") == []
+
+
+def test_cell_periodic_unsolicited_answer_resolves_and_stores(monkeypatch: pytest.MonkeyPatch):
+    """A periodic (`req: null`) `no_fix` + `cell` answer is resolved and
+    stored the same way as an on-demand one."""
+    monkeypatch.setattr(
+        cellgeo, "resolve", lambda cell: cellgeo.CellFix(lat=4.0, lon=5.0, acc_m=800, provider="google")
+    )
+    _make_user("student", "student")
+    _make_pager_device("pgr-loc-cell-6", "student")
+
+    env = _loc_env(err="no_fix", cell=_cell_info())
+    location.ingest_loc("pgr-loc-cell-6", env)
+
+    fixes = locations_store.list_locations("pgr-loc-cell-6")
+    assert len(fixes) == 1
+    assert fixes[0].src == "cell"
+    assert fixes[0].reqId is None

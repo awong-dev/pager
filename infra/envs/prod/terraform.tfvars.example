@@ -40,6 +40,8 @@ broker_host = "<your-deployment>.emqxsl.com"
 # enable_phone_auth      = true
 # enable_email_link_auth = true
 # enable_sms_secrets     = false   # flip once the three Twilio secret values are set
+# cell_geo_provider      = "none"  # "google" | "opencellid" | "none" (docs/PROTOCOL.md §13.2)
+# enable_cell_geo_secret = false   # flip once CELL_GEO_API_KEY has a real value set
 # time_zone              = "America/Los_Angeles"
 # use_broker_gce         = false   # EMQX Cloud Serverless is the default plan (D2)
 # broker_domain          = ""      # required if use_broker_gce = true

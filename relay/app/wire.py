@@ -490,6 +490,61 @@ class LocFix(BaseModel):
         return value
 
 
+# Cell-tower location fallback (this task, docs/PROTOCOL.md §13.2/§10):
+# integer sub-keys mcc=0, mnc=1, tac=2, ci=3, rsrp=4 (app/wirecbor.py's
+# CELL_KEYMAP). `mcc`/`mnc` are strings, not ints, specifically so a leading
+# zero (a real MNC, e.g. "05") is not silently lost -- the whole reason the
+# protocol table calls them out as strings.
+_MCC_RE = re.compile(r"^\d{3}$")
+_MNC_RE = re.compile(r"^\d{2,3}$")
+CELL_TAC_MAX = 65535
+CELL_CI_MAX = 268_435_455  # 2**28 - 1: E-UTRAN cell identity is 28 bits.
+CELL_RSRP_MIN = -156
+CELL_RSRP_MAX = -30
+
+
+class CellInfo(BaseModel):
+    """`cell` sub-map on a `/loc` envelope (docs/PROTOCOL.md §13.2, this
+    task): the pager's serving cell, sent whenever it answers a `loc_req` (or
+    a periodic fix) with `loc:null, err:"no_fix"` -- GNSS and LTE cannot run
+    at once on this modem, so a `no_fix` answer is common, and the relay can
+    turn a cell identity into a coarse position (`app/cellgeo.py`) even
+    though the pager itself cannot. May also be sent alongside a real GNSS
+    fix, in which case the fix wins and the cell is only recorded
+    (`app/location.py`'s `ingest_loc`, `devices/{d}.status.lastCell`).
+
+    Deliberately **not** wired into `LocEnvelope`'s own field validators the
+    way every other field here is: a malformed `cell` must not fail the
+    whole `/loc` envelope (the pager's actual fix/no_fix answer is still
+    good and must still be processed) -- see `LocEnvelope`'s
+    `_drop_malformed_cell` pre-validator, which validates a `cell` against
+    this model *before* the parent model ever sees it, and silently drops it
+    on failure rather than letting pydantic's usual "a bad nested model
+    fails the whole parent" behaviour apply."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    mcc: str
+    mnc: str
+    tac: int = Field(ge=0, le=CELL_TAC_MAX)
+    ci: int = Field(ge=0, le=CELL_CI_MAX)
+    rsrp: int | None = Field(default=None, ge=CELL_RSRP_MIN, le=CELL_RSRP_MAX)
+
+    @field_validator("mcc")
+    @classmethod
+    def _check_mcc(cls, value: str) -> str:
+        if not _MCC_RE.match(value):
+            raise ValueError("cell.mcc must be exactly 3 digits")
+        return value
+
+    @field_validator("mnc")
+    @classmethod
+    def _check_mnc(cls, value: str) -> str:
+        if not _MNC_RE.match(value):
+            raise ValueError("cell.mnc must be 2 or 3 digits")
+        return value
+
+
 class LocEnvelope(BaseModel):
     """A payload received on `pager/{device_id}/loc` (device -> relay), per
     §13.2. `loc` and `req` are required *keys* (the value may be null)."""
@@ -503,8 +558,36 @@ class LocEnvelope(BaseModel):
     req: str | None
     cached: bool = False
     err: Literal["no_fix", "disabled"] | None = None
+    # Cell-tower location fallback (this task, §13.2): optional, absent =
+    # today's behaviour exactly. See `CellInfo`'s docstring and
+    # `_drop_malformed_cell` below for why a bad `cell` does not reject the
+    # whole envelope.
+    cell: CellInfo | None = None
     # §14.2: present on every signed envelope.
     n: int | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_malformed_cell(cls, data: Any) -> Any:
+        """§13.2 (this task): "treat a malformed cell as absent rather than
+        dropping the envelope." Runs before any other validation on this
+        model: pop `cell`, try validating it on its own against `CellInfo`,
+        and drop it silently (the pager's fix/no_fix answer is still
+        processed either way) if it does not validate. Only dict-shaped
+        `data` is inspected -- anything else is left to `LocEnvelope`'s own
+        top-level type check to reject in the usual way."""
+        if not isinstance(data, dict) or "cell" not in data:
+            return data
+        cell = data["cell"]
+        if cell is None:
+            return data
+        try:
+            CellInfo.model_validate(cell)
+        except Exception:  # noqa: BLE001 -- any validation error means "treat as absent"
+            logger.info("malformed /loc cell field %r treated as absent", cell)
+            data = dict(data)
+            data.pop("cell", None)
+        return data
 
     @field_validator("n")
     @classmethod

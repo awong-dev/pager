@@ -66,10 +66,10 @@ module "relay_service" {
   service_name = var.relay_service_name
   image        = var.relay_image
 
-  broker_api_url   = var.broker_api_url
-  broker_host      = var.broker_host
-  broker_ca_pem    = var.broker_ca_pem_file == "" ? "" : file("${path.module}/${var.broker_ca_pem_file}")
-  public_base_url  = var.public_base_url
+  broker_api_url  = var.broker_api_url
+  broker_host     = var.broker_host
+  broker_ca_pem   = var.broker_ca_pem_file == "" ? "" : file("${path.module}/${var.broker_ca_pem_file}")
+  public_base_url = var.public_base_url
 
   broker_api_key_secret_id    = module.secrets.secret_ids.broker_api_key
   broker_api_secret_secret_id = module.secrets.secret_ids.broker_api_secret
@@ -79,6 +79,9 @@ module "relay_service" {
   twilio_auth_token_secret_id  = var.enable_sms_secrets ? module.secrets.secret_ids.twilio_auth_token : null
   twilio_from_number_secret_id = var.enable_sms_secrets ? module.secrets.secret_ids.twilio_from_number : null
   twilio_base_url              = var.twilio_base_url
+
+  cell_geo_provider          = var.cell_geo_provider
+  cell_geo_api_key_secret_id = var.enable_cell_geo_secret ? module.secrets.secret_ids.cell_geo_api_key : null
 
   oidc_audience       = local.relay_oidc_audience
   oidc_allowed_emails = local.scheduler_caller_email

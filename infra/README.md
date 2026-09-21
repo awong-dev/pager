@@ -111,6 +111,33 @@ the SMS backend, which needs a real Twilio account and a registered number (see 
 Leave `enable_sms_secrets = false` in `terraform.tfvars` until you have real values for all three
 — Cloud Run refuses to create a revision that references a secret with zero versions.
 
+**`CELL_GEO_API_KEY`** (docs/PROTOCOL.md §13.2 — cell-tower location fallback) is only needed if
+you are enabling `CELL_GEO_PROVIDER=google` (or `opencellid`); leave `enable_cell_geo_secret =
+false` and `cell_geo_provider = "none"` in `terraform.tfvars` until you have a real key — the
+relay works exactly as it does today with `none` (no third-party lookup, nothing stored beyond
+`devices/{d}.status.lastCell`). To create a Google Geolocation API key:
+
+1. Google Cloud Console → this project → **APIs & Services → Library** → enable the **Geolocation
+   API**.
+2. **APIs & Services → Credentials → Create credentials → API key.**
+3. **Restrict the key**: "Restrict key" → **API restrictions** → select only **Geolocation API**
+   (do *not* leave it unrestricted — a key that can also call, say, the Maps or Places APIs is a
+   much more valuable thing to leak). There is no IP/referrer restriction that makes sense here
+   (the caller is a Cloud Run service, not a browser or a fixed-IP host), so API restriction is the
+   only meaningful one available.
+4. `gcloud secrets versions add CELL_GEO_API_KEY --project <PROJECT_ID> --data-file=-` (same
+   no-trailing-newline caution as the other secrets above), then set `cell_geo_provider = "google"`
+   and `enable_cell_geo_secret = true` in `terraform.tfvars` (or as the `CELL_GEO_PROVIDER` /
+   `enable_cell_geo_secret` values in step 9's CI wiring) and `terraform apply` again.
+
+**Cost at this project's volume**: the Geolocation API bills per request past a monthly free
+allowance; a school pager answering a handful of `no_fix` `loc_req`s a day, almost all of which hit
+`app/cellgeo.py`'s 30-day cache after the first lookup per cell (a handful of distinct cells at
+one school + home), stays a tiny fraction of that free allowance — realistically $0/month, but
+**verify current Google Geolocation API pricing before relying on that** (pricing pages change; this
+repo does not track it). OpenCelliD's own pricing/free-tier terms are unverified here too — see
+`app/cellgeo.py`'s docstring on that provider's `UNVERIFIED` API shape.
+
 ## 7. Build and push the first relay image by hand
 
 ```
@@ -170,6 +197,11 @@ Read that workflow's own top-of-file comment for the exact gating mechanism firs
     above -- the deployed Cloud Run URL, once known). Only load-bearing once a CA is pinned; if this
     repo variable is unset while `BROKER_CA_PEM_FILE` is set, the next CI deploy makes device
     create/rotate start failing with a 500 instead of silently un-pinning (`app/devsetup.py`).
+  - `CELL_GEO_PROVIDER` (optional; docs/PROTOCOL.md §13.2 -- cell-tower location fallback). Unset
+    or empty deploys with `"none"` (`.github/workflows/deploy.yml`'s own fallback), the same
+    no-lookup default as everywhere else. Set to `google` (or `opencellid`) only once
+    `CELL_GEO_API_KEY` has a real value (step 6 above) **and** `enable_cell_geo_secret = true` in
+    `terraform.tfvars` -- this repo variable alone does not wire the secret in.
   - `FIREBASE_PROJECT_ID`, `FIREBASE_API_KEY`, `FIREBASE_AUTH_DOMAIN`, `FIREBASE_STORAGE_BUCKET`,
     `FIREBASE_MESSAGING_SENDER_ID`, `FIREBASE_APP_ID` -- the web app's Firebase config (same values as
     `web/.env.local`'s own `NEXT_PUBLIC_FIREBASE_*`, from the Firebase console's Project Settings ->

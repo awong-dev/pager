@@ -14,8 +14,11 @@ Firmware
 - "Set up again" on the device menu is a stub; setup is console-only.
 - A received SMS lives in RAM only; multipart texts arrive as separate messages; the boot-time
   scan of stored texts reads slots one by one.
-- Location: the PSM-window radio route (cheaper than dropping the radio) is not built; no
-  cell-based fallback position; accelerometer thresholds are datasheet defaults.
+- Location: the PSM-window radio route (cheaper than dropping the radio) is not built;
+  accelerometer thresholds are datasheet defaults. Cell-based fallback position
+  (`PROTOCOL.md` §13.2): the relay/tools half is built, but firmware does not yet send `cell` on a
+  `no_fix` answer -- that is a separate, later firmware task, byte-compatible with the wire shape
+  already in `PROTOCOL.md`.
 - The payload parser in the modem library miscounts by one byte when a payload ends in a newline;
   the symptom is patched, the cause is not.
 - The temporary diagnostics (`nettest`, `mqtttest`, the raw AT trace) are still compiled in.
@@ -27,6 +30,12 @@ Relay
 - No end-to-end scenario for a CA push.
 - The per-device APN field has an API but no web UI; the pager's own detection makes it rarely
   needed.
+- Cell-tower location fallback (`PROTOCOL.md` §13.2) needs a real `CELL_GEO_API_KEY` before it
+  resolves anything in production -- `CELL_GEO_PROVIDER=none` (the default, and every deployment's
+  value until an owner does `infra/README.md`'s Google Geolocation API key step) stores only
+  `devices/{d}.status.lastCell`, no coarse position. `opencellid`'s request/response shape is also
+  `UNVERIFIED` (`relay/app/cellgeo.py`'s docstring) -- confirm it against the current API docs
+  before ever selecting that provider.
 
 Web
 - No test runner. Validation logic is kept in pure modules so it can be tested later.

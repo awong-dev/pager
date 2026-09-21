@@ -127,15 +127,33 @@ devices/{deviceId}             {ownerUid, label, mqttUsername, defaultToUid|null
                                 smsContacts: [{name, phone}…],        v0.2 §6, max 8, owner/admin-managed
                                 status: {state, mode, battMv, rssi, session, ts, fw, locPeriodS, locMinS,
                                          authAlarm, updatedAt,
-                                         tls, caFp, locBackoffS, smsLost},   v0.2 §4.3/§5/§6, all optional
+                                         tls, caFp, locBackoffS, smsLost,
+                                         lastCell: {mcc, mnc, tac, ci, rsrp|null, ts}|null},
+                                                        v0.2 §4.3/§5/§6, this task's §13.2, all optional.
+                                                        lastCell is the pager's most recently reported
+                                                        serving cell, written whenever a `/loc` carries a
+                                                        `cell` (resolved or not, GNSS fix or not) so the web
+                                                        app can show "last known cell" even with
+                                                        CELL_GEO_PROVIDER=none or a resolver outage.
                                 smsContacts: [{name, phone}],                 v0.2 §6, max 8
                                 pendingCfg, pendingCfgCa, pendingCfgSms}     newest unacked cfg per kind
 devices/{deviceId}/locations/{autoId}
-                               {ts, fixTs, lat, lon, accM, src, cached, reqId|null, createdAt}
+                               {ts, fixTs, lat, lon, accM, src: 'gnss'|'cell', cached, reqId|null, createdAt}
+                                                        src:'cell' fixes are produced by the relay's cell
+                                                        geolocation resolver (this task, §13.2), never by
+                                                        the pager itself.
 cas/{sha256hex}                {pem, createdAt}       v0.2 §4.4: every CA the relay has ever pointed a
                                                         device at, so an old `ca_url` keeps resolving.
                                                         Server-only (rules: default deny); served by the
                                                         public `GET /ca/{sha256hex}.pem`.
+cells/{mcc}-{mnc}-{tac}-{ci}   {lat, lon, accM, provider, unknown: bool, resolvedAt}
+                                                        this task, §13.2: cache of resolved (or "unknown")
+                                                        cell-tower positions, `app/cellgeo.py`/`app/store/
+                                                        cells.py`. Reused 30 days when resolved, 1 day when
+                                                        `unknown` (a provider's coverage can grow). Server-
+                                                        only (rules: default deny, no client read path at
+                                                        all — unlike `locations`, nothing here is served
+                                                        back to a client directly).
 devices/{deviceId}/smsLog/{logId}
                                {ts, smsTs, dir: 'out'|'in', peer, st: 'sent'|'failed'|'recv'|'blocked',
                                 body, receivedAt}      v0.2 §6/§7 (device-direct SMS audit log; `logId` is
@@ -203,6 +221,18 @@ settings/meta                  {schemaVersion: 2, lastSweepAt, seqCounter}
   fans out to N recipients), while a `/loc` envelope has no recipient to key against. Additive to
   this table; nothing device-visible. §5.7's sweep must delete these alongside
   `locations`, the way it deletes `wireIds` alongside `messages`, or the collection grows forever.
+- **`cells/{mcc}-{mnc}-{tac}-{ci}` is this task's own addition** (`PROTOCOL.md` §13.2): a cache of
+  resolved cell-tower positions, keyed by the cell identity itself (content-addressed, the same
+  idiom `cas/{sha256hex}` uses). A resolved fix is reused for 30 days, an "unknown cell" answer for
+  1 day — cells do not move, the provider APIs (`app/cellgeo.py`) bill per call, and the cache is
+  what keeps cell-based locations working through a provider outage. **Privacy**: a cache entry (and
+  the provider lookup that fills it) carries only the cell identity, never anything about the
+  pager's owner. Server-only, same default-deny posture as `cas`/`phoneIndex` below — no `match`
+  block in `firestore.rules`, nothing here is ever read directly by a client (unlike `locations`,
+  the web app never queries `cells`). `relay/tests/test_rules.py` pins it. No retention sweep
+  needed (unlike `locations`/`messages`): the 30-day/1-day TTLs above are enforced at read time by
+  `app/store/cells.py`'s own `get_cached`, the same "derived, not swept" pattern `PROTOCOL.md` §4's
+  `expired` state uses.
 - **Three inbound-lookup collections, additive to this table:**
   `phoneIndex/{e164Phone}` → `{uid, bid}`, `gchatSpaces/{spaceId}` → `{uid, bid}`, and
   `gchatLinkCodes/{code}` → `{uid, bid, expiresAt}`. §6.4/§6.5 specify the *behaviour* ("map
@@ -348,6 +378,17 @@ session. `sent` means "the broker's publish API accepted the QoS 1 message", whi
 PUBACK reported. The §5.3 "re-publish on online edge" is triggered by the `/status` webhook.
 Nothing the device sees changes.
 
+### 4.9 `cell` on `/loc` — cell-tower location fallback (this task)
+`PROTOCOL.md` §13.2. GNSS and LTE cannot run at once on the pager's modem, and a school pager is
+indoors most of the day, so a GNSS attempt usually ends in `no_fix`; the pager always knows its
+serving cell but cannot turn that into coordinates itself. `cell` (`mcc`/`mnc`/`tac`/`ci`, optional
+`rsrp`) is sent whenever the pager answers without a GNSS fix, and optionally alongside a real fix
+too (then only recorded, never used for the position). Server-side handling is §5.6's job; the
+resolver itself is `app/cellgeo.py` (§5's module list) — pluggable (`google`/`opencellid`/`none`),
+cache-first (`cells/{mcc}-{mnc}-{tac}-{ci}`, §3), and privacy-scoped: a lookup sends only the cell
+identity to the chosen third party, never anything about the pager's owner, and `none` (the
+default) makes no third-party call at all.
+
 ---
 
 ## 5. Backend (Python) design
@@ -362,11 +403,12 @@ relay/app/
   db/firestore.py    firebase-admin init (emulator-aware), typed collection helpers, txn helpers;
   store/             users.py, devices.py, backends.py, allow.py, messages.py, locations.py, settings.py,
                      sms.py (devices/{id}/smsLog/{logId} — v0.2 §6/§7, device-direct SMS audit log),
-                     cas.py (cas/{sha256hex} — v0.2 §4.4)
+                     cas.py (cas/{sha256hex} — v0.2 §4.4),
+                     cells.py (cells/{mcc}-{mnc}-{tac}-{ci} — this task, §13.2: cell-geolocation cache)
   ca_resolve.py      the broker's CA: BROKER_CA_PEM wins, else resolved from the served chain;
                      ca_pointer() -> (url, sha) for bundles and pushes; needs PUBLIC_BASE_URL
   devcfg.py          /down cfg pushes: lock, ca (push/un-pin), sms contacts; one pending slot each
-  wire.py            + kind, to, alias regex, LocEnvelope
+  wire.py            + kind, to, alias regex, LocEnvelope, CellInfo (this task, §13.2's `cell` sub-map)
   broker.py          BrokerClient: publish(topic, payload, qos, retain) over the broker REST API;
                      verify_webhook(request); parse_webhook(body) → (topic, payload, qos)
   ingest.py          what mqtt_gateway.py was: /up acks + replies, /status (+ online-edge
@@ -374,7 +416,11 @@ relay/app/
   routing.py         allow-list check, recipient resolution, fan-out → deliveries → adapters
   backends/          base.py (Protocol), pager.py, webapp.py, sms_twilio.py, gchat.py, registry.py
   auth.py            verify Firebase ID token → user; require_user / require_admin (custom claim)
-  location.py        loc_req lifecycle, coalescing, cached answers
+  location.py        loc_req lifecycle, coalescing, cached answers; cell-tower fallback resolution
+                     (this task, §13.2) when a /loc answer has no GNSS fix
+  cellgeo.py         this task, §13.2: pluggable cell-tower geolocation resolver (google/opencellid/
+                     none, CELL_GEO_PROVIDER/CELL_GEO_API_KEY), cache-first via store/cells.py, never
+                     raises into the ingest path
   jobs.py            tick(): retry queued publishes + failed adapter deliveries; sweep(): retention
   tasks.py           Cloud Tasks enqueue (prod) / inline thread (dev) for delivery retries
   routers/           me.py, conversations.py, admin.py, devices.py (GET /api/devices, owner/admin
@@ -486,6 +532,16 @@ otherwise the admin UI shows "add these to the broker" copy.
 - Expiry is **derived**: a `loc_req` delivery still `sent` after 15 min renders as `expired` (the
   web app computes it from `createdAt`; `/internal/tick` also clears stale `locReqs/{d}` docs so a
   new request is not coalesced onto a dead one).
+- **Cell-tower fallback (this task, `PROTOCOL.md` §13.2):** when a `/loc` answer has no GNSS fix
+  (`env.loc is None`) but carries `cell`, `ingest_loc` calls `app/cellgeo.py` (an HTTP call, so it
+  happens *before* the ingest transaction opens, same as the existing device lookup) and, on
+  success, treats the resolved position exactly like a real fix for the rest of the function —
+  `src:"cell"`, the provider's own accuracy radius as `accM`, `fixTs` = the envelope's `ts` (or
+  receive time if `ts` is 0) — including fulfilling `req` if set. `devices/{d}.status.lastCell` is
+  written unconditionally whenever `cell` is present, whether or not it resolves and whether or
+  not the pager also sent a real GNSS fix (§13.2: "the GNSS fix wins and the cell is only
+  recorded"). A resolver failure, timeout, or `CELL_GEO_PROVIDER=none` all fall back to identical
+  `no_fix` handling — the ingest path never breaks on a third-party failure.
 
 ### 5.7 Retention (`jobs.sweep`)
 Settings are **a count plus a unit**, `{n, unit: 'days'|'weeks'}`, stored as given and converted

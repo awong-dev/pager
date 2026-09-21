@@ -256,3 +256,54 @@ def test_to_json_safe_base64url_encodes_bytes_recursively():
 def test_to_json_safe_leaves_non_bytes_values_unchanged():
     obj = {"a": 1, "b": [1, "x", None, {"c": True}]}
     assert wirecbor.to_json_safe(obj) == obj
+
+
+# ---------------------------------------------------------------------------
+# docs/PROTOCOL.md §13.2/§10 (this task): the `/loc` envelope's `cell`
+# sub-map, key 49, sub-keys mcc=0/mnc=1/tac=2/ci=3/rsrp=4.
+# ---------------------------------------------------------------------------
+
+
+def test_wirecbor_cell_round_trips():
+    obj = {"cell": {"mcc": "310", "mnc": "410", "tac": 12345, "ci": 87654321, "rsrp": -95}}
+    encoded = wirecbor.encode(obj)
+    assert wirecbor.decode(encoded) == obj
+
+
+def test_wirecbor_cell_encodes_at_key_49_with_expected_submap():
+    encoded = wirecbor.encode({"cell": {"mcc": "310", "mnc": "41", "tac": 1, "ci": 2}})
+    assert encoded == cbor2.dumps({49: {0: "310", 1: "41", 2: 1, 3: 2}})
+
+
+def test_wirecbor_cell_unknown_subkey_is_dropped_not_raised():
+    """§13.2: "Unknown sub-keys are ignored" -- a numeric sub-key this
+    module's CELL_KEYMAP does not know (99, here) must not raise or make the
+    whole envelope fail to decode."""
+    raw = cbor2.dumps({49: {0: "310", 1: "410", 2: 12345, 3: 87654321, 99: "future"}})
+    decoded = wirecbor.decode(raw)
+    assert decoded == {"cell": {"mcc": "310", "mnc": "410", "tac": 12345, "ci": 87654321}}
+
+
+def test_loc_envelope_with_cell_example_cbor_hex():
+    """An example `/loc` answering `no_fix` with a `cell`, the exact CBOR
+    bytes a firmware implementation can byte-compare against (this task's
+    report reproduces this hex)."""
+    obj = {
+        "v": 1,
+        "id": "l_3c9a11f0",
+        "ts": 1757700000,
+        "loc": None,
+        "req": "m_7f3a2b10",
+        "err": "no_fix",
+        "cell": {"mcc": "310", "mnc": "410", "tac": 12345, "ci": 87654321, "rsrp": -95},
+    }
+    encoded = wirecbor.encode(obj)
+    assert wirecbor.decode(encoded) == obj
+    # Pinned so a future change to key ordering/encoding is a deliberate,
+    # reviewed diff, not a silent wire-format break -- this exact hex is
+    # reproduced in this task's report for the firmware task to
+    # byte-compare against.
+    assert (
+        encoded.hex()
+        == "a70001016a6c5f3363396131316630021a68c45fa008f6096a6d5f37663361326231300b666e6f5f6669781831a50063333130016334313002193039031a05397fb104385e"
+    )

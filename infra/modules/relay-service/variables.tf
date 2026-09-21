@@ -93,6 +93,19 @@ variable "twilio_base_url" {
   default     = ""
 }
 
+# --- Cell-tower location fallback (docs/PROTOCOL.md §13.2, this task) ----
+variable "cell_geo_provider" {
+  description = "relay/app/cellgeo.py's CELL_GEO_PROVIDER -- \"none\" (default: no third-party lookup, nothing stored beyond devices/{d}.status.lastCell), \"google\" or \"opencellid\" (UNVERIFIED API shape, see that module's docstring). Not secret -- a plain env var, unlike the API key below."
+  type        = string
+  default     = "none"
+}
+
+variable "cell_geo_api_key_secret_id" {
+  description = "Optional, like the Twilio secret ids above: only wired into the service's env if non-null. A deployment with cell_geo_provider left at \"none\" never needs this -- relay/app/cellgeo.py treats an unset key as \"skip the lookup\", not a crash."
+  type        = string
+  default     = null
+}
+
 variable "oidc_audience" {
   description = "app/routers/internal.py's OIDC_AUDIENCE -- must match infra/modules/schedule's oidc_token.audience exactly (both fed the same value from envs/prod, per that file's module docstring 'Known gap' section). Also set as this service's custom_audiences so a fixed, non-self-referential string (e.g. \"https://pager-relay\") can be used instead of the service's own computed .uri."
   type        = string

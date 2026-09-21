@@ -18,7 +18,11 @@ Two ways to drive it:
   - one-shot subcommand (scripting): relay/.venv/bin/python tools/pager_client.py msg "hi"
 `--json` on either prints machine-readable output instead of prose.
 
-Device-side flags: `--device-id --host --port --username --password`.
+Device-side flags: `--device-id --host --port --username --password`, and
+`--cell <mcc,mnc,tac,ci[,rsrp]>` (docs/PROTOCOL.md §13.2, cell-tower location
+fallback: this device's serving cell, which also starts it with `loc fail
+on` so it answers a `loc_req` with `no_fix` + `cell` instead of a real fix --
+same shorthand as the REPL's `loc cell` subcommand).
 Server-side flags: `--api --auth-url --as <alias>` (`--as` is a convenience
 that runs `login <alias>` before the REPL/subcommand).
 
@@ -39,7 +43,8 @@ docs/PROTOCOL.md §3.2's `contact_req`/`book`/`cfg` kinds):
 
   Device: connect, disconnect, crash, inbox, msg, ack, autoack, status, bytes,
           loc <lat> <lon> [acc] | loc auto <period_s> [--walk] |
-          loc min <s> | loc fail on|off | loc backoff <s>,
+          loc min <s> | loc fail on|off | loc backoff <s> |
+          loc cell <mcc,mnc,tac,ci[,rsrp]>|off,
           contactreq <name> [phone-or-alias],
           sms out <phone> <text...> | sms in <phone> <text...>
   Server: login, contacts, chat, say, watch, tick, sweep, locate <alias>,
@@ -136,6 +141,26 @@ def parse_retention_shorthand(value: str) -> dict[str, Any]:
     return {"n": n, "unit": unit}
 
 
+def parse_cell_arg(value: str) -> dict[str, Any]:
+    """`mcc,mnc,tac,ci[,rsrp]` -> the wire's `cell` sub-map shape (JSON
+    names, docs/PROTOCOL.md §13.2) -- `--cell`'s CLI shorthand and `loc
+    cell`'s REPL argument share this one parser. `mcc`/`mnc` stay strings
+    (leading zeros matter, §13.2); `tac`/`ci`/`rsrp` are ints. Raises
+    `ValueError` on anything else, which both callers turn into a clean
+    usage error rather than a traceback."""
+    parts = value.split(",")
+    if len(parts) not in (4, 5):
+        raise ValueError(f"--cell/loc cell must be mcc,mnc,tac,ci[,rsrp], got {value!r}")
+    mcc, mnc, tac_s, ci_s = (p.strip() for p in parts[:4])
+    try:
+        cell: dict[str, Any] = {"mcc": mcc, "mnc": mnc, "tac": int(tac_s), "ci": int(ci_s)}
+        if len(parts) == 5:
+            cell["rsrp"] = int(parts[4].strip())
+    except ValueError as exc:
+        raise ValueError(f"--cell/loc cell: tac/ci/rsrp must be integers ({value!r})") from exc
+    return cell
+
+
 def _fs_value(field: dict[str, Any] | None) -> Any:
     """Unwraps one Firestore REST API typed field value
     (`{"doubleValue": 1.0}`, `{"integerValue": "3"}`, `{"booleanValue":
@@ -228,6 +253,7 @@ class DeviceClient:
         *,
         hmac_key: bytes | None = None,
         wire: Literal["json", "cbor"] = "json",
+        cell: dict[str, Any] | None = None,
     ):
         self.device_id = device_id
         self.host = host
@@ -305,7 +331,22 @@ class DeviceClient:
         self._lat = 37.7749
         self._lon = -122.4194
         self._loc_acc: int | None = None
-        self._loc_fail = False
+        # docs/PROTOCOL.md §13.2 (cell-tower location fallback): this
+        # device's serving cell, `{mcc, mnc, tac, ci, rsrp?}` (JSON names) --
+        # set from `--cell`/`loc cell` and attached to every `/loc` answer
+        # that has no fix (`publish_loc` below), mirroring "the pager sends
+        # `cell` whenever it answers without a GNSS fix". `None` (the
+        # default) is exactly today's behaviour: no `cell` ever sent.
+        # Starting the device with a `cell` configured also starts it with
+        # `loc fail on` (GNSS unavailable) -- the whole point of this
+        # fallback is a pager that cannot get a GNSS fix, and this is what
+        # makes `--cell ...` alone exercise "answers loc_req with no_fix +
+        # cell" without a second command; `loc fail off` still switches it
+        # back to a real fix (§13.2's "may also send it alongside a real
+        # GNSS fix" case), which keeps `cell` attached to nothing once a fix
+        # succeeds, since `publish_loc` only attaches it when `loc is None`.
+        self._cell: dict[str, Any] | None = cell
+        self._loc_fail = cell is not None
         self._last_fix: dict[str, Any] | None = None
         self._last_attempt_ts: float | None = None
         # Rule 3: "at most one fix attempt is in flight" -- this simulator's
@@ -746,11 +787,21 @@ class DeviceClient:
             obj["cached"] = True
         if err:
             obj["err"] = err
+        # docs/PROTOCOL.md §13.2 (cell-tower location fallback): "the pager
+        # sends cell whenever it answers without a GNSS fix" -- attach it
+        # whenever this simulator has one configured (`--cell`/`loc cell`)
+        # and this particular answer has no fix. (§13.2 also allows sending
+        # `cell` alongside a real fix "for recording only" -- this simulator
+        # does not do that today, since nothing in this tool's test
+        # scenarios needs it; `--cell` exists to exercise the no-fix
+        # fallback path.)
+        if loc is None and self._cell is not None:
+            obj["cell"] = self._cell
         # PROTOCOL.md §2: QoS 1 when `req` is non-null (an answer someone is
         # waiting on), QoS 0 otherwise (an unsolicited periodic fix).
         qos = 1 if req is not None else 0
         self._publish(self.loc_topic, obj, qos=qos)
-        print(f"-> loc {loc_id} req={req} cached={cached} err={err} loc={loc}")
+        print(f"-> loc {loc_id} req={req} cached={cached} err={err} loc={loc} cell={obj.get('cell')}")
         return loc_id
 
     def loc_now(self, lat: float, lon: float, acc: int | None = None) -> None:
@@ -814,6 +865,17 @@ class DeviceClient:
         """`loc fail on|off`: simulate no-fix -- every attempt while this is
         on answers `err:"no_fix"` instead of a real fix (§13.2)."""
         self._loc_fail = on
+
+    def loc_set_cell(self, cell: dict[str, Any] | None) -> None:
+        """`loc cell <mcc,mnc,tac,ci[,rsrp]>|off` (and `--cell` at startup):
+        this device's serving cell, attached to every `/loc` answer that has
+        no fix (§13.2). Setting a cell also turns `loc fail on` (see the
+        constructor's `cell` parameter docstring); `off` only clears the
+        cell, it does not turn `loc fail` back off -- use `loc fail off`
+        explicitly to go back to answering with a real fix."""
+        self._cell = cell
+        if cell is not None:
+            self._loc_fail = True
 
     def _handle_loc_req(self, req_id: str | None) -> None:
         """PROTOCOL.md §13.3 rules 1-3, normative: answers a `loc_req` down
@@ -1639,8 +1701,26 @@ class PagerShell(cmd.Cmd):
         if not parts:
             print(
                 "usage: loc <lat> <lon> [acc] | loc auto <period_s> [--walk] | "
-                "loc min <s> | loc fail on|off | loc backoff <s>"
+                "loc min <s> | loc fail on|off | loc backoff <s> | "
+                "loc cell <mcc,mnc,tac,ci[,rsrp]>|off"
             )
+            return
+        if parts[0] == "cell":
+            # docs/PROTOCOL.md §13.2 (this task): same shorthand as --cell.
+            if len(parts) != 2:
+                print("usage: loc cell <mcc,mnc,tac,ci[,rsrp]>|off")
+                return
+            if parts[1] == "off":
+                self.device.loc_set_cell(None)
+                print("loc cell = off")
+                return
+            try:
+                cell = parse_cell_arg(parts[1])
+            except ValueError as exc:
+                print(f"usage: loc cell <mcc,mnc,tac,ci[,rsrp]>|off ({exc})")
+                return
+            self.device.loc_set_cell(cell)
+            print(f"loc cell = {cell}")
             return
         if parts[0] == "backoff":
             # docs/V02_DESIGN.md §5: a test-only knob for `/status`'s
@@ -2056,6 +2136,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "bootstrap hop and the continuation, since this tool never speaks TLS (see "
         "bootstrap_device()'s docstring)",
     )
+    parser.add_argument(
+        "--cell",
+        metavar="MCC,MNC,TAC,CI[,RSRP]",
+        help="docs/PROTOCOL.md §13.2 (cell-tower location fallback): this device's serving "
+        "cell, attached to every /loc answer that has no fix -- e.g. --cell 310,410,12345,87654321,-95 "
+        "makes this simulated pager answer a loc_req with no_fix + cell instead of plain no_fix "
+        "(same effect as 'loc fail on' plus this option, or simply before any real fix has been set)",
+    )
     parser.add_argument("--api", default=DEFAULT_API_URL, help="relay API base URL")
     parser.add_argument("--auth-url", default=DEFAULT_AUTH_URL, help="Auth emulator base URL")
     parser.add_argument("--as", dest="as_alias", help="log in as this alias before running")
@@ -2069,8 +2157,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_arg_parser().parse_args(argv)
 
+    cell = parse_cell_arg(args.cell) if args.cell else None
+
     if args.bootstrap:
         device = bootstrap_device(args.bootstrap, port=args.port, wire=args.wire)
+        if cell is not None:
+            device.loc_set_cell(cell)
     else:
         hmac_key = base64.b64decode(args.hmac_key) if args.hmac_key else None
         device = DeviceClient(
@@ -2081,6 +2173,7 @@ def main(argv: list[str] | None = None) -> int:
             args.password,
             hmac_key=hmac_key,
             wire=args.wire,
+            cell=cell,
         )
     server = ServerClient(args.api, args.auth_url)
     shell = PagerShell(device, server, as_json=args.json)

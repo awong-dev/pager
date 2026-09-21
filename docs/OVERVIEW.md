@@ -114,7 +114,10 @@ LTE cannot run at once on this modem, and a school pager is usually indoors, so 
 short (20 s), request-driven, and followed by a growing backoff after a failure (5 minutes
 doubling to 12 hours). Inside the backoff the pager answers immediately from its last fix or with
 `no_fix`. A change of cell, or sustained motion from the accelerometer, resets the backoff
-(`V02_DESIGN.md` §5, `PROTOCOL.md` §13).
+(`V02_DESIGN.md` §5, `PROTOCOL.md` §13). On a `no_fix` answer the pager also sends its serving
+cell, and the relay turns that into a coarse position through a pluggable third-party lookup
+(`relay/app/cellgeo.py`); a `loc.src: "cell"` fix is always relay-produced, never something the
+pager itself computes.
 
 ## Texting from the pager
 

@@ -18,6 +18,7 @@ from google.cloud.firestore import FieldFilter
 from pydantic import BaseModel, ConfigDict, field_validator
 
 from app.db.firestore import get_db
+from app.wire import CellInfo
 
 # docs/V02_DESIGN.md §6: `phone` is a real number, never an alias reference
 # (unlike `contact_req`'s overloaded `ph`, §4.2) -- same E.164 shape
@@ -56,6 +57,25 @@ AUTH_ALARM_THRESHOLD = 20
 AUTH_ALARM_WINDOW_S = 600
 
 
+class LastCell(BaseModel):
+    """docs/PROTOCOL.md §13.2 (cell-tower location fallback, this task):
+    the pager's most recently reported serving cell, recorded whenever a
+    `/loc` envelope carries a `cell` field -- whether or not it resolved to
+    a position (`app/cellgeo.py`) and whether or not the pager also had a
+    real GNSS fix (`app/location.py`'s `ingest_loc`). Lets the web app show
+    "last known cell" even with `CELL_GEO_PROVIDER=none` or a resolver
+    failure/outage."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    mcc: str
+    mnc: str
+    tac: int
+    ci: int
+    rsrp: int | None = None
+    ts: int | None = None
+
+
 class DeviceStatus(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -82,6 +102,8 @@ class DeviceStatus(BaseModel):
     # AUTH_ALARM_THRESHOLD inside AUTH_ALARM_WINDOW_S; cleared on key
     # rotation.
     authAlarm: bool | None = None
+    # docs/PROTOCOL.md §13.2 (this task): see `LastCell`'s docstring.
+    lastCell: LastCell | None = None
 
 
 class SmsContact(BaseModel):
@@ -330,6 +352,30 @@ def clear_auth_alarm(device_id: str) -> None:
     the key-rotation task once it exists."""
     _devices().document(device_id).set(
         {"authFailureTimes": [], "status": {"authAlarm": False}}, merge=True
+    )
+
+
+def set_last_cell(device_id: str, cell: CellInfo, ts: int) -> None:
+    """docs/PROTOCOL.md §13.2 (this task): called by `app/location.py`'s
+    `ingest_loc` whenever a `/loc` envelope carries a `cell` field, whether
+    or not `app/cellgeo.py` resolves it to a position and whether or not the
+    pager also sent a real GNSS fix -- "the cell is only recorded" in that
+    second case. A merge write (like `set_auth_alarm`/`update_status`
+    above), so this never disturbs the rest of `status`."""
+    _devices().document(device_id).set(
+        {
+            "status": {
+                "lastCell": {
+                    "mcc": cell.mcc,
+                    "mnc": cell.mnc,
+                    "tac": cell.tac,
+                    "ci": cell.ci,
+                    "rsrp": cell.rsrp,
+                    "ts": ts,
+                }
+            }
+        },
+        merge=True,
     )
 
 

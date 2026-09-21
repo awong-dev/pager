@@ -8,6 +8,7 @@ import pytest
 from pydantic import ValidationError
 
 from app.wire import (
+    CellInfo,
     DownEnvelope,
     LocEnvelope,
     StatusEnvelope,
@@ -664,3 +665,113 @@ def test_loc_envelope_example_from_protocol_round_trips():
     assert env.req == "m_7f3a2b10"
     assert env.loc is not None
     assert env.loc.src == "gnss"
+
+
+# ---- §13.2 `cell` (cell-tower location fallback, this task) ----
+
+
+def _cell(**overrides) -> dict:
+    obj = {"mcc": "310", "mnc": "410", "tac": 12345, "ci": 87654321, "rsrp": -95}
+    obj.update(overrides)
+    return obj
+
+
+def test_cell_info_valid_full():
+    info = CellInfo.model_validate(_cell())
+    assert info.mcc == "310"
+    assert info.mnc == "410"
+    assert info.tac == 12345
+    assert info.ci == 87654321
+    assert info.rsrp == -95
+
+
+def test_cell_info_valid_without_rsrp():
+    info = CellInfo.model_validate(_cell(rsrp=None))
+    assert info.rsrp is None
+
+
+def test_cell_info_valid_two_digit_mnc_leading_zero_preserved():
+    info = CellInfo.model_validate(_cell(mnc="05"))
+    assert info.mnc == "05"
+
+
+def test_loc_envelope_no_fix_with_valid_cell():
+    """§13.2: "the pager sends `cell` whenever it answers without a GNSS
+    fix": `loc: null, err: "no_fix", cell: {...}`."""
+    obj = {
+        "v": 1,
+        "id": "l_3c9a11f0",
+        "ts": 1_700_000_000,
+        "loc": None,
+        "req": "m_7f3a2b10",
+        "err": "no_fix",
+        "cell": _cell(),
+    }
+    env = LocEnvelope.model_validate(obj)
+    assert env.loc is None
+    assert env.err == "no_fix"
+    assert env.cell is not None
+    assert env.cell.mcc == "310"
+    assert env.cell.ci == 87654321
+
+
+def test_loc_envelope_cell_absent_is_backward_compatible():
+    """A pager that never sends `cell` (today's firmware) must behave
+    exactly as today: `env.cell` is `None`, nothing else about the envelope
+    changes."""
+    env = LocEnvelope.model_validate(_base_loc())
+    assert env.cell is None
+
+
+def test_loc_envelope_gnss_fix_wins_cell_is_only_recorded():
+    """§13.2: "It may also send it alongside a real GNSS fix (then the GNSS
+    fix wins and the cell is only recorded)." -- both a real `loc` and a
+    `cell` validate together; nothing about `LocEnvelope` itself picks a
+    winner (that's `app/location.py`'s job) -- this only pins that the wire
+    shape accepts both at once."""
+    obj = _base_loc()
+    obj["cell"] = _cell()
+    env = LocEnvelope.model_validate(obj)
+    assert env.loc is not None
+    assert env.cell is not None
+
+
+@pytest.mark.parametrize(
+    "bad_cell",
+    [
+        {"mcc": "31", "mnc": "410", "tac": 1, "ci": 1},  # mcc not 3 digits
+        {"mcc": "310", "mnc": "4100", "tac": 1, "ci": 1},  # mnc too long
+        {"mcc": "31x", "mnc": "410", "tac": 1, "ci": 1},  # mcc non-digit
+        {"mcc": "310", "mnc": "410", "tac": -1, "ci": 1},  # tac out of range
+        {"mcc": "310", "mnc": "410", "tac": 65536, "ci": 1},  # tac out of range
+        {"mcc": "310", "mnc": "410", "tac": 1, "ci": -1},  # ci out of range
+        {"mcc": "310", "mnc": "410", "tac": 1, "ci": 268_435_456},  # ci out of range (2**28)
+        {"mcc": "310", "mnc": "410", "tac": 1, "ci": 1, "rsrp": -29},  # rsrp out of range
+        {"mcc": "310", "mnc": "410", "tac": 1, "ci": 1, "rsrp": -157},  # rsrp out of range
+        {"mcc": "310", "mnc": "410"},  # missing required tac/ci
+        "not-a-map",
+    ],
+)
+def test_loc_envelope_malformed_cell_is_treated_as_absent(bad_cell):
+    """§13.2 (this task): "treat a malformed cell as absent rather than
+    dropping the envelope" -- the rest of the `/loc` envelope (a valid
+    `no_fix` answer here) must still parse successfully."""
+    obj = {
+        "v": 1,
+        "id": "l_3c9a11f0",
+        "ts": 1_700_000_000,
+        "loc": None,
+        "req": None,
+        "err": "no_fix",
+        "cell": bad_cell,
+    }
+    env = LocEnvelope.model_validate(obj)
+    assert env.cell is None
+    assert env.err == "no_fix"
+
+
+def test_loc_envelope_cell_null_is_absent():
+    obj = _base_loc()
+    obj["cell"] = None
+    env = LocEnvelope.model_validate(obj)
+    assert env.cell is None

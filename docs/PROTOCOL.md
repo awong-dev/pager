@@ -1259,10 +1259,16 @@ Devices emit CBOR (§3) with this integer keymap. The relay accepts both JSON (t
 | 46 | `st` | tstr | `/up` `sms_log` (v0.2, §3.6 — `sent`/`failed`/`recv`/`blocked`) |
 | 47 | `sms_ts` | int | `/up` `sms_log` (v0.2, §3.6 — when the SMS itself was sent/received) |
 | 48 | `sms_lost` | int | `/status` (v0.2, §3.6 — device SMS audit-drop counter) |
+| 49 | `cell` | map | `/loc` envelope, optional (§13.2 — cell-tower location fallback) |
 
 **Sub-map keys:**
 
 `loc` object (inside `/loc` envelope): `lat=0, lon=1, acc=2, fix_ts=3, src=4`.
+
+`cell` object (inside `/loc` envelope, key 49 above, §13.2 — cell-tower location fallback):
+`mcc=0` (tstr, 3 digits), `mnc=1` (tstr, 2 or 3 digits), `tac=2` (uint, 0…65535), `ci=3` (uint,
+0…268435455), `rsrp=4` (int, dBm, optional). Unknown sub-keys are ignored, per §3.1's usual
+forward-compatibility rule.
 
 `c[]` contact object (inside `/down` `book`): `a=0` (alias), `n=1` (name), `t=2` (type web/sms/chat).
 
@@ -1504,9 +1510,41 @@ a broker rule forwards it to the relay's authenticated HTTPS endpoint (§2).
 | `req` | string \| null | **yes** | The `id` of the `loc_req` (§3.2) this answers; `null` = an unsolicited periodic fix |
 | `cached` | bool | no (default `false`) | True when the device's rate limit (§13.3) answered from the last fix instead of powering GNSS |
 | `err` | `no_fix` \| `disabled` | only when `loc` is `null` | `no_fix` = the fix attempt timed out; `disabled` = location is off on the device (`loc_period_s` 0 and the user has disabled on-demand fixes) |
+| `cell` | object, optional | no | The device's serving cell (§13.2's own sub-table below). Absent = today's behaviour exactly. |
 
-The example is ~160 bytes; the worst case is ≤ ~200 bytes, so §3.3's 640-byte limit applies
-unchanged and is nowhere near binding. A `/loc` payload that violates any rule above is malformed
+**`cell` (cell-tower location fallback).** GNSS and LTE cannot run at once on this modem, and a
+school pager is indoors most of the day, so a GNSS attempt usually ends in `no_fix`. The pager
+always knows its serving cell; it cannot turn that into coordinates, but the relay can (a
+pluggable third-party lookup, `relay/app/cellgeo.py`). The device sends `cell` whenever it answers
+without a GNSS fix (`loc:null, err:"no_fix", cell:{...}`); it MAY also send it alongside a real
+GNSS fix, in which case the GNSS fix wins and the cell is only recorded (on
+`devices/{d}.status.lastCell`, for diagnosis). **`loc.src:"cell"` fixes are produced by the relay,
+never by the pager** — the pager's own `loc.src` is always `gnss` or absent; a `cell` sub-map on
+the wire is raw cell identity, not a position.
+
+| Field | Type | Required | Meaning |
+|---|---|---|---|
+| `cell.mcc` | string, 3 digits | **yes** | Mobile Country Code. A string (not an int) so a leading zero survives. |
+| `cell.mnc` | string, 2 or 3 digits | **yes** | Mobile Network Code. Same leading-zero reason as `mcc`. |
+| `cell.tac` | uint, 0…65535 | **yes** | Tracking Area Code. |
+| `cell.ci` | uint, 0…268435455 (2²⁸-1) | **yes** | E-UTRAN Cell Identity (28 bits). |
+| `cell.rsrp` | int, dBm, -156…-30 | no | Reference Signal Received Power, if known. |
+
+A malformed `cell` (an out-of-range value, a missing required sub-field, a non-object) is treated
+as **absent**, not as a reason to drop the whole `/loc` envelope — the pager's actual fix/no_fix
+answer is still good and must still be processed. Unknown `cell` sub-keys are ignored, per §3.1's
+usual forward-compatibility rule. Relay-side: a resolved cell position is stored exactly like a
+fix (`src:"cell"`, the provider's own accuracy radius, `fixTs` = the envelope's `ts` or the relay's
+receive time if `ts` is 0) and fulfils the `loc_req` it answers, same as a real fix would; an
+unresolved cell behaves exactly like a plain `no_fix` answer, except the raw cell identity and
+timestamp are still recorded on `devices/{d}.status.lastCell` so the web app can show "last known
+cell" even with no position. See `docs/SERVER_PLAN.md` §5.6/§3 for the relay-side cache and data
+model, and `relay/app/cellgeo.py` for the pluggable provider (`google` / `opencellid` /
+`none` — the default, which makes no third-party call at all).
+
+The example is ~160 bytes; the worst case is ≤ ~200 bytes without `cell`, and ≤ ~260 bytes with a
+maximal `cell` sub-map — §3.3's 640-byte limit applies unchanged and is nowhere near binding
+either way. A `/loc` payload that violates any rule above is malformed
 and is handled per §3.4 — logged and dropped, never crashing the ingest path.
 
 Relay-side: dedup on `id` exactly as §4.2 dedups an up message, in the same transaction that
@@ -1555,6 +1593,10 @@ device and the server disagree about is a limit that produces phantom `expired` 
   applies to messages, carrying a separate "may locate" right — enforced in the relay *and* in the
   store's own access rules, and never on the device. The device answers whatever it is asked;
   it is not the gate.
+8. `cell` rides on the same rate-limited answer — it costs the pager nothing extra to attach (the
+  serving cell is already known from the modem's registration state, no separate radio activity),
+  so it does not get its own rate limit or its own `loc_req`/`/locate` path; it is only ever a
+  sub-field of an ordinary `/loc` answer (§13.2).
 
 ### 13.4 Request lifecycle
 

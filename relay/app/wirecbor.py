@@ -10,12 +10,13 @@ changes a value's type or content (`docs/DEVICE_PLAN.md` §2.4: "values are
 identical to the JSON ones").
 
 `KEYMAP` is `PROTOCOL.md` §10's single flat integer namespace for envelope,
-`/status`, bootstrap and `cfg` field *names* (0-48). Six field names nest one
-level deeper and get their own small local namespace, per §10's "Sub-map
+`/status`, bootstrap and `cfg` field *names* (0-49). Seven field names nest
+one level deeper and get their own small local namespace, per §10's "Sub-map
 keys" list: `loc` (the `/loc` fix object), `c[]` items (named `contact`
 here), `p[]` items (named `request` here), `cfg.lock`, `cfg.ca` (v0.2,
-docs/V02_DESIGN.md §4.4/§7), and `cfg.sms[]` items (v0.2, docs/V02_DESIGN.md
-§6/§7, named `sms_contact` here).
+docs/V02_DESIGN.md §4.4/§7), `cfg.sms[]` items (v0.2, docs/V02_DESIGN.md
+§6/§7, named `sms_contact` here), and `cell` (the `/loc` cell-tower fallback
+object, this task -- docs/PROTOCOL.md §13.2).
 
 **Gap in `PROTOCOL.md` §10, closed by v0.2's own edit rather than left
 open:** an earlier revision of this module flagged that the table gave
@@ -35,7 +36,8 @@ import cbor2
 
 # PROTOCOL.md §10: envelope 0-20, /status 21-28, bootstrap 29-37, cfg 38,
 # v0.2 additions 39-48 (44-47 are docs/V02_DESIGN.md §6's sms_log-only
-# fields: `peer`/`dir`/`st`/`sms_ts`).
+# fields: `peer`/`dir`/`st`/`sms_ts`), 49 is this task's `/loc` `cell`
+# field (§13.2 -- cell-tower location fallback).
 KEYMAP: dict[str, int] = {
     "v": 0,
     "id": 1,
@@ -90,6 +92,9 @@ KEYMAP: dict[str, int] = {
     "st": 46,
     "sms_ts": 47,
     "sms_lost": 48,
+    # docs/PROTOCOL.md §13.2 (this task, cell-tower location fallback): the
+    # `/loc` envelope's optional `cell` sub-map.
+    "cell": 49,
 }
 REVERSE_KEYMAP: dict[int, str] = {v: k for k, v in KEYMAP.items()}
 
@@ -109,6 +114,8 @@ SMS_CONTACT_KEYMAP: dict[str, int] = {"n": 0, "p": 1}
 # PROTOCOL.md §10's own `cfg` sub-map allocation (see module docstring):
 # `lock=0`, `ca=1`, `sms=2`.
 CFG_KEYMAP: dict[str, int] = {"lock": 0, "ca": 1, "sms": 2}
+# docs/PROTOCOL.md §13.2 (this task): `cell = {mcc, mnc, tac, ci, rsrp}`.
+CELL_KEYMAP: dict[str, int] = {"mcc": 0, "mnc": 1, "tac": 2, "ci": 3, "rsrp": 4}
 
 _REVERSE_LOC = {v: k for k, v in LOC_KEYMAP.items()}
 _REVERSE_CONTACT = {v: k for k, v in CONTACT_KEYMAP.items()}
@@ -117,11 +124,14 @@ _REVERSE_LOCK = {v: k for k, v in LOCK_KEYMAP.items()}
 _REVERSE_CA = {v: k for k, v in CA_KEYMAP.items()}
 _REVERSE_SMS_CONTACT = {v: k for k, v in SMS_CONTACT_KEYMAP.items()}
 _REVERSE_CFG = {v: k for k, v in CFG_KEYMAP.items()}
+_REVERSE_CELL = {v: k for k, v in CELL_KEYMAP.items()}
 
 
 def _value_to_int_keys(name: str, value: Any) -> Any:
     if name == "loc" and isinstance(value, dict):
         return {LOC_KEYMAP[k]: v for k, v in value.items()}
+    if name == "cell" and isinstance(value, dict):
+        return {CELL_KEYMAP[k]: v for k, v in value.items()}
     if name == "c" and isinstance(value, list):
         return [{CONTACT_KEYMAP[k]: v for k, v in item.items()} for item in value]
     if name == "p" and isinstance(value, list):
@@ -154,6 +164,12 @@ def _value_to_int_keys(name: str, value: Any) -> Any:
 def _value_to_names(name: str, value: Any) -> Any:
     if name == "loc" and isinstance(value, dict):
         return {_REVERSE_LOC[k]: v for k, v in value.items()}
+    if name == "cell" and isinstance(value, dict):
+        # §13.2 (this task): "Unknown sub-keys are ignored" -- a numeric
+        # sub-key this module does not know yet is dropped, not raised, the
+        # same forward-compatibility treatment `translate_to_names` gives an
+        # unknown top-level envelope key.
+        return {_REVERSE_CELL[k]: v for k, v in value.items() if k in _REVERSE_CELL}
     if name == "c" and isinstance(value, list):
         return [{_REVERSE_CONTACT[k]: v for k, v in item.items()} for item in value]
     if name == "p" and isinstance(value, list):

@@ -83,6 +83,19 @@ variable "enable_sms_secrets" {
   default     = false
 }
 
+# --- Cell-tower location fallback (docs/PROTOCOL.md §13.2, this task) ----
+variable "cell_geo_provider" {
+  description = "relay/app/cellgeo.py's CELL_GEO_PROVIDER -- \"none\" (default), \"google\" or \"opencellid\". Not secret; safe to leave at the default until a real API key exists (see enable_cell_geo_secret below)."
+  type        = string
+  default     = "none"
+}
+
+variable "enable_cell_geo_secret" {
+  description = "Wire CELL_GEO_API_KEY into the relay service. Leave false (and cell_geo_provider at \"none\") until a real Google Geolocation API (or OpenCelliD) key exists in Secret Manager -- see infra/README.md's runbook step. Same zero-versions-refuses-a-revision constraint as enable_sms_secrets."
+  type        = bool
+  default     = false
+}
+
 variable "tick_schedule" {
   type    = string
   default = "*/5 * * * *"
