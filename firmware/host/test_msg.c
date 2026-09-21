@@ -218,6 +218,163 @@ static void test_reset_clears_partial_sequence(void)
           "push after reset did not land as a clean single-byte code point");
 }
 
+/* ---------------------------------------------------------------------
+ * msghist: the persisted-history record codec, terminal-ack predicate and
+ * restore ordering (owner task 2026-09-20, "keep recent messages across
+ * reboots"). Pure logic, no NVS/ESP-IDF — see msg.h's long comment above
+ * MSGHIST_REC_VERSION and msg.c's own module comment for the design.
+ * --------------------------------------------------------------------- */
+
+static msg_t make_msg(const char *id, const char *from, const char *to, const char *body,
+                      uint8_t dir, uint8_t ack_state, uint8_t flags, int64_t ts)
+{
+    msg_t m;
+    memset(&m, 0, sizeof(m));
+    m.ts = ts;
+    strncpy(m.id, id, sizeof(m.id) - 1);
+    strncpy(m.from, from, sizeof(m.from) - 1);
+    strncpy(m.to, to, sizeof(m.to) - 1);
+    size_t blen = strlen(body);
+    memcpy(m.body, body, blen);
+    m.body[blen] = '\0';
+    m.body_len = (uint16_t) blen;
+    m.dir = dir;
+    m.ack_state = ack_state;
+    m.flags = flags;
+    m.in_use = true;
+    return m;
+}
+
+static void test_msghist_roundtrip_basic(void)
+{
+    msg_t m = make_msg("m_7f3a", "mom", "", "Pickup at 3:15 by the gym", MSG_DIR_DOWN,
+                       MSG_ACK_SHOWN, MSG_F_RECOVERED, 1757700000);
+    uint8_t buf[MSGHIST_REC_MAX];
+    size_t len = msghist_record_encode(&m, 42, buf, sizeof(buf));
+    CHECK(len > 0, "encode of a normal record returned 0");
+
+    msg_t out;
+    uint32_t seq = 0;
+    CHECK(msghist_record_decode(buf, len, &out, &seq), "decode of a just-encoded record failed");
+    CHECK(seq == 42, "seq == %u, want 42", (unsigned) seq);
+    CHECK(strcmp(out.id, m.id) == 0, "id mismatch after round trip: '%s' != '%s'", out.id, m.id);
+    CHECK(strcmp(out.from, m.from) == 0, "from mismatch after round trip");
+    CHECK(strcmp(out.body, m.body) == 0, "body mismatch after round trip: '%s' != '%s'", out.body,
+          m.body);
+    CHECK(out.body_len == m.body_len, "body_len == %u, want %u", (unsigned) out.body_len,
+          (unsigned) m.body_len);
+    CHECK(out.ts == m.ts, "ts mismatch after round trip");
+    CHECK(out.dir == m.dir, "dir mismatch after round trip");
+    CHECK(out.ack_state == m.ack_state, "ack_state mismatch after round trip");
+    CHECK(out.flags == m.flags, "flags mismatch after round trip");
+    CHECK(out.hist_seq == 42, "decoded hist_seq == %u, want 42", (unsigned) out.hist_seq);
+    CHECK(out.in_use, "decoded record not marked in_use");
+}
+
+/* An empty body (a `loc_req`/ack has none) and a full 320-byte body are the
+ * two edges msg.c's own body_rules_ok() allows through; both must round
+ * trip without truncation. */
+static void test_msghist_roundtrip_edges(void)
+{
+    msg_t empty = make_msg("u_00000001", "student", "mom", "", MSG_DIR_UP, MSG_ACK_UP_PENDING, 0, 0);
+    uint8_t buf[MSGHIST_REC_MAX];
+    size_t len = msghist_record_encode(&empty, 1, buf, sizeof(buf));
+    CHECK(len > 0, "encode of an empty-body record returned 0");
+    msg_t out;
+    uint32_t seq;
+    CHECK(msghist_record_decode(buf, len, &out, &seq), "decode of an empty-body record failed");
+    CHECK(out.body_len == 0, "decoded body_len == %u, want 0", (unsigned) out.body_len);
+    CHECK(out.body[0] == '\0', "decoded body not empty");
+
+    char full_body[321];
+    memset(full_body, 'x', 320);
+    full_body[320] = '\0';
+    msg_t full = make_msg("m_deadbeef", "mom", "", full_body, MSG_DIR_DOWN, MSG_ACK_UNSHOWN, 0,
+                          1700000000);
+    len = msghist_record_encode(&full, 7, buf, sizeof(buf));
+    CHECK(len > 0 && len <= MSGHIST_REC_MAX, "encode of a full 320-byte body out of range: %u",
+          (unsigned) len);
+    CHECK(msghist_record_decode(buf, len, &out, &seq), "decode of a full 320-byte body failed");
+    CHECK(out.body_len == 320, "decoded body_len == %u, want 320", (unsigned) out.body_len);
+    CHECK(memcmp(out.body, full_body, 320) == 0, "decoded 320-byte body content mismatch");
+}
+
+/* A single flipped byte anywhere in a valid record (a torn nvs_commit(), or
+ * simply reading a foreign/garbage slot) MUST be rejected, never silently
+ * accepted with wrong content — msg.c's history_restore() relies on this to
+ * treat a corrupt slot as "skip it", never fatal. */
+static void test_msghist_decode_rejects_corruption(void)
+{
+    msg_t m = make_msg("m_7f3a", "mom", "", "ok", MSG_DIR_DOWN, MSG_ACK_READ, 0, 1700000000);
+    uint8_t buf[MSGHIST_REC_MAX];
+    size_t len = msghist_record_encode(&m, 5, buf, sizeof(buf));
+    CHECK(len > 0, "encode failed");
+
+    for (size_t i = 0; i < len; i++) {
+        uint8_t saved = buf[i];
+        buf[i] ^= 0xFF;
+        msg_t out;
+        uint32_t seq;
+        bool ok = msghist_record_decode(buf, len, &out, &seq);
+        buf[i] = saved;
+        CHECK(!ok, "corrupting byte %u of a valid record was NOT detected", (unsigned) i);
+    }
+
+    /* A truncated buffer (a short nvs_get_blob() read) must also be rejected. */
+    for (size_t trunc = 0; trunc < len; trunc++) {
+        msg_t out;
+        uint32_t seq;
+        CHECK(!msghist_record_decode(buf, trunc, &out, &seq),
+              "a %u-byte truncation of a %u-byte record was NOT detected", (unsigned) trunc,
+              (unsigned) len);
+    }
+
+    /* A version byte from an unknown future format must also be rejected,
+     * not partially interpreted. */
+    uint8_t bad_version[MSGHIST_REC_MAX];
+    memcpy(bad_version, buf, len);
+    bad_version[0] = (uint8_t) (MSGHIST_REC_VERSION + 1);
+    msg_t out;
+    uint32_t seq;
+    CHECK(!msghist_record_decode(bad_version, len, &out, &seq),
+          "a record with an unknown version was accepted");
+}
+
+static void test_msghist_terminal_ack(void)
+{
+    CHECK(!msghist_is_terminal_ack(MSG_DIR_DOWN, MSG_ACK_UNSHOWN), "UNSHOWN reported terminal");
+    CHECK(!msghist_is_terminal_ack(MSG_DIR_DOWN, MSG_ACK_SHOWN), "SHOWN reported terminal");
+    CHECK(msghist_is_terminal_ack(MSG_DIR_DOWN, MSG_ACK_READ), "READ not reported terminal");
+    CHECK(!msghist_is_terminal_ack(MSG_DIR_UP, MSG_ACK_UP_PENDING), "UP_PENDING reported terminal");
+    CHECK(msghist_is_terminal_ack(MSG_DIR_UP, MSG_ACK_UP_SENT), "UP_SENT not reported terminal");
+    CHECK(msghist_is_terminal_ack(MSG_DIR_UP, MSG_ACK_UP_FAILED), "UP_FAILED not reported terminal");
+}
+
+/* history_restore()'s own "which of the decoded slots is newest" step —
+ * ring indexing/ordering only, no msg_t/NVS knowledge (msg.h's own doc
+ * comment on msghist_restore_order()). */
+static void test_msghist_restore_order(void)
+{
+    /* Seqs out of order, as they would be reading slots "m0".."m4" back in
+     * slot order rather than insertion order. */
+    uint32_t seqs[5] = { 103, 101, 105, 102, 104 };
+    int order[5];
+    int n = msghist_restore_order(seqs, 5, order, 5);
+    CHECK(n == 5, "n == %d, want 5", n);
+    uint32_t expect_desc[5] = { 105, 104, 103, 102, 101 };
+    for (int i = 0; i < 5; i++) {
+        CHECK(order[i] >= 0 && order[i] < 5, "order[%d] == %d out of range", i, order[i]);
+        CHECK(seqs[order[i]] == expect_desc[i], "order[%d] -> seq %u, want %u (newest-first)", i,
+              (unsigned) seqs[order[i]], (unsigned) expect_desc[i]);
+    }
+
+    /* n clamped to max_out (a defensive floor this file's own caller never
+     * actually needs, msg.h's doc comment) — must not overflow order_out. */
+    int order2[2];
+    int n2 = msghist_restore_order(seqs, 5, order2, 2);
+    CHECK(n2 == 2, "clamped n == %d, want 2", n2);
+}
+
 int main(void)
 {
     test_ascii_byte_cap();
@@ -227,9 +384,15 @@ int main(void)
     test_backspace_removes_whole_codepoint();
     test_reset_clears_partial_sequence();
 
+    test_msghist_roundtrip_basic();
+    test_msghist_roundtrip_edges();
+    test_msghist_decode_rejects_corruption();
+    test_msghist_terminal_ack();
+    test_msghist_restore_order();
+
     if (g_failures == 0) {
-        printf("PASS: msg.c composer (320-byte/160-codepoint caps, 3-byte code point atomicity), "
-               "0 failures\n");
+        printf("PASS: msg.c composer (320-byte/160-codepoint caps, 3-byte code point atomicity) "
+               "and msghist record codec/terminal-ack/restore-order, 0 failures\n");
         return 0;
     }
     printf("FAIL: %d failure(s)\n", g_failures);

@@ -66,7 +66,7 @@ endif
 MAIN_SRC := ../main
 BUILD := build
 
-TESTS := test_cbor test_auth test_setup test_input test_msg test_lock test_loc test_cafetch test_catrust test_cfg test_sms test_carrier
+TESTS := test_cbor test_auth test_setup test_input test_msg test_lock test_loc test_cafetch test_catrust test_cfg test_sms test_carrier test_chat_layout
 TEST_BINS := $(TESTS:%=$(BUILD)/%)
 
 # ASSETS: tools/mkassets.py's default output location (docs/DEVICE_TASKS.md
@@ -247,6 +247,21 @@ png: $(BUILD)/render_png
 
 clean:
 	rm -rf $(BUILD)
+
+# test_chat_layout: scr_chat.c's pure row-layout section only (its own
+# `#ifdef ESP_PLATFORM` split, added by the same owner task that added this
+# test, keeps gfx.h/msg.h/book.h/ime.h/sms.h/ESP-IDF-dependent rendering
+# code out of the host build) + test_chat_layout.c. No shared header (see
+# test_chat_layout.c's own comment for why); the two files are linked
+# together here so a signature mismatch is a link error, not silent.
+$(BUILD)/scr_chat.o: $(MAIN_SRC)/scr_chat.c | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $(MAIN_SRC)/scr_chat.c
+
+$(BUILD)/test_chat_layout.o: test_chat_layout.c | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ test_chat_layout.c
+
+$(BUILD)/test_chat_layout: $(BUILD)/scr_chat.o $(BUILD)/test_chat_layout.o
+	$(CC) $(CFLAGS) -o $@ $(BUILD)/scr_chat.o $(BUILD)/test_chat_layout.o
 
 # test_carrier: carrier.c's pure half (APN validation, SIM-based detection).
 $(BUILD)/carrier.o: $(MAIN_SRC)/carrier.c $(MAIN_SRC)/carrier.h | $(BUILD)

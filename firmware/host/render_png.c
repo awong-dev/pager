@@ -314,31 +314,100 @@ static void render_screen_home(void)
     gfx_text(0, FIXTURE_FOOTER_Y, GFX_FONT_NORMAL, "up/down move  enter open  hold=home");
 }
 
+/* scr_chat.c's own visible_rows() for GFX_FONT_NORMAL — see this fixture's
+ * own comment below for why this file re-derives the same layout by hand
+ * rather than linking scr_chat.c. */
+#define FIXTURE_CHAT_ROWS 6
+#define FIXTURE_CHAT_MAX_LINES 24
+
 static void render_screen_chat(void)
 {
     gfx_clear();
     draw_fixture_status_bar(4, true, 0, false, 0, 3);
 
+    /* Owner task 2026-09-20 ("wrap long messages in the chat screen"):
+     * reproduces scr_chat.c's real row-wrap model (wrap_width_row0()/
+     * wrap_width_conservative()/chat_layout(), see that file's own module
+     * comments) closely enough to be a faithful visual proof, hand-drawn
+     * the same way every other render_screen_*() in this file already is
+     * (no dependency on scr_chat.c itself — this file's own module
+     * comment). Builds the WHOLE thread's flattened, oldest-to-newest line
+     * sequence first (each message's header row, "who HH:MM " + body +
+     * right-aligned tag, followed by its own indented continuation rows,
+     * in reading order), then draws only its LAST FIXTURE_CHAT_ROWS lines
+     * -- the same "newest pinned to the bottom, oldest cut from the top"
+     * windowing chat_layout() does at scroll=0.
+     *
+     * The third message is deliberately long enough to wrap onto several
+     * rows (the fixture this task's Verify step exists to eyeball): a
+     * body that does not fit one row must flow onto indented continuation
+     * rows without ever running under its own "NEW" tag on row 0. */
     struct {
         const char *who, *ts, *body, *tag;
-    } rows[] = {
+    } msgs[] = {
         { "mom", "13:58", "where are you?", NULL },
         { "you", "13:59", "library, coming now", "sent" },
-        { "mom", "14:02", "Pickup at 3:15 by the gym", "NEW" },
+        { "mom", "14:02",
+          "Pickup at 3:15 by the gym today - coach moved practice up front "
+          "because the fields are wet, so wait by the flagpole instead of "
+          "the usual spot by the equipment shed.",
+          "NEW" },
     };
-    int y = FIXTURE_BODY_TOP + 2;
-    for (size_t i = 0; i < sizeof(rows) / sizeof(rows[0]); i++) {
-        int x = gfx_text(0, y, GFX_FONT_NORMAL, rows[i].who);
-        x = gfx_text(x, y, GFX_FONT_NORMAL, " ");
-        x = gfx_text(x, y, GFX_FONT_NORMAL, rows[i].ts);
-        x = gfx_text(x, y, GFX_FONT_NORMAL, " ");
-        gfx_text(x, y, GFX_FONT_NORMAL, rows[i].body);
-        if (rows[i].tag) {
-            int tw = gfx_text_width(GFX_FONT_NORMAL, rows[i].tag);
-            gfx_text(GFX_SCREEN_W - tw, y, GFX_FONT_NORMAL, rows[i].tag);
+    size_t nmsgs = sizeof(msgs) / sizeof(msgs[0]);
+    const int indent = 8; /* CHAT_CONT_INDENT_PX, scr_chat.c */
+
+    static char all_lines[FIXTURE_CHAT_MAX_LINES][64];
+    int line_msg[FIXTURE_CHAT_MAX_LINES];
+    int line_row[FIXTURE_CHAT_MAX_LINES];
+    int total = 0;
+
+    for (size_t i = 0; i < nmsgs && total < FIXTURE_CHAT_MAX_LINES; i++) {
+        char prefix[40];
+        snprintf(prefix, sizeof(prefix), "%s %s ", msgs[i].who, msgs[i].ts);
+        int avail0 = GFX_SCREEN_W - gfx_text_width(GFX_FONT_NORMAL, prefix);
+        if (msgs[i].tag) {
+            avail0 -= gfx_text_width(GFX_FONT_NORMAL, msgs[i].tag) + 4;
         }
-        y += 14; /* 12 px glyph + 2 px leading, matches scr_chat.c */
+        int avail_cont = GFX_SCREEN_W - indent;
+        int width = (avail0 < avail_cont) ? avail0 : avail_cont;
+        if (width < 24) {
+            width = 24;
+        }
+
+        char lines[FIXTURE_CHAT_MAX_LINES][64];
+        int n = gfx_text_wrap(GFX_FONT_NORMAL, msgs[i].body, width, lines, FIXTURE_CHAT_MAX_LINES);
+        if (n < 0) {
+            n = FIXTURE_CHAT_MAX_LINES;
+        }
+        for (int row = 0; row < n && total < FIXTURE_CHAT_MAX_LINES; row++) {
+            memcpy(all_lines[total], lines[row], sizeof(all_lines[total]));
+            line_msg[total] = (int) i;
+            line_row[total] = row;
+            total++;
+        }
     }
+
+    int start = (total > FIXTURE_CHAT_ROWS) ? (total - FIXTURE_CHAT_ROWS) : 0;
+    int y = FIXTURE_BODY_TOP + 2;
+    int pitch = 14; /* 12px glyph + 2px leading, matches scr_chat.c */
+    for (int i = start; i < total; i++) {
+        size_t mi = (size_t) line_msg[i];
+        if (line_row[i] == 0) {
+            int x = gfx_text(0, y, GFX_FONT_NORMAL, msgs[mi].who);
+            x = gfx_text(x, y, GFX_FONT_NORMAL, " ");
+            x = gfx_text(x, y, GFX_FONT_NORMAL, msgs[mi].ts);
+            x = gfx_text(x, y, GFX_FONT_NORMAL, " ");
+            gfx_text(x, y, GFX_FONT_NORMAL, all_lines[i]);
+            if (msgs[mi].tag) {
+                int tw = gfx_text_width(GFX_FONT_NORMAL, msgs[mi].tag);
+                gfx_text(GFX_SCREEN_W - tw, y, GFX_FONT_NORMAL, msgs[mi].tag);
+            }
+        } else {
+            gfx_text(indent, y, GFX_FONT_NORMAL, all_lines[i]);
+        }
+        y += pitch;
+    }
+
     gfx_hline(0, GFX_SCREEN_W - 1, y);
     y += 2;
 

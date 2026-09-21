@@ -56,6 +56,7 @@
 #include "ident.h"
 #include "carrier.h"
 #include "lock.h" /* F6.5: passcode/auto-lock/senders rows, docs/DEVICE_PLAN.md §5.8 */
+#include "msg.h"  /* owner task 2026-09-20: msg_history_erase() on factory reset */
 
 #include <stdio.h>
 #include <string.h>
@@ -133,6 +134,14 @@ static void device_on_key_confirm(input_key_t key)
     case INPUT_KEY_ENTER:
         if (strcmp(s_confirm_buf, ident_get_dev_id()) == 0) {
             // TODO(F7.1): also erase the `book` NVS namespace once it exists.
+            // Owner task 2026-09-20: the persisted message history (`msghist`
+            // partition) and the msgq pending-reply/unread bodies are the
+            // child's private messages too — erase them before the restart,
+            // same as ident_erase() below. Power effect: a handful of
+            // nvs_erase_all()/nvs_commit() calls (a few ms, no RF/modem
+            // involvement), then the same full ESP32 reset ident_erase()
+            // already causes.
+            msg_history_erase();
             ident_erase();
             // Power effect: full ESP32 reset. The modem is left exactly as
             // it was (a separate chip over UART) until the next boot's

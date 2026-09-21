@@ -118,7 +118,112 @@ typedef struct {
     uint8_t ack_state; /* see above, depends on dir */
     uint8_t flags;
     bool in_use;
+    /* Owner task 2026-09-20 ("keep recent messages across reboots"): the
+     * `msghist` NVS-partition slot/sequence this entry is persisted under,
+     * 0 = never persisted (persistence unavailable, or this entry predates
+     * the feature/was only ever a RECOVERED reconstruction — see msg.c's
+     * history_write_entry() callers). Purely a msg.c-internal bookkeeping
+     * field: nothing outside msg.c reads it, so it costs nothing to any
+     * existing caller of msg_thread_at()/msg_iter_peer() and does not
+     * change wire, RTC, or msgq NVS layout. Real sequence numbers start at
+     * 1 (msg.c's history_next_seq()) so 0 is unambiguous. */
+    uint32_t hist_seq;
 } msg_t;
+
+/* ---------------------------------------------------------------------
+ * NVS-partition-resident message history (owner task 2026-09-20: "keep
+ * recent messages on the device across reboots"). Deliberately NOT the
+ * RTC (`pager_rtc_t`'s budget is a fixed, nearly-full 1184 bytes, modes.c's
+ * own comment) and NOT the main `nvs` partition (24 kB total, already
+ * carrying identity/msgq/sms/book — firmware/partitions.csv's own header
+ * says not to grow it). Instead a dedicated NVS-type data partition
+ * `msghist` (128 KB, firmware/partitions.csv, appended at the end of the
+ * table so every existing partition keeps its offset), opened
+ * independently via nvs_flash_init_partition()/nvs_open_from_partition()
+ * in msg.c so a corrupt or full `msghist` can never affect any other NVS
+ * namespace. Fails open: if the partition is missing (a pager whose table
+ * has not been re-flashed yet) or fails to init, msg.c logs once at INFO
+ * and runs exactly as it did before this feature (RAM-only thread, cleared
+ * on every reset) — this feature must never be able to stop a page from
+ * being received, rendered or acked.
+ *
+ * Ring indexing: MSG_THREAD_DEPTH (32) NVS keys, "m0".."m31" — one per
+ * *sequence slot*, NOT one per s_thread ARRAY INDEX (which reshuffles on
+ * every insert, thread_insert_locked()'s memmove). Each record carries its
+ * own monotonically increasing `seq`, assigned at insert time; its key is
+ * "m" + (seq % 32). This is what keeps a single message's flash cost to a
+ * single NVS key for its whole life — msg.c never rewrites 32 keys to age
+ * the ring by one slot the way it would if keys were addressed by the
+ * live RAM array index instead. The ring is therefore self-describing:
+ * restoring newest-first is "read all 32 keys, keep the ones that decode
+ * with the current version and a good CRC, sort by `seq` descending"
+ * (msg.c's history_restore(), msghist_restore_order() below), and the next
+ * `seq` to hand out after a cold boot is simply (max observed seq) + 1 —
+ * no separate head/count record, hence no extra write for that either.
+ *
+ * Write policy (bounds flash wear to about 2 writes per message over its
+ * life, per the owner's instruction): a record is written once at
+ * msg_insert time (whatever ack_state the entry starts at) and at most
+ * ONE more time, the moment msghist_is_terminal_ack() first becomes true
+ * for it (MSG_ACK_READ for a down message; MSG_ACK_UP_SENT or
+ * MSG_ACK_UP_FAILED for an up message) — never on every intermediate
+ * ack_state step (a down message's UNSHOWN -> SHOWN transition is never,
+ * on its own, worth a second write). At an estimated 20 messages/day this
+ * is at most ~40 nvs_set_blob()+nvs_commit() calls/day into a 128 KB
+ * partition; NVS's own wear-levelling amortises that over many flash
+ * pages long before any one sector nears a typical NOR sector's ~100k-erase
+ * budget (see the final report's arithmetic).
+ *
+ * What a message restored in an "older" ack state does on the next boot:
+ * nothing incorrect. docs/PROTOCOL.md §4.1 rule 1 — "Idempotent. A
+ * repeated ack for a state already reached is a no-op (log at debug)." —
+ * is exactly why this is safe: a down message persisted at its insert-time
+ * UNSHOWN (because it was reset before ever being read) comes back
+ * UNSHOWN, gets re-shown/re-read exactly like any other outstanding
+ * message, and the relay silently drops the redundant ack instead of
+ * treating it as new. Nothing here can ever *skip* a real ack or reply —
+ * that guarantee still comes entirely from the RTC pending_acks/pending_up
+ * queues above, which this partition neither reads nor replaces. This
+ * partition only ever affects what is *drawn*, never what is *sent*.
+ * --------------------------------------------------------------------- */
+#define MSGHIST_REC_VERSION 1
+#define MSGHIST_REC_MAX 400 /* header + 3 full-length names + 320-byte body + crc, see msg.c */
+
+/* Pure record codec — no ESP-IDF/NVS dependency, host-tested by
+ * firmware/host/test_msg.c the same way msg.c's composer section above is
+ * (this whole block sits above msg.c's own `#ifdef ESP_PLATFORM` split).
+ * Encoding is variable-length (a one-byte length prefix ahead of each of
+ * id/from/to, a two-byte length ahead of body, not a fixed
+ * 17/17/17/321-byte layout) so a short "ok" reply costs far fewer NVS
+ * bytes than a full 320-byte page — NVS blobs of different sizes coexist
+ * fine across successive writes under the same key. Returns the encoded
+ * length, or 0 if it cannot possibly fit `out_cap` (never happens for
+ * `out_cap >= MSGHIST_REC_MAX`, msg.c's own buffer size). */
+size_t msghist_record_encode(const msg_t *m, uint32_t seq, uint8_t *out, size_t out_cap);
+
+/* Decodes a record written by msghist_record_encode(). Returns false (and
+ * leaves `out`/`out_seq` untouched) for anything that doesn't check out: a
+ * version mismatch, a truncated buffer, or a CRC mismatch (a torn write
+ * from a power loss mid-nvs_commit(), or a key from a future/older
+ * firmware) — msg.c's history_restore() treats false as "skip this slot",
+ * never fatal, the same corruption-handling rule this codebase uses
+ * everywhere else (see e.g. gfx.c's asset-header validation). */
+bool msghist_record_decode(const uint8_t *buf, size_t len, msg_t *out, uint32_t *out_seq);
+
+/* True once `ack_state` is the LAST state this direction's ack state
+ * machine ever reaches (down: MSG_ACK_READ; up: MSG_ACK_UP_SENT or
+ * MSG_ACK_UP_FAILED) — see the write-policy note above for why this is
+ * the one state change worth a second NVS write. */
+bool msghist_is_terminal_ack(uint8_t dir, uint8_t ack_state);
+
+/* Sorts the index set [0, n) by seqs[i] DESCENDING (newest first) into
+ * order_out[0 .. return value - 1] — pure index arithmetic, no msg_t/NVS
+ * knowledge, so history_restore()'s "which of the (up to 32) decoded
+ * records is newest" step is host-testable on its own. `n` is clamped to
+ * `max_out` (defensive; msg.c's only caller already bounds `n` by
+ * MSG_THREAD_DEPTH, so this never actually clamps in practice). Returns
+ * the number of indices written. */
+int msghist_restore_order(const uint32_t *seqs, int n, int *order_out, int max_out);
 
 /* ---------------------------------------------------------------------
  * RTC-resident sub-struct (PROTOCOL.md §9.3). Embedded by modes.c inside
@@ -400,6 +505,18 @@ void msg_iter_peer(const char *alias, bool from_newest, msg_iter_peer_cb cb, voi
  * call is exposed since a getter that also clears is simpler for a single
  * UI caller). Always false after a boot with nothing to recover. */
 bool msg_history_lost(void);
+
+/* Owner task 2026-09-20 (factory reset must erase the persisted history
+ * too — it is the child's private messages): erases every key in the
+ * `msghist` NVS partition/namespace, and, for the same reason, the `msgq`
+ * namespace's pending-reply/unread bodies (msgq_erase_reply()/
+ * msgq_erase_unread(), already used elsewhere in this file for their own
+ * per-message lifecycle). No-op if `msghist` was never available (nothing
+ * to erase). Does not touch s_thread/RTC — the caller (scr_device.c's
+ * factory-reset confirm) always follows this with ident_erase() +
+ * esp_restart(), which is what actually clears those. Safe to call more
+ * than once; NVS erase of an already-empty namespace is a no-op. */
+void msg_history_erase(void);
 
 typedef struct {
     uint32_t dedup_hits;

@@ -123,6 +123,280 @@ const char *msg_composer_text(void) { return s_composer; }
 uint16_t msg_composer_len(void) { return s_composer_len; }
 uint16_t msg_composer_codepoint_count(void) { return s_composer_codepoints; }
 
+// ---------------------------------------------------------------------------
+// msghist record codec (owner task 2026-09-20, "keep recent messages across
+// reboots") — pure logic, no ESP-IDF/NVS dependency, host-tested by
+// firmware/host/test_msg.c the same way the composer above is (this whole
+// section sits above msg.c's own `#ifdef ESP_PLATFORM` split). See msg.h's
+// long comment above MSGHIST_REC_VERSION for the on-flash design rationale;
+// this section is only the byte-level codec plus the two other bits of pure
+// arithmetic (which ack state is worth a second write, which decoded record
+// is newest) that the ESP-only history_restore()/mark_common() etc. below
+// build on.
+// ---------------------------------------------------------------------------
+
+// Bitwise CRC32 (polynomial 0xEDB88320 — the same one zlib/PNG/
+// esp_rom_crc32_le() use, but computed independently here without a
+// lookup table): this guards a few-hundred-byte record written at most a
+// couple of times per message, not a hot path, so trading a 256-entry
+// table for a few dozen extra cycles is the right call on a build that
+// already avoids all dynamic allocation. Not the same digest as
+// id_digest()'s esp_rom_crc32_le() call below, or any wire value — purely
+// private to this file's own corruption check.
+static uint32_t msghist_crc32(const uint8_t *data, size_t len)
+{
+    uint32_t crc = 0xFFFFFFFFu;
+    for (size_t i = 0; i < len; i++) {
+        crc ^= data[i];
+        for (int b = 0; b < 8; b++) {
+            uint32_t mask = (uint32_t) (-(int32_t) (crc & 1u));
+            crc = (crc >> 1) ^ (0xEDB88320u & mask);
+        }
+    }
+    return ~crc;
+}
+
+// --- little-endian bounded-write/-read primitives used by the codec below.
+// Each returns false (writing/reading nothing) the instant it would run
+// past `cap`/`len` — msghist_record_encode()/_decode() lean on this so
+// they never need their own separate bounds check per field. ---
+
+static bool w_u8(uint8_t *out, size_t cap, size_t *off, uint8_t v)
+{
+    if (*off + 1 > cap) {
+        return false;
+    }
+    out[(*off)++] = v;
+    return true;
+}
+
+static bool w_u16(uint8_t *out, size_t cap, size_t *off, uint16_t v)
+{
+    if (*off + 2 > cap) {
+        return false;
+    }
+    out[(*off)++] = (uint8_t) (v & 0xFF);
+    out[(*off)++] = (uint8_t) (v >> 8);
+    return true;
+}
+
+static bool w_u32(uint8_t *out, size_t cap, size_t *off, uint32_t v)
+{
+    if (*off + 4 > cap) {
+        return false;
+    }
+    out[(*off)++] = (uint8_t) (v & 0xFF);
+    out[(*off)++] = (uint8_t) ((v >> 8) & 0xFF);
+    out[(*off)++] = (uint8_t) ((v >> 16) & 0xFF);
+    out[(*off)++] = (uint8_t) ((v >> 24) & 0xFF);
+    return true;
+}
+
+static bool w_i64(uint8_t *out, size_t cap, size_t *off, int64_t v)
+{
+    uint64_t u = (uint64_t) v; // two's-complement reinterpret; msg.c-private wire, no cross-platform contract
+    if (!w_u32(out, cap, off, (uint32_t) (u & 0xFFFFFFFFu))) {
+        return false;
+    }
+    return w_u32(out, cap, off, (uint32_t) (u >> 32));
+}
+
+static bool w_bytes(uint8_t *out, size_t cap, size_t *off, const void *src, size_t n)
+{
+    if (*off + n > cap) {
+        return false;
+    }
+    memcpy(out + *off, src, n);
+    *off += n;
+    return true;
+}
+
+// One-byte length prefix + bytes — every id/from/to field here is at most
+// 16 bytes (MSG_ID_MAX/MSG_FROM_MAX/MSG_TO_MAX), well under 255.
+static bool w_str_field(uint8_t *out, size_t cap, size_t *off, const char *s)
+{
+    size_t len = strlen(s);
+    if (len > 255) {
+        len = 255; // defensive; never actually reached by this file's own callers
+    }
+    if (!w_u8(out, cap, off, (uint8_t) len)) {
+        return false;
+    }
+    return w_bytes(out, cap, off, s, len);
+}
+
+static bool r_u8(const uint8_t *buf, size_t len, size_t *off, uint8_t *v)
+{
+    if (*off + 1 > len) {
+        return false;
+    }
+    *v = buf[(*off)++];
+    return true;
+}
+
+static bool r_u16(const uint8_t *buf, size_t len, size_t *off, uint16_t *v)
+{
+    if (*off + 2 > len) {
+        return false;
+    }
+    *v = (uint16_t) (buf[*off] | (buf[*off + 1] << 8));
+    *off += 2;
+    return true;
+}
+
+static bool r_u32(const uint8_t *buf, size_t len, size_t *off, uint32_t *v)
+{
+    if (*off + 4 > len) {
+        return false;
+    }
+    *v = (uint32_t) buf[*off] | ((uint32_t) buf[*off + 1] << 8) | ((uint32_t) buf[*off + 2] << 16) |
+         ((uint32_t) buf[*off + 3] << 24);
+    *off += 4;
+    return true;
+}
+
+static bool r_i64(const uint8_t *buf, size_t len, size_t *off, int64_t *v)
+{
+    uint32_t lo, hi;
+    if (!r_u32(buf, len, off, &lo) || !r_u32(buf, len, off, &hi)) {
+        return false;
+    }
+    uint64_t u = ((uint64_t) hi << 32) | lo;
+    *v = (int64_t) u;
+    return true;
+}
+
+// Bounds `dst_cap` (a MSG_*_MAX-sized buffer, cap includes the NUL) against
+// the encoded length prefix and rejects (does not truncate) anything that
+// would not fit — an oversized length prefix here can only mean a corrupt
+// or foreign record, and this file's own rule throughout is "skip the whole
+// record", never "truncate and keep going" (msg.h's decode contract).
+static bool r_str_field(const uint8_t *buf, size_t len, size_t *off, char *dst, size_t dst_cap)
+{
+    uint8_t slen;
+    if (!r_u8(buf, len, off, &slen)) {
+        return false;
+    }
+    if (*off + slen > len || (size_t) slen > dst_cap - 1) {
+        return false;
+    }
+    memcpy(dst, buf + *off, slen);
+    dst[slen] = '\0';
+    *off += slen;
+    return true;
+}
+
+size_t msghist_record_encode(const msg_t *m, uint32_t seq, uint8_t *out, size_t out_cap)
+{
+    if (!m || !out) {
+        return 0;
+    }
+    size_t off = 0;
+    if (!w_u8(out, out_cap, &off, MSGHIST_REC_VERSION) || !w_u32(out, out_cap, &off, seq) ||
+        !w_i64(out, out_cap, &off, m->ts) || !w_u8(out, out_cap, &off, m->dir) ||
+        !w_u8(out, out_cap, &off, m->ack_state) || !w_u8(out, out_cap, &off, m->flags) ||
+        !w_str_field(out, out_cap, &off, m->id) || !w_str_field(out, out_cap, &off, m->from) ||
+        !w_str_field(out, out_cap, &off, m->to) || !w_u16(out, out_cap, &off, m->body_len) ||
+        !w_bytes(out, out_cap, &off, m->body, m->body_len)) {
+        return 0;
+    }
+    uint32_t crc = msghist_crc32(out, off);
+    if (!w_u32(out, out_cap, &off, crc)) {
+        return 0;
+    }
+    return off;
+}
+
+bool msghist_record_decode(const uint8_t *buf, size_t len, msg_t *out, uint32_t *out_seq)
+{
+    if (!buf || !out) {
+        return false;
+    }
+    size_t off = 0;
+    uint8_t version;
+    uint32_t seq;
+    int64_t ts;
+    uint8_t dir, ack_state, flags;
+    char id[MSG_ID_MAX], from[MSG_FROM_MAX], to[MSG_TO_MAX];
+    uint16_t body_len;
+
+    if (!r_u8(buf, len, &off, &version) || version != MSGHIST_REC_VERSION) {
+        return false;
+    }
+    if (!r_u32(buf, len, &off, &seq) || !r_i64(buf, len, &off, &ts) ||
+        !r_u8(buf, len, &off, &dir) || dir > 1 || !r_u8(buf, len, &off, &ack_state) ||
+        !r_u8(buf, len, &off, &flags) || !r_str_field(buf, len, &off, id, sizeof(id)) ||
+        !r_str_field(buf, len, &off, from, sizeof(from)) ||
+        !r_str_field(buf, len, &off, to, sizeof(to)) || !r_u16(buf, len, &off, &body_len) ||
+        (size_t) body_len > MSG_RAM_BODY_MAX - 1 || off + body_len > len) {
+        return false;
+    }
+    const uint8_t *body_ptr = buf + off;
+    off += body_len;
+
+    uint32_t stored_crc;
+    if (!r_u32(buf, len, &off, &stored_crc)) {
+        return false;
+    }
+    if (msghist_crc32(buf, off - 4) != stored_crc) {
+        return false; // torn write or foreign data — skip this slot, never fatal
+    }
+
+    memset(out, 0, sizeof(*out));
+    out->ts = ts;
+    memcpy(out->id, id, sizeof(id));
+    memcpy(out->from, from, sizeof(from));
+    memcpy(out->to, to, sizeof(to));
+    memcpy(out->body, body_ptr, body_len);
+    out->body[body_len] = '\0';
+    out->body_len = body_len;
+    out->dir = dir;
+    out->ack_state = ack_state;
+    out->flags = flags;
+    out->in_use = true;
+    out->hist_seq = seq;
+    if (out_seq) {
+        *out_seq = seq;
+    }
+    return true;
+}
+
+bool msghist_is_terminal_ack(uint8_t dir, uint8_t ack_state)
+{
+    if (dir == (uint8_t) MSG_DIR_DOWN) {
+        return ack_state == MSG_ACK_READ;
+    }
+    return ack_state == MSG_ACK_UP_SENT || ack_state == MSG_ACK_UP_FAILED;
+}
+
+int msghist_restore_order(const uint32_t *seqs, int n, int *order_out, int max_out)
+{
+    if (n < 0) {
+        n = 0;
+    }
+    if (n > max_out) {
+        n = max_out;
+    }
+    if (n > MSG_THREAD_DEPTH) {
+        n = MSG_THREAD_DEPTH; // this file's own only caller never exceeds this; defensive floor for the `used[]` array below
+    }
+    bool used[MSG_THREAD_DEPTH] = { 0 };
+    for (int k = 0; k < n; k++) {
+        int best = -1;
+        for (int i = 0; i < n; i++) {
+            if (used[i]) {
+                continue;
+            }
+            if (best < 0 || seqs[i] > seqs[best]) {
+                best = i;
+            }
+        }
+        used[best] = true;
+        order_out[k] = best;
+    }
+    return n;
+}
+
 #ifdef ESP_PLATFORM
 
 #include <ctype.h>
@@ -134,6 +408,7 @@ uint16_t msg_composer_codepoint_count(void) { return s_composer_codepoints; }
 #include "esp_rom_crc.h"
 #include "esp_timer.h"
 #include "nvs.h"
+#include "nvs_flash.h" // nvs_flash_init_partition()/nvs_flash_erase_partition(), msghist (§ below)
 
 // F3.6 (docs/PROTOCOL.md §14, §10 keymap): signing/verification and the CBOR
 // codec every publish now goes through. ident.h is needed only for the
@@ -298,6 +573,204 @@ static msg_t *thread_find_locked(const char *id, msg_dir_t dir)
 }
 
 // ---------------------------------------------------------------------------
+// NVS partition `msghist` (owner task 2026-09-20; msg.h's long comment above
+// MSGHIST_REC_VERSION has the full design rationale). Separate from the
+// main `nvs` partition/namespace `msgq` below on purpose: a 128 KB
+// dedicated partition (firmware/partitions.csv) so this feature can never
+// starve identity/msgq/sms/book's own 24 kB `nvs` partition, and a
+// dedicated nvs_flash_init_partition() so a missing/corrupt partition on a
+// pager whose table hasn't been re-flashed yet degrades to "log once, run
+// RAM-only" rather than touching (or being touched by) anything else NVS
+// does. Every function here does its own nvs_open_from_partition()/
+// nvs_close() and is always called with the RTC/RAM lock RELEASED (flash
+// I/O), same discipline as the `msgq` helpers just below.
+// ---------------------------------------------------------------------------
+
+#define MSGHIST_PART "msghist"
+#define MSGHIST_NS "msghist"
+
+static bool s_hist_available = false;
+// Real seq numbers start at 1 (0 = "never persisted", msg.h's msg_t.hist_seq
+// comment); history_restore() below overwrites this with (max seq found)+1
+// when there is anything to restore, so numbering survives a cold boot too.
+static uint32_t s_hist_next_seq = 1;
+
+// Power/flash effect: none by itself — nvs_flash_init_partition() only
+// mounts/validates the NVS page structure already on flash (or, on a
+// factory-blank 128 KB region, recognises it as an empty valid page set;
+// no erase needed in that common case). The erase-and-retry fallback below
+// (mirrors main.c's own boilerplate for the main `nvs` partition) only
+// costs a real erase cycle on the rare "wrong NVS version" or genuinely
+// torn page case. Called once, from msg_init(), before anything reads the
+// thread.
+static void history_mount(void)
+{
+    esp_err_t err = nvs_flash_init_partition(MSGHIST_PART);
+    if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        if (nvs_flash_erase_partition(MSGHIST_PART) == ESP_OK) {
+            err = nvs_flash_init_partition(MSGHIST_PART);
+        }
+    }
+    if (err != ESP_OK) {
+        // Fails open (msg.h/module comment, owner instruction: this feature
+        // must never be able to stop a page from being received, rendered
+        // or acked): the overwhelmingly common cause is a pager whose
+        // partition table predates this feature (esp_partition_find() in
+        // nvs_flash_init_partition() returns ESP_ERR_NOT_FOUND for a
+        // partition label the table doesn't have) — logged once at INFO,
+        // not WARN/ERROR, since that is an expected state for an
+        // already-deployed pager, not a fault.
+        ESP_LOGI(TAG, "msghist unavailable (0x%x) - message history is RAM-only this boot", err);
+        s_hist_available = false;
+        return;
+    }
+    s_hist_available = true;
+}
+
+// Allocates the next persisted-history sequence number, or 0 ("do not
+// persist this entry") if msghist isn't available. Shares msg.c's existing
+// cross-task RAM lock (msg.h's header comment: "the only cross-task
+// primitive in this design") to serialise s_hist_next_seq++ the same way
+// every other msg.c static already is, even though s_hist_next_seq is not
+// itself RTC-resident.
+static uint32_t history_next_seq(void)
+{
+    if (!s_hist_available) {
+        return 0;
+    }
+    s_lock();
+    uint32_t seq = s_hist_next_seq++;
+    s_unlock();
+    return seq;
+}
+
+// Writes (or overwrites) `m`'s slot, keyed by its own hist_seq — see msg.h's
+// module comment for why this is at most 2 calls per message's whole life
+// (once at insert, once more at msghist_is_terminal_ack()) rather than one
+// call per ring-aging step. No-op if `m` was never assigned a hist_seq
+// (persistence unavailable, or a RECOVERED entry re-inserted by the msgq
+// fallback paths below — those must never re-persist, see their own
+// comments). Always called with the lock released (flash I/O).
+static void history_write_entry(const msg_t *m)
+{
+    if (!s_hist_available || m->hist_seq == 0) {
+        return;
+    }
+    uint8_t buf[MSGHIST_REC_MAX];
+    size_t len = msghist_record_encode(m, m->hist_seq, buf, sizeof(buf));
+    if (len == 0) {
+        ESP_LOGD(TAG, "msghist: encode failed for id=%s (should not happen)", m->id);
+        return; // fail open: this message just isn't persisted this time
+    }
+    char key[8];
+    snprintf(key, sizeof(key), "m%u", (unsigned) (m->hist_seq % MSG_THREAD_DEPTH));
+
+    nvs_handle_t h;
+    if (nvs_open_from_partition(MSGHIST_PART, MSGHIST_NS, NVS_READWRITE, &h) != ESP_OK) {
+        return;
+    }
+    if (nvs_set_blob(h, key, buf, len) == ESP_OK) {
+        nvs_commit(h);
+    }
+    nvs_close(h);
+}
+
+// Called once from msg_init(), before the warm/cold msgq recovery paths
+// (which only reconstruct in-flight pending-reply/unread rows) and before
+// anything else reads the thread. Reads all MSG_THREAD_DEPTH possible
+// slots, decodes and validates each independently (a corrupt or
+// old-version slot is skipped, never fatal — msg.h's decode contract),
+// and restores newest-first by `seq` via msghist_restore_order() (pure,
+// host-tested). Leaves s_thread untouched (all-zero, from msg_init()'s own
+// memset) if msghist is unavailable or nothing valid is found — that is
+// exactly the "first boot / erased / corrupt" case msg_history_lost() is
+// meant to report.
+static void history_restore(void)
+{
+    if (!s_hist_available) {
+        return;
+    }
+    nvs_handle_t h;
+    if (nvs_open_from_partition(MSGHIST_PART, MSGHIST_NS, NVS_READONLY, &h) != ESP_OK) {
+        return; // namespace not created yet: msghist mounted fine but nothing was ever written
+    }
+
+    static msg_t decoded[MSG_THREAD_DEPTH]; // static: this runs once at boot, keep it off the stack
+    uint32_t seqs[MSG_THREAD_DEPTH];
+    int n = 0;
+    uint32_t max_seq = 0;
+
+    for (int slot = 0; slot < MSG_THREAD_DEPTH; slot++) {
+        char key[8];
+        snprintf(key, sizeof(key), "m%u", (unsigned) slot);
+        uint8_t buf[MSGHIST_REC_MAX];
+        size_t len = sizeof(buf);
+        if (nvs_get_blob(h, key, buf, &len) != ESP_OK) {
+            continue; // fewer than 32 messages ever persisted, or a gap: not an error
+        }
+        uint32_t seq;
+        if (!msghist_record_decode(buf, len, &decoded[n], &seq)) {
+            ESP_LOGI(TAG, "msghist: slot %d failed to decode (corrupt or old version), skipped",
+                     slot);
+            continue;
+        }
+        seqs[n] = seq;
+        if (seq > max_seq) {
+            max_seq = seq;
+        }
+        n++;
+    }
+    nvs_close(h);
+
+    if (n == 0) {
+        return;
+    }
+
+    int order[MSG_THREAD_DEPTH];
+    int fill = msghist_restore_order(seqs, n, order, MSG_THREAD_DEPTH);
+
+    s_lock();
+    for (int i = 0; i < fill; i++) {
+        s_thread[i] = decoded[order[i]];
+        // Restored across a reset, same meaning §9.6 already gives this
+        // flag for the msgq-only recovery paths below.
+        s_thread[i].flags |= MSG_F_RECOVERED;
+    }
+    s_hist_next_seq = max_seq + 1;
+    s_unlock();
+
+    ESP_LOGI(TAG, "msghist: restored %d of %d decoded record(s), newest seq=%u", fill, n,
+             (unsigned) max_seq);
+}
+
+// Owner task: factory reset must erase the persisted history too. Erases
+// every "m0".."m31" key it can find (nvs_erase_all() is simplest and
+// correct here: this whole namespace holds nothing but history rows) plus,
+// for the same "child's private messages" reason, the msgq pending-reply/
+// unread bodies (msgq_erase_reply()/msgq_erase_unread(), defined below —
+// forward-declared here since C requires it). No-op if msghist was never
+// available. scr_device.c calls this immediately before ident_erase() +
+// esp_restart(); it does not itself touch s_thread/RTC (the restart does).
+static void msgq_erase_unread(void); // fwd decl: defined further down this file
+static void msgq_erase_reply(int slot); // fwd decl: defined further down this file
+
+void msg_history_erase(void)
+{
+    if (s_hist_available) {
+        nvs_handle_t h;
+        if (nvs_open_from_partition(MSGHIST_PART, MSGHIST_NS, NVS_READWRITE, &h) == ESP_OK) {
+            nvs_erase_all(h);
+            nvs_commit(h);
+            nvs_close(h);
+        }
+    }
+    msgq_erase_unread();
+    for (int i = 0; i < MSG_PENDING_UP_MAX; i++) {
+        msgq_erase_reply(i);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // NVS namespace `msgq` (docs/PROTOCOL.md §9.2/§9.4): full-fidelity bodies
 // for a pending reply (per pending_up slot) and the newest unread down
 // message. Every function here does its own nvs_open()/nvs_close() and is
@@ -454,7 +927,11 @@ static bool msgq_read_unread(char *id, size_t id_cap, char *from, size_t from_ca
 // (.bss) did not — repopulate the RAM view from the NVS body so a reply
 // typed just before a crash/watchdog reset is still visible. msg_pump()
 // keeps retrying regardless (it reads RTC metadata directly), so this only
-// affects what the UI shows, not delivery.
+// affects what the UI shows, not delivery. Guarded against history_restore()
+// (called first by msg_init(), below) having already restored this exact
+// row from `msghist` — msg_queue_reply() persists a reply at insert time, so
+// a still-pending reply is typically already sitting in s_thread by the
+// time this runs, and inserting it a second time would show it twice.
 static void warm_recover_replies(void)
 {
     for (int i = 0; i < MSG_PENDING_UP_MAX; i++) {
@@ -462,12 +939,14 @@ static void warm_recover_replies(void)
         bool in_use = s_rtc->pending_up[i].in_use;
         char id[MSG_ID_MAX] = "";
         char to[MSG_TO_MAX] = "";
+        bool already = false;
         if (in_use) {
             strncpy(id, s_rtc->pending_up[i].id, MSG_ID_MAX - 1);
             strncpy(to, s_rtc->pending_up[i].to, MSG_TO_MAX - 1);
+            already = thread_find_locked(id, MSG_DIR_UP) != NULL;
         }
         s_unlock();
-        if (!in_use) {
+        if (!in_use || already) {
             continue;
         }
 
@@ -489,13 +968,20 @@ static void warm_recover_replies(void)
         entry.ack_state = MSG_ACK_UP_PENDING;
         entry.flags = MSG_F_RECOVERED;
         entry.in_use = true;
+        // No hist_seq assigned/history_write_entry() call here: this row
+        // either already exists in msghist (msg_queue_reply() persisted it
+        // at insert) or msghist is unavailable, in which case there is
+        // nothing to persist to. Re-persisting a msgq-only reconstruction
+        // under a *new* seq would also orphan whatever seq the original
+        // insert used, wasting a ring slot for no benefit.
         s_lock();
         thread_insert_locked(&entry);
         s_unlock();
     }
 }
 
-// Warm reset: RTC's unread[0] metadata survived; body comes from NVS.
+// Warm reset: RTC's unread[0] metadata survived; body comes from NVS. Same
+// history_restore()-already-has-it guard as warm_recover_replies() above.
 // Returns true if there was an unread message to (attempt to) recover.
 static bool warm_recover_unread(void)
 {
@@ -503,14 +989,19 @@ static bool warm_recover_unread(void)
     bool had_unread = s_rtc->unread[0].in_use;
     char id[MSG_ID_MAX] = "", from[MSG_FROM_MAX] = "";
     int64_t ts = 0;
+    bool already = false;
     if (had_unread) {
         strncpy(id, s_rtc->unread[0].id, MSG_ID_MAX - 1);
         strncpy(from, s_rtc->unread[0].from, MSG_FROM_MAX - 1);
         ts = s_rtc->unread[0].ts;
+        already = thread_find_locked(id, MSG_DIR_DOWN) != NULL;
     }
     s_unlock();
     if (!had_unread) {
         return false;
+    }
+    if (already) {
+        return true; // msghist already restored this row; RTC metadata is already correct
     }
 
     char nid[MSG_ID_MAX] = "", nfrom[MSG_FROM_MAX] = "", body[MSG_RAM_BODY_MAX] = "";
@@ -542,7 +1033,10 @@ static bool warm_recover_unread(void)
 // still be sitting there from before the battery pull — sweep both slots
 // and rebuild the minimum RTC+RAM state to keep sending it. Age/attempts
 // reset to fresh (a cold boot is a total loss-of-context event, §9.6); only
-// the content itself is preserved.
+// the content itself is preserved. The RTC pending_up reconstruction below
+// always runs (RTC really was wiped); the s_thread insertion is skipped
+// when history_restore() (called first by msg_init()) already put this id
+// in the thread, same reasoning as warm_recover_replies() above.
 static void cold_recover_replies(void)
 {
     for (int i = 0; i < MSG_PENDING_UP_MAX; i++) {
@@ -561,18 +1055,21 @@ static void cold_recover_replies(void)
         p->in_use = true;
         s_save();
 
-        msg_t entry = { 0 };
-        strncpy(entry.id, id, MSG_ID_MAX - 1);
-        strncpy(entry.to, to, MSG_TO_MAX - 1);
-        strncpy(entry.from, "student", MSG_FROM_MAX - 1);
-        memcpy(entry.body, body, body_len);
-        entry.body[body_len] = '\0';
-        entry.body_len = body_len;
-        entry.dir = (uint8_t) MSG_DIR_UP;
-        entry.ack_state = MSG_ACK_UP_PENDING;
-        entry.flags = MSG_F_RECOVERED;
-        entry.in_use = true;
-        thread_insert_locked(&entry);
+        bool already = thread_find_locked(id, MSG_DIR_UP) != NULL;
+        if (!already) {
+            msg_t entry = { 0 };
+            strncpy(entry.id, id, MSG_ID_MAX - 1);
+            strncpy(entry.to, to, MSG_TO_MAX - 1);
+            strncpy(entry.from, "student", MSG_FROM_MAX - 1);
+            memcpy(entry.body, body, body_len);
+            entry.body[body_len] = '\0';
+            entry.body_len = body_len;
+            entry.dir = (uint8_t) MSG_DIR_UP;
+            entry.ack_state = MSG_ACK_UP_PENDING;
+            entry.flags = MSG_F_RECOVERED;
+            entry.in_use = true;
+            thread_insert_locked(&entry);
+        }
         s_unlock();
 
         ESP_LOGI(TAG, "cold boot: recovered pending reply slot %d from NVS msgq (%u bytes)", i,
@@ -581,6 +1078,8 @@ static void cold_recover_replies(void)
 }
 
 // Returns true if an orphaned unread message was found and recovered.
+// Same "RTC metadata always rebuilt, s_thread insert skipped if
+// history_restore() already has it" split as cold_recover_replies() above.
 static bool cold_recover_unread(void)
 {
     char id[MSG_ID_MAX] = "", from[MSG_FROM_MAX] = "", body[MSG_RAM_BODY_MAX] = "";
@@ -599,18 +1098,21 @@ static bool cold_recover_unread(void)
     u->in_use = true;
     s_save();
 
-    msg_t entry = { 0 };
-    entry.ts = ts;
-    strncpy(entry.id, id, MSG_ID_MAX - 1);
-    strncpy(entry.from, from, MSG_FROM_MAX - 1);
-    memcpy(entry.body, body, body_len);
-    entry.body[body_len] = '\0';
-    entry.body_len = body_len;
-    entry.dir = (uint8_t) MSG_DIR_DOWN;
-    entry.ack_state = MSG_ACK_SHOWN;
-    entry.flags = MSG_F_RECOVERED;
-    entry.in_use = true;
-    thread_insert_locked(&entry);
+    bool already = thread_find_locked(id, MSG_DIR_DOWN) != NULL;
+    if (!already) {
+        msg_t entry = { 0 };
+        entry.ts = ts;
+        strncpy(entry.id, id, MSG_ID_MAX - 1);
+        strncpy(entry.from, from, MSG_FROM_MAX - 1);
+        memcpy(entry.body, body, body_len);
+        entry.body[body_len] = '\0';
+        entry.body_len = body_len;
+        entry.dir = (uint8_t) MSG_DIR_DOWN;
+        entry.ack_state = MSG_ACK_SHOWN;
+        entry.flags = MSG_F_RECOVERED;
+        entry.in_use = true;
+        thread_insert_locked(&entry);
+    }
     s_unlock();
 
     ESP_LOGI(TAG, "cold boot: recovered newest-unread message from NVS msgq (%u bytes)",
@@ -624,27 +1126,51 @@ void msg_init(bool rtc_was_valid)
     msg_composer_reset();
     s_history_lost_pending = false;
 
+    // Owner task 2026-09-20: mount `msghist` and restore whatever it has
+    // BEFORE the msgq-based pending-reply/unread reconstruction below, on
+    // both a cold and a warm boot — those two only ever rebuild a couple of
+    // in-flight rows and actively check for (and skip duplicating) a row
+    // history_restore() already placed here, see their own comments.
+    history_mount();
+    history_restore();
+
     if (!rtc_was_valid) {
         // Cold boot: RTC's own zeroing is modes.c's job (rtc_cold_init());
-        // msgq NVS content is all that can possibly have survived.
+        // msgq NVS content is what lets an in-flight reply/unread's RTC
+        // retry/ack metadata survive even though the RTC struct itself did
+        // not (msghist has no opinion on retry state, only on what to draw).
         cold_recover_replies();
-        bool had_unread = cold_recover_unread();
-        if (had_unread) {
-            s_history_lost_pending = true;
-            ESP_LOGI(TAG, "cold boot: recovered from NVS msgq, history_lost flag armed");
-        }
-        return;
+        cold_recover_unread();
+    } else {
+        // Reset recovery: RTC's own metadata survived; msgq is still the
+        // source for any full-fidelity body msghist did not already supply
+        // (msg.h/§9.4 — bodies never lived in RTC itself).
+        warm_recover_replies();
+        warm_recover_unread();
     }
 
-    // Reset recovery: RAM thread is empty (fresh .bss); re-insert whatever
-    // RTC says survived, reading full-fidelity bodies back from NVS
-    // (msg.h/§9.4 — bodies no longer live in RTC at all).
-    warm_recover_replies();
-    bool had_unread = warm_recover_unread();
-
-    s_history_lost_pending = true;
-    ESP_LOGI(TAG, "reset recovery: thread reduced to %s, history_lost flag armed",
-             had_unread ? "1 recovered message" : "0 messages");
+    // "History really lost" (owner instruction) now means exactly what it
+    // says: no stored history could be reconstructed by ANY of the paths
+    // above — first boot ever, an erased/not-yet-provisioned `msghist`
+    // partition, or (rare) every stored record failing its version/CRC
+    // check. Any of the recovery paths above having put at least one row
+    // in s_thread means there IS stored history, so the flag stays false —
+    // this is the behaviour change from pre-msghist firmware, which armed
+    // this flag on every single reset regardless (msg.c's own git history).
+    size_t n = 0;
+    for (int i = 0; i < MSG_THREAD_DEPTH; i++) {
+        if (s_thread[i].in_use) {
+            n++;
+        }
+    }
+    if (n == 0) {
+        s_history_lost_pending = true;
+        ESP_LOGI(TAG, "%s: no stored history found, history_lost flag armed",
+                 rtc_was_valid ? "reset recovery" : "cold boot");
+    } else {
+        ESP_LOGI(TAG, "%s: thread has %u message(s) after recovery",
+                 rtc_was_valid ? "reset recovery" : "cold boot", (unsigned) n);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -709,6 +1235,19 @@ static msg_ingest_t ingest_common(const char *id_str, int64_t ts, const char *fr
     s_lock();
     is_dup = seen_contains_locked(digest);
     if (!is_dup) {
+        // Owner task 2026-09-20: the RTC seen_ids ring (§4.1 rule 7) is only
+        // 16 deep and lost on every cold boot, but msghist's persisted
+        // history — restored into s_thread by msg_init()/history_restore()
+        // before this function's caller ever runs — is neither. Consulting
+        // it here is what makes a message the relay re-publishes on the
+        // next online edge after a cold boot (§5.3) still recognised as a
+        // duplicate (re-acked below, not re-rendered) instead of shown
+        // twice, closing the same gap this function's pre-existing comment
+        // already describes for a same-boot duplicate whose id fell out of
+        // the (narrower) seen_ids ring before this task.
+        is_dup = thread_find_locked(id_copy, MSG_DIR_DOWN) != NULL;
+    }
+    if (!is_dup) {
         seen_add_locked(digest);
     } else {
         s_rtc->dedup_hits++;
@@ -741,6 +1280,13 @@ static msg_ingest_t ingest_common(const char *id_str, int64_t ts, const char *fr
     entry.ack_state = MSG_ACK_UNSHOWN;
     entry.flags = 0;
     entry.in_use = true;
+    // Owner task 2026-09-20: this is the "insert" write of msghist's
+    // "at most 2 writes per message" budget (msg.h's module comment) — the
+    // second, if any, happens later when this id's ack_state first reaches
+    // MSG_ACK_READ (mark_common()). Assigned before thread_insert_locked()
+    // so the copy that lands in s_thread[0] carries it too (mark_common()
+    // needs it to know which msghist key to rewrite).
+    entry.hist_seq = history_next_seq();
 
     // Full-fidelity NVS write BEFORE touching the RAM thread/RTC metadata,
     // and with the lock released (flash I/O; matches msg_pump()'s existing
@@ -766,6 +1312,8 @@ static msg_ingest_t ingest_common(const char *id_str, int64_t ts, const char *fr
     u->in_use = true;
     s_save();
     s_unlock();
+
+    history_write_entry(&entry); // unlocked flash I/O, same discipline as msgq_write_unread() above
 
     return MSG_INGEST_NEW;
 }
@@ -1020,6 +1568,7 @@ static bool mark_common(const char *id, uint8_t ack_state, uint8_t pending_state
     // because it no longer looked UNSHOWN. Leaving ack_state where it was
     // when queuing fails means the next successful pass sees it as still
     // outstanding and retries. No power/modem effect: RAM bookkeeping only.
+    uint8_t old_ack_state = m ? m->ack_state : 0;
     bool queued = pending_ack_upsert_locked(id, pending_state);
     if (queued && m && m->ack_state < ack_state) {
         m->ack_state = ack_state;
@@ -1030,11 +1579,29 @@ static bool mark_common(const char *id, uint8_t ack_state, uint8_t pending_state
         s_rtc->unread[0].in_use = false;
         clear_unread = true;
     }
+    // Owner task 2026-09-20: the "terminal ack_state" second msghist write
+    // (msg.h's write-policy comment) — fires exactly once per message, the
+    // call where ack_state actually transitions (old_ack_state != the new
+    // value) into MSG_ACK_READ, never on a re-ack of an already-READ
+    // message (msg_mark_all_unshown()'s own retry sweep, or a duplicate
+    // ingest's re-ack, would otherwise call this repeatedly). A snapshot is
+    // taken now (still locked) so the flash write below can happen after
+    // s_unlock(), same discipline as msgq_erase_unread() already uses here.
+    bool need_persist = false;
+    msg_t snapshot = { 0 };
+    if (queued && m && old_ack_state != m->ack_state &&
+        msghist_is_terminal_ack(MSG_DIR_DOWN, m->ack_state)) {
+        snapshot = *m;
+        need_persist = true;
+    }
     s_save();
     s_unlock();
 
     if (clear_unread) {
         msgq_erase_unread(); // unlocked flash I/O, §9.4
+    }
+    if (need_persist) {
+        history_write_entry(&snapshot);
     }
     return queued;
 }
@@ -1105,6 +1672,11 @@ bool msg_queue_reply(const char *to, const char *body, uint16_t len)
     // NVS write with the lock released (flash I/O, §4.2/§9.4) — matches
     // msg_pump()'s existing discipline of never blocking under the lock.
     bool wrote = msgq_write_reply(slot, id, to_copy, body);
+    // Owner task 2026-09-20: allocated here, NOT inside the s_lock() block
+    // below — history_next_seq() takes msg.c's own lock itself
+    // (xSemaphoreCreateMutexStatic in modes.c is not recursive), so calling
+    // it while already holding that lock would deadlock.
+    uint32_t hist_seq = history_next_seq();
 
     s_lock();
     if (!wrote) {
@@ -1137,8 +1709,11 @@ bool msg_queue_reply(const char *to, const char *body, uint16_t len)
     entry.ack_state = MSG_ACK_UP_PENDING;
     entry.flags = 0;
     entry.in_use = true;
+    entry.hist_seq = hist_seq; // insert-time msghist write, see the allocation comment above
     thread_insert_locked(&entry);
     s_unlock();
+
+    history_write_entry(&entry); // unlocked flash I/O, same discipline as msgq_write_reply() above
 
     return true;
 }
@@ -1178,10 +1753,16 @@ bool msg_insert_sms_in(const char *from, const char *body, uint16_t body_len, ch
     entry.ack_state = MSG_ACK_READ;
     entry.flags = 0;
     entry.in_use = true;
+    // Already at its terminal ack_state (MSG_ACK_READ, never advanced) —
+    // this is the ONE msghist write this row will ever get, unlike a
+    // down/`msg` row's separate insert+terminal writes.
+    entry.hist_seq = history_next_seq();
 
     s_lock();
     thread_insert_locked(&entry);
     s_unlock();
+
+    history_write_entry(&entry); // unlocked flash I/O, see msg_queue_reply()'s own comment
 
     if (out_id && out_id_cap > 0) {
         strncpy(out_id, id, out_id_cap - 1);
@@ -1212,10 +1793,13 @@ bool msg_insert_sms_out_pending(const char *to, const char *body, uint16_t body_
     entry.ack_state = MSG_ACK_UP_PENDING;
     entry.flags = 0;
     entry.in_use = true;
+    entry.hist_seq = history_next_seq(); // insert write; msg_finish_sms_out() below does the terminal one
 
     s_lock();
     thread_insert_locked(&entry);
     s_unlock();
+
+    history_write_entry(&entry); // unlocked flash I/O, see msg_queue_reply()'s own comment
 
     if (out_id && out_id_cap > 0) {
         strncpy(out_id, id, out_id_cap - 1);
@@ -1231,15 +1815,28 @@ bool msg_finish_sms_out(const char *id, bool ok)
     }
     s_lock();
     msg_t *m = thread_find_locked(id, MSG_DIR_UP);
+    bool need_persist = false;
+    msg_t snapshot = { 0 };
     if (m) {
+        uint8_t old_ack_state = m->ack_state;
         if (ok) {
             m->ack_state = MSG_ACK_UP_SENT;
         } else {
             m->ack_state = MSG_ACK_UP_FAILED;
             m->flags |= MSG_F_SEND_FAILED;
         }
+        // Terminal-state msghist write (msg.h's write-policy comment) —
+        // MSG_ACK_UP_SENT/MSG_ACK_UP_FAILED are always terminal for an up
+        // message, so any real transition here is worth persisting once.
+        if (old_ack_state != m->ack_state) {
+            snapshot = *m;
+            need_persist = true;
+        }
     }
     s_unlock();
+    if (need_persist) {
+        history_write_entry(&snapshot);
+    }
     return m != NULL;
 }
 
@@ -1456,6 +2053,14 @@ void msg_pump(void)
                       : publish_reply(id_copy, to_copy, body_copy, body_len);
 
         bool freed = false;
+        // Owner task 2026-09-20: the terminal-state msghist write (msg.h's
+        // write-policy comment) for a reply — MSG_ACK_UP_SENT/
+        // MSG_ACK_UP_FAILED are always terminal, so whichever branch below
+        // actually flips ack_state is always this row's second (and last)
+        // msghist write. Snapshotted under the lock, written after
+        // s_unlock(), same discipline as msgq_erase_reply() just below.
+        bool need_persist = false;
+        msg_t snapshot = { 0 };
         s_lock();
         if (ok) {
             p->in_use = false;
@@ -1463,6 +2068,8 @@ void msg_pump(void)
             msg_t *m = thread_find_locked(id_copy, MSG_DIR_UP);
             if (m) {
                 m->ack_state = MSG_ACK_UP_SENT;
+                snapshot = *m;
+                need_persist = true;
             }
         } else {
             p->attempts++;
@@ -1473,6 +2080,8 @@ void msg_pump(void)
                 if (m) {
                     m->ack_state = MSG_ACK_UP_FAILED;
                     m->flags |= MSG_F_SEND_FAILED;
+                    snapshot = *m;
+                    need_persist = true;
                 }
             }
         }
@@ -1481,6 +2090,9 @@ void msg_pump(void)
 
         if (freed) {
             msgq_erase_reply(i); // unlocked flash I/O, §9.4
+        }
+        if (need_persist) {
+            history_write_entry(&snapshot);
         }
         return;
     }

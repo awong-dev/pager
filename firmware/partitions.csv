@@ -11,3 +11,18 @@ otadata,    data, ota,      ,         0x2000,
 assets,     data, spiffs,   ,         0x100000,
 ota_0,      app,  ota_0,    ,         0x200000,
 ota_1,      app,  ota_1,    ,         0x200000,
+# msghist: appended at the END of the table (docs request, owner task
+# "keep recent messages across reboots"). Appending never moves nvs/
+# otadata/assets/ota_0/ota_1's offsets, so a pager already flashed with the
+# five rows above keeps a valid identity, assets and both app slots after
+# only the partition table itself is rewritten (see firmware/main/msg.c's
+# module comment for the one-time `idf.py partition-table-flash` a person
+# runs on such a pager, and why that command alone is safe: it writes only
+# the small partition-table binary at CONFIG_PARTITION_TABLE_OFFSET/0x8000,
+# never touching nvs/assets/app flash). 128 KB: MSG_THREAD_DEPTH (32)
+# records at up to ~400 bytes encoded each (17+17+17+320+small header,
+# msg.c's msghist_record_encode()) is under 13 KB of payload; the rest is
+# NVS page-erase headroom so the wear-leveling driver isn't starved (NVS
+# needs at least 2 free pages beyond the working set to avoid thrashing a
+# single page on every write).
+msghist,    data, nvs,      ,         0x20000,
