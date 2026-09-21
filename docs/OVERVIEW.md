@@ -92,10 +92,14 @@ is the same flow with a new code.
 
 The modem stays registered with **eDRX** (a 20.48 s paging cycle, PSM off), so a page arrives
 within about 20 s without the radio being on. The modem's built-in MQTT client owns the session
-and sends its own keepalives (every 1800 s) without waking the ESP32. The ESP32 light-sleeps,
-waking every 5 s (or on the button) for about 30 ms to let the modem speak. That last part,
-whether the modem reliably holds an event until the next wake, is the design's largest
-**unverified** assumption (`ROADMAP.md`).
+and sends its own keepalives (every 480 s) without waking the ESP32. The ESP32 light-sleeps,
+waking every 5 s (or on the button) for about 200 ms to collect events held by the modem. The
+modem does queue events; a 50 ms wake window is too short to receive them (pages vanish), while
+150 ms succeeds and 200 ms is in use (4% awake, against the 1% the design assumed).
+
+After losing coverage, the radio runs a duty cycle: 3 minutes unregistered, then off for 2/5/10/15
+minutes (capped) with a 150 s search window between. Any registration resets the backoff; sustained
+motion resets it too.
 
 The data budget is dominated by TLS reconnects (about 5 kB each), not by messages:
 roughly 1-2 MB a month nominal (`PROTOCOL.md` §7).

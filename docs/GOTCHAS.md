@@ -38,6 +38,34 @@ narrowly, and near misses are tested (`firmware/host/test_carrier.c`). Precedenc
 with the setup code, a choice made on the pager (`carrier` console command, Device → Carrier),
 detection, the bundle's APN, blank.
 
+## Pages never arrive while the pager sleeps
+
+**Symptom:** pages sent during a sleep window do not appear during that boot; they arrive in a later boot.
+
+**Cause:** the ESP32 light-sleeps with RTS deasserted, and the modem holds `+SQNSMQTTONMESSAGE` URCs. But the URCs are held until the device is awake and ready to receive them; with a 50 ms wake window after each 5 s sleep cycle, the modem never hands them over because the window is too short.
+
+**Rule:** the post-wake window must be long enough for the modem to deliver all held events. Testing showed 50 ms is too short (two pages were lost entirely in one 4-minute window), while 150 ms worked (pages delivered 35 s and 136 s after sending). The firmware now uses 200 ms (4% awake, against the 1% the design assumed).
+
+UNVERIFIED: the exact minimum (not bisected between 50 and 150 ms), why one delivery took 136 s, and whether a bare `AT` right after wake would allow a shorter window.
+
+## Pages stop arriving after about ten minutes, then resume much later
+
+**Symptom:** the web app shows the pager online; the broker's client list includes it; new pages vanish; the pager's log shows no disconnect; pages start arriving again about 45 minutes later.
+
+**Cause (most likely):** the carrier's NAT drops an idle TCP flow. Seen three times out of three on AT&T, 10 to 13 minutes after the last traffic. With an MQTT keepalive of 1800 s the connection dies without either side noticing.
+
+**Rule:** the keepalive must be shorter than the carrier's idle timeout. It is now 480 s, so the modem's PINGREQ prevents the TCP flow from timing out, and a dead session is detected within 1.5 times the keepalive interval. Cost: 180 pings a day instead of 48, modem-side only; at roughly 0.1 mAh per ping, about 18 mAh a day instead of about 5.
+
+UNVERIFIED: that 480 s cures it (not yet run on hardware), and the timeout on other carriers such as T-Mobile.
+
+## The pager dies after losing signal
+
+**Symptom:** the pager works normally; it walks into an area with no coverage; after coverage returns, the pager is not reachable and will not send or receive pages until a power cycle.
+
+**Root cause (now fixed):** a health check used to treat "no signal" as "modem unresponsive" and hard-reset the modem, which erased its MQTT and TLS configuration. With no coverage, the re-init gave up and nothing redid it.
+
+**Rule:** losing coverage must never reset the modem. Radio bring-up and session configuration are now separate. Regained coverage triggers an immediate reconnect (an existing session is torn down first, because it may be silently dead), and the modem is reset only if it stops answering or after 30 minutes with no network. Verified on hardware: radio off for 70 s and 12 minutes, then on; no reset, `network coverage regained - reconnecting the MQTT session now`, session usable 3 s later, page delivered afterwards.
+
 ## The modem's MQTT client and TLS
 
 - **A TLS profile that names no CA slot makes the MQTT client send plaintext.** With
@@ -97,6 +125,12 @@ and not inside the setup bundle (a Let's Encrypt root is 1.9 kB).
   erase its settings: `esptool.py --chip esp32s3 erase_region 0x9000 0x6000`. Fonts are a separate
   partition at `0x11000`, built by `tools/mkassets.py`.
 - Noto Sans is the text face. Literata was tried on the real panel and rejected.
+- **USB and light sleep:** the USB-Serial-JTAG port dies in light sleep and often does not come
+  back afterwards, even across `esp_restart()`; on the bench it stayed dead for hours and needed
+  a physical reset. The debug build's `sleeptest` now ends with a reset through the RTC watchdog,
+  which resets the USB block too (UNVERIFIED that this brings the port back). A single serial
+  capture spanning a restart shows nothing; open the port again afterwards. The port's name changes
+  (`/dev/cu.usbmodem101`, `...1101`): always glob.
 
 ## Display
 

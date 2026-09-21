@@ -35,8 +35,7 @@ Soracom can all read it.
 
 Why the data drops: the dominant term in §7.3 is the ~5 kB TLS handshake on every reconnect (20 of
 38 kB/day nominal, 120 of 179 kB pessimistic). A plain MQTT connect is about 0.4 kB, and every
-record loses its 29-byte TLS framing. Beam's 1200 s keepalive ceiling (ours is 1800 s) adds 24
-pings a day at about 42 bytes each, which is noise, and PINGREQs are not billed in version 201912.
+record loses its 29-byte TLS framing. Beam's 1200 s keepalive ceiling is above our 480 s, so it changes nothing, and PINGREQs are not billed in version 201912.
 The handshake saving is also radio time, so it helps the battery more than the bill.
 
 Funk's first 50,000 requests a month are free, then $0.18 per 10,000. Money is not what rules

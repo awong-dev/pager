@@ -207,7 +207,10 @@ failed or wrong fix is an acceptable answer; battery matters more.
 - **Relay/protocol**: §13.3 item 1 is amended: the device's window is the growing backoff above,
   reported in `/status`; the relay's own mirrored 60 s rule is unchanged. `tools/pager_client.py`
   answers `loc_req` the same way (a `--loc lat,lon` option, else `no_fix`) so the e2e suite covers
-  the lifecycle.
+  the lifecycle. On a `no_fix` answer the pager sends its serving cell (PROTOCOL.md §13.2, envelope
+  key 49 `cell`), and the relay resolves it to a coarse position via pluggable geolocation (Google
+  Geolocation API or OpenCelliD), stored as a fix with `src: "cell"`. This gives a coarse answer
+  indoors; GNSS improves accuracy outdoors but is not the only source.
 
 ## 6. Device-direct SMS
 

@@ -10,15 +10,27 @@ Hardware tests still to run are listed in `HARDWARE_TESTING.md`. This is everyth
 
 ## Known gaps
 
+Unverified measurements (see HARDWARE_TESTING.md for test plans):
+
+- **Post-wake window:** only 50 ms (fails) and 150 ms (works) were tried; the minimum between
+  them is unknown, and 200 ms is in use as a margin. The 136 s delivery latency has no explanation.
+- **MQTT keepalive cure:** the 480 s keepalive has not yet been run on hardware. The session
+  deaths it answers were seen on AT&T (US Mobile Dark Star) only.
+- **No-coverage duty cycle:** implemented but not yet tested on hardware.
+- **Cell-tower location:** the pager half sends `cell` on a `no_fix` answer (coded, untested on
+  hardware); the relay half resolves it with Google Geolocation API or OpenCelliD. The OpenCelliD
+  provider is unverified.
+- **Battery budget:** the design assumed ~1% awake and 48 pings a day. It is now 4% awake (200 ms
+  per 5 s wake) and 180 pings a day, which moves `PROTOCOL.md` §8.4's estimate from 43–50 to
+  84–96 mAh/day (about 15–18 days idle on 1500 mAh). Every term is still an estimate; a current
+  trace is the next step, then shrinking the wake window.
+
 Firmware
 - "Set up again" on the device menu is a stub; setup is console-only.
 - A received SMS lives in RAM only; multipart texts arrive as separate messages; the boot-time
   scan of stored texts reads slots one by one.
 - Location: the PSM-window radio route (cheaper than dropping the radio) is not built;
-  accelerometer thresholds are datasheet defaults. Cell-based fallback position
-  (`PROTOCOL.md` §13.2): the relay/tools half is built, but firmware does not yet send `cell` on a
-  `no_fix` answer -- that is a separate, later firmware task, byte-compatible with the wire shape
-  already in `PROTOCOL.md`.
+  accelerometer thresholds are datasheet defaults.
 - The payload parser in the modem library miscounts by one byte when a payload ends in a newline;
   the symptom is patched, the cause is not.
 - The temporary diagnostics (`nettest`, `mqtttest`, the raw AT trace) are still compiled in.
@@ -30,15 +42,38 @@ Relay
 - No end-to-end scenario for a CA push.
 - The per-device APN field has an API but no web UI; the pager's own detection makes it rarely
   needed.
-- Cell-tower location fallback (`PROTOCOL.md` §13.2) needs a real `CELL_GEO_API_KEY` before it
-  resolves anything in production -- `CELL_GEO_PROVIDER=none` (the default, and every deployment's
-  value until an owner does `infra/README.md`'s Google Geolocation API key step) stores only
-  `devices/{d}.status.lastCell`, no coarse position. `opencellid`'s request/response shape is also
-  `UNVERIFIED` (`relay/app/cellgeo.py`'s docstring) -- confirm it against the current API docs
-  before ever selecting that provider.
+- Cell-tower location needs a real `CELL_GEO_API_KEY` to resolve anything in production. `opencellid`
+  provider support exists but its request/response shape is `UNVERIFIED`.
 
 Web
 - No test runner. Validation logic is kept in pure modules so it can be tested later.
+
+## GNSS: the remaining work, in order
+
+The pager's GNSS answers location requests, but its time-to-fix and indoor performance are unknown,
+and the power cost against the data budget is uncharacterized. Cell-tower location (above) gives a
+coarse fix indoors; GNSS is an accuracy improvement for outdoors, not the only source. Following this
+plan will unblock periodic location and complete the feature.
+
+1. **Outdoors, `gnsstest 40` to characterize the radio route.** Determine whether GNSS runs in-place
+   while attached, or requires the `CFUN=4` window (modem radio off, TLS session lost, full re-attach
+   and re-handshake). Record cold-boot and hot-fix times, and the re-attach time if GNSS needs a
+   dedicated window. Update `HARDWARE_TESTING.md` with the numbers for tuning.
+
+2. **Try a GNSS fix inside a short PSM window.** Sequans forum thread 209 mentions GNSS can run in LTE
+   "off" periods such as PSM. It might avoid the re-attach and the TLS handshake. Measure the PSM
+   entry/exit latency and whether GNSS succeeds in the window.
+
+3. **Tune the 20 s / 40 s attempt budgets and the 5 min to 12 h backoff** from the measured numbers in
+   step 1.
+
+4. **Wire and tune the LIS3DH accelerometer** (the driver exists; the chip was not wired on the bench).
+   It resets both the location backoff and the no-coverage backoff.
+
+5. **Measure assistance-data download size and power** against the data budget.
+
+6. **Only then consider unsolicited periodic fixes.** They are not needed for request-driven location
+   or for the school-pickup use case, and they need a rewrite of `PROTOCOL.md` §13.3.
 
 ## Ideas on hold
 
