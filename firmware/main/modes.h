@@ -58,6 +58,12 @@ uint32_t modes_get_modem_resets(void);
  * own beyond what net_publish_raw() already costs when the modem was idle. */
 bool modes_publish_status_now(void);
 
+/* Debug build only (PAGER_DEBUG_NO_LIGHT_SLEEP): open a timed window in which
+ * the pager really light-sleeps, and print what was received during it. */
+void modes_debug_sleeptest_start(uint32_t minutes);
+void modes_debug_sleeptest_report(void);
+void modes_debug_sleeptest_print_saved(void);
+
 /* v0.2 §5 (location, loc.c): route 2's deliberate CFUN=4 window tears the
  * MQTT session down and takes the radio off on purpose. While `suppress` is
  * true, modes_run()'s own reconnect-retry loop and the F4 modem-health

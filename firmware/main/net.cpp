@@ -15,6 +15,7 @@
 #include "pins.h"
 #include "ident.h"
 #include "carrier.h"
+#include "watchdog.h"
 #include "placeholder_ca.h"
 
 #include "WalterModem.h"
@@ -452,12 +453,16 @@ static void pager_socket_event_handler(WMSocketEventType event, const WMSocketEv
     }
 }
 
+static void note_registration(bool registered); // defined with the coverage-tracking state below
+
 static void pager_network_event_handler(WMNetworkEventType event, const WMNetworkEventData *data, void *args)
 {
     (void) args;
 
     if (event == WALTER_MODEM_NETWORK_EVENT_REG_STATE_CHANGE) {
         ESP_LOGI(TAG, "network registration state -> %d", (int) data->cereg.state);
+        note_registration(data->cereg.state == WALTER_MODEM_NETWORK_REG_REGISTERED_HOME ||
+                          data->cereg.state == WALTER_MODEM_NETWORK_REG_REGISTERED_ROAMING);
         // v0.2 §5 trigger 1: lac/ci are only non-empty when the modem's
         // CEREG report type carries location info (net_init() requests
         // ENABLED_WITH_LOCATION) -- empty on a plain state change (e.g. the
@@ -614,7 +619,41 @@ static const char *effective_apn(const char *typed, const char *stored)
     return apn;
 }
 
-extern "C" bool net_init(void)
+// ---------------------------------------------------------------------------
+// Coverage loss and recovery.
+//
+// Found on hardware (a walk in and out of a building killed the pager until a
+// power cycle): net_init() used to do everything in one pass and give up if
+// the attach did not happen, and nothing ever ran it again. Worse, the modem
+// health check treated "not registered" as "modem unresponsive" and hard-reset
+// the modem, which wipes its MQTT and TLS configuration; if there was still no
+// coverage the re-init stopped before restoring them, so every later connect
+// failed with +CME ERROR for ever, even with full signal.
+//
+// Now: bringing the radio up and configuring the session are separate. Losing
+// coverage is normal and resets nothing: the modem re-registers by itself
+// (COPS=0) and net_session_up() (re)configures whatever is missing the next
+// time it runs while registered. A modem reset only clears a flag.
+// ---------------------------------------------------------------------------
+static volatile bool s_registered = false;        // tracked from +CEREG URCs and polls
+static volatile bool s_reg_regained_edge = false; // not registered -> registered
+static volatile int64_t s_unregistered_since_us = 0;
+static bool s_session_configured = false;         // TLS profile + mqttConfig are in the modem
+
+static void note_registration(bool registered)
+{
+    if (registered && !s_registered) {
+        s_reg_regained_edge = true;
+        s_unregistered_since_us = 0;
+    } else if (!registered && (s_registered || s_unregistered_since_us == 0)) {
+        s_unregistered_since_us = esp_timer_get_time();
+    }
+    s_registered = registered;
+}
+
+static bool configure_session(void);
+
+static bool net_bringup(int attach_wait_s)
 {
 #ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
     // Debug builds only (main/CMakeLists.txt): raw AT TX:/RX: trace, so URCs
@@ -705,8 +744,12 @@ extern "C" bool net_init(void)
     // F1: single-attempt wait, capped at 300s. modes.c is responsible for
     // the 5/15/60/300s backoff across repeated net_init() calls; this loop
     // is not itself a retry loop, so it never busy-spins setOpState(FULL).
+    // The wait is a convenience (it lets boot go straight to a connected
+    // session), not a condition: on a timeout the radio stays up and
+    // searching, and the session is configured later, from net_session_up().
     bool attached = false;
-    for (int waited_s = 0; waited_s < PAGER_ATTACH_POLL_CAP_S; waited_s++) {
+    for (int waited_s = 0; waited_s < attach_wait_s; waited_s++) {
+        watchdog_feed(); // up to 300 s of legitimate waiting at boot
         WalterModemNetworkRegState st = WalterModem::getNetworkRegState();
         if (st == WALTER_MODEM_NETWORK_REG_REGISTERED_HOME ||
             st == WALTER_MODEM_NETWORK_REG_REGISTERED_ROAMING) {
@@ -715,11 +758,28 @@ extern "C" bool net_init(void)
         }
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
+    note_registration(attached);
     if (!attached) {
-        ESP_LOGI(TAG, "network attach timed out after %ds (F1)", PAGER_ATTACH_POLL_CAP_S);
-        return false;
+        ESP_LOGI(TAG, "no network after %d s; the radio stays on and the session will be set up "
+                      "when coverage appears",
+                 attach_wait_s);
+        return true;
     }
     ESP_LOGI(TAG, "network attached");
+    return configure_session();
+}
+
+extern "C" bool net_init(void)
+{
+    s_session_configured = false;
+    return net_bringup(PAGER_ATTACH_POLL_CAP_S);
+}
+
+// Clock, CA, TLS profile and MQTT client configuration: everything a modem
+// reset wipes. Needs the network only for the clock. Power effect: a handful of
+// AT commands, one NVRAM write if the CA changed.
+static bool configure_session(void)
+{
 
     // §3.5: seed ts from the network clock (NITZ via getClock()). On
     // failure the device publishes ts:0 forever - no SNTP path is added.
@@ -732,8 +792,7 @@ extern "C" bool net_init(void)
     // to the documented ts:0 rather than ever publishing a bogus time.
     static constexpr int64_t PAGER_CLOCK_MIN = 1704067200LL; // 2024-01-01
     static constexpr int64_t PAGER_CLOCK_MAX = 3124224000LL; // 2069-01-01, below the "70" artefact
-    s_clock_epoch = 0;
-    for (int attempt = 0; attempt < 10; attempt++) {
+    for (int attempt = 0; s_clock_epoch == 0 && attempt < 10; attempt++) {
         WalterModemRsp rsp = {};
         if (WalterModem::getClock(&rsp)) {
             int64_t t = rsp.data.clock.epochTime;
@@ -803,6 +862,7 @@ extern "C" bool net_init(void)
         return false;
     }
 
+    s_session_configured = true;
     return true;
 }
 
@@ -1002,9 +1062,24 @@ extern "C" bool net_session_up(void)
     // Power effect: one TLS handshake, ~5kB (PROTOCOL.md §7.2/§7.3), plus
     // the RRC time it takes. Never call this on a timer - only after
     // net_init() and after a detected session loss (F3).
+    if (!s_registered) {
+        // A poll, not only the URC: the URC can be missed while the ESP32 sleeps.
+        note_registration(net_is_attached());
+        if (!s_registered) {
+            ESP_LOGI(TAG, "no network: not connecting yet");
+            return false;
+        }
+    }
+    if (!s_session_configured && !configure_session()) {
+        return false;
+    }
     s_disconnect_edge = false;
     if (!WalterModem::mqttConnect(ident_get_host(), ident_get_port(), PAGER_MQTT_KEEPALIVE_S)) {
         ESP_LOGI(TAG, "mqttConnect() call could not be queued");
+        // If the modem has lost its client configuration (it answers +CME
+        // ERROR), the next attempt redoes it. Cheap, and it is the state that
+        // used to be unrecoverable.
+        s_session_configured = false;
         return false;
     }
     ESP_LOGI(TAG, "MQTT connect issued to %s:%u", ident_get_host(), (unsigned) ident_get_port());
@@ -1118,12 +1193,28 @@ extern "C" void net_sleep(uint32_t ms)
 extern "C" bool net_check(void)
 {
     // Power effect: one AT round trip ("AT" / "OK"), no RRC of its own.
+    // "Responsive" only. Being out of coverage is not a modem fault and must
+    // not lead to a modem reset (see the block comment above net_bringup()).
     if (!WalterModem::checkComm()) {
         return false;
     }
-    WalterModemNetworkRegState st = WalterModem::getNetworkRegState();
-    return (st == WALTER_MODEM_NETWORK_REG_REGISTERED_HOME ||
-            st == WALTER_MODEM_NETWORK_REG_REGISTERED_ROAMING);
+    note_registration(net_is_attached());
+    return true;
+}
+
+extern "C" bool net_take_registered_edge(void)
+{
+    bool e = s_reg_regained_edge;
+    s_reg_regained_edge = false;
+    return e;
+}
+
+extern "C" uint32_t net_unregistered_for_s(void)
+{
+    if (s_registered || s_unregistered_since_us == 0) {
+        return 0;
+    }
+    return (uint32_t) ((esp_timer_get_time() - s_unregistered_since_us) / 1000000);
 }
 
 extern "C" bool net_recover_modem(void)
@@ -1138,8 +1229,12 @@ extern "C" bool net_recover_modem(void)
         return false;
     }
     // WalterModem::begin() is documented to no-op on the 2nd+ call, so this
-    // safely redoes opstate/PDP/eDRX/PSM/attach/clock/TLS/mqttConfig only.
-    return net_init();
+    // safely redoes opstate/PDP/eDRX/PSM. The reset wiped the modem's TLS
+    // profile and MQTT client configuration; they are redone as soon as the
+    // pager is registered. Short attach wait: this runs on the main loop.
+    s_session_configured = false;
+    s_registered = false;
+    return net_bringup(20);
 }
 
 extern "C" bool net_get_clock(int64_t *epoch_s)

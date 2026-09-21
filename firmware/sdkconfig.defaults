@@ -53,3 +53,11 @@ CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384
 # then tlsConfigProfile(3) fails locally with NO_SUCH_PROFILE. Found on hardware 2026-09-20.
 # Pin it here so every build tree gets it.
 CONFIG_WALTER_MODEM_MAX_TLS_PROFILES=6
+
+# Watchdogs (main/watchdog.c). The task watchdog must reboot, not just print:
+# an unattended pager that stalls has to come back by itself. 60 s (the Kconfig
+# maximum) because the
+# main loop has legitimate waits of tens of seconds (modem recovery, assistance
+# data download); the loop feeds it every pass.
+CONFIG_ESP_TASK_WDT_PANIC=y
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=60

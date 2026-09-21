@@ -15,6 +15,7 @@
 #include "modes.h"
 #include "msg.h"
 #include "net.h"
+#include "watchdog.h"
 #include "ui.h"
 
 // F6.2 (docs/DEVICE_PLAN.md §5.3): CardKB decode + button FSM (+BTN_STUCK)
@@ -80,6 +81,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -88,6 +90,8 @@
 #include "esp_random.h"
 #include "esp_rom_crc.h"
 #include "esp_sleep.h"
+#include "nvs.h"
+#include "esp_private/esp_clk.h" /* esp_clk_rtc_time() */
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -791,6 +795,210 @@ static void service_render_pending(void)
     // comment).
 }
 
+#ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
+// ---------------------------------------------------------------------------
+// Debug build only: `sleeptest <minutes>` (main.c). The debug build never
+// light-sleeps, which is exactly why it cannot answer the design's biggest
+// open question (PROTOCOL.md section 8.3, M5): does a page arrive while the ESP32
+// light-sleeps with RTS deasserted, waking only every few seconds? This opens
+// a timed window in which the normal sleep decision applies, records what
+// happened in RAM (the USB log is dead while asleep), and prints a report
+// when the window closes and the log is alive again.
+// ---------------------------------------------------------------------------
+#include "esp_sleep.h"
+
+typedef struct {
+    int32_t t_s;     // seconds since the window opened
+    char kind;       // 'M' new message, 'D' duplicate, 'X' malformed, 'C' connected, 'L' session lost
+    int32_t a;       // 'M'/'D': seconds between the relay stamping it and the pager parsing it
+    char id[12];
+} st_event_t;
+
+#define ST_EVENTS_MAX 48
+static st_event_t s_st_events[ST_EVENTS_MAX];
+static volatile uint32_t s_st_n_events = 0;
+static volatile int64_t s_st_start_us = 0;
+static volatile int64_t s_st_until_us = 0;
+static volatile bool s_st_report_due = false;
+static uint32_t s_st_sleeps = 0, s_st_wake_timer = 0, s_st_wake_other = 0;
+// Where the awake time goes, per wake: cumulative microseconds per loop segment.
+#define ST_SEG_N 7
+static const char *const k_st_seg_name[ST_SEG_N] = { "post-wake yield", "input+ui+render", "mqtt status/retry",
+                                                    "msg_pump+health", "accel+loc", "sms", "catrust+heartbeat+rtc_save" };
+static int64_t s_st_seg_us[ST_SEG_N];
+static int64_t s_st_seg_max_us[ST_SEG_N];
+static int64_t s_st_mark_us = 0;
+// Raw per-cycle timestamps for the first cycles: esp_timer before and after
+// net_sleep(), and the RTC's own clock across the same call, to tell real
+// sleep from time spent entering/leaving it.
+#define ST_CYC_MAX 10
+typedef struct { int64_t before_us, after_us, rtc_before_us, rtc_after_us; } st_cycle_t;
+static st_cycle_t s_st_cyc[ST_CYC_MAX];
+static uint32_t s_st_ncyc = 0;
+#define ST_MARK_BEGIN() do { s_st_mark_us = esp_timer_get_time(); } while (0)
+#define ST_MARK(i)                                                                                  \
+    do {                                                                                            \
+        if (sleeptest_active_flag()) {                                                              \
+            int64_t _n = esp_timer_get_time();                                                      \
+            int64_t _d = _n - s_st_mark_us;                                                         \
+            s_st_seg_us[i] += _d;                                                                   \
+            if (_d > s_st_seg_max_us[i]) s_st_seg_max_us[i] = _d;                                   \
+            s_st_mark_us = _n;                                                                      \
+        }                                                                                           \
+    } while (0)
+static bool sleeptest_active_flag(void);
+static int64_t s_st_asleep_us = 0;
+
+static bool sleeptest_active(void);
+static bool sleeptest_active_flag(void) { return sleeptest_active(); }
+
+static bool sleeptest_active(void)
+{
+    return s_st_until_us != 0 && esp_timer_get_time() < s_st_until_us;
+}
+
+static void sleeptest_note(char kind, int32_t a, const char *id)
+{
+    if (!sleeptest_active() || s_st_n_events >= ST_EVENTS_MAX) {
+        return;
+    }
+    st_event_t *e = &s_st_events[s_st_n_events];
+    e->t_s = (int32_t) ((esp_timer_get_time() - s_st_start_us) / 1000000);
+    e->kind = kind;
+    e->a = a;
+    snprintf(e->id, sizeof(e->id), "%s", id ? id : "");
+    s_st_n_events = s_st_n_events + 1;
+}
+
+void modes_debug_sleeptest_start(uint32_t minutes)
+{
+    s_st_n_events = 0;
+    s_st_sleeps = s_st_wake_timer = s_st_wake_other = 0;
+    s_st_asleep_us = 0;
+    s_st_ncyc = 0;
+    s_st_mark_us = esp_timer_get_time();
+    memset(s_st_seg_us, 0, sizeof(s_st_seg_us));
+    memset(s_st_seg_max_us, 0, sizeof(s_st_seg_max_us));
+    s_st_start_us = esp_timer_get_time();
+    s_st_until_us = s_st_start_us + (int64_t) minutes * 60 * 1000000;
+    s_st_report_due = true;
+    // The AT trace is hundreds of lines a minute, and a USB console with no
+    // host listening (the port dies in light sleep) can stall each write;
+    // that would stretch the short wake window this test is measuring.
+    esp_log_level_set("WalterModem", ESP_LOG_WARN);
+    ESP_LOGI(TAG, "sleeptest: light sleep ENABLED for %u min. The USB log goes quiet now. "
+                  "Send pages; a report prints when the window closes.",
+             (unsigned) minutes);
+}
+
+// The report as text, so it can be kept in NVS: after a sleep window the USB
+// port often does not re-enumerate until the pager is reset, and a reset
+// would otherwise lose everything that was recorded.
+static char s_st_text[1800];
+
+static void st_appendf(size_t *n, const char *fmt, ...)
+{
+    if (*n >= sizeof(s_st_text) - 1) {
+        return;
+    }
+    va_list ap;
+    va_start(ap, fmt);
+    int w = vsnprintf(s_st_text + *n, sizeof(s_st_text) - *n, fmt, ap);
+    va_end(ap);
+    if (w > 0) {
+        *n += (size_t) w;
+        if (*n > sizeof(s_st_text) - 1) {
+            *n = sizeof(s_st_text) - 1;
+        }
+    }
+}
+
+static void sleeptest_save(void)
+{
+    nvs_handle_t h;
+    if (nvs_open("dbg", NVS_READWRITE, &h) != ESP_OK) {
+        return;
+    }
+    nvs_set_str(h, "sleeprep", s_st_text);
+    nvs_commit(h);
+    nvs_close(h);
+}
+
+void modes_debug_sleeptest_print_saved(void)
+{
+    nvs_handle_t h;
+    if (nvs_open("dbg", NVS_READONLY, &h) != ESP_OK) {
+        return;
+    }
+    size_t len = sizeof(s_st_text);
+    if (nvs_get_str(h, "sleeprep", s_st_text, &len) == ESP_OK && s_st_text[0]) {
+        ESP_LOGI(TAG, "saved sleeptest report from before this boot:\n%s", s_st_text);
+    }
+    nvs_close(h);
+}
+
+void modes_debug_sleeptest_report(void)
+{
+    if (s_st_start_us == 0) {
+        ESP_LOGI(TAG, "sleeptest: no window has been run since boot");
+        modes_debug_sleeptest_print_saved();
+        return;
+    }
+    size_t n = 0;
+    int64_t now = esp_timer_get_time();
+    int64_t end = (now < s_st_until_us) ? now : s_st_until_us;
+    int64_t span_us = end - s_st_start_us;
+    st_appendf(&n, "window %lld s%s, %u light sleeps, asleep %lld s (%d%%), wakes: %u timer / %u other\n",
+               (long long) (span_us / 1000000), (now < s_st_until_us) ? " (still open)" : "",
+               (unsigned) s_st_sleeps, (long long) (s_st_asleep_us / 1000000),
+               span_us > 0 ? (int) (s_st_asleep_us * 100 / span_us) : 0, (unsigned) s_st_wake_timer,
+               (unsigned) s_st_wake_other);
+    for (int i = 0; i < ST_SEG_N && s_st_sleeps > 0; i++) {
+        st_appendf(&n, "  awake in %-28s avg %5lld ms/wake, max %5lld ms\n", k_st_seg_name[i],
+                   (long long) (s_st_seg_us[i] / 1000 / s_st_sleeps),
+                   (long long) (s_st_seg_max_us[i] / 1000));
+    }
+    for (uint32_t i = 0; i < s_st_ncyc; i++) {
+        const st_cycle_t *c = &s_st_cyc[i];
+        st_appendf(&n, "  cycle %u: net_sleep %lld ms by esp_timer, %lld ms by the RTC; awake before it %lld ms\n",
+                   (unsigned) i, (long long) ((c->after_us - c->before_us) / 1000),
+                   (long long) ((c->rtc_after_us - c->rtc_before_us) / 1000),
+                   i ? (long long) ((c->before_us - s_st_cyc[i - 1].after_us) / 1000) : 0LL);
+    }
+    uint32_t ne = s_st_n_events;
+    for (uint32_t i = 0; i < ne; i++) {
+        const st_event_t *e = &s_st_events[i];
+        switch (e->kind) {
+        case 'M':
+            st_appendf(&n, "  +%4d s  page %s received, %d s after the relay stamped it\n", (int) e->t_s,
+                       e->id, (int) e->a);
+            break;
+        case 'D':
+            st_appendf(&n, "  +%4d s  duplicate of %s (a re-publish)\n", (int) e->t_s, e->id);
+            break;
+        case 'X':
+            st_appendf(&n, "  +%4d s  malformed /down dropped\n", (int) e->t_s);
+            break;
+        case 'C':
+            st_appendf(&n, "  +%4d s  MQTT session (re)connected\n", (int) e->t_s);
+            break;
+        case 'L':
+            st_appendf(&n, "  +%4d s  MQTT session LOST (rc=%d)\n", (int) e->t_s, (int) e->a);
+            break;
+        default:
+            break;
+        }
+    }
+    if (ne == 0) {
+        st_appendf(&n, "  no events: nothing was received during the window\n");
+    }
+    ESP_LOGI(TAG, "sleeptest report:\n%s", s_st_text);
+    if (now >= s_st_until_us) {
+        sleeptest_save(); // power effect: one NVS write, debug build only
+    }
+}
+#endif // PAGER_DEBUG_NO_LIGHT_SLEEP
+
 // ---------------------------------------------------------------------------
 // Incoming message hook — wired to msg.c's ingest/dedup/ack state machine.
 // ---------------------------------------------------------------------------
@@ -844,11 +1052,24 @@ static void handle_ingest_result(msg_ingest_t r, const msg_t *out, uint16_t len,
             strncpy(id, out->id, sizeof(id) - 1);
             strncpy(from, out->from, sizeof(from) - 1);
         }
+#ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
+        {
+            int64_t now_s = 0;
+            int32_t lat = -1;
+            if (out && net_get_clock(&now_s) && out->ts > 0) {
+                lat = (int32_t) (now_s - out->ts);
+            }
+            sleeptest_note('M', lat, id);
+        }
+#endif
         modes_alert_incoming(id, from);
         break;
     }
 
     case MSG_INGEST_DUPLICATE: {
+#ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
+        sleeptest_note('D', 0, out ? out->id : msg_last_ingest_id());
+#endif
         // §4.1 rule 7: re-ack only, MUST NOT re-render/re-alert/re-enter
         // active mode. *out is NULL if the entry already scrolled out of
         // the 10-deep RAM thread (routine: the 16-deep dedup ring is
@@ -870,6 +1091,9 @@ static void handle_ingest_result(msg_ingest_t r, const msg_t *out, uint16_t len,
 
     case MSG_INGEST_MALFORMED:
     default:
+#ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
+        sleeptest_note('X', 0, "");
+#endif
         // §3.4: log, count (already counted by whichever of
         // msg_ingest_down_cbor()/msg_count_malformed() rejected it), do not
         // ack, do not render, do not reboot.
@@ -1086,15 +1310,28 @@ static bool rate_limited_modem_recover(const char *reason)
     return true;
 }
 
+#define PAGER_NO_NETWORK_RESET_S (30u * 60u)
+
 static void run_modem_health_check(void)
 {
+    watchdog_kick(WD_HEALTH);
     for (int attempt = 0; attempt < 3; attempt++) {
         if (net_check()) {
+            uint32_t dark_s = net_unregistered_for_s();
+            if (dark_s >= PAGER_NO_NETWORK_RESET_S && !s_loc_suppress && !s_ca_apply_suppress &&
+                rate_limited_modem_recover("no network for 30 min")) {
+                note_session_up_attempt(net_session_up());
+            }
             return;
         }
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
 
+    // net_check() now means "the modem answers". Out of coverage is normal and
+    // resets nothing (net.cpp, "Coverage loss and recovery"). The long stop
+    // below is for a modem that answers but has been unable to register for
+    // so long that a radio restart is worth its cost; the 10-minute rate
+    // limit still applies.
     if (rate_limited_modem_recover("modem unresponsive after 3 retries over 3s")) {
         note_session_up_attempt(net_session_up());
     }
@@ -1235,6 +1472,7 @@ void modes_boot(void)
 
     net_set_msg_cb(on_incoming_message);
 
+    watchdog_kick(WD_NET_INIT);
     if (!net_init()) {
         ESP_LOGI(TAG, "net_init() failed at boot; will retry from the wake loop (F1)");
         rtc_lock();
@@ -1287,7 +1525,9 @@ void modes_run(void)
     uint32_t backoff_index = 0;
     int64_t next_session_retry_us = 0; // 0 = retry as soon as we notice we're down
 
+    watchdog_loop_begin();
     for (;;) {
+        watchdog_kick(WD_LOOP_TOP);
         uint32_t interval_ms = (g_rtc.mode == (uint8_t) PAGER_MODE_ACTIVE)
                                     ? PAGER_WAKE_INTERVAL_ACTIVE_MS
                                     : PAGER_WAKE_INTERVAL_SLEEP_MS;
@@ -1353,10 +1593,50 @@ void modes_run(void)
         // pump_blocked deliberately keeps the pre-override value: forcing it
         // true too meant msg_pump() never ran, so this build never published
         // a single ack and the web app sat on "sent" forever (found live).
-        skip_sleep = true;
+        // ... except inside a `sleeptest` window, where the real decision stands.
+        if (!sleeptest_active()) {
+            skip_sleep = true;
+            if (s_st_report_due && s_st_until_us != 0) {
+                s_st_report_due = false;
+                esp_log_level_set("WalterModem", ESP_LOG_DEBUG);
+                vTaskDelay(pdMS_TO_TICKS(4000)); // let the host re-enumerate the USB port
+                modes_debug_sleeptest_report();
+                // Proof of life that does not depend on USB: the relay logs this webhook.
+                modes_publish_status_now();
+                // The USB port often does not re-enumerate after light sleep.
+                // A restart always brings it back, and the report (saved to
+                // NVS above) is printed at boot. Unattended testing needs this.
+                vTaskDelay(pdMS_TO_TICKS(3000));
+                watchdog_kick(WD_DELIBERATE_RESTART);
+                esp_restart();
+            }
+        }
 #endif
         if (!skip_sleep) {
+#ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
+            int64_t st_t0 = esp_timer_get_time();
+            int64_t st_rtc0 = (int64_t) esp_clk_rtc_time();
+#endif
+            watchdog_kick(WD_SLEEP_ENTER);
             net_sleep(interval_ms);
+            watchdog_kick(WD_SLEEP_EXIT);
+#ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
+            if (s_st_ncyc < ST_CYC_MAX) {
+                s_st_cyc[s_st_ncyc].before_us = st_t0;
+                s_st_cyc[s_st_ncyc].after_us = esp_timer_get_time();
+                s_st_cyc[s_st_ncyc].rtc_before_us = st_rtc0;
+                s_st_cyc[s_st_ncyc].rtc_after_us = (int64_t) esp_clk_rtc_time();
+                s_st_ncyc++;
+            }
+            s_st_asleep_us += esp_timer_get_time() - st_t0;
+            ST_MARK_BEGIN();
+            s_st_sleeps++;
+            if (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_TIMER) {
+                s_st_wake_timer++;
+            } else {
+                s_st_wake_other++;
+            }
+#endif
             // L4/F7: the event task ticks at 10ms + settles for 10ms; give
             // it >=30ms of awake time before looking at anything it may
             // have produced.
@@ -1377,6 +1657,10 @@ void modes_run(void)
             vTaskDelay(pdMS_TO_TICKS(100));
         }
 
+#ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
+        ST_MARK(0);
+#endif
+        watchdog_kick(WD_INPUT_UI);
         input_poll(); // power effect: one GPIO read (button FSM step) - see input.h
 
         // F6.3: CardKB read moved to ui.c (ui_poll_keyboard(), see its own
@@ -1438,6 +1722,7 @@ void modes_run(void)
 
         // F6.3/README R5: renders (if a message arrived) on this task, then
         // marks `shown` - see service_render_pending()'s own comment.
+        watchdog_kick(WD_RENDER);
         service_render_pending();
 
         // F6.5: pushes/pops the Locked screen to match lock.c's current
@@ -1485,8 +1770,29 @@ void modes_run(void)
         uint32_t wake_cycle_count = g_rtc.wake_cycle_count;
         rtc_unlock();
 
+#ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
+        ST_MARK(1);
+#endif
+        watchdog_kick(WD_MQTT);
         net_mqtt_status_t st;
         net_get_mqtt_status(&st);
+
+        if (net_take_registered_edge() && !s_loc_suppress && !s_ca_apply_suppress) {
+            // Coverage is back. Retry at once instead of waiting out a backoff
+            // that grew while there was no network. And a session that was
+            // "connected" across the gap cannot be trusted: on this modem the
+            // TCP connection under it can be dead with no event until the MQTT
+            // keepalive expires, up to 45 minutes of silently missed pages
+            // (Sequans forum thread 400). Tear it down and reconnect: one TLS
+            // handshake (~5 kB) per coverage loss.
+            ESP_LOGI(TAG, "network coverage regained - reconnecting the MQTT session now");
+            if (st.mqtt_connected) {
+                net_session_down();
+                net_get_mqtt_status(&st);
+            }
+            backoff_index = 0;
+            next_session_retry_us = 0;
+        }
 
         if (st.mqtt_connected && !s_was_mqtt_connected) {
             // Edge: session just became usable. §5.4a - drives the relay's
@@ -1502,6 +1808,9 @@ void modes_run(void)
             // heartbeat an hour later.
             catrust_on_mqtt_connected();
             publish_status_online();
+#ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
+            sleeptest_note('C', 0, "");
+#endif
         }
         s_was_mqtt_connected = st.mqtt_connected;
 
@@ -1514,6 +1823,11 @@ void modes_run(void)
             s_connect_watchdog_count = 0;
         }
 
+#ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
+        if (st.disconnect_edge) {
+            sleeptest_note('L', st.last_rc, "");
+        }
+#endif
         if (st.disconnect_edge) {
             handle_mqtt_loss(&st, &backoff_index, &next_session_retry_us);
         } else if (!st.mqtt_connected && s_connect_attempt_us != 0 &&
@@ -1577,6 +1891,10 @@ void modes_run(void)
         // cadence used while the composer/button FSM keep us from
         // sleeping) - PROTOCOL.md §9.5's rationale against turning a 50ms
         // wake into a multi-second one.
+#ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
+        ST_MARK(2);
+#endif
+        watchdog_kick(WD_PUMP);
         if (!pump_blocked && st.mqtt_connected) {
             msg_pump();
         }
@@ -1597,6 +1915,10 @@ void modes_run(void)
         // chip) and one GNSS attempt-state-machine step (a no-op if no
         // attempt is in progress). Neither blocks for more than one small,
         // bounded piece of work — see accel.h/loc.h's own doc comments.
+#ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
+        ST_MARK(3);
+#endif
+        watchdog_kick(WD_LOC);
         accel_poll();
         loc_service();
 
@@ -1609,6 +1931,10 @@ void modes_run(void)
         // point is that SMS send/receive works without the relay — only the
         // sms_log audit publish (msg_pump()'s own tail call into sms.c,
         // above) needs the MQTT session up.
+#ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
+        ST_MARK(4);
+#endif
+        watchdog_kick(WD_SMS);
         sms_service();
 
         // v0.2 §4.4: one step of the pending cfg.ca request / two-phase
@@ -1618,6 +1944,10 @@ void modes_run(void)
         // (see catrust_service()'s own doc comment for why it must be the
         // same one handle_mqtt_loss()/the reconnect branch above already
         // saw, not a fresh net_get_mqtt_status() call).
+#ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
+        ST_MARK(5);
+#endif
+        watchdog_kick(WD_CATRUST);
         catrust_service(&st);
 
         maybe_publish_heartbeat();
@@ -1631,8 +1961,12 @@ void modes_run(void)
             }
         }
 
+        watchdog_kick(WD_SAVE);
         rtc_lock();
         rtc_save();
         rtc_unlock();
+#ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
+        ST_MARK(6);
+#endif
     }
 }

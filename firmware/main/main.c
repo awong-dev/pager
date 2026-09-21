@@ -15,6 +15,7 @@
 
 #include "catrust.h"
 #include "ident.h"
+#include "watchdog.h"
 #include "carrier.h"
 #include "loc.h"
 #include "modes.h"
@@ -140,6 +141,23 @@ static int cmd_mqtttest(int argc, char **argv)
 
 #ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
 // Debug build only: raw AT passthrough.
+// Debug build only: `sleeptest <minutes>` opens a window of real light sleep
+// (modes.c); `sleeptest` alone prints the report again.
+static int cmd_sleeptest(int argc, char **argv)
+{
+    if (argc == 1) {
+        modes_debug_sleeptest_report();
+        return 0;
+    }
+    long m = strtol(argv[1], NULL, 10);
+    if (m < 1 || m > 120) {
+        printf("usage: sleeptest [<minutes 1..120>]\n");
+        return 1;
+    }
+    modes_debug_sleeptest_start((uint32_t) m);
+    return 0;
+}
+
 static int cmd_at(int argc, char **argv)
 {
     if (argc < 2) {
@@ -409,6 +427,14 @@ static void start_normal_console(void)
     };
     ESP_ERROR_CHECK(esp_console_cmd_register(&mqtttest_cmd));
 
+    const esp_console_cmd_t sleeptest_cmd = {
+        .command = "sleeptest",
+        .help = "sleeptest [<minutes>] -- really light-sleep for a while, then report what arrived",
+        .hint = NULL,
+        .func = &cmd_sleeptest,
+    };
+    ESP_ERROR_CHECK(esp_console_cmd_register(&sleeptest_cmd));
+
     const esp_console_cmd_t at_cmd = {
         .command = "at",
         .help = "at <command> -- send one raw AT command; the reply shows in the AT trace",
@@ -459,6 +485,7 @@ static void start_normal_console(void)
 void app_main(void)
 {
     ESP_LOGI(TAG, "school_pager boot");
+    watchdog_boot(); // logs why we reset and where the loop was; arms the RTC watchdog
 
     board_power_init(); // 3V3 peripheral rail on -- must precede any display/I2C use
 

@@ -360,6 +360,13 @@ bool net_check_tcp_sized(const char *host, uint16_t port, size_t bytes);
 /* Debug build only: send one raw AT command; the reply shows in the AT trace. */
 bool net_debug_at(const char *cmd);
 
+/* Coverage tracking (net.cpp's block comment above net_bringup()).
+ * net_take_registered_edge(): true once after the pager goes from not
+ * registered to registered. net_unregistered_for_s(): seconds without a
+ * network, 0 when registered. */
+bool net_take_registered_edge(void);
+uint32_t net_unregistered_for_s(void);
+
 /* TEMPORARY diagnostic (main.c's `mqtttest` console command): attaches like
  * net_bootstrap_attach(), then issues a real AT+SQNSMQTTCONNECT to host:port
  * over the VALIDATION_NONE bootstrap TLS profile with dummy credentials, and
