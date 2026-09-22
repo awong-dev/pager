@@ -90,6 +90,13 @@ void gfx_rect(int x, int y, int w, int h)
 
 void gfx_invert_rect(int x, int y, int w, int h)
 {
+    // Bug found while building the disptest bench harness: this used
+    // `native_row = xx` directly, unmirrored — every other x->native_row
+    // site (gfx_set_pixel() above) uses `(GFX_FB_ROWS - 1) - x` for the
+    // horizontal-mirror bring-up fix documented there. Latent, not the
+    // reported garbled-bands bug: this function has no callers today. Kept
+    // in sync with gfx_set_pixel() rather than duplicating the mapping's
+    // rationale here — that comment is the single point of truth.
     for (int j = 0; j < h; j++) {
         int yy = y + j;
         if (yy < 0 || yy >= GFX_SCREEN_H) {
@@ -100,7 +107,7 @@ void gfx_invert_rect(int x, int y, int w, int h)
             if (xx < 0 || xx >= GFX_SCREEN_W) {
                 continue;
             }
-            int native_row = xx;
+            int native_row = (GFX_FB_ROWS - 1) - xx;
             int native_byte = yy / 8;
             int bit = 7 - (yy % 8);
             s_fb[native_row][native_byte] ^= (uint8_t) (1u << bit);

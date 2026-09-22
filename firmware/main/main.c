@@ -18,6 +18,8 @@
 #include "ident.h"
 #include "watchdog.h"
 #include "carrier.h"
+#include "disp.h"
+#include "gfx.h"
 #include "input.h"
 #include "loc.h"
 #include "modes.h"
@@ -543,6 +545,174 @@ static int cmd_smslist(int argc, char **argv)
     return 0;
 }
 
+// Bench harness for the garbled-bands bug (disp.c's partial_refresh_locked()
+// comment, docs task-disp-fix.md): a deterministic, keyboard-free,
+// network-free reproduction. Paints a known pattern and drives
+// disp_partial_refresh()/disp_full_refresh() directly instead of typing on
+// the CardKB, so the bench can correlate "the band that went wrong" (a
+// screen-x range) against disp.c's own "partial: native rows ..." log line
+// with nothing else moving. No modem/sleep-state effect; every refresh call
+// below has its own documented panel-VCC power effect at its definition in
+// disp.c.
+#define DISPTEST_COL_PX 8
+#define DISPTEST_MAX_STEP (GFX_SCREEN_W / DISPTEST_COL_PX) /* n must be < this */
+#define DISPTEST_SEQ_MAX_COUNT 36
+#define DISPTEST_SEQ_MIN_MS 200
+#define DISPTEST_SEQ_MAX_MS 5000
+
+static const char *DISPTEST_USAGE =
+    "disptest                     -- same as `disptest info`\n"
+    "disptest info                -- print again-mode, partial count, disp_dirty_rows()\n"
+    "disptest again <0|1>         -- set the partial-write-again A/B flag\n"
+    "disptest bars                -- paint the baseline pattern and FULL refresh\n"
+    "disptest step <n>            -- invert the 8px screen column at x=n*8 (full height), then "
+    "ONE partial refresh; n must be 0..(GFX_SCREEN_W/8 - 1)\n"
+    "disptest seq [n0] [n1] [ms]  -- `step` for n = n0..n1, ms apart (defaults 2 12 1500; "
+    "count clamped to 36, ms clamped to 200..5000)\n"
+    "disptest full                -- force one full refresh of whatever is in the framebuffer\n"
+    "NOTE: do not use `wake` or `key` while disptest is running -- the UI render task would "
+    "repaint over the test pattern.\n";
+
+// Baseline test pattern: 8px black, 8px white, repeating across the full
+// 296px screen width, full screen height. Nested gfx_set_pixel() loops --
+// gfx.h has no filled-rect primitive (gfx_rect() is an outline only).
+static void disptest_paint_bars(void)
+{
+    gfx_clear();
+    for (int x0 = 0; x0 < GFX_SCREEN_W; x0 += 2 * DISPTEST_COL_PX) {
+        for (int dx = 0; dx < DISPTEST_COL_PX && x0 + dx < GFX_SCREEN_W; dx++) {
+            for (int y = 0; y < GFX_SCREEN_H; y++) {
+                gfx_set_pixel(x0 + dx, y, true);
+            }
+        }
+    }
+}
+
+// One `disptest step`/`seq` iteration: invert the n'th 8px screen column
+// (full height) and fire ONE partial refresh. Prints the screen-x range and
+// the native-row range gfx_set_pixel()'s x -> (GFX_FB_ROWS-1)-x mirror maps
+// it to, so the log reads as "asked for x 16..23 => native rows 272..279"
+// right next to disp.c's own "partial: native rows ..." line for the same
+// request.
+static void disptest_step(int n)
+{
+    int x = n * DISPTEST_COL_PX;
+    int x_hi = x + DISPTEST_COL_PX - 1;
+    int native_lo = (GFX_FB_ROWS - 1) - x_hi;
+    int native_hi = (GFX_FB_ROWS - 1) - x;
+    printf("disptest: step %d asked for x %d..%d => native rows %d..%d\n", n, x, x_hi, native_lo,
+           native_hi);
+    gfx_invert_rect(x, 0, DISPTEST_COL_PX, GFX_SCREEN_H);
+    disp_partial_refresh();
+}
+
+static int cmd_disptest(int argc, char **argv)
+{
+    if (argc < 2 || strcmp(argv[1], "info") == 0) {
+        printf("disptest: again=%d partial_count=%u dirty_rows=%d\n",
+               (int) disp_partial_write_again(), (unsigned) disp_partial_count(),
+               disp_dirty_rows());
+        return 0;
+    }
+    if (strcmp(argv[1], "again") == 0) {
+        if (argc != 3 || (strcmp(argv[2], "0") != 0 && strcmp(argv[2], "1") != 0)) {
+            printf("usage: disptest again <0|1>\n");
+            return 1;
+        }
+        disp_set_partial_write_again(strcmp(argv[2], "1") == 0);
+        printf("disptest: again=%d\n", (int) disp_partial_write_again());
+        return 0;
+    }
+    if (strcmp(argv[1], "bars") == 0) {
+        if (argc != 2) {
+            printf("usage: disptest bars\n");
+            return 1;
+        }
+        disptest_paint_bars();
+        disp_full_refresh();
+        printf("disptest: bars painted, full refresh done\n");
+        return 0;
+    }
+    if (strcmp(argv[1], "step") == 0) {
+        if (argc != 3) {
+            printf("usage: disptest step <n>\n");
+            return 1;
+        }
+        char *end = NULL;
+        long n = strtol(argv[2], &end, 10);
+        if (!end || *end != '\0' || n < 0 || n >= DISPTEST_MAX_STEP) {
+            printf("disptest: n must be 0..%d\n", DISPTEST_MAX_STEP - 1);
+            printf("usage: disptest step <n>\n");
+            return 1;
+        }
+        disptest_step((int) n);
+        return 0;
+    }
+    if (strcmp(argv[1], "seq") == 0) {
+        if (argc > 5) {
+            printf("usage: disptest seq [n0] [n1] [ms]\n");
+            return 1;
+        }
+        long n0 = 2, n1 = 12, ms = 1500;
+        char *end = NULL;
+        if (argc >= 3) {
+            n0 = strtol(argv[2], &end, 10);
+            if (!end || *end != '\0') {
+                printf("usage: disptest seq [n0] [n1] [ms]\n");
+                return 1;
+            }
+        }
+        if (argc >= 4) {
+            n1 = strtol(argv[3], &end, 10);
+            if (!end || *end != '\0') {
+                printf("usage: disptest seq [n0] [n1] [ms]\n");
+                return 1;
+            }
+        }
+        if (argc >= 5) {
+            ms = strtol(argv[4], &end, 10);
+            if (!end || *end != '\0') {
+                printf("usage: disptest seq [n0] [n1] [ms]\n");
+                return 1;
+            }
+        }
+        if (n0 < 0 || n0 >= DISPTEST_MAX_STEP || n1 < 0 || n1 >= DISPTEST_MAX_STEP || n1 < n0) {
+            printf("disptest: n0/n1 must be 0..%d with n1 >= n0\n", DISPTEST_MAX_STEP - 1);
+            printf("usage: disptest seq [n0] [n1] [ms]\n");
+            return 1;
+        }
+        if (n1 - n0 + 1 > DISPTEST_SEQ_MAX_COUNT) {
+            n1 = n0 + DISPTEST_SEQ_MAX_COUNT - 1;
+            printf("disptest: clamped to %d steps (n0=%ld n1=%ld)\n", DISPTEST_SEQ_MAX_COUNT, n0,
+                   n1);
+        }
+        if (ms < DISPTEST_SEQ_MIN_MS) {
+            ms = DISPTEST_SEQ_MIN_MS;
+        } else if (ms > DISPTEST_SEQ_MAX_MS) {
+            ms = DISPTEST_SEQ_MAX_MS;
+        }
+        printf("disptest: seq n=%ld..%ld, %ld ms apart\n", n0, n1, ms);
+        for (long n = n0; n <= n1; n++) {
+            disptest_step((int) n);
+            if (n != n1) {
+                vTaskDelay(pdMS_TO_TICKS(ms));
+            }
+        }
+        return 0;
+    }
+    if (strcmp(argv[1], "full") == 0) {
+        if (argc != 2) {
+            printf("usage: disptest full\n");
+            return 1;
+        }
+        disp_full_refresh();
+        printf("disptest: full refresh done\n");
+        return 0;
+    }
+    printf("%s", DISPTEST_USAGE);
+    return 1;
+}
+
 static void start_normal_console(void)
 {
     esp_console_repl_t *repl = NULL;
@@ -633,6 +803,18 @@ static void start_normal_console(void)
         .func = &cmd_smslist,
     };
     ESP_ERROR_CHECK(esp_console_cmd_register(&smslist_cmd));
+
+    const esp_console_cmd_t disptest_cmd = {
+        .command = "disptest",
+        .help = "disptest [info|again <0|1>|bars|step <n>|seq [n0] [n1] [ms]|full] -- "
+                 "deterministic e-paper partial-refresh bench harness (docs task-disp-fix.md); "
+                 "run `disptest` with no args for the full usage. NOTE: do not use `wake` or "
+                 "`key` while this is running -- the UI render task would repaint over the test "
+                 "pattern.",
+        .hint = NULL,
+        .func = &cmd_disptest,
+    };
+    ESP_ERROR_CHECK(esp_console_cmd_register(&disptest_cmd));
 
     ESP_ERROR_CHECK(esp_console_start_repl(repl));
     ESP_LOGI(TAG, "debug console REPL started in normal mode (PAGER_DEBUG_NO_LIGHT_SLEEP)");

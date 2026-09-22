@@ -25,6 +25,7 @@
 #define DISP_H
 
 #include <stdbool.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -88,6 +89,25 @@ void disp_refresh_cadence(void);
  * ever call it concurrently); the strong definition is responsible for its
  * own task-safety check before touching shared I2C/input state. */
 void disp_busy_idle_hook(void);
+
+/* Bench A/B for the garbled-bands fix: false = pre-fix behaviour (only the
+ * previous-image plane is re-synced after a partial), true = also re-write the
+ * new-image plane, as the vendor reference does. Default true (CONFIRMED on
+ * hardware: 13 consecutive adjacent-band partials all correct, real typing
+ * stays clean); false deliberately reproduces the pre-fix bug and is kept so
+ * a future session can re-confirm the fix on the bench in about 40 seconds
+ * via `disptest again 0` / `disptest seq`. The `disptest` console command
+ * flips it so one flash can test both. */
+void disp_set_partial_write_again(bool on);
+bool disp_partial_write_again(void);
+
+/* Number of native rows where gfx.c's framebuffer differs from the shadow
+ * plane, i.e. what the next partial refresh would send. 0 right after any
+ * successful refresh. Bench diagnostic. */
+int disp_dirty_rows(void);
+
+/* Partials since the last full refresh (the 20-partial cadence counter). */
+uint32_t disp_partial_count(void);
 
 #ifdef __cplusplus
 }
