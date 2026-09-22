@@ -50,13 +50,15 @@ UNVERIFIED: the exact minimum (not bisected between 50 and 150 ms), why one deli
 
 ## Pages stop arriving after about ten minutes, then resume much later
 
-**Symptom:** the web app shows the pager online; the broker's client list includes it; new pages vanish; the pager's log shows no disconnect; pages start arriving again about 45 minutes later.
+**Symptom:** the web app shows the pager online; new pages vanish; the pager's log shows no disconnect; the session comes back by itself several minutes later.
 
-**Cause (most likely):** the carrier's NAT drops an idle TCP flow. Seen three times out of three on AT&T, 10 to 13 minutes after the last traffic. With an MQTT keepalive of 1800 s the connection dies without either side noticing.
+**Cause (measured 2026-09-21):** **the modem never sends PINGREQ**, whatever keepalive is configured. Three idle sessions at keepalive 480 s: the broker's `recv_pkt` for the client stayed at 1 (the CONNECT) for the whole session, so nothing arrived at the 8-minute mark (`build/bench-logs/r2-keepalive-poll.log`). The AT manual says the keepalive argument "controls the rate at which the client sends ping messages"; on `LR8.2.1.0-61488` it does not. So **lowering the keepalive is not a cure** — it only moves the broker's own 1.5 × keepalive deadline. On top of that, something in the carrier path kills an idle flow after 10-13 minutes regardless: at keepalive 1800 s sessions still died in 10-13 min, not 45 (assumed NAT, INFERRED).
 
-**Rule:** the keepalive must be shorter than the carrier's idle timeout. It is now 480 s, so the modem's PINGREQ prevents the TCP flow from timing out, and a dead session is detected within 1.5 times the keepalive interval. Cost: 180 pings a day instead of 48, modem-side only; at roughly 0.1 mAh per ping, about 18 mAh a day instead of about 5.
+Worse, after the modem resumes the session by itself (`+SQNSMQTTONCONNECT:0,0`, no connect command from us) the pager is **subscribed to nothing**: the AT manual requires the host to re-subscribe, and `mqttSubscribe()` silently does nothing when the topic is still in its local table. No `AT+SQNSMQTTSUBSCRIBE` was sent for either resume in a 40-minute log. No `+SQNSMQTTONDISCONNECT` is ever raised either, so the firmware never notices any of it.
 
-UNVERIFIED: that 480 s cures it (not yet run on hardware), and the timeout on other carriers such as T-Mobile.
+**Rule:** the host keeps the flow warm. Every 300 s of uplink silence the ESP32 re-subscribes to `pager/{id}/down` with a raw `AT+SQNSMQTTSUBSCRIBE` — the SUBACK proves the round trip and re-arms the subscription after a silent resume. No SUBACK in 30 s means the session is dead: reconnect. Cost about 28.8 mAh/day (288 pings x ~0.1 mAh, estimate). See `V02_DESIGN.md` §9.
+
+UNVERIFIED: the per-ping energy, the carrier's true idle timeout (and the largest safe interval), and behaviour on other carriers such as T-Mobile.
 
 ## The pager dies after losing signal
 

@@ -1008,7 +1008,7 @@ polls (there is no URC to catch, so §8's light-sleep constraint disappears).
 
 | Downlink | Worst-case latency | Data / month | Battery / day | Idle life, 1500 mAh |
 |---|---|---|---|---|
-| **MQTT in modem (today)** | **≈ 27 s** | **1.7 MB nominal / 6.9 MB pessimistic** | **84–96 mAh** | **15–18 days** |
+| **MQTT in modem (today)** | **≈ 27 s** | **2.5 MB nominal / 8.4 MB pessimistic** | **95–107 mAh** | **14–16 days** |
 | HTTPS poll every 25 s | ≈ 30 s | ≈ 520 MB | modem never leaves RRC-connected: 1–2 Ah | ≈ 1 day |
 | HTTPS poll every 60 s | ≈ 65 s | ≈ 216 MB | ≈ 360 mAh | ≈ 4 days |
 | HTTPS poll every 5 min | ≈ 5.5 min | ≈ 43 MB | ≈ 75 mAh | ≈ 20 days |

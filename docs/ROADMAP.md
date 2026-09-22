@@ -14,15 +14,16 @@ Unverified measurements (see HARDWARE_TESTING.md for test plans):
 
 - **Post-wake window:** only 50 ms (fails) and 150 ms (works) were tried; the minimum between
   them is unknown, and 200 ms is in use as a margin. The 136 s delivery latency has no explanation.
-- **MQTT keepalive cure:** the 480 s keepalive has not yet been run on hardware. The session
-  deaths it answers were seen on AT&T (US Mobile Dark Star) only.
+- **Host liveness ping:** specified (`V02_DESIGN.md` §9) after the bench showed the modem sends
+  no PINGREQ; not yet verified on hardware. The per-ping energy and the carrier's true idle
+  timeout are unmeasured, and the relay's `link` counter (P2 there) is not built.
 - **No-coverage duty cycle:** implemented but not yet tested on hardware.
 - **Cell-tower location:** the pager half sends `cell` on a `no_fix` answer (coded, untested on
   hardware); the relay half resolves it with Google Geolocation API or OpenCelliD. The OpenCelliD
   provider is unverified.
 - **Battery budget:** the design assumed ~1% awake and 48 pings a day. It is now 4% awake (200 ms
-  per 5 s wake) and 180 pings a day, which moves `PROTOCOL.md` §8.4's estimate from 43–50 to
-  84–96 mAh/day (about 15–18 days idle on 1500 mAh). Every term is still an estimate; a current
+  per 5 s wake) and 288 host pings a day, which moves `PROTOCOL.md` §8.4's estimate from 43–50 to
+  95–107 mAh/day (about 14–16 days idle on 1500 mAh). Every term is still an estimate; a current
   trace is the next step, then shrinking the wake window.
 
 Firmware

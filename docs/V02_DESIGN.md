@@ -262,6 +262,7 @@ Envelope keys:
 | 46 | `st` | tstr | `/up` `sms_log` |
 | 47 | `sms_ts` | int | `/up` `sms_log` |
 | 48 | `sms_lost` | int | `/status` (audit entries dropped, normally 0) |
+| 50 | `link` | int | `/status` (MQTT-session generation within a boot — §9.5; key 49 is `cell`) |
 
 `kind` gains `sms_log` (`/up`). `cfg` sub-map: `lock=0` (existing), **`ca=1`** `{url=0 tstr,
 sha=1 bstr(32)}`, **`sms=2`** array of `{n=0 tstr name, p=1 tstr phone}`. In JSON the same names
@@ -279,3 +280,125 @@ are used; `ca_sha`/`sha` are base64url without padding, like `sig`.
   `locate`, `ca_push`, `sms_log` with `pager_client.py`.
 - Web: `npm run build`, lint.
 - Hardware, by a person: everything marked `UNVERIFIED`, using the debug console.
+
+## 9. Session liveness: the modem sends no PINGREQ
+
+### 9.1 The finding (measured 2026-09-21, AT&T via US Mobile Dark Star)
+
+`AT+SQNSMQTTCONNECT`'s fourth argument is documented as "Maximum period (in seconds) allowed
+between communications with the broker. If no other messages are being exchanged, this parameter
+controls the rate at which the client sends ping messages to the broker" (Monarch 2 AT manual,
+`AT+SQNSMQTTCONNECT`). **On `LR8.2.1.0-61488` it does not.** Three consecutive idle sessions with
+`keepalive=480` (confirmed negotiated by the broker) sent **no PINGREQ at the 8-minute mark**:
+EMQX's `recv_pkt` for the client stayed at 1 (the CONNECT) for the whole session
+(`build/bench-logs/r2-keepalive-poll.log`, sessions starting `02:35:20Z`, `02:51:37Z`,
+`03:09:47Z`; polled every 30 s). The one `recv_pkt` 1→2 step was the device's own hourly
+`/status` heartbeat, not a ping — it came with `recv_msg` 0→1, `recv_oct` +143 (a 113-byte
+PUBLISH) and a 4-byte reply (PUBACK); a SUBSCRIBE would be ~28 octets with `recv_msg` unchanged
+and a 5-byte SUBACK.
+
+Consequences, in order of severity:
+
+1. **Two independent killers of an idle flow.** The broker drops the client at 1.5 × keepalive
+   (720 s; measured 12.4 min for session 2). Separately, something in the path kills the flow at
+   **10–13 min** regardless: with `keepalive=1800` sessions still died in 10–13 min, far short of
+   45 min, so this is not the broker. Assumed carrier NAT idle timeout (INFERRED).
+2. **After a silent resume the pager is deaf.** The modem reconnects on its own ~6 min later and
+   emits `+SQNSMQTTONCONNECT:0,0` with no preceding `AT+SQNSMQTTCONNECT` from us
+   (`build/bench-logs/r2-keepalive-serial.log:646`, `:1566`). The AT manual is explicit: "If the
+   MQTT connection was dropped by the server and automatically resumed by the modem … the MCU must
+   re-subscribe to carry on receiving MQTT messages." Our handler tries, but
+   `WalterModem::mqttSubscribe()` returns `OK` **without sending anything** when the topic is
+   already in its local table (`src/proto/WalterMQTT.cpp:120-123`), and only `mqttConnect()` ever
+   frees that table (`:86-88`) — which a modem-initiated resume never calls. Measured: no
+   `AT+SQNSMQTTSUBSCRIBE` was sent in the whole 40-minute log, for either resume.
+3. **No disconnect is ever reported.** No `+SQNSMQTTONDISCONNECT` in 40 minutes over three broker
+   drops. The handler logs on every rc (`net.cpp:382-387`), so the URC simply is not raised.
+   `s_mqtt_connected` therefore stays `true` from boot: no disconnect edge, no F1/F3 backoff, no
+   `net_session_up()`, and no rising edge — which is why three resumes produced **no**
+   `published /status online`, and the relay's §5.3 re-publish of unacked pages never ran.
+4. **The session is not persistent.** While the client was gone, EMQX's `/clients/{id}` returned
+   404 rather than a disconnected session, so the broker keeps nothing: the subscription and any
+   queued QoS 1 `/down` are discarded on every drop (INFERRED from the 404s). Clean-session is not
+   settable on this firmware; the vendor added `AT+SQNSMQTTCFG=…[,<retain>[,<clear>]]` only in
+   `LR8.2.3.1-65130` (Sequans forum topic 606).
+
+### 9.2 Decision
+
+The host must keep the flow warm itself. **Every `PAGER_MQTT_PING_S` = 300 s of uplink silence,
+re-SUBSCRIBE to `pager/{id}/down`** via a raw `AT+SQNSMQTTSUBSCRIBE`. MQTT keepalive stays 480 s.
+
+Why a re-SUBSCRIBE and not a publish: the SUBACK proves the round trip (a QoS 0 publish proves
+nothing), it needs no ACL change and no relay-side tolerance (the broker rule forwards `/up`,
+`/status`, `/loc`, `boot/+/up` only), and it is *also* the repair item 2 above requires, so one
+mechanism fixes both. It is safe to repeat: EMQX replaces the subscription, and `/down` is
+published with `retain=False` (`relay/app/broker.py:193`), so no page is re-delivered.
+Rejected: TCP keepalive (the library's socket `keep_alive` is "currently unused",
+`WalterModem.h:5223`, and the built-in MQTT client has no socket handle anyway); reconnecting on a
+9-minute timer (160 TLS handshakes/day ≈ 800 kB and ~80 mAh/day — worse on both axes);
+a modem firmware upgrade (a forum report of RF loss after `LR8.2.1.0` → `LR8.2.2.1` makes that a
+bench experiment, not a plan).
+
+`N` = 300 s halves the shortest observed death (10.5 min) and leaves 420 s of margin to the
+broker's 720 s timeout, i.e. one whole missed ping is survivable. Keeping keepalive at 480 s also
+keeps "broker declares a truly dead pager offline" at ≤12 min, unchanged.
+
+### 9.3 Cost
+
+| Term | Number | Assumption |
+|---|---|---|
+| Per ping | ~0.1 mAh (estimate) | §6.2's RRC figure: ~3 s at ~120 mA. **The weakest number here** — an RRC release tail of 10 s instead of 3 s would make it 0.28 mAh |
+| Pings/day | 288 worst case | 86400/300 with no other uplink; every publish resets the timer, so a school day is ~250 |
+| **Energy** | **~28.8 mAh/day → 1.2 mA** | replaces `PROTOCOL.md` §8.4's 0.75 mA keepalive line, which assumed pings that never happened |
+| Sleep-mode total | 3.95–4.45 mA → **95–107 mAh/day** → 14–16 days on 1500 mAh | §8.4's other terms unchanged |
+| Data | 288 × ~0.17 kB ≈ **49 kB/day** (+1.5 MB/month) | SUBSCRIBE ~28 B + SUBACK 5 B, each +29 B TLS +40 B TCP/IP (§7.1). Nominal day goes 57 → 106 kB; the 10 MB bar holds |
+
+If the per-ping measurement comes back at ≥0.25 mAh, raise `N` to whatever the §9.6 NAT
+measurement allows (420–540 s) rather than accepting 70+ mAh/day.
+
+### 9.4 Mechanism
+
+1. `net.cpp` tracks `s_last_uplink_us` (set on every successful publish and on every SUBACK) and
+   a `s_resub_pending` flag.
+2. `+SQNSMQTTONCONNECT` while the firmware already believes it is connected = a modem-initiated
+   resume: log it, set `s_resub_pending`, do not touch `s_mqtt_connected` (nothing else is broken —
+   publishes still work).
+3. `net_service_session()`, called once per wake-and-drain iteration from `modes.c` (the ESP32 is
+   already awake every 5 s in sleep mode, §8 — the timer check is free), sends the raw
+   `AT+SQNSMQTTSUBSCRIBE=0,"pager/{id}/down",1` when `s_resub_pending`, or when
+   `now - s_last_uplink_us >= N`. Skipped while the coverage duty cycle owns the radio, during
+   location route 2, and during a CA-apply trial — the same three suppressions the reconnect path
+   already honours.
+4. The `SUBSCRIBED` event clears the pending flag and, if it closed a resume, raises a
+   **session-restart edge** so `modes.c` runs the existing `catrust_on_mqtt_connected()` +
+   `publish_status_online()` + `loc_flush_pending_answer()` block.
+5. No SUBACK within 30 s (two wake cycles plus RRC setup) = the session is dead: mark
+   disconnected and raise the ordinary disconnect edge, so F1/F3 backoff and `net_session_up()`
+   run. `mqttConnect()` frees the topic table, so the subscribe after a real reconnect is a
+   normal one. **This is the early death detection the firmware lacks today** — ≤30 s instead of
+   the modem's ~6 min.
+
+No new wake source; no new RTC state (`s_last_uplink_us` and the flags live in RAM, which the
+5 s light sleep retains, and after a reset the session is rebuilt from scratch anyway).
+
+### 9.5 Relay (P2, after the above)
+
+A resume still leaves a ≤10 s window with no subscription at the broker, and a QoS 1 `/down`
+published into it is discarded (§9.1 item 4). The relay re-publishes unacked pages only on a
+`session` change or an offline→online edge (`relay/app/ingest.py:647-650`), and `session` is a
+cold-boot id (§5.1), so a resume triggers neither. Fix: `/status` gains optional **`link`**
+(key 50, §7) — a counter incremented on every MQTT session within a boot — and the relay treats a
+changed `link` exactly like a changed `session`. Optional field, so an older relay is unaffected.
+
+### 9.6 What to measure
+
+1. **The ping works.** 2 h idle with the change: broker `recv_pkt` rises every ~300 s, `connected_at`
+   never changes, and a page sent at t+90 min arrives. This is the acceptance test.
+2. **Per-ping energy.** Current trace across one ping: peak, duration to RRC release, mAh. Feeds
+   §9.3 and decides whether `N` = 300 s survives.
+3. **The real idle-death time.** `keepalive=1800` (removes the broker as a killer), no host ping,
+   poll the broker every 10 s: gives the carrier's timeout directly, and with it the largest `N`
+   that is safe. Run per carrier (AT&T today, T-Mobile/Google Fi next).
+4. **The resume repair.** Force a drop (broker-side kick), confirm `AT+SQNSMQTTSUBSCRIBE` goes out
+   within one wake cycle, `+SQNSMQTTONSUBSCRIBE` returns, `/status online` is published, and a page
+   sent 10 s later arrives.

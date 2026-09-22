@@ -92,7 +92,8 @@ is the same flow with a new code.
 
 The modem stays registered with **eDRX** (a 20.48 s paging cycle, PSM off), so a page arrives
 within about 20 s without the radio being on. The modem's built-in MQTT client owns the session
-and sends its own keepalives (every 480 s) without waking the ESP32. The ESP32 light-sleeps,
+but sends no keepalive pings of its own, so the ESP32 re-subscribes to its topic every 300 s of
+silence from a wake it takes anyway (`GOTCHAS.md`, `V02_DESIGN.md` §9). The ESP32 light-sleeps,
 waking every 5 s (or on the button) for about 200 ms to collect events held by the modem. The
 modem does queue events; a 50 ms wake window is too short to receive them (pages vanish), while
 150 ms succeeds and 200 ms is in use (4% awake, against the 1% the design assumed).
