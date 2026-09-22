@@ -21,65 +21,15 @@ static const char *TAG = "disp";
 #define PAGER_UI_PARTIAL_FULL_EVERY 20 // firmware/README.md, explicit override of "~10"
 #define PAGER_UI_BUSY_TIMEOUT_US (15 * 1000000)
 
-// Each partial refresh widens its changed-row window to a whole multiple of
-// this many native rows, aligned to it.
-//
-// History, corrected 2026-09-22 — the two rationales this comment used to
-// give were both wrong, and are recorded here so neither is re-derived:
-//   (1) "every keystroke in the same on-screen character band refreshes the
-//       exact same physical row range". False. One native row is one screen-x
-//       column (gfx.c's gfx_set_pixel(): native_row = 295 - x), and the 12 px
-//       font is PROPORTIONAL (glyph_adv() returns 5..8 px, with per-glyph
-//       bearings), so consecutive keystrokes land in *adjacent*, not
-//       identical, aligned chunks — exactly the adjacent-band case that
-//       exposed the garbled-bands bug.
-//   (2) "it makes the window match gfx.c's glyph cells, which are drawn on
-//       byte-aligned native-row boundaries". False. gfx.c packs bits along y
-//       inside each native row (native_byte = y / 8, bit = 7 - y % 8); a
-//       native row is 16 bytes covering all 128 y. Byte boundaries therefore
-//       lie on the y axis, which a native-row window does not cut at all.
-//       Aligning native rows only rounds a screen-x range out to 8 px.
-// The garbled bands were never caused by window alignment: the confirmed
-// cause was the two-RAM-plane desync fixed in dd694a3 (see
-// partial_refresh_locked()'s banner comment).
-//
-// Kept at 8 anyway, deliberately: it is the configuration verified on
-// hardware in dd694a3, and it is nearly free. A single-glyph composer diff is
-// 5..8 columns, so aligning costs at most ~11 extra gate lines (an 8- or
-// 16-row window instead of 5..8). Shrinking it to 1 is the right move only
-// once a bench run confirms unaligned small windows stay clean AND those few
-// rows are shown to cost measurable BUSY time (`disptest step <n>` already
-// produces an 8-row-band partial, and disp_wait_busy_fb() logs elapsed us).
-#define PAGER_UI_PARTIAL_ROW_ALIGN 8
-
 /* Shadow plane: what the panel was last told to show, for partial-refresh
  * diffing. gfx.c owns the "new" framebuffer this is diffed against. */
 static uint8_t s_fb_old[GFX_FB_ROWS][GFX_FB_ROW_BYTES];
-
-// Scratch: exactly the bytes handed to the panel (0x24) for the row range of
-// the partial refresh currently in flight. partial_refresh_locked() re-syncs
-// the SSD1680's "old" RAM plane (0x26) and s_fb_old from THIS buffer, never
-// from a fresh gfx_fb_native_row() read taken after the BUSY wait — see that
-// function's own comment for the desync this closes off.
-static uint8_t s_fb_snap[GFX_FB_ROWS][GFX_FB_ROW_BYTES];
 
 static spi_device_handle_t s_spi;
 static bool s_spi_ready = false;
 static bool s_display_dead = false; // logged once, then the device runs headless
 static bool s_display_dead_logged = false;
 static uint32_t s_partial_count = 0;
-
-// Bench A/B for the garbled-bands fix (see partial_refresh_locked()'s own
-// comment on the second 0x24 write this flag guards). Default true = fixed
-// behaviour; 0 deliberately reproduces the pre-fix bug (confirmed on the
-// bench: with again=0, adjacent-band partials come out garbled and never
-// settle; with again=1, 13 consecutive adjacent-band partials all came out
-// correct and real typing in the composer stayed clean) — kept here, not
-// removed once verified, so a future session can re-confirm the fix on the
-// bench in about 40 seconds via `disptest again 0` / `disptest seq`. Power
-// effect: none by itself — it only decides whether the extra RAM write
-// below runs, which is documented at that write.
-static bool s_partial_write_again = true;
 
 /* docs/DEVICE_PLAN.md §5.3: "one mutex in disp.c" — see disp.h's header
  * comment. Created in disp_init(); every public refresh entry point takes
@@ -309,46 +259,11 @@ static void mark_display_dead(void)
 }
 
 // ---------------------------------------------------------------------------
-// Refresh primitives (PROTOCOL.md §6). Full: border 0x05, update-mode byte
-// 0xF7. Partial: only the changed row band, border 0x80 (HiZ), update-mode
-// byte 0xFF. PROTOCOL.md used to flag both bytes as inferred/unverified;
-// they are now reference-matched: GxEPD2_290_T94.cpp (this panel, waveform
-// from OTP) uses 0xF7 full and 0xFC partial, and ours are those values plus
-// bits 1+0 (disable analog, disable clock), which this driver wants because
-// it powers the panel down between refreshes. Hardware-verified in this
-// configuration; do NOT "fix" them to the bare reference values.
-//
-// Two rules, stated once here rather than repeated at each call site
-// (bench-found: task-disp-fix-2.md; the second rule's scope was narrowed
-// after hardware testing, see below):
-//   1. Every RAM write (0x24 or 0x26) is preceded by its own
-//      disp_set_ram_window() call. disp_set_ram_window() sets the address
-//      counters (0x4E/0x4F) as well as the window (0x44/0x45); after a RAM
-//      write the counters have run to the end of whatever window was set,
-//      so a second write with no window/cursor reset in between starts from
-//      wherever the first one left off, not from the start of its own
-//      window. full_refresh_locked() used to violate this between its 0x24
-//      and 0x26 writes; fixed unconditionally below, costs nothing.
-//   2. Every PARTIAL update (0x20 with the partial LUT) is followed by
-//      writing the exact image just displayed to BOTH RAM planes (0x26 then
-//      0x24, matching GxEPD2's writeImageAgain()): the SSD1680 has two
-//      physical RAM planes and auto-toggles which one 0x24/0x26 address on
-//      every update (Waveshare's own example, verbatim: "once the display
-//      is refreshed, the memory area will be auto-toggled... you have to
-//      set the frame memory and refresh the display twice"). Skipping this
-//      leaves the two planes unequal, and the next differential update
-//      reads a plane that never held the displayed image — this is the
-//      confirmed cause of the garbled-bands bug; partial_refresh_locked()
-//      does this, guarded by s_partial_write_again (see its comment).
-//      A full (mode-1) update does NOT read the previous-image plane at
-//      all, so it needs no post-update re-sync of its own — an earlier
-//      version of this file added one anyway (guarded by a since-removed
-//      flag) on the theory that it might explain a bench discrepancy; that
-//      theory did not hold up (the discrepancy was a test-harness gap, not
-//      a real defect — task-disp-fix-2.md), so full_refresh_locked() below
-//      does rule 1 only. This is the configuration verified on hardware:
-//      13 consecutive adjacent-band partials after a full refresh, all
-//      correct, plus clean real typing in the composer.
+// Refresh primitives (PROTOCOL.md §6). Full: write to 0x24 AND 0x26 (syncs
+// the shadow plane), border 0x05, update-mode byte 0xF7 (flagged in
+// PROTOCOL.md as inferred/unverified — carried forward unchanged). Partial:
+// only the changed row band, border 0x80 (HiZ), update-mode byte 0xFF (same
+// unverified caveat), then re-mirror those rows into the shadow plane.
 // ---------------------------------------------------------------------------
 
 static void full_refresh_locked(void)
@@ -356,24 +271,14 @@ static void full_refresh_locked(void)
     if (s_display_dead) {
         return;
     }
-
-    // Snapshot before anything below can block on BUSY — same reasoning as
-    // partial_refresh_locked()'s own banner comment (never read
-    // gfx_fb_native_row() fresh after the wait; a full refresh's BUSY wait
-    // is ~1.4s, the same desync exposure the partial path already closed).
-    for (int r = 0; r < GFX_FB_ROWS; r++) {
-        memcpy(s_fb_snap[r], gfx_fb_native_row(r), GFX_FB_ROW_BYTES);
-    }
-
     disp_set_ram_window(0, 295);
     disp_send_cmd(0x24);
     for (int r = 0; r < GFX_FB_ROWS; r++) {
-        disp_send_data(s_fb_snap[r], GFX_FB_ROW_BYTES);
+        disp_send_data(gfx_fb_native_row(r), GFX_FB_ROW_BYTES);
     }
-    disp_set_ram_window(0, 295); // rule 1 above: reset before every RAM write
     disp_send_cmd(0x26);
     for (int r = 0; r < GFX_FB_ROWS; r++) {
-        disp_send_data(s_fb_snap[r], GFX_FB_ROW_BYTES);
+        disp_send_data(gfx_fb_native_row(r), GFX_FB_ROW_BYTES);
     }
     disp_send_cmd(0x3C);
     disp_send_data1(0x05);
@@ -390,46 +295,12 @@ static void full_refresh_locked(void)
             return;
         }
     }
-
-    // No post-update RAM re-sync here — see rule 2 above: a full (mode-1)
-    // update never reads the previous-image plane, so there is nothing to
-    // desync. (An earlier version of this function did one anyway,
-    // task-disp-fix-2.md; removed once hardware testing showed the bench
-    // discrepancy that prompted it was a test-harness gap, not a real
-    // defect.)
-    ESP_LOGI(TAG, "full: %d rows", GFX_FB_ROWS);
-
-    // Commit from the snapshot, not a fresh gfx_fb_native_row() read —
-    // this is what was actually sent (see the snapshot comment above), so
-    // the shadow-plane commit is truthful even if gfx.c's framebuffer
-    // changed while this call was blocked in the BUSY wait above.
     for (int r = 0; r < GFX_FB_ROWS; r++) {
-        memcpy(s_fb_old[r], s_fb_snap[r], GFX_FB_ROW_BYTES);
+        memcpy(s_fb_old[r], gfx_fb_native_row(r), GFX_FB_ROW_BYTES);
     }
     s_partial_count = 0;
 }
 
-// Bug found on the bench: while typing, consecutive partials touching
-// adjacent, non-overlapping native-row bands left the panel showing content
-// that never matched gfx.c's framebuffer again ("garbled bands that never
-// settle"). Root cause: the old-RAM (0x26) and s_fb_old re-sync below used
-// gfx_fb_native_row(r) read AFTER the ~0.5s BUSY wait, not the data actually
-// handed to the panel in the 0x24 write before it. disp_busy_idle_hook()'s
-// current strong definition (ui.c) only queues key events and never draws
-// (see its own comment), so it does not itself race this — but nothing in
-// disp.c enforced that invariant, and any future or other call path that
-// draws into gfx_fb from a different task while this task blocks in the
-// wait (disp_lock() only serializes disp.c's own entry points, not gfx.c's
-// framebuffer) would silently desync the "old" plane and the shadow plane
-// from what the panel actually received: on the next partial, the memcmp
-// diff would then be computed against a too-new s_fb_old, so the row range
-// that was never actually drawn is never detected as changed again, and the
-// SSD1680's differential LUT sees an old-RAM value that was never the truly
-// displayed image either. Fix: snapshot the exact bytes sent to 0x24 into
-// s_fb_snap before the wait, and use only that snapshot — never a fresh
-// framebuffer read — for the 0x26 write and the s_fb_old commit after it.
-// Window/pointer (disp_set_ram_window(), shared with full_refresh_locked())
-// are reset immediately before each of the two RAM writes.
 static void partial_refresh_locked(void)
 {
     if (s_display_dead) {
@@ -448,39 +319,10 @@ static void partial_refresh_locked(void)
         return; // nothing changed, not worth a refresh or a cadence tick
     }
 
-    // Widen/align to whole PAGER_UI_PARTIAL_ROW_ALIGN-row chunks (Task 3:
-    // uniform, cheaper composer refresh — see the #define's comment). Safe:
-    // the padding rows are re-sent with their own unchanged, correct
-    // content, so this is still a no-op visually for anything outside the
-    // real diff.
-    int pre_first = first, pre_last = last;
-    first -= first % PAGER_UI_PARTIAL_ROW_ALIGN;
-    last += (PAGER_UI_PARTIAL_ROW_ALIGN - 1) - (last % PAGER_UI_PARTIAL_ROW_ALIGN);
-    if (last >= GFX_FB_ROWS) {
-        last = GFX_FB_ROWS - 1;
-    }
-
-    // Bench correlation line: lets the bench match "the band the owner saw
-    // go wrong" (a screen-x range) against "the rows we actually sent" (a
-    // native-row range), and shows the alignment widening (pre_first/
-    // pre_last vs. first/last) in the same place. Screen x = 295 -
-    // native_row (gfx.c's gfx_set_pixel() mirror), so the higher native row
-    // (last) is the lower screen x (x0) and vice versa.
-    int x0 = (GFX_FB_ROWS - 1) - last;
-    int x1 = (GFX_FB_ROWS - 1) - first;
-    ESP_LOGI(TAG, "partial: pre-align rows %d..%d, native rows %d..%d (%d rows) = screen x %d..%d, again=%d",
-             pre_first, pre_last, first, last, last - first + 1, x0, x1, (int) s_partial_write_again);
-
-    // Snapshot now, before anything below can block — see this function's
-    // banner comment.
-    for (int r = first; r <= last; r++) {
-        memcpy(s_fb_snap[r], gfx_fb_native_row(r), GFX_FB_ROW_BYTES);
-    }
-
     disp_set_ram_window((uint16_t) first, (uint16_t) last);
     disp_send_cmd(0x24);
     for (int r = first; r <= last; r++) {
-        disp_send_data(s_fb_snap[r], GFX_FB_ROW_BYTES);
+        disp_send_data(gfx_fb_native_row(r), GFX_FB_ROW_BYTES);
     }
     disp_send_cmd(0x3C);
     disp_send_data1(0x80); // HiZ border for partial, PROTOCOL.md §6
@@ -502,54 +344,14 @@ static void partial_refresh_locked(void)
         return;
     }
 
-    // Re-sync the "old" RAM plane and the host shadow to EXACTLY what we
-    // just sent (s_fb_snap, not a fresh gfx_fb_native_row() read) — window
-    // and pointer explicitly reset again first.
     disp_set_ram_window((uint16_t) first, (uint16_t) last);
     disp_send_cmd(0x26);
     for (int r = first; r <= last; r++) {
-        disp_send_data(s_fb_snap[r], GFX_FB_ROW_BYTES);
+        disp_send_data(gfx_fb_native_row(r), GFX_FB_ROW_BYTES);
     }
     for (int r = first; r <= last; r++) {
-        memcpy(s_fb_old[r], s_fb_snap[r], GFX_FB_ROW_BYTES);
+        memcpy(s_fb_old[r], gfx_fb_native_row(r), GFX_FB_ROW_BYTES);
     }
-
-    // Bug found on the bench (garbled/alternating bands per keystroke that
-    // never settle, a different band each time). INFERRED mechanism (the FIX
-    // is hardware-verified, this explanation of it is not): the SSD1680 has
-    // two physical RAM planes, and an update appears to auto-toggle which one
-    // 0x24/0x26 address, so after a 0x20 the "previous image" plane is not
-    // the one a bare 0x26 write lands in. The known-good
-    // reference driver for this exact panel, GxEPD2_290_T94_V2 (also
-    // GxEPD2_290_T94.cpp)'s writeImageAgain(), re-writes BOTH planes after
-    // every update, not just the "previous image" one (0x26) above:
-    //   _writeImage(0x26, bitmap, ...); // set previous
-    //   _writeImage(0x24, bitmap, ...); // set current
-    // its header comment, verbatim: "for differential update: set current
-    // and previous buffers equal (for fast partial update to work
-    // correctly)". Waveshare's own example agrees, verbatim: "once the
-    // display is refreshed, the memory area will be auto-toggled... you
-    // have to set the frame memory and refresh the display twice." Skipping
-    // this second write (pre-fix behaviour here) leaves the two planes
-    // unequal; the next partial on an adjacent, non-overlapping band then
-    // differentially updates against a plane that was never the displayed
-    // image, and since s_fb_old was already committed above, the host never
-    // re-diffs those rows — the band stays wrong until the next full
-    // refresh. Order matters and matches the reference: 0x26 first (above),
-    // then 0x24 (here). s_partial_write_again exists ONLY so the `disptest`
-    // console command (main.c) can flip it off and A/B both behaviours on
-    // one flash; ship builds must never disable it. Power effect: doubles
-    // the data phase of every partial's SPI transaction (one more
-    // (last-first+1)*GFX_FB_ROW_BYTES-byte write) — negligible next to the
-    // panel's own ~0.3-0.8s update time this is guarding the correctness of.
-    if (s_partial_write_again) {
-        disp_set_ram_window((uint16_t) first, (uint16_t) last);
-        disp_send_cmd(0x24);
-        for (int r = first; r <= last; r++) {
-            disp_send_data(s_fb_snap[r], GFX_FB_ROW_BYTES);
-        }
-    }
-
     s_partial_count++;
 }
 
@@ -687,26 +489,3 @@ void disp_refresh_cadence(void)
     }
     disp_unlock();
 }
-
-// Bench A/B entry points for the garbled-bands fix above (partial_refresh_
-// locked()'s second-0x24-write comment). Power effect: none of these three
-// touch the panel themselves — they only read/flip state or (dirty_rows)
-// diff two in-memory buffers under disp_lock().
-void disp_set_partial_write_again(bool on) { s_partial_write_again = on; }
-
-bool disp_partial_write_again(void) { return s_partial_write_again; }
-
-int disp_dirty_rows(void)
-{
-    disp_lock();
-    int count = 0;
-    for (int r = 0; r < GFX_FB_ROWS; r++) {
-        if (memcmp(gfx_fb_native_row(r), s_fb_old[r], GFX_FB_ROW_BYTES) != 0) {
-            count++;
-        }
-    }
-    disp_unlock();
-    return count;
-}
-
-uint32_t disp_partial_count(void) { return s_partial_count; }
