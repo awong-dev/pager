@@ -93,7 +93,9 @@ must now be 8-16 row bands (the counter island is gone below 120).
 **Verify:** owner's read plus the band widths in the log. Record the result in
 `docs/HARDWARE_TESTING.md` "Seen working".
 
-### 1.4 Partial refresh time: measure lever 1 (0xFC vs 0xFF) — firmware-dev, then bench-tester
+### 1.4 Partial refresh time: measure lever 1 (0xFC vs 0xFF) — DEFERRED (owner, 22 Sep: "stay with 0.45 s, it's okay for now")
+
+Not scheduled. Kept here so the measurement plan is ready if the owner reopens it. Agents: skip.
 
 **Read:** `docs/V03_PLAN.md` §1 "Refresh time", `firmware/main/disp.c` `partial_refresh_locked()`
 and the `disptest` command in `main.c`, `docs/reference/wf_partial_2in9.h` (lever 2, reference only).

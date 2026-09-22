@@ -193,6 +193,33 @@ incognito window) to act as two different people at once where noted.
    simulated student device send a message to mom (`msg` command). Expect
    `/chat`'s contact list to show an unread badge, and a browser notification
    if `/settings/notifications` was enabled first and the tab isn't focused.
+   A thread now marks messages read only when the viewer is at the bottom of
+   the list and the tab is visible; before this change, opening the thread
+   marked everything read even if it was off-screen.
+
+## Thread auto-scroll behaviour
+
+1. Open a thread with more than a screenful of history → it opens scrolled to
+   the bottom (newest message visible), no animation.
+2. Have the pager reply (bench: `wake`, `key \n`, type, `enter`; or type on
+   the CardKB) while the thread is at the bottom → the new message appears and
+   the view follows it.
+3. Scroll up a screenful; have another message arrive → the view holds its
+   place and a "New messages ↓" chip appears at the bottom edge of the list;
+   the conversation's unread badge on the list page (open it in a second tab)
+   does NOT clear.
+4. Click the chip → the view scrolls to the bottom, the chip disappears, and
+   the unread badge clears.
+5. Send a message yourself while scrolled up → the view scrolls to the bottom
+   (own messages always follow).
+6. Click "Load older" → older messages appear above and the message you were
+   looking at stays where it was on screen (no jump).
+7. With the OS "reduce motion" setting on, repeat 2 → the scroll is instant,
+   not animated.
+8. Switch to another tab while a message arrives with the thread at the
+   bottom, then switch back → it is marked read only once the tab is visible
+   again.
+
 10. **Request location**: open mom's thread with student -> "Request
     location" button should be visible (locate was allowed in step 4) ->
     click it -> confirm a `location requested` marker appears in the thread,

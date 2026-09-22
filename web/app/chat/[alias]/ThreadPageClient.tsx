@@ -33,15 +33,17 @@ import {
   where,
 } from "firebase/firestore";
 import { usePathname } from "next/navigation";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import Alert from "@mui/material/Alert";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
+import Chip from "@mui/material/Chip";
 import CircularProgress from "@mui/material/CircularProgress";
 import Snackbar from "@mui/material/Snackbar";
 import Stack from "@mui/material/Stack";
 import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
+import useMediaQuery from "@mui/material/useMediaQuery";
 import LocationOnIcon from "@mui/icons-material/LocationOn";
 import SendIcon from "@mui/icons-material/Send";
 
@@ -64,9 +66,34 @@ const PAGE_SIZE_STEP = 50;
 // the "last known location" card's faint trail (LocationMap) -- a plain
 // Firestore listener limit, not a new endpoint.
 const RECENT_FIXES_LIMIT = 8;
+// docs/V03_PLAN.md §2: "within 80 px of the bottom" counts as at-bottom for
+// both the auto-scroll and the mark-read gate.
+const AT_BOTTOM_THRESHOLD_PX = 80;
 
 interface MessageRow extends MessageDoc {
   id: string;
+}
+
+// `useLayoutEffect` warns when it runs during the `output: 'export'`
+// prerender pass (no browser, so nothing to lay out before paint) --
+// `ThreadInner` is in practice never reached there (`RequireAuth` renders
+// only its loading screen until a real client-side auth state exists), but
+// this keeps the hook honest instead of relying on that other file's guard.
+const useIsomorphicLayoutEffect = typeof window !== "undefined" ? useLayoutEffect : useEffect;
+
+/** First and last `seq` of a (seq-ascending) message array, or `null` for
+ * an empty one -- the shape `ThreadInner`'s scroll effect diffs against the
+ * previous render to tell "append" from "prepend" without relying on
+ * array length (a prepend followed by a live append changes both ends at
+ * once, and length alone can't tell them apart). */
+interface SeqRange {
+  first: number;
+  last: number;
+}
+
+function seqRangeOf(messages: MessageRow[]): SeqRange | null {
+  if (messages.length === 0) return null;
+  return { first: messages[0]!.seq, last: messages[messages.length - 1]!.seq };
 }
 
 function codePointLength(s: string): number {
@@ -162,8 +189,25 @@ function ThreadInner({ alias }: { alias: string }) {
   const [sendError, setSendError] = useState<string | null>(null);
   const [locateBusy, setLocateBusy] = useState(false);
   const [snack, setSnack] = useState<string | null>(null);
+  const [showNewMessagesChip, setShowNewMessagesChip] = useState(false);
 
   const markedReadRef = useRef<Set<string>>(new Set());
+
+  // Scroll bookkeeping for the layout effect below -- docs/V03_PLAN.md §2.
+  const listRef = useRef<HTMLDivElement | null>(null);
+  // Whether the viewer is (within 80 px of) the bottom right now; a ref, not
+  // state, because the scroll handler updates it on every scroll event and
+  // nothing here needs a re-render when it changes -- it's read by the
+  // layout effect and by `markRead` at the moment a message arrives.
+  const atBottomRef = useRef(true);
+  const prevSeqRef = useRef<SeqRange | null>(null);
+  // Set by the "Load older" button right before it grows `pageSize`
+  // (re-subscribing the listener at 174-200 with a bigger `limit`), so the
+  // layout effect can diff the scrollHeight from just-before-the-prepend
+  // against just-after -- reading it any later would already see the grown
+  // list.
+  const prevScrollHeightRef = useRef<number | null>(null);
+  const reducedMotion = useMediaQuery("(prefers-reduced-motion: reduce)");
 
   const convKey = me && peerUid ? [me.uid, peerUid].sort().join("_") : null;
 
@@ -282,9 +326,28 @@ function ThreadInner({ alias }: { alias: string }) {
   }, [me, peerUid]);
 
   // Mark-read: any message addressed to me with a not-yet-'read' webapp
-  // delivery -- docs/SERVER_PLAN.md §6.3.
-  useEffect(() => {
+  // delivery -- docs/SERVER_PLAN.md §6.3. Gated on the viewer actually being
+  // at the bottom of the list *and* the tab being visible
+  // (docs/V03_PLAN.md §2 point 4, same predicate as
+  // `NotificationWatcher.tsx:56-62`) -- called from the places that can make
+  // that gate newly true (the scroll handler reaching bottom, a
+  // `visibilitychange` to visible, and every scroll-to-bottom transition
+  // below) rather than from a plain `[messages]` effect, so a thread left
+  // scrolled up or backgrounded does not mark everything read just because
+  // a new message happened to arrive.
+  // Plain function, not `useCallback` -- this file's existing handlers
+  // (`handleSend`, `handleLocate`, `handleScroll` below) follow the same
+  // pattern, and the React Compiler (`eslint-config-next`'s
+  // `react-hooks/preserve-manual-memoization`) rejects a hand-written
+  // dependency list it disagrees with. It closes over this render's
+  // `messages`/`me`/`alias`, so the `visibilitychange` listener below goes
+  // through `markReadRef` (the same "latest ref" shape as
+  // `NotificationWatcher.tsx`'s `pathnameRef`/`uidToAliasRef`) instead of
+  // being listed as an effect dependency, so it's never stale without the
+  // listener having to be torn down and re-added on every message.
+  function markRead() {
     if (!me) return;
+    if (!atBottomRef.current || document.visibilityState !== "visible") return;
     for (const msg of messages) {
       if (msg.recipientUid !== me.uid) continue;
       if (markedReadRef.current.has(msg.id)) continue;
@@ -295,7 +358,93 @@ function ThreadInner({ alias }: { alias: string }) {
         markedReadRef.current.delete(msg.id);
       });
     }
-  }, [messages, me, alias]);
+  }
+  const markReadRef = useRef(markRead);
+  useEffect(() => {
+    markReadRef.current = markRead;
+  });
+
+  useEffect(() => {
+    function onVisibilityChange() {
+      if (document.visibilityState === "visible") markReadRef.current();
+    }
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => document.removeEventListener("visibilitychange", onVisibilityChange);
+  }, []);
+
+  // Scrolls the list to its newest message and clears the "New messages"
+  // chip -- the single choke point for every "reached the bottom"
+  // transition, so it's also the single choke point for re-checking
+  // mark-read (see `markRead` above).
+  function scrollToBottom(behavior: ScrollBehavior) {
+    const el = listRef.current;
+    if (!el) return;
+    el.scrollTo({ top: el.scrollHeight, behavior });
+    atBottomRef.current = true;
+    setShowNewMessagesChip(false);
+    markRead();
+  }
+  // Read through a ref inside the layout effect below (the same shape as
+  // `markReadRef` above), so that effect's deps can stay `[messages, me,
+  // reducedMotion]` instead of re-running on every render of `ThreadInner`
+  // (e.g. every composer keystroke) just because `scrollToBottom` -- a
+  // plain, unmemoized function -- is a new reference each time.
+  const scrollToBottomRef = useRef(scrollToBottom);
+  useEffect(() => {
+    scrollToBottomRef.current = scrollToBottom;
+  });
+
+  function handleScroll(event: React.UIEvent<HTMLDivElement>) {
+    const el = event.currentTarget;
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < AT_BOTTOM_THRESHOLD_PX;
+    atBottomRef.current = atBottom;
+    if (atBottom) {
+      setShowNewMessagesChip(false);
+      markRead();
+    }
+  }
+
+  // Auto-scroll -- docs/V03_PLAN.md §2. Runs in the same commit as the DOM
+  // update that rendered the new `messages` array, before the browser
+  // paints, so a jump-to-bottom or a prepend's scrollTop correction never
+  // flashes the wrong position first.
+  useIsomorphicLayoutEffect(() => {
+    const el = listRef.current;
+    const prev = prevSeqRef.current;
+    const next = seqRangeOf(messages);
+
+    if (el && next) {
+      if (!prev) {
+        // First snapshot with data: jump to the bottom, no animation.
+        scrollToBottomRef.current("auto");
+      } else if (next.last > prev.last) {
+        // Append: a new last message. Follow it if the viewer was already
+        // at the bottom or it's their own message; otherwise hold position
+        // and let the chip offer the jump.
+        const lastMessage = messages[messages.length - 1]!;
+        if (atBottomRef.current || lastMessage.senderUid === me?.uid) {
+          scrollToBottomRef.current(reducedMotion ? "auto" : "smooth");
+        } else {
+          setShowNewMessagesChip(true);
+        }
+      } else if (next.first < prev.first) {
+        // Prepend ("Load older"): hold the viewer's place by the exact
+        // amount the content above them grew. `prevScrollHeightRef` is only
+        // cleared here, not on every run, because the re-subscribed
+        // listener (174-200) can deliver a cache-then-server pair of
+        // snapshots for the same expanded query -- an earlier no-op fire
+        // (identical `first`/`last`, neither branch above taken) must not
+        // discard the anchor the real prepend snapshot still needs.
+        const prevScrollHeight = prevScrollHeightRef.current;
+        if (prevScrollHeight !== null) {
+          el.scrollTop += el.scrollHeight - prevScrollHeight;
+          prevScrollHeightRef.current = null;
+        }
+      }
+    }
+
+    prevSeqRef.current = next;
+  }, [messages, me, reducedMotion]);
 
   const bodyCodePoints = codePointLength(composer);
   const bodyBytes = utf8ByteLength(composer);
@@ -398,20 +547,56 @@ function ThreadInner({ alias }: { alias: string }) {
         </Alert>
       )}
 
-      <Box sx={{ flexGrow: 1, overflowY: "auto", px: 1 }}>
-        {peerUid && messages.length >= pageSize && (
-          <Stack direction="row" sx={{ justifyContent: "center", mb: 1 }}>
-            <Button size="small" onClick={() => setPageSize((n) => n + PAGE_SIZE_STEP)}>
-              Load older
-            </Button>
-          </Stack>
+      {/* `position: relative` lives on this wrapper, not the scrolling Box
+          below -- an absolutely positioned child of the scroll container
+          itself is positioned against that container's padding box at
+          scroll origin and scrolls away WITH the content, which is exactly
+          when the chip needs to stay visible. `minHeight: 0` keeps this
+          flex child shrinkable so the inner `overflowY: auto` box is the
+          one that actually scrolls, not this wrapper. */}
+      <Box sx={{ position: "relative", flexGrow: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
+        <Box ref={listRef} onScroll={handleScroll} sx={{ flexGrow: 1, overflowY: "auto", px: 1 }}>
+          {peerUid && messages.length >= pageSize && (
+            <Stack direction="row" sx={{ justifyContent: "center", mb: 1 }}>
+              <Button
+                size="small"
+                onClick={() => {
+                  // Read the pre-prepend scrollHeight now -- the layout
+                  // effect that fires once the bigger-limit listener
+                  // delivers its next snapshot needs the "before" figure,
+                  // and by then the DOM already reflects the "after" one.
+                  if (listRef.current) {
+                    prevScrollHeightRef.current = listRef.current.scrollHeight;
+                  }
+                  setPageSize((n) => n + PAGE_SIZE_STEP);
+                }}
+              >
+                Load older
+              </Button>
+            </Stack>
+          )}
+          {messages.map((m) => {
+            const mine = m.senderUid === me?.uid;
+            if (m.kind === "loc_req") return <LocReqRow key={m.id} message={m} mine={mine} />;
+            if (m.kind === "loc") return <LocMessageRow key={m.id} message={m} mine={mine} />;
+            return <MessageBubble key={m.id} message={m} mine={mine} />;
+          })}
+        </Box>
+        {showNewMessagesChip && (
+          <Chip
+            label="New messages ↓"
+            color="primary"
+            onClick={() => scrollToBottom(reducedMotion ? "auto" : "smooth")}
+            sx={{
+              position: "absolute",
+              bottom: 8,
+              left: "50%",
+              transform: "translateX(-50%)",
+              cursor: "pointer",
+              boxShadow: 2,
+            }}
+          />
         )}
-        {messages.map((m) => {
-          const mine = m.senderUid === me?.uid;
-          if (m.kind === "loc_req") return <LocReqRow key={m.id} message={m} mine={mine} />;
-          if (m.kind === "loc") return <LocMessageRow key={m.id} message={m} mine={mine} />;
-          return <MessageBubble key={m.id} message={m} mine={mine} />;
-        })}
       </Box>
 
       <Stack direction="row" spacing={1} sx={{ alignItems: "flex-end" }}>

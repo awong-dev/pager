@@ -67,6 +67,8 @@ earlier session.
 
 Task `1.4` in `V03_TASKS.md` makes the `0x22` byte selectable from `disptest` and measures lever 1
 against the existing harness; lever 2 stays a described option until lever 1's number is in.
+**Deferred by the owner (22 Sep): "stay with 0.45 s, it's okay for now."** Neither lever is
+scheduled; the measurement plan is kept so it can be reopened without re-deriving it.
 
 ### Decision: single line, show the tail, counter only near the cap
 
