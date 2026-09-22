@@ -1,3 +1,14 @@
+## v0.3 (planned)
+
+Details in `docs/V03_PLAN.md` (decisions) and `docs/V03_TASKS.md` (agent-runnable tasks, build order
+2 → 1 → 3a → 3b → 3c).
+
+1. Composer overflow on device — single-line tail-scroll, counter only from 120 chars.
+2. Web chat auto-scroll with a "New messages" chip and mark-read gated on being at the bottom.
+3. Real push (the relay's FCM client is a `NullFCMClient` today and the SW ships demo config),
+   installability polish, then geofences driven by serving-cell-change reports with accuracy-aware
+   hysteresis, gated on a bench check of cell changes and on the geo provider.
+
 # Unfinished and unverified
 
 Hardware tests still to run are listed in `HARDWARE_TESTING.md`. This is everything else.
