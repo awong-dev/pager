@@ -44,7 +44,11 @@ Setup mode has `setup` and `carrier`. The debug build has all of these, in any m
 | `at <command>` | One raw AT command; the reply shows in the trace |
 
 Run modem commands only after `MQTT session usable` has appeared. Before that they collide with
-the pager's own attach.
+the pager's own attach. Never send a slow raw command (`AT+COPS=0`, `AT+CFUN`) while the
+coverage duty-cycle is in a search window or the modem is registering: the library runs one
+command at a time, an unanswered one holds the queue for up to 90 s, and the main loop's next
+command waits behind it. Before vendor patch 1.10 that tripped the 60 s task watchdog and
+rebooted the pager; it still stalls the loop.
 
 ## Bench tools
 
