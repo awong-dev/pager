@@ -16,7 +16,11 @@ Unverified measurements (see HARDWARE_TESTING.md for test plans):
   them is unknown, and 200 ms is in use as a margin. The 136 s delivery latency has no explanation.
 - **Host liveness ping:** specified (`V02_DESIGN.md` §9) after the bench showed the modem sends
   no PINGREQ; not yet verified on hardware. The per-ping energy and the carrier's true idle
-  timeout are unmeasured, and the relay's `link` counter (P2 there) is not built.
+  timeout are unmeasured. Both set the interval: 300 s is half the shortest observed death;
+  a measured 13 min timeout would allow 540 s and nearly halve the cost. The packet type does
+  not matter (the RRC connection dominates, not the bytes), so keep the re-SUBSCRIBE: its SUBACK
+  proves the link and repairs the subscription. Check whether the modem exposes LTE-M Release
+  Assistance to shorten the radio tail after each ping; that is the other real lever.
 - **No-coverage duty cycle:** implemented but not yet tested on hardware.
 - **Cell-tower location:** the pager half sends `cell` on a `no_fix` answer (coded, untested on
   hardware); the relay half resolves it with Google Geolocation API or OpenCelliD. The OpenCelliD
