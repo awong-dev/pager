@@ -5,6 +5,7 @@
 #include "esp_log.h"
 #include "esp_system.h"
 #include "esp_task_wdt.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "hal/wdt_hal.h"
@@ -15,6 +16,14 @@ static TaskHandle_t s_loop_task = NULL; // the one task subscribed to the task w
 
 #define WD_MAGIC 0x57444f47u /* "WDOG" */
 #define WD_RTC_TIMEOUT_MS 180000u
+/* PAGER PATCH 1.10: bigger than the worst case a wedged synchronous AT
+ * command wait can legitimately take (3 retries * 30 s
+ * CONFIG_WALTER_MODEM_CMD_TIMEOUT_MS = 90 s), smaller than the 180 s RTC
+ * watchdog, so a command that is merely slow gets fed through and a command
+ * that is genuinely wedged still trips the task watchdog with the
+ * "modem health check" breadcrumb intact rather than running forever. */
+#define WD_MODEM_BLOCK_BUDGET_MS 95000u
+static int64_t s_block_start_us;
 
 // RTC_NOINIT: survives software, panic and watchdog resets; garbage after a
 // power-on, hence the magic.
@@ -100,12 +109,21 @@ void watchdog_loop_begin(void)
     }
 }
 
-void watchdog_feed(void)
+// The RTC watchdog feed only; factored out so walter_modem_block_tick() can
+// feed the RTC watchdog without also touching the task watchdog subscription
+// check below (that check is duplicated there, not called through here,
+// since it needs its own gate on the block budget).
+static void rtc_feed(void)
 {
     wdt_hal_context_t ctx = RWDT_HAL_CONTEXT_DEFAULT();
     wdt_hal_write_protect_disable(&ctx);
     wdt_hal_feed(&ctx);
     wdt_hal_write_protect_enable(&ctx);
+}
+
+void watchdog_feed(void)
+{
+    rtc_feed();
     // Only from the subscribed task: from any other task the call fails and
     // logs an error every time.
     if (s_loop_task != NULL && xTaskGetCurrentTaskHandle() == s_loop_task) {
@@ -116,7 +134,33 @@ void watchdog_feed(void)
 void watchdog_kick(wd_stage_t stage)
 {
     s_stage = (uint32_t) stage;
+    s_block_start_us = 0; // PAGER PATCH 1.10: fresh block budget for this stage
     watchdog_feed();
+}
+
+// PAGER PATCH 1.10: called about once a second from inside the walter-modem
+// component's untimed synchronous command wait (WalterDefines.h
+// _returnAfterReply(), WalterModem.cpp _waitCmdResult() and
+// getNetworkRegState()). Power effect: none worth measuring, same as
+// watchdog_feed() (two register writes and one RAM read per call); it does
+// not itself keep the modem or radio active, it only keeps both watchdogs
+// fed while a command already in flight is waited on.
+void walter_modem_block_tick(void)
+{
+    int64_t now = esp_timer_get_time();
+    if (s_block_start_us == 0) {
+        s_block_start_us = now;
+    }
+    if ((uint64_t) (now - s_block_start_us) < (uint64_t) WD_MODEM_BLOCK_BUDGET_MS * 1000ULL) {
+        rtc_feed();
+        if (s_loop_task != NULL && xTaskGetCurrentTaskHandle() == s_loop_task) {
+            esp_task_wdt_reset();
+        }
+    }
+    // else: past the budget, feed nothing — a genuinely wedged modem still
+    // trips the task watchdog (~155 s in: 95 s budget here plus however long
+    // the task watchdog's own timeout takes from the last real feed) with
+    // the "modem health check" breadcrumb intact.
 }
 
 uint32_t watchdog_reset_count(void) { return (s_magic == WD_MAGIC) ? s_resets : 0; }

@@ -58,6 +58,19 @@ void watchdog_hard_reset(void);
 uint32_t watchdog_reset_count(void);
 const char *watchdog_stage_name(uint32_t stage);
 
+/* PAGER PATCH 1.10: strong override of the walter-modem component's weak
+ * `walter_modem_block_tick()` (declared extern "C" there so the C++ component
+ * links against this C definition). The component calls this once a second
+ * from inside its own untimed synchronous command wait, so a slow command
+ * still feeds both watchdogs instead of holding the queue in silence.
+ * Arithmetic for why this is needed at all: the command queue retries a
+ * timed-out command up to 3 times (CONFIG_WALTER_MODEM_CMD_TIMEOUT_MS = 30 s
+ * each in this project's sdkconfig), so one slow command (AT+COPS=0 during a
+ * network search) can hold the queue for up to 3 * 30 s = 90 s, which is
+ * already past the 60 s task watchdog timeout (the IDF maximum) even before
+ * the next queued command (net_check()'s health-check AT) gets a turn. */
+void walter_modem_block_tick(void);
+
 #ifdef __cplusplus
 }
 #endif

@@ -93,7 +93,10 @@ UNVERIFIED: the per-ping energy, the carrier's true idle timeout (and the larges
 every change, each marked `PAGER PATCH` in the source. The ones to know about: a result line with
 no command pending used to crash the pager; receive paths could read and write past the 1540-byte
 buffer; only socket id 1 could be looked up; a payload ending in a newline left the final `OK`
-unmatched and the read timed out; SMS and SIM-file reads did not exist. **A single MQTT message
+unmatched and the read timed out; SMS and SIM-file reads did not exist; the synchronous
+command wait was untimed, so one slow command (`AT+COPS=0` during a search: up to 3 × 30 s)
+blocked every other task's next command behind it and tripped the 60 s task watchdog (patch
+1.10 feeds the watchdogs for up to 95 s while blocked, then lets a wedged modem reset the chip). **A single MQTT message
 larger than about 1.5 kB cannot be received**, which is why the CA travels as a URL and a hash
 and not inside the setup bundle (a Let's Encrypt root is 1.9 kB).
 

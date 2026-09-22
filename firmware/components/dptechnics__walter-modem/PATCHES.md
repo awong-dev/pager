@@ -228,3 +228,48 @@ parse numerically for any other reason now reports `ncDigits = 0` ("unknown digi
 of a confident-looking width next to a wrong value. `firmware/main/net.cpp`'s
 `net_get_cell_info()` needed no change: it already treats `ncDigits` 0 as "fall back to the NANP
 heuristic", which now only fires on a genuine parse failure, not on every 3-digit NANP MNC.
+
+## 1.10 Bounded, watchdog-feeding synchronous command wait (`src/WalterDefines.h`, `src/WalterModem.cpp`)
+
+Found on the bench: the command queue is single-threaded, and a slow command holds it for the
+retry logic's full `3 * CONFIG_WALTER_MODEM_CMD_TIMEOUT_MS` (30 s in this project's sdkconfig, so
+90 s) before giving up — 90 s is already past the 60 s task watchdog timeout (`CONFIG_ESP_TASK_WDT_TIMEOUT_S`,
+the IDF maximum), and the three synchronous wait sites below waited on their condition variable
+with no timeout at all, so nothing fed either watchdog while a command was stuck. On real hardware
+this was `AT+COPS=0` (`firmware/main/net.cpp:826`, `net_bringup()`'s `setNetworkSelectionMode`,
+issued after 30 min dark) during a network search: it held the queue long enough that the next
+queued command — `net_check()`'s bare `AT` health-check probe, `firmware/main/modes.c:1435` —
+never got a turn before the task watchdog fired:
+
+```
+W (11113735) WalterModem: TX: AT+COPS=0
+W (11143735) WalterModem: Command time-out (TX) Attempt 1 of 3
+W (11173735) WalterModem: TX: AT+COPS=0
+E (11175345) task_wdt: Task watchdog got triggered. ... - main (CPU 0)
+...
+W (296) watchdog: RESET REASON: TASK WATCHDOG. The main loop's last stage was: modem health check.
+```
+
+(`build/bench-logs/r2-coverage-recover2-serial.log` lines 111-127, 203.)
+
+**Fix**: all three untimed `cond.wait(lock, pred)` sites in this component now loop on
+`cond.wait_for(lock, std::chrono::milliseconds(1000), pred)`, calling a new
+`walter_modem_block_tick()` hook every second the predicate is still false, each site keeping its
+own original predicate unchanged:
+
+- `src/WalterDefines.h`'s `_returnAfterReply()` macro (used by every ordinary blocking command):
+  `[cmd] { return cmd->state == WALTER_MODEM_CMD_STATE_SYNC_LOCK_NOTIFIED; }`
+- `src/WalterModem.cpp`'s `_waitCmdResult()` (the `smsConfig()`/`smsSend()` step helper):
+  `[cmd] { return cmd->state == WALTER_MODEM_CMD_STATE_SYNC_LOCK_NOTIFIED; }`
+- `src/WalterModem.cpp`'s `getNetworkRegState()`: the same predicate, kept exactly as the original
+  had it (including its harmless stray trailing `;` statement inside the lambda body).
+
+`walter_modem_block_tick()` is declared `extern "C"` in `WalterDefines.h` and given a weak no-op
+default in `WalterModem.cpp` so the component still links standalone; `firmware/main/watchdog.c`
+provides the real, strongly-overriding definition, feeding the RTC watchdog and (only from the
+subscribed main-loop task) the task watchdog for up to `WD_MODEM_BLOCK_BUDGET_MS` = 95 s per stage
+(> the 90 s worst case above, < the 180 s RTC watchdog) — past that budget it does nothing, so a
+command that is genuinely wedged (not just slow) still trips the task watchdog with the
+"modem health check" breadcrumb intact rather than looping forever. `watchdog_kick()` resets that
+per-stage budget so each main-loop stage starts fresh. See `firmware/main/watchdog.h`/`.c` for the
+full arithmetic and `firmware/main/watchdog.h`'s doc comment on `walter_modem_block_tick()`.

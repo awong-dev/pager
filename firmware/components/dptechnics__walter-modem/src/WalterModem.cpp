@@ -74,6 +74,13 @@
 #include <esp_partition.h>
 
 #endif
+
+// PAGER PATCH: 1.10 — weak default for the application-level breadcrumb/
+// watchdog-feed hook declared in WalterDefines.h, so this component still
+// builds and links standalone (without firmware/main/watchdog.c's strong
+// override) when vendored elsewhere.
+extern "C" __attribute__((weak)) void walter_modem_block_tick(void) {}
+
 #pragma region CONFIG
 
 /**
@@ -4330,8 +4337,12 @@ static bool _waitCmdResult(WalterModemCmd* cmd, std::unique_lock<std::mutex>& lo
     lock.unlock();
     return true;
   }
-  cmd->cmdLock.cond.wait(lock,
-                         [cmd] { return cmd->state == WALTER_MODEM_CMD_STATE_SYNC_LOCK_NOTIFIED; });
+  // PAGER PATCH: 1.10
+  while(!cmd->cmdLock.cond.wait_for(lock, std::chrono::milliseconds(1000), [cmd] {
+    return cmd->state == WALTER_MODEM_CMD_STATE_SYNC_LOCK_NOTIFIED;
+  })) {
+    walter_modem_block_tick();
+  }
   WalterModemState rspResult = cmd->rsp->result;
   cmd->state = WALTER_MODEM_CMD_STATE_COMPLETE;
   lock.unlock();
@@ -5060,10 +5071,13 @@ WalterModemNetworkRegState WalterModem::getNetworkRegState()
   }
 
   std::unique_lock<std::mutex> lock { cmd->cmdLock.mutex };
-  cmd->cmdLock.cond.wait(lock, [cmd] {
+  // PAGER PATCH: 1.10
+  while(!cmd->cmdLock.cond.wait_for(lock, std::chrono::milliseconds(1000), [cmd] {
     return cmd->state == WALTER_MODEM_CMD_STATE_SYNC_LOCK_NOTIFIED;
     ;
-  });
+  })) {
+    walter_modem_block_tick();
+  }
   cmd->state = WALTER_MODEM_CMD_STATE_COMPLETE;
   lock.unlock();
 

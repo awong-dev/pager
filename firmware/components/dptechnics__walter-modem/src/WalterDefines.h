@@ -51,6 +51,15 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <time.h>
+#include <chrono> // PAGER PATCH: 1.10
+
+// PAGER PATCH: 1.10 — strong-overridden in firmware/main/watchdog.c so a
+// synchronous command wait that runs long (a slow AT+COPS=0 during a network
+// search, holding the queue for up to 3 retries * 30 s
+// CONFIG_WALTER_MODEM_CMD_TIMEOUT_MS = 90 s) keeps both watchdogs fed instead
+// of blocking silently past the 60 s task watchdog timeout. Weak default is
+// defined once in WalterModem.cpp so this component still builds standalone.
+extern "C" void walter_modem_block_tick(void);
 
 // NOLINT(readability-identifier-naming.PrivateFunctionPrefix)
 /**
@@ -275,8 +284,12 @@ bool strToFloat(const char* str, int len, float* result);
     lock.unlock();                                                                                 \
     return true;                                                                                   \
   }                                                                                                \
-  cmd->cmdLock.cond.wait(                                                                          \
-      lock, [cmd] { return cmd->state == WALTER_MODEM_CMD_STATE_SYNC_LOCK_NOTIFIED; });            \
+  /* PAGER PATCH: 1.10 */                                                                          \
+  while(!cmd->cmdLock.cond.wait_for(lock, std::chrono::milliseconds(1000), [cmd] {                 \
+    return cmd->state == WALTER_MODEM_CMD_STATE_SYNC_LOCK_NOTIFIED;                                \
+  })) {                                                                                             \
+    walter_modem_block_tick();                                                                     \
+  }                                                                                                 \
   WalterModemState rspResult = cmd->rsp->result;                                                   \
   cmd->state = WALTER_MODEM_CMD_STATE_COMPLETE;                                                    \
   lock.unlock();                                                                                   \
