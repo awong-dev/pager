@@ -109,6 +109,11 @@ and not inside the setup bundle (a Let's Encrypt root is 1.9 kB).
 - CI applies Terraform with values from GitHub repo variables. `BROKER_CA_PEM_FILE` and
   `PUBLIC_BASE_URL` must be set there, or a deploy silently un-pins new setup codes or refuses to
   issue them.
+- **Never run `npm install` for the web app on a Mac.** It prunes Linux-only optional
+  dependencies (`@emnapi/core`, `@emnapi/runtime`, sharp's wasm fallback) from the lockfile, and
+  the deploy's `npm ci` on Linux then fails while the relay half of the same push deploys. Change
+  dependencies inside the `node:24` image: `docker run --rm -v "$PWD":/work -w /work node:24 npm
+  install <pkg>`. This bit twice.
 - **Deploy the relay before flashing firmware that adds fields.** A relay older than v0.2 drops a
   whole envelope over one unknown CBOR key.
 
