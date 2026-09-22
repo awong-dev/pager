@@ -10,6 +10,7 @@
 #include "freertos/task.h"
 
 #include "driver/gpio.h"
+#include "driver/i2c.h"
 
 #include <stdio.h>
 
@@ -275,8 +276,39 @@ static int cmd_key(int argc, char **argv)
     return 0;
 }
 
+// `i2cscan`: probe every 7-bit address on the keyboard bus (IO8/IO9) and
+// print who ACKs. Bench aid: tells wiring faults from a dead keyboard.
+static int cmd_i2cscan(int argc, char **argv)
+{
+    (void) argc;
+    (void) argv;
+    int found = 0;
+    for (uint8_t a = 0x08; a <= 0x77; a++) {
+        i2c_cmd_handle_t cmd = i2c_cmd_link_create();
+        i2c_master_start(cmd);
+        i2c_master_write_byte(cmd, (uint8_t) ((a << 1) | I2C_MASTER_WRITE), true);
+        i2c_master_stop(cmd);
+        esp_err_t err = i2c_master_cmd_begin(I2C_NUM_0, cmd, pdMS_TO_TICKS(20));
+        i2c_cmd_link_delete(cmd);
+        if (err == ESP_OK) {
+            printf("i2cscan: device at 0x%02x%s\n", a,
+                   a == PAGER_I2C_ADDR_CARDKB ? " (CardKB)" : a == PAGER_I2C_ADDR_LIS3DH ? " (LIS3DH)" : "");
+            found++;
+        }
+    }
+    printf("i2cscan: %d device(s) on SDA=IO%d SCL=IO%d\n", found, PAGER_PIN_KB_SDA, PAGER_PIN_KB_SCL);
+    return 0;
+}
+
 static void register_input_cmds(void)
 {
+    const esp_console_cmd_t scan_cmd = {
+        .command = "i2cscan",
+        .help = "i2cscan -- list the devices that answer on the keyboard I2C bus",
+        .hint = NULL,
+        .func = &cmd_i2cscan,
+    };
+    ESP_ERROR_CHECK(esp_console_cmd_register(&scan_cmd));
     const esp_console_cmd_t wake_cmd = {
         .command = "wake",
         .help = "wake -- arm the UI-awake window so the keyboard is polled",

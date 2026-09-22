@@ -493,11 +493,15 @@ void ui_poll_keyboard(void)
         }
         return;
     }
+    if (s_i2c_fail_count >= 3) {
+        ESP_LOGI(TAG, "CardKB: answering again");
+    }
     s_i2c_fail_count = 0;
 
     if (byte == 0x00) {
         return;
     }
+    ESP_LOGI(TAG, "CardKB: 0x%02x", byte); // bench: the first hardware check of the decode table
     input_feed_key(byte); // arms the UI-awake window, queues INPUT_EVT_KEY (input.h)
 }
 
