@@ -215,6 +215,35 @@ def test_status_rejects_negative_sms_lost():
         StatusEnvelope.model_validate(_online_status(sms_lost=-1))
 
 
+# ---------------------------------------------------------------------------
+# docs/V02_DESIGN.md §9.5/§7 (this task) -- `/status`'s optional `link`
+# field: MQTT-session generation within a boot.
+# ---------------------------------------------------------------------------
+
+
+def test_status_accepts_link():
+    env = StatusEnvelope.model_validate(_online_status(link=3))
+    assert env.link == 3
+
+
+def test_status_link_is_optional():
+    """Absent-field compatibility: older firmware that never sends `link`
+    must still validate, with `env.link` reported as unknown (`None`), not
+    `0`."""
+    env = StatusEnvelope.model_validate(_online_status())
+    assert env.link is None
+
+
+def test_status_rejects_negative_link():
+    with pytest.raises(ValidationError):
+        StatusEnvelope.model_validate(_online_status(link=-1))
+
+
+def test_status_accepts_link_zero():
+    env = StatusEnvelope.model_validate(_online_status(link=0))
+    assert env.link == 0
+
+
 def test_status_still_ignores_a_genuinely_unknown_field():
     """The pre-existing `extra='ignore'` forward-compat guarantee, still
     true for a field this relay has no opinion on at all (as opposed to the

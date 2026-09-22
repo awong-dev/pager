@@ -270,6 +270,121 @@ def test_v2_republish_on_session_change_resends_still_pending():
     assert json.loads(broker.published[0].payload)["id"] == msg.id
 
 
+# ---- docs/V02_DESIGN.md §9.5 (this task): `link`-triggered republish ----
+
+
+def test_v2_republish_on_link_change_same_session_resends_still_pending():
+    """A silent modem-initiated MQTT session resume within one boot bumps
+    `link` but not `session` (§9.5) -- the relay must still treat it as a
+    republish-worthy edge, because the resume leaves the same kind of
+    subscription gap a cold boot does."""
+    _make_user("mom", "mom")
+    _make_user("student", "student")
+    allow_store.set_edge("mom", "student", message=True, locate=True)
+    _make_pager_device("pgr-v2-link-1", "student")
+
+    broker = FakeBrokerClient()
+    routing = Routing(broker)
+    ingest = Ingest(broker, routing)
+
+    # Baseline: session s_00000001, link 1, no pending messages yet.
+    ingest.handle_status(
+        status_topic("pgr-v2-link-1"), online_status_payload("s_00000001", link=1)
+    )
+    assert broker.published == []
+
+    broker.fail_publish = True
+    result = routing.send(
+        sender_uid="mom",
+        recipient_alias="student",
+        kind="text",
+        body="hi",
+        origin_backend_kind="webapp",
+    )
+    msg = result.messages[0]
+    assert broker.published == []  # publish failed -> stayed queued
+
+    broker.fail_publish = False
+    # Same session, `link` bumped 1 -> 2: a resume, not a reboot.
+    ingest.handle_status(
+        status_topic("pgr-v2-link-1"), online_status_payload("s_00000001", link=2)
+    )
+    assert len(broker.published) == 1
+    assert json.loads(broker.published[0].payload)["id"] == msg.id
+
+
+def test_v2_no_republish_when_link_unchanged():
+    """Same session, same `link`, already online: no edge, no republish --
+    the mirror image of the change-triggers-republish case above."""
+    _make_user("mom", "mom")
+    _make_user("student", "student")
+    allow_store.set_edge("mom", "student", message=True, locate=True)
+    _make_pager_device("pgr-v2-link-2", "student")
+
+    broker = FakeBrokerClient()
+    routing = Routing(broker)
+    ingest = Ingest(broker, routing)
+
+    ingest.handle_status(
+        status_topic("pgr-v2-link-2"), online_status_payload("s_00000002", link=1)
+    )
+    assert broker.published == []
+
+    broker.fail_publish = True
+    routing.send(
+        sender_uid="mom",
+        recipient_alias="student",
+        kind="text",
+        body="hi",
+        origin_backend_kind="webapp",
+    )
+    broker.fail_publish = False
+
+    # Same session, same link -- no offline->online edge either (state was
+    # already "online").
+    ingest.handle_status(
+        status_topic("pgr-v2-link-2"), online_status_payload("s_00000002", link=1)
+    )
+    assert broker.published == []
+
+
+def test_v2_no_republish_when_link_newly_appears_on_unchanged_session():
+    """Absent-field compatibility: a device that never reported `link`
+    before (older firmware, or firmware that just upgraded mid-boot) must
+    not trigger a republish just because `link` is now present for the
+    first time -- only a genuine *change* between two present values
+    counts (docs/V02_DESIGN.md §9.5)."""
+    _make_user("mom", "mom")
+    _make_user("student", "student")
+    allow_store.set_edge("mom", "student", message=True, locate=True)
+    _make_pager_device("pgr-v2-link-3", "student")
+
+    broker = FakeBrokerClient()
+    routing = Routing(broker)
+    ingest = Ingest(broker, routing)
+
+    # Baseline: no `link` field at all, like today's firmware.
+    ingest.handle_status(status_topic("pgr-v2-link-3"), online_status_payload("s_00000003"))
+    assert broker.published == []
+
+    broker.fail_publish = True
+    routing.send(
+        sender_uid="mom",
+        recipient_alias="student",
+        kind="text",
+        body="hi",
+        origin_backend_kind="webapp",
+    )
+    broker.fail_publish = False
+
+    # Same session; `link` now present for the first time.
+    ingest.handle_status(
+        status_topic("pgr-v2-link-3"), online_status_payload("s_00000003", link=1)
+    )
+    assert broker.published == []
+    assert devices_store.get_device("pgr-v2-link-3").status.link == 1
+
+
 def test_republish_reuses_id_but_gets_a_fresh_n_and_both_publishes_verify():
     """docs/DEVICE_TASKS.md S1.4: every `/down` publish goes through
     `BrokerClient.publish_down`, which signs with a fresh `deviceSecrets.

@@ -307,3 +307,44 @@ def test_loc_envelope_with_cell_example_cbor_hex():
         encoded.hex()
         == "a70001016a6c5f3363396131316630021a68c45fa008f6096a6d5f37663361326231300b666e6f5f6669781831a50063333130016334313002193039031a05397fb104385e"
     )
+
+
+# ---------------------------------------------------------------------------
+# docs/V02_DESIGN.md §9.5/§7 (this task): `/status`'s `link` field, key 50 --
+# MQTT-session generation within a boot.
+# ---------------------------------------------------------------------------
+
+
+def test_wirecbor_link_round_trips():
+    obj = {"link": 3}
+    encoded = wirecbor.encode(obj)
+    assert wirecbor.decode(encoded) == obj
+
+
+def test_wirecbor_link_encodes_at_key_50():
+    encoded = wirecbor.encode({"link": 1})
+    assert encoded == cbor2.dumps({50: 1})
+
+
+def test_status_envelope_with_link_example_cbor_hex():
+    """An example online `/status` carrying `link` (§9.5, a silent
+    modem-initiated MQTT session resume within the boot), the exact CBOR
+    bytes a firmware implementation can byte-compare against."""
+    obj = {
+        "v": 1,
+        "state": "online",
+        "mode": "sleep",
+        "batt_mv": 3280,
+        "rssi": -95,
+        "session": "s_3ab91c02",
+        "ts": 1757700000,
+        "fw": "0.1.0",
+        "link": 3,
+    }
+    encoded = wirecbor.encode(obj)
+    assert wirecbor.decode(encoded) == obj
+    assert (
+        encoded.hex()
+        == "a9000115666f6e6c696e651665736c65657017190cd01818385e18196a735f3361623931633032021a"
+        "68c45fa0181a65302e312e30183203"
+    )

@@ -606,6 +606,7 @@ class Ingest:
             caFp=env.ca_fp,
             locBackoffS=env.loc_backoff_s,
             smsLost=env.sms_lost,
+            link=env.link,
         )
 
         # docs/V02_DESIGN.md §4.3: "on a transition
@@ -644,7 +645,19 @@ class Ingest:
         # as `pendingBook`) -- both would be harmless on the wire (same id,
         # device dedup, §4.1 rule 7), but this ordering avoids the wasted
         # publish.
-        session_changed = previous_status.session != env.session
+        # docs/V02_DESIGN.md §9.5: a silent modem-initiated MQTT session
+        # resume within one boot changes `link`, not `session` (that stays
+        # the cold-boot id), but leaves the same ≤10 s subscription gap a
+        # cold boot does -- so a changed `link` triggers the same republish.
+        # Absent-vs-present never counts as "changed": that would fire on
+        # every device's very first `link`-carrying `/status` (previously
+        # `None`) and on any firmware that never sends it at all.
+        link_changed = (
+            previous_status.link is not None
+            and env.link is not None
+            and previous_status.link != env.link
+        )
+        session_changed = previous_status.session != env.session or link_changed
         offline_to_online = previous_status.state == "offline"
         if session_changed or offline_to_online:
             self._republish_unacked(device_id)

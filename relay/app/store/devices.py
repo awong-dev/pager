@@ -97,6 +97,11 @@ class DeviceStatus(BaseModel):
     locBackoffS: int | None = None
     # docs/V02_DESIGN.md §6/§7 (device SMS): audit-queue drop counter.
     smsLost: int | None = None
+    # docs/V02_DESIGN.md §9.5/§7 (this task): MQTT-session generation within
+    # the current boot, stored next to `session` -- the online-edge
+    # republish (ingest.py) treats a changed `link` exactly like a changed
+    # `session`.
+    link: int | None = None
     updatedAt: datetime | None = None
     # docs/DEVICE_PLAN.md §2.6: set once `sigFailures` crosses
     # AUTH_ALARM_THRESHOLD inside AUTH_ALARM_WINDOW_S; cleared on key

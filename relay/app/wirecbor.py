@@ -10,7 +10,7 @@ changes a value's type or content (`docs/DEVICE_PLAN.md` §2.4: "values are
 identical to the JSON ones").
 
 `KEYMAP` is `PROTOCOL.md` §10's single flat integer namespace for envelope,
-`/status`, bootstrap and `cfg` field *names* (0-49). Seven field names nest
+`/status`, bootstrap and `cfg` field *names* (0-50). Seven field names nest
 one level deeper and get their own small local namespace, per §10's "Sub-map
 keys" list: `loc` (the `/loc` fix object), `c[]` items (named `contact`
 here), `p[]` items (named `request` here), `cfg.lock`, `cfg.ca` (v0.2,
@@ -36,8 +36,9 @@ import cbor2
 
 # PROTOCOL.md §10: envelope 0-20, /status 21-28, bootstrap 29-37, cfg 38,
 # v0.2 additions 39-48 (44-47 are docs/V02_DESIGN.md §6's sms_log-only
-# fields: `peer`/`dir`/`st`/`sms_ts`), 49 is this task's `/loc` `cell`
-# field (§13.2 -- cell-tower location fallback).
+# fields: `peer`/`dir`/`st`/`sms_ts`), 49 is the `/loc` `cell` field
+# (§13.2 -- cell-tower location fallback), 50 is `/status`'s `link`
+# (docs/V02_DESIGN.md §9.5/§7, this task -- MQTT-session generation counter).
 KEYMAP: dict[str, int] = {
     "v": 0,
     "id": 1,
@@ -95,6 +96,9 @@ KEYMAP: dict[str, int] = {
     # docs/PROTOCOL.md §13.2 (this task, cell-tower location fallback): the
     # `/loc` envelope's optional `cell` sub-map.
     "cell": 49,
+    # docs/V02_DESIGN.md §9.5/§7 (this task): `/status`'s MQTT-session
+    # generation counter within a boot.
+    "link": 50,
 }
 REVERSE_KEYMAP: dict[int, str] = {v: k for k, v in KEYMAP.items()}
 

@@ -516,11 +516,16 @@ broker-generated LWT.
 | `ca_fp` | string | no | 16 lowercase hex chars | *(v0.2)* First 16 hex characters of the SHA-256 of the pinned CA PEM (the same digest carried in the bootstrap bundle's `ca_sha`/a `cfg.ca.sha` push, §4.4). Absent when `tls` is `unpinned` or absent. |
 | `loc_backoff_s` | int | no | 0…86400 | *(v0.2, §13.3)* Seconds until the device's own growing location-attempt backoff next allows a fresh fix attempt; `0` = an attempt is allowed now. See §13.3's amendment for how this relates to `loc_min_s`. |
 | `sms_lost` | int | no | ≥ 0 | *(v0.2, §3.6 — device-direct SMS)* Count of `sms_log` audit entries dropped from the device's NVS queue for lack of space; normally 0. |
+| `link` | int | no | ≥ 0 | *(v0.2, §9.5 — MQTT session liveness)* Counter incremented on every MQTT session restart within the current boot (starts at 1 per boot); `session` alone cannot tell a silent modem-initiated resume from an unbroken session. Absent means firmware older than §9. The relay treats a changed `link` exactly like a changed `session` for §5.3's online-edge re-publish. |
 
-*(all six fields above are **display and diagnosis only**; the relay stores the reported
+*(`loc_period_s`, `loc_min_s`, `tls`, `ca_fp`, `loc_backoff_s` and `sms_lost` — six fields —
+are **display and diagnosis only**; the relay stores the reported
 values and never writes them back. The device owns its location duty cycle because the cost being
 traded is GNSS power on its battery (§12 item 8), which the server cannot see. Making these
-server-settable would need a `/cfg` topic, which §11 still only reserves.)* They are optional, so
+server-settable would need a `/cfg` topic, which §11 still only reserves. `link` is the one
+exception: the relay does not merely display it, it compares it against the stored value to decide
+whether to re-publish unacked `/down` messages, exactly as it already does for `session` — §5.3.)*
+They are optional, so
 a `/status` without them remains valid, and a relay MUST treat their absence as "unknown", not as `0`.
 **Compatibility (§0):** every field in this table added since the first release — these five
 included — is optional, and an *older* relay MUST NOT reject a `/status` merely because it carries
@@ -546,7 +551,10 @@ keeps the TLS+MQTT session up on eDRX while the ESP32 is in deep sleep; that dev
 
 - On a retained `offline` or an LWT `offline`: mark the device offline; the parent UI shows
   "last seen <time>". No message state changes (§4.1 rule 5).
-- On an `online` whose `session` **differs from the last seen `session`**, or on any
+- On an `online` whose `session` **differs from the last seen `session`**, whose `link` differs
+  from the last seen `link` (§9.5 — both values present and unequal; a `link` that is absent
+  either now or previously never counts as a change, so older firmware and a device's first
+  `link`-carrying `/status` are unaffected), or on any
   offline→online edge: **re-publish unacked messages and the newest `book` and `cfg`**. Broker QoS 1
   covers the common case; this covers session loss.
   - Order: oldest first.
@@ -1269,6 +1277,7 @@ Devices emit CBOR (§3) with this integer keymap. The relay accepts both JSON (t
 | 47 | `sms_ts` | int | `/up` `sms_log` (v0.2, §3.6 — when the SMS itself was sent/received) |
 | 48 | `sms_lost` | int | `/status` (v0.2, §3.6 — device SMS audit-drop counter) |
 | 49 | `cell` | map | `/loc` envelope, optional (§13.2 — cell-tower location fallback) |
+| 50 | `link` | int | `/status` (v0.2, §9.5 — MQTT-session generation within a boot, optional) |
 
 **Sub-map keys:**
 

@@ -588,6 +588,11 @@ class DeviceClient:
             # -- but `ca_fp` is only meaningful once something is pinned.
             "tls": self.tls,
             "loc_backoff_s": self.loc_backoff_s,
+            # docs/V02_DESIGN.md §9.5/§7: MQTT-session generation within this
+            # boot. The simulator never actually resumes a dropped session,
+            # so a constant is enough to exercise the relay's decode/store
+            # path end to end; it is not meant to model a real resume.
+            "link": 1,
         }
         if self.ca_fp is not None:
             obj["ca_fp"] = self.ca_fp

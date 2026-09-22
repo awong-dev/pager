@@ -225,6 +225,13 @@ class StatusEnvelope(BaseModel):
     # here (not left to `extra="ignore"`) because the ground rule (§0) is
     # explicit that a relay must accept this *before* any firmware sends it.
     sms_lost: int | None = None
+    # docs/V02_DESIGN.md §9.5/§7 (this task): MQTT-session generation within
+    # a boot, incremented by the firmware on every silent modem-initiated
+    # session resume. Optional -- absent on firmware that predates §9 -- and
+    # treated by the relay's online-edge republish exactly like a changed
+    # `session` (ingest.py's `handle_status`), because a resume drops any
+    # QoS 1 `/down` published into the ≤10 s gap before the re-subscribe.
+    link: int | None = None
     # §14.2: present on every signed envelope; absent on the unsigned LWT
     # exception (§14.6) and on an unsigned (`authMode: "password"`) device.
     n: int | None = None
@@ -248,6 +255,13 @@ class StatusEnvelope(BaseModel):
     def _check_sms_lost(cls, value: int | None) -> int | None:
         if value is not None and value < 0:
             raise ValueError("sms_lost must be >= 0")
+        return value
+
+    @field_validator("link")
+    @classmethod
+    def _check_link(cls, value: int | None) -> int | None:
+        if value is not None and value < 0:
+            raise ValueError("link must be >= 0")
         return value
 
     @field_validator("n")
