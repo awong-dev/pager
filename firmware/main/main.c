@@ -280,9 +280,23 @@ static int cmd_key(int argc, char **argv)
 // print who ACKs. Bench aid: tells wiring faults from a dead keyboard.
 static int cmd_i2cscan(int argc, char **argv)
 {
-    (void) argc;
-    (void) argv;
-    int found = 0;
+    bool swap = (argc >= 2) && (strcmp(argv[1], "swap") == 0);
+    int sda = swap ? PAGER_PIN_KB_SCL : PAGER_PIN_KB_SDA;
+    int scl = swap ? PAGER_PIN_KB_SDA : PAGER_PIN_KB_SCL;
+    if (swap) {
+        i2c_driver_delete(I2C_NUM_0);
+        i2c_config_t conf = {
+            .mode = I2C_MODE_MASTER,
+            .sda_io_num = sda,
+            .scl_io_num = scl,
+            .sda_pullup_en = GPIO_PULLUP_ENABLE,
+            .scl_pullup_en = GPIO_PULLUP_ENABLE,
+            .master.clk_speed = 100000,
+        };
+        i2c_param_config(I2C_NUM_0, &conf);
+        i2c_driver_install(I2C_NUM_0, conf.mode, 0, 0, 0);
+    }
+    int found = 0, nack = 0, timeout = 0, other = 0;
     for (uint8_t a = 0x08; a <= 0x77; a++) {
         i2c_cmd_handle_t cmd = i2c_cmd_link_create();
         i2c_master_start(cmd);
@@ -294,9 +308,25 @@ static int cmd_i2cscan(int argc, char **argv)
             printf("i2cscan: device at 0x%02x%s\n", a,
                    a == PAGER_I2C_ADDR_CARDKB ? " (CardKB)" : a == PAGER_I2C_ADDR_LIS3DH ? " (LIS3DH)" : "");
             found++;
+        } else if (err == ESP_FAIL) {
+            nack++; // nobody answered: a normal empty address
+        } else if (err == ESP_ERR_TIMEOUT) {
+            timeout++; // the bus never completed: a line held low or floating
+        } else {
+            other++;
+            if (other == 1) {
+                printf("i2cscan: error %s at 0x%02x\n", esp_err_to_name(err), a);
+            }
         }
     }
-    printf("i2cscan: %d device(s) on SDA=IO%d SCL=IO%d\n", found, PAGER_PIN_KB_SDA, PAGER_PIN_KB_SCL);
+    printf("i2cscan: %d device(s) on SDA=IO%d SCL=IO%d; %d no-answer, %d timeout, %d other. "
+           "Lines idle: SDA=%d SCL=%d (1 = pulled up, as they should be)\n",
+           found, sda, scl, nack, timeout, other, gpio_get_level((gpio_num_t) sda),
+           gpio_get_level((gpio_num_t) scl));
+    if (timeout > 0) {
+        printf("i2cscan: timeouts mean a line is stuck: check for a short, a swapped pair, or a "
+               "keyboard powered from the wrong rail\n");
+    }
     return 0;
 }
 

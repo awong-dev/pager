@@ -1827,9 +1827,13 @@ void modes_run(void)
         // screen to type into unless the UI is awake, and reading I2C while
         // asleep would cost a transaction for nothing.
         bool ui_awake_now = input_awake();
-        if (ui_awake_now) {
-            ui_poll_keyboard(); // power effect: one I2C read - see ui.h
-        }
+        // Bench finding (21 Sep): with no button wired, a keystroke is the only
+        // way to wake the UI, and the keyboard was read only while awake. Poll
+        // it on every loop iteration instead: awake, that is the 100 ms
+        // cadence as before; asleep, one I2C read per wake-and-drain cycle
+        // (~100 us every 5 s), so a key pressed while "sleeping" wakes the UI
+        // within one cycle if the CardKB holds it until read (README M13).
+        ui_poll_keyboard(); // power effect: one I2C read - see ui.h
 
         input_event_t ievt;
         while (input_get_event(&ievt)) {

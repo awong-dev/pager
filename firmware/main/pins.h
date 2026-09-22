@@ -23,8 +23,8 @@
 #define PAGER_PIN_DISP_VCC_EN 15  // active-low P-MOSFET gate
 
 // Keyboard (CardKB, I2C addr 0x5F)
-#define PAGER_PIN_KB_SDA 8
-#define PAGER_PIN_KB_SCL 9
+#define PAGER_PIN_KB_SDA 9 // as wired on the bench unit (was 8/9 the other way round)
+#define PAGER_PIN_KB_SCL 8
 #define PAGER_I2C_ADDR_CARDKB 0x5F
 
 // Motion (LIS3DH, I2C addr 0x18)

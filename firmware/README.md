@@ -15,7 +15,7 @@ before flashing a real device. `docs/PROTOCOL.md` §12 has two still-open protoc
 |---|---|---|
 | Walter module (DPTechnics) | ESP32-S3 + Sequans GM02SP LTE-M modem + GNSS | — |
 | GDEY029T94-FT01 (SSD1680, 296×128) | E-paper display | SPI: SCK IO12, MOSI IO11, CS IO10, DC IO16, RST IO17, BUSY IO18; VCC gated by P-MOSFET on IO15 (active low) |
-| M5Stack CardKB | Keyboard | I2C 0x5F on IO8 (SDA) / IO9 (SCL), polled |
+| M5Stack CardKB | Keyboard | I2C 0x5F on IO9 (SDA) / IO8 (SCL), polled |
 | LIS3DH breakout | Motion wake (not implemented) | I2C 0x18, INT1 on IO2 |
 | Push button | Wake / open reply | IO1, active low, RTC GPIO |
 | LiFePO4 18650 + LFP charger | Power | VIN 3.0–5.5 V |
