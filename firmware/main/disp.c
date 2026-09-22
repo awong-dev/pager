@@ -54,7 +54,29 @@ static void disp_unlock(void)
 // SSD1680 low-level transport.
 // ---------------------------------------------------------------------------
 
-static bool disp_wait_busy(void)
+// Bug found on the bench (loose IO18 wire): BUSY can read low the whole
+// time even though a real 0x20 update is in flight. Measured healthy
+// refreshes: partial elapsed=454705 us (~455 ms), full elapsed=3426314 us
+// (~3.43 s). Callers with a real update in flight pass one of these grace
+// periods (with margin); disp_wait_busy() (no fallback) is for sites where
+// BUSY genuinely never asserts on healthy hardware either (SW reset with no
+// update queued, post-reinit checks) and must not eat 3.5 s on every call.
+#define PAGER_UI_BUSY_FALLBACK_GRACE_US (20 * 1000)         // grace to see BUSY assert at all
+#define PAGER_UI_BUSY_FALLBACK_PARTIAL_MS 700                // measured 455ms + margin
+#define PAGER_UI_BUSY_FALLBACK_FULL_MS 3500                  // measured 3426ms + margin
+
+static bool s_busy_fallback_logged = false;
+
+// fallback_ms == 0: no fallback — a real update is not in flight at this
+// call site, so if BUSY never reads high we just fall straight through
+// (matches pre-fix behaviour exactly). fallback_ms != 0: a real update
+// (0x20) was just sent; if BUSY does not assert within the grace period,
+// assume the line is disconnected and wait fallback_ms instead of trusting
+// a false "already idle" read. Power effect: none in the healthy case
+// (unchanged polling); in the fallback case the panel VCC stays on for
+// fallback_ms, which is the same order of time a real refresh costs anyway
+// — see disp_power_off() callers, unchanged by this function.
+static bool disp_wait_busy_fb(uint32_t fallback_ms)
 {
     int64_t start = esp_timer_get_time();
     int entry_level = gpio_get_level(PAGER_PIN_DISP_BUSY);
@@ -63,6 +85,28 @@ static bool disp_wait_busy(void)
     // idle already" apart from "BUSY line not really connected" without a
     // multimeter/scope.
     int iters = 0;
+
+    if (fallback_ms != 0) {
+        bool asserted = false;
+        while (esp_timer_get_time() - start <= PAGER_UI_BUSY_FALLBACK_GRACE_US) {
+            if (gpio_get_level(PAGER_PIN_DISP_BUSY) == 1) {
+                asserted = true;
+                break;
+            }
+            vTaskDelay(pdMS_TO_TICKS(2)); // NEVER a tight busy-loop
+        }
+        if (!asserted) {
+            if (!s_busy_fallback_logged) {
+                ESP_LOGI(TAG, "BUSY line never asserted; using fixed waits (check the IO18 wire)");
+                s_busy_fallback_logged = true;
+            }
+            vTaskDelay(pdMS_TO_TICKS(fallback_ms));
+            ESP_LOGD(TAG, "BUSY: entry=%d fixed-wait=%lu ms (fallback, no BUSY assert seen)",
+                     entry_level, (unsigned long) fallback_ms);
+            return true;
+        }
+    }
+
     // BUSY high = busy (common SSD1680 breakout polarity) — UNVERIFIED
     // against this exact panel's datasheet, PENDING_HW.
     while (gpio_get_level(PAGER_PIN_DISP_BUSY) == 1) {
@@ -78,6 +122,11 @@ static bool disp_wait_busy(void)
              gpio_get_level(PAGER_PIN_DISP_BUSY), iters, esp_timer_get_time() - start);
     return true;
 }
+
+// No real update in flight at these call sites on healthy hardware either
+// (SW reset with nothing queued yet, or a post-reinit sanity check) — never
+// apply the fixed-wait fallback here, or every retry path would eat 3.5 s.
+static bool disp_wait_busy(void) { return disp_wait_busy_fb(0); }
 
 static void disp_send_cmd(uint8_t cmd)
 {
@@ -219,7 +268,9 @@ static void full_refresh_locked(void)
     disp_send_cmd(0x22);
     disp_send_data1(0xF7); // PROTOCOL.md §6: inferred, not datasheet-verified
     disp_send_cmd(0x20);
-    if (!disp_wait_busy()) {
+    // Real update in flight (0x20, full) — use the fixed-wait fallback if
+    // BUSY doesn't assert.
+    if (!disp_wait_busy_fb(PAGER_UI_BUSY_FALLBACK_FULL_MS)) {
         ESP_LOGI(TAG, "full refresh BUSY timeout; attempting one reset+re-init");
         disp_hw_reset();
         if (!disp_run_init_sequence() || !disp_wait_busy()) {
@@ -261,7 +312,9 @@ static void partial_refresh_locked(void)
     disp_send_cmd(0x22);
     disp_send_data1(0xFF); // inferred, not datasheet-verified
     disp_send_cmd(0x20);
-    if (!disp_wait_busy()) {
+    // Real update in flight (0x20, partial) — use the fixed-wait fallback if
+    // BUSY doesn't assert.
+    if (!disp_wait_busy_fb(PAGER_UI_BUSY_FALLBACK_PARTIAL_MS)) {
         ESP_LOGI(TAG, "partial refresh BUSY timeout; attempting one reset+re-init");
         disp_hw_reset();
         if (!disp_run_init_sequence() || !disp_wait_busy()) {
