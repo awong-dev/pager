@@ -281,6 +281,58 @@ static void rtc_unlock(void) { xSemaphoreGive(s_rtc_mutex); }
 static bool s_was_mqtt_connected = false;
 static bool s_ui_awake_prev = false; // F6.3: edge-detects input_awake() for ui_wake_status_refresh()
 
+// Bench bug fix (typing on the CardKB dropped ~every other character):
+// modes_run()'s render call below (ui_render()) used to fire on every loop
+// iteration a key event was drained, and each one blocks the task for
+// disp_partial_refresh()'s ~455ms BUSY wait (disp.c) - ui_poll_keyboard()
+// (called once per iteration, before this drain) could not run again until
+// that wait returned, and the CardKB only holds the single most recent
+// unread key, so a key typed mid-refresh was lost outright even with
+// disp_busy_idle_hook() now polling during the wait (that fix stops the
+// *loss*; this one cuts down how often the *long block* happens at all).
+// modes_run()'s event-drain switch below (INPUT_EVT_KEY case) calls
+// key_render_note() instead of rendering immediately; the render decision
+// block further down calls key_render_due() to decide whether this
+// iteration's render is allowed to fire. RAM-only, modes_run()'s task only
+// - no cross-task lock needed (same reasoning s_ui_awake_prev above uses).
+static bool s_key_render_pending = false;
+static int64_t s_key_render_first_us = 0;
+static int64_t s_key_render_deadline_us = 0;
+
+// Called from the INPUT_EVT_KEY case below on every key event. First key of
+// a burst: deadline = now+250ms. Every further key pushes the deadline back
+// out to now+250ms, but never past first_key_time+1000ms, so a sustained
+// fast typist still gets a render at least once a second rather than
+// starving it indefinitely.
+static void key_render_note(int64_t now_us)
+{
+    if (!s_key_render_pending) {
+        s_key_render_pending = true;
+        s_key_render_first_us = now_us;
+        s_key_render_deadline_us = now_us + 250000;
+        return;
+    }
+    int64_t candidate = now_us + 250000;
+    int64_t cap = s_key_render_first_us + 1000000;
+    s_key_render_deadline_us = (candidate < cap) ? candidate : cap;
+}
+
+// True if a key-triggered render is due (deadline passed) or there is none
+// outstanding at all - i.e. this iteration's render is allowed to proceed.
+// Clears the pending flag as a side effect once it lets a render through,
+// so the caller's own render call is what "pays off" the debounce.
+static bool key_render_due(int64_t now_us)
+{
+    if (!s_key_render_pending) {
+        return true;
+    }
+    if (now_us < s_key_render_deadline_us) {
+        return false;
+    }
+    s_key_render_pending = false;
+    return true;
+}
+
 // v0.2 §9.5/§7 key 50: per-MQTT-session counter within this boot, incremented
 // in the rising-edge block below on every session start (including a
 // modem-initiated resume the firmware repaired, `st.session_restart_edge`)
@@ -1653,8 +1705,20 @@ void modes_boot(void)
     ESP_LOGI(TAG, "boot complete, entering sleep mode");
 }
 
+// Recorded on modes_run()'s very first line below; modes_on_run_task()
+// (modes.h) compares against it. RAM-only, never RTC_DATA_ATTR — a task
+// handle from this boot is meaningless after a reset, and this design never
+// deep sleeps anyway (see s_render_pending's own comment on that).
+static TaskHandle_t s_modes_run_task = NULL;
+
+bool modes_on_run_task(void)
+{
+    return s_modes_run_task != NULL && xTaskGetCurrentTaskHandle() == s_modes_run_task;
+}
+
 void modes_run(void)
 {
+    s_modes_run_task = xTaskGetCurrentTaskHandle();
     uint32_t backoff_index = 0;
     int64_t next_session_retry_us = 0; // 0 = retry as soon as we notice we're down
 
@@ -1855,6 +1919,12 @@ void modes_run(void)
         // within one cycle if the CardKB holds it until read (README M13).
         ui_poll_keyboard(); // power effect: one I2C read - see ui.h
 
+        // Set when this iteration drains a button event: button events keep
+        // their existing immediate render (see the render decision block
+        // below) - only INPUT_EVT_KEY goes through key_render_note()'s
+        // deadline instead.
+        bool btn_event_this_iter = false;
+
         input_event_t ievt;
         while (input_get_event(&ievt)) {
             modes_note_activity(); // any resolved key/button event counts as activity
@@ -1866,15 +1936,22 @@ void modes_run(void)
             case INPUT_EVT_BTN_DOWN:
                 // firmware/README.md: button press enters active mode.
                 set_mode(PAGER_MODE_ACTIVE, MODE_REASON_BUTTON);
+                btn_event_this_iter = true;
                 break;
             case INPUT_EVT_BTN_SHORT:
                 ui_on_button_short(); // docs/DEVICE_PLAN.md §5.5 (ui.c)
+                btn_event_this_iter = true;
                 break;
             case INPUT_EVT_BTN_LONG:
                 ui_on_button_long();
+                btn_event_this_iter = true;
                 break;
             case INPUT_EVT_KEY:
                 ui_dispatch_key(ievt.key); // routed to the top screen's on_key() (ui.c)
+                // Coalesce: defer the render instead of letting the
+                // unconditional call below fire this same iteration - see
+                // key_render_note()'s own comment.
+                key_render_note(esp_timer_get_time());
                 break;
             }
         }
@@ -1931,7 +2008,26 @@ void modes_run(void)
             ui_pop();
         }
 
+        // Coalesce key-triggered renders (bug fix, see s_key_render_pending's
+        // own comment): a button event this iteration always renders
+        // immediately, same as before this fix (and pays off any
+        // outstanding key debounce too - the render it triggers covers
+        // whatever the keys already did to the framebuffer); otherwise this
+        // iteration's render only proceeds once key_render_due() says the
+        // 250ms/1000ms-capped deadline has passed (or there was never a key
+        // debounce outstanding at all - the ordinary idle-iteration case,
+        // unchanged). Both only consulted while ui_awake_now, matching this
+        // block's pre-fix "only while awake" gating.
+        bool render_now = false;
         if (ui_awake_now) {
+            if (btn_event_this_iter) {
+                render_now = true;
+                s_key_render_pending = false;
+            } else {
+                render_now = key_render_due(esp_timer_get_time());
+            }
+        }
+        if (render_now) {
             // The screen stack's own render, reflecting whatever
             // ui_dispatch_key()/ui_on_button_*() above just did. Always a
             // partial (never the cadence's full refresh - see ui_render()'s

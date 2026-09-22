@@ -20,6 +20,17 @@ void modes_boot(void);
 /* The wake-and-drain loop (PROTOCOL.md §8). Never returns. */
 void modes_run(void) __attribute__((noreturn));
 
+/* True iff the calling task is modes_run()'s own task — the task every
+ * disp_*_refresh() entry point runs on (ui_render()/ui_on_awake_lapse()/
+ * service_render_pending(), all called only from modes_run()'s loop, see
+ * their own comments). False before modes_run() has recorded its task
+ * handle (e.g. during modes_boot()'s own disp_refresh_cadence() call, on
+ * app_main()'s task, before modes_run() starts — no keyboard-loss risk
+ * there since nothing is typed yet). Used by disp.h's disp_busy_idle_hook()
+ * strong definition (ui.c) so a refresh's BUSY wait only ever touches the
+ * CardKB's I2C bus from the task that owns it. */
+bool modes_on_run_task(void);
+
 /* Unconditionally bumps the active-mode idle deadline (Part A bug #2: the
  * deadline must be refreshed by activity while already active, not only set
  * once on the sleep->active edge). No-op while in sleep mode. Called from

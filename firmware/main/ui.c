@@ -505,6 +505,41 @@ void ui_poll_keyboard(void)
     input_feed_key(byte); // arms the UI-awake window, queues INPUT_EVT_KEY (input.h)
 }
 
+// Strong definition of disp.h's weak disp_busy_idle_hook() — bench bug fix:
+// each key event made modes.c render a partial refresh whose
+// disp_wait_busy_fb() (disp.c) blocks the calling task for ~455ms polling
+// BUSY every 10ms; ui_poll_keyboard() otherwise only runs once per
+// modes_run() loop iteration (modes.c), so a key typed during that wait was
+// lost outright (the CardKB only holds the single most recent unread key).
+// This hook now gives that same poll a chance on every 10ms BUSY-wait tick
+// too.
+//
+// Task-safety: ui_poll_keyboard() does one I2C read and, on a decoded byte,
+// calls input_feed_key() (input.h), which only arms input.c's awake window
+// and xQueueSend()s an input_event_t — no disp.c/SPI call, so no risk of
+// re-entering disp.c's own mutex (already held by our caller) or its SPI
+// transaction. That makes the hook itself re-entrancy safe; the remaining
+// risk is calling the CardKB's I2C bus from two tasks at once, which
+// modes_on_run_task() (modes.h) rules out: every disp_*_refresh() call site
+// today runs on modes_run()'s own task (ui_render()/ui_on_awake_lapse()/
+// service_render_pending(), see their own comments), the same task
+// ui_poll_keyboard() is normally called from — modes_on_run_task() confirms
+// we are still on it before touching I2C, and skips the poll otherwise
+// (currently only modes_boot()'s ui_render_boot(), where the handle is not
+// yet recorded and there is nothing to type yet anyway).
+//
+// Also gated on input_awake(): as ui_poll_keyboard()'s own doc comment
+// says, there is no screen to type into unless the UI-awake window is
+// armed, so polling here when it is not would just cost an I2C transaction
+// for nothing.
+void disp_busy_idle_hook(void)
+{
+    if (!input_awake() || !modes_on_run_task()) {
+        return;
+    }
+    ui_poll_keyboard();
+}
+
 // ---------------------------------------------------------------------------
 // Public init/shutdown
 // ---------------------------------------------------------------------------

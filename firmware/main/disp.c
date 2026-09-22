@@ -67,6 +67,11 @@ static void disp_unlock(void)
 
 static bool s_busy_fallback_logged = false;
 
+// Weak default: no-op. disp.h's own comment explains the layering seam —
+// disp.c must not include ui.h, so ui.c/modes.c overrides this with the
+// strong definition that polls the CardKB during a long BUSY wait.
+__attribute__((weak)) void disp_busy_idle_hook(void) {}
+
 // fallback_ms == 0: no fallback — a real update is not in flight at this
 // call site, so if BUSY never reads high we just fall straight through
 // (matches pre-fix behaviour exactly). fallback_ms != 0: a real update
@@ -100,7 +105,18 @@ static bool disp_wait_busy_fb(uint32_t fallback_ms)
                 ESP_LOGI(TAG, "BUSY line never asserted; using fixed waits (check the IO18 wire)");
                 s_busy_fallback_logged = true;
             }
-            vTaskDelay(pdMS_TO_TICKS(fallback_ms));
+            // 10ms steps rather than one long vTaskDelay(fallback_ms), so
+            // disp_busy_idle_hook() gets a chance to run each iteration —
+            // see disp.h's own comment (this is the up-to-3.5s full-refresh
+            // fallback wait, the one a lost keystroke is most likely to land
+            // in).
+            uint32_t waited_ms = 0;
+            while (waited_ms < fallback_ms) {
+                uint32_t step = (fallback_ms - waited_ms < 10) ? (fallback_ms - waited_ms) : 10;
+                vTaskDelay(pdMS_TO_TICKS(step)); // NEVER a tight busy-loop
+                waited_ms += step;
+                disp_busy_idle_hook();
+            }
             ESP_LOGD(TAG, "BUSY: entry=%d fixed-wait=%lu ms (fallback, no BUSY assert seen)",
                      entry_level, (unsigned long) fallback_ms);
             return true;
@@ -117,6 +133,7 @@ static bool disp_wait_busy_fb(uint32_t fallback_ms)
             return false;
         }
         vTaskDelay(pdMS_TO_TICKS(10)); // NEVER a tight busy-loop
+        disp_busy_idle_hook();
     }
     ESP_LOGI(TAG, "BUSY: entry=%d exit=%d iters=%d elapsed=%lld us", entry_level,
              gpio_get_level(PAGER_PIN_DISP_BUSY), iters, esp_timer_get_time() - start);
