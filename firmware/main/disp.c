@@ -21,15 +21,35 @@ static const char *TAG = "disp";
 #define PAGER_UI_PARTIAL_FULL_EVERY 20 // firmware/README.md, explicit override of "~10"
 #define PAGER_UI_BUSY_TIMEOUT_US (15 * 1000000)
 
-// Bug found on the bench (garbled/alternating bands while typing that never
-// settle): each partial refresh widened its changed-row window to a whole
-// multiple of this many native rows, aligned to it. Two effects: (1) every
-// keystroke in the same on-screen character band always refreshes the exact
-// same physical row range instead of a slightly different one per keystroke
-// (Task 3 — cheaper, uniform composer refresh), and (2) it makes the window
-// match gfx.c's glyph cells, which are drawn on byte-aligned native-row
-// boundaries, so a partial's window never splits a glyph's rows across two
-// refreshes.
+// Each partial refresh widens its changed-row window to a whole multiple of
+// this many native rows, aligned to it.
+//
+// History, corrected 2026-09-22 — the two rationales this comment used to
+// give were both wrong, and are recorded here so neither is re-derived:
+//   (1) "every keystroke in the same on-screen character band refreshes the
+//       exact same physical row range". False. One native row is one screen-x
+//       column (gfx.c's gfx_set_pixel(): native_row = 295 - x), and the 12 px
+//       font is PROPORTIONAL (glyph_adv() returns 5..8 px, with per-glyph
+//       bearings), so consecutive keystrokes land in *adjacent*, not
+//       identical, aligned chunks — exactly the adjacent-band case that
+//       exposed the garbled-bands bug.
+//   (2) "it makes the window match gfx.c's glyph cells, which are drawn on
+//       byte-aligned native-row boundaries". False. gfx.c packs bits along y
+//       inside each native row (native_byte = y / 8, bit = 7 - y % 8); a
+//       native row is 16 bytes covering all 128 y. Byte boundaries therefore
+//       lie on the y axis, which a native-row window does not cut at all.
+//       Aligning native rows only rounds a screen-x range out to 8 px.
+// The garbled bands were never caused by window alignment: the confirmed
+// cause was the two-RAM-plane desync fixed in dd694a3 (see
+// partial_refresh_locked()'s banner comment).
+//
+// Kept at 8 anyway, deliberately: it is the configuration verified on
+// hardware in dd694a3, and it is nearly free. A single-glyph composer diff is
+// 5..8 columns, so aligning costs at most ~11 extra gate lines (an 8- or
+// 16-row window instead of 5..8). Shrinking it to 1 is the right move only
+// once a bench run confirms unaligned small windows stay clean AND those few
+// rows are shown to cost measurable BUSY time (`disptest step <n>` already
+// produces an 8-row-band partial, and disp_wait_busy_fb() logs elapsed us).
 #define PAGER_UI_PARTIAL_ROW_ALIGN 8
 
 /* Shadow plane: what the panel was last told to show, for partial-refresh
