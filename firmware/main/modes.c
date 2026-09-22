@@ -113,6 +113,12 @@ static const char *TAG = "modes";
 
 #define PAGER_WAKE_INTERVAL_SLEEP_MS 5000u  // T=5s sleep mode, PROTOCOL.md §8.2
 #define PAGER_WAKE_INTERVAL_ACTIVE_MS 2000u // T=2s active mode
+// pump_blocked no longer keys on ui_awake/btn_busy/btn_stuck (see its doc
+// comment above), so msg_pump() now runs on every loop iteration once
+// connected, not just once per wake-and-drain cycle. On the 2s/5s wake
+// cadence this limit never binds; on the 100ms UI-awake busy-poll cadence
+// it caps the pump rate at 5 Hz instead of one AT transaction per 100ms.
+#define PAGER_PUMP_MIN_INTERVAL_US (200 * 1000)
 // Owner request, 2026-09-20: nothing to receive while unregistered (no MQTT
 // session at all) -- sleep mode's own wake interval can lengthen well past
 // the registered T=5s without costing any latency that matters, since there
@@ -299,6 +305,12 @@ static uint32_t s_mqtt_link_counter = 0;
 static int64_t s_connect_attempt_us = 0;
 static uint32_t s_connect_watchdog_count = 0;
 #define PAGER_CONNECT_WATCHDOG_US ((int64_t) 60 * 1000000) // §2.3: 60s
+
+// Rate limit for msg_pump(), now that pump_blocked no longer keys on
+// ui_awake/btn_busy/btn_stuck (see that variable's doc comment): 0 means "no
+// call yet, run immediately". RAM-only, same reasoning as
+// s_connect_attempt_us above.
+static int64_t s_next_pump_us = 0;
 
 // v0.2 §5: see modes.h's own modes_set_loc_suppress() doc comment. RAM-only,
 // same reasoning as s_connect_attempt_us above (never survives, or needs to
@@ -1719,9 +1731,17 @@ void modes_run(void)
         bool btn_stuck = input_button_stuck();
         bool ui_awake = input_awake();
         bool skip_sleep = btn_busy || btn_stuck || ui_awake || net_modem_busy();
-        // What the pump gate below keys on: the real reasons not to sleep,
-        // before any debug override.
-        bool pump_blocked = skip_sleep;
+        // pump_blocked keys ONLY on net_modem_busy() (the UART/RTS interlock
+        // against the MQTT event handler, see the comment above on
+        // net_modem_busy()) -- NOT on btn_busy/btn_stuck/ui_awake. Those three
+        // are legitimate reasons to skip net_sleep(), but they are not
+        // reasons to withhold a reply/ack publish: a 30s input_awake() window
+        // after every keystroke used to gate msg_pump() off entirely, which
+        // is what let a typed reply sit unsent for up to 116s waiting for
+        // that window (and the UI-awake busy-poll cadence) to expire. See the
+        // rate limit at the msg_pump() call site below for how the resulting
+        // faster cadence is kept bounded.
+        bool pump_blocked = net_modem_busy();
 #ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
         // Debug builds only (see main/CMakeLists.txt): behave as if the UI
         // were permanently awake -- no light sleep, RTS held asserted, log alive.
@@ -2128,10 +2148,12 @@ void modes_run(void)
             backoff_index = 0;
         }
 
-        // Part B: at most one publish per wake cycle, only while connected,
-        // and only on a real wake-and-drain cycle (not the busy-poll
-        // cadence used while the composer/button FSM keep us from
-        // sleeping) - PROTOCOL.md §9.5's rationale against turning a 50ms
+        // Part B: at most one publish per pump call, only while connected
+        // and not net_modem_busy() (pump_blocked, see its doc comment -- no
+        // longer gated on the composer/button FSM's ui_awake/btn_busy/
+        // btn_stuck), and rate-limited to PAGER_PUMP_MIN_INTERVAL_US so the
+        // 100ms UI-awake busy-poll cadence can't turn into an AT transaction
+        // every 100ms - PROTOCOL.md §9.5's rationale against turning a 50ms
         // wake into a multi-second one.
 #ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
         ST_MARK(2);
@@ -2148,8 +2170,9 @@ void modes_run(void)
         }
 
         watchdog_kick(WD_PUMP);
-        if (!pump_blocked && st.mqtt_connected) {
+        if (!pump_blocked && st.mqtt_connected && esp_timer_get_time() >= s_next_pump_us) {
             msg_pump();
+            s_next_pump_us = esp_timer_get_time() + PAGER_PUMP_MIN_INTERVAL_US;
         }
 
         // F4: checkComm() every 60 wake cycles in sleep mode. v0.2 §5/§4.4:

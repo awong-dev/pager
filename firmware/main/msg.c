@@ -1983,35 +1983,18 @@ void msg_pump(void)
 
     s_lock();
 
-    for (int i = 0; i < MSG_PENDING_ACKS_MAX; i++) {
-        if (!s_rtc->pending_acks[i].in_use) {
-            continue;
-        }
-        msg_pending_ack_t *a = &s_rtc->pending_acks[i];
-        const char *ack_str = (a->state == 0) ? "shown" : "read";
-        char id_copy[MSG_ID_MAX];
-        strncpy(id_copy, a->id, MSG_ID_MAX - 1);
-        id_copy[MSG_ID_MAX - 1] = '\0';
-        uint8_t state = a->state;
-        s_unlock();
-
-        bool ok = publish_ack(id_copy, ack_str);
-
-        s_lock();
-        if (ok) {
-            a->in_use = false;
-        } else {
-            a->attempts++;
-            if (a->attempts >= 3) {
-                a->in_use = false; // §4.1 rule 6: drop after 3 attempts
-            }
-        }
-        (void) state;
-        s_save();
-        s_unlock();
-        return;
-    }
-
+    // Owner request (bench, 2026-09-21): a typed reply must not wait behind
+    // the pending_acks loop below — a reply publish used to be reachable
+    // only after every pending ack drained (§4.1's "one publish per call"
+    // discipline gave acks first refusal every time), which combined with
+    // the old msg_pump() gating (modes.c's pump_blocked/skip_sleep coupling,
+    // now removed — see modes.c's pump_blocked doc comment) to sit a reply
+    // unsent for 116s on the bench. Trying pending_up first instead does not
+    // starve acks: MSG_PENDING_UP_MAX is 2, so this loop finds nothing to do
+    // (falls through without an early return) on almost every call, and even
+    // a full replies queue only delays an ack by at most 2 publishes now
+    // that modes.c calls msg_pump() every ~100ms-5s instead of once per
+    // wake-and-drain cycle.
     for (int i = 0; i < MSG_PENDING_UP_MAX; i++) {
         if (!s_rtc->pending_up[i].in_use) {
             continue;
@@ -2097,13 +2080,44 @@ void msg_pump(void)
         return;
     }
 
+    for (int i = 0; i < MSG_PENDING_ACKS_MAX; i++) {
+        if (!s_rtc->pending_acks[i].in_use) {
+            continue;
+        }
+        msg_pending_ack_t *a = &s_rtc->pending_acks[i];
+        const char *ack_str = (a->state == 0) ? "shown" : "read";
+        char id_copy[MSG_ID_MAX];
+        strncpy(id_copy, a->id, MSG_ID_MAX - 1);
+        id_copy[MSG_ID_MAX - 1] = '\0';
+        uint8_t state = a->state;
+        s_unlock();
+
+        bool ok = publish_ack(id_copy, ack_str);
+
+        s_lock();
+        if (ok) {
+            a->in_use = false;
+        } else {
+            a->attempts++;
+            if (a->attempts >= 3) {
+                a->in_use = false; // §4.1 rule 6: drop after 3 attempts
+            }
+        }
+        (void) state;
+        s_save();
+        s_unlock();
+        return;
+    }
+
     s_unlock();
 
     // v0.2 §6 (device-direct SMS, sms.c): reached only when neither a
-    // pending ack nor a pending reply had anything to do this cycle — the
-    // "one publish per wake cycle" discipline this whole function
-    // implements, extended to the sms_log audit queue rather than adding a
-    // second, independent publisher (V02_DESIGN.md §6's own instruction).
+    // pending reply nor a pending ack had anything to do this cycle — the
+    // "one publish per call" discipline this whole function implements,
+    // extended to the sms_log audit queue rather than adding a second,
+    // independent publisher (V02_DESIGN.md §6's own instruction). Order
+    // above is reply-then-ack (see the pending_up loop's doc comment); this
+    // tail is unaffected either way, reached only once both are empty.
     sms_try_publish_one();
 }
 
