@@ -490,6 +490,38 @@ static void test_skip_unknown_key(void)
     CHECK(cbor_r_tstr(&r, &s, &slen) && slen == 4 && memcmp(s, "kept", 4) == 0, "skip: value 2");
 }
 
+/* docs/PROTOCOL.md §10 key 50 (`link`, v0.2 §9.5 — MQTT-session generation
+ * counter within a boot, modes.c's STK_LINK). No pinned /status vector
+ * exists in this directory (modes.c's build_status_cbor() is not part of
+ * the host build — it needs the real modem/FreeRTOS stack), so this checks
+ * the one thing that is this module's job: that cbor_w_uint() encodes key
+ * 50 byte-for-byte identically to relay/tests/test_devauth.py's pinned
+ * vectors (`test_wirecbor_link_encodes_at_key_50`'s `cbor2.dumps({50: 1})`
+ * and `test_status_envelope_with_link_example_cbor_hex`'s trailing
+ * `...183203`, both re-derived here as `a1183201`/`a1183203`), so a future
+ * change to the writer's key/value encoding can't silently diverge from
+ * what the relay's decoder expects on the wire. */
+static void test_link_key_50_matches_relay_vector(void)
+{
+    uint8_t buf[8];
+    cbor_w_t w;
+
+    cbor_w_init(&w, buf, sizeof(buf));
+    CHECK(cbor_w_map(&w, 1), "link=1: map header");
+    CHECK(cbor_w_uint(&w, 50, 1), "link=1: key 50 = 1");
+    static const uint8_t expect_link1[] = {0xa1, 0x18, 0x32, 0x01};
+    CHECK(w.len == sizeof(expect_link1) && memcmp(buf, expect_link1, sizeof(expect_link1)) == 0,
+          "link=1: bytes must match relay's cbor2.dumps({50: 1}) == a1183201");
+
+    cbor_w_init(&w, buf, sizeof(buf));
+    CHECK(cbor_w_map(&w, 1), "link=3: map header");
+    CHECK(cbor_w_uint(&w, 50, 3), "link=3: key 50 = 3");
+    static const uint8_t expect_link3[] = {0xa1, 0x18, 0x32, 0x03};
+    CHECK(w.len == sizeof(expect_link3) && memcmp(buf, expect_link3, sizeof(expect_link3)) == 0,
+          "link=3: bytes must match relay's cbor2.dumps({50: 3}) == a1183203, the tail of "
+          "test_devauth.py's test_status_envelope_with_link_example_cbor_hex");
+}
+
 int main(void)
 {
     test_overflow();
@@ -497,6 +529,7 @@ int main(void)
     test_indefinite_length_rejected();
     test_roundtrip_scalars();
     test_skip_unknown_key();
+    test_link_key_50_matches_relay_vector();
 
     vector_t vectors[MAX_VECTORS];
     int n = load_vectors(AUTHVECTORS_PATH, vectors, MAX_VECTORS);

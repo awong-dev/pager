@@ -275,6 +275,16 @@ static void rtc_unlock(void) { xSemaphoreGive(s_rtc_mutex); }
 static bool s_was_mqtt_connected = false;
 static bool s_ui_awake_prev = false; // F6.3: edge-detects input_awake() for ui_wake_status_refresh()
 
+// v0.2 §9.5/§7 key 50: per-MQTT-session counter within this boot, incremented
+// in the rising-edge block below on every session start (including a
+// modem-initiated resume the firmware repaired, `st.session_restart_edge`)
+// before publish_status_online() runs, so the session's first online status
+// already carries the new value. RAM-only by design (§9.5 doesn't need it to
+// survive a reset: a reset starts a new boot and the relay's `session` id
+// changes too, which already forces the re-publish this counter is for).
+// No modem/sleep-state effect of its own — a plain counter read/write.
+static uint32_t s_mqtt_link_counter = 0;
+
 // v0.2 bug fix #3 (docs/V02_DESIGN.md §2.3): connect watchdog. mqttConnect()
 // can "wedge silently" -- neither CONNECTED nor DISCONNECTED ever fires
 // (GOTCHAS.md documents this engine doing exactly that for the
@@ -456,6 +466,7 @@ static void on_auth_epoch_wrap(void)
 #define STK_TLS 39           // v0.2 §4.3/§7: "unpinned"/"pinned"/"broken"
 #define STK_CA_FP 42         // v0.2 §4.3/§7: absent when unpinned
 #define STK_SMS_LOST 48      // v0.2 §6/§7: sms_log audit entries dropped for lack of NVS space
+#define STK_LINK 50           // v0.2 §9.5/§7: MQTT-session generation within this boot
 
 // PROTOCOL.md §5.1: batt_mv must be in [2000, 4500] when state:"online".
 #define PAGER_BATT_MV_MIN 2000
@@ -579,8 +590,9 @@ static bool build_status_cbor(uint8_t *out, size_t cap, size_t *out_len, const c
     // v0.2 §5/§7: +3 for loc_period_s/loc_min_s/loc_backoff_s (loc.c's own
     // getters — plain reads of already-resident policy state, no AT round
     // trip of their own beyond what batt_mv/rssi above already cost).
-    uint32_t nfields = 9 + 3 + 1 + 1; // + tls, + sms_lost; v,state,mode,batt_mv,rssi,session,ts,fw,bv,
-                                      // loc_period_s,loc_min_s,loc_backoff_s,tls,sms_lost
+    uint32_t nfields = 9 + 3 + 1 + 1 + 1; // + tls, + sms_lost, + link; v,state,mode,batt_mv,rssi,
+                                          // session,ts,fw,bv,loc_period_s,loc_min_s,loc_backoff_s,
+                                          // tls,sms_lost,link
     if (have_ca_fp) {
         nfields += 1;
     }
@@ -608,6 +620,11 @@ static bool build_status_cbor(uint8_t *out, size_t cap, size_t *out_len, const c
         cbor_w_tstr(&w, STK_CA_FP, ca_fp, strlen(ca_fp));              // v0.2 §4.3
     }
     cbor_w_uint(&w, STK_SMS_LOST, sms_get_lost_count());               // v0.2 §6/§7 key 48
+    // v0.2 §9.5/§7 key 50: always present because build_status_cbor() is
+    // only ever reached with mqtt_connected already true (every caller
+    // guards on it, and the rising-edge block below increments the counter
+    // before its own call), so s_mqtt_link_counter is always >= 1 here.
+    cbor_w_uint(&w, STK_LINK, s_mqtt_link_counter);
 
     if (!signed_env) {
         *out_len = w.len;
@@ -1989,6 +2006,12 @@ void modes_run(void)
             if (st.session_restart_edge) {
                 net_ack_session_restart_edge();
             }
+            // v0.2 §9.5/§7 key 50: a new MQTT session within this boot,
+            // whether a fresh connect or a repaired silent resume -- bump
+            // before publish_status_online() below so the session's first
+            // online status already carries the new `link` value. No modem/
+            // sleep-state effect: a RAM counter increment only.
+            s_mqtt_link_counter++;
             // Edge: session just became usable. §5.4a - drives the relay's
             // re-publish of unacked messages (§5.3).
             // v0.2 §4.2: clears the TLS-fail retry streak and, if this was a
