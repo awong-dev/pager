@@ -155,6 +155,40 @@ a slow display plus that line. Bench-found 22 Sep while wiring the CardKB.
 E-paper partial refreshes ghost. A message that *changes the screen* (greeting to chat) takes a
 full refresh; messages into an open chat stay partial.
 
+## The SSD1680 two-plane differential update
+
+**Symptom:** vertical bands about one character wide remain garbled after typing in the chat
+composer stops — only a full refresh (at boot, or every 20th partial) resyncs them. Firmware-side
+everything is right: keys arrive, the composer holds the text, the reply publishes. The panel
+image diverges from the framebuffer on partial refreshes.
+
+**Root cause:** the SSD1680 controller inside this panel has two image planes in RAM (new at 0x24,
+old at 0x26). A mode-2 differential update compares the new plane against the old to decide which
+pixels to refresh. The driver wrote the changed band to 0x24 and ran the update, but only
+re-synced 0x26 afterwards — the two planes were left unequal. The next differential update on
+an adjacent band then compared against a plane that never held the displayed image, so rows
+unchanged by the host were never detected as changed again, and stayed wrong until the next full
+refresh.
+
+**Rule:** after a SSD1680 mode-2 partial update, both planes MUST be equal. Write the band to
+plane 0x26 first, then to 0x24, each preceded by its own `set RAM window` (0x44/0x45) and
+`set RAM counter` (0x4E/0x4F) sequence. Full refreshes must also re-set the window before
+writing 0x26, because the address pointer has run to the end after 296 rows of 0x24 data.
+Reference implementations: GxEPD2's `GxEPD2_290_T94.cpp` / `GxEPD2_290_T94_V2.cpp`,
+function `writeImageAgain()`. Waveshare's own 2.9" V2 driver example documents why:
+
+> there are 2 memory areas embedded in the e-paper display and once the display is refreshed,
+> the memory area will be auto-toggled, i.e. the next action of SetFrameMemory will set the
+> other memory area therefore you have to set the frame memory and refresh the display twice.
+
+**Gotcha in bench testing `disptest seq`:** this harness does not touch any band below the
+starting row, so with the default `seq 2 12` the two leftmost bars never change — easily
+misread as "the leftmost band did not flip". Always start at `seq 0` when judging correctness
+by eye, and predict the expected black/white bar pattern in advance (e.g. `w b w b w b ...`).
+Reading the bars off the glass as a `b w b w ...` list and diffing that against the prediction is
+what finally settled it; "looks right except one band" cost a whole round of chasing a defect that
+did not exist.
+
 ## Finding out what the modem really sends
 
 Point it at a server you control and read the bytes:

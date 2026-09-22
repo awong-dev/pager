@@ -57,6 +57,26 @@ Send test pages with `relay/.venv/bin/python tools/bench/send_test_page.py test-
 `tools/bench/serial_capture.py` is a serial reader that survives the USB port vanishing and
 reappearing (it renames when the ESP32 resets).
 
+### disptest — display refresh test harness
+
+Debug build console command. No keyboard or network needed; do not use `wake` or `key` while it
+runs — the UI render task would repaint over the test pattern. Commands:
+
+| Command | Does |
+|---|---|
+| `disptest` or `disptest info` | Print refresh mode, partial count, and dirty rows. Run again to re-read. |
+| `disptest again <0\|1>` | `0` deliberately reproduces the pre-fix two-plane bug; `1` is the corrected code. |
+| `disptest bars` | Paint 8-pixel wide full-height stripes (black / white / black / ...) with a FULL refresh. Establishes a baseline pattern. |
+| `disptest step <n>` | Invert the 8-pixel screen column at x=n*8, trigger ONE partial refresh, wait for BUSY. |
+| `disptest seq [n0] [n1] [ms]` | Step through columns n0 to n1 inclusive, ms apart (defaults: 2 12 1500). Watch for band flipping; verify pattern matches prediction. |
+| `disptest full` | Force one full refresh of the framebuffer. |
+
+**Pattern reading:** After `disptest bars`, every 8-pixel column is either solid black or solid
+white. `disptest seq` inverts each column in turn, producing a predictable band-flip sequence
+that can be read off as a pattern (e.g. `w b w b w b w b ...`) and compared against the expected
+sequence. The leftmost columns (before the starting column of the `seq` range) never change and
+appear wrong if the reading is off by one.
+
 ## Seen working on hardware
 
 Debug build, v0.2, against the production relay and broker. Google Fi (T-Mobile) and US Mobile
@@ -81,6 +101,15 @@ Dark Star (AT&T) SIMs.
   wake cycle; Enter opens the chat, a typed reply publishes within 50 ms of Enter. The bench cable
   has SDA on IO9 and SCL on IO8 (`pins.h`). `i2cscan [swap]` finds the keyboard; `wake` and
   `key <text>` drive the UI from the console.
+- Display partial-refresh two-plane fix (22 Sep): the SSD1680 controller's two image planes must
+  be kept equal after every differential update. Pre-fix (`disptest again 0` + `bars` + `seq 2 12
+  1500`): garbled bands in odd/even pattern, never settling. Post-fix (`disptest again 1` + `bars` +
+  `seq 0 12 1500`): all 13 adjacent 8-row bands correct, pattern read as `w b w b w b w b w b w b w`
+  matching prediction exactly. Typing on the physical CardKB: characters appear cleanly, the
+  composer holds the right text, and the screen stays clean after typing stops. NOT verified: a
+  multi-character burst through the console (`key efghijkl`) produced no redraw at all and no
+  `partial_count` increment — see "Not yet seen working" for that open item; it is a console-feed
+  path only, and does not affect typing on the keyboard.
 
 ## Not yet seen working
 
