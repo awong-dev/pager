@@ -144,6 +144,14 @@ and not inside the setup bundle (a Let's Encrypt root is 1.9 kB).
 
 ## Display
 
+**Symptom:** the screen freezes on one image while the log shows screens changing and
+`disp: BUSY: entry=0 exit=0 iters=0 elapsed=12 us` on every refresh. A healthy refresh shows
+`entry=1` and 450 ms (partial) or 1.4-3.4 s (full). **Cause:** the panel's BUSY wire (IO18, Walter
+pin 22, next to the keyboard's pins) was loose, so the driver believed each refresh had finished
+at once and cut the panel's power before it drew. The driver now waits a fixed 700 ms / 3.5 s
+when BUSY never rises, and logs "BUSY line never asserted" once per boot, so the symptom becomes
+a slow display plus that line. Bench-found 22 Sep while wiring the CardKB.
+
 E-paper partial refreshes ghost. A message that *changes the screen* (greeting to chat) takes a
 full refresh; messages into an open chat stay partial.
 

@@ -76,6 +76,11 @@ Dark Star (AT&T) SIMs.
 - A page delivered during real light sleep with a 150 ms wake window (35 s and 136 s after sending).
 - Coverage loss and recovery: radio off for 70 s and 12 minutes, then on; no modem reset, session
   reconnected in 3 s, page delivered afterwards.
+- The CardKB keyboard (22 Sep): every printable key, Enter (0x0d), Esc and the four arrows
+  (0xb4-0xb7) decode as the host test predicted; a key wakes the UI from "sleeping" within one
+  wake cycle; Enter opens the chat, a typed reply publishes within 50 ms of Enter. The bench cable
+  has SDA on IO9 and SCL on IO8 (`pins.h`). `i2cscan [swap]` finds the keyboard; `wake` and
+  `key <text>` drive the UI from the console.
 
 ## Not yet seen working
 
@@ -98,7 +103,8 @@ In the order worth testing:
 4. **End-to-end `/loc` cell answer:** send a `loc_req`, confirm the relay receives a `cell` envelope
    key 49 and resolves it, confirm the relay stores `src: "cell"` in the fix.
 
-5. Replies from the pager: no keyboard or button is wired on the bench unit.
+5. Replies from the pager through the web app, end to end: the pager side now works (above);
+   check the relay stores the reply and the web app shows it.
 
 6. A CA push from the web app, with a right and a wrong CA.
 
@@ -107,6 +113,6 @@ In the order worth testing:
 
 8. SMS at all: the SIM may not carry it. Then texts from listed and unlisted numbers.
 
-9. The accelerometer, and every screen that needs input.
+9. The accelerometer, and the button.
 
 Registration takes about two minutes at the bench location on AT&T, a second or two on T-Mobile.
