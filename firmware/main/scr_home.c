@@ -138,6 +138,16 @@ static void home_on_key(input_key_t key)
         }
         break;
     }
+    case INPUT_KEY_CHAR:
+        // Bench finding (22 Sep): people start typing on Home, where letters
+        // did nothing, and the text was lost. Typing here opens the chat and
+        // hands the key on, so the first character is not dropped.
+        ui_push(&g_scr_chat);
+        scr_chat_mark_visible_read();
+        if (g_scr_chat.on_key) {
+            g_scr_chat.on_key(key);
+        }
+        break;
     default:
         break; // esc/other: "esc nothing", docs/DEVICE_PLAN.md §5.5
     }
