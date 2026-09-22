@@ -529,6 +529,13 @@ static void ui_wake_status_refresh(void)
 // AT round trip of their own; see modes.h's own doc comment.
 int modes_get_rssi_dbm(void) { return (s_last_rssi_dbm != PAGER_RSSI_UNSET) ? s_last_rssi_dbm : -113; }
 int modes_get_batt_mv(void) { return (s_last_batt_mv != 0) ? s_last_batt_mv : 3300; }
+// This task: s_last_batt_mv stays 0 until net_get_battery_mv() (AT+SQNVMON)
+// returns something inside [PAGER_BATT_MV_MIN, PAGER_BATT_MV_MAX] -- see
+// refresh_batt_mv() above. modes_get_batt_mv()'s 3300 fallback above is a
+// placeholder, not a reading; this accessor is how a caller (loc.c's
+// battery floor) tells the two apart instead of trusting the coincidence
+// that the placeholder equals LOC_BATTERY_FLOOR_MV exactly.
+bool modes_batt_mv_known(void) { return s_last_batt_mv != 0; }
 const char *modes_get_fw_version(void) { return PAGER_FW_VERSION; }
 const char *modes_get_session_id(void) { return g_rtc.session_id; }
 uint32_t modes_get_memfull_count(void) { return g_rtc.mqtt_memfull_count; }
@@ -1985,6 +1992,16 @@ void modes_run(void)
             // heartbeat an hour later.
             catrust_on_mqtt_connected();
             publish_status_online();
+            // This task (V02_DESIGN.md §5 / PROTOCOL.md §13.3 item 2, "the
+            // device always answers a loc_req it accepted"): a GNSS attempt
+            // that finished while the session was down (route 2's CFUN=4
+            // window losing the race with re-attach, found on hardware --
+            // build/bench-logs/07-locreq-cont.log's "/loc publish failed")
+            // leaves loc.c holding one queued answer instead of dropping it.
+            // Flush it now that the session is usable again -- after the two
+            // calls above, same ordering reason catrust_on_mqtt_connected()'s
+            // own comment gives (publish the state that is actually current).
+            loc_flush_pending_answer();
 #ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
             sleeptest_note('C', 0, "");
 #endif

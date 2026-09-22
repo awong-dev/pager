@@ -70,6 +70,17 @@ extern "C" {
 #define LOC_BATTERY_FLOOR_MV 3300 /* LiFePO4, docs/V02_DESIGN.md §5 */
 #define LOC_FIX_CONFIDENCE_MAX 100.0 /* vendor demo threshold, docs/V02_DESIGN.md §5 */
 
+/* This task: sentinel `batt_mv` meaning "no real reading yet" (modes.c's
+ * modes_batt_mv_known() is false -- e.g. AT+SQNVMON hasn't returned a
+ * plausible value this boot, found on hardware running on USB power).
+ * loc_battery_ok() treats this exact value as passing the floor, same as any
+ * other unknown-quantity gate in this codebase fails open rather than
+ * blocking a GNSS attempt on a placeholder number. Deliberately the most
+ * extreme value an `int` can hold, nowhere near any real millivolt reading,
+ * so it can never be confused with one; callers must pass this constant
+ * itself, not merely "some very negative number". */
+#define LOC_BATTERY_UNKNOWN_MV INT32_MIN
+
 #define LOC_STATUS_MIN_S 600u    /* reported /status loc_min_s: the trigger floor above */
 #define LOC_STATUS_PERIOD_S 0u   /* reported /status loc_period_s: periodic fixes stay off */
 
@@ -362,6 +373,16 @@ bool loc_attempt_in_progress(void);
  * result is available. No return value: everything it does is either
  * logged or, on completion, published. */
 void loc_service(void);
+
+/* This task (PROTOCOL.md §13.3 item 2's "always answered" rule): publishes
+ * the one pending `/loc` answer, if any, that a finished GNSS attempt left
+ * behind because the MQTT session was not usable at the time (loc.c's own
+ * "Pending /loc answer" section explains why that can happen — route 2's
+ * CFUN=4 window). Call from modes.c's own "MQTT session usable" edge, after
+ * catrust_on_mqtt_connected()/publish_status_online() (modes.c's own comment
+ * at that call site explains the ordering). Cheap no-op (one lock-guarded
+ * flag read) when nothing is pending, the overwhelming majority of calls. */
+void loc_flush_pending_answer(void);
 
 /* /status fields this module owns (PROTOCOL.md §5.1, §10 keys 27/28, and
  * V02_DESIGN.md §7 key 43). Plain reads of already-resident policy state,

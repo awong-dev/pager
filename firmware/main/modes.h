@@ -44,6 +44,18 @@ bool modes_is_active(void);
  * --------------------------------------------------------------------- */
 int modes_get_rssi_dbm(void);
 int modes_get_batt_mv(void);
+
+/* True once at least one good AT+SQNVMON reading has been taken this boot.
+ * modes_get_batt_mv() returns a hardcoded 3300 mV placeholder before that
+ * (or if every reading since boot has been out of range) purely so the UI
+ * battery icon and the /status `batt_mv` field (PROTOCOL.md §5.1's
+ * [2000,4500] range requirement) always have *something* numeric to show —
+ * it is NOT a real reading. loc.c's battery floor (V02_DESIGN.md §5, exactly
+ * 3300 mV) must not treat that placeholder as a real "at the floor" reading:
+ * callers that gate on the battery floor must check this first (this task,
+ * found on hardware bench-logs/08-locreq2.log logging "batt=3300mV" while on
+ * USB power with AT+SQNVMON returning an out-of-range value). */
+bool modes_batt_mv_known(void);
 const char *modes_get_fw_version(void);
 const char *modes_get_session_id(void);
 uint32_t modes_get_memfull_count(void);

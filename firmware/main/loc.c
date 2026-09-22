@@ -36,6 +36,15 @@ uint32_t loc_next_backoff_s(uint32_t current_s)
 
 bool loc_battery_ok(int batt_mv)
 {
+    // This task: an unknown reading must never block a GNSS attempt. Before
+    // this fix the caller passed modes_get_batt_mv()'s 3300 placeholder
+    // straight through, which happened to sit exactly on LOC_BATTERY_FLOOR_MV
+    // (3300 >= 3300 is true) -- it passed today only by coincidence, not by
+    // design, and would have silently started blocking GNSS the moment
+    // either constant changed independently of the other.
+    if (batt_mv == LOC_BATTERY_UNKNOWN_MV) {
+        return true;
+    }
     return batt_mv >= LOC_BATTERY_FLOOR_MV;
 }
 
@@ -635,6 +644,122 @@ static void drain_queue_and_publish(bool success, double lat, double lon, bool h
 }
 
 // ---------------------------------------------------------------------------
+// Pending /loc answer (this task, PROTOCOL.md §13.3 item 2's "the device
+// always answers a loc_req it accepted"): drain_queue_and_publish() above
+// assumes net_publish_raw() will succeed, which found on hardware is not
+// true right when a route-2 (CFUN=4) attempt finishes -- the re-attach only
+// proves the modem is *registered* again (net_is_attached()); the MQTT
+// session itself is still down and modes_run()'s own F1/F3 retry has not
+// had a turn yet (build/bench-logs/07-locreq-cont.log: AT+SQNSMQTTPUBLISH ->
+// ERROR, "/loc publish failed for req=..." -- the requester got NO answer
+// at all). One slot, not a second queue on top of loc_policy_t's own: a
+// newer finished attempt always replaces whatever is still waiting here,
+// same tradeoff PROTOCOL.md §13.3 item 5 already makes server-side ("at
+// most one in-flight loc_req per device"). Flushed from modes.c's own "MQTT
+// session usable" edge (loc_flush_pending_answer(), below), after
+// catrust_on_mqtt_connected()/publish_status_online() -- see modes.c's own
+// comment at that call site for why that ordering.
+// ---------------------------------------------------------------------------
+typedef struct {
+    bool pending;
+    char req_id[LOC_ID_MAX];
+    bool success;
+    double lat, lon;
+    bool have_acc;
+    int32_t acc_m;
+    int64_t fix_ts;
+    uint8_t src;
+    bool have_cell;
+    loc_cell_t cell;
+} loc_pending_answer_t;
+
+// Guarded by s_lock/s_unlock even though, in practice, every writer and
+// reader today runs on modes_run()'s own task (finish_attempt() via
+// loc_service(), and loc_flush_pending_answer() from modes.c's MQTT-usable
+// edge, which is itself inside modes_run()'s loop) -- same defensive
+// consistency s_policy's own fields use throughout this file, and it costs
+// nothing extra since that lock is already held around every neighbouring
+// access in both call sites.
+static loc_pending_answer_t s_pending_answer;
+
+// Takes exactly one queued request id and stashes it (with the shared
+// result/cell this attempt just produced) as the one pending answer,
+// replacing whatever was there before; any *other* ids still queued for
+// this same attempt would get the identical result and are simply dropped
+// (logged) rather than growing a second queue — see this section's own
+// module comment for why one slot is the deliberate design.
+static void queue_pending_answer_and_drop_rest(bool success, double lat, double lon, bool have_acc,
+                                                int32_t acc_m, int64_t fix_ts, uint8_t src,
+                                                const loc_cell_t *cell)
+{
+    char id[LOC_ID_MAX];
+    s_lock();
+    bool have = loc_take_queued_id(&s_policy, id, sizeof(id));
+    s_unlock();
+    if (!have) {
+        return; // nothing was actually queued for this attempt
+    }
+
+    s_lock();
+    s_pending_answer.pending = true;
+    strncpy(s_pending_answer.req_id, id, sizeof(s_pending_answer.req_id) - 1);
+    s_pending_answer.req_id[sizeof(s_pending_answer.req_id) - 1] = '\0';
+    s_pending_answer.success = success;
+    s_pending_answer.lat = lat;
+    s_pending_answer.lon = lon;
+    s_pending_answer.have_acc = have_acc;
+    s_pending_answer.acc_m = acc_m;
+    s_pending_answer.fix_ts = fix_ts;
+    s_pending_answer.src = src;
+    s_pending_answer.have_cell = (cell != NULL);
+    if (cell) {
+        s_pending_answer.cell = *cell;
+    }
+    s_unlock();
+    ESP_LOGI(TAG, "/loc answer for req=%s queued (MQTT session not usable yet); will publish once "
+                  "it is",
+             id);
+
+    int dropped = 0;
+    s_lock();
+    have = loc_take_queued_id(&s_policy, id, sizeof(id));
+    s_unlock();
+    while (have) {
+        dropped++;
+        s_lock();
+        have = loc_take_queued_id(&s_policy, id, sizeof(id));
+        s_unlock();
+    }
+    if (dropped > 0) {
+        ESP_LOGI(TAG,
+                 "%d additional queued loc_req(s) for this attempt dropped (one pending-answer "
+                 "slot; they would have gotten the identical result)",
+                 dropped);
+    }
+}
+
+// modes.c's own "MQTT session usable" edge (after catrust_on_mqtt_connected()/
+// publish_status_online()) calls this once per edge. No-op (cheap lock-guarded
+// flag read) the overwhelming majority of the time, when nothing is pending.
+void loc_flush_pending_answer(void)
+{
+    loc_pending_answer_t a;
+    s_lock();
+    bool have = s_pending_answer.pending;
+    if (have) {
+        a = s_pending_answer;
+        s_pending_answer.pending = false;
+    }
+    s_unlock();
+    if (!have) {
+        return;
+    }
+    ESP_LOGI(TAG, "MQTT session usable again: publishing the queued /loc answer for req=%s", a.req_id);
+    publish_loc_answer(a.req_id, a.success, a.lat, a.lon, a.have_acc, a.acc_m, a.fix_ts, a.src,
+                        /*cached=*/false, a.have_cell ? &a.cell : NULL);
+}
+
+// ---------------------------------------------------------------------------
 // kind:"loc_req" intercept.
 // ---------------------------------------------------------------------------
 
@@ -668,7 +793,12 @@ bool loc_ingest_req_cbor(const uint8_t *buf, uint16_t len)
         return true;
     }
 
-    int batt_mv = modes_get_batt_mv();
+    // This task: modes_get_batt_mv() alone cannot be trusted for the battery
+    // floor -- it returns a fixed 3300 mV placeholder (not a reading) before
+    // the first good AT+SQNVMON response this boot, which coincidentally
+    // equals LOC_BATTERY_FLOOR_MV. modes_batt_mv_known() tells them apart;
+    // loc_battery_ok() treats LOC_BATTERY_UNKNOWN_MV as passing the floor.
+    int batt_mv = modes_batt_mv_known() ? modes_get_batt_mv() : LOC_BATTERY_UNKNOWN_MV;
     int64_t now_us = esp_timer_get_time();
 
     s_lock();
@@ -695,8 +825,13 @@ bool loc_ingest_req_cbor(const uint8_t *buf, uint16_t len)
         bool want_cell = !have_cached || cell_fix_is_stale(fix_ts);
         loc_cell_t cellbuf;
         const loc_cell_t *cellp = (want_cell && get_cell_snapshot(&cellbuf)) ? &cellbuf : NULL;
-        ESP_LOGI(TAG, "loc_req %s answered from %s (batt=%dmV) without powering GNSS%s", id,
-                 have_cached ? "cache" : "no_fix", batt_mv, cellp ? ", cell attached" : "");
+        if (batt_mv == LOC_BATTERY_UNKNOWN_MV) {
+            ESP_LOGI(TAG, "loc_req %s answered from %s (batt=unknown) without powering GNSS%s", id,
+                     have_cached ? "cache" : "no_fix", cellp ? ", cell attached" : "");
+        } else {
+            ESP_LOGI(TAG, "loc_req %s answered from %s (batt=%dmV) without powering GNSS%s", id,
+                     have_cached ? "cache" : "no_fix", batt_mv, cellp ? ", cell attached" : "");
+        }
         publish_loc_answer(id, have_cached, lat, lon, have_acc, acc_m, fix_ts, src, have_cached,
                             cellp);
         break;
@@ -780,7 +915,26 @@ typedef enum {
 // cold-boot attach (PDP/APN/SIM already negotiated, only re-registration is
 // needed) — UNVERIFIED, so this cap is deliberately generous rather than
 // tuned; look for "re-attach after CFUN=4" in the log to see the real figure.
-#define LOC_REATTACH_CAP_S 90u
+//
+// This task, raised 90 -> 180: found on hardware (build/bench-logs/
+// 07-locreq-cont.log) that re-attach on the bench AT&T SIM had not even
+// finished (still `+CEREG: 2,2`, "searching") 90s after CFUN=1 -- the owner's
+// own bench note says registration there takes "about 2 minutes". 180s is a
+// deliberately generous cap above that measured figure, same margin-over-
+// measurement style LOC_FIRST_ATTEMPT_S/LOC_ATTEMPT_S already use.
+//
+// IMPORTANT: this cap is a cost SEPARATE from LOC_ATTEMPT_S/
+// LOC_FIRST_ATTEMPT_S (the "budget" a loc_req log line reports) — that
+// budget only ever bounds a GNSS-wait phase (LOC_PH_ROUTE1_WAIT/
+// LOC_PH_ROUTE2_WAIT), never this re-attach wait. A route-2 attempt's total
+// wall time is therefore up to `budget_s` (GNSS search) + up to
+// LOC_REATTACH_CAP_S (re-attach) + a handful of ordinary AT round trips, NOT
+// bounded by `budget_s` alone — finish_attempt()'s own "gnss attempt done"
+// log line reports both halves separately for exactly this reason (found
+// confusing on hardware: "elapsed=131s" next to an earlier "budget=40s" log
+// line reads like a budget overrun; it is not one — 40s GNSS wait + 90s
+// reattach + AT round trips one-to-one accounts for the 131s).
+#define LOC_REATTACH_CAP_S 180u
 
 // s_phase is written from three tasks: the MQTT event task and the debug
 // console task each make exactly one write (LOC_PH_IDLE ->
@@ -802,6 +956,18 @@ static int64_t s_attempt_start_us = 0;
 static net_gnss_event_t s_last_event;
 static bool s_route1_tried = false;
 static loc_route_t s_route_used = LOC_ROUTE_UNKNOWN;
+
+// This task: the serving cell as it was known right before route 2 dropped
+// the radio (LOC_PH_ROUTE2_TEARDOWN, below) — captured while still attached
+// because a query made AFTER the CFUN=4 window can fail outright if the
+// modem has not finished re-attaching yet (found on hardware,
+// build/bench-logs/07-locreq-cont.log: "AT+SQNMONI=0" -> "ERROR" while still
+// `+CEREG: 2,2`). finish_attempt() falls back to this snapshot only when a
+// fresh query at the end of the attempt fails; reset at the start of every
+// attempt (begin_attempt()) so a stale value from an earlier attempt is
+// never reused for this one.
+static loc_cell_t s_route2_cell;
+static bool s_have_route2_cell = false;
 
 // gnsstest's own bookkeeping. s_debug_mode is read by finish_attempt() on
 // modes_run()'s task; set true before begin_attempt() (whose own s_lock/
@@ -854,6 +1020,7 @@ static void begin_attempt(uint32_t budget_s, bool extendable)
     s_budget_extendable = extendable;
     s_route1_tried = false;
     s_route_used = LOC_ROUTE_UNKNOWN;
+    s_have_route2_cell = false; // this task: discard any earlier attempt's snapshot
     memset(&s_last_event, 0, sizeof(s_last_event));
     s_lock();
     s_policy.attempt_in_progress = true;
@@ -868,10 +1035,20 @@ static void finish_attempt(bool success)
     int32_t acc_m = success ? (int32_t) (s_last_event.confidence + 0.5) : 0;
     int64_t fix_ts = s_last_event.fix_ts;
 
-    ESP_LOGI(TAG, "gnss attempt done: %s route=%d sats=%u confidence=%.1f elapsed=%llds",
+    // This task: `elapsed` here is the WHOLE attempt (GNSS assistance +
+    // whichever route(s) were tried), never bounded by `budget_s` alone --
+    // route 2 adds up to LOC_REATTACH_CAP_S of re-attach time on top of it
+    // (LOC_REATTACH_CAP_S's own comment explains why that is a separate
+    // cost). Logging both numbers here avoids the misreading found on
+    // hardware, where a much smaller "budget=Ns" from the loc_req log line
+    // looked like a violated cap next to a much larger `elapsed`.
+    ESP_LOGI(TAG,
+             "gnss attempt done: %s route=%d sats=%u confidence=%.1f elapsed=%llds (gnss "
+             "budget=%us; route-2 re-attach, if used, adds up to %us separately)",
              success ? "FIX" : "no_fix", (int) s_route_used, (unsigned) s_last_event.sat_count,
              s_last_event.confidence,
-             (long long) ((esp_timer_get_time() - s_attempt_start_us) / 1000000));
+             (long long) ((esp_timer_get_time() - s_attempt_start_us) / 1000000),
+             (unsigned) s_budget_s, (unsigned) LOC_REATTACH_CAP_S);
 
     if (s_route_used != LOC_ROUTE_UNKNOWN) {
         rtc_set_route(s_route_used);
@@ -896,10 +1073,34 @@ static void finish_attempt(bool success)
         // §13.2/this task: a GNSS attempt that ended in no_fix attaches the
         // serving cell (fetched at most once here, shared by every drained
         // requester); a real fix needs none (only a *cached*, stale fix
-        // does, handled in loc_ingest_req_cbor()'s own branch above).
+        // does, handled in loc_ingest_req_cbor()'s own branch above). Fall
+        // back to the pre-route-2 snapshot (s_route2_cell's own comment)
+        // when the live query above fails -- typically right after a
+        // CFUN=4 window, before re-attach has fully settled.
         loc_cell_t cellbuf;
-        const loc_cell_t *cellp = (!success && get_cell_snapshot(&cellbuf)) ? &cellbuf : NULL;
-        drain_queue_and_publish(success, lat, lon, have_acc, acc_m, fix_ts, LOC_SRC_GNSS, cellp);
+        const loc_cell_t *cellp = NULL;
+        if (!success) {
+            if (get_cell_snapshot(&cellbuf)) {
+                cellp = &cellbuf;
+            } else if (s_have_route2_cell) {
+                cellbuf = s_route2_cell;
+                cellp = &cellbuf;
+            }
+        }
+
+        // This task (PROTOCOL.md §13.3 item 2): publishing only works if the
+        // MQTT session is actually usable right now -- route 2 can finish
+        // this attempt well before modes_run()'s own F1/F3 retry has
+        // reconnected it (found on hardware: net_publish_raw() -> ERROR).
+        // Queue the one pending answer instead of losing it outright.
+        net_mqtt_status_t mst;
+        net_get_mqtt_status(&mst);
+        if (mst.mqtt_connected) {
+            drain_queue_and_publish(success, lat, lon, have_acc, acc_m, fix_ts, LOC_SRC_GNSS, cellp);
+        } else {
+            queue_pending_answer_and_drop_rest(success, lat, lon, have_acc, acc_m, fix_ts,
+                                                LOC_SRC_GNSS, cellp);
+        }
     }
     s_phase = LOC_PH_IDLE; // same-task write; the only cross-task readers use attempt_in_progress
 }
@@ -978,6 +1179,14 @@ void loc_service(void)
     }
 
     case LOC_PH_ROUTE2_TEARDOWN: {
+        // This task: refresh the cell snapshot NOW, while still attached --
+        // see s_route2_cell's own comment for why a query made after the
+        // CFUN=4 window can fail outright. One AT round trip, same cost
+        // class as every other call in this phase; get_cell_snapshot() is a
+        // no-op AT-wise when the cache is already fresh (net_get_cell_info()'s
+        // own doc comment).
+        s_have_route2_cell = get_cell_snapshot(&s_route2_cell);
+
         // Deliberate session loss (V02_DESIGN.md §5) — must not trip
         // handle_mqtt_loss()'s backoff, the connect watchdog, or the F4
         // health check while this window is open.

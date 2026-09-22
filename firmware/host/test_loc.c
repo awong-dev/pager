@@ -212,6 +212,24 @@ static void test_battery_floor(void)
     CHECK(d == LOC_ANSWER_CACHED, "a request below the battery floor must never start GNSS");
 }
 
+/* This task: modes.c's modes_get_batt_mv() returns a fixed 3300 mV
+ * placeholder before the first good AT+SQNVMON reading this boot, which
+ * coincidentally equals LOC_BATTERY_FLOOR_MV -- a caller that fed that
+ * placeholder straight into loc_battery_ok()/loc_on_request() without
+ * distinguishing it from a real reading was only passing by coincidence.
+ * modes.c is expected to pass LOC_BATTERY_UNKNOWN_MV instead (see loc.h's
+ * own doc comment and loc.c's loc_ingest_req_cbor()); this must always pass
+ * the floor, and must never be confused with an ordinary low reading. */
+static void test_battery_unknown_sentinel(void)
+{
+    CHECK(loc_battery_ok(LOC_BATTERY_UNKNOWN_MV), "an unknown battery reading must pass the floor");
+
+    loc_policy_t p;
+    loc_policy_init(&p);
+    loc_decision_t d = loc_on_request(&p, 0, LOC_BATTERY_UNKNOWN_MV, "l_unknownbatt");
+    CHECK(d == LOC_ANSWER_START_ATTEMPT, "an unknown battery reading must not block a GNSS attempt");
+}
+
 /* ---------------------------------------------------------------------
  * Cached answer only from this power session: a fresh policy (as a cold
  * boot / reset produces, since the cache is deliberately RAM-only) has no
@@ -489,6 +507,7 @@ int main(void)
     test_cell_change_debounce();
     test_motion_classifier();
     test_battery_floor();
+    test_battery_unknown_sentinel();
     test_cached_only_this_session();
     test_mid_attempt_requests_share_result();
     test_attempt_budget();

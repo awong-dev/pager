@@ -2332,15 +2332,29 @@ typedef struct {
 
   /**
    * @brief Mobile network operator code.
+   *
+   * PAGER PATCH (PATCHES.md 1.9, widened 2026-09-21): was `uint8_t`, which
+   * cannot hold a 3-digit MNC (NANP carriers, e.g. "410": 0-999 needs 10
+   * bits). strToUint8() silently failed (str > UINT8_MAX) and left `nc` at
+   * its zero-initialised value, which net_get_cell_info() then formatted as
+   * a confident-looking "000" -- found on hardware, an AT&T 310/410 cell
+   * (build/bench-logs/08-locreq2.log: "+SQNMONI: ... Nc:410 ..." parsed to
+   * mnc=000). Widened so the same 0-999 value that already fits in
+   * `ncDigits` (2-3 digits) also fits here.
    */
-  uint8_t nc;
+  uint16_t nc;
 
   /**
    * @brief PAGER PATCH (PATCHES.md 1.9): number of ASCII digits the "Nc:"
    * field occupied in the raw +SQNMONI response (2 or 3), 0 if unknown/not
-   * parsed. `nc` alone cannot tell a 2-digit MNC with a leading zero (e.g.
-   * "05") from a 1-digit one ("5") once it is an integer -- this preserves
-   * that width so a caller can zero-pad correctly instead of guessing.
+   * parsed, OR if the numeric parse of that field itself failed (widened
+   * 2026-09-21: previously set unconditionally from the field width even
+   * when strToUint8()/strToUint16() returned false, which is exactly how
+   * the uint8_t overflow above went unnoticed -- ncDigits claimed "3 digits,
+   * raw" while `nc` silently stayed 0). `nc` alone cannot tell a 2-digit MNC
+   * with a leading zero (e.g. "05") from a 1-digit one ("5") once it is an
+   * integer -- this preserves that width so a caller can zero-pad correctly
+   * instead of guessing.
    */
   uint8_t ncDigits;
 

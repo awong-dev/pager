@@ -1756,8 +1756,24 @@ extern "C" bool net_get_cell_info(net_cell_info_t *out)
                 cc %= 1000u;
             }
             snprintf(s_cell_cache.mcc, sizeof(s_cell_cache.mcc), "%03u", cc);
-            snprintf(s_cell_cache.mnc, sizeof(s_cell_cache.mnc), "%0*u", (int) mnc_digits,
-                     (unsigned) ci.nc);
+            // This task: `nc` was widened to uint16_t (PATCHES.md 1.9) so a
+            // 3-digit NANP MNC like "410" survives strToUint16() instead of
+            // overflowing strToUint8()'s old UINT8_MAX check -- but the
+            // compiler can no longer prove a uint16_t (up to 65535) fits
+            // mnc[4] the way it could for the old uint8_t (always <=3
+            // digits). The raw "Nc:" field is only ever 1-3 ASCII digits
+            // (net.cpp's own patch to WalterModem.cpp's +SQNMONI parser
+            // gates `ncDigits` on exactly that), so `nc` itself can never
+            // actually exceed 999 -- clamp defensively anyway, same
+            // %03u-truncation-and-implausible-value reasoning `cc` above
+            // already uses, both to satisfy -Wformat-truncation and because
+            // a >=1000 reading is not a real MNC either.
+            unsigned nc = (unsigned) ci.nc;
+            if (nc > 999) {
+                ESP_LOGI(TAG, "cell info: implausible MNC %u from AT+SQNMONI (clamped)", nc);
+                nc %= 1000u;
+            }
+            snprintf(s_cell_cache.mnc, sizeof(s_cell_cache.mnc), "%0*u", (int) mnc_digits, nc);
             s_cell_cache.tac = ci.tac;
             s_cell_cache.ci = ci.cid & 0x0FFFFFFFu; // 28 bits, PROTOCOL.md §13.2
             s_cell_cache.have_rsrp = (ci.rsrp <= -30.0f && ci.rsrp >= -156.0f);

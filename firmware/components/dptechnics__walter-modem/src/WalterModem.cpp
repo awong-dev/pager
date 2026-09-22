@@ -2575,12 +2575,18 @@ void WalterModem::_processModemRSP(WalterModemCmd* cmd, WalterModemBuffer* buff)
           if(strncmp("Cc", key, key_len) == 0) {
             strToUint16(value, value_len, &(cmd->rsp->data.cellInformation.cc));
           } else if(strncmp("Nc", key, key_len) == 0) {
-            strToUint8(value, value_len, &(cmd->rsp->data.cellInformation.nc));
-            /* PAGER PATCH (PATCHES.md 1.9): remember the raw digit count so a
-             * caller can tell "05" (2 digits) from "5" (1 digit) after
-             * strToUint8() has already thrown that away. */
+            /* PAGER PATCH (PATCHES.md 1.9, widened 2026-09-21): strToUint8()
+             * cannot hold a 3-digit MNC (e.g. NANP "410"; range is 0-999,
+             * needs > 8 bits) -- it silently failed and left `nc` at 0 while
+             * `ncDigits` below was set unconditionally, so a failed parse
+             * looked exactly like a confident "000" MNC on the wire. Use
+             * strToUint16() (0-999 fits easily) and only claim `ncDigits`
+             * when the numeric parse actually succeeded, so an
+             * unparseable field is reported as digit-count 0 ("unknown"),
+             * never as a false "raw" width paired with a wrong 0 value. */
+            bool nc_ok = strToUint16(value, value_len, &(cmd->rsp->data.cellInformation.nc));
             cmd->rsp->data.cellInformation.ncDigits =
-                (value_len > 0 && value_len <= 3) ? (uint8_t) value_len : 0;
+                (nc_ok && value_len > 0 && value_len <= 3) ? (uint8_t) value_len : 0;
           } else if(strncmp("RSRP", key, key_len) == 0) {
             strToFloat(value, value_len, &(cmd->rsp->data.cellInformation.rsrp));
           } else if(strncmp("CINR", key, key_len) == 0) {

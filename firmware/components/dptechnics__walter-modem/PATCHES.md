@@ -213,3 +213,18 @@ throws the original digit width away — `nc=5` is indistinguishable from a raw 
 never guessed). `firmware/main/net.cpp`'s `net_get_cell_info()` uses it to zero-pad correctly, and
 falls back to an MCC-based NANP heuristic only when `ncDigits` is 0 (e.g. against an unpatched
 component) — see that function's own doc comment.
+
+**Widened 2026-09-21 (bench finding, `build/bench-logs/08-locreq2.log`):** on the bench SIM
+(AT&T 310/410) the raw response was `+SQNMONI: US Mobile Cc:310 Nc:410 ...` but the pager's `/loc`
+went out with `cell.mnc:"000"`. Root cause was **not** a missing `Nc:` field — the modem sends one
+even while idle/attached, as the raw line shows — it was `nc`'s width: `uint8_t` cannot hold "410"
+(3-digit MNCs run 0-999, > 8 bits), so `strToUint8()` returned `false` on the range check and left
+`nc` at its zero-initialised value, while the surrounding code set `ncDigits = 3` **unconditionally
+from the field's text width**, regardless of whether the numeric parse actually succeeded. The
+result was indistinguishable on the wire from a genuine `"000"` MNC. Fixed by widening
+`WalterModemCellInformation.nc` to `uint16_t` and switching the parser to `strToUint16()` (0-999
+fits easily), and by gating `ncDigits` on that call's own success — an `Nc:` field that fails to
+parse numerically for any other reason now reports `ncDigits = 0` ("unknown digit width") instead
+of a confident-looking width next to a wrong value. `firmware/main/net.cpp`'s
+`net_get_cell_info()` needed no change: it already treats `ncDigits` 0 as "fall back to the NANP
+heuristic", which now only fires on a genuine parse failure, not on every 3-digit NANP MNC.
