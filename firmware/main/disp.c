@@ -21,9 +21,27 @@ static const char *TAG = "disp";
 #define PAGER_UI_PARTIAL_FULL_EVERY 20 // firmware/README.md, explicit override of "~10"
 #define PAGER_UI_BUSY_TIMEOUT_US (15 * 1000000)
 
+// Bug found on the bench (garbled/alternating bands while typing that never
+// settle): each partial refresh widened its changed-row window to a whole
+// multiple of this many native rows, aligned to it. Two effects: (1) every
+// keystroke in the same on-screen character band always refreshes the exact
+// same physical row range instead of a slightly different one per keystroke
+// (Task 3 — cheaper, uniform composer refresh), and (2) it makes the window
+// match gfx.c's glyph cells, which are drawn on byte-aligned native-row
+// boundaries, so a partial's window never splits a glyph's rows across two
+// refreshes.
+#define PAGER_UI_PARTIAL_ROW_ALIGN 8
+
 /* Shadow plane: what the panel was last told to show, for partial-refresh
  * diffing. gfx.c owns the "new" framebuffer this is diffed against. */
 static uint8_t s_fb_old[GFX_FB_ROWS][GFX_FB_ROW_BYTES];
+
+// Scratch: exactly the bytes handed to the panel (0x24) for the row range of
+// the partial refresh currently in flight. partial_refresh_locked() re-syncs
+// the SSD1680's "old" RAM plane (0x26) and s_fb_old from THIS buffer, never
+// from a fresh gfx_fb_native_row() read taken after the BUSY wait — see that
+// function's own comment for the desync this closes off.
+static uint8_t s_fb_snap[GFX_FB_ROWS][GFX_FB_ROW_BYTES];
 
 static spi_device_handle_t s_spi;
 static bool s_spi_ready = false;
@@ -301,6 +319,27 @@ static void full_refresh_locked(void)
     s_partial_count = 0;
 }
 
+// Bug found on the bench: while typing, consecutive partials touching
+// adjacent, non-overlapping native-row bands left the panel showing content
+// that never matched gfx.c's framebuffer again ("garbled bands that never
+// settle"). Root cause: the old-RAM (0x26) and s_fb_old re-sync below used
+// gfx_fb_native_row(r) read AFTER the ~0.5s BUSY wait, not the data actually
+// handed to the panel in the 0x24 write before it. disp_busy_idle_hook()'s
+// current strong definition (ui.c) only queues key events and never draws
+// (see its own comment), so it does not itself race this — but nothing in
+// disp.c enforced that invariant, and any future or other call path that
+// draws into gfx_fb from a different task while this task blocks in the
+// wait (disp_lock() only serializes disp.c's own entry points, not gfx.c's
+// framebuffer) would silently desync the "old" plane and the shadow plane
+// from what the panel actually received: on the next partial, the memcmp
+// diff would then be computed against a too-new s_fb_old, so the row range
+// that was never actually drawn is never detected as changed again, and the
+// SSD1680's differential LUT sees an old-RAM value that was never the truly
+// displayed image either. Fix: snapshot the exact bytes sent to 0x24 into
+// s_fb_snap before the wait, and use only that snapshot — never a fresh
+// framebuffer read — for the 0x26 write and the s_fb_old commit after it.
+// Window/pointer (disp_set_ram_window(), shared with full_refresh_locked())
+// are reset immediately before each of the two RAM writes.
 static void partial_refresh_locked(void)
 {
     if (s_display_dead) {
@@ -319,10 +358,27 @@ static void partial_refresh_locked(void)
         return; // nothing changed, not worth a refresh or a cadence tick
     }
 
+    // Widen/align to whole PAGER_UI_PARTIAL_ROW_ALIGN-row chunks (Task 3:
+    // uniform, cheaper composer refresh — see the #define's comment). Safe:
+    // the padding rows are re-sent with their own unchanged, correct
+    // content, so this is still a no-op visually for anything outside the
+    // real diff.
+    first -= first % PAGER_UI_PARTIAL_ROW_ALIGN;
+    last += (PAGER_UI_PARTIAL_ROW_ALIGN - 1) - (last % PAGER_UI_PARTIAL_ROW_ALIGN);
+    if (last >= GFX_FB_ROWS) {
+        last = GFX_FB_ROWS - 1;
+    }
+
+    // Snapshot now, before anything below can block — see this function's
+    // banner comment.
+    for (int r = first; r <= last; r++) {
+        memcpy(s_fb_snap[r], gfx_fb_native_row(r), GFX_FB_ROW_BYTES);
+    }
+
     disp_set_ram_window((uint16_t) first, (uint16_t) last);
     disp_send_cmd(0x24);
     for (int r = first; r <= last; r++) {
-        disp_send_data(gfx_fb_native_row(r), GFX_FB_ROW_BYTES);
+        disp_send_data(s_fb_snap[r], GFX_FB_ROW_BYTES);
     }
     disp_send_cmd(0x3C);
     disp_send_data1(0x80); // HiZ border for partial, PROTOCOL.md §6
@@ -344,13 +400,16 @@ static void partial_refresh_locked(void)
         return;
     }
 
+    // Re-sync the "old" RAM plane and the host shadow to EXACTLY what we
+    // just sent (s_fb_snap, not a fresh gfx_fb_native_row() read) — window
+    // and pointer explicitly reset again first.
     disp_set_ram_window((uint16_t) first, (uint16_t) last);
     disp_send_cmd(0x26);
     for (int r = first; r <= last; r++) {
-        disp_send_data(gfx_fb_native_row(r), GFX_FB_ROW_BYTES);
+        disp_send_data(s_fb_snap[r], GFX_FB_ROW_BYTES);
     }
     for (int r = first; r <= last; r++) {
-        memcpy(s_fb_old[r], gfx_fb_native_row(r), GFX_FB_ROW_BYTES);
+        memcpy(s_fb_old[r], s_fb_snap[r], GFX_FB_ROW_BYTES);
     }
     s_partial_count++;
 }
