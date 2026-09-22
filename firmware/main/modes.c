@@ -1978,7 +1978,17 @@ void modes_run(void)
             next_session_retry_us = 0;
         }
 
-        if (st.mqtt_connected && !s_was_mqtt_connected) {
+        if ((st.mqtt_connected && !s_was_mqtt_connected) || st.session_restart_edge) {
+            // v0.2 §9.4 step 4 / §9.5: a session_restart_edge is a
+            // modem-initiated silent resume (§9.1 item 2) that
+            // net_service_session()'s raw re-SUBSCRIBE has just repaired --
+            // mqtt_connected never went false for it, so it needs its own
+            // trigger into this same re-announce block (the relay never saw
+            // a disconnect either, so it never re-published anything on its
+            // own - §9.1 item 3/4).
+            if (st.session_restart_edge) {
+                net_ack_session_restart_edge();
+            }
             // Edge: session just became usable. §5.4a - drives the relay's
             // re-publish of unacked messages (§5.3).
             // v0.2 §4.2: clears the TLS-fail retry streak and, if this was a
@@ -2099,6 +2109,17 @@ void modes_run(void)
 #ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
         ST_MARK(2);
 #endif
+        // v0.2 §9.4: idle-uplink liveness ping / silent-resume repair, once
+        // per wake-and-drain iteration. Same three suppressions the
+        // reconnect path above already honours (modes_set_loc_suppress()'s/
+        // modes_set_ca_apply_suppress()'s own doc comments, and the coverage
+        // duty-cycle reasoning at s_coverage_owns_radio above): none of them
+        // want an extra AT transaction landing while they deliberately own
+        // the radio/session.
+        if (!s_coverage_owns_radio && !s_loc_suppress && !s_ca_apply_suppress) {
+            net_service_session();
+        }
+
         watchdog_kick(WD_PUMP);
         if (!pump_blocked && st.mqtt_connected) {
             msg_pump();

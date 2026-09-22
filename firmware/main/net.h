@@ -37,6 +37,14 @@ typedef struct {
     bool                 disconnect_edge;  /* set once per fresh loss; caller must ack it */
     int                  last_rc;          /* raw WMMQTTConnRC from the event that set the edge */
     net_mqtt_rc_class_t  last_class;       /* classification of last_rc, see F3 */
+    bool                 session_restart_edge; /* v0.2 §9.4 step 4: set once when a modem-initiated
+                                                 * silent resume (§9.1 item 2) has just been repaired
+                                                 * by net_service_session()'s raw re-SUBSCRIBE; caller
+                                                 * must ack it via net_ack_session_restart_edge(). Never
+                                                 * set together with a mqtt_connected false->true edge
+                                                 * (a resume never clears mqtt_connected in the first
+                                                 * place) -- modes.c treats the two as equivalent triggers
+                                                 * for the same re-announce block regardless. */
 } net_mqtt_status_t;
 
 /* Cold-boot modem/network bring-up: begin() + handlers + opstate + PDP +
@@ -304,6 +312,31 @@ void net_get_mqtt_status(net_mqtt_status_t *out);
  * Exactly one call site in modes.c should call this, after it has decided
  * on a backoff/recovery action for the edge it just read. */
 void net_ack_disconnect_edge(void);
+
+/* v0.2 §9.4: the idle-uplink liveness ping / silent-resume repair. Call once
+ * per wake-and-drain loop iteration from modes.c's own task (never from an
+ * event callback), guarded by the same three suppressions the reconnect path
+ * already honours (coverage duty cycle, location route 2, a CA-apply trial).
+ * Sends a raw AT+SQNSMQTTSUBSCRIBE to the down-topic (via WalterModem::sendCmd(),
+ * the same path net_debug_at() uses) every PAGER_MQTT_PING_S seconds of
+ * uplink silence, or immediately after a modem-initiated resume (§9.1 item 2)
+ * -- the vendor's mqttSubscribe() would silently no-op that resubscribe
+ * (WalterMQTT.cpp:120-123, "Topic already in use") since mqttConnect() is the
+ * only thing that frees its local topic table and a modem-initiated resume
+ * never calls it. Also the early-death detector §9.1 lacked: no SUBACK within
+ * 30s marks the session dead (disconnect_edge, NET_MQTT_RC_TRANSIENT) so the
+ * ordinary F1/F3 backoff + net_session_up() path runs, instead of waiting out
+ * the modem's own ~6 minute silent-resume window.
+ * Power effect: nothing when idle and under the ping interval; otherwise one
+ * AT round trip (the RRC time for one subscribe if the modem was idle, ~0
+ * extra if it was already active) at most once per PAGER_MQTT_PING_S. */
+void net_service_session(void);
+
+/* Acknowledge (clear) the session_restart_edge latched in
+ * net_get_mqtt_status(). Exactly one call site in modes.c should call this,
+ * the same re-announce block that already handles the ordinary
+ * mqtt_connected false->true edge (docs/V02_DESIGN.md §9.4 step 4/§9.5). */
+void net_ack_session_restart_edge(void);
 
 /* True while net.cpp's MQTT event handler is inside an AT transaction
  * (mqttReceive()) or the app message callback. modes_run() MUST NOT

@@ -109,20 +109,24 @@ static constexpr int PAGER_CA_FETCH_SOCKET_ID = 4;
 // silently breaks against.
 static constexpr int PAGER_TLS_BOOTSTRAP_PROFILE_ID = PAGER_TLS_PROFILE_ID;
 
-// MQTT keepalive. It was 1800 s (PROTOCOL.md section 6.2's power arithmetic). Measured
-// on hardware 2026-09-21 on AT&T (US Mobile): an idle session died 10-13 min
-// after connecting, three times out of three. The broker no longer listed the
-// client, the modem reported nothing, the firmware believed it was connected,
-// and pages vanished until the modem's own keepalive finally failed ~45 min
-// later. That is a carrier NAT dropping an idle TCP flow. The keepalive must
-// be shorter than that timeout so the modem's PINGREQ keeps the flow alive,
-// and detects a dead one within 1.5 x the keepalive. 480 s leaves ~20% margin
-// under the shortest death seen. Power effect: 180 pings a day instead of 48
-// (modem-side only; the ESP32 does not wake for them); at the design's own
-// unmeasured ~0.1 mAh per ping that is ~18 mAh/day instead of ~5.
-// UNVERIFIED: that 480 s cures it (the pager was unreachable before it could
-// be tried), and the timeout on other carriers.
+// MQTT keepalive. Measured 2026-09-21 on AT&T (US Mobile), docs/V02_DESIGN.md
+// §9.1: on this modem firmware (LR8.2.1.0-61488) the AT+SQNSMQTTCONNECT
+// keepalive parameter does NOT make the modem send a PINGREQ -- three idle
+// sessions, zero PINGREQs in 8+ minutes each. This constant only sets the
+// broker's own drop deadline (measured 1.5x keepalive). Keeping the flow/NAT
+// alive and detecting a dead session early is PAGER_MQTT_PING_S's job
+// (net_service_session(), §9.2/§9.4), not this one's. 480 s keeps "broker
+// declares a dead pager offline" at <=12 min.
 static constexpr uint16_t PAGER_MQTT_KEEPALIVE_S = 480;
+
+// §9.2/§9.4: idle-uplink liveness ping interval -- net_service_session()
+// re-SUBSCRIBEs to the down-topic every this-many seconds of uplink silence,
+// which is both what keeps the broker/NAT flow alive (the modem itself does
+// not, see PAGER_MQTT_KEEPALIVE_S's comment above) and the mechanism that
+// repairs a modem-initiated silent resume (§9.1 item 2). 300 s halves the
+// shortest observed idle death (10.5 min) and leaves 420 s of margin to the
+// broker's 720 s timeout -- one whole missed ping is survivable (§9.2).
+static constexpr uint32_t PAGER_MQTT_PING_S = 300;
 
 static constexpr int PAGER_ATTACH_POLL_CAP_S = 300; // F1: single-attempt cap
 
@@ -162,6 +166,25 @@ static volatile bool s_mqtt_connected = false;
 static volatile bool s_disconnect_edge = false;
 static volatile int s_last_rc = 0;
 static volatile net_mqtt_rc_class_t s_last_class = NET_MQTT_RC_NONE;
+
+// v0.2 §9.4 (session liveness / silent-resume repair, net_service_session()).
+// All written from pager_mqtt_event_handler() (_eventProcessingTask) and/or
+// net_service_session() (modes_run()'s own task) -- same "single-word,
+// volatile, no mutex" reasoning as the rest of this block's comment above.
+static volatile int64_t s_last_uplink_us = 0;   // last publish send or SUBACK, esp_timer_get_time()
+static volatile bool s_resub_pending = false;   // a modem-initiated resume needs a raw re-SUBSCRIBE
+static volatile bool s_resub_wait = false;      // raw re-SUBSCRIBE sent, waiting on its SUBACK
+static volatile int64_t s_resub_sent_us = 0;    // when the outstanding raw re-SUBSCRIBE was sent
+static volatile bool s_session_restart_edge = false; // set once the resume repair's SUBACK lands
+// Not in the spec's own static list, but required to implement its step 4
+// correctly: net_service_session() clears s_resub_pending the moment it
+// *sends* the raw re-SUBSCRIBE (so it does not re-send every iteration while
+// s_resub_wait is true), so by the time the matching SUBACK arrives
+// s_resub_pending can no longer tell the SUBSCRIBED handler whether that
+// SUBACK is closing a resume repair (-> session_restart_edge) or an ordinary
+// idle-timeout liveness ping (-> nothing further). This single-shot flag
+// carries that classification across the round trip.
+static volatile bool s_resub_is_resume = false;
 
 static volatile bool s_handler_busy = false; // true while the MQTT event
                                              // handler is inside an AT
@@ -292,6 +315,25 @@ static void pager_mqtt_event_handler(WMMQTTEventType event, const WMMQTTEventDat
             ESP_LOGI(TAG, "MQTT connect failed, rc=%d", data->rc);
             break;
         }
+        if (s_mqtt_connected) {
+            // v0.2 §9.4 step 2: a CONNECTED event while we already believe
+            // we are connected, with no DISCONNECTED in between, is a
+            // modem-initiated silent resume (§9.1 item 2) -- the AT manual's
+            // own words: "If the MQTT connection was dropped by the server
+            // and automatically resumed by the modem ... the MCU must
+            // re-subscribe". Do NOT call mqttSubscribe() here: mqttConnect()
+            // is the only thing that frees the vendor's local topic table,
+            // and a modem-initiated resume never calls it, so mqttSubscribe()
+            // would just dedupe this into a silent no-op ("Topic already in
+            // use", WalterMQTT.cpp:120-123) -- nothing would ever go out on
+            // the wire. Queue it instead; net_service_session() (modes.c's
+            // task) sends the repair as a raw AT+SQNSMQTTSUBSCRIBE.
+            // s_mqtt_connected is left alone: publishes still work.
+            ESP_LOGI(TAG, "MQTT session resumed by the modem (no DISCONNECTED seen); "
+                          "re-subscribe queued");
+            s_resub_pending = true;
+            break;
+        }
         ESP_LOGI(TAG, "MQTT connected, resubscribing to %s", s_down_topic);
         // L3: mqttConnect() frees the ENTIRE local topic table before
         // connecting and nothing auto-resubscribes. Must resubscribe on
@@ -312,6 +354,18 @@ static void pager_mqtt_event_handler(WMMQTTEventType event, const WMMQTTEventDat
             break;
         }
         s_mqtt_connected = true;
+        // v0.2 §9.4 step 4: this SUBACK proves the round trip, whether it
+        // answered the ordinary post-CONNECTED subscribe above or a raw
+        // liveness-ping/resume-repair re-SUBSCRIBE from net_service_session()
+        // -- either way the flow is alive right now.
+        s_last_uplink_us = esp_timer_get_time();
+        if (s_resub_wait) {
+            s_resub_wait = false;
+            if (s_resub_is_resume) {
+                s_resub_is_resume = false;
+                s_session_restart_edge = true;
+            }
+        }
         ESP_LOGI(TAG, "MQTT session usable (subscribed to '%s')", data->topic);
         // §5.4a: the /status online publish happens from modes.c, edge-
         // triggered on s_mqtt_connected flipping true — deliberately NOT
@@ -324,6 +378,7 @@ static void pager_mqtt_event_handler(WMMQTTEventType event, const WMMQTTEventDat
             ESP_LOGD(TAG, "PUBACK missing for mid=%d rc=%d", data->mid, data->rc);
         } else {
             ESP_LOGD(TAG, "PUBACK mid=%d", data->mid);
+            s_last_uplink_us = esp_timer_get_time(); // §9.4: uplink activity resets the idle clock
         }
         // §4.1 r6 / §4.2: freeing the matching pending_ack/pending_up RTC
         // entry belongs to msg.c, which is the thing that knows
@@ -384,6 +439,11 @@ static void pager_mqtt_event_handler(WMMQTTEventType event, const WMMQTTEventDat
         s_last_rc = data->rc;
         s_last_class = classify_mqtt_rc(data->rc);
         s_disconnect_edge = true;
+        // A liveness ping or resume repair in flight is void now: the next
+        // mqttConnect() subscribes afresh, so nothing must carry over.
+        s_resub_wait = false;
+        s_resub_pending = false;
+        s_resub_is_resume = false;
         ESP_LOGI(TAG, "MQTT disconnected, rc=%d", data->rc);
         break;
 
@@ -1128,7 +1188,11 @@ extern "C" bool net_publish(const char *topic, char *buf, uint16_t len, uint8_t 
         return false;
     }
     // L6: mqttPublish() takes non-const uint8_t*; publish from a mutable buffer.
-    return WalterModem::mqttPublish(topic, (uint8_t *) buf, len, qos);
+    bool ok = WalterModem::mqttPublish(topic, (uint8_t *) buf, len, qos);
+    if (ok) {
+        s_last_uplink_us = esp_timer_get_time(); // §9.4: successful publish resets the idle clock
+    }
+    return ok;
 }
 
 extern "C" bool net_publish_raw(const char *topic, uint8_t *buf, uint16_t len, uint8_t qos)
@@ -1147,7 +1211,11 @@ extern "C" bool net_publish_raw(const char *topic, uint8_t *buf, uint16_t len, u
     // i.e. exactly buf_size raw bytes, no NUL-termination or escaping
     // applied to the payload. Same call as net_publish() above, just typed
     // for a CBOR byte buffer instead of a text one.
-    return WalterModem::mqttPublish(topic, buf, len, qos);
+    bool ok = WalterModem::mqttPublish(topic, buf, len, qos);
+    if (ok) {
+        s_last_uplink_us = esp_timer_get_time(); // §9.4: successful publish resets the idle clock
+    }
+    return ok;
 }
 
 extern "C" void net_set_msg_cb(void (*cb)(const char *topic, const char *body, uint16_t len))
@@ -1330,6 +1398,64 @@ extern "C" bool net_get_rssi(int *dbm)
     return true;
 }
 
+// v0.2 §9.4: idle-uplink liveness ping / silent-resume repair. Called once
+// per wake-and-drain iteration from modes_run()'s own task (never from an
+// event callback), guarded there by the same three suppressions the
+// reconnect path already honours. Power effect: none when neither condition
+// below holds; otherwise one AT round trip (RRC time for one subscribe if
+// the modem was idle) at most once per PAGER_MQTT_PING_S.
+extern "C" void net_service_session(void)
+{
+    int64_t now = esp_timer_get_time();
+
+    // Step 5: no SUBACK within 30s (two wake cycles plus RRC setup) means the
+    // session is dead -- far earlier than the modem's own ~6 minute silent
+    // resume. mqttConnect() (net_session_up(), driven by the ordinary F1/F3
+    // backoff this disconnect edge triggers) frees the topic table, so the
+    // next subscribe after a real reconnect is a normal one.
+    if (s_resub_wait && (now - s_resub_sent_us) > 30 * 1000000LL) {
+        s_mqtt_connected = false;
+        s_last_class = NET_MQTT_RC_TRANSIENT;
+        s_disconnect_edge = true;
+        s_resub_wait = false;
+        s_resub_is_resume = false;
+        ESP_LOGI(TAG, "liveness ping got no SUBACK in 30 s: treating the MQTT session as dead");
+        return;
+    }
+
+    bool resume_repair = s_resub_pending;
+    bool idle_ping = s_mqtt_connected && !s_resub_wait &&
+                      (now - s_last_uplink_us) >= (int64_t) PAGER_MQTT_PING_S * 1000000LL;
+    if (!resume_repair && !idle_ping) {
+        return;
+    }
+
+    int64_t idle_s = (now - s_last_uplink_us) / 1000000;
+
+    // Raw AT+SQNSMQTTSUBSCRIBE, same WalterModem::sendCmd() path
+    // net_debug_at() uses: WalterModem::mqttSubscribe() would silently no-op
+    // this (WalterMQTT.cpp:120-123, "Topic already in use") since the topic
+    // is already in the modem's local table from the very first connect --
+    // for both the resume-repair case and the routine liveness ping.
+    char cmd[32 + sizeof(s_down_topic)];
+    snprintf(cmd, sizeof(cmd), "AT+SQNSMQTTSUBSCRIBE=0,\"%s\",1", s_down_topic);
+    if (!WalterModem::sendCmd(cmd)) {
+        ESP_LOGI(TAG, "liveness ping: re-SUBSCRIBE could not be sent (idle %llds)%s",
+                 (long long) idle_s, resume_repair ? " (resume repair)" : "");
+        return;
+    }
+    s_resub_sent_us = now;
+    s_resub_wait = true;
+    s_resub_pending = false;
+    s_resub_is_resume = resume_repair;
+    s_last_uplink_us = now;
+    if (resume_repair) {
+        ESP_LOGI(TAG, "liveness ping: re-SUBSCRIBE sent (resume repair)");
+    } else {
+        ESP_LOGI(TAG, "liveness ping: re-SUBSCRIBE sent (idle %llds)", (long long) idle_s);
+    }
+}
+
 extern "C" void net_get_mqtt_status(net_mqtt_status_t *out)
 {
     if (!out) {
@@ -1339,11 +1465,17 @@ extern "C" void net_get_mqtt_status(net_mqtt_status_t *out)
     out->disconnect_edge = s_disconnect_edge;
     out->last_rc = s_last_rc;
     out->last_class = s_last_class;
+    out->session_restart_edge = s_session_restart_edge;
 }
 
 extern "C" void net_ack_disconnect_edge(void)
 {
     s_disconnect_edge = false;
+}
+
+extern "C" void net_ack_session_restart_edge(void)
+{
+    s_session_restart_edge = false;
 }
 
 extern "C" bool net_modem_busy(void)
