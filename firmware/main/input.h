@@ -122,6 +122,11 @@ bool input_get_event(input_event_t *out);
  * cadence. */
 bool input_awake(void);
 
+/* Arms the UI-awake window as a button press would, without an event.
+ * For the console (`wake`): the CardKB is polled only while awake, so a
+ * bench with no button wired has no other way to start typing. */
+void input_arm_awake(void);
+
 /* True while the button FSM is mid-press (BTN_DOWN) or mid-hold (BTN_HELD,
  * i.e. before the BTN_STUCK cutoff) and so needs frequent polling to
  * measure press/hold duration accurately. False for BTN_IDLE and

@@ -17,6 +17,7 @@
 #include "ident.h"
 #include "watchdog.h"
 #include "carrier.h"
+#include "input.h"
 #include "loc.h"
 #include "modes.h"
 #include "net.h"
@@ -241,6 +242,57 @@ static int cmd_carrier(int argc, char **argv)
     return 0;
 }
 
+// `wake`: arm the UI-awake window so the CardKB is polled (a bench with no
+// button). `key <text>`: feed bytes as if typed; "\n" = enter, "\e" = esc.
+static int cmd_wake(int argc, char **argv)
+{
+    (void) argc;
+    (void) argv;
+    input_arm_awake();
+    printf("wake: UI awake; the keyboard is polled now\n");
+    return 0;
+}
+
+static int cmd_key(int argc, char **argv)
+{
+    input_arm_awake();
+    for (int i = 1; i < argc; i++) {
+        if (i > 1) {
+            input_feed_key(' ');
+        }
+        for (const char *p = argv[i]; *p; p++) {
+            if (p[0] == '\\' && p[1] == 'n') {
+                input_feed_key(0x0D);
+                p++;
+            } else if (p[0] == '\\' && p[1] == 'e') {
+                input_feed_key(0x1B);
+                p++;
+            } else {
+                input_feed_key((uint8_t) *p);
+            }
+        }
+    }
+    return 0;
+}
+
+static void register_input_cmds(void)
+{
+    const esp_console_cmd_t wake_cmd = {
+        .command = "wake",
+        .help = "wake -- arm the UI-awake window so the keyboard is polled",
+        .hint = NULL,
+        .func = &cmd_wake,
+    };
+    ESP_ERROR_CHECK(esp_console_cmd_register(&wake_cmd));
+    const esp_console_cmd_t key_cmd = {
+        .command = "key",
+        .help = "key <text> -- type text as if on the keyboard (\\n enter, \\e esc)",
+        .hint = NULL,
+        .func = &cmd_key,
+    };
+    ESP_ERROR_CHECK(esp_console_cmd_register(&key_cmd));
+}
+
 static void register_carrier_cmd(void)
 {
     const esp_console_cmd_t carrier_cmd = {
@@ -293,6 +345,7 @@ static void start_setup_console(void)
     };
     ESP_ERROR_CHECK(esp_console_cmd_register(&setup_cmd));
     register_carrier_cmd();
+    register_input_cmds();
 
     const esp_console_cmd_t nettest_cmd = {
         .command = "nettest",
@@ -476,6 +529,7 @@ static void start_normal_console(void)
     ESP_ERROR_CHECK(esp_console_cmd_register(&at_cmd));
 
     register_carrier_cmd();
+    register_input_cmds();
 
     const esp_console_cmd_t gnsstest_cmd = {
         .command = "gnsstest",

@@ -194,6 +194,11 @@ void input_feed_key(uint8_t byte)
     push_event((input_event_t) { .type = INPUT_EVT_KEY, .key = key });
 }
 
+void input_arm_awake(void)
+{
+    arm_awake_window(esp_timer_get_time());
+}
+
 bool input_get_event(input_event_t *out)
 {
     return xQueueReceive(s_queue, out, 0) == pdTRUE;
