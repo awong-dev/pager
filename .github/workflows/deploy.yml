@@ -36,6 +36,19 @@ on:
     branches: [main]
   workflow_dispatch: {}
 
+# Two pushes to `main` close together previously started two overlapping
+# Deploy runs; the second's terraform-apply failed with "Error acquiring
+# the state lock" (Error 412) against
+# gs://kid-pager-tfstate/envs/prod/default.tflock while the first run still
+# held it, and that run's firebase-deploy job was then skipped. Serialize
+# all Deploy runs on a single group so a second push queues behind the
+# first instead of racing it, and never cancel a run mid-`terraform apply`
+# (cancel-in-progress: false) -- an interrupted apply can leave real GCP
+# resources half-changed and the state lock held.
+concurrency:
+  group: deploy-prod
+  cancel-in-progress: false
+
 # Least-privilege OIDC token for google-github-actions/auth's WIF exchange.
 permissions:
   contents: read
