@@ -130,6 +130,7 @@ Base envelope:
 | `ack` | string \| null | yes; `null` on content messages | `shown` \| `read` | Ack state being reported. |
 | `kind` | string | no (default `msg`) | `msg` \| `loc_req` \| `contact_req` \| `book` \| `cfg` \| `sms_log`; `/down`: `msg`/`loc_req`/`book`/`cfg`; `/up`: `msg`/`contact_req`/`sms_log` | What the message *is* (§3.2). Absent MUST be read as `msg`. |
 | `to` | string | no; `/up` content messages only | same regex as `from` | Recipient alias chosen by the device. Absent → the relay uses the device's configured default recipient, or broadcasts to every user the owner may message. *(the device can address one of several users; optional, so a device that never sets it works unchanged.)* |
+| `sndr` | string | no; `/down` `msg` in a **group** conversation only | same regex as `from`, ≤16 chars | Author's alias when `from` names a **conversation** rather than a person: in a group chat the relay sets `from` = the group's alias (the thread the device replies to with `to`) and `sndr` = the alias of the member who wrote the message. **Absent on every one-to-one page, so existing pages are byte-identical**, and absent MUST be read as "`from` is the author" (today's rule). A receiver that does not know this field ignores it under §3.1's unknown-field rule and still threads and replies correctly — it only loses the author's name. *(v0.3, owner decision 2026-09-22: a group needs both a thread identity and an author identity, and the alternative — prefixing the author into `body` — spends up to 18 of `body`'s 160 code points on every group page and makes the author unrecoverable by a parser. Costs 26 bytes at §3.3's ceiling, which that section carries. Never sent on `/up`: a device replies to a conversation, and the relay knows which member's device it is.)* |
 | `n` | uint | no; signed envelopes only | 0…2⁵³-1 *(v0.2: widened from a 32-bit counter; see rationale)* | Per-device, per-direction replay counter (§2.4, §2.5, §14.2). Strictly increasing per publisher. |
 | `sig` | bstr(8) in CBOR / base64url(8) in JSON | no; signed envelopes only | — | HMAC-SHA256 tag, truncated to 64 bits, MUST be the last pair (§2.4). |
 | `bv` | int | `/status` only | 0…2³²-1 | Book version (§4.3, §5.1). |
@@ -266,6 +267,10 @@ sums each field's independent maximum, and several of those maxima are mutually 
   ----
   420 v1 down msg, text fields only
 
+"sndr":"<=16>", 26   (v0.3: `/down` group page only, §3.1)
+  ----
+  446 v1 down msg in a group
+
 "to":"<=16>", 24
   ----
   444 up msg with to
@@ -281,6 +286,7 @@ sums each field's independent maximum, and several of those maxima are mutually 
 "sig":"<11 base64url>", 20
   ----
   449 down msg, signed
+  475 down msg in a group, signed (+26 for `sndr`, v0.3)
   
   ----
   425 up msg without to, signed
@@ -288,7 +294,9 @@ sums each field's independent maximum, and several of those maxima are mutually 
 
 **CBOR, signed (with `n` and `sig`):**
 - Down message 75 B, up message 55 B, `/status` ≈78 B, location ≈105 B — roughly 25% smaller than
-  signed JSON.
+  signed JSON. A group down message adds `sndr` (key 51, §10): +19 B with a 16-character alias
+  (≈94 B), +6 B at a typical 3-character alias. *(stated because a two-byte integer key plus a
+  string head is not the same +26 the JSON form pays.)*
 
 **Achievable figures:** The largest payload that can actually exist is ≈438 bytes (JSON, unsigned):
 a `/up` content message with `id`, `from` and `to` all 16 characters and `body` at its cap. With
@@ -297,7 +305,10 @@ signing added, a signed JSON down message or book reaches ≈479 bytes (v0.2: +6
 it does not grow until an epoch value actually needs more bytes, §14.2).
 A maximal `/down` `loc_req` is 101 bytes (78 in §3.2's example). §13's `/loc` envelope is ≤ ~200
 bytes. Real headroom against the 640-byte limit is **≥ 166 bytes** for the largest payloads, and
-typical shapes have over 300 bytes.
+typical shapes have over 300 bytes. A v0.3 **group** page is the one shape that moves: ≈505 bytes
+signed JSON (≈479 + 26 for `sndr`), leaving **≥ 135 bytes** of headroom. *(the limit itself does not
+move, and no other payload grows; recorded so the worst case stays a number in this table rather
+than an addition someone has to redo.)*
 
 *(the one escaping assumption the limit depends on, stated because it was previously
 implicit.)* Publishers MUST serialise non-ASCII `body` characters as **raw UTF-8, not `\uXXXX`
@@ -1278,6 +1289,7 @@ Devices emit CBOR (§3) with this integer keymap. The relay accepts both JSON (t
 | 48 | `sms_lost` | int | `/status` (v0.2, §3.6 — device SMS audit-drop counter) |
 | 49 | `cell` | map | `/loc` envelope, optional (§13.2 — cell-tower location fallback) |
 | 50 | `link` | int | `/status` (v0.2, §9.5 — MQTT-session generation within a boot, optional) |
+| 51 | `sndr` | tstr | `/down` `msg` in a group conversation (v0.3, §3.1 — the author's alias when `from` names the group) |
 
 **Sub-map keys:**
 
@@ -1452,6 +1464,17 @@ the future.
   mean current and the resulting mAh per fix in `firmware/README.md` and bring the number back
   here. This is **why** the interval is device-side and not a server setting (§5.1): the server
   cannot see the cost it would be spending.
+
+9. **Group chat is decided (2026-09-22) and specified — `sndr` in §3.1/§3.3/§10. One rule this
+  document now owes it:** a group's alias and a user's alias live in **one flat namespace**, because
+  `to` and `from` cannot say which kind of thing an alias names. The relay MUST allocate a group
+  alias in the same uniqueness store as a user alias (`aliases/{alias}`), MUST NOT issue a user
+  alias that collides with a group's, and MUST keep `system` reserved against both (§3.1). A `to`
+  naming a group the sender is not a member of takes §4.2's unknown-recipient drop path, exactly as
+  a `to` naming an unknown user does. *(the namespace claim is the only part of group chat the
+  device can observe beyond `sndr`, and without it a device's reply could silently address a
+  different conversation than the one it is reading; the rest lives in
+  `docs/GROUP_CHAT_DESIGN.md`.)*
 
 > **Retracted claim, kept as a warning.** An earlier revision of this section carried a fifth
 > `NEEDS HUMAN DECISION` claiming `tlsWriteCredential()` was private and that application code
