@@ -415,27 +415,22 @@ void sms_bind(auth_rtc_t *auth_rtc, sms_rtc_lock_fn lock, sms_rtc_unlock_fn unlo
 /* Loads NVS namespaces "smscts" (allow-list) and "smsaud" (audit ring) into
  * RAM, then calls net_sms_config() (AT+CMGF/CSCS/CSMP/CNMI/CPMS). A false
  * return from net_sms_config() is logged once at INFO and disables the
- * feature for this boot (sms_available() then reads false everywhere: the
- * picker shows no SMS contacts as sendable, sms_service() becomes a no-op,
- * `cfg.sms` pushes are still stored to NVS/acked but never make an SMS
- * contact sendable) — V02_DESIGN.md §0's fail-open rule; nothing here can
- * block or fail boot. Also arms the boot-drain scan (V02_DESIGN.md §6:
- * "drain any messages that arrived while the pager was off"), stepped one
- * index per sms_service() call, never all at once. Call once from
- * modes_boot(), after net_init() (net_sms_config() needs the modem) and
- * after sms_bind(). */
+ * feature for this boot (every other public entry point in this section
+ * degrades to a safe no-op/false return: the picker shows no SMS contacts
+ * as sendable, sms_service() becomes a no-op, `cfg.sms` pushes are still
+ * stored to NVS/acked but never make an SMS contact sendable) — V02_DESIGN.md
+ * §0's fail-open rule; nothing here can block or fail boot. Also arms the
+ * boot-drain scan (V02_DESIGN.md §6: "drain any messages that arrived while
+ * the pager was off"), stepped one index per sms_service() call, never all
+ * at once. Call once from modes_boot(), after net_init() (net_sms_config()
+ * needs the modem) and after sms_bind(). */
 void sms_init(void);
-
-/* True once net_sms_config() has succeeded this boot (§0's fail-open flag —
- * every other public entry point in this section is safe to call
- * regardless, they just become no-ops/return false when this is false). */
-bool sms_available(void);
 
 /* Which TE charset AT+CSCS is resting on this boot (SMS_CHARSET_IRA unless
  * smsConfig() had to fall back) — scr_chat.c's own render-time composer
  * limit display and send-time sms_measure() calls both need this. Reads a
- * plain RAM flag; meaningless (defaults to SMS_CHARSET_IRA) when
- * sms_available() is false. */
+ * plain RAM flag; meaningless (defaults to SMS_CHARSET_IRA) when SMS is
+ * unavailable this boot (net_sms_config() failed). */
 sms_charset_mode_t sms_get_charset_mode(void);
 
 /* One non-blocking-ish step of the boot-drain / `+CMTI`-drain / pending-send
@@ -486,8 +481,8 @@ void sms_apply_cfg_submap(const uint8_t *buf, uint16_t len, const char *id);
  * Read-only accessors for scr_pick.c/scr_chat.c (the recipient picker and
  * the composer's `@name` resolution) — plain reads of the RAM-cached
  * allow-list, no NVS I/O of their own. Return a false/empty result
- * (never a crash) when sms_available() is false, so the picker simply shows
- * no SMS contacts. */
+ * (never a crash) when SMS is unavailable this boot, so the picker simply
+ * shows no SMS contacts. */
 size_t sms_contact_count(void);
 bool sms_contact_at(size_t index, sms_contact_t *out);
 
@@ -495,7 +490,7 @@ bool sms_contact_at(size_t index, sms_contact_t *out);
  * the RAM-cached allow-list (cross-task locked) — scr_chat.c's own `@name`
  * composer resolution and its render-time "is the current @word an SMS
  * contact" peek. Returns the matching index or -1 (also -1, never a crash,
- * when sms_available() is false). */
+ * when SMS is unavailable this boot). */
 int sms_find_by_name(const char *word, size_t word_len, sms_contact_t *out);
 
 /* Composer send entry point (scr_chat.c, modes_run()'s own task): `to` is
@@ -512,8 +507,8 @@ int sms_find_by_name(const char *word, size_t word_len, sms_contact_t *out);
  * Returns false (nothing queued, thread unchanged) only if the tiny
  * pending-send queue is already full (both slots busy — a rapid-fire
  * double-send; the composer shows "reply full" the same way
- * msg_queue_reply() does for its own queue-full case) or if `sms_available()`
- * is false. */
+ * msg_queue_reply() does for its own queue-full case) or if SMS is
+ * unavailable this boot. */
 bool sms_queue_send(const sms_contact_t *to, const char *body, uint16_t body_len);
 
 /* `smstest <number> <text>` (main.c, PAGER_DEBUG_NO_LIGHT_SLEEP builds

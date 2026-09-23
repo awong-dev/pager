@@ -34,8 +34,8 @@ Setup mode has `setup` and `carrier`. The debug build has all of these, in any m
 |---|---|
 | `setup <code>` | Provision from a setup code |
 | `carrier` / `carrier <n>` / `carrier custom <apn>` | Show or set the APN choice. 0 = automatic |
-| `nettest <host> <port> [udp\|tls\|<bytes>]` | Socket-layer probe. With a byte count: a padded HTTP GET, then waits for a reply. Re-attaches first, which disturbs a live session |
-| `mqtttest <host> <port> [ca\|noneca\|emptyca]` | Points the modem's own MQTT client at any host. `emptyca` deletes the certificate in slot 12 first |
+| `nettest <host> <port> [udp\|tls\|<bytes>]` | Debug build only. Socket-layer probe. With a byte count: a padded HTTP GET, then waits for a reply. Re-attaches first, which disturbs a live session |
+| `mqtttest <host> <port> [ca\|noneca\|emptyca]` | Debug build only. Points the modem's own MQTT client at any host. `emptyca` deletes the certificate in slot 12 first |
 | `cafetch <https url> <sha256 hex>` | The CA fetch over a second TLS socket, without applying it. Reports whether the MQTT session survived |
 | `gnsstest <seconds>` | One location attempt, bypassing the backoff and the battery floor |
 | `smstest <number> <text>`, `smslist` | Send one SMS bypassing the allow-list; show the list and the audit queue |

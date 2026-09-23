@@ -173,7 +173,19 @@ static bool parse_request(cbor_r_t *r, book_request_t *out)
     return out->name[0] != '\0'; // `n` is required, §3.1
 }
 
-bool book_parse(const uint8_t *buf, uint16_t len, bool sig_pair_present, book_parsed_t *out)
+/* Parsed shape of one `kind:"book"` `/down` envelope — mirrors lock.h's
+ * `lock_parse_cfg()` contract exactly: `buf` MUST already have passed
+ * auth_verify() when signed (trailing `sig` bytes trimmed, map header's
+ * declared pair count left untouched), `sig_pair_present` stands in for
+ * `ident_get_flags() & IDENT_FLAG_REQ_SIG` so this stays host-testable.
+ * Returns false if `buf` does not decode as a well-formed `kind:"book"`
+ * envelope — covers both "not book" and "book but malformed", deliberately
+ * conflated the same way lock_parse_cfg() documents (the caller,
+ * book_ingest_cbor(), falls through to msg.c's own ingest either way).
+ * `out->id` is truncated-away silently if it doesn't fit (only used for
+ * acking, never rendered); contacts/requests beyond the cap are parsed (so
+ * the buffer position stays correct) but not copied into `out`. */
+static bool book_parse(const uint8_t *buf, uint16_t len, bool sig_pair_present, book_parsed_t *out)
 {
     memset(out, 0, sizeof(*out));
 

@@ -120,11 +120,6 @@ bool accel_init(void)
     return true;
 }
 
-bool accel_present(void)
-{
-    return s_present;
-}
-
 void accel_poll(void)
 {
     if (!s_present) {

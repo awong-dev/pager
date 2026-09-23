@@ -1597,15 +1597,6 @@ extern "C" uint32_t net_take_oversize_delta(void)
     return v;
 }
 
-extern "C" void net_get_granted_edrx(char *out, size_t out_size)
-{
-    if (!out || out_size == 0) {
-        return;
-    }
-    strncpy(out, s_granted_edrx, out_size - 1);
-    out[out_size - 1] = '\0';
-}
-
 extern "C" const char *net_get_device_id(void)
 {
     return ident_get_dev_id();
@@ -1652,14 +1643,18 @@ extern "C" bool net_check_sim(void)
     return ok;
 }
 
-static size_t s_nettest_pad_bytes = 0;
-
 // Debug console `at <command>`: sends one raw AT command and relies on the
 // WalterModem debug trace to show the reply. Debug build only.
 extern "C" bool net_debug_at(const char *cmd)
 {
     return WalterModem::sendCmd(cmd);
 }
+
+#ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
+// docs/ROADMAP.md's "temporary diagnostics" (nettest/mqtttest) no longer
+// ship in the release binary -- debug build only from here down to
+// net_check_mqtt()'s closing brace below.
+static size_t s_nettest_pad_bytes = 0;
 
 extern "C" bool net_check_tcp_sized(const char *host, uint16_t port, size_t bytes)
 {
@@ -1838,6 +1833,7 @@ extern "C" bool net_check_mqtt(const char *host, uint16_t port, int tls_mode)
     WalterModem::mqttDisconnect();
     return false;
 }
+#endif /* PAGER_DEBUG_NO_LIGHT_SLEEP */
 
 // ---------------------------------------------------------------------------
 // v0.2 §5 (location, loc.c). See net.h's own doc comments for the contract

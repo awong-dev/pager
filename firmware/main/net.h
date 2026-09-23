@@ -395,11 +395,6 @@ bool net_connect_fail_streak_maxed(void);
 uint32_t net_take_memfull_delta(void);
 uint32_t net_take_oversize_delta(void);
 
-/* Granted eDRX value from the network (§6.3/§6.5, measurement M4), latched
- * from WALTER_MODEM_NETWORK_EVENT_EDRX_RECEIVED. Copies an empty string
- * into `out` until the first eDRX URC arrives after attach. */
-void net_get_granted_edrx(char *out, size_t out_size);
-
 /* The device_id / MQTT client id in use (PROTOCOL.md §1: the two are
  * identical). Single source of truth for modes.c to build the /up and
  * /status topics; net.c already knows it for the /down subscription. */
@@ -413,7 +408,10 @@ const char *net_get_device_id(void);
  * effect: modem leaves reset, one AT round trip, no RRC. */
 bool net_check_sim(void);
 
-/* TEMPORARY diagnostic (main.c's `nettest` console command): attaches like
+#ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
+/* TEMPORARY diagnostic (main.c's `nettest` console command), debug build
+ * only (PAGER_DEBUG_NO_LIGHT_SLEEP) -- docs/ROADMAP.md's "temporary
+ * diagnostics" no longer ship in the release binary. Attaches like
  * net_bootstrap_attach(), then dials a plain socket (no TLS at all, TCP if
  * udp==false else UDP) to host:port and polls for up to 10s for it to reach
  * WALTER_MODEM_SOCKET_STATE_OPENED. Added to isolate raw network/transport
@@ -431,6 +429,7 @@ bool net_check_tcp(const char *host, uint16_t port, bool udp, bool tls);
 /* TEMPORARY diagnostic: plain TCP like net_check_tcp(), but sends a valid HTTP/1.0 GET padded to
  * `bytes` and then waits 12 s so the AT trace shows whether a reply rings (+SQNSRING). */
 bool net_check_tcp_sized(const char *host, uint16_t port, size_t bytes);
+#endif /* PAGER_DEBUG_NO_LIGHT_SLEEP */
 
 /* Debug build only: send one raw AT command; the reply shows in the AT trace. */
 bool net_debug_at(const char *cmd);
@@ -442,14 +441,17 @@ bool net_debug_at(const char *cmd);
 bool net_take_registered_edge(void);
 uint32_t net_unregistered_for_s(void);
 
-/* TEMPORARY diagnostic (main.c's `mqtttest` console command): attaches like
- * net_bootstrap_attach(), then issues a real AT+SQNSMQTTCONNECT to host:port
- * over the VALIDATION_NONE bootstrap TLS profile with dummy credentials, and
- * waits up to 30 s for an MQTT event. Exists so a TLS server we control can
- * capture the ClientHello the modem's dedicated MQTT engine sends (SNI or
- * not), as opposed to nettest's socket-layer ClientHello. Remove together
- * with net_check_tcp(). */
+#ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
+/* TEMPORARY diagnostic (main.c's `mqtttest` console command), debug build
+ * only (PAGER_DEBUG_NO_LIGHT_SLEEP) -- same as net_check_tcp() above.
+ * Attaches like net_bootstrap_attach(), then issues a real
+ * AT+SQNSMQTTCONNECT to host:port over the VALIDATION_NONE bootstrap TLS
+ * profile with dummy credentials, and waits up to 30 s for an MQTT event.
+ * Exists so a TLS server we control can capture the ClientHello the modem's
+ * dedicated MQTT engine sends (SNI or not), as opposed to nettest's
+ * socket-layer ClientHello. Remove together with net_check_tcp(). */
 bool net_check_mqtt(const char *host, uint16_t port, int tls_mode);
+#endif /* PAGER_DEBUG_NO_LIGHT_SLEEP */
 
 /* ---------------------------------------------------------------------
  * GNSS (docs/V02_DESIGN.md §5, docs/V02_DESIGN.md §5). Every power-effect

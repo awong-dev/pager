@@ -130,7 +130,8 @@ __attribute__((weak)) void disp_busy_idle_hook(void) {}
 // a false "already idle" read. Power effect: none in the healthy case
 // (unchanged polling); in the fallback case the panel VCC stays on for
 // fallback_ms, which is the same order of time a real refresh costs anyway
-// — see disp_power_off() callers, unchanged by this function.
+// — panel VCC is gated off between refreshes regardless, unchanged by
+// this function.
 static bool disp_wait_busy_fb(uint32_t fallback_ms)
 {
     int64_t start = esp_timer_get_time();
@@ -223,14 +224,6 @@ static void disp_power_on(void)
     // Power effect: enables the panel's VCC rail (active-low P-MOSFET gate).
     gpio_set_level(PAGER_PIN_DISP_VCC_EN, 0);
     vTaskDelay(pdMS_TO_TICKS(10));
-}
-
-static void disp_power_off(void)
-{
-    // Power effect: the single largest display-side saving in this driver —
-    // panel VCC is gated off between refreshes (PROTOCOL.md §8.4: "Display
-    // (gated off via IO15) ~0 mA").
-    gpio_set_level(PAGER_PIN_DISP_VCC_EN, 1);
 }
 
 static void disp_hw_reset(void)
@@ -627,14 +620,14 @@ bool disp_init(void)
     }
 
     // TEMPORARY hardware bring-up diagnostic.
-    ESP_LOGI(TAG, "BUSY raw level before power-on: %d", gpio_get_level(PAGER_PIN_DISP_BUSY));
+    ESP_LOGD(TAG, "BUSY raw level before power-on: %d", gpio_get_level(PAGER_PIN_DISP_BUSY));
 
     // Power effect: VCC on for the duration of reset+init (a few tens of ms).
     disp_power_on();
-    ESP_LOGI(TAG, "BUSY raw level after power-on (pre-reset): %d",
+    ESP_LOGD(TAG, "BUSY raw level after power-on (pre-reset): %d",
              gpio_get_level(PAGER_PIN_DISP_BUSY));
     disp_hw_reset();
-    ESP_LOGI(TAG, "BUSY raw level right after hw_reset (pre-command): %d",
+    ESP_LOGD(TAG, "BUSY raw level right after hw_reset (pre-command): %d",
              gpio_get_level(PAGER_PIN_DISP_BUSY));
     if (!disp_run_init_sequence()) {
         ESP_LOGI(TAG, "init sequence BUSY timeout; retrying once");
@@ -648,17 +641,6 @@ bool disp_init(void)
     s_partial_count = PAGER_UI_PARTIAL_FULL_EVERY; // force a full refresh on first render
     ESP_LOGI(TAG, "display init OK");
     return true;
-}
-
-void disp_shutdown(void)
-{
-    disp_lock();
-    if (!s_display_dead && s_spi_ready) {
-        disp_send_cmd(0x10);
-        disp_send_data1(0x01); // deep sleep mode 1
-    }
-    disp_power_off(); // power effect: panel VCC gated off, ~0 mA (PROTOCOL.md §8.4)
-    disp_unlock();
 }
 
 bool disp_is_dead(void) { return s_display_dead; }

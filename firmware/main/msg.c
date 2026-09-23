@@ -683,8 +683,8 @@ static void history_write_entry(const msg_t *m)
 // and restores newest-first by `seq` via msghist_restore_order() (pure,
 // host-tested). Leaves s_thread untouched (all-zero, from msg_init()'s own
 // memset) if msghist is unavailable or nothing valid is found — that is
-// exactly the "first boot / erased / corrupt" case msg_history_lost() is
-// meant to report.
+// exactly the "first boot / erased / corrupt" case that sets
+// s_history_lost_pending below.
 static void history_restore(void)
 {
     if (!s_hist_available) {
@@ -2211,25 +2211,5 @@ void msg_iter_peer(const char *alias, bool from_newest, msg_iter_peer_cb cb, voi
     s_unlock();
 }
 
-bool msg_history_lost(void)
-{
-    if (s_history_lost_pending) {
-        s_history_lost_pending = false;
-        return true;
-    }
-    return false;
-}
-
-void msg_get_stats(msg_stats_t *out)
-{
-    if (!out) {
-        return;
-    }
-    s_lock();
-    out->dedup_hits = s_rtc->dedup_hits;
-    out->malformed_drops = s_rtc->malformed_drops;
-    out->reply_failed = s_rtc->reply_failed;
-    s_unlock();
-}
 
 #endif /* ESP_PLATFORM */

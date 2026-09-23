@@ -94,10 +94,13 @@ static int cmd_setup(int argc, char **argv)
     return 0; // unreachable: setup_run() only returns by not returning (esp_restart())
 }
 
+#ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
 // TEMPORARY diagnostic command: `nettest <host> <port>` dials a plain TCP
 // socket (no TLS) via net_check_tcp() -- see that function's own doc
 // comment in net.h for why. Remove once the broker-connect issue is
-// root-caused.
+// root-caused. Debug build only (PAGER_DEBUG_NO_LIGHT_SLEEP): docs/
+// ROADMAP.md's "temporary diagnostics" no longer ship in the release
+// binary.
 static int cmd_nettest(int argc, char **argv)
 {
     esp_log_level_set("WalterModem", ESP_LOG_DEBUG); // raw AT TX:/RX: trace
@@ -121,7 +124,8 @@ static int cmd_nettest(int argc, char **argv)
 
 // TEMPORARY diagnostic command: `mqtttest <host> <port>` issues a real
 // AT+SQNSMQTTCONNECT (TLS, VALIDATION_NONE, dummy credentials) via
-// net_check_mqtt() -- see net.h. Remove together with nettest.
+// net_check_mqtt() -- see net.h. Remove together with nettest. Debug build
+// only (PAGER_DEBUG_NO_LIGHT_SLEEP), same as nettest above.
 static int cmd_mqtttest(int argc, char **argv)
 {
     esp_log_level_set("WalterModem", ESP_LOG_DEBUG); // raw AT TX:/RX: trace
@@ -143,7 +147,6 @@ static int cmd_mqtttest(int argc, char **argv)
     return ok ? 0 : 1;
 }
 
-#ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
 // Debug build only: raw AT passthrough.
 // Debug build only: `sleeptest <minutes> [yield_ms] [interval_ms]` opens a
 // window of real light sleep (modes.c); `sleeptest` alone prints the report
@@ -411,6 +414,9 @@ static void start_setup_console(void)
     register_carrier_cmd();
     register_input_cmds();
 
+#ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
+    // Debug build only: docs/ROADMAP.md's "temporary diagnostics" no longer
+    // ship in the release binary's Setup console.
     const esp_console_cmd_t nettest_cmd = {
         .command = "nettest",
         .help = "nettest <host> <port> -- TEMPORARY: plain TCP (no TLS) connectivity probe",
@@ -426,6 +432,7 @@ static void start_setup_console(void)
         .func = &cmd_mqtttest,
     };
     ESP_ERROR_CHECK(esp_console_cmd_register(&mqtttest_cmd));
+#endif
 
     ESP_ERROR_CHECK(esp_console_start_repl(repl));
 }
@@ -817,7 +824,7 @@ static void start_normal_console(void)
     ESP_ERROR_CHECK(esp_console_cmd_register(&disptest_cmd));
 
     ESP_ERROR_CHECK(esp_console_start_repl(repl));
-    ESP_LOGI(TAG, "debug console REPL started in normal mode (PAGER_DEBUG_NO_LIGHT_SLEEP)");
+    ESP_LOGD(TAG, "debug console REPL started in normal mode (PAGER_DEBUG_NO_LIGHT_SLEEP)");
 }
 #endif
 

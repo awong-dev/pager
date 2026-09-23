@@ -776,8 +776,10 @@ partial refresh there leaves the old screen ghosted under the message, so `ui_in
 full refresh for that first message only. The Chat screen has no key-hint footer; rows have 2 px
 of leading instead.
 
-**Status bar** (10 px, always 1×): `[signal 0–4 bars] [link ok|x] [unsent n] [lock if sig on]
-… [unread n] [battery 0–4]`. No clock *(see rationale: a clock would need a refresh every minute
+**Status bar** (10 px, always 1×): `[signal 0–4 bars] [link ok|x] [unsent n]
+… [unread n] [battery 0–4]`. The only padlock the bar ever shows is the TLS trust padlock (v0.2
+§4.3: closed while pinned, broken while broken, nothing while unpinned) — the earlier
+envelope-signing "[lock if sig on]" indicator was removed. No clock *(see rationale: a clock would need a refresh every minute
 while the device is meant to be asleep; message rows carry absolute `HH:MM` instead, which never
 change)*.
 

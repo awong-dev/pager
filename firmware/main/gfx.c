@@ -543,13 +543,11 @@ static void icon_battery(int x, int y, int filled /* 0..4 */)
 // every other icon in this function — "if icons live in the assets
 // partition image, do NOT change the asset format: draw these two from a
 // small const bitmap in code instead" does not apply here, since every
-// existing icon (including GFX_ICON_LOCK, whose shape this borrows for the
-// closed case) is already hand-drawn with gfx_rect()/gfx_hline()/
+// existing icon is already hand-drawn with gfx_rect()/gfx_hline()/
 // gfx_set_pixel() rather than blitted from a bitmap asset. `broken` draws
 // the shackle with a gap on the right (open) and a short displaced stub
 // instead of the closed top-plus-two-sides shape — meant to read as "the
-// shackle popped open", distinct at a glance from GFX_ICON_LOCK's closed
-// shape used for envelope-signing.
+// shackle popped open", distinct at a glance from the closed shape.
 static void icon_padlock(int x, int y, bool broken)
 {
     gfx_rect(x + 1, y + 5, 10, 7); // body
@@ -601,7 +599,7 @@ void gfx_icon(int x, int y, gfx_icon_t id)
         /* "no entry" sign: a circle outline (midpoint circle algorithm) plus
          * a single bottom-left-to-top-right slash through it, replacing the
          * old corner-to-corner X at the user's request -- easier to tell
-         * apart from GFX_ICON_LOCK/other diagonal-heavy icons at a glance. */
+         * apart from other diagonal-heavy icons at a glance. */
         int cx = x + GFX_ICON_W / 2;
         int cy = y + GFX_ICON_H / 2;
         int r = GFX_ICON_W / 2 - 1;
@@ -629,16 +627,6 @@ void gfx_icon(int x, int y, gfx_icon_t id)
         }
         break;
     }
-    case GFX_ICON_LOCK:
-        gfx_rect(x + 1, y + 5, 10, 7);
-        gfx_hline(x + 3, x + 8, y + 2);
-        gfx_set_pixel(x + 3, y + 3, true);
-        gfx_set_pixel(x + 3, y + 4, true);
-        gfx_set_pixel(x + 8, y + 3, true);
-        gfx_set_pixel(x + 8, y + 4, true);
-        gfx_set_pixel(x + 5, y + 8, true);
-        gfx_set_pixel(x + 6, y + 8, true);
-        break;
     case GFX_ICON_PENDING:
         gfx_rect(x + 1, y + 1, 10, 10);
         gfx_set_pixel(x + 6, y + 6, true);

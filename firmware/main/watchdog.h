@@ -54,9 +54,6 @@ void watchdog_feed(void);
  * after light sleep the USB port was seen to stay dead for hours across
  * esp_restart(). Does not return. */
 void watchdog_hard_reset(void);
-/* Watchdog or panic resets since power-on, for /status or the device screen. */
-uint32_t watchdog_reset_count(void);
-const char *watchdog_stage_name(uint32_t stage);
 
 /* PAGER PATCH 1.10: strong override of the walter-modem component's weak
  * `walter_modem_block_tick()` (declared extern "C" there so the C++ component

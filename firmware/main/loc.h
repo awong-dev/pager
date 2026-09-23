@@ -398,14 +398,6 @@ uint32_t loc_get_backoff_remaining_s(void);
  * trigger alone (V02_DESIGN.md §5: "they never start an attempt by
  * themselves"). */
 
-/* Called from net.cpp's network event handler (via net_set_cell_change_cb())
- * with the raw, already-deduplicated-against-the-immediately-previous-value
- * "lac:ci" key; net.cpp's own module comment documents why that
- * de-duplication happens there rather than here. Keep this fast: it can run
- * on WalterModem's _eventProcessingTask, same rule as every other event
- * handoff in this codebase. */
-void loc_on_cell_change(const char *cell_key);
-
 /* Called from accel.c's accel_poll() (modes_run()'s own task, never an ISR —
  * the LIS3DH's INT1 is only ever read as a polled register, see accel.c's
  * module comment) once per drained INT1 event. */

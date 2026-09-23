@@ -7,7 +7,7 @@
 // status sequence) painted a DIFFERENT name order each time, and the
 // e-paper panel -- which only partial-refreshes the diffed region, not a
 // full clear -- showed overlapping remnants of two or three shuffles at
-// once) and its reused-layout "sleeping" mode.
+// once).
 //
 // Not part of docs/DEVICE_PLAN.md §5.5's screen set — added directly at the
 // user's request as a real, separate screen (Home's own conversation-row
@@ -17,18 +17,16 @@
 // push, so a locked device still always ends up showing Locked on top — see
 // modes_boot()'s own comment on that ordering requirement).
 //
-// GREETING_SLEEPING used to be pushed a second time, by modes_run()'s
-// UI-awake-window edge detection on the awake->asleep edge (popped again on
-// the asleep->awake edge), mirroring lock_screen_sync()'s push/pop
-// discipline. Owner decision, 22 Sep evening ("stay on chat unless it's
-// explicitly locked"): that second call site is gone — the UI-awake window
+// This screen used to also have a GREETING_SLEEPING mode, pushed a second
+// time by modes_run()'s UI-awake-window edge detection on the awake->asleep
+// edge (popped again on the asleep->awake edge), mirroring
+// lock_screen_sync()'s push/pop discipline. Owner decision, 22 Sep evening
+// ("stay on chat unless it's explicitly locked"): that second call site and
+// the GREETING_SLEEPING mode itself are both gone — the UI-awake window
 // lapsing no longer changes which screen is on top, only whether it repaints
-// and whether a due full refresh lands (ui.c's ui_on_awake_lapse()). The
-// GREETING_SLEEPING mode/render path itself is unchanged and still compiles,
-// simply unused by modes.c for now, in case a future decision brings back an
-// explicit "sleeping" indicator some other way.
-// on_key still pops unconditionally in either mode (see below) — with only
-// one push site left, this is now just the ordinary "esc/any key leaves the
+// and whether a due full refresh lands (ui.c's ui_on_awake_lapse()).
+// GREETING_HELLO is the only mode left; on_key still pops unconditionally
+// (see below), which is now just the ordinary "esc/any key leaves the
 // greeting" behaviour, not a double-pop guard.
 
 #include "ui.h"
@@ -98,14 +96,6 @@ static void on_event(ui_evt_t evt)
 static void render(void)
 {
     const int sz = GFX_FONT_LARGE;
-    int y = UI_BODY_TOP + (GFX_SCREEN_H - UI_BODY_TOP) / 2 - 10;
-
-    if (s_mode == GREETING_SLEEPING) {
-        const char *text = "sleeping";
-        int w = gfx_text_width(sz, text);
-        gfx_text((GFX_SCREEN_W - w) / 2, y, sz, text);
-        return;
-    }
 
     if (s_line[0] == '\0') {
         shuffle_line(); // defensive: render() called before any on_event(ENTER), shouldn't happen via ui_push()

@@ -18,7 +18,6 @@
 #include "net.h"
 #include "disp.h"
 #include "gfx.h"
-#include "ident.h"
 #include "lock.h" /* F6.5: gates ui_on_button_short()/ui_on_button_long() below, docs/DEVICE_PLAN.md §5.8 */
 #include "catrust.h" /* v0.2 §4.3: TLS trust-state padlock in draw_status_bar() below */
 
@@ -60,7 +59,7 @@ void ui_push(const ui_screen_t *scr)
         return;
     }
     s_stack[s_depth++] = scr;
-    ESP_LOGI(TAG, "screen: -> %s (depth %d)", scr->name ? scr->name : "?", s_depth);
+    ESP_LOGD(TAG, "screen: -> %s (depth %d)", scr->name ? scr->name : "?", s_depth);
     fire_enter(scr);
 }
 
@@ -71,7 +70,7 @@ void ui_pop(void)
     }
     s_depth--;
     const ui_screen_t *top = s_stack[s_depth - 1];
-    ESP_LOGI(TAG, "screen: <- %s (depth %d)", top && top->name ? top->name : "?", s_depth);
+    ESP_LOGD(TAG, "screen: <- %s (depth %d)", top && top->name ? top->name : "?", s_depth);
     fire_enter(top);
 }
 
@@ -85,7 +84,7 @@ void ui_replace(const ui_screen_t *scr)
         return;
     }
     s_stack[s_depth - 1] = scr;
-    ESP_LOGI(TAG, "screen: = %s (depth %d)", scr->name ? scr->name : "?", s_depth);
+    ESP_LOGD(TAG, "screen: = %s (depth %d)", scr->name ? scr->name : "?", s_depth);
     fire_enter(scr);
 }
 
@@ -93,7 +92,7 @@ void ui_go_home(void)
 {
     s_depth = 0;
     s_stack[s_depth++] = &g_scr_home;
-    ESP_LOGI(TAG, "screen: -> home (depth 1)");
+    ESP_LOGD(TAG, "screen: -> home (depth 1)");
     fire_enter(&g_scr_home);
 }
 
@@ -238,14 +237,6 @@ static void draw_status_bar(void)
     char buf[32];
     snprintf(buf, sizeof(buf), "new: %d  unsent: %d", unread, unsent);
     int x = gfx_text(0, UI_STATUS_TEXT_Y, GFX_FONT_NORMAL, buf) + 3;
-
-    // "[lock if sig on]" (§5.4) — envelope signing (auth.c/IDENT_FLAG_REQ_SIG),
-    // NOT the device-passcode lock (lock.c/F6.5, not built). Kept right after
-    // the counts, its old adjacency.
-    if (ident_get_flags() & IDENT_FLAG_REQ_SIG) {
-        gfx_icon(x, 0, GFX_ICON_LOCK);
-        x += GFX_ICON_W + UI_STATUS_ICON_GAP;
-    }
 
     // v0.2 §4.3: TLS trust-state padlock — closed while pinned, broken while
     // broken, nothing at all while unpinned (docs/V02_DESIGN.md §4.3's own
@@ -502,7 +493,7 @@ void ui_poll_keyboard(void)
     if (byte == 0x00) {
         return;
     }
-    ESP_LOGI(TAG, "CardKB: 0x%02x", byte); // bench: the first hardware check of the decode table
+    ESP_LOGD(TAG, "CardKB: 0x%02x", byte); // bench: the first hardware check of the decode table
     input_feed_key(byte); // arms the UI-awake window, queues INPUT_EVT_KEY (input.h)
 }
 
@@ -558,9 +549,4 @@ bool ui_init(void)
     s_depth = 0;
     ui_go_home(); // establishes the stack even if disp_init() below fails (headless is not fatal)
     return disp_init(); // power effect: see disp_init()'s own comment
-}
-
-void ui_shutdown(void)
-{
-    disp_shutdown(); // power effect: see disp_shutdown()'s own comment
 }

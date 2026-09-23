@@ -846,14 +846,6 @@ void modes_note_activity(void)
     rtc_unlock();
 }
 
-bool modes_is_active(void)
-{
-    rtc_lock();
-    bool active = (g_rtc.mode == (uint8_t) PAGER_MODE_ACTIVE);
-    rtc_unlock();
-    return active;
-}
-
 // ---------------------------------------------------------------------------
 // F6.3 (docs/DEVICE_PLAN.md §5.3/§5.4, firmware/README.md R5): the incoming-
 // message render moves off WalterModem's _eventProcessingTask and onto
@@ -1100,7 +1092,7 @@ static void sleeptest_save(void)
     nvs_close(h);
 }
 
-void modes_debug_sleeptest_print_saved(void)
+static void modes_debug_sleeptest_print_saved(void)
 {
     nvs_handle_t h;
     if (nvs_open("dbg", NVS_READONLY, &h) != ESP_OK) {

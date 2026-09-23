@@ -49,7 +49,9 @@ Firmware
   accelerometer thresholds are datasheet defaults.
 - The payload parser in the modem library miscounts by one byte when a payload ends in a newline;
   the symptom is patched, the cause is not.
-- The temporary diagnostics (`nettest`, `mqtttest`, the raw AT trace) are still compiled in.
+- The temporary diagnostics (`nettest`, `mqtttest`) and the raw AT trace are debug-build only
+  (`PAGER_DEBUG_NO_LIGHT_SLEEP`) now; the release binary does not carry them (the AT trace is a
+  log level the debug build raises in net.cpp's `net_bringup()`).
 
 Relay
 - No retention sweep for the SMS audit log; it grows for ever.

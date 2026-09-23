@@ -39,10 +39,6 @@ bool modes_on_run_task(void);
  * input.h's own event queue). */
 void modes_note_activity(void);
 
-/* Read-only mode getter. Does not participate in the
- * set_mode() funnel — it only reads. */
-bool modes_is_active(void);
-
 /* ---------------------------------------------------------------------
  * F6.3 (docs/DEVICE_PLAN.md §5.4/§5.5, §5.7): read-only getters for the
  * status bar and the Device screen. modes.c remains the sole owner of the
@@ -90,7 +86,6 @@ bool modes_publish_status_now(void);
  * receive a held URC" question). */
 void modes_debug_sleeptest_start(uint32_t minutes, uint32_t yield_ms_override, uint32_t interval_ms_override);
 void modes_debug_sleeptest_report(void);
-void modes_debug_sleeptest_print_saved(void);
 
 /* v0.2 §5 (location, loc.c): route 2's deliberate CFUN=4 window tears the
  * MQTT session down and takes the radio off on purpose. While `suppress` is

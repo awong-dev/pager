@@ -108,20 +108,18 @@ extern const ui_screen_t g_scr_lock;
 extern const ui_screen_t g_scr_pick;
 extern const ui_screen_t g_scr_book;
 
-/* scr_greeting.c: boot splash + reused-layout "sleeping" screen — see that
- * file's own module comment for the two modes.c call sites that own its
- * push/pop lifecycle. Not part of DEVICE_PLAN.md §5.5's screen set. */
+/* scr_greeting.c: boot splash screen — see that file's own module comment
+ * for the call sites that own its push/pop lifecycle. Not part of
+ * DEVICE_PLAN.md §5.5's screen set. */
 typedef enum {
     GREETING_HELLO = 0,
-    GREETING_SLEEPING,
 } scr_greeting_mode_t;
 void scr_greeting_set_mode(scr_greeting_mode_t mode);
 
-/* Optional footer line under the "Hi ...!" banner (GREETING_HELLO only --
- * GREETING_SLEEPING's single centered "sleeping" word never grew a footer,
- * nothing asked for one). Added for main.c's pre-provisioning boot screen
- * (no ident/no SIM yet, so it reuses this screen rather than standing up a
- * whole scr_boot.c): "booting" -> "sim missing"/found -> "shutting down".
+/* Optional footer line under the "Hi ...!" banner. Added for main.c's
+ * pre-provisioning boot screen (no ident/no SIM yet, so it reuses this
+ * screen rather than standing up a whole scr_boot.c): "booting" ->
+ * "sim missing"/found -> "shutting down".
  * NULL/"" (the default) draws no footer at all, so modes_boot()'s normal
  * post-ident-load push is unaffected. Copies into a fixed internal buffer;
  * `status` need not outlive the call. */
@@ -146,12 +144,6 @@ void scr_chat_mark_visible_read(void);
  * display was marked dead, so screens/scr_*.c never need their own
  * disp_is_dead() checks). */
 bool ui_init(void);
-
-/* Sleep the panel and power its VCC gate off. Power effect: see
- * disp_shutdown()'s own comment. Not called anywhere in this task (no
- * caller ever wants the UI permanently off) — kept for symmetry/future use
- * (e.g. a future "ship mode"), same as it was pre-F6.3. */
-void ui_shutdown(void);
 
 /* ---------------------------------------------------------------------
  * Screen stack.

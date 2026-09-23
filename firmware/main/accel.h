@@ -43,12 +43,9 @@ extern "C" {
  * this board). */
 bool accel_init(void);
 
-/* True iff accel_init() found the chip. */
-bool accel_present(void);
-
 /* Reads INT1_SRC (register 0x31) once — the read itself clears the LIS3DH's
- * latched interrupt (CTRL_REG5 LIR_INT1). No-op if accel_present() is
- * false. Call once per modes_run() loop iteration, unconditionally, same
+ * latched interrupt (CTRL_REG5 LIR_INT1). No-op if accel_init() did not find
+ * the chip. Call once per modes_run() loop iteration, unconditionally, same
  * polling discipline input_poll()/ui_poll_keyboard() already use — never
  * from an ISR (this chip's INT1 is only ever read as a polled register, not
  * hooked to a GPIO interrupt handler; IO2's only "interrupt" role is as the

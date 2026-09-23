@@ -8,7 +8,7 @@ bounded foreground captures. Coding agents never open `/dev/cu.usbmodem*`.
 
 Build (firmware): `export PATH=<pyshim>:$PATH; . ~/src/esp/esp-idf/export.sh; cd firmware;
 PAGER_DEBUG_NO_LIGHT_SLEEP=1 idf.py reconfigure build`. Host tests: `make -C firmware/host test`
-(14 suites; every firmware task must leave them green). Web: `cd web && npm run lint && npm run
+(15 suites; every firmware task must leave them green). Web: `cd web && npm run lint && npm run
 build`. Relay: `cd relay && .venv/bin/pytest`.
 
 Order: 2.1 → 2.2 → 2.3 → 1.0 → 1.1 → 1.2 → 1.3 → 1.4 → 3a.1 → 3a.2 → 3a.3 → 3a.4 → 3b.1 → 3b.2 →

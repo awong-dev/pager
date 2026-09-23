@@ -1012,10 +1012,10 @@ void sms_init(void)
     // AT+CPMS), no RRC of its own beyond that.
     net_sms_config_result_t cfg;
     if (!net_sms_config(&cfg)) {
-        // §0: fail open. Logged once here; sms_available() then reads false
-        // for the rest of this boot and every other public entry point in
-        // this file degrades to a safe no-op (see each one's own doc
-        // comment) — never touches paging.
+        // §0: fail open. Logged once here; s_available then reads false for
+        // the rest of this boot and every other public entry point in this
+        // file degrades to a safe no-op (see each one's own doc comment) —
+        // never touches paging.
         ESP_LOGI(TAG, "SMS unavailable this boot (net_sms_config() failed - the production SIM "
                       "may not carry SMS at all) - feature disabled, paging unaffected");
         s_available = false;
@@ -1041,8 +1041,6 @@ void sms_init(void)
              cfg.storage_total, (unsigned) s_contacts.count, (unsigned) s_audit.count,
              s_audit.count == 1 ? "y" : "ies", (unsigned) s_audit.lost);
 }
-
-bool sms_available(void) { return s_available; }
 
 sms_charset_mode_t sms_get_charset_mode(void) { return s_charset_mode; }
 

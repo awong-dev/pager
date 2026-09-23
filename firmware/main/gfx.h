@@ -114,7 +114,6 @@ typedef enum {
     GFX_ICON_BATTERY_4,
     GFX_ICON_LINK_OK,
     GFX_ICON_LINK_X,
-    GFX_ICON_LOCK,
     GFX_ICON_PENDING, /* clock, unsent/pending-ack marker */
     GFX_ICON_SMS,
     GFX_ICON_WEB,
@@ -122,10 +121,10 @@ typedef enum {
     /* v0.2 §4.3 (CA trust, docs/V02_DESIGN.md/docs/V02_DESIGN.md §4.3):
      * TLS trust-state indicators, drawn from code (gfx.c's own
      * primitives) exactly like every other icon here, NOT from the assets
-     * partition — see gfx.c's icon_padlock() for the shape. Distinct from
-     * GFX_ICON_LOCK above, which is envelope-signing's own "[lock if sig
-     * on]" indicator (docs/DEVICE_PLAN.md §5.4), a different meaning that
-     * happens to use a similar glyph. */
+     * partition — see gfx.c's icon_padlock() for the shape. The status bar's
+     * only padlock now (envelope-signing's own separate "[lock if sig on]"
+     * indicator, docs/DEVICE_PLAN.md §5.4, was removed — the bar shows only
+     * this TLS trust padlock). */
     GFX_ICON_TLS_PINNED,  /* closed padlock: CA pinned, last connect validated */
     GFX_ICON_TLS_BROKEN,  /* broken padlock: CA pinned, running unvalidated */
     GFX_ICON_COUNT,

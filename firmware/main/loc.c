@@ -855,7 +855,13 @@ bool loc_ingest_req_cbor(const uint8_t *buf, uint16_t len)
 // loc_req, in loc_ingest_req_cbor() above).
 // ---------------------------------------------------------------------------
 
-void loc_on_cell_change(const char *cell_key)
+// Called from net.cpp's network event handler (via net_set_cell_change_cb())
+// with the raw, already-deduplicated-against-the-immediately-previous-value
+// "lac:ci" key; net.cpp's own module comment documents why that
+// de-duplication happens there rather than here. Keep this fast: it can run
+// on WalterModem's _eventProcessingTask, same rule as every other event
+// handoff in this codebase.
+static void loc_on_cell_change(const char *cell_key)
 {
     int64_t now_us = esp_timer_get_time();
     s_lock();

@@ -499,13 +499,6 @@ const msg_t *msg_newest_unread(void);     /* NULL if none */
 typedef void (*msg_iter_peer_cb)(const msg_t *m, void *ctx);
 void msg_iter_peer(const char *alias, bool from_newest, msg_iter_peer_cb cb, void *ctx);
 
-/* true once, after a reset/cold-boot recovery, until this is called for the
- * first time afterward — self-clearing one-shot (chosen semantics: "true
- * once" per the header comment in the phase brief; no separate ack/clear
- * call is exposed since a getter that also clears is simpler for a single
- * UI caller). Always false after a boot with nothing to recover. */
-bool msg_history_lost(void);
-
 /* Owner task 2026-09-20 (factory reset must erase the persisted history
  * too — it is the child's private messages): erases every key in the
  * `msghist` NVS partition/namespace, and, for the same reason, the `msgq`
@@ -517,13 +510,6 @@ bool msg_history_lost(void);
  * esp_restart(), which is what actually clears those. Safe to call more
  * than once; NVS erase of an already-empty namespace is a no-op. */
 void msg_history_erase(void);
-
-typedef struct {
-    uint32_t dedup_hits;
-    uint32_t malformed_drops;
-    uint32_t reply_failed;
-} msg_stats_t;
-void msg_get_stats(msg_stats_t *out);
 
 /* F3.6: increments the malformed_drops counter (§3.4 diagnostics) for a
  * caller that rejects an envelope *before* handing it to

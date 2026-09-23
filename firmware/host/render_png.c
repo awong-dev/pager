@@ -265,15 +265,11 @@ static void render_tofu(void)
 // request: "new: 0  unsent: 0" on the left, icons on the right, MQTT and
 // bars swapped from an earlier iteration so MQTT sits leftmost of the
 // three).
-static void draw_fixture_status_bar(int bars, bool link_ok, int unsent, bool lock_on, int unread,
-                                     int batt_segs)
+static void draw_fixture_status_bar(int bars, bool link_ok, int unsent, int unread, int batt_segs)
 {
     char buf[32];
     snprintf(buf, sizeof(buf), "new: %d  unsent: %d", unread, unsent);
-    int x = gfx_text(0, FIXTURE_STATUS_TEXT_Y, GFX_FONT_NORMAL, buf) + 3;
-    if (lock_on) {
-        gfx_icon(x, 0, GFX_ICON_LOCK);
-    }
+    gfx_text(0, FIXTURE_STATUS_TEXT_Y, GFX_FONT_NORMAL, buf);
 
     int batt_x = GFX_SCREEN_W - GFX_ICON_W;
     gfx_icon(batt_x, 0, (gfx_icon_t) (GFX_ICON_BATTERY_0 + batt_segs));
@@ -290,7 +286,7 @@ static void draw_fixture_status_bar(int bars, bool link_ok, int unsent, bool loc
 static void render_screen_home(void)
 {
     gfx_clear();
-    draw_fixture_status_bar(3, true, 0, true, 1, 3);
+    draw_fixture_status_bar(3, true, 0, 1, 3);
 
     int y = FIXTURE_BODY_TOP + 2;
     gfx_text(0, y, GFX_FONT_NORMAL, ">");
@@ -361,7 +357,7 @@ static int fixture_composer_viewport(const uint8_t *adv, int n, int avail_px, in
 static void render_screen_chat_impl(const char *draft)
 {
     gfx_clear();
-    draw_fixture_status_bar(4, true, 0, false, 0, 3);
+    draw_fixture_status_bar(4, true, 0, 0, 3);
 
     /* Owner task 2026-09-20 ("wrap long messages in the chat screen"):
      * reproduces scr_chat.c's real row-wrap model (wrap_width_row0()/
@@ -516,7 +512,7 @@ static void render_screen_chat_long_draft(void)
 static void render_screen_device(void)
 {
     gfx_clear();
-    draw_fixture_status_bar(3, true, 0, true, 0, 3);
+    draw_fixture_status_bar(3, true, 0, 0, 3);
 
     const char *lines[] = {
         "id pgr-0001  fw 0.2.0",
@@ -542,7 +538,7 @@ static void render_screen_device(void)
 static void render_screen_setup(void)
 {
     gfx_clear();
-    draw_fixture_status_bar(0, false, 0, false, 0, 4);
+    draw_fixture_status_bar(0, false, 0, 0, 4);
 
     int y = FIXTURE_BODY_TOP + 2;
     gfx_text(0, y, GFX_FONT_NORMAL, "Setup");
@@ -571,7 +567,7 @@ static void render_screen_setup(void)
 static void render_screen_pick(void)
 {
     gfx_clear();
-    draw_fixture_status_bar(3, true, 0, false, 0, 3);
+    draw_fixture_status_bar(3, true, 0, 0, 3);
 
     int y = FIXTURE_BODY_TOP + 2;
     struct {
@@ -600,7 +596,7 @@ static void render_screen_pick(void)
 static void render_screen_book(void)
 {
     gfx_clear();
-    draw_fixture_status_bar(3, true, 0, false, 0, 3);
+    draw_fixture_status_bar(3, true, 0, 0, 3);
 
     int y = FIXTURE_BODY_TOP + 2;
     struct {
@@ -632,7 +628,7 @@ static void render_screen_book(void)
 static void render_screen_book_add(void)
 {
     gfx_clear();
-    draw_fixture_status_bar(3, true, 0, false, 0, 3);
+    draw_fixture_status_bar(3, true, 0, 0, 3);
 
     int y = FIXTURE_BODY_TOP + 2;
     gfx_text(0, y, GFX_FONT_NORMAL, "Add contact");
@@ -650,7 +646,7 @@ static void render_screen_book_add(void)
 static void render_screen_nickname(void)
 {
     gfx_clear();
-    draw_fixture_status_bar(3, true, 0, false, 0, 3);
+    draw_fixture_status_bar(3, true, 0, 0, 3);
 
     int y = FIXTURE_BODY_TOP + 2;
     gfx_text(0, y, GFX_FONT_NORMAL, "Nickname");
@@ -685,7 +681,7 @@ static void draw_centered_wrapped(const char *text)
 static void render_screen_greeting(void)
 {
     gfx_clear();
-    draw_fixture_status_bar(3, true, 0, false, 0, 3);
+    draw_fixture_status_bar(3, true, 0, 0, 3);
     draw_centered_wrapped("Hi Colin! Hi May! Hi Hannah!");
 }
 
@@ -703,7 +699,7 @@ static void draw_status_footer(const char *status)
 static void render_screen_greeting_booting(void)
 {
     gfx_clear();
-    draw_fixture_status_bar(0, false, 0, false, 0, 0);
+    draw_fixture_status_bar(0, false, 0, 0, 0);
     draw_centered_wrapped("Hi Colin! Hi May! Hi Hannah!");
     draw_status_footer("booting");
 }
@@ -711,7 +707,7 @@ static void render_screen_greeting_booting(void)
 static void render_screen_greeting_sim_missing(void)
 {
     gfx_clear();
-    draw_fixture_status_bar(0, false, 0, false, 0, 0);
+    draw_fixture_status_bar(0, false, 0, 0, 0);
     draw_centered_wrapped("Hi Colin! Hi May! Hi Hannah!");
     draw_status_footer("sim missing");
 }
@@ -719,7 +715,7 @@ static void render_screen_greeting_sim_missing(void)
 static void render_screen_greeting_shutting_down(void)
 {
     gfx_clear();
-    draw_fixture_status_bar(0, false, 0, false, 0, 0);
+    draw_fixture_status_bar(0, false, 0, 0, 0);
     draw_centered_wrapped("Hi Colin! Hi May! Hi Hannah!");
     draw_status_footer("shutting down");
 }
@@ -773,7 +769,7 @@ static void draw_padlock_scaled(int x0, int y0, gfx_icon_t id, int scale)
 static void render_screen_tls_icons(void)
 {
     gfx_clear();
-    draw_fixture_status_bar(3, true, 0, false, 0, 3);
+    draw_fixture_status_bar(3, true, 0, 0, 3);
 
     int y = FIXTURE_BODY_TOP + 2;
     gfx_text(0, y, GFX_FONT_NORMAL, "pinned (1x, 3x, 6x):");
@@ -785,13 +781,6 @@ static void render_screen_tls_icons(void)
     draw_padlock_scaled(140, y - 2, GFX_ICON_TLS_BROKEN, 1);
     draw_padlock_scaled(160, y - 6, GFX_ICON_TLS_BROKEN, 3);
     draw_padlock_scaled(200, y - 10, GFX_ICON_TLS_BROKEN, 6);
-}
-
-static void render_screen_sleeping(void)
-{
-    gfx_clear();
-    draw_fixture_status_bar(3, true, 0, false, 0, 3);
-    draw_centered_wrapped("sleeping");
 }
 
 int main(int argc, char **argv)
@@ -824,7 +813,6 @@ int main(int argc, char **argv)
         { "screen_book_add", render_screen_book_add },
         { "screen_nickname", render_screen_nickname },
         { "screen_greeting", render_screen_greeting },
-        { "screen_sleeping", render_screen_sleeping },
         { "screen_greeting_booting", render_screen_greeting_booting },
         { "screen_greeting_sim_missing", render_screen_greeting_sim_missing },
         { "screen_greeting_shutting_down", render_screen_greeting_shutting_down },

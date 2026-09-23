@@ -33,18 +33,12 @@ extern "C" {
 
 /* Bring up the panel: VCC gate on, hardware reset, SSD1680 init sequence.
  * Power effect: turns the panel's VCC rail on (PAGER_PIN_DISP_VCC_EN) for
- * the duration of init; disp_shutdown() gates it back off. Returns false
- * if BUSY never deasserts (15s timeout, one retry) — the caller MUST keep
- * running headless in that case (PROTOCOL.md: no pager function may be
- * gated on the display). Forces a full refresh on the first
- * disp_refresh_cadence() call after a successful init. */
+ * the duration of init. Returns false if BUSY never deasserts (15s
+ * timeout, one retry) — the caller MUST keep running headless in that case
+ * (PROTOCOL.md: no pager function may be gated on the display). Forces a
+ * full refresh on the first disp_refresh_cadence() call after a successful
+ * init. */
 bool disp_init(void);
-
-/* Sleep the panel (0x10) and power the VCC gate off. Power effect: this is
- * the single largest display-side saving in this driver — PROTOCOL.md
- * §8.4: "Display (gated off via IO15) ~0 mA". Safe to call even if
- * disp_init() failed or the display was marked dead. */
-void disp_shutdown(void);
 
 /* True once a BUSY timeout has persisted through a reset+re-init retry;
  * every refresh call below becomes a no-op once this is true, and the

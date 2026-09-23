@@ -31,7 +31,7 @@ static RTC_NOINIT_ATTR uint32_t s_magic;
 static RTC_NOINIT_ATTR uint32_t s_stage;
 static RTC_NOINIT_ATTR uint32_t s_resets;
 
-const char *watchdog_stage_name(uint32_t stage)
+static const char *watchdog_stage_name(uint32_t stage)
 {
     static const char *const k_names[] = {
         "?", "boot", "network init", "loop top", "entering light sleep", "just woke from light sleep",
@@ -162,8 +162,6 @@ void walter_modem_block_tick(void)
     // the task watchdog's own timeout takes from the last real feed) with
     // the "modem health check" breadcrumb intact.
 }
-
-uint32_t watchdog_reset_count(void) { return (s_magic == WD_MAGIC) ? s_resets : 0; }
 
 void watchdog_hard_reset(void)
 {
