@@ -140,7 +140,7 @@ Base envelope:
 | `c` | array of objects | `book` only | ≤10 contacts | Approved contacts; each has `a` (alias), `n` (name ≤16 cp), `t` (type: `web`/`sms`/`chat`/`grp`, the last for a group conversation) (§4.3). |
 | `p` | array of objects | `book` only | ≤4 pending requests | Pending `contact_req`; each has `n` (name), `s` (status: `pend`/`no`) (§4.3). |
 | `more` | bool | `book` only | — | Reserved for chunking if the cap moves (§4.3). |
-| `cfg` | object | `/down` `cfg` kind only | — | Configuration map carrying `lock` (object with `clear` bool and `auto` int minutes; a dangling cross-reference to "§5.8" for its full shape predates this table's current section numbering and is flagged, not fixed, here), `ca` (v0.2, §4.4) and `sms` (v0.2, §3.6 — the SMS contact allow-list). |
+| `cfg` | object | `/down` `cfg` kind only | — | Configuration map carrying `lock` (object with `clear` bool and `auto` int minutes; a dangling cross-reference to "§5.8" for its full shape predates this table's current section numbering and is flagged, not fixed, here), `ca` (v0.2, §4.4), `sms` (v0.2, §3.6 — the SMS contact allow-list) and `wifi` (`docs/WIFI_DESIGN.md` §4/§6, §10 below — the WiFi enable flag and up to two credential pairs). |
 | `peer` | string | `sms_log` only | E.164 | The other party's phone number (§3.6). |
 | `dir` | string | `sms_log` only | `out` \| `in` | Direction of the SMS this entry audits (§3.6). |
 | `st` | string | `sms_log` only | `sent` \| `failed` \| `recv` \| `blocked` | Outcome of the SMS this entry audits (§3.6). |
@@ -237,10 +237,17 @@ carrying the approved contacts and pending requests for this device:
 **`kind:"cfg"` (relay → device).** A configuration message is a down message with `kind:"cfg"`,
 `ack:null`, carrying device settings that only the relay can modify (passcode lock, auto-lock
 timing, CA trust, the SMS contact allow-list, etc.). Fields: `cfg` is an object that currently
-holds `lock` (see §5.8 for structure), `ca` (v0.2, §4.4) and `sms` (v0.2, §3.6/§10 — an array of
+holds `lock` (see §5.8 for structure), `ca` (v0.2, §4.4), `sms` (v0.2, §3.6/§10 — an array of
 `{n, p}` objects, the device's *whole* SMS contact allow-list, replaced wholesale on every push;
-`[]` is a legal push meaning "no SMS contacts"). Unknown members of `cfg` are ignored, making this
-the home for future settings.
+`[]` is a legal push meaning "no SMS contacts") and `wifi` (`docs/WIFI_DESIGN.md` §4, §10 below —
+`{en, nets}`: `en` toggles WiFi on/off, `nets` is up to two `{s, p}` (SSID, WPA2-PSK) credential
+pairs; `nets` absent leaves the device's stored networks alone and applies `en` only, letting the
+web app toggle WiFi without re-sending a PSK; `nets: []` clears the stored networks). Unknown
+members of `cfg` are ignored, making this the home for future settings. **The relay MUST refuse to
+push `cfg.wifi.nets`** (`en` alone is always allowed) to a device whose last `/status` reported
+`tls` other than `pinned` (§5.1) — WiFi requires a CA-pinned TLS connection (`docs/WIFI_DESIGN.md`
+§5), and pushing credentials to a device running without certificate validation would send a PSK
+over a connection that cannot verify who is on the other end.
 - **Not a thread entry:** the device MUST NOT render it in the message thread, and MUST NOT
   `shown`- or `read`-ack it in the normal sense. Instead, the device acks with `shown` **once the
   config has been applied**.
@@ -530,9 +537,10 @@ broker-generated LWT.
 | `loc_backoff_s` | int | no | 0…86400 | *(v0.2, §13.3)* Seconds until the device's own growing location-attempt backoff next allows a fresh fix attempt; `0` = an attempt is allowed now. See §13.3's amendment for how this relates to `loc_min_s`. |
 | `sms_lost` | int | no | ≥ 0 | *(v0.2, §3.6 — device-direct SMS)* Count of `sms_log` audit entries dropped from the device's NVS queue for lack of space; normally 0. |
 | `link` | int | no | ≥ 0 | *(v0.2, §9.5 — MQTT session liveness)* Counter incremented on every MQTT session restart within the current boot (starts at 1 per boot); `session` alone cannot tell a silent modem-initiated resume from an unbroken session. Absent means firmware older than §9. The relay treats a changed `link` exactly like a changed `session` for §5.3's online-edge re-publish. |
+| `xport` | string | no | `lte` \| `wifi` | *(WiFi transport, `docs/WIFI_DESIGN.md` §6)* Which physical transport carried this MQTT session: the Sequans LTE-M modem or the ESP32-S3's own WiFi station (§4 of that design). Absent means firmware that predates the WiFi transport, or a device with WiFi never enabled. **Display and diagnosis only** — the relay stores whatever the device reports and never writes it back; a transport switch already bumps `link` (§9.5), which the relay already treats as a re-publish edge (§5.3), so `xport` itself carries no additional relay logic. |
 
-*(`loc_period_s`, `loc_min_s`, `tls`, `ca_fp`, `loc_backoff_s` and `sms_lost` — six fields —
-are **display and diagnosis only**; the relay stores the reported
+*(`loc_period_s`, `loc_min_s`, `tls`, `ca_fp`, `loc_backoff_s`, `sms_lost` and `xport` — seven
+fields — are **display and diagnosis only**; the relay stores the reported
 values and never writes them back. The device owns its location duty cycle because the cost being
 traded is GNSS power on its battery (§12 item 8), which the server cannot see. Making these
 server-settable would need a `/cfg` topic, which §11 still only reserves. `link` is the one
@@ -540,12 +548,13 @@ exception: the relay does not merely display it, it compares it against the stor
 whether to re-publish unacked `/down` messages, exactly as it already does for `session` — §5.3.)*
 They are optional, so
 a `/status` without them remains valid, and a relay MUST treat their absence as "unknown", not as `0`.
-**Compatibility (§0):** every field in this table added since the first release — these five
+**Compatibility (§0):** every field in this table added since the first release — these six
 included — is optional, and an *older* relay MUST NOT reject a `/status` merely because it carries
 a field the relay predates (§3.1's "unknown fields MUST be ignored" already covers this; called out
 again here because it is the exact case v0.2 shipped the relay's own acceptance of these fields
 ahead of any firmware sending them, per the "add the relay's acceptance ... before any firmware
-that sends them is flashed" rule).
+that sends them is flashed" rule — `xport` is the same shape of change, applied ahead of W6's
+firmware, docs/WIFI_TASKS.md W7).
 
 ### 5.2 LWT payload (48 bytes)
 
@@ -1292,6 +1301,7 @@ Devices emit CBOR (§3) with this integer keymap. The relay accepts both JSON (t
 | 49 | `cell` | map | `/loc` envelope, optional (§13.2 — cell-tower location fallback) |
 | 50 | `link` | int | `/status` (v0.2, §9.5 — MQTT-session generation within a boot, optional) |
 | 51 | `sndr` | tstr | `/down` `msg` in a group conversation (v0.3, §3.1 — the author's alias when `from` names the group) |
+| 52 | `xport` | tstr | `/status` (WiFi transport, §5.1 — `lte`/`wifi`, optional) |
 
 **Sub-map keys:**
 
@@ -1308,7 +1318,8 @@ forward-compatibility rule.
 
 `cfg` object (inside `/down` `cfg`, key 38 above): `lock=0` (map, existing — see below), `ca=1`
 (map, v0.2 — §4.4: `{url=0 tstr, sha=1 bstr(32)}`; `sha` absent on an un-pin push, `url=""`),
-`sms=2` (array, v0.2 — §3.6: the device's whole SMS contact allow-list, `[{n=0 tstr, p=1 tstr}, …]`).
+`sms=2` (array, v0.2 — §3.6: the device's whole SMS contact allow-list, `[{n=0 tstr, p=1 tstr}, …]`),
+`wifi=3` (map, `docs/WIFI_DESIGN.md` §4/§6 — see below).
 
 `lock` map (inside `/down` `cfg.lock`): `clear=0` (bool), `auto=1` (int minutes).
 
@@ -1320,6 +1331,19 @@ forward-compatibility rule.
 bytes — tighter than `book`/`contact_req`'s 48-byte name cap; see §3.6 for why), `p=1` (tstr,
 E.164 phone number). Note this is its own small namespace, distinct from `c[]`'s `{a, n, t}` above,
 even though both happen to use `n` for a display name.
+
+`wifi` map (inside `/down` `cfg.wifi`, key 3 above, `docs/WIFI_DESIGN.md` §4/§6): `en=0` (bool,
+WiFi on/off), `nets=1` (array, ≤2 entries, `[{s=0 tstr, p=1 tstr}, …]` — see below). `nets` absent
+means "leave the stored networks alone, apply `en` only"; `nets: []` clears the stored networks.
+WPA2-PSK only, one SSID/PSK pair per entry.
+
+`cfg.wifi.nets[]` item (`docs/WIFI_DESIGN.md` §4): `s=0` (tstr, SSID, 1-32 bytes), `p=1` (tstr,
+WPA2 PSK, 8-63 bytes). Both fields are required in every entry that is present at all — a partial
+entry (`s` without `p` or vice versa) is malformed and the whole `cfg.wifi.nets` push is rejected,
+not truncated (`firmware/main/wificred.c`'s `wificred_parse_cfg_submap`, which this sub-map matches
+byte for byte, applies the same all-or-nothing rule). **The relay MUST NOT log a PSK value at any
+level** (info, debug, or error) — see §4/§5.1's `tls`-guard rule above for the security reason this
+matters.
 
 **JSON note (§3, §14.3):** the CBOR sub-map keys above are integers; in JSON the same *names* are
 used (`{"lock":{...}}`, `{"ca":{"url":...,"sha":...}}`), and, exactly like `sig`, a `bstr`-typed

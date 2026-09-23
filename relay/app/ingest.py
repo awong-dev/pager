@@ -607,6 +607,7 @@ class Ingest:
             locBackoffS=env.loc_backoff_s,
             smsLost=env.sms_lost,
             link=env.link,
+            xport=env.xport,
         )
 
         # docs/V02_DESIGN.md §4.3: "on a transition

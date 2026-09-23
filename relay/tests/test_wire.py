@@ -245,6 +245,30 @@ def test_status_accepts_link_zero():
     assert env.link == 0
 
 
+# ---------------------------------------------------------------------------
+# docs/WIFI_DESIGN.md §6/§7, docs/WIFI_TASKS.md W7 -- `/status`'s optional
+# `xport` field: which physical transport carried this session.
+# ---------------------------------------------------------------------------
+
+
+def test_status_accepts_xport_wifi_and_lte():
+    assert StatusEnvelope.model_validate(_online_status(xport="wifi")).xport == "wifi"
+    assert StatusEnvelope.model_validate(_online_status(xport="lte")).xport == "lte"
+
+
+def test_status_xport_is_optional():
+    """Older firmware that predates the WiFi transport never sends `xport`;
+    such a `/status` must still validate, with `env.xport` reported as
+    unknown (`None`), same compatibility rule `link` gets above."""
+    env = StatusEnvelope.model_validate(_online_status())
+    assert env.xport is None
+
+
+def test_status_rejects_bad_xport_value():
+    with pytest.raises(ValidationError):
+        StatusEnvelope.model_validate(_online_status(xport="modem"))
+
+
 def test_status_still_ignores_a_genuinely_unknown_field():
     """The pre-existing `extra='ignore'` forward-compat guarantee, still
     true for a field this relay has no opinion on at all (as opposed to the

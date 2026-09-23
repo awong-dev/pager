@@ -40,7 +40,10 @@ import cbor2
 # (§13.2 -- cell-tower location fallback), 50 is `/status`'s `link`
 # (docs/V02_DESIGN.md §9.5/§7, this task -- MQTT-session generation counter),
 # 51 is `/down msg`'s group-author field `sndr` (docs/GROUP_CHAT_DESIGN.md
-# §4, docs/PROTOCOL.md §3.1/§10 -- the next free integer after `link=50`).
+# §4, docs/PROTOCOL.md §3.1/§10 -- the next free integer after `link=50`),
+# 52 is `/status`'s `xport` (docs/WIFI_DESIGN.md §6/§7, docs/WIFI_TASKS.md
+# W7 -- which physical transport carried this session, the next free
+# integer after `sndr=51`).
 KEYMAP: dict[str, int] = {
     "v": 0,
     "id": 1,
@@ -104,6 +107,9 @@ KEYMAP: dict[str, int] = {
     # docs/GROUP_CHAT_DESIGN.md §4 (v0.3): `/down msg`'s group-author alias,
     # absent on every one-to-one page.
     "sndr": 51,
+    # docs/WIFI_DESIGN.md §6/§7, docs/WIFI_TASKS.md W7: `/status`'s
+    # transport-in-use field, `lte`/`wifi`, optional.
+    "xport": 52,
 }
 REVERSE_KEYMAP: dict[int, str] = {v: k for k, v in KEYMAP.items()}
 
@@ -121,8 +127,18 @@ CA_KEYMAP: dict[str, int] = {"url": 0, "sha": 1}
 # a JSON key name.
 SMS_CONTACT_KEYMAP: dict[str, int] = {"n": 0, "p": 1}
 # PROTOCOL.md §10's own `cfg` sub-map allocation (see module docstring):
-# `lock=0`, `ca=1`, `sms=2`.
-CFG_KEYMAP: dict[str, int] = {"lock": 0, "ca": 1, "sms": 2}
+# `lock=0`, `ca=1`, `sms=2`, `wifi=3` (docs/WIFI_DESIGN.md §4/§6,
+# docs/WIFI_TASKS.md W7).
+CFG_KEYMAP: dict[str, int] = {"lock": 0, "ca": 1, "sms": 2, "wifi": 3}
+# docs/WIFI_DESIGN.md §4/§6, docs/PROTOCOL.md §10 (this task): `cfg.wifi =
+# {en, nets}`. `en` toggles WiFi on/off; `nets` (absent = "leave stored
+# networks alone, apply en only") is an array of at most two
+# `WIFI_NET_KEYMAP` entries -- matches `firmware/main/wificred.c`'s
+# `wificred_parse_cfg_submap` byte for byte (WIFICK_EN/WIFICK_NETS).
+WIFI_KEYMAP: dict[str, int] = {"en": 0, "nets": 1}
+# docs/WIFI_DESIGN.md §4: one `cfg.wifi.nets[]` entry, `{s, p}` = SSID, WPA2
+# PSK -- matches `wificred.c`'s WIFI_NETK_S/WIFI_NETK_P.
+WIFI_NET_KEYMAP: dict[str, int] = {"s": 0, "p": 1}
 # docs/PROTOCOL.md §13.2 (this task): `cell = {mcc, mnc, tac, ci, rsrp}`.
 CELL_KEYMAP: dict[str, int] = {"mcc": 0, "mnc": 1, "tac": 2, "ci": 3, "rsrp": 4}
 
@@ -134,6 +150,8 @@ _REVERSE_CA = {v: k for k, v in CA_KEYMAP.items()}
 _REVERSE_SMS_CONTACT = {v: k for k, v in SMS_CONTACT_KEYMAP.items()}
 _REVERSE_CFG = {v: k for k, v in CFG_KEYMAP.items()}
 _REVERSE_CELL = {v: k for k, v in CELL_KEYMAP.items()}
+_REVERSE_WIFI = {v: k for k, v in WIFI_KEYMAP.items()}
+_REVERSE_WIFI_NET = {v: k for k, v in WIFI_NET_KEYMAP.items()}
 
 
 def _value_to_int_keys(name: str, value: Any) -> Any:
@@ -161,6 +179,19 @@ def _value_to_int_keys(name: str, value: Any) -> Any:
                 out[CFG_KEYMAP["sms"]] = [
                     {SMS_CONTACT_KEYMAP[sk]: sv for sk, sv in item.items()} for item in v
                 ]
+            elif k == "wifi" and isinstance(v, dict):
+                # docs/WIFI_DESIGN.md §4/§6: `cfg.wifi = {en, nets}` -- `nets`
+                # (a list of `{s, p}` entries) is only translated if present,
+                # since its absence is itself meaningful ("leave the stored
+                # networks alone, apply en only").
+                wifi_out: dict[int, Any] = {}
+                if "en" in v:
+                    wifi_out[WIFI_KEYMAP["en"]] = v["en"]
+                if "nets" in v:
+                    wifi_out[WIFI_KEYMAP["nets"]] = [
+                        {WIFI_NET_KEYMAP[nk]: nv for nk, nv in item.items()} for item in v["nets"]
+                    ]
+                out[CFG_KEYMAP["wifi"]] = wifi_out
             else:
                 # §3.2: "Unknown members of cfg are ignored" -- a future
                 # member this module does not know a numeric key for yet
@@ -194,6 +225,16 @@ def _value_to_names(name: str, value: Any) -> Any:
                 out["sms"] = [
                     {_REVERSE_SMS_CONTACT[sk]: sv for sk, sv in item.items()} for item in v
                 ]
+            elif k == CFG_KEYMAP["wifi"] and isinstance(v, dict):
+                wifi_out: dict[str, Any] = {}
+                for wk, wv in v.items():
+                    if wk == WIFI_KEYMAP["nets"] and isinstance(wv, list):
+                        wifi_out["nets"] = [
+                            {_REVERSE_WIFI_NET[nk]: nv for nk, nv in item.items()} for item in wv
+                        ]
+                    elif wk in _REVERSE_WIFI:
+                        wifi_out[_REVERSE_WIFI[wk]] = wv
+                out["wifi"] = wifi_out
             else:
                 out[_REVERSE_CFG.get(k, k)] = v
         return out

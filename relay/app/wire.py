@@ -232,6 +232,11 @@ class StatusEnvelope(BaseModel):
     # `session` (ingest.py's `handle_status`), because a resume drops any
     # QoS 1 `/down` published into the ≤10 s gap before the re-subscribe.
     link: int | None = None
+    # docs/WIFI_DESIGN.md §6/§7, docs/PROTOCOL.md §5.1 (this task): which
+    # physical transport carried this session -- display/diagnosis only, the
+    # relay stores it and never writes it back. Absent means firmware that
+    # predates the WiFi transport, or WiFi never enabled on this device.
+    xport: Literal["lte", "wifi"] | None = None
     # §14.2: present on every signed envelope; absent on the unsigned LWT
     # exception (§14.6) and on an unsigned (`authMode: "password"`) device.
     n: int | None = None

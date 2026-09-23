@@ -640,6 +640,40 @@ def test_status_persists_tls_ca_fp_loc_backoff_s_sms_lost():
     assert status.smsLost == 1
 
 
+# ---- docs/WIFI_DESIGN.md §6/§7, docs/WIFI_TASKS.md W7: `xport` ----
+
+
+def test_status_persists_xport():
+    _make_user("wifiuser1", "wifiuser1")
+    _make_pager_device("pgr-xport-1", "wifiuser1")
+    ingest, _broker = _ingest()
+
+    ingest.handle_status(
+        status_topic("pgr-xport-1"), online_status_payload("s_00000001", xport="wifi")
+    )
+    assert devices_store.get_device("pgr-xport-1").status.xport == "wifi"
+
+    ingest.handle_status(
+        status_topic("pgr-xport-1"), online_status_payload("s_00000002", xport="lte")
+    )
+    assert devices_store.get_device("pgr-xport-1").status.xport == "lte"
+
+
+def test_status_without_xport_still_validates_and_leaves_it_unknown():
+    """Absent-field compatibility (docs/PROTOCOL.md §0): a `/status` from
+    firmware that predates the WiFi transport must still validate, and
+    `xport` is reported as unknown (`None`), not defaulted to `lte`."""
+    _make_user("wifiuser2", "wifiuser2")
+    _make_pager_device("pgr-xport-2", "wifiuser2")
+    ingest, _broker = _ingest()
+
+    ingest.handle_status(status_topic("pgr-xport-2"), online_status_payload("s_00000001"))
+
+    assert devices_store.get_device("pgr-xport-2").status.xport is None
+    # No malformed-payload drop: the status was accepted and stored.
+    assert devices_store.get_device("pgr-xport-2").status.state == "online"
+
+
 def test_status_logs_security_event_on_transition_into_broken(caplog):
     _make_user("catrustuser2", "catrustuser2")
     _make_pager_device("pgr-catrust-2", "catrustuser2")

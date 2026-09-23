@@ -102,6 +102,13 @@ class DeviceStatus(BaseModel):
     # republish (ingest.py) treats a changed `link` exactly like a changed
     # `session`.
     link: int | None = None
+    # docs/WIFI_DESIGN.md §6/§7, docs/PROTOCOL.md §5.1 (docs/WIFI_TASKS.md
+    # W7): which physical transport carried this session -- display/
+    # diagnosis only, same as `tls`/`ca_fp` above. Also read by
+    # `app/routers/devices.py`'s `PUT /api/devices/{id}/wifi` guard, which
+    # refuses to push `cfg.wifi.nets` unless `tls == "pinned"` (not `xport`
+    # -- `xport` itself gates nothing, `tls` is the security-relevant field).
+    xport: Literal["lte", "wifi"] | None = None
     updatedAt: datetime | None = None
     # docs/DEVICE_PLAN.md §2.6: set once `sigFailures` crosses
     # AUTH_ALARM_THRESHOLD inside AUTH_ALARM_WINDOW_S; cleared on key

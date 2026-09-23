@@ -41,15 +41,80 @@ extra round trip.
 from __future__ import annotations
 
 import base64
+import re
 from datetime import datetime
+from typing import Any
 
 from google.cloud.firestore import SERVER_TIMESTAMP, Transaction
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 
 from app.db.firestore import get_db, run_transaction
 
 _WINDOW = 64
 _WINDOW_MASK = (1 << _WINDOW) - 1
+
+# docs/WIFI_DESIGN.md §4, docs/WIFI_TASKS.md W7: `deviceSecrets/{d}.wifiEnabled`
+# / `.wifiNets`, next to `hmacKey`/`mqttPasswordHash` -- a WPA2 PSK is a
+# credential exactly like those two, and this collection is the one place
+# nothing but firebase-admin (this relay) can ever read (this module's own
+# docstring). `devices/{d}` (`app/store/devices.py`), by contrast, is
+# readable by the device's own owner from the web app, so a raw PSK must
+# never land there -- `GET /api/devices/{id}/wifi` (`app/routers/devices.py`)
+# reports only `{s, set: true}` per network, never `p`.
+_WIFI_CONTROL_CHAR_RE = re.compile(r"[\x00-\x1f\x7f]")
+WIFI_SSID_MIN_BYTES = 1
+WIFI_SSID_MAX_BYTES = 32
+WIFI_PSK_MIN_BYTES = 8
+WIFI_PSK_MAX_BYTES = 63
+# docs/WIFI_DESIGN.md §4: "at most 2" (`WIFICRED_MAX_NETS`,
+# `firmware/main/wificred.h`) -- kept in lockstep with that firmware constant
+# by inspection, not by import (no shared header between the two languages).
+WIFI_MAX_NETS = 2
+
+
+class WifiNet(BaseModel):
+    """One `cfg.wifi.nets[]` entry (docs/PROTOCOL.md §10) -- `s` (SSID) and
+    `p` (WPA2-PSK passphrase), matching `firmware/main/wificred.c`'s
+    `wificred_valid_ssid`/`wificred_valid_psk` byte-length bounds and their
+    "no embedded NUL" rule (a NUL would silently truncate through this
+    relay's own JSON/CBOR round-trip the same way it would through
+    `nvs_set_str()`/`nvs_get_str()` on the device)."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    s: str
+    p: str
+
+    @field_validator("s")
+    @classmethod
+    def _check_ssid(cls, value: str) -> str:
+        if _WIFI_CONTROL_CHAR_RE.search(value):
+            raise ValueError("wifi ssid contains control characters")
+        length = len(value.encode("utf-8"))
+        if not (WIFI_SSID_MIN_BYTES <= length <= WIFI_SSID_MAX_BYTES):
+            raise ValueError(
+                f"wifi ssid must be {WIFI_SSID_MIN_BYTES}-{WIFI_SSID_MAX_BYTES} UTF-8 bytes, "
+                f"got {length}"
+            )
+        return value
+
+    @field_validator("p")
+    @classmethod
+    def _check_psk(cls, value: str) -> str:
+        if _WIFI_CONTROL_CHAR_RE.search(value):
+            # Never interpolate `value` itself into this message -- this
+            # file's own hard "never a PSK near a log" rule, applied to
+            # exception text too (pydantic's `ValidationError` renders a
+            # `ValueError`'s message verbatim, and that message can end up in
+            # a log or an HTTP 422 body).
+            raise ValueError("wifi psk contains control characters")
+        length = len(value.encode("utf-8"))
+        if not (WIFI_PSK_MIN_BYTES <= length <= WIFI_PSK_MAX_BYTES):
+            raise ValueError(
+                f"wifi psk must be {WIFI_PSK_MIN_BYTES}-{WIFI_PSK_MAX_BYTES} UTF-8 bytes, "
+                "got a different length"
+            )
+        return value
 
 
 def _to_signed64(bits: int) -> int:
@@ -192,6 +257,37 @@ def next_down_n(device_id: str) -> int:
         return down_n
 
     return run_transaction(_txn)
+
+
+def get_wifi(device_id: str) -> tuple[bool, list[WifiNet]]:
+    """docs/WIFI_TASKS.md W7: `GET /api/devices/{id}/wifi`'s reader.
+    `(False, [])` for a device with no `deviceSecrets/{d}` document at all
+    (e.g. a `password`-mode test device, or one created before this field
+    existed) -- same "no such secret is just an empty answer" style
+    `app/devcfg.py`'s pending-slot readers use, rather than raising."""
+    snap = _secrets().document(device_id).get()
+    if not snap.exists:
+        return False, []
+    data = snap.to_dict() or {}
+    en = bool(data.get("wifiEnabled", False))
+    raw_nets = data.get("wifiNets", [])
+    nets = [WifiNet.model_validate(n) for n in raw_nets] if isinstance(raw_nets, list) else []
+    return en, nets[:WIFI_MAX_NETS]
+
+
+def set_wifi(device_id: str, *, en: bool, nets: list[WifiNet] | None) -> None:
+    """docs/WIFI_TASKS.md W7: `PUT /api/devices/{id}/wifi`'s writer. `nets is
+    None` means "leave the stored networks alone, apply `en` only" (mirrors
+    `cfg.wifi.nets` absent on the wire, docs/WIFI_DESIGN.md §4) -- a merge
+    write that touches only `wifiEnabled` in that case; `nets=[]` clears the
+    stored set (still a merge write, but with an explicit empty list so the
+    old entries do not linger). Caller (`app/routers/devices.py`) has already
+    applied the `tls == "pinned"` guard before calling this with a non-`None`
+    `nets` -- this function does not re-check it."""
+    fields: dict[str, Any] = {"wifiEnabled": en}
+    if nets is not None:
+        fields["wifiNets"] = [n.model_dump() for n in nets]
+    _secrets().document(device_id).set(fields, merge=True)
 
 
 def bump_sig_failures(device_id: str) -> int:

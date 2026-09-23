@@ -144,14 +144,19 @@ _PENDING_CFG_CA_FIELD = "pendingCfgCa"
 # (or be clobbered by) a pending `cfg.lock`/`cfg.ca`, since all three are
 # independently "newest unacked, one at a time" per *kind* of cfg.
 _PENDING_CFG_SMS_FIELD = "pendingCfgSms"
+# docs/WIFI_DESIGN.md §4/§6, docs/WIFI_TASKS.md W7: `cfg.wifi` gets its own
+# pending slot for the same reason -- independent of `cfg.lock`/`cfg.ca`/
+# `cfg.sms`.
+_PENDING_CFG_WIFI_FIELD = "pendingCfgWifi"
 # Every field `ack()`/`republish_pending()` iterate over -- see their
-# docstrings for why book/lock/ca/sms are four independent "newest unacked"
-# slots rather than one.
+# docstrings for why book/lock/ca/sms/wifi are five independent "newest
+# unacked" slots rather than one.
 _ALL_PENDING_FIELDS = (
     _PENDING_BOOK_FIELD,
     _PENDING_CFG_FIELD,
     _PENDING_CFG_CA_FIELD,
     _PENDING_CFG_SMS_FIELD,
+    _PENDING_CFG_WIFI_FIELD,
 )
 
 
@@ -442,6 +447,58 @@ def push_sms_contacts(
     _assert_within_envelope_limit(obj)
     _set_pending(device_id, _PENDING_CFG_SMS_FIELD, obj)
     return broker.publish_down(device_id, obj)
+
+
+def push_wifi(
+    device_id: str, *, en: bool, nets: list[dict[str, str]] | None, broker: BrokerClient
+) -> bool:
+    """docs/WIFI_DESIGN.md §4/§6, docs/WIFI_TASKS.md W7: `/down cfg.wifi =
+    {en, nets?}`. `nets is None` omits the `nets` key from the pushed
+    envelope entirely -- the wire's own "leave the stored networks alone,
+    apply `en` only" rule (§4), which is what lets the web app toggle WiFi
+    without re-sending a PSK. `nets == []` pushes an explicit empty array
+    (clears the device's stored networks); a non-empty list wholesale
+    replaces them. `nets` entries are `{"s": ssid, "p": psk}` (`app/store/
+    device_secrets.py`'s `WifiNet.model_dump()` shape) -- the caller
+    (`app/routers/devices.py`) has already validated the `<=2`/byte-length
+    rules and the `tls == "pinned"` guard before calling this, so this
+    function does not re-check either.
+
+    **Never logs `nets`' contents** (this module logs nothing on success, same
+    as `push_sms_contacts`/`push_cfg`; the "no such device" warning below
+    logs only the device id, matching every other push function here).
+
+    Stored under its own pending slot (`_PENDING_CFG_WIFI_FIELD`), independent
+    of a pending `cfg.lock`/`cfg.ca`/`cfg.sms` -- see `_ALL_PENDING_FIELDS`'s
+    docstring."""
+    if devices_store.get_device(device_id) is None:
+        logger.warning("push_wifi: no such device %s", device_id)
+        return False
+    cfg_wifi: dict[str, Any] = {"en": en}
+    if nets is not None:
+        cfg_wifi["nets"] = nets
+    obj: dict[str, Any] = {
+        "v": 1,
+        "id": new_message_id(),
+        "ts": int(time.time()),
+        "kind": "cfg",
+        "cfg": {"wifi": cfg_wifi},
+        "ack": None,
+    }
+    _assert_within_envelope_limit(obj)
+    _set_pending(device_id, _PENDING_CFG_WIFI_FIELD, obj)
+    return broker.publish_down(device_id, obj)
+
+
+def wifi_pending(device_id: str) -> bool:
+    """True iff this device has a pushed `cfg.wifi` not yet acked `shown` --
+    `GET`/`PUT /api/devices/{id}/wifi`'s `pending` field (`app/routers/
+    devices.py`), same shape as `sms_pending` below."""
+    snap = _devices().document(device_id).get()
+    if not snap.exists:
+        return False
+    pending = (snap.to_dict() or {}).get(_PENDING_CFG_WIFI_FIELD)
+    return isinstance(pending, dict) and not pending.get("acked", False)
 
 
 def sms_pending(device_id: str) -> bool:
