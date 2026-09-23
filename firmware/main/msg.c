@@ -1777,8 +1777,8 @@ static void gen_local_id(char *out, size_t cap)
     snprintf(out, cap, "x_%08x", (unsigned) esp_random());
 }
 
-bool msg_insert_sms_in(const char *from, const char *body, uint16_t body_len, char *out_id,
-                       size_t out_id_cap)
+bool msg_insert_sms_in(const char *from, const char *body, uint16_t body_len, int64_t ts,
+                       char *out_id, size_t out_id_cap)
 {
     if (!body || !body_rules_ok(body, body_len)) {
         return false;
@@ -1787,7 +1787,7 @@ bool msg_insert_sms_in(const char *from, const char *body, uint16_t body_len, ch
     gen_local_id(id, sizeof(id));
 
     msg_t entry = { 0 };
-    entry.ts = 0; // best-effort clock fill not needed for a never-published entry
+    entry.ts = ts; // S1: caller's net_get_clock() result; 0 = no clock yet (§3.5), never a new sentinel
     strncpy(entry.id, id, MSG_ID_MAX - 1);
     strncpy(entry.from, from ? from : "", MSG_FROM_MAX - 1);
     entry.to[0] = '\0';

@@ -1100,7 +1100,7 @@ static void process_inbound(int idx, const net_sms_read_t *r)
 
     if (found >= 0) {
         char thread_id[MSG_ID_MAX];
-        if (msg_insert_sms_in(match.name, decoded, (uint16_t) decoded_len, thread_id,
+        if (msg_insert_sms_in(match.name, decoded, (uint16_t) decoded_len, sms_ts, thread_id,
                               sizeof(thread_id))) {
             modes_alert_incoming(thread_id, match.name);
         }

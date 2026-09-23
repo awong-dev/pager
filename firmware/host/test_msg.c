@@ -340,6 +340,35 @@ static void test_msghist_decode_rejects_corruption(void)
           "a record with an unknown version was accepted");
 }
 
+/* S1 (docs/DEVICE_NEXT_TASKS.md): msg_insert_sms_in() now stores the
+ * caller's already-fetched net_get_clock() result instead of hardcoding 0 —
+ * itself not host-testable (sms.c/msg.c's ESP_PLATFORM-guarded section), but
+ * the codec it now actually exercises with a nonzero `ts` is: an "x_"-id,
+ * MSG_ACK_READ, MSG_DIR_DOWN entry (msg_insert_sms_in()'s exact shape) with
+ * a real ts round-trips; with ts 0 (no clock yet, §3.5's existing sentinel,
+ * "today's behaviour" pre-S1) it round-trips identically. */
+static void test_msghist_roundtrip_sms_ts(void)
+{
+    msg_t with_ts = make_msg("x_deadbeef", "mom", "", "call me back", MSG_DIR_DOWN, MSG_ACK_READ, 0,
+                             1757700000);
+    uint8_t buf[MSGHIST_REC_MAX];
+    size_t len = msghist_record_encode(&with_ts, 21, buf, sizeof(buf));
+    CHECK(len > 0, "encode of an SMS-shaped record with a real ts returned 0");
+    msg_t out;
+    uint32_t seq = 0;
+    CHECK(msghist_record_decode(buf, len, &out, &seq), "decode of an SMS-shaped record failed");
+    CHECK(out.ts == 1757700000, "ts mismatch after round trip: %lld != 1757700000",
+          (long long) out.ts);
+    CHECK(out.dir == MSG_DIR_DOWN, "dir mismatch");
+    CHECK(out.ack_state == MSG_ACK_READ, "ack_state mismatch");
+
+    msg_t no_ts = make_msg("x_cafef00d", "mom", "", "call me back", MSG_DIR_DOWN, MSG_ACK_READ, 0, 0);
+    len = msghist_record_encode(&no_ts, 22, buf, sizeof(buf));
+    CHECK(len > 0, "encode of an SMS-shaped record with ts 0 returned 0");
+    CHECK(msghist_record_decode(buf, len, &out, &seq), "decode of the ts-0 record failed");
+    CHECK(out.ts == 0, "ts-0 record decoded with ts == %lld, want 0", (long long) out.ts);
+}
+
 /* G7 (docs/GROUP_CHAT_DESIGN.md §4): `sndr` round-trips through the v2
  * codec, and a 16-char `sndr` alongside a full 320-byte body still fits
  * MSGHIST_REC_MAX (420). */
@@ -523,6 +552,7 @@ int main(void)
 
     test_msghist_roundtrip_basic();
     test_msghist_roundtrip_edges();
+    test_msghist_roundtrip_sms_ts();
     test_msghist_roundtrip_sndr();
     test_msghist_v1_record_decodes_with_empty_sndr();
     test_msghist_decode_rejects_corruption();

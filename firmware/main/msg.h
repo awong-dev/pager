@@ -444,15 +444,20 @@ bool msg_queue_reply(const char *to, const char *body, uint16_t len);
  * id, and no other id this codebase generates ("u_" replies, "l_" /loc,
  * "s_" sms_log audit), ever produces, so it can never collide with or be
  * mistaken for one). `from` is the SMS contact's display name (shown as the
- * `from` column, same as any other down message). Rejects (returns false,
+ * `from` column, same as any other down message). `ts` is the caller's
+ * already-fetched net_get_clock() result (S1, docs/DEVICE_NEXT_TASKS.md):
+ * wall-clock seconds, or 0 when there is no network clock yet — the
+ * existing, documented §3.5 "no time" value, not a new sentinel. No wire,
+ * RTC or `msghist` format change: `ts` was already a field on every stored
+ * entry: this only stops it being hardcoded to 0. Rejects (returns false,
  * nothing inserted) only if `body` fails the same body_rules_ok() every
  * down message is held to — sms.c's own decoder is expected to have already
  * produced valid text, so a false return here means a decoder bug, not
  * something the caller should react to specially. On success, `out_id` is
  * filled with the generated id (for the caller's own alert/audit
  * bookkeeping — modes_alert_incoming(), modes.h). */
-bool msg_insert_sms_in(const char *from, const char *body, uint16_t body_len, char *out_id,
-                       size_t out_id_cap);
+bool msg_insert_sms_in(const char *from, const char *body, uint16_t body_len, int64_t ts,
+                       char *out_id, size_t out_id_cap);
 
 /* v0.2 §6: inserts a PENDING ("...", MSG_ACK_UP_PENDING) UP thread entry for
  * a direct SMS send — deliberately OUTSIDE msg.c's own pending_up/NVS
