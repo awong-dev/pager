@@ -1,5 +1,6 @@
 /* test_chat_layout.c — host test for scr_chat.c's pure row-layout section
- * (owner task 2026-09-20, "wrap long messages in the chat screen").
+ * (owner task 2026-09-20, "wrap long messages in the chat screen") and,
+ * since v0.3 task 1.1, its composer-viewport helper too.
  *
  * Builds against ONLY scr_chat.c's own top section (above its `#ifdef
  * ESP_PLATFORM` split — see that file's own module comment), the same
@@ -24,9 +25,14 @@
  *     silently drops a message.
  *  5. chat_layout_is_last_row_visible(): true only once a message's LAST
  *     row is actually within the visible window.
+ *  6. chat_composer_viewport() (task 1.1): empty; exact fit; one px over
+ *     (marker, drops one codepoint); very narrow span (only the last glyph
+ *     fits); marker wider than span; zero-width advances do not loop
+ *     forever.
  */
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
 
 typedef struct {
@@ -38,6 +44,7 @@ int chat_layout_max_scroll(const int *msg_rows, int count, int rows);
 int chat_layout(const int *msg_rows, int count, int rows, int scroll, chat_layout_cell_t *out_cells);
 bool chat_layout_is_last_row_visible(const int *msg_rows, int count, int rows, int scroll,
                                      int msg_index);
+int chat_composer_viewport(const uint8_t *adv, int n, int avail_px, int marker_px, bool *marker);
 
 static int g_failures = 0;
 
@@ -172,6 +179,76 @@ static void test_last_row_visible(void)
           "msg 0's last row should no longer be visible after scrolling past it");
 }
 
+/* Task 1.1 (docs/V03_TASKS.md): chat_composer_viewport() coverage. */
+
+static void test_viewport_empty(void)
+{
+    bool marker = true; /* deliberately wrong, to check it gets cleared */
+    int start = chat_composer_viewport(NULL, 0, 100, 8, &marker);
+    CHECK(start == 0, "empty: start == %d, want 0", start);
+    CHECK(!marker, "empty: marker should be false");
+}
+
+static void test_viewport_fits_exactly(void)
+{
+    const uint8_t adv[4] = { 10, 10, 10, 10 }; /* total 40 */
+    bool marker = true;
+    int start = chat_composer_viewport(adv, 4, 40, 8, &marker);
+    CHECK(start == 0, "exact fit: start == %d, want 0", start);
+    CHECK(!marker, "exact fit: no marker needed");
+}
+
+static void test_viewport_one_px_over_drops_one_codepoint(void)
+{
+    /* total 41, one px over a 40 px span -> needs the marker; budget for
+     * text becomes 40 - 8 = 32, which the last 3 codepoints (30 px) fit and
+     * the last 4 (41 px) do not, so exactly the first codepoint is dropped. */
+    const uint8_t adv[4] = { 11, 10, 10, 10 };
+    bool marker = false;
+    int start = chat_composer_viewport(adv, 4, 40, 8, &marker);
+    CHECK(marker, "one px over: marker should be needed");
+    CHECK(start == 1, "one px over: start == %d, want 1 (drop exactly the first codepoint)", start);
+}
+
+static void test_viewport_very_narrow_only_last_glyph_fits(void)
+{
+    /* avail=10, marker=8 -> budget 2 for text; only the last glyph (2 px)
+     * fits, the last two together (2+9=11 px) do not. */
+    const uint8_t adv[3] = { 9, 9, 2 };
+    bool marker = false;
+    int start = chat_composer_viewport(adv, 3, 10, 8, &marker);
+    CHECK(marker, "very narrow: marker should be needed");
+    CHECK(start == 2, "very narrow: start == %d, want 2 (only the last glyph)", start);
+}
+
+static void test_viewport_marker_wider_than_span(void)
+{
+    /* Text (15 px) does not fit in avail_px (10), so the marker is needed --
+     * but marker_px (20) alone already exceeds avail_px (10), so no text
+     * budget is left either. */
+    const uint8_t adv[3] = { 5, 5, 5 };
+    bool marker = false;
+    int start = chat_composer_viewport(adv, 3, 10, 20, &marker);
+    CHECK(marker, "marker wider than span: marker should still be true");
+    CHECK(start == 3, "marker wider than span: start == %d, want n (3), draw only the marker",
+          start);
+}
+
+static void test_viewport_zero_width_advances_do_not_loop_forever(void)
+{
+    /* Trailing zero-width entries (combining marks/tofu) must not confuse
+     * the backward walk or hang it -- it is a bounded for loop either way,
+     * but this pins the *result* down too: the zero-width codepoints are
+     * "free" and get included before their non-zero neighbour. */
+    const uint8_t adv[5] = { 10, 10, 10, 0, 0 }; /* total 30, over a 15 px span */
+    bool marker = false;
+    int start = chat_composer_viewport(adv, 5, 15, 3, &marker); /* budget 12 for text */
+    CHECK(marker, "zero-width tail: marker should be needed");
+    /* Walk from the end: 0 (sum 0), 0 (sum 0), 10 (sum 10, fits), next 10
+     * would make 20 > 12 -> stop. start == 2. */
+    CHECK(start == 2, "zero-width tail: start == %d, want 2", start);
+}
+
 int main(void)
 {
     test_single_row_messages_like_old_model();
@@ -180,9 +257,17 @@ int main(void)
     test_every_row_of_a_tall_message_reachable();
     test_last_row_visible();
 
+    test_viewport_empty();
+    test_viewport_fits_exactly();
+    test_viewport_one_px_over_drops_one_codepoint();
+    test_viewport_very_narrow_only_last_glyph_fits();
+    test_viewport_marker_wider_than_span();
+    test_viewport_zero_width_advances_do_not_loop_forever();
+
     if (g_failures == 0) {
         printf("PASS: scr_chat.c chat_layout() (row ordering, blank-row handling, full "
-               "scroll reachability, last-row visibility), 0 failures\n");
+               "scroll reachability, last-row visibility) + chat_composer_viewport() "
+               "(tail-scroll/marker), 0 failures\n");
         return 0;
     }
     printf("FAIL: %d failure(s)\n", g_failures);

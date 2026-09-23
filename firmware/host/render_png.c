@@ -320,7 +320,45 @@ static void render_screen_home(void)
 #define FIXTURE_CHAT_ROWS 6
 #define FIXTURE_CHAT_MAX_LINES 24
 
-static void render_screen_chat(void)
+/* v0.3 task 1.2: scr_chat.c's chat_composer_viewport() (docs/V03_PLAN.md
+ * §1's tail-scroll), reproduced by hand for the same reason the row-wrap
+ * logic above already is — this file's own module comment: no dependency
+ * on scr_chat.c itself. Byte-for-byte the same algorithm; see that
+ * function's doc comment in scr_chat.c for the rationale. */
+static int fixture_composer_viewport(const uint8_t *adv, int n, int avail_px, int marker_px,
+                                      bool *marker)
+{
+    if (n <= 0) {
+        *marker = false;
+        return 0;
+    }
+    int total = 0;
+    for (int i = 0; i < n; i++) {
+        total += adv[i];
+    }
+    if (total <= avail_px) {
+        *marker = false;
+        return 0;
+    }
+    *marker = true;
+    int budget = avail_px - marker_px;
+    if (budget <= 0) {
+        return n;
+    }
+    int sum = 0;
+    int start = n;
+    for (int i = n - 1; i >= 0; i--) {
+        int next_sum = sum + adv[i];
+        if (next_sum > budget) {
+            break;
+        }
+        sum = next_sum;
+        start = i;
+    }
+    return start;
+}
+
+static void render_screen_chat_impl(const char *draft)
 {
     gfx_clear();
     draw_fixture_status_bar(4, true, 0, false, 0, 3);
@@ -411,13 +449,68 @@ static void render_screen_chat(void)
     gfx_hline(0, GFX_SCREEN_W - 1, y);
     y += 2;
 
-    const char *counter = "9/160";
-    int cw = gfx_text_width(GFX_FONT_NORMAL, counter);
-    int x = gfx_text(0, y, GFX_FONT_NORMAL, "> ok coming_");
-    (void) x;
-    gfx_text(GFX_SCREEN_W - cw, y, GFX_FONT_NORMAL, counter);
+    /* v0.3 task 1.2 (docs/V03_PLAN.md §1): tail-scroll + counter-at-120 +
+     * caret, matching scr_chat.c's real chat_render() composer block byte
+     * for byte (fixture_composer_viewport() above), minus the SMS-peek
+     * counter variant (composer_targets_sms() needs book.c/sms.c, out of
+     * this dependency-free fixture's reach) — every draft below is short of
+     * the leading-`@word` SMS special case anyway. */
+    size_t draft_len = strlen(draft);
+    bool show_counter = draft_len >= 120;
+    char counter[24];
+    snprintf(counter, sizeof(counter), "%u/160", (unsigned) draft_len);
+    int cw = show_counter ? gfx_text_width(GFX_FONT_NORMAL, counter) : 0;
+
+    int pen = gfx_text(0, y, GFX_FONT_NORMAL, "> ");
+
+    /* ASCII-only fixture drafts: one byte is one codepoint, so no UTF-8
+     * decode is needed here (scr_chat.c's real composer_utf8_next() handles
+     * the general case on-device). */
+    uint8_t adv[160];
+    int n = (draft_len < sizeof(adv)) ? (int) draft_len : (int) sizeof(adv);
+    for (int i = 0; i < n; i++) {
+        adv[i] = (uint8_t) gfx_glyph_advance(GFX_FONT_NORMAL, (uint8_t) draft[i]);
+    }
+
+    const char marker_str[] = "…";
+    int marker_w = gfx_text_width(GFX_FONT_NORMAL, marker_str);
+    const int caret_w = 2;
+    const int caret_h = 12;
+    int avail = GFX_SCREEN_W - pen - (show_counter ? cw + 6 : 0) - caret_w;
+
+    bool marker;
+    int tail_start = fixture_composer_viewport(adv, n, avail, marker_w, &marker);
+
+    if (marker) {
+        pen = gfx_text(pen, y, GFX_FONT_NORMAL, marker_str);
+    }
+    if (tail_start < n) {
+        pen = gfx_text(pen, y, GFX_FONT_NORMAL, draft + tail_start);
+    }
+    for (int cy = y; cy < y + caret_h; cy++) {
+        gfx_hline(pen, pen + caret_w - 1, cy);
+    }
+    if (show_counter) {
+        gfx_text(GFX_SCREEN_W - cw, y, GFX_FONT_NORMAL, counter);
+    }
 
     /* no key-hint footer, matches scr_chat.c */
+}
+
+static void render_screen_chat(void)
+{
+    render_screen_chat_impl("ok coming");
+}
+
+/* v0.3 task 1.2's Verify step: a draft long enough to overflow the line so
+ * the "…" marker and the tail-scroll fold are both visible in the PNG. 70
+ * chars, short of the 120-codepoint counter threshold (docs/V03_PLAN.md
+ * §1: "counter appears only when it matters") — the marker/fold do not
+ * depend on the counter showing. */
+static void render_screen_chat_long_draft(void)
+{
+    render_screen_chat_impl(
+        "this is a much longer draft message than the line can show all at once");
 }
 
 static void render_screen_device(void)
@@ -723,6 +816,7 @@ int main(int argc, char **argv)
         { "tofu", render_tofu },
         { "screen_home", render_screen_home },
         { "screen_chat", render_screen_chat },
+        { "screen_chat_long_draft", render_screen_chat_long_draft },
         { "screen_device", render_screen_device },
         { "screen_setup", render_screen_setup },
         { "screen_pick", render_screen_pick },

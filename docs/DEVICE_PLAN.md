@@ -821,7 +821,8 @@ chat, else stay; long = Home from anywhere.
 **Chat (requirement 6).** History for one peer, newest at the bottom, oldest scrolled off the top.
 `up`/`down` scroll a row, `left`/`right` a page; the view auto-follows new messages unless the user
 has scrolled up. Typing any printable key opens the composer line in place; `enter` sends, `esc`
-clears it, `esc` on an empty composer goes back. Up messages show their state (`…` pending, `sent`,
+clears it, `esc` on an empty composer goes back. Longer than the line: shows the tail with a
+leading …; the counter appears from 120 characters. Up messages show their state (`…` pending, `sent`,
 `FAILED`). Opening a chat, or pressing any key while it is on screen, marks every rendered down
 message from that peer `read` (through the existing pending-ack queue; with 8 slots, a burst of
 more than 8 is acked over successive pumps).
