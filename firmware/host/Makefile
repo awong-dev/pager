@@ -45,6 +45,15 @@ CC ?= cc
 CFLAGS ?= -std=c11 -Wall -Wextra -Werror -O1 -g
 INCLUDES := -I../main
 
+# Task 1.0 (docs/V03_TASKS.md): test_input now also exercises input.c's
+# ESP_PLATFORM section (the FreeRTOS queue/awake-window code, previously
+# untested on the host -- see idf_stub/driver/gpio.h's module comment) via
+# a small stand-in for the handful of ESP-IDF headers/functions it calls.
+# -Iidf_stub comes after -I../main so a quoted #include still finds a real
+# header in firmware/main first if one exists there (it does not, for any
+# of these).
+IDF_STUB_INCLUDES := -Iidf_stub
+
 MBEDTLS_CFLAGS := $(shell pkg-config --cflags mbedcrypto 2>/dev/null)
 MBEDTLS_LIBS := $(shell pkg-config --libs mbedcrypto 2>/dev/null)
 ifeq ($(strip $(MBEDTLS_LIBS)),)
@@ -126,16 +135,21 @@ $(BUILD)/test_setup.o: test_setup.c $(MAIN_SRC)/setup.h $(MAIN_SRC)/cbor.h | $(B
 $(BUILD)/test_setup: $(BUILD)/setup.o $(BUILD)/cbor.o $(BUILD)/test_setup.o
 	$(CC) $(CFLAGS) -o $@ $(BUILD)/setup.o $(BUILD)/cbor.o $(BUILD)/test_setup.o $(MBEDTLS_LIBS)
 
-# test_input: input.c (only its ESP_PLATFORM-free input_decode_key(), per
-# input.c's own #ifdef split) + test_input.c.
+# test_input: input.c built WITH -DESP_PLATFORM (both the decode table and
+# the queue/awake-window section, task 1.0) against idf_stub.c's stand-ins
+# for the ESP-IDF pieces it calls, + test_input.c (also built with
+# -DESP_PLATFORM so it sees the same input.h declarations input.c does).
 $(BUILD)/input.o: $(MAIN_SRC)/input.c $(MAIN_SRC)/input.h | $(BUILD)
-	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $(MAIN_SRC)/input.c
+	$(CC) $(CFLAGS) -DESP_PLATFORM $(INCLUDES) $(IDF_STUB_INCLUDES) -c -o $@ $(MAIN_SRC)/input.c
+
+$(BUILD)/idf_stub.o: idf_stub.c | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) $(IDF_STUB_INCLUDES) -c -o $@ idf_stub.c
 
 $(BUILD)/test_input.o: test_input.c $(MAIN_SRC)/input.h | $(BUILD)
-	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ test_input.c
+	$(CC) $(CFLAGS) -DESP_PLATFORM $(INCLUDES) -c -o $@ test_input.c
 
-$(BUILD)/test_input: $(BUILD)/input.o $(BUILD)/test_input.o
-	$(CC) $(CFLAGS) -o $@ $(BUILD)/input.o $(BUILD)/test_input.o
+$(BUILD)/test_input: $(BUILD)/input.o $(BUILD)/idf_stub.o $(BUILD)/test_input.o
+	$(CC) $(CFLAGS) -o $@ $(BUILD)/input.o $(BUILD)/idf_stub.o $(BUILD)/test_input.o
 
 # test_msg: msg.c's composer section only (its own `#ifdef ESP_PLATFORM`
 # split keeps NVS/RTC/net/auth/cbor-dependent code, which this test does not

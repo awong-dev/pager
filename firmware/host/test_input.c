@@ -1,22 +1,30 @@
 /* test_input.c — host test for input.c's key decode table (task F6.2,
- * docs/DEVICE_PLAN.md §5.3).
+ * docs/DEVICE_PLAN.md §5.3) and, since task 1.0 (docs/V03_TASKS.md), the
+ * event queue/awake-window section too.
  *
- * Builds and runs with the host compiler (see Makefile), no ESP-IDF:
- * input_decode_key() has no ESP-IDF dependency (input.c's `#ifdef
- * ESP_PLATFORM` split keeps the button-FSM/queue/awake-window code, which
- * does need FreeRTOS/driver/esp_timer, out of the host build entirely).
+ * Builds and runs with the host compiler (see Makefile). input_decode_key()
+ * has no ESP-IDF dependency at all; the queue/awake-window code below it in
+ * input.c (input.c's own `#ifdef ESP_PLATFORM` split) needs FreeRTOS/
+ * driver/esp_timer, which the headers under firmware/host/idf_stub/ now
+ * stand in for (see that directory's module comment) so this binary is built with
+ * -DESP_PLATFORM against input.c's real queue code, not a second
+ * reimplementation of it.
  *
  * Coverage: every byte 0x00-0xFF is checked against the exact table in
  * docs/DEVICE_PLAN.md §5.3 - printable ASCII 0x20-0x7E, 0x08 backspace,
  * 0x09 tab, 0x0D enter, 0x1B esc, 0xB4-0xB7 arrows (left/up/down/right in
  * that order, per §5.3 - UNVERIFIED against real hardware, M13) - plus
- * everything else, including 0x00, decoding to INPUT_KEY_NONE.
+ * everything else, including 0x00, decoding to INPUT_KEY_NONE. Plus (task
+ * 1.0): N keys fed to input_feed_key() back-to-back (no drain in between,
+ * modelling the console's `key <text>` command, main.c's cmd_key()) are
+ * all delivered, in order, by input_get_event().
  */
 #include "input.h"
 
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 
 static int g_failures = 0;
 
@@ -115,6 +123,43 @@ static void test_no_side_effects(void)
     CHECK(a.type == b.type && a.ch == b.ch, "input_decode_key(0x41) is not idempotent/pure");
 }
 
+#ifdef ESP_PLATFORM
+/* Task 1.0 (docs/V03_TASKS.md): bench evidence (build/bench-logs/phaseG.log)
+ * showed `key a`..`key d` (one character per console call) each reaching
+ * the composer while `key efghijkl` (8 characters in one call) did not.
+ * main.c's cmd_key() feeds every character of one console call to
+ * input_feed_key() back-to-back, with no drain in between (draining is
+ * modes_run()'s job, on a different task, later) - this reproduces exactly
+ * that shape against the real input.c queue code. */
+static void test_n_keys_fed_at_once_are_all_delivered(void)
+{
+    input_init();
+
+    const char *text = "efghijkl"; /* the exact failing bench input */
+    int n = (int) strlen(text);
+    for (int i = 0; i < n; i++) {
+        input_feed_key((uint8_t) text[i]);
+    }
+
+    for (int i = 0; i < n; i++) {
+        input_event_t evt;
+        bool got = input_get_event(&evt);
+        CHECK(got, "key %d/%d ('%c') never reached the queue", i + 1, n, text[i]);
+        if (!got) {
+            continue;
+        }
+        CHECK(evt.type == INPUT_EVT_KEY, "key %d/%d: got event type %d, want INPUT_EVT_KEY", i + 1,
+              n, (int) evt.type);
+        CHECK(evt.key.type == INPUT_KEY_CHAR && evt.key.ch == text[i],
+              "key %d/%d: got ch '%c', want '%c' (queue reordered or dropped an event)", i + 1, n,
+              evt.key.ch, text[i]);
+    }
+
+    input_event_t extra;
+    CHECK(!input_get_event(&extra), "queue had a leftover event after draining exactly %d", n);
+}
+#endif
+
 int main(void)
 {
     test_no_key_sentinel();
@@ -123,9 +168,17 @@ int main(void)
     test_arrows();
     test_everything_else_is_dropped();
     test_no_side_effects();
+#ifdef ESP_PLATFORM
+    test_n_keys_fed_at_once_are_all_delivered();
+#endif
 
     if (g_failures == 0) {
+#ifdef ESP_PLATFORM
+        printf("PASS: input_decode_key() table + queue delivery (N keys fed at once), 0 "
+               "failures\n");
+#else
         printf("PASS: input_decode_key() table, 0 failures\n");
+#endif
         return 0;
     }
     printf("FAIL: %d failure(s)\n", g_failures);
