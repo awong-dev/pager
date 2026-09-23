@@ -334,14 +334,15 @@ void ui_render_boot(void)
 }
 
 // Called from modes.c on the input_awake() true->false edge (the UI-awake
-// window lapsing, docs/DEVICE_PLAN.md §5.4). modes.c pushes scr_greeting.c's
-// "sleeping" screen at this same edge, so this now does repaint (unlike its
-// original contract of just flushing whatever ui_render() last painted) —
-// paint_frame() is cheap (framebuffer only, no SPI) and a no-op-looking
-// diff when the stack didn't actually change, so this stays correct for
-// callers that push nothing new here too. The 20-partial cadence counter
-// still decides partial vs. full, so a due full refresh lands here (session
-// just ended) rather than mid-interaction or on the inbound-message path.
+// window lapsing, docs/DEVICE_PLAN.md §5.4). Owner decision, 22 Sep evening
+// ("stay on chat unless it's explicitly locked"): modes.c no longer pushes
+// scr_greeting.c's "sleeping" screen at this edge, so the top screen is
+// whatever it already was — this still repaints it (paint_frame() is cheap,
+// framebuffer only, no SPI, and a no-op-looking diff when the stack didn't
+// change) rather than just flushing whatever ui_render() last painted. The
+// 20-partial cadence counter still decides partial vs. full, so a due full
+// refresh lands here (session just ended) rather than mid-interaction or on
+// the inbound-message path.
 void ui_on_awake_lapse(void)
 {
     paint_frame();

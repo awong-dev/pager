@@ -17,6 +17,7 @@
 #include "carrier.h"
 #include "watchdog.h"
 #include "placeholder_ca.h"
+#include "net_connect_guard.h"
 
 #include "WalterModem.h"
 
@@ -167,6 +168,16 @@ static volatile bool s_disconnect_edge = false;
 static volatile int s_last_rc = 0;
 static volatile net_mqtt_rc_class_t s_last_class = NET_MQTT_RC_NONE;
 
+// v0.2 bug fixes M1 (22 Sep outage: "CONNECT issued, no CONNECTED seen" bound)
+// / M3 (22 Sep evening: escalate after 3 consecutive net_session_up()
+// failures) — see net_connect_guard.h's own module comment. Written from
+// net_session_up() (this file's own task) and from pager_mqtt_event_handler()
+// (_eventProcessingTask) via net_connect_guard_clear() -- same "plain
+// struct of single-word fields, no mutex, races tolerated" reasoning as the
+// rest of this block (net_connect_guard.c's writes are each a single bool/
+// int64_t/uint32_t store, same as s_mqtt_connected etc. above).
+static net_connect_guard_t s_connect_guard;
+
 // v0.2 §9.4 (session liveness / silent-resume repair, net_service_session()).
 // All written from pager_mqtt_event_handler() (_eventProcessingTask) and/or
 // net_service_session() (modes_run()'s own task) -- same "single-word,
@@ -308,6 +319,12 @@ static void pager_mqtt_event_handler(WMMQTTEventType event, const WMMQTTEventDat
 
     switch (event) {
     case WALTER_MODEM_MQTT_EVENT_CONNECTED:
+        // v0.2 M1: any CONNECTED event, success or failure rc, proves the
+        // connect round trip was answered at all -- it is no longer the
+        // "silently wedged" case net_service_session()'s connect timeout
+        // exists for. Cleared here unconditionally, before the rc check
+        // below, on purpose.
+        net_connect_guard_clear(&s_connect_guard);
         if (data->rc != WALTER_MODEM_MQTT_SUCCESS) {
             s_last_rc = data->rc;
             s_last_class = classify_mqtt_rc(data->rc);
@@ -349,6 +366,11 @@ static void pager_mqtt_event_handler(WMMQTTEventType event, const WMMQTTEventDat
         break;
 
     case WALTER_MODEM_MQTT_EVENT_SUBSCRIBED:
+        // v0.2 M1: belt-and-suspenders alongside the CONNECTED clear above
+        // (SUBSCRIBED always follows a real CONNECTED in the ordinary
+        // flow, so this is normally a no-op, but the spec calls for
+        // clearing on either event).
+        net_connect_guard_clear(&s_connect_guard);
         if (data->rc != WALTER_MODEM_MQTT_SUCCESS) {
             ESP_LOGI(TAG, "MQTT subscribe failed, rc=%d", data->rc);
             break;
@@ -859,6 +881,7 @@ static bool net_bringup(int attach_wait_s)
 extern "C" bool net_init(void)
 {
     s_session_configured = false;
+    net_connect_guard_init(&s_connect_guard); // v0.2 M1/M3: fresh boot, nothing outstanding
     return net_bringup(PAGER_ATTACH_POLL_CAP_S);
 }
 
@@ -1158,6 +1181,15 @@ extern "C" bool net_session_up(void)
         }
     }
     if (!s_session_configured && !configure_session()) {
+        // v0.2 M3 (phaseO-recover.log): mqttConfig() answering +CME ERROR 4
+        // because the modem's own MQTT client is still up is exactly this
+        // failure. The fix is proactive: whichever code path decides the
+        // session is dead calls net_session_down() BEFORE this function runs
+        // again (net_service_session()'s liveness-dead and M1 connect-timeout
+        // branches). Repeated failures here count toward the 3-strike modem
+        // recover in modes.c (net_connect_fail_streak_maxed()), which covers
+        // a client left up by anything else (e.g. an ESP-only reset).
+        net_connect_guard_note_fail(&s_connect_guard);
         return false;
     }
     s_disconnect_edge = false;
@@ -1167,17 +1199,26 @@ extern "C" bool net_session_up(void)
         // ERROR), the next attempt redoes it. Cheap, and it is the state that
         // used to be unrecoverable.
         s_session_configured = false;
+        net_connect_guard_note_fail(&s_connect_guard); // v0.2 M3: 3 in a row -> modem recover
         return false;
     }
     ESP_LOGI(TAG, "MQTT connect issued to %s:%u", ident_get_host(), (unsigned) ident_get_port());
+    // v0.2 M1: arms the 30s "no CONNECTED/SUBSCRIBED seen" bound
+    // (net_service_session() below) and, per net_connect_guard_issued()'s own
+    // contract, resets the M3 fail streak -- the modem accepted CONFIG/CONNECT
+    // this time, whatever happens next.
+    net_connect_guard_issued(&s_connect_guard, esp_timer_get_time());
     return true;
 }
 
 extern "C" void net_session_down(void)
 {
-    // F3 recovery path only (never called on a timer or speculatively).
+    // F3 recovery path only (never called on a timer or speculatively) --
+    // plus, as of v0.2 M3, net_service_session()'s own host-detected-dead
+    // branches below.
     WalterModem::mqttDisconnect();
     s_mqtt_connected = false;
+    net_connect_guard_clear(&s_connect_guard); // v0.2 M1: no connect is in flight once torn down
 }
 
 extern "C" bool net_publish(const char *topic, char *buf, uint16_t len, uint8_t qos)
@@ -1319,6 +1360,10 @@ extern "C" bool net_recover_modem(void)
     // re-attach - modes.c must rate-limit this to 1/10min.
     ESP_LOGI(TAG, "modem unresponsive: issuing hard reset + full re-init (F4)");
     s_mqtt_connected = false;
+    // v0.2 M1/M3: a physical reset wipes the modem's MQTT client outright,
+    // so nothing is in flight and the fail streak that led here is moot --
+    // reset both rather than let a stale streak immediately re-escalate.
+    net_connect_guard_init(&s_connect_guard);
     if (!WalterModem::reset()) {
         ESP_LOGI(TAG, "WalterModem::reset() failed");
         return false;
@@ -1408,6 +1453,28 @@ extern "C" void net_service_session(void)
 {
     int64_t now = esp_timer_get_time();
 
+    // v0.2 M1 (22 Sep outage): net_session_up() issued a connect but neither
+    // CONNECTED nor SUBSCRIBED has arrived within NET_CONNECT_TIMEOUT_US
+    // (30s -- matches the Step 5 SUBACK bound just below). esp_timer_get_time()
+    // keeps counting across light sleep, and this function is serviced once
+    // per wake-and-drain iteration (modes.c), so the bound is honoured even
+    // when most of it elapses asleep -- exactly the "one missed event must
+    // not hang forever" fix the outage needed. Same M3 treatment as Step 5
+    // below: net_session_down() runs HERE, at the moment the host makes the
+    // "dead" call, not left for whichever retry branch runs next (see that
+    // branch's own comment for why this is the right place, not modes.c's
+    // retry branch).
+    if (net_connect_guard_check_timeout(&s_connect_guard, now)) {
+        s_mqtt_connected = false;
+        s_last_class = NET_MQTT_RC_TRANSIENT;
+        ESP_LOGI(TAG, "connect watchdog: no CONNECTED/SUBSCRIBED within %llds of the connect - "
+                      "treating the MQTT session as dead",
+                 (long long) (NET_CONNECT_TIMEOUT_US / 1000000));
+        net_session_down(); // v0.2 M3: tear down the modem's client before F1/F3 backoff retries
+        s_disconnect_edge = true;
+        return;
+    }
+
     // Step 5: no SUBACK within 30s (two wake cycles plus RRC setup) means the
     // session is dead -- far earlier than the modem's own ~6 minute silent
     // resume. mqttConnect() (net_session_up(), driven by the ordinary F1/F3
@@ -1416,10 +1483,22 @@ extern "C" void net_service_session(void)
     if (s_resub_wait && (now - s_resub_sent_us) > 30 * 1000000LL) {
         s_mqtt_connected = false;
         s_last_class = NET_MQTT_RC_TRANSIENT;
-        s_disconnect_edge = true;
         s_resub_wait = false;
         s_resub_is_resume = false;
         ESP_LOGI(TAG, "liveness ping got no SUBACK in 30 s: treating the MQTT session as dead");
+        // v0.2 M3 fix (tonight's phaseO-recover.log): this branch used to
+        // only set s_disconnect_edge and rely on modes.c's F1/F3 backoff to
+        // call net_session_up() again -- which then hit exactly tonight's
+        // failure, mqttConfig() answering +CME ERROR: 4 because the modem's
+        // own MQTT client was still connected (this host-side verdict never
+        // told the modem otherwise). Option 1 of the two the spec offered:
+        // tear the client down HERE, in the branch that makes the
+        // host-detected-dead call, rather than in modes.c's retry branch --
+        // by the time modes.c observes disconnect_edge, it can no longer
+        // tell a host-detected loss from a modem-reported one, but net.cpp
+        // can, right here, for free.
+        net_session_down();
+        s_disconnect_edge = true;
         return;
     }
 
@@ -1481,6 +1560,23 @@ extern "C" void net_ack_session_restart_edge(void)
 extern "C" bool net_modem_busy(void)
 {
     return s_handler_busy;
+}
+
+extern "C" bool net_connect_in_flight(void)
+{
+    // v0.2 M1/M2: true from net_session_up()'s successful mqttConnect() queue
+    // until CONNECTED/SUBSCRIBED arrives, net_session_down() runs, or the 30s
+    // connect timeout fires (net_service_session()) -- see net_connect_in_flight()'s
+    // own doc comment in net.h for why this is a separate accessor from
+    // net_modem_busy(), not folded into it.
+    return net_connect_guard_in_flight(&s_connect_guard);
+}
+
+extern "C" bool net_connect_fail_streak_maxed(void)
+{
+    // v0.2 M3: true once net_session_up() has failed NET_SESSION_UP_FAIL_ESCALATE
+    // times in a row at the mqttConfig()/mqttConnect() step.
+    return net_connect_guard_should_escalate(&s_connect_guard);
 }
 
 extern "C" uint32_t net_take_memfull_delta(void)

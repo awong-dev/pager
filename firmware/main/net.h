@@ -205,9 +205,12 @@ bool net_session_up(void);
 
 /* Explicit MQTT disconnect. Legal from the F3 "permanent failure" recovery
  * path (to force a clean modem-side teardown before the 300s steady
- * backoff) and from the v0.2 §2.3 connect watchdog (modes.c) when a connect
- * has produced neither CONNECTED nor DISCONNECTED within 60s - same "force
- * a clean modem-side teardown" reasoning, just a different trigger.
+ * backoff), from the v0.2 §2.3 connect watchdog (modes.c) when a connect
+ * has produced neither CONNECTED nor DISCONNECTED within 60s, and (v0.2 M3,
+ * 22 Sep evening) from net_service_session()'s own host-detected-dead
+ * branches (the liveness-ping-no-SUBACK case and the M1 connect-timeout
+ * case) -- all four are "force a clean modem-side teardown", just different
+ * triggers. Also clears the M1/M2 connect-in-flight state (net_connect_in_flight()).
  * Power effect: one AT command, no RRC of its own. */
 void net_session_down(void);
 
@@ -327,9 +330,19 @@ void net_ack_disconnect_edge(void);
  * 30s marks the session dead (disconnect_edge, NET_MQTT_RC_TRANSIENT) so the
  * ordinary F1/F3 backoff + net_session_up() path runs, instead of waiting out
  * the modem's own ~6 minute silent-resume window.
+ *
+ * v0.2 M1 (22 Sep outage): also checks a second, independent bound -- a
+ * connect issued by net_session_up() with neither CONNECTED nor SUBSCRIBED
+ * seen within 30s (net_connect_guard.h's NET_CONNECT_TIMEOUT_US) is declared
+ * dead the same way. Both this and the no-SUBACK case above call
+ * net_session_down() themselves (v0.2 M3) before setting disconnect_edge, so
+ * the modem's MQTT client is never left connected out from under a host
+ * verdict that it is dead -- see net_session_down()'s own updated doc
+ * comment.
  * Power effect: nothing when idle and under the ping interval; otherwise one
  * AT round trip (the RRC time for one subscribe if the modem was idle, ~0
- * extra if it was already active) at most once per PAGER_MQTT_PING_S. */
+ * extra if it was already active) at most once per PAGER_MQTT_PING_S, or (on
+ * either dead-detection edge) one AT+SQNSMQTTDISCONNECT. */
 void net_service_session(void);
 
 /* Acknowledge (clear) the session_restart_edge latched in
@@ -346,6 +359,35 @@ void net_ack_session_restart_edge(void);
  * checked on the caller's task); it narrows the window from "every
  * incoming message" to a few microseconds, it does not close it. */
 bool net_modem_busy(void);
+
+/* v0.2 M1/M2 (22 Sep outage): true from the moment net_session_up() queues
+ * mqttConnect() until CONNECTED/SUBSCRIBED arrives, net_session_down() runs,
+ * or M1's 30s connect timeout fires (net_service_session()) -- a distinct
+ * accessor from net_modem_busy() rather than folded into it, because the two
+ * guard different races: net_modem_busy() is the UART/RTS interlock against
+ * an in-progress AT *response* the event handler is mid-processing (a few ms
+ * to a couple of seconds); this is "a CONNECT is outstanding" for as long as
+ * the TLS handshake + CONNACK can plausibly still be coming (up to 30s).
+ * modes.c's skip_sleep OR's this in (M2's own fix for the outage: the ESP32
+ * used to light-sleep 110ms after issuing a connect, deasserting RTS while
+ * the handshake was still in flight, which is exactly how the CONNECTED
+ * event got lost). Deliberately NOT folded into pump_blocked: msg_pump()'s
+ * gating exists for the mqttReceive() AT-response race (net_modem_busy()'s
+ * own doc comment above), not for holding the CPU awake during a connect --
+ * no message can usefully be published while the session is not up yet, and
+ * even a stale publish attempt just fails cheaply rather than corrupting a
+ * different modem-side transaction. */
+bool net_connect_in_flight(void);
+
+/* v0.2 M3 (22 Sep evening): true once net_session_up() has failed
+ * NET_SESSION_UP_FAIL_ESCALATE (3, net_connect_guard.h) times in a row at the
+ * mqttConfig()/mqttConnect() step -- modes.c's retry branch escalates to
+ * rate_limited_modem_recover() when this is true instead of another ordinary
+ * backoff step, mirroring the existing 60s connect-watchdog's own 3x
+ * escalation. Resets to false the moment a connect is successfully queued
+ * again (net_connect_guard_issued()'s own contract) or after
+ * net_recover_modem() runs. */
+bool net_connect_fail_streak_maxed(void);
 
 /* Drain-and-reset delta counters, for folding into modes.c's RTC-resident
  * cumulative counters once per wake cycle. net.c only owns the

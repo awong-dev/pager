@@ -1790,21 +1790,35 @@ void modes_run(void)
         // modem's response to mqttReceive() (see net.h). Costs ~1.5s of
         // 40mA busy-polling per incoming message (~0.02 mAh, ~0.4 mAh/day
         // at 20 msgs/day, estimate) and buys back a per-message
-        // message-loss window.
+        // message-loss window. OR (v0.2 M2, 22 Sep outage) net_connect_in_flight():
+        // the outage's own root cause was issuing a CONNECT and light-sleeping
+        // 110ms later, deasserting RTS while the TLS handshake/CONNACK was
+        // still in flight, which is how the CONNECTED event got lost forever.
+        // Bounded by M1's own 30s connect timeout (net_connect_guard.h), so a
+        // lost CONNACK cannot pin the device awake indefinitely -- see
+        // net_connect_in_flight()'s own doc comment (net.h) for why this
+        // feeds skip_sleep only, not pump_blocked.
         bool btn_busy = input_button_busy();
         bool btn_stuck = input_button_stuck();
         bool ui_awake = input_awake();
-        bool skip_sleep = btn_busy || btn_stuck || ui_awake || net_modem_busy();
+        bool skip_sleep = btn_busy || btn_stuck || ui_awake || net_modem_busy() || net_connect_in_flight();
         // pump_blocked keys ONLY on net_modem_busy() (the UART/RTS interlock
         // against the MQTT event handler, see the comment above on
-        // net_modem_busy()) -- NOT on btn_busy/btn_stuck/ui_awake. Those three
-        // are legitimate reasons to skip net_sleep(), but they are not
-        // reasons to withhold a reply/ack publish: a 30s input_awake() window
-        // after every keystroke used to gate msg_pump() off entirely, which
-        // is what let a typed reply sit unsent for up to 116s waiting for
-        // that window (and the UI-awake busy-poll cadence) to expire. See the
-        // rate limit at the msg_pump() call site below for how the resulting
-        // faster cadence is kept bounded.
+        // net_modem_busy()) -- NOT on btn_busy/btn_stuck/ui_awake, and NOT on
+        // net_connect_in_flight() either (v0.2 M2): those four are legitimate
+        // reasons to skip net_sleep(), but none of them are reasons to
+        // withhold a reply/ack publish. For net_connect_in_flight() specifically:
+        // the session is not up yet during that window anyway, so there is
+        // nothing meaningful for msg_pump() to publish against it (a stale
+        // attempt just fails cheaply, same as it does today for any other
+        // disconnected stretch) -- withholding it would only delay a publish
+        // that becomes possible again the moment CONNECTED/SUBSCRIBED lands,
+        // for no benefit. A 30s input_awake() window after every keystroke
+        // used to gate msg_pump() off entirely, which is what let a typed
+        // reply sit unsent for up to 116s waiting for that window (and the
+        // UI-awake busy-poll cadence) to expire. See the rate limit at the
+        // msg_pump() call site below for how the resulting faster cadence is
+        // kept bounded.
         bool pump_blocked = net_modem_busy();
 #ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
         // Debug builds only (see main/CMakeLists.txt): behave as if the UI
@@ -1994,19 +2008,18 @@ void modes_run(void)
             ui_show_toast(lock_toast);
         }
 
-        // scr_greeting.c: push its "sleeping" mode on the awake->asleep
-        // edge (revealed by ui_on_awake_lapse()'s repaint just below/after),
-        // pop it back off on the asleep->awake edge if it's still on top —
-        // same push/pop-to-match-state discipline as lock_screen_sync()
-        // just above. on_key also pops unconditionally (scr_greeting.c's
-        // own comment) as a second, redundant path to the same end state;
-        // whichever runs first in a given tick leaves the other a no-op.
-        if (ui_awake_edge_out) {
-            scr_greeting_set_mode(GREETING_SLEEPING);
-            ui_push(&g_scr_greeting);
-        } else if (ui_awake_edge_in && ui_top() == &g_scr_greeting) {
-            ui_pop();
-        }
+        // Owner decision, 22 Sep evening ("stay on chat unless it's
+        // explicitly locked"): the awake->asleep edge used to push
+        // scr_greeting.c's "sleeping" mode over whatever screen was open
+        // (the chat, typically), replacing it until the next keystroke.
+        // That push (and its matching asleep->awake pop) is deliberately
+        // gone now — the top screen simply stays put across the edge.
+        // lock_screen_sync() above is unchanged and still covers the
+        // locked case (Locked always wins over whatever was open);
+        // ui_on_awake_lapse() below is still called at this same edge and
+        // is still where the cadence-driven full refresh lands (ui.c's own
+        // comment). scr_greeting.c itself is untouched and still used for
+        // the boot-time HELLO splash (modes_boot()).
 
         // Coalesce key-triggered renders (bug fix, see s_key_render_pending's
         // own comment): a button event this iteration always renders
@@ -2225,7 +2238,21 @@ void modes_run(void)
             // session was healthy, backoff_index==0, right up until it was
             // torn down), so this reconnects on the very next iteration with
             // no special-casing needed here.
-            if (!s_loc_suppress && !s_ca_apply_suppress && esp_timer_get_time() >= next_session_retry_us) {
+            //
+            // v0.2 bug fix, 22 Sep evening (phaseO-recover2.log lines 36-49):
+            // net_session_up() returning true only means mqttConnect() was
+            // QUEUED, not connected. Without the net_connect_in_flight()
+            // term below, this branch re-entered on the very next loop
+            // iteration (110ms later, before st.mqtt_connected could
+            // possibly have gone true yet) and issued a second
+            // AT+SQNSMQTTCONNECT while the first was still outstanding,
+            // which the modem refused with +CME ERROR: 4.
+            // net_connect_in_flight() (net.cpp's connect guard, M1/M2) stays
+            // true until CONNECTED/SUBSCRIBED arrives or M1's 30s timeout
+            // fires, so this branch simply does not run again until one of
+            // those happens.
+            if (!s_loc_suppress && !s_ca_apply_suppress && esp_timer_get_time() >= next_session_retry_us &&
+                !net_connect_in_flight()) {
                 // v0.2 §4.2: no-op unless currently `broken` — decides
                 // validated vs. unvalidated for this attempt (the
                 // cold-boot/24h revalidation window) and reconfigures
@@ -2235,7 +2262,24 @@ void modes_run(void)
                 bool up_ok = net_session_up();
                 note_session_up_attempt(up_ok); // §2.3: arms the connect watchdog
                 if (!up_ok) {
-                    schedule_backoff(&backoff_index, &next_session_retry_us);
+                    // v0.2 M3 (phaseO-recover.log): net_session_up() itself
+                    // can keep failing at mqttConfig()/mqttConnect() if the
+                    // modem's MQTT client is stuck up. net.cpp's own
+                    // net_session_down() calls (net_service_session()'s
+                    // liveness-dead / M1 connect-timeout branches, and the
+                    // defensive disconnect net_session_up() now does on its
+                    // own configure/connect failure) are the normal fix; if
+                    // three attempts in a row still fail here regardless,
+                    // treat it the same as the existing 60s connect
+                    // watchdog's own 3x escalation and reach for a full
+                    // modem reset rather than backing off forever.
+                    if (net_connect_fail_streak_maxed() &&
+                        rate_limited_modem_recover(
+                            "net_session_up() failed 3x in a row (modem MQTT client possibly stuck)")) {
+                        note_session_up_attempt(net_session_up());
+                    } else {
+                        schedule_backoff(&backoff_index, &next_session_retry_us);
+                    }
                 }
             }
         } else {

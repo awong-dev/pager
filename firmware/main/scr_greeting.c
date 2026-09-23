@@ -12,19 +12,24 @@
 // Not part of docs/DEVICE_PLAN.md §5.5's screen set — added directly at the
 // user's request as a real, separate screen (Home's own conversation-row
 // rendering is left untouched, noise-pattern bug and all, for a later
-// pass). Two call sites own its lifecycle, both in modes.c:
-//   - modes_boot() pushes it once, in GREETING_HELLO mode, right after
-//     ui_init() (and before the Locked-screen push, so a locked device
-//     still always ends up showing Locked on top — see modes_boot()'s own
-//     comment on that ordering requirement).
-//   - modes_run()'s UI-awake-window edge detection pushes it in
-//     GREETING_SLEEPING mode on the awake->asleep edge, and pops it (if
-//     still on top) on the asleep->awake edge — mirroring lock_screen_sync()
-//     immediately above that call site.
-// on_key pops unconditionally in either mode, so a stray key dispatched in
-// the same tick as a wake edge and the sync-driven pop below can't double
-// pop: whichever runs first leaves the other's ui_top() check/attempt a
-// no-op (modes_run() is single-threaded, no cross-task race here).
+// pass). One call site owns its lifecycle now: modes_boot() pushes it once,
+// in GREETING_HELLO mode, right after ui_init() (and before the Locked-screen
+// push, so a locked device still always ends up showing Locked on top — see
+// modes_boot()'s own comment on that ordering requirement).
+//
+// GREETING_SLEEPING used to be pushed a second time, by modes_run()'s
+// UI-awake-window edge detection on the awake->asleep edge (popped again on
+// the asleep->awake edge), mirroring lock_screen_sync()'s push/pop
+// discipline. Owner decision, 22 Sep evening ("stay on chat unless it's
+// explicitly locked"): that second call site is gone — the UI-awake window
+// lapsing no longer changes which screen is on top, only whether it repaints
+// and whether a due full refresh lands (ui.c's ui_on_awake_lapse()). The
+// GREETING_SLEEPING mode/render path itself is unchanged and still compiles,
+// simply unused by modes.c for now, in case a future decision brings back an
+// explicit "sleeping" indicator some other way.
+// on_key still pops unconditionally in either mode (see below) — with only
+// one push site left, this is now just the ordinary "esc/any key leaves the
+// greeting" behaviour, not a double-pop guard.
 
 #include "ui.h"
 

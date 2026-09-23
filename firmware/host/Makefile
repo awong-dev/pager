@@ -66,7 +66,7 @@ endif
 MAIN_SRC := ../main
 BUILD := build
 
-TESTS := test_cbor test_auth test_setup test_input test_msg test_lock test_loc test_cafetch test_catrust test_cfg test_sms test_carrier test_chat_layout test_coverage
+TESTS := test_cbor test_auth test_setup test_input test_msg test_lock test_loc test_cafetch test_catrust test_cfg test_sms test_carrier test_chat_layout test_coverage test_net_connect_guard
 TEST_BINS := $(TESTS:%=$(BUILD)/%)
 
 # ASSETS: tools/mkassets.py's default output location (docs/DEVICE_TASKS.md
@@ -282,4 +282,17 @@ $(BUILD)/test_coverage.o: test_coverage.c $(MAIN_SRC)/coverage.h | $(BUILD)
 	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ test_coverage.c
 
 $(BUILD)/test_coverage: $(BUILD)/coverage.o $(BUILD)/test_coverage.o
+	$(CC) $(CFLAGS) -o $@ $^
+
+# test_net_connect_guard: net_connect_guard.c (whole file -- no ESP-IDF
+# dependency at all, see net_connect_guard.h's own module comment) +
+# test_net_connect_guard.c. v0.2 bug fixes M1 (connect timeout) / M3 (fail
+# streak escalation), 22 Sep 2026.
+$(BUILD)/net_connect_guard.o: $(MAIN_SRC)/net_connect_guard.c $(MAIN_SRC)/net_connect_guard.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $(MAIN_SRC)/net_connect_guard.c
+
+$(BUILD)/test_net_connect_guard.o: test_net_connect_guard.c $(MAIN_SRC)/net_connect_guard.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ test_net_connect_guard.c
+
+$(BUILD)/test_net_connect_guard: $(BUILD)/net_connect_guard.o $(BUILD)/test_net_connect_guard.o
 	$(CC) $(CFLAGS) -o $@ $^
