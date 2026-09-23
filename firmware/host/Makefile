@@ -66,7 +66,7 @@ endif
 MAIN_SRC := ../main
 BUILD := build
 
-TESTS := test_cbor test_auth test_setup test_input test_msg test_lock test_loc test_cafetch test_catrust test_cfg test_sms test_carrier test_chat_layout test_coverage test_wifi_policy
+TESTS := test_cbor test_auth test_setup test_input test_msg test_lock test_loc test_cafetch test_catrust test_cfg test_sms test_carrier test_chat_layout test_coverage test_wifi_policy test_wificred
 TEST_BINS := $(TESTS:%=$(BUILD)/%)
 
 # ASSETS: tools/mkassets.py's default output location (docs/DEVICE_TASKS.md
@@ -293,4 +293,16 @@ $(BUILD)/test_wifi_policy.o: test_wifi_policy.c $(MAIN_SRC)/wifi_policy.h | $(BU
 	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ test_wifi_policy.c
 
 $(BUILD)/test_wifi_policy: $(BUILD)/wifi_policy.o $(BUILD)/test_wifi_policy.o
+	$(CC) $(CFLAGS) -o $@ $^
+
+# test_wificred: wificred.c's pure section (SSID/PSK validation, the
+# replace-wholesale candidate applier) + test_wificred.c. Everything past its
+# own `#ifdef ESP_PLATFORM` split needs NVS and is not built here.
+$(BUILD)/wificred.o: $(MAIN_SRC)/wificred.c $(MAIN_SRC)/wificred.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $(MAIN_SRC)/wificred.c
+
+$(BUILD)/test_wificred.o: test_wificred.c $(MAIN_SRC)/wificred.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ test_wificred.c
+
+$(BUILD)/test_wificred: $(BUILD)/wificred.o $(BUILD)/test_wificred.o
 	$(CC) $(CFLAGS) -o $@ $^
