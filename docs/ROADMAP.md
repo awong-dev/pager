@@ -43,8 +43,10 @@ Unverified measurements (see HARDWARE_TESTING.md for test plans):
 
 Firmware
 - "Set up again" on the device menu is a stub; setup is console-only.
-- A received SMS lives in RAM only; multipart texts arrive as separate messages; the boot-time
-  scan of stored texts reads slots one by one.
+- A received SMS is persisted to `msghist` like any other message, but with `ts = 0`
+  (`msg_insert_sms_in()` sets it deliberately, since the row is never published), so it renders
+  with no clock time and sorts only by `msghist` seq; multipart texts arrive as separate messages;
+  the boot-time scan of stored texts reads slots one by one.
 - Location: the PSM-window radio route (cheaper than dropping the radio) is not built;
   accelerometer thresholds are datasheet defaults.
 - The payload parser in the modem library miscounts by one byte when a payload ends in a newline;
