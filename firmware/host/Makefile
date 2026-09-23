@@ -75,7 +75,7 @@ endif
 MAIN_SRC := ../main
 BUILD := build
 
-TESTS := test_cbor test_auth test_setup test_input test_msg test_lock test_loc test_cafetch test_catrust test_cfg test_sms test_carrier test_chat_layout test_coverage test_net_connect_guard
+TESTS := test_cbor test_auth test_setup test_input test_msg test_lock test_loc test_cafetch test_catrust test_cfg test_sms test_carrier test_chat_layout test_coverage test_net_connect_guard test_publish_quiet
 TEST_BINS := $(TESTS:%=$(BUILD)/%)
 
 # ASSETS: tools/mkassets.py's default output location (docs/DEVICE_TASKS.md
@@ -309,4 +309,17 @@ $(BUILD)/test_net_connect_guard.o: test_net_connect_guard.c $(MAIN_SRC)/net_conn
 	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ test_net_connect_guard.c
 
 $(BUILD)/test_net_connect_guard: $(BUILD)/net_connect_guard.o $(BUILD)/test_net_connect_guard.o
+	$(CC) $(CFLAGS) -o $@ $^
+
+# test_publish_quiet: publish_quiet.c (whole file -- no ESP-IDF dependency
+# at all, see publish_quiet.h's own module comment) + test_publish_quiet.c.
+# 23 Sep 2026 display-corruption field failures (panel SPI write overlapping
+# a pager-originated MQTT publish's LTE uplink).
+$(BUILD)/publish_quiet.o: $(MAIN_SRC)/publish_quiet.c $(MAIN_SRC)/publish_quiet.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $(MAIN_SRC)/publish_quiet.c
+
+$(BUILD)/test_publish_quiet.o: test_publish_quiet.c $(MAIN_SRC)/publish_quiet.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ test_publish_quiet.c
+
+$(BUILD)/test_publish_quiet: $(BUILD)/publish_quiet.o $(BUILD)/test_publish_quiet.o
 	$(CC) $(CFLAGS) -o $@ $^

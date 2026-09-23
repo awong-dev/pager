@@ -233,6 +233,17 @@ bool net_publish(const char *topic, char *buf, uint16_t len, uint8_t qos);
  * extra if it was already in an active RRC state (PENDING_HW). */
 bool net_publish_raw(const char *topic, uint8_t *buf, uint16_t len, uint8_t qos);
 
+/* 23 Sep display-corruption fix (publish_quiet.h's own module comment):
+ * blocks (vTaskDelay, never a tight loop) while a pager-originated publish
+ * issued via net_publish()/net_publish_raw() is outstanding or has
+ * completed less than PUBLISH_QUIET_WINDOW_US ago, up to `max_wait_ms`.
+ * Returns the actual ms waited (0 if nothing was in flight). disp.c's
+ * pre-refresh gate hook (ui.c's strong disp_pre_write_gate_hook()) is the
+ * only caller — see disp.h's own comment on that layering seam.
+ * Power effect: none of its own; it only delays a refresh that was already
+ * about to happen, up to max_wait_ms. */
+uint32_t net_publish_quiet_wait_ms(uint32_t max_wait_ms);
+
 /* Register the callback invoked once per inbound MQTT message, after net.c
  * has already bounds-checked it (§3.4/F6) and fetched it via mqttReceive().
  * Runs on the modem library's _eventProcessingTask (L4), not an ISR and not

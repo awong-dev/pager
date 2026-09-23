@@ -532,6 +532,32 @@ void disp_busy_idle_hook(void)
     ui_poll_keyboard();
 }
 
+// Bounded wait for disp_pre_write_gate_hook() below: a dropped
+// +SQNSMQTTONPUBLISH URC (or its OK/ERROR) must not stall rendering
+// forever. 1500ms per the coordinator's own figure for this fix.
+#define PAGER_UI_PUBLISH_QUIET_MAX_WAIT_MS 1500
+
+// Strong definition of disp.h's weak disp_pre_write_gate_hook() — 23 Sep
+// display-corruption field failures: three register-loss events all
+// correlated with a panel SPI write starting while a pager-originated MQTT
+// publish's LTE uplink was in flight (a reconnect + the `/up` ack publish
+// in the 00:40 event); zero on console-driven (`disptest`) refreshes,
+// which never publish. net.c tracks in-flight publishes and a short quiet
+// window after each one completes (publish_quiet.h); this hook is disp.c's
+// only route to that state, kept out of disp.c itself so it does not have
+// to include net.h — same layering seam disp_busy_idle_hook() above uses
+// for ui.h. Logs once per delayed refresh so the bench can see the gate
+// working; silent (and free) when nothing is in flight, which
+// net_publish_quiet_wait_ms() itself makes true without a syscall beyond
+// one esp_timer_get_time() read.
+void disp_pre_write_gate_hook(void)
+{
+    uint32_t waited_ms = net_publish_quiet_wait_ms(PAGER_UI_PUBLISH_QUIET_MAX_WAIT_MS);
+    if (waited_ms > 0) {
+        ESP_LOGI(TAG, "refresh delayed %u ms for an in-flight publish", (unsigned) waited_ms);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Public init/shutdown
 // ---------------------------------------------------------------------------

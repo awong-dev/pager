@@ -70,12 +70,29 @@ runs — the UI render task would repaint over the test pattern. Commands:
 | `disptest step <n>` | Invert the 8-pixel screen column at x=n*8, trigger ONE partial refresh, wait for BUSY. |
 | `disptest seq [n0] [n1] [ms]` | Step through columns n0 to n1 inclusive, ms apart (defaults: 2 12 1500). Watch for band flipping; verify pattern matches prediction. |
 | `disptest full` | Force one full refresh of the framebuffer. |
+| `disptest swreset` | Fault injector: send the SSD1680's SW reset (0x12) alone, wait BUSY, nothing else — leaves the controller on power-on register defaults, exactly like the 23 Sep field failure. |
 
 **Pattern reading:** After `disptest bars`, every 8-pixel column is either solid black or solid
 white. `disptest seq` inverts each column in turn, producing a predictable band-flip sequence
 that can be read off as a pattern (e.g. `w b w b w b w b ...`) and compared against the expected
 sequence. The leftmost columns (before the starting column of the `seq` range) never change and
 appear wrong if the reading is off by one.
+
+**23 Sep register-loss regression, acceptance sequence:** `disptest bars` (clean) -> `disptest
+swreset` -> `disptest bars` again. Before the fix (both refresh paths re-arm the SSD1680's
+registers before every RAM write, disp.c's `disp_pre_refresh_reset()`), the second `bars` came out
+garbled/half black, because `swreset` leaves the controller on power-on register defaults and
+nothing re-armed them before the next write. With the fix, the second `bars` is clean. Also run
+`disptest seq 0 3 1500` right after a `swreset` — it must be clean too (this exercises the partial
+path's own re-arm).
+
+**Publish/refresh gate:** every full/partial refresh now also waits (bounded, at most 1500ms) for
+any in-flight `/status`, `/up`, ack or location publish to finish and its 300ms quiet window to
+pass, before sending any panel command (net.cpp's `publish_quiet.h`, disp.c's
+`disp_pre_write_gate_hook()`). Watch the serial log for `ui: refresh delayed <n> ms for an
+in-flight publish` around a mode change or an incoming message — it should appear whenever a
+publish and a render land close together, and never during a `disptest` run (console commands
+never publish).
 
 ## Seen working on hardware
 

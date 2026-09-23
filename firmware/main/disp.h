@@ -84,6 +84,22 @@ void disp_refresh_cadence(void);
  * own task-safety check before touching shared I2C/input state. */
 void disp_busy_idle_hook(void);
 
+/* Weak hook, called once at the very top of full_refresh_locked()/
+ * partial_refresh_locked() — before ANY panel command, including the
+ * register re-arm ahead of it — so it also covers full_refresh_locked()'s
+ * own reset (see full_refresh_locked()'s own comment for why the register
+ * re-arm exists). Default definition (disp.c) is empty. 23 Sep display-
+ * corruption field failures: three register-loss events all correlated
+ * with a panel SPI write starting while a pager-originated MQTT publish's
+ * LTE uplink was in flight; zero on console-driven (`disptest`) refreshes,
+ * which never publish. ui.c's strong definition blocks (bounded, via
+ * net_publish_quiet_wait_ms()) until net.c's publish-quiet gate reports
+ * clear. disp.c intentionally does NOT include net.h — same layering seam
+ * disp_busy_idle_hook() above uses to avoid including ui.h. Runs on
+ * whichever task called the refresh, with disp_lock() already held (same
+ * as disp_busy_idle_hook()). */
+void disp_pre_write_gate_hook(void);
+
 /* Bench A/B for the garbled-bands fix: false = pre-fix behaviour (only the
  * previous-image plane is re-synced after a partial), true = also re-write the
  * new-image plane, as the vendor reference does. Default true (CONFIRMED on
@@ -102,6 +118,14 @@ int disp_dirty_rows(void);
 
 /* Partials since the last full refresh (the 20-partial cadence counter). */
 uint32_t disp_partial_count(void);
+
+/* Fault injector for the bench (`disptest swreset`): sends the SSD1680's SW
+ * reset (0x12) alone, waits BUSY, and does nothing else, so the controller
+ * is left on power-on register defaults exactly like the 23 Sep field
+ * failure (disp.c's own comment on disp_pre_refresh_reset() has the full
+ * story). Power effect: one SW-reset BUSY wait (~10ms, PENDING_HW); does not
+ * touch panel VCC. */
+void disp_fault_inject_swreset(void);
 
 #ifdef __cplusplus
 }

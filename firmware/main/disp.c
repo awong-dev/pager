@@ -69,6 +69,16 @@ static bool s_display_dead = false; // logged once, then the device runs headles
 static bool s_display_dead_logged = false;
 static uint32_t s_partial_count = 0;
 
+// Handoff task D2: partial_refresh_locked()'s own BUSY-timeout recovery used
+// to set s_partial_count = PAGER_UI_PARTIAL_FULL_EVERY to force the next
+// refresh full, but ui.c's render path calls disp_partial_refresh()
+// directly (never disp_refresh_cadence()), so that counter bump was silently
+// never read. This flag is what disp_partial_refresh() actually honours;
+// set here (that recovery) and by disp_init()'s own priming below, cleared
+// once consumed. disp_refresh_cadence() is unchanged — it still decides full
+// vs. partial from s_partial_count alone, exactly as before.
+static bool s_force_full = false;
+
 // Bench A/B for the garbled-bands fix (see partial_refresh_locked()'s own
 // comment on the second 0x24 write this flag guards). Default true = fixed
 // behaviour; 0 deliberately reproduces the pre-fix bug (confirmed on the
@@ -121,6 +131,13 @@ static bool s_busy_fallback_logged = false;
 // disp.c must not include ui.h, so ui.c/modes.c overrides this with the
 // strong definition that polls the CardKB during a long BUSY wait.
 __attribute__((weak)) void disp_busy_idle_hook(void) {}
+
+// Weak default: no-op. Same layering seam as disp_busy_idle_hook() above,
+// for the same reason (disp.c must not include net.h either) — ui.c
+// overrides this with the strong definition that blocks on net.c's
+// publish-quiet gate. See full_refresh_locked()/partial_refresh_locked()'s
+// own call sites for the field failure this closes.
+__attribute__((weak)) void disp_pre_write_gate_hook(void) {}
 
 // fallback_ms == 0: no fallback — a real update is not in flight at this
 // call site, so if BUSY never reads high we just fall straight through
@@ -254,15 +271,14 @@ static void disp_set_ram_window(uint16_t y_start, uint16_t y_end)
     disp_send_data(yc, 2);
 }
 
-// Runs the SSD1680 init sequence per docs/PROTOCOL.md §6. Assumes VCC is
-// already on and a hardware reset has just completed.
-static bool disp_run_init_sequence(void)
+// Register half of the SSD1680 init sequence — everything after the SW
+// reset + its BUSY wait: MUX, data-entry mode, RAM window, border, display
+// update control, temperature source, RAM address counters. Factored out of
+// disp_run_init_sequence() so the per-refresh reset below (23 Sep field
+// failure fix, see full_refresh_locked()/partial_refresh_locked()) can send
+// exactly the same registers without a hardware reset in between.
+static void disp_send_init_registers(void)
 {
-    disp_send_cmd(0x12); // SW reset
-    if (!disp_wait_busy()) {
-        return false;
-    }
-
     uint8_t mux[3] = { 0x27, 0x01, 0x00 };
     disp_send_cmd(0x01);
     disp_send_data(mux, 3);
@@ -287,7 +303,17 @@ static bool disp_run_init_sequence(void)
     uint8_t yc0[2] = { 0x00, 0x00 };
     disp_send_cmd(0x4F);
     disp_send_data(yc0, 2);
+}
 
+// Runs the SSD1680 init sequence per docs/PROTOCOL.md §6. Assumes VCC is
+// already on and a hardware reset has just completed.
+static bool disp_run_init_sequence(void)
+{
+    disp_send_cmd(0x12); // SW reset
+    if (!disp_wait_busy()) {
+        return false;
+    }
+    disp_send_init_registers();
     return disp_wait_busy();
 }
 
@@ -299,6 +325,48 @@ static void mark_display_dead(void)
                       "this boot; device continues headless (network/replies/acks unaffected)");
         s_display_dead_logged = true;
     }
+}
+
+// 23 Sep field failure, hardware-verified: mid-way through a full-refresh RAM
+// write, the SSD1680 lost its register configuration (the first ~165 native
+// rows landed, the rest were dropped) and every refresh after that came out
+// garbled, because the controller was now running on power-on register
+// defaults — this panel uses 128 of the SSD1680's 176 sources, so the
+// default RAM X window skews every row. Only disp_init()'s init sequence
+// restored it; a plain reboot fixed the glass, because disp_init() re-runs
+// disp_run_init_sequence() and nothing else in this file ever did, again,
+// after boot. The reference driver for this exact panel (GxEPD2_290_T94)
+// re-runs its whole _InitDisplay() before every refresh (_Init_Full()/
+// _Init_Part()); disp_pre_refresh_reset() below is that, called at the top
+// of both full_refresh_locked() and partial_refresh_locked(), before any RAM
+// window/write.
+//
+// 0x12 (software reset) resets the SSD1680's registers only, not its RAM —
+// datasheet and the reference driver both treat it this way — so the
+// two-RAM-plane state partial_refresh_locked() depends on (the panel's own
+// "previous image" plane, and s_fb_old which tracks it) survives this call
+// untouched.
+//
+// Deliberately no hardware reset here: disp_hw_reset() (RST pin toggle)
+// stays reserved for disp_init() and the two BUSY-timeout recovery branches
+// below, which already do a real hardware reset when a software reset alone
+// isn't trusted to have worked.
+//
+// Cost, paid on every refresh: one SW-reset BUSY wait (bench-measured ~10ms:
+// "BUSY: entry=1 exit=0 iters=1 elapsed=9648 us") plus the seven short
+// register-write commands in disp_send_init_registers().
+static bool disp_pre_refresh_reset(const char *who)
+{
+    if (disp_run_init_sequence()) {
+        return true;
+    }
+    ESP_LOGI(TAG, "%s: pre-refresh re-init BUSY timeout; attempting one reset+re-init", who);
+    disp_hw_reset();
+    if (!disp_run_init_sequence()) {
+        mark_display_dead();
+        return false;
+    }
+    return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -347,6 +415,20 @@ static void mark_display_dead(void)
 static void full_refresh_locked(void)
 {
     if (s_display_dead) {
+        return;
+    }
+
+    // 00:40 field failure: a full refresh's SPI write started while a
+    // pager-originated MQTT publish's LTE uplink was in flight (a reconnect
+    // + the `/up` ack publish) and the controller lost its registers again.
+    // Block here, before ANY panel command below (including the register
+    // re-arm), until net.c's publish-quiet gate says it's clear — see
+    // disp_pre_write_gate_hook()'s own comment.
+    disp_pre_write_gate_hook();
+
+    // Re-arm the SSD1680's registers before touching RAM — see
+    // disp_pre_refresh_reset()'s own banner comment (23 Sep field failure).
+    if (!disp_pre_refresh_reset("full refresh")) {
         return;
     }
 
@@ -428,6 +510,19 @@ static void partial_refresh_locked(void)
     if (s_display_dead) {
         return;
     }
+
+    // 00:40 field failure — see full_refresh_locked()'s identical call and
+    // its own comment.
+    disp_pre_write_gate_hook();
+
+    // Re-arm the SSD1680's registers before touching RAM — see
+    // disp_pre_refresh_reset()'s own banner comment (23 Sep field failure).
+    // Safe for the two-RAM-plane state this function depends on: 0x12 (SW
+    // reset) resets registers only, never RAM.
+    if (!disp_pre_refresh_reset("partial refresh")) {
+        return;
+    }
+
     int first = -1, last = -1;
     for (int r = 0; r < GFX_FB_ROWS; r++) {
         if (memcmp(gfx_fb_native_row(r), s_fb_old[r], GFX_FB_ROW_BYTES) != 0) {
@@ -491,7 +586,11 @@ static void partial_refresh_locked(void)
         }
         // Re-init invalidates the shadow plane's validity; force the next
         // caller onto a full refresh rather than risk desync.
+        // s_partial_count covers disp_refresh_cadence() callers;
+        // s_force_full covers disp_partial_refresh()'s direct callers, which
+        // never read s_partial_count (see s_force_full's own comment).
         s_partial_count = PAGER_UI_PARTIAL_FULL_EVERY;
+        s_force_full = true;
         return;
     }
 
@@ -638,7 +737,8 @@ bool disp_init(void)
         }
     }
 
-    s_partial_count = PAGER_UI_PARTIAL_FULL_EVERY; // force a full refresh on first render
+    s_partial_count = PAGER_UI_PARTIAL_FULL_EVERY; // force a full refresh via disp_refresh_cadence()
+    s_force_full = true; // ...and via disp_partial_refresh(), in case the first render call goes there directly
     ESP_LOGI(TAG, "display init OK");
     return true;
 }
@@ -655,7 +755,17 @@ void disp_full_refresh(void)
 void disp_partial_refresh(void)
 {
     disp_lock();
-    partial_refresh_locked();
+    if (s_force_full) {
+        // Honour a pending forced-full request (disp_init()'s priming, or
+        // partial_refresh_locked()'s own BUSY-timeout recovery) — see
+        // s_force_full's own comment. Consume it here: this is the only
+        // place a caller that bypasses disp_refresh_cadence() can be made to
+        // see it.
+        s_force_full = false;
+        full_refresh_locked();
+    } else {
+        partial_refresh_locked();
+    }
     disp_unlock();
 }
 
@@ -667,6 +777,27 @@ void disp_refresh_cadence(void)
     } else {
         partial_refresh_locked();
     }
+    disp_unlock();
+}
+
+// Fault injector for the bench (`disptest swreset`, main.c): sends 0x12 (SW
+// reset) alone, waits for BUSY, and does nothing else — deliberately leaves
+// the SSD1680 exactly where the 23 Sep field failure left it, registers on
+// power-on defaults, with no re-init to follow. Confirms disp_pre_refresh_
+// reset() above actually recovers from that state: acceptance sequence is
+// `disptest bars` (clean) -> `disptest swreset` -> `disptest bars` again
+// (must still be clean, since full_refresh_locked() now re-arms the
+// registers itself before writing RAM). Power effect: none beyond the SW
+// reset's own BUSY wait (~10ms, bench-measured) — does not touch panel VCC.
+void disp_fault_inject_swreset(void)
+{
+    disp_lock();
+    if (!s_spi_ready) {
+        disp_unlock();
+        return;
+    }
+    disp_send_cmd(0x12); // SW reset -- deliberately nothing else follows
+    disp_wait_busy();
     disp_unlock();
 }
 

@@ -18,6 +18,7 @@
 #include "watchdog.h"
 #include "placeholder_ca.h"
 #include "net_connect_guard.h"
+#include "publish_quiet.h"
 
 #include "WalterModem.h"
 
@@ -177,6 +178,16 @@ static volatile net_mqtt_rc_class_t s_last_class = NET_MQTT_RC_NONE;
 // rest of this block (net_connect_guard.c's writes are each a single bool/
 // int64_t/uint32_t store, same as s_mqtt_connected etc. above).
 static net_connect_guard_t s_connect_guard;
+
+// 23 Sep display-corruption field failures — see publish_quiet.h's own
+// module comment. Written from net_publish()/net_publish_raw() (whichever
+// task called them) on issue, and from pager_mqtt_event_handler()
+// (_eventProcessingTask) on WALTER_MODEM_MQTT_EVENT_PUBLISHED -- same
+// "plain struct, no mutex, races tolerated" reasoning as s_connect_guard
+// above (a torn read here costs at worst one extra/missed refresh delay,
+// never a correctness bug -- disp.c's own refresh path is what actually
+// matters for the panel).
+static publish_quiet_gate_t s_publish_quiet;
 
 // v0.2 §9.4 (session liveness / silent-resume repair, net_service_session()).
 // All written from pager_mqtt_event_handler() (_eventProcessingTask) and/or
@@ -409,6 +420,13 @@ static void pager_mqtt_event_handler(WMMQTTEventType event, const WMMQTTEventDat
         // §4.1 r6 / §4.2: freeing the matching pending_ack/pending_up RTC
         // entry belongs to msg.c, which is the thing that knows
         // which entry a given publish was for. No such entries exist yet.
+        //
+        // 23 Sep fix: this is the completion event for the publish's AT
+        // round trip (the +SQNSMQTTONPUBLISH URC, or the terminal OK/ERROR)
+        // regardless of rc — either way the uplink this publish caused is
+        // over, so clear it from the in-flight count and arm the quiet
+        // window disp.c's pre-refresh gate waits on (publish_quiet.h).
+        publish_quiet_gate_done(&s_publish_quiet, esp_timer_get_time());
         break;
 
     case WALTER_MODEM_MQTT_EVENT_MESSAGE:
@@ -886,6 +904,7 @@ extern "C" bool net_init(void)
 {
     s_session_configured = false;
     net_connect_guard_init(&s_connect_guard); // v0.2 M1/M3: fresh boot, nothing outstanding
+    publish_quiet_gate_init(&s_publish_quiet); // 23 Sep fix: fresh boot, nothing in flight
     return net_bringup(PAGER_ATTACH_POLL_CAP_S);
 }
 
@@ -1236,6 +1255,10 @@ extern "C" bool net_publish(const char *topic, char *buf, uint16_t len, uint8_t 
     bool ok = WalterModem::mqttPublish(topic, (uint8_t *) buf, len, qos);
     if (ok) {
         s_last_uplink_us = esp_timer_get_time(); // §9.4: successful publish resets the idle clock
+        // 23 Sep fix: the AT+SQNSMQTTPUBLISH round trip is now outstanding;
+        // matching publish_quiet_gate_done() call is the PUBLISHED event
+        // above.
+        publish_quiet_gate_issued(&s_publish_quiet);
     }
     return ok;
 }
@@ -1259,8 +1282,29 @@ extern "C" bool net_publish_raw(const char *topic, uint8_t *buf, uint16_t len, u
     bool ok = WalterModem::mqttPublish(topic, buf, len, qos);
     if (ok) {
         s_last_uplink_us = esp_timer_get_time(); // §9.4: successful publish resets the idle clock
+        // 23 Sep fix: see net_publish()'s own comment above.
+        publish_quiet_gate_issued(&s_publish_quiet);
     }
     return ok;
+}
+
+extern "C" uint32_t net_publish_quiet_wait_ms(uint32_t max_wait_ms)
+{
+    // 23 Sep display-corruption fix (publish_quiet.h's own module comment):
+    // disp.c's pre-refresh gate hook (ui.c's strong disp_pre_write_gate_hook())
+    // calls this before any panel SPI command goes out. Bounded so a lost
+    // PUBLISHED event (a dropped URC) cannot stall rendering forever --
+    // matches disp.c's own "NEVER a tight busy-loop"/bounded-wait discipline
+    // (disp_wait_busy_fb()).
+    uint32_t waited_ms = 0;
+    while (publish_quiet_gate_should_wait(&s_publish_quiet, esp_timer_get_time())) {
+        if (waited_ms >= max_wait_ms) {
+            break;
+        }
+        vTaskDelay(pdMS_TO_TICKS(10)); // NEVER a tight busy-loop
+        waited_ms += 10;
+    }
+    return waited_ms;
 }
 
 extern "C" void net_set_msg_cb(void (*cb)(const char *topic, const char *body, uint16_t len))
@@ -1368,6 +1412,7 @@ extern "C" bool net_recover_modem(void)
     // so nothing is in flight and the fail streak that led here is moot --
     // reset both rather than let a stale streak immediately re-escalate.
     net_connect_guard_init(&s_connect_guard);
+    publish_quiet_gate_init(&s_publish_quiet); // same reasoning: a reset drops any outstanding publish too
     if (!WalterModem::reset()) {
         ESP_LOGI(TAG, "WalterModem::reset() failed");
         return false;

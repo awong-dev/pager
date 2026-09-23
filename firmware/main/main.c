@@ -577,6 +577,8 @@ static const char *DISPTEST_USAGE =
     "disptest seq [n0] [n1] [ms]  -- `step` for n = n0..n1, ms apart (defaults 2 12 1500; "
     "count clamped to 36, ms clamped to 200..5000)\n"
     "disptest full                -- force one full refresh of whatever is in the framebuffer\n"
+    "disptest swreset             -- fault injector: send SW reset (0x12) alone, wait BUSY, "
+    "nothing else -- leaves the controller on power-on register defaults (23 Sep field failure)\n"
     "NOTE: do not use `wake` or `key` while disptest is running -- the UI render task would "
     "repaint over the test pattern.\n";
 
@@ -716,6 +718,16 @@ static int cmd_disptest(int argc, char **argv)
         printf("disptest: full refresh done\n");
         return 0;
     }
+    if (strcmp(argv[1], "swreset") == 0) {
+        if (argc != 2) {
+            printf("usage: disptest swreset\n");
+            return 1;
+        }
+        disp_fault_inject_swreset();
+        printf("disptest: swreset sent (SW reset only, no re-init) -- controller now on "
+               "power-on register defaults\n");
+        return 0;
+    }
     printf("%s", DISPTEST_USAGE);
     return 1;
 }
@@ -813,7 +825,7 @@ static void start_normal_console(void)
 
     const esp_console_cmd_t disptest_cmd = {
         .command = "disptest",
-        .help = "disptest [info|again <0|1>|bars|step <n>|seq [n0] [n1] [ms]|full] -- "
+        .help = "disptest [info|again <0|1>|bars|step <n>|seq [n0] [n1] [ms]|full|swreset] -- "
                  "deterministic e-paper partial-refresh bench harness (docs task-disp-fix.md); "
                  "run `disptest` with no args for the full usage. NOTE: do not use `wake` or "
                  "`key` while this is running -- the UI render task would repaint over the test "
