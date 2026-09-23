@@ -146,6 +146,37 @@ static void test_sms_only(void)
     CHECK(cbor_r_array(&r, &count) && count == 2, "captured sms span must decode as a 2-item array");
 }
 
+/* docs/WIFI_TASKS.md W3: a cfg envelope carrying only `wifi` -- cfg.c's own
+ * job is just the byte-span hand-off (wificred.c's own
+ * wificred_parse_cfg_submap(), tested in firmware/host/test_wificred.c, does
+ * the real decode/validation); this only proves cfg_parse() extracts the
+ * right span. */
+static void test_wifi_only(void)
+{
+    uint8_t buf[192];
+    cbor_w_t w;
+    cbor_w_init(&w, buf, sizeof(buf));
+    cbor_w_map(&w, 3);
+    cbor_w_tstr(&w, 1, "m_77777777", 10);
+    cbor_w_tstr(&w, 6, "cfg", 3);
+    cbor_w_map_key(&w, 38, 1);
+    cbor_w_map_key(&w, 3, 1); /* wifi: { en: true } */
+    cbor_w_bool(&w, 0, true);
+    CHECK(!w.err, "test setup: encoding the wifi-only fixture must not overflow");
+
+    cfg_dispatch_t d;
+    bool ok = cfg_parse(buf, (uint16_t) w.len, false, &d);
+    CHECK(ok, "a cfg envelope with only `wifi` must be accepted");
+    CHECK(strcmp(d.id, "m_77777777") == 0, "id mismatch: %s", d.id);
+    CHECK(d.have_wifi, "have_wifi must be true");
+    CHECK(!d.have_lock && !d.have_ca && !d.have_sms, "have_lock/have_ca/have_sms must all be false");
+
+    cbor_r_t r;
+    cbor_r_init(&r, buf + d.wifi_off, d.wifi_len);
+    uint32_t count;
+    CHECK(cbor_r_map(&r, &count) && count == 1, "captured wifi span must decode as a 1-pair map");
+}
+
 /* An empty `sms` array (V02_DESIGN.md §6: clearing the allow-list) must be
  * a recognised, well-formed push too, not treated as unknown/malformed. */
 static void test_sms_empty_array(void)
@@ -257,6 +288,7 @@ int main(void)
     test_ca_only();
     test_sms_only();
     test_sms_empty_array();
+    test_wifi_only();
     test_both_lock_and_ca();
     test_unknown_key_skipped();
     test_unpin_form();

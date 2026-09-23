@@ -85,6 +85,34 @@ typedef struct {
  * and only after a real association. */
 bool wificred_apply_candidates(const wificred_candidate_t *candidates, uint8_t count, wificred_set_t *out);
 
+/* ---------------------------------------------------------------------
+ * `cfg.wifi` sub-map decode (docs/WIFI_TASKS.md W3, docs/WIFI_DESIGN.md §4):
+ * `{ en=0 (bool), nets=1 (array <=2 of { s=0 tstr, p=1 tstr }) }`.
+ * Same pattern as catrust_parse_cfg_submap()/sms_parse_cfg_submap(): pure,
+ * no ESP-IDF dependency, host-tested by firmware/host/test_wificred.c.
+ * --------------------------------------------------------------------- */
+typedef struct {
+    bool have_en;
+    bool en;
+    bool have_nets; /* true even for `nets: []` (a legal, empty push that clears the set) */
+    wificred_set_t nets; /* meaningful only when have_nets */
+} wificred_cfg_t;
+
+/* `buf`/`len` are the raw CBOR bytes of the `wifi` sub-map value itself
+ * (cfg.h's cfg_dispatch_t.wifi_off/wifi_len span) — this function opens its
+ * own cbor_r_t on them, it does not touch the enclosing envelope.
+ * `nets` absent from the push at all leaves `out->have_nets` false (caller:
+ * apply `en` only, leave stored networks untouched — docs/WIFI_DESIGN.md
+ * §4). `nets: []` is accepted and sets `have_nets` true with an empty set
+ * (clears the stored networks). More than WIFICRED_MAX_NETS entries, any
+ * invalid SSID/PSK, an unparseable array/map, or a network item missing
+ * `s`/`p` all reject the WHOLE push (this function returns false, `*out`
+ * untouched) — never a partial apply, matching every other cfg sub-map
+ * parser in this codebase. Unknown keys (both at the `{en, nets}` level and
+ * inside each network item) are skipped, never a parse failure
+ * (cfg.c's own "unknown cfg keys must be skipped" rule, PROTOCOL.md-wide). */
+bool wificred_parse_cfg_submap(const uint8_t *buf, uint16_t len, wificred_cfg_t *out);
+
 #ifdef ESP_PLATFORM
 /* ---------------------------------------------------------------------
  * Device wiring: NVS namespace "wifi".
@@ -133,6 +161,20 @@ bool wificred_clear(void);
  * ONLY the `ch{idx}` key (docs/WIFI_DESIGN.md §4's "cached home channel"),
  * one small NVS write, no full-set rewrite. No-op if `idx >= wificred_count()`. */
 void wificred_note_channel(uint8_t idx, uint8_t channel);
+
+/* `cfg.wifi` intercept (cfg.c's cfg_ingest_cbor(), MQTT event task,
+ * docs/WIFI_TASKS.md W3). `buf`/`len` are the raw `wifi` sub-map bytes
+ * (cfg_dispatch_t.wifi_off/wifi_len); `id` is the envelope's own id, for the
+ * ack. A malformed `wifi` sub-map (wificred_parse_cfg_submap() returns
+ * false) is logged and dropped, exactly like any other malformed `/down`
+ * content — no ack, no crash. Applies `en` (wificred_set_enabled()) and/or
+ * `nets` (wificred_store()) as present, then acks `shown` immediately on
+ * success — same "apply and ack immediately" contract `cfg.sms`/`cfg.lock`
+ * already use (this sub-map needs no two-phase apply the way `cfg.ca` does:
+ * a bad WiFi credential just means the eventual association attempt fails
+ * and the policy falls back to LTE, W1's own job, not this module's).
+ * Never logs a PSK value (this file's own hard rule, above). */
+void wificred_apply_cfg_submap(const uint8_t *buf, uint16_t len, const char *id);
 
 #endif /* ESP_PLATFORM */
 

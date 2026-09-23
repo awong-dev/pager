@@ -2,18 +2,19 @@
  * §3.2/§10).
  *
  * A single `cfg` push can now carry more than one sub-map (`lock`=0,
- * existing; `ca`=1, this task; `sms`=2, a later task) in one envelope, and
- * each sub-map has its own apply/ack timing (`lock` applies and acks
- * immediately; `ca`'s two-phase apply, catrust.c, may defer the ack for
- * several modes_run() cycles or never ack at all if the apply is rejected).
- * That ruled out the old design, where lock_ingest_cfg_cbor() decoded the
- * *whole* envelope itself and returned true/false for "was this a cfg
- * message" — a single push carrying both `lock` and `ca` would have been
- * entirely swallowed by whichever consumer ran first. This module decodes
- * the envelope exactly once, extracts the raw CBOR byte span of every
- * sub-map it recognises, and hands each span to its own owning module
- * (lock.c / catrust.c) — teaching neither of those modules about the other,
- * or about `cfg`'s own envelope shape.
+ * existing; `ca`=1; `sms`=2; `wifi`=3, docs/WIFI_DESIGN.md §4/docs/WIFI_TASKS.md
+ * W3) in one envelope, and each sub-map has its own apply/ack timing (`lock`/
+ * `sms`/`wifi` all apply and ack immediately; `ca`'s two-phase apply,
+ * catrust.c, may defer the ack for several modes_run() cycles or never ack
+ * at all if the apply is rejected). That ruled out the old design, where
+ * lock_ingest_cfg_cbor() decoded the *whole* envelope itself and returned
+ * true/false for "was this a cfg message" — a single push carrying both
+ * `lock` and `ca` would have been entirely swallowed by whichever consumer
+ * ran first. This module decodes the envelope exactly once, extracts the raw
+ * CBOR byte span of every sub-map it recognises, and hands each span to its
+ * own owning module (lock.c / catrust.c / sms.c / wificred.c) — teaching
+ * none of those modules about each other, or about `cfg`'s own envelope
+ * shape.
  *
  * Split the usual way: `cfg_parse()` (pure, no ESP-IDF dependency,
  * host-tested by firmware/host/test_cfg.c) does the byte-span extraction;
@@ -53,6 +54,11 @@ typedef struct {
      * not yet consumed — cfg_ingest_cbor() does nothing with this span. */
     bool have_sms;
     size_t sms_off, sms_len;
+
+    /* `wifi`=3 (docs/WIFI_DESIGN.md §4, docs/WIFI_TASKS.md W3): the WiFi
+     * `{en, nets}` sub-map. Dispatched to wificred_apply_cfg_submap(). */
+    bool have_wifi;
+    size_t wifi_off, wifi_len;
 } cfg_dispatch_t;
 
 /* Decodes `buf`/`len` as a `/down` envelope already reduced to `count` map
@@ -85,9 +91,11 @@ bool cfg_parse(const uint8_t *buf, uint16_t len, bool sig_pair_present, cfg_disp
  * pre-existing behaviour) and `ca`'s span to catrust_apply_cfg_submap()
  * (records the request only — the two-phase apply itself runs from
  * catrust_service(), modes_run()'s own task, never from this MQTT-event-task
- * call). `sms` is recognised but not yet acted on (a later task). No modem
- * or sleep-state effect of its own beyond whatever lock.c's/catrust.c's own
- * handlers already document. */
+ * call). `sms`'s span goes to sms_apply_cfg_submap() and `wifi`'s span
+ * (docs/WIFI_TASKS.md W3) goes to wificred_apply_cfg_submap() — both apply +
+ * ack `shown` immediately, same timing as `lock`. No modem or sleep-state
+ * effect of its own beyond whatever lock.c's/catrust.c's/sms.c's/
+ * wificred.c's own handlers already document. */
 bool cfg_ingest_cbor(const uint8_t *buf, uint16_t len);
 #endif /* ESP_PLATFORM */
 

@@ -1,19 +1,29 @@
 /* test_wificred.c — host test harness for main/wificred.c's pure section
- * (docs/WIFI_TASKS.md W2, docs/WIFI_DESIGN.md §4): SSID/PSK validation and
- * the replace-wholesale candidate applier.
+ * (docs/WIFI_TASKS.md W2/W3, docs/WIFI_DESIGN.md §4): SSID/PSK validation,
+ * the replace-wholesale candidate applier, and the `cfg.wifi` sub-map decode.
  *
- * Coverage required by the task brief: every validation boundary
+ * W2 coverage required by the task brief: every validation boundary
  * (0/1/32/33-byte SSID; 7/8/63/64-byte PSK; embedded NUL), 3 entries
  * refused, empty list clears. Also covers, beyond the task's own list but
  * for the same NVS str-storage reason wificred.h's own module comment gives
  * for the SSID check: an embedded NUL in the PSK is rejected too, and a
  * rejected batch never touches the caller's existing set (the
  * `sms_parse_cfg_submap()`-style "reject the whole list" contract).
+ *
+ * W3 coverage required by the task brief: a full push with 2 networks;
+ * `en` only; `nets: []`; 3 networks rejected (whole push refused, not
+ * truncated); an oversize SSID rejected; an unknown sub-key ignored; a
+ * malformed array rejected without reading out of bounds. Fixtures are
+ * hand-built with cbor.c's own writer, literal PROTOCOL.md §10 `cfg.wifi`
+ * keys inline (en=0, nets=1; each `nets[]` item: s=0, p=1) — same convention
+ * firmware/host/test_cfg.c's own fixture-building tests already use.
  */
 #include "wificred.h"
 
 #include <stdio.h>
 #include <string.h>
+
+#include "cbor.h"
 
 static int g_failures = 0;
 
@@ -167,6 +177,152 @@ static void test_apply_two_max_is_ok(void)
     CHECK(out.count == WIFICRED_MAX_NETS, "count must equal WIFICRED_MAX_NETS");
 }
 
+/* ---------------------------------------------------------------------
+ * `cfg.wifi` sub-map decode (W3). PROTOCOL.md §10 `cfg.wifi` keys: en=0
+ * (bool), nets=1 (array). Each `nets[]` item: s=0 (tstr), p=1 (tstr).
+ * --------------------------------------------------------------------- */
+static void test_cfg_full_push_two_networks(void)
+{
+    uint8_t buf[256];
+    cbor_w_t w;
+    cbor_w_init(&w, buf, sizeof(buf));
+    cbor_w_map(&w, 2);
+    cbor_w_bool(&w, 0, true); /* en: true */
+    cbor_w_array(&w, 1, 2);  /* nets: [ {s,p}, {s,p} ] */
+    cbor_w_map(&w, 2);
+    cbor_w_tstr(&w, 0, "home-network", 12);
+    cbor_w_tstr(&w, 1, "correcthorsebattery", 19);
+    cbor_w_map(&w, 2);
+    cbor_w_tstr(&w, 0, "office", 6);
+    cbor_w_tstr(&w, 1, "anotherpassphrase", 17);
+    CHECK(!w.err, "test setup: encoding the full-push fixture must not overflow");
+
+    wificred_cfg_t cfg;
+    bool ok = wificred_parse_cfg_submap(buf, (uint16_t) w.len, &cfg);
+    CHECK(ok, "a full cfg.wifi push with 2 networks must be accepted");
+    CHECK(cfg.have_en && cfg.en, "en must be true");
+    CHECK(cfg.have_nets && cfg.nets.count == 2, "nets.count must be 2, got %u",
+          (unsigned) cfg.nets.count);
+    CHECK(strcmp(cfg.nets.nets[0].ssid, "home-network") == 0, "ssid[0] mismatch: %s",
+          cfg.nets.nets[0].ssid);
+    CHECK(strcmp(cfg.nets.nets[1].ssid, "office") == 0, "ssid[1] mismatch: %s", cfg.nets.nets[1].ssid);
+}
+
+static void test_cfg_en_only(void)
+{
+    uint8_t buf[32];
+    cbor_w_t w;
+    cbor_w_init(&w, buf, sizeof(buf));
+    cbor_w_map(&w, 1);
+    cbor_w_bool(&w, 0, false); /* en: false, no `nets` key at all */
+    CHECK(!w.err, "test setup: encoding the en-only fixture must not overflow");
+
+    wificred_cfg_t cfg;
+    bool ok = wificred_parse_cfg_submap(buf, (uint16_t) w.len, &cfg);
+    CHECK(ok, "an en-only push must be accepted");
+    CHECK(cfg.have_en && !cfg.en, "en must be false");
+    CHECK(!cfg.have_nets, "have_nets must be false when `nets` is absent -- leave stored networks alone");
+}
+
+static void test_cfg_nets_empty_clears(void)
+{
+    uint8_t buf[32];
+    cbor_w_t w;
+    cbor_w_init(&w, buf, sizeof(buf));
+    cbor_w_map(&w, 1);
+    cbor_w_array(&w, 1, 0); /* nets: [] -- no `en` key at all */
+    CHECK(!w.err, "test setup: encoding the empty-nets fixture must not overflow");
+
+    wificred_cfg_t cfg;
+    bool ok = wificred_parse_cfg_submap(buf, (uint16_t) w.len, &cfg);
+    CHECK(ok, "a `nets: []` push must be accepted");
+    CHECK(!cfg.have_en, "have_en must be false when `en` is absent");
+    CHECK(cfg.have_nets && cfg.nets.count == 0,
+          "have_nets must be true with count 0 -- `nets: []` clears the stored networks");
+}
+
+static void test_cfg_three_networks_rejected(void)
+{
+    uint8_t buf[256];
+    cbor_w_t w;
+    cbor_w_init(&w, buf, sizeof(buf));
+    cbor_w_map(&w, 1);
+    cbor_w_array(&w, 1, 3); /* nets: [ {s,p} x3 ] -- one over WIFICRED_MAX_NETS */
+    for (int i = 0; i < 3; i++) {
+        cbor_w_map(&w, 2);
+        cbor_w_tstr(&w, 0, "net", 3);
+        cbor_w_tstr(&w, 1, "password", 8);
+    }
+    CHECK(!w.err, "test setup: encoding the 3-network fixture must not overflow");
+
+    wificred_cfg_t cfg;
+    bool ok = wificred_parse_cfg_submap(buf, (uint16_t) w.len, &cfg);
+    CHECK(!ok, "a 3-network push must be refused (over WIFICRED_MAX_NETS), not truncated to 2");
+}
+
+static void test_cfg_oversize_ssid_rejected(void)
+{
+    char big_ssid[40];
+    for (int i = 0; i < 33; i++) {
+        big_ssid[i] = 'x';
+    }
+
+    uint8_t buf[256];
+    cbor_w_t w;
+    cbor_w_init(&w, buf, sizeof(buf));
+    cbor_w_map(&w, 1);
+    cbor_w_array(&w, 1, 1);
+    cbor_w_map(&w, 2);
+    cbor_w_tstr(&w, 0, big_ssid, 33); /* one byte over the SSID cap */
+    cbor_w_tstr(&w, 1, "password", 8);
+    CHECK(!w.err, "test setup: encoding the oversize-ssid fixture must not overflow");
+
+    wificred_cfg_t cfg;
+    bool ok = wificred_parse_cfg_submap(buf, (uint16_t) w.len, &cfg);
+    CHECK(!ok, "an oversize SSID must reject the whole cfg.wifi push");
+}
+
+static void test_cfg_unknown_subkey_ignored(void)
+{
+    uint8_t buf[256];
+    cbor_w_t w;
+    cbor_w_init(&w, buf, sizeof(buf));
+    /* Unknown key at the {en, nets} level (99), plus an unknown key inside a
+     * network item (2) -- both must be skipped, never a parse failure. */
+    cbor_w_map(&w, 3);
+    cbor_w_bool(&w, 0, true);
+    cbor_w_uint(&w, 99, 7);
+    cbor_w_array(&w, 1, 1);
+    cbor_w_map(&w, 3);
+    cbor_w_tstr(&w, 0, "home", 4);
+    cbor_w_tstr(&w, 1, "password", 8);
+    cbor_w_uint(&w, 2, 42); /* unknown network-item key */
+    CHECK(!w.err, "test setup: encoding the unknown-subkey fixture must not overflow");
+
+    wificred_cfg_t cfg;
+    bool ok = wificred_parse_cfg_submap(buf, (uint16_t) w.len, &cfg);
+    CHECK(ok, "unknown sub-keys (at either level) must be skipped, not treated as malformed");
+    CHECK(cfg.have_en && cfg.en, "en must still be true");
+    CHECK(cfg.have_nets && cfg.nets.count == 1, "the one well-formed network must still be captured");
+}
+
+static void test_cfg_malformed_array_rejected(void)
+{
+    /* A `nets` array header claiming 1 element, with no element bytes
+     * following at all -- the reader must fail closed (bounds-checked by
+     * cbor.c), never read past the end of the buffer. */
+    uint8_t buf[64];
+    cbor_w_t w;
+    cbor_w_init(&w, buf, sizeof(buf));
+    cbor_w_map(&w, 1);
+    cbor_w_array(&w, 1, 1); /* nets: [ <nothing actually follows> ] */
+    CHECK(!w.err, "test setup: encoding the malformed-array fixture must not overflow");
+
+    wificred_cfg_t cfg;
+    bool ok = wificred_parse_cfg_submap(buf, (uint16_t) w.len, &cfg);
+    CHECK(!ok, "a truncated `nets` array must be rejected, not read out of bounds");
+}
+
 int main(void)
 {
     test_ssid_boundaries();
@@ -176,6 +332,14 @@ int main(void)
     test_apply_empty_clears();
     test_apply_oversize_rejects_whole_batch();
     test_apply_two_max_is_ok();
+
+    test_cfg_full_push_two_networks();
+    test_cfg_en_only();
+    test_cfg_nets_empty_clears();
+    test_cfg_three_networks_rejected();
+    test_cfg_oversize_ssid_rejected();
+    test_cfg_unknown_subkey_ignored();
+    test_cfg_malformed_array_rejected();
 
     if (g_failures == 0) {
         printf("PASS: wificred, 0 failures\n");

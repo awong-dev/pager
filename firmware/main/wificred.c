@@ -5,6 +5,8 @@
 
 #include <string.h>
 
+#include "cbor.h"
+
 // ---------------------------------------------------------------------------
 // Pure functions (no ESP-IDF dependency) — host-tested by
 // firmware/host/test_wificred.c.
@@ -63,6 +65,113 @@ bool wificred_apply_candidates(const wificred_candidate_t *candidates, uint8_t c
     tmp.count = count;
 
     *out = tmp;
+    return true;
+}
+
+// PROTOCOL.md §10 `cfg.wifi` sub-map keys: en=0 (bool), nets=1 (array). Each
+// `nets[]` item sub-map: s=0 (tstr, ssid), p=1 (tstr, psk).
+#define WIFICK_EN 0
+#define WIFICK_NETS 1
+#define WIFI_NETK_S 0
+#define WIFI_NETK_P 1
+
+bool wificred_parse_cfg_submap(const uint8_t *buf, uint16_t len, wificred_cfg_t *out)
+{
+    memset(out, 0, sizeof(*out));
+
+    cbor_r_t r;
+    cbor_r_init(&r, buf, len);
+    uint32_t count;
+    if (!cbor_r_map(&r, &count)) {
+        return false;
+    }
+
+    for (uint32_t i = 0; i < count; i++) {
+        uint32_t key;
+        if (!cbor_r_key(&r, &key)) {
+            return false;
+        }
+        switch (key) {
+        case WIFICK_EN: {
+            bool v;
+            if (!cbor_r_bool(&r, &v)) {
+                return false;
+            }
+            out->en = v;
+            out->have_en = true;
+            break;
+        }
+        case WIFICK_NETS: {
+            uint32_t ncount;
+            if (!cbor_r_array(&r, &ncount)) {
+                return false;
+            }
+            if (ncount > WIFICRED_MAX_NETS) {
+                return false; // over the cap: reject the whole push, never truncate
+            }
+            wificred_candidate_t cand[WIFICRED_MAX_NETS];
+            for (uint32_t j = 0; j < ncount; j++) {
+                uint32_t mcount;
+                if (!cbor_r_map(&r, &mcount)) {
+                    return false;
+                }
+                const char *s = NULL;
+                size_t slen = 0;
+                const char *p = NULL;
+                size_t plen = 0;
+                bool have_s = false, have_p = false;
+                for (uint32_t k = 0; k < mcount; k++) {
+                    uint32_t nk;
+                    if (!cbor_r_key(&r, &nk)) {
+                        return false;
+                    }
+                    switch (nk) {
+                    case WIFI_NETK_S:
+                        if (!cbor_r_tstr(&r, &s, &slen)) {
+                            return false;
+                        }
+                        have_s = true;
+                        break;
+                    case WIFI_NETK_P:
+                        if (!cbor_r_tstr(&r, &p, &plen)) {
+                            return false;
+                        }
+                        have_p = true;
+                        break;
+                    default:
+                        if (!cbor_r_skip(&r)) {
+                            return false;
+                        }
+                        break;
+                    }
+                }
+                if (!have_s || !have_p) {
+                    return false; // both s and p are required in every network item
+                }
+                cand[j].ssid = s;
+                cand[j].ssid_len = slen;
+                cand[j].psk = p;
+                cand[j].psk_len = plen;
+            }
+            // wificred_apply_candidates() re-validates every SSID/PSK
+            // boundary and rejects the whole batch on the first bad entry --
+            // this parser never duplicates that validation itself.
+            if (!wificred_apply_candidates(cand, (uint8_t) ncount, &out->nets)) {
+                return false;
+            }
+            out->have_nets = true; // true even for ncount==0 ("nets: []" clears the set)
+            break;
+        }
+        default:
+            // "unknown cfg keys must be skipped, not treated as malformed"
+            // (cfg.c's own rule, applied one level down here for `wifi`'s
+            // own sub-keys).
+            if (!cbor_r_skip(&r)) {
+                return false;
+            }
+            break;
+        }
+    }
     return true;
 }
 
@@ -254,6 +363,38 @@ void wificred_note_channel(uint8_t idx, uint8_t channel)
         nvs_commit(h);
     }
     nvs_close(h);
+}
+
+// ---------------------------------------------------------------------------
+// `cfg.wifi` intercept (cfg.c's cfg_ingest_cbor(), docs/WIFI_TASKS.md W3).
+// ---------------------------------------------------------------------------
+#include "msg.h"
+
+void wificred_apply_cfg_submap(const uint8_t *buf, uint16_t len, const char *id)
+{
+    wificred_cfg_t cfg;
+    if (!wificred_parse_cfg_submap(buf, len, &cfg)) {
+        ESP_LOGI(TAG, "malformed cfg.wifi sub-map dropped (id=%s)", id ? id : "");
+        return;
+    }
+
+    if (cfg.have_en) {
+        wificred_set_enabled(cfg.en);
+    }
+    if (cfg.have_nets) {
+        wificred_store(&cfg.nets);
+    }
+
+    // §4: "nets absent -> apply en only, leave stored networks untouched" --
+    // logged as counts/flags only, never a PSK (this file's own hard rule).
+    ESP_LOGI(TAG, "cfg.wifi applied: en=%s nets=%s (id=%s)",
+             cfg.have_en ? (cfg.en ? "on" : "off") : "unchanged",
+             cfg.have_nets ? "replaced" : "unchanged", id ? id : "");
+    if (id && id[0] != '\0') {
+        // §4: apply-and-ack-`shown` immediately on success, exactly like
+        // `cfg.sms` (cfg.c:161-165) -- no two-phase apply needed here.
+        msg_mark_shown(id);
+    }
 }
 
 #endif /* ESP_PLATFORM */

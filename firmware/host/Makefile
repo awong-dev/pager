@@ -296,13 +296,15 @@ $(BUILD)/test_wifi_policy: $(BUILD)/wifi_policy.o $(BUILD)/test_wifi_policy.o
 	$(CC) $(CFLAGS) -o $@ $^
 
 # test_wificred: wificred.c's pure section (SSID/PSK validation, the
-# replace-wholesale candidate applier) + test_wificred.c. Everything past its
-# own `#ifdef ESP_PLATFORM` split needs NVS and is not built here.
-$(BUILD)/wificred.o: $(MAIN_SRC)/wificred.c $(MAIN_SRC)/wificred.h | $(BUILD)
+# replace-wholesale candidate applier, the `cfg.wifi` sub-map decode -- W3
+# adds the cbor.c dependency for that last one) + cbor.c + test_wificred.c.
+# Everything past its own `#ifdef ESP_PLATFORM` split needs NVS and is not
+# built here.
+$(BUILD)/wificred.o: $(MAIN_SRC)/wificred.c $(MAIN_SRC)/wificred.h $(MAIN_SRC)/cbor.h | $(BUILD)
 	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $(MAIN_SRC)/wificred.c
 
-$(BUILD)/test_wificred.o: test_wificred.c $(MAIN_SRC)/wificred.h | $(BUILD)
+$(BUILD)/test_wificred.o: test_wificred.c $(MAIN_SRC)/wificred.h $(MAIN_SRC)/cbor.h | $(BUILD)
 	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ test_wificred.c
 
-$(BUILD)/test_wificred: $(BUILD)/wificred.o $(BUILD)/test_wificred.o
+$(BUILD)/test_wificred: $(BUILD)/wificred.o $(BUILD)/cbor.o $(BUILD)/test_wificred.o
 	$(CC) $(CFLAGS) -o $@ $^
