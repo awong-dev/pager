@@ -49,6 +49,7 @@
 // own wake-and-drain loop, alongside loc_service()/accel_poll().
 #include "cfg.h"
 #include "catrust.h"
+#include "wificred.h"
 
 // F7.1 (docs/DEVICE_PLAN.md §4.3): book.c's NVS-backed address book — the
 // `kind:"book"` dispatch ahead of msg_ingest_down_cbor() (alongside lock.c's
@@ -96,6 +97,7 @@
 #include "esp_random.h"
 #include "esp_rom_crc.h"
 #include "esp_sleep.h"
+#include "esp_system.h" /* esp_get_free_heap_size()/esp_get_minimum_free_heap_size(), W0/W5 boot heap log */
 #include "nvs.h"
 #include "esp_private/esp_clk.h" /* esp_clk_rtc_time() */
 #include "esp_timer.h"
@@ -1610,6 +1612,26 @@ void modes_boot(void)
     // couple of NVS reads.
     catrust_bind(rtc_lock, rtc_unlock);
     catrust_init();
+
+    // docs/WIFI_TASKS.md W5: wificred_init() had no caller anywhere in the
+    // tree before this task (W2/W3 built the module and its cfg.wifi
+    // dispatch but never wired the boot-time NVS load) -- without it, every
+    // reboot would start with wificred_enabled()/wificred_count() reading
+    // the module's zero-initialized RAM cache instead of whatever was
+    // actually stored, silently forgetting a `wifi set`/`cfg.wifi` push
+    // across a reset. Same slot as catrust_init() above: a couple of NVS
+    // reads, no modem or sleep-state effect, never logs a PSK (wificred.c's
+    // own hard rule).
+    wificred_init();
+
+    // docs/WIFI_TASKS.md W5 addendum: W0 never measured a real heap
+    // watermark on this branch (no wifi_probe.c commit exists), so log it
+    // here instead -- one INFO line at boot, before any WiFi code has run,
+    // for W6's bench to diff against the second line main.c's `wifi on`
+    // handler logs once the WiFi station + TLS + esp-mqtt session is up.
+    // Power effect: none -- a read of the heap allocator's own counters.
+    ESP_LOGI(TAG, "heap at boot: free=%u minimum_free=%u",
+             (unsigned) esp_get_free_heap_size(), (unsigned) esp_get_minimum_free_heap_size());
 
     // F7.1 (docs/DEVICE_PLAN.md §4.3): book.c has no RTC sub-struct of its
     // own (book.h's module comment) — book_bind() hands it the EXISTING
