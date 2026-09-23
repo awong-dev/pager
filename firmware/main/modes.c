@@ -533,6 +533,7 @@ static void on_auth_epoch_wrap(void)
 #define STK_CA_FP 42         // v0.2 §4.3/§7: absent when unpinned
 #define STK_SMS_LOST 48      // v0.2 §6/§7: sms_log audit entries dropped for lack of NVS space
 #define STK_LINK 50           // v0.2 §9.5/§7: MQTT-session generation within this boot
+#define STK_XPORT 52          // docs/WIFI_DESIGN.md §5.1/§6, docs/WIFI_TASKS.md W4: "lte"/"wifi"
 
 // PROTOCOL.md §5.1: batt_mv must be in [2000, 4500] when state:"online".
 #define PAGER_BATT_MV_MIN 2000
@@ -656,9 +657,10 @@ static bool build_status_cbor(uint8_t *out, size_t cap, size_t *out_len, const c
     // v0.2 §5/§7: +3 for loc_period_s/loc_min_s/loc_backoff_s (loc.c's own
     // getters — plain reads of already-resident policy state, no AT round
     // trip of their own beyond what batt_mv/rssi above already cost).
-    uint32_t nfields = 9 + 3 + 1 + 1 + 1; // + tls, + sms_lost, + link; v,state,mode,batt_mv,rssi,
+    uint32_t nfields = 9 + 3 + 1 + 1 + 1 + 1; // + tls, + sms_lost, + link, + xport;
+                                          // v,state,mode,batt_mv,rssi,
                                           // session,ts,fw,bv,loc_period_s,loc_min_s,loc_backoff_s,
-                                          // tls,sms_lost,link
+                                          // tls,sms_lost,link,xport
     if (have_ca_fp) {
         nfields += 1;
     }
@@ -691,6 +693,12 @@ static bool build_status_cbor(uint8_t *out, size_t cap, size_t *out_len, const c
     // guards on it, and the rising-edge block below increments the counter
     // before its own call), so s_mqtt_link_counter is always >= 1 here.
     cbor_w_uint(&w, STK_LINK, s_mqtt_link_counter);
+
+    // docs/WIFI_DESIGN.md §5.1/§6, docs/WIFI_TASKS.md W4 item 1: which
+    // physical transport carried this session — display/diagnosis only
+    // (PROTOCOL.md §5.1), no modem or sleep-state effect of its own.
+    const char *xport_str = (net_xport_active() == NET_XPORT_WIFI) ? "wifi" : "lte";
+    cbor_w_tstr(&w, STK_XPORT, xport_str, strlen(xport_str));
 
     if (!signed_env) {
         *out_len = w.len;
