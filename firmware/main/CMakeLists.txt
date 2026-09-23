@@ -1,4 +1,4 @@
-idf_component_register(SRCS "net.cpp" "net_connect_guard.c" "publish_quiet.c" "ui.c" "scr_home.c" "scr_chat.c" "scr_device.c" "scr_setup.c" "scr_lock.c" "scr_pick.c" "scr_book.c" "scr_greeting.c" "disp.c" "gfx.c" "input.c" "modes.c" "msg.c" "ident.c" "carrier.c" "watchdog.c" "cbor.c" "auth.c" "setup.c" "lock.c" "book.c" "loc.c" "accel.c" "cfg.c" "catrust.c" "cafetch.c" "sms.c" "coverage.c" "wifi_policy.c" "wificred.c" "main.c"
+idf_component_register(SRCS "net.cpp" "xport_lte.cpp" "net_connect_guard.c" "publish_quiet.c" "ui.c" "scr_home.c" "scr_chat.c" "scr_device.c" "scr_setup.c" "scr_lock.c" "scr_pick.c" "scr_book.c" "scr_greeting.c" "disp.c" "gfx.c" "input.c" "modes.c" "msg.c" "ident.c" "carrier.c" "watchdog.c" "cbor.c" "auth.c" "setup.c" "lock.c" "book.c" "loc.c" "accel.c" "cfg.c" "catrust.c" "cafetch.c" "sms.c" "coverage.c" "wifi_policy.c" "wificred.c" "main.c"
                         INCLUDE_DIRS "."
                         REQUIRES driver esp_timer nvs_flash mbedtls console esp_partition esp_hw_support dptechnics__walter-modem)
 

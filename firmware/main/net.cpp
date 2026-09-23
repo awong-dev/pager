@@ -12,6 +12,8 @@
 // to this build session. Nothing here is a measured number.
 
 #include "net.h"
+#include "net_xport.h"
+#include "net_internal.h"
 #include "pins.h"
 #include "ident.h"
 #include "carrier.h"
@@ -111,38 +113,11 @@ static constexpr int PAGER_CA_FETCH_SOCKET_ID = 4;
 // silently breaks against.
 static constexpr int PAGER_TLS_BOOTSTRAP_PROFILE_ID = PAGER_TLS_PROFILE_ID;
 
-// MQTT keepalive. Measured 2026-09-21 on AT&T (US Mobile), docs/V02_DESIGN.md
-// §9.1: on this modem firmware (LR8.2.1.0-61488) the AT+SQNSMQTTCONNECT
-// keepalive parameter does NOT make the modem send a PINGREQ -- three idle
-// sessions, zero PINGREQs in 8+ minutes each. This constant only sets the
-// broker's own drop deadline (measured 1.5x keepalive). Keeping the flow/NAT
-// alive and detecting a dead session early is PAGER_MQTT_PING_S's job
-// (net_service_session(), §9.2/§9.4), not this one's. 480 s keeps "broker
-// declares a dead pager offline" at <=12 min.
-static constexpr uint16_t PAGER_MQTT_KEEPALIVE_S = 480;
-
-// §9.2/§9.4: idle-uplink liveness ping interval -- net_service_session()
-// re-SUBSCRIBEs to the down-topic every this-many seconds of uplink silence,
-// which is both what keeps the broker/NAT flow alive (the modem itself does
-// not, see PAGER_MQTT_KEEPALIVE_S's comment above) and the mechanism that
-// repairs a modem-initiated silent resume (§9.1 item 2). 300 s halves the
-// shortest observed idle death (10.5 min) and leaves 420 s of margin to the
-// broker's 720 s timeout -- one whole missed ping is survivable (§9.2).
-static constexpr uint32_t PAGER_MQTT_PING_S = 300;
+// docs/WIFI_TASKS.md W4: PAGER_MQTT_KEEPALIVE_S, PAGER_MQTT_PING_S,
+// PAGER_MAX_PAYLOAD, PAGER_BOOT_MAX_PAYLOAD and PAGER_BOOT_TOPIC_PREFIX moved
+// to xport_lte.cpp with the MQTT session code that is their only use.
 
 static constexpr int PAGER_ATTACH_POLL_CAP_S = 300; // F1: single-attempt cap
-
-// PROTOCOL.md §3.3: hard envelope limit, both directions, for the
-// pager/{device_id}/... namespace.
-static constexpr uint16_t PAGER_MAX_PAYLOAD = 640;
-
-// PROTOCOL.md §2: the pager/boot/{bid}/... namespace (setup.c, F3.5) has its
-// own, larger 4 kB limit for the encrypted bootstrap bundle
-// (DEVICE_PLAN.md §3.2 step 4). One shared RX buffer sized to the larger of
-// the two; the MESSAGE handler below picks whichever cap applies to the
-// topic a given message actually arrived on.
-static constexpr uint16_t PAGER_BOOT_MAX_PAYLOAD = 4096;
-static constexpr const char *PAGER_BOOT_TOPIC_PREFIX = "pager/boot/";
 
 // DEVICE_PLAN.md §3.2 step 4: the bootstrap session is a few seconds long
 // (fetch one retained message, publish one ack, disconnect) — a short
@@ -162,61 +137,35 @@ static constexpr uint16_t PAGER_BOOT_MQTT_KEEPALIVE_S = 60;
 // concurrently written, only set once at net_init()).
 // ---------------------------------------------------------------------------
 
-static void (*s_msg_cb)(const char *, const char *, uint16_t) = nullptr;
+// Registers one callback that both transports call (docs/WIFI_DESIGN.md §1):
+// a single, transport-independent slot rather than per-transport state, so a
+// caller's registration survives a future net_xport_switch(). Not `static`:
+// xport_lte.cpp's pager_mqtt_event_handler() (net_internal.h) invokes it
+// directly, exactly as it did when both lived in this file.
+void (*s_msg_cb)(const char *, const char *, uint16_t) = nullptr;
 
-static volatile bool s_mqtt_connected = false;
-static volatile bool s_disconnect_edge = false;
-static volatile int s_last_rc = 0;
-static volatile net_mqtt_rc_class_t s_last_class = NET_MQTT_RC_NONE;
+// ---------------------------------------------------------------------------
+// The transport seam (docs/WIFI_DESIGN.md §1, docs/WIFI_TASKS.md W4).
+// s_xport_ops is the only thing every dispatcher (below, past net_tls_configure())
+// touches; s_active_xport is only ever written here (net_init(), today's sole
+// writer -- W5's net_xport_switch() becomes the only other one). Every net.h
+// entry point in docs/WIFI_DESIGN.md §1's "dispatched through the seam" list
+// is one of those thin wrappers; the real logic is the unmodified code moved
+// to xport_lte.cpp (see that file's own module comment).
+// ---------------------------------------------------------------------------
+static const net_xport_ops_t *s_xport_ops = nullptr;
+static net_xport_t s_active_xport = NET_XPORT_LTE;
+// v0.2 §9.4's three suppressions (coverage duty cycle, location route 2, a CA
+// -apply trial), moved here from modes.c's net_service_session() call site --
+// see net_set_lte_suppressed()'s own doc comment in net.h for why.
+static bool s_lte_suppressed = false;
 
-// v0.2 bug fixes M1 (22 Sep outage: "CONNECT issued, no CONNECTED seen" bound)
-// / M3 (22 Sep evening: escalate after 3 consecutive net_session_up()
-// failures) — see net_connect_guard.h's own module comment. Written from
-// net_session_up() (this file's own task) and from pager_mqtt_event_handler()
-// (_eventProcessingTask) via net_connect_guard_clear() -- same "plain
-// struct of single-word fields, no mutex, races tolerated" reasoning as the
-// rest of this block (net_connect_guard.c's writes are each a single bool/
-// int64_t/uint32_t store, same as s_mqtt_connected etc. above).
-static net_connect_guard_t s_connect_guard;
-
-// 23 Sep display-corruption field failures — see publish_quiet.h's own
-// module comment. Written from net_publish()/net_publish_raw() (whichever
-// task called them) on issue, and from pager_mqtt_event_handler()
-// (_eventProcessingTask) on WALTER_MODEM_MQTT_EVENT_PUBLISHED -- same
-// "plain struct, no mutex, races tolerated" reasoning as s_connect_guard
-// above (a torn read here costs at worst one extra/missed refresh delay,
-// never a correctness bug -- disp.c's own refresh path is what actually
-// matters for the panel).
-static publish_quiet_gate_t s_publish_quiet;
-
-// v0.2 §9.4 (session liveness / silent-resume repair, net_service_session()).
-// All written from pager_mqtt_event_handler() (_eventProcessingTask) and/or
-// net_service_session() (modes_run()'s own task) -- same "single-word,
-// volatile, no mutex" reasoning as the rest of this block's comment above.
-static volatile int64_t s_last_uplink_us = 0;   // last publish send or SUBACK, esp_timer_get_time()
-static volatile bool s_resub_pending = false;   // a modem-initiated resume needs a raw re-SUBSCRIBE
-static volatile bool s_resub_wait = false;      // raw re-SUBSCRIBE sent, waiting on its SUBACK
-static volatile int64_t s_resub_sent_us = 0;    // when the outstanding raw re-SUBSCRIBE was sent
-static volatile bool s_session_restart_edge = false; // set once the resume repair's SUBACK lands
-// Not in the spec's own static list, but required to implement its step 4
-// correctly: net_service_session() clears s_resub_pending the moment it
-// *sends* the raw re-SUBSCRIBE (so it does not re-send every iteration while
-// s_resub_wait is true), so by the time the matching SUBACK arrives
-// s_resub_pending can no longer tell the SUBSCRIBED handler whether that
-// SUBACK is closing a resume repair (-> session_restart_edge) or an ordinary
-// idle-timeout liveness ping (-> nothing further). This single-shot flag
-// carries that classification across the round trip.
-static volatile bool s_resub_is_resume = false;
-
-static volatile bool s_handler_busy = false; // true while the MQTT event
-                                             // handler is inside an AT
-                                             // transaction or the app
-                                             // callback (see the RTS interlock below)
-
-static volatile uint32_t s_memfull_count = 0;
-static volatile uint32_t s_oversize_count = 0;
-
-static char s_down_topic[48];
+// docs/WIFI_TASKS.md W4: moved to xport_lte.cpp with the rest of the MQTT
+// session state (net_internal.h re-declares what net.cpp still needs).
+// s_down_topic is the one piece of LTE bringup state configure_session()
+// (below) and net_bootstrap_connect() write and xport_lte.cpp's MQTT event
+// handler/net_service_session() read -- not `static` for the same reason.
+char s_down_topic[48];
 static char s_granted_edrx[16] = { 0 };
 
 // DEVICE_PLAN.md §3.3: the hash of the CA last written to modem NVRAM slot
@@ -228,9 +177,8 @@ static char s_granted_edrx[16] = { 0 };
 static bool s_ca_written = false;
 static uint8_t s_ca_written_hash[IDENT_CA_HASH_LEN];
 
-// Sized to the larger of the two namespace caps above; sized once, no
-// malloc on the RX path (L9).
-static uint8_t s_mqtt_rx_buf[PAGER_BOOT_MAX_PAYLOAD];
+// docs/WIFI_TASKS.md W4: s_mqtt_rx_buf moved to xport_lte.cpp (its only
+// reader/writer, pager_mqtt_event_handler's MESSAGE case, moved with it).
 
 static int64_t s_clock_epoch = 0;    // 0 = no network time yet (§3.5)
 static int64_t s_clock_epoch_us = 0; // esp_timer_get_time() at the moment s_clock_epoch was read
@@ -297,211 +245,18 @@ static bool s_cell_info_stale = true;
 // net_enable_accel_wake()'s own doc comment in net.h).
 static bool s_accel_wake_enabled = false;
 
+// docs/WIFI_TASKS.md W4: classify_mqtt_rc() and pager_mqtt_event_handler()
+// moved to xport_lte.cpp, unmodified, with the rest of the MQTT session code
+// (docs/WIFI_DESIGN.md §1). pager_mqtt_event_handler() is still registered
+// from net_bringup()/net_bootstrap_attach() below via
+// WalterModem::setMQTTEventHandler() -- net_internal.h declares it so those
+// two call sites keep compiling unchanged.
+//
 // ---------------------------------------------------------------------------
-// F3 classification helper.
-// ---------------------------------------------------------------------------
-
-static net_mqtt_rc_class_t classify_mqtt_rc(int rc)
-{
-    switch (rc) {
-    case WALTER_MODEM_MQTT_SUCCESS:
-        return NET_MQTT_RC_OK;
-    case WALTER_MODEM_MQTT_TLS:
-        return NET_MQTT_RC_TLS_FAIL;
-    case WALTER_MODEM_MQTT_CONN_REFUSED:
-    case WALTER_MODEM_MQTT_AUTH:
-    case WALTER_MODEM_MQTT_ACL_DENIED:
-        return NET_MQTT_RC_PERMANENT;
-    case WALTER_MODEM_MQTT_CONN_LOST:
-    case WALTER_MODEM_MQTT_NO_CONN:
-        return NET_MQTT_RC_TRANSIENT;
-    default:
-        // Unknown code: be conservative and treat as transient/retryable
-        // rather than silently going permanent on something unclassified.
-        return NET_MQTT_RC_TRANSIENT;
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Event handlers. Both run on WalterModem's _eventProcessingTask
+// Event handlers below run on WalterModem's _eventProcessingTask
 // (WalterModem.cpp:1595-1626), NOT the RX task/ISR. Calling modem APIs from
 // here is the vendor's own pattern (examples/mqtts). Keep these short (L4).
 // ---------------------------------------------------------------------------
-
-static void pager_mqtt_event_handler(WMMQTTEventType event, const WMMQTTEventData *data, void *args)
-{
-    (void) args;
-
-    switch (event) {
-    case WALTER_MODEM_MQTT_EVENT_CONNECTED:
-        // v0.2 M1/M2: a SUCCESSFUL CONNECTED does NOT clear the guard -- the
-        // connect stays "in flight" until SUBSCRIBED, because s_mqtt_connected
-        // is only set there and modes.c's retry branch keys on it: with the
-        // guard cleared here, the CONNECTED->SUBSCRIBED window (~150 ms on
-        // the bench) read as "not connected, nothing in flight" and a second
-        // AT+SQNSMQTTCONNECT went out, answered +CME ERROR: 4 (phase1-boot.log
-        // 121605-121655, and every boot before it). A FAILED CONNECTED is a
-        // real answer, so it does clear the guard and the ordinary rc
-        // classification below takes over.
-        if (data->rc != WALTER_MODEM_MQTT_SUCCESS) {
-            net_connect_guard_clear(&s_connect_guard);
-            s_last_rc = data->rc;
-            s_last_class = classify_mqtt_rc(data->rc);
-            s_disconnect_edge = true;
-            ESP_LOGI(TAG, "MQTT connect failed, rc=%d", data->rc);
-            break;
-        }
-        if (s_mqtt_connected) {
-            // v0.2 §9.4 step 2: a CONNECTED event while we already believe
-            // we are connected, with no DISCONNECTED in between, is a
-            // modem-initiated silent resume (§9.1 item 2) -- the AT manual's
-            // own words: "If the MQTT connection was dropped by the server
-            // and automatically resumed by the modem ... the MCU must
-            // re-subscribe". Do NOT call mqttSubscribe() here: mqttConnect()
-            // is the only thing that frees the vendor's local topic table,
-            // and a modem-initiated resume never calls it, so mqttSubscribe()
-            // would just dedupe this into a silent no-op ("Topic already in
-            // use", WalterMQTT.cpp:120-123) -- nothing would ever go out on
-            // the wire. Queue it instead; net_service_session() (modes.c's
-            // task) sends the repair as a raw AT+SQNSMQTTSUBSCRIBE.
-            // s_mqtt_connected is left alone: publishes still work.
-            ESP_LOGI(TAG, "MQTT session resumed by the modem (no DISCONNECTED seen); "
-                          "re-subscribe queued");
-            s_resub_pending = true;
-            break;
-        }
-        ESP_LOGI(TAG, "MQTT connected, resubscribing to %s", s_down_topic);
-        // L3: mqttConnect() frees the ENTIRE local topic table before
-        // connecting and nothing auto-resubscribes. Must resubscribe on
-        // every connect, from here, exactly like the vendor's examples/mqtts.
-        // Same RTS interlock as the MESSAGE case below: this is an AT
-        // transaction issued from the event task, so modes_run() must not
-        // light-sleep (and deassert RTS) underneath it.
-        s_handler_busy = true;
-        if (!WalterModem::mqttSubscribe(s_down_topic, 1)) {
-            ESP_LOGI(TAG, "mqttSubscribe() call could not be queued");
-        }
-        s_handler_busy = false;
-        break;
-
-    case WALTER_MODEM_MQTT_EVENT_SUBSCRIBED:
-        // v0.2 M1/M2: THE clearing point for a successful connect -- the
-        // session is usable from here, and s_mqtt_connected (set below)
-        // takes over as modes.c's "no retry needed" signal. See the
-        // CONNECTED case above for why it is not cleared earlier.
-        net_connect_guard_clear(&s_connect_guard);
-        if (data->rc != WALTER_MODEM_MQTT_SUCCESS) {
-            ESP_LOGI(TAG, "MQTT subscribe failed, rc=%d", data->rc);
-            break;
-        }
-        s_mqtt_connected = true;
-        // v0.2 §9.4 step 4: this SUBACK proves the round trip, whether it
-        // answered the ordinary post-CONNECTED subscribe above or a raw
-        // liveness-ping/resume-repair re-SUBSCRIBE from net_service_session()
-        // -- either way the flow is alive right now.
-        s_last_uplink_us = esp_timer_get_time();
-        if (s_resub_wait) {
-            s_resub_wait = false;
-            if (s_resub_is_resume) {
-                s_resub_is_resume = false;
-                s_session_restart_edge = true;
-            }
-        }
-        ESP_LOGI(TAG, "MQTT session usable (subscribed to '%s')", data->topic);
-        // §5.4a: the /status online publish happens from modes.c, edge-
-        // triggered on s_mqtt_connected flipping true — deliberately NOT
-        // from the CONNECTED handler, so the relay only re-publishes once
-        // the device can actually receive (F3).
-        break;
-
-    case WALTER_MODEM_MQTT_EVENT_PUBLISHED:
-        if (data->rc != WALTER_MODEM_MQTT_SUCCESS) {
-            ESP_LOGD(TAG, "PUBACK missing for mid=%d rc=%d", data->mid, data->rc);
-        } else {
-            ESP_LOGD(TAG, "PUBACK mid=%d", data->mid);
-            s_last_uplink_us = esp_timer_get_time(); // §9.4: uplink activity resets the idle clock
-        }
-        // §4.1 r6 / §4.2: freeing the matching pending_ack/pending_up RTC
-        // entry belongs to msg.c, which is the thing that knows
-        // which entry a given publish was for. No such entries exist yet.
-        //
-        // 23 Sep fix: this is the completion event for the publish's AT
-        // round trip (the +SQNSMQTTONPUBLISH URC, or the terminal OK/ERROR)
-        // regardless of rc — either way the uplink this publish caused is
-        // over, so clear it from the in-flight count and arm the quiet
-        // window disp.c's pre-refresh gate waits on (publish_quiet.h).
-        publish_quiet_gate_done(&s_publish_quiet, esp_timer_get_time());
-        break;
-
-    case WALTER_MODEM_MQTT_EVENT_MESSAGE:
-        // RTS interlock: net_sleep() runs on modes_run()'s task, which
-        // is priority 1 against this task's priority 4, so it gets
-        // scheduled every time this handler blocks (mqttReceive()'s AT
-        // round trip, ui.c's 10ms disp_wait_busy() poll). Without this
-        // flag modes_run() can enter esp_light_sleep_start() - and force
-        // RTS high - in the middle of the modem's response to
-        // mqttReceive(), i.e. mid-payload rather than at an idle moment.
-        // That turns PROTOCOL.md §8.3's "does the Sequans queue or drop
-        // when CTS is deasserted" (M5, still UNVERIFIED) from a latency
-        // question into a message-loss one. modes_run() ORs
-        // net_modem_busy() into its skip_sleep condition.
-        s_handler_busy = true;
-        {
-            // PROTOCOL.md §2: pager/boot/{bid}/... (setup.c, F3.5) gets the
-            // 4 kB bundle cap; every other topic keeps the 640-byte
-            // envelope cap. Braced so `payload_cap`'s initialization does
-            // not cross into the other case labels below (C++ forbids
-            // jumping past a non-trivial initializer within one switch).
-            uint16_t payload_cap =
-                (strncmp(data->topic, PAGER_BOOT_TOPIC_PREFIX, strlen(PAGER_BOOT_TOPIC_PREFIX)) == 0)
-                    ? PAGER_BOOT_MAX_PAYLOAD
-                    : PAGER_MAX_PAYLOAD;
-            if (data->msg_length > payload_cap) {
-                // F6: oversize payload. Log, count, do not ack/render, but
-                // still drain it with a scratch read so it doesn't wedge the
-                // modem's buffer into F5.
-                s_oversize_count = s_oversize_count + 1; // volatile: avoid deprecated ++ (C++20)
-                ESP_LOGI(TAG, "oversize MQTT message dropped: %u bytes > %u cap",
-                         (unsigned) data->msg_length, (unsigned) payload_cap);
-                WalterModem::mqttReceive(data->topic, data->mid, s_mqtt_rx_buf, sizeof(s_mqtt_rx_buf));
-                s_handler_busy = false;
-                break;
-            }
-        }
-
-        // L1/L2: never mqttDidRing(). Fetch by the real mid from this event.
-        if (!WalterModem::mqttReceive(data->topic, data->mid, s_mqtt_rx_buf, data->msg_length)) {
-            ESP_LOGI(TAG, "mqttReceive() failed for mid=%d", data->mid);
-            s_handler_busy = false;
-            break;
-        }
-
-        if (s_msg_cb) {
-            s_msg_cb(data->topic, (const char *) s_mqtt_rx_buf, data->msg_length);
-        }
-        s_handler_busy = false;
-        break;
-
-    case WALTER_MODEM_MQTT_EVENT_DISCONNECTED:
-        s_mqtt_connected = false;
-        s_last_rc = data->rc;
-        s_last_class = classify_mqtt_rc(data->rc);
-        s_disconnect_edge = true;
-        // A liveness ping or resume repair in flight is void now: the next
-        // mqttConnect() subscribes afresh, so nothing must carry over.
-        s_resub_wait = false;
-        s_resub_pending = false;
-        s_resub_is_resume = false;
-        ESP_LOGI(TAG, "MQTT disconnected, rc=%d", data->rc);
-        break;
-
-    case WALTER_MODEM_MQTT_EVENT_MEMORY_FULL:
-        s_memfull_count = s_memfull_count + 1; // volatile: avoid deprecated ++ (C++20)
-        ESP_LOGI(TAG, "MQTT modem buffer MEMORY_FULL (count this cycle=%u)",
-                 (unsigned) s_memfull_count);
-        break;
-    }
-}
 
 // v0.2 §5 (location): GNSS event handoff. Runs on WalterModem's
 // _eventProcessingTask (same task pager_mqtt_event_handler above runs on) --
@@ -583,7 +338,9 @@ static void pager_socket_event_handler(WMSocketEventType event, const WMSocketEv
     }
 }
 
-static void note_registration(bool registered); // defined with the coverage-tracking state below
+// note_registration() is declared in net_internal.h (defined with the
+// coverage-tracking state below; not `static` since xport_lte.cpp's
+// net_session_up() also calls it -- docs/WIFI_TASKS.md W4).
 
 static void pager_network_event_handler(WMNetworkEventType event, const WMNetworkEventData *data, void *args)
 {
@@ -770,12 +527,15 @@ static const char *effective_apn(const char *typed, const char *stored)
 // (COPS=0) and net_session_up() (re)configures whatever is missing the next
 // time it runs while registered. A modem reset only clears a flag.
 // ---------------------------------------------------------------------------
-static volatile bool s_registered = false;        // tracked from +CEREG URCs and polls
+// Not `static` (net_internal.h declares both): docs/WIFI_TASKS.md W4 moved
+// net_session_up() to xport_lte.cpp, and it still reads s_registered and
+// calls note_registration() exactly as it did in this file.
+volatile bool s_registered = false;        // tracked from +CEREG URCs and polls
 static volatile bool s_reg_regained_edge = false; // not registered -> registered
 static volatile int64_t s_unregistered_since_us = 0;
-static bool s_session_configured = false;         // TLS profile + mqttConfig are in the modem
+bool s_session_configured = false;         // TLS profile + mqttConfig are in the modem
 
-static void note_registration(bool registered)
+void note_registration(bool registered)
 {
     if (registered && !s_registered) {
         s_reg_regained_edge = true;
@@ -786,7 +546,7 @@ static void note_registration(bool registered)
     s_registered = registered;
 }
 
-static bool configure_session(void);
+bool configure_session(void); // not `static`: net_internal.h re-declares this for xport_lte.cpp
 
 static bool net_bringup(int attach_wait_s)
 {
@@ -906,6 +666,10 @@ static bool net_bringup(int attach_wait_s)
 
 extern "C" bool net_init(void)
 {
+    // docs/WIFI_TASKS.md W4: wire the transport seam to its one implementation.
+    // LTE always, in this task -- W5's net_xport_switch() is the only future
+    // writer of s_active_xport (already NET_XPORT_LTE by its static initializer).
+    s_xport_ops = xport_lte_ops();
     s_session_configured = false;
     net_connect_guard_init(&s_connect_guard); // v0.2 M1/M3: fresh boot, nothing outstanding
     publish_quiet_gate_init(&s_publish_quiet); // 23 Sep fix: fresh boot, nothing in flight
@@ -915,7 +679,9 @@ extern "C" bool net_init(void)
 // Clock, CA, TLS profile and MQTT client configuration: everything a modem
 // reset wipes. Needs the network only for the clock. Power effect: a handful of
 // AT commands, one NVRAM write if the CA changed.
-static bool configure_session(void)
+// Not `static` (net_internal.h's own forward declaration): docs/WIFI_TASKS.md
+// W4 moved net_session_up() to xport_lte.cpp, and it still calls this.
+bool configure_session(void)
 {
 
     // §3.5: seed ts from the network clock (NITZ via getClock()). On
@@ -1196,119 +962,37 @@ extern "C" bool net_tls_configure(uint8_t ca_slot, bool validated)
 
 extern "C" bool net_session_up(void)
 {
-    // Power effect: one TLS handshake, ~5kB (PROTOCOL.md §7.2/§7.3), plus
-    // the RRC time it takes. Never call this on a timer - only after
-    // net_init() and after a detected session loss (F3).
-    if (!s_registered) {
-        // A poll, not only the URC: the URC can be missed while the ESP32 sleeps.
-        note_registration(net_is_attached());
-        if (!s_registered) {
-            ESP_LOGI(TAG, "no network: not connecting yet");
-            return false;
-        }
-    }
-    if (!s_session_configured && !configure_session()) {
-        // v0.2 M3 (phaseO-recover.log): mqttConfig() answering +CME ERROR 4
-        // because the modem's own MQTT client is still up is exactly this
-        // failure. The fix is proactive: whichever code path decides the
-        // session is dead calls net_session_down() BEFORE this function runs
-        // again (net_service_session()'s liveness-dead and M1 connect-timeout
-        // branches). Repeated failures here count toward the 3-strike modem
-        // recover in modes.c (net_connect_fail_streak_maxed()), which covers
-        // a client left up by anything else (e.g. an ESP-only reset).
-        net_connect_guard_note_fail(&s_connect_guard);
-        return false;
-    }
-    s_disconnect_edge = false;
-    if (!WalterModem::mqttConnect(ident_get_host(), ident_get_port(), PAGER_MQTT_KEEPALIVE_S)) {
-        ESP_LOGI(TAG, "mqttConnect() call could not be queued");
-        // If the modem has lost its client configuration (it answers +CME
-        // ERROR), the next attempt redoes it. Cheap, and it is the state that
-        // used to be unrecoverable.
-        s_session_configured = false;
-        net_connect_guard_note_fail(&s_connect_guard); // v0.2 M3: 3 in a row -> modem recover
-        return false;
-    }
-    ESP_LOGI(TAG, "MQTT connect issued to %s:%u", ident_get_host(), (unsigned) ident_get_port());
-    // v0.2 M1: arms the 30s "no CONNECTED/SUBSCRIBED seen" bound
-    // (net_service_session() below) and, per net_connect_guard_issued()'s own
-    // contract, resets the M3 fail streak -- the modem accepted CONFIG/CONNECT
-    // this time, whatever happens next.
-    net_connect_guard_issued(&s_connect_guard, esp_timer_get_time());
-    return true;
+    return s_xport_ops->up();
 }
 
 extern "C" void net_session_down(void)
 {
-    // F3 recovery path only (never called on a timer or speculatively) --
-    // plus, as of v0.2 M3, net_service_session()'s own host-detected-dead
-    // branches below.
-    WalterModem::mqttDisconnect();
-    s_mqtt_connected = false;
-    net_connect_guard_clear(&s_connect_guard); // v0.2 M1: no connect is in flight once torn down
+    s_xport_ops->down();
 }
 
 extern "C" bool net_publish(const char *topic, char *buf, uint16_t len, uint8_t qos)
 {
-    if (len > PAGER_MAX_PAYLOAD) {
-        ESP_LOGI(TAG, "refusing to publish %u bytes > %u cap (PROTOCOL.md §3.3)",
-                 (unsigned) len, (unsigned) PAGER_MAX_PAYLOAD);
-        return false;
-    }
-    // L6: mqttPublish() takes non-const uint8_t*; publish from a mutable buffer.
-    bool ok = WalterModem::mqttPublish(topic, (uint8_t *) buf, len, qos);
-    if (ok) {
-        s_last_uplink_us = esp_timer_get_time(); // §9.4: successful publish resets the idle clock
-        // 23 Sep fix: the AT+SQNSMQTTPUBLISH round trip is now outstanding;
-        // matching publish_quiet_gate_done() call is the PUBLISHED event
-        // above.
-        publish_quiet_gate_issued(&s_publish_quiet, esp_timer_get_time());
-    }
-    return ok;
+    return s_xport_ops->publish(topic, buf, len, qos);
 }
 
 extern "C" bool net_publish_raw(const char *topic, uint8_t *buf, uint16_t len, uint8_t qos)
 {
-    if (len > PAGER_MAX_PAYLOAD) {
-        ESP_LOGI(TAG, "refusing to publish %u bytes > %u cap (PROTOCOL.md §3.3)",
-                 (unsigned) len, (unsigned) PAGER_MAX_PAYLOAD);
-        return false;
-    }
-    // Binary-safe, confirmed by reading the vendor source (not UNVERIFIED):
-    // WalterModem::mqttPublish() (src/proto/WalterMQTT.cpp:97-103) puts only
-    // the topic string and buf_size on the AT command line
-    // ("AT+SQNSMQTTPUBLISH=0,<topic>,<qos>,<buf_size>"); the payload itself
-    // is written with uart_write_bytes(_uartNo, cmd->payload, cmd->payloadSize)
-    // after the modem's "> " data prompt (src/WalterModem.cpp:2049-2068),
-    // i.e. exactly buf_size raw bytes, no NUL-termination or escaping
-    // applied to the payload. Same call as net_publish() above, just typed
-    // for a CBOR byte buffer instead of a text one.
-    bool ok = WalterModem::mqttPublish(topic, buf, len, qos);
-    if (ok) {
-        s_last_uplink_us = esp_timer_get_time(); // §9.4: successful publish resets the idle clock
-        // 23 Sep fix: see net_publish()'s own comment above.
-        publish_quiet_gate_issued(&s_publish_quiet, esp_timer_get_time());
-    }
-    return ok;
+    return s_xport_ops->publish_raw(topic, buf, len, qos);
 }
 
 extern "C" uint32_t net_publish_quiet_wait_ms(uint32_t max_wait_ms)
 {
-    // 23 Sep display-corruption fix (publish_quiet.h's own module comment):
-    // disp.c's pre-refresh gate hook (ui.c's strong disp_pre_write_gate_hook())
-    // calls this before any panel SPI command goes out. Bounded so a lost
-    // PUBLISHED event (a dropped URC) cannot stall rendering forever --
-    // matches disp.c's own "NEVER a tight busy-loop"/bounded-wait discipline
-    // (disp_wait_busy_fb()).
-    uint32_t waited_ms = 0;
-    while (publish_quiet_gate_should_wait(&s_publish_quiet, esp_timer_get_time())) {
-        if (waited_ms >= max_wait_ms) {
-            break;
-        }
-        vTaskDelay(pdMS_TO_TICKS(10)); // NEVER a tight busy-loop
-        waited_ms += 10;
-    }
-    return waited_ms;
+    return s_xport_ops->publish_quiet_wait_ms(max_wait_ms);
+}
+
+extern "C" net_xport_t net_xport_active(void)
+{
+    return s_active_xport;
+}
+
+extern "C" void net_set_lte_suppressed(bool suppressed)
+{
+    s_lte_suppressed = suppressed;
 }
 
 extern "C" void net_set_msg_cb(void (*cb)(const char *topic, const char *body, uint16_t len))
@@ -1514,133 +1198,42 @@ extern "C" bool net_get_rssi(int *dbm)
     return true;
 }
 
-// v0.2 §9.4: idle-uplink liveness ping / silent-resume repair. Called once
-// per wake-and-drain iteration from modes_run()'s own task (never from an
-// event callback), guarded there by the same three suppressions the
-// reconnect path already honours. Power effect: none when neither condition
-// below holds; otherwise one AT round trip (RRC time for one subscribe if
-// the modem was idle) at most once per PAGER_MQTT_PING_S.
+// docs/WIFI_TASKS.md W4: net_service_session() moved to xport_lte.cpp with
+// the rest of the MQTT session code. This wrapper applies the LTE-only
+// suppression (net_set_lte_suppressed() above, net.h's own doc comment)
+// before dispatching -- a future WiFi transport's service tick must not be
+// silenced by suppressions that are only about the modem.
 extern "C" void net_service_session(void)
 {
-    int64_t now = esp_timer_get_time();
-
-    // v0.2 M1 (22 Sep outage): net_session_up() issued a connect but neither
-    // CONNECTED nor SUBSCRIBED has arrived within NET_CONNECT_TIMEOUT_US
-    // (30s -- matches the Step 5 SUBACK bound just below). esp_timer_get_time()
-    // keeps counting across light sleep, and this function is serviced once
-    // per wake-and-drain iteration (modes.c), so the bound is honoured even
-    // when most of it elapses asleep -- exactly the "one missed event must
-    // not hang forever" fix the outage needed. Same M3 treatment as Step 5
-    // below: net_session_down() runs HERE, at the moment the host makes the
-    // "dead" call, not left for whichever retry branch runs next (see that
-    // branch's own comment for why this is the right place, not modes.c's
-    // retry branch).
-    if (net_connect_guard_check_timeout(&s_connect_guard, now)) {
-        s_mqtt_connected = false;
-        s_last_class = NET_MQTT_RC_TRANSIENT;
-        ESP_LOGI(TAG, "connect watchdog: no CONNECTED/SUBSCRIBED within %llds of the connect - "
-                      "treating the MQTT session as dead",
-                 (long long) (NET_CONNECT_TIMEOUT_US / 1000000));
-        net_session_down(); // v0.2 M3: tear down the modem's client before F1/F3 backoff retries
-        s_disconnect_edge = true;
+    if (s_active_xport == NET_XPORT_LTE && s_lte_suppressed) {
         return;
     }
-
-    // Step 5: no SUBACK within 30s (two wake cycles plus RRC setup) means the
-    // session is dead -- far earlier than the modem's own ~6 minute silent
-    // resume. mqttConnect() (net_session_up(), driven by the ordinary F1/F3
-    // backoff this disconnect edge triggers) frees the topic table, so the
-    // next subscribe after a real reconnect is a normal one.
-    if (s_resub_wait && (now - s_resub_sent_us) > 30 * 1000000LL) {
-        s_mqtt_connected = false;
-        s_last_class = NET_MQTT_RC_TRANSIENT;
-        s_resub_wait = false;
-        s_resub_is_resume = false;
-        ESP_LOGI(TAG, "liveness ping got no SUBACK in 30 s: treating the MQTT session as dead");
-        // v0.2 M3 fix (tonight's phaseO-recover.log): this branch used to
-        // only set s_disconnect_edge and rely on modes.c's F1/F3 backoff to
-        // call net_session_up() again -- which then hit exactly tonight's
-        // failure, mqttConfig() answering +CME ERROR: 4 because the modem's
-        // own MQTT client was still connected (this host-side verdict never
-        // told the modem otherwise). Option 1 of the two the spec offered:
-        // tear the client down HERE, in the branch that makes the
-        // host-detected-dead call, rather than in modes.c's retry branch --
-        // by the time modes.c observes disconnect_edge, it can no longer
-        // tell a host-detected loss from a modem-reported one, but net.cpp
-        // can, right here, for free.
-        net_session_down();
-        s_disconnect_edge = true;
-        return;
-    }
-
-    bool resume_repair = s_resub_pending;
-    bool idle_ping = s_mqtt_connected && !s_resub_wait &&
-                      (now - s_last_uplink_us) >= (int64_t) PAGER_MQTT_PING_S * 1000000LL;
-    if (!resume_repair && !idle_ping) {
-        return;
-    }
-
-    int64_t idle_s = (now - s_last_uplink_us) / 1000000;
-
-    // Raw AT+SQNSMQTTSUBSCRIBE, same WalterModem::sendCmd() path
-    // net_debug_at() uses: WalterModem::mqttSubscribe() would silently no-op
-    // this (WalterMQTT.cpp:120-123, "Topic already in use") since the topic
-    // is already in the modem's local table from the very first connect --
-    // for both the resume-repair case and the routine liveness ping.
-    char cmd[32 + sizeof(s_down_topic)];
-    snprintf(cmd, sizeof(cmd), "AT+SQNSMQTTSUBSCRIBE=0,\"%s\",1", s_down_topic);
-    if (!WalterModem::sendCmd(cmd)) {
-        ESP_LOGI(TAG, "liveness ping: re-SUBSCRIBE could not be sent (idle %llds)%s",
-                 (long long) idle_s, resume_repair ? " (resume repair)" : "");
-        return;
-    }
-    s_resub_sent_us = now;
-    s_resub_wait = true;
-    s_resub_pending = false;
-    s_resub_is_resume = resume_repair;
-    s_last_uplink_us = now;
-    if (resume_repair) {
-        ESP_LOGI(TAG, "liveness ping: re-SUBSCRIBE sent (resume repair)");
-    } else {
-        ESP_LOGI(TAG, "liveness ping: re-SUBSCRIBE sent (idle %llds)", (long long) idle_s);
-    }
+    s_xport_ops->service();
 }
 
 extern "C" void net_get_mqtt_status(net_mqtt_status_t *out)
 {
-    if (!out) {
-        return;
-    }
-    out->mqtt_connected = s_mqtt_connected;
-    out->disconnect_edge = s_disconnect_edge;
-    out->last_rc = s_last_rc;
-    out->last_class = s_last_class;
-    out->session_restart_edge = s_session_restart_edge;
+    s_xport_ops->status(out);
 }
 
 extern "C" void net_ack_disconnect_edge(void)
 {
-    s_disconnect_edge = false;
+    s_xport_ops->ack_disconnect_edge();
 }
 
 extern "C" void net_ack_session_restart_edge(void)
 {
-    s_session_restart_edge = false;
+    s_xport_ops->ack_session_restart_edge();
 }
 
 extern "C" bool net_modem_busy(void)
 {
-    return s_handler_busy;
+    return s_xport_ops->modem_busy();
 }
 
 extern "C" bool net_connect_in_flight(void)
 {
-    // v0.2 M1/M2: true from net_session_up()'s successful mqttConnect() queue
-    // until CONNECTED/SUBSCRIBED arrives, net_session_down() runs, or the 30s
-    // connect timeout fires (net_service_session()) -- see net_connect_in_flight()'s
-    // own doc comment in net.h for why this is a separate accessor from
-    // net_modem_busy(), not folded into it.
-    return net_connect_guard_in_flight(&s_connect_guard);
+    return s_xport_ops->connect_in_flight();
 }
 
 extern "C" bool net_publish_in_flight(void)
@@ -1656,23 +1249,17 @@ extern "C" bool net_publish_in_flight(void)
 
 extern "C" bool net_connect_fail_streak_maxed(void)
 {
-    // v0.2 M3: true once net_session_up() has failed NET_SESSION_UP_FAIL_ESCALATE
-    // times in a row at the mqttConfig()/mqttConnect() step.
-    return net_connect_guard_should_escalate(&s_connect_guard);
+    return s_xport_ops->connect_fail_streak_maxed();
 }
 
 extern "C" uint32_t net_take_memfull_delta(void)
 {
-    uint32_t v = s_memfull_count;
-    s_memfull_count = 0;
-    return v;
+    return s_xport_ops->take_memfull_delta();
 }
 
 extern "C" uint32_t net_take_oversize_delta(void)
 {
-    uint32_t v = s_oversize_count;
-    s_oversize_count = 0;
-    return v;
+    return s_xport_ops->take_oversize_delta();
 }
 
 extern "C" const char *net_get_device_id(void)
