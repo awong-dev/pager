@@ -1789,11 +1789,22 @@ void modes_run(void)
         // Bounded by M1's own 30s connect timeout (net_connect_guard.h), so a
         // lost CONNACK cannot pin the device awake indefinitely -- see
         // net_connect_in_flight()'s own doc comment (net.h) for why this
-        // feeds skip_sleep only, not pump_blocked.
+        // feeds skip_sleep only, not pump_blocked. OR (23 Sep release-build
+        // fix, M4) net_publish_in_flight(): the CONNECT window above was
+        // fixed but a publish has the exact same RTS-vs-payload race --
+        // observed on the bench (phaseS-release-boot.log): net_sleep()
+        // deasserted RTS right after the modem's '>' data prompt but before
+        // the 44 payload bytes went out, so the retried
+        // `AT+SQNSMQTTPUBLISH=0,"pager/test-pager/up",1` command line (also
+        // exactly 44 characters) got consumed as that outstanding payload and
+        // published verbatim, tripping the relay's bad-sig check. Bounded by
+        // PUBLISH_SLEEP_HOLD_MAX_US (15s, publish_quiet.h) so a lost
+        // PUBLISHED URC cannot pin the device awake indefinitely.
         bool btn_busy = input_button_busy();
         bool btn_stuck = input_button_stuck();
         bool ui_awake = input_awake();
-        bool skip_sleep = btn_busy || btn_stuck || ui_awake || net_modem_busy() || net_connect_in_flight();
+        bool skip_sleep = btn_busy || btn_stuck || ui_awake || net_modem_busy() || net_connect_in_flight() ||
+                           net_publish_in_flight();
         // pump_blocked keys ONLY on net_modem_busy() (the UART/RTS interlock
         // against the MQTT event handler, see the comment above on
         // net_modem_busy()) -- NOT on btn_busy/btn_stuck/ui_awake, and NOT on

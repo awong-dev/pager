@@ -1262,7 +1262,7 @@ extern "C" bool net_publish(const char *topic, char *buf, uint16_t len, uint8_t 
         // 23 Sep fix: the AT+SQNSMQTTPUBLISH round trip is now outstanding;
         // matching publish_quiet_gate_done() call is the PUBLISHED event
         // above.
-        publish_quiet_gate_issued(&s_publish_quiet);
+        publish_quiet_gate_issued(&s_publish_quiet, esp_timer_get_time());
     }
     return ok;
 }
@@ -1287,7 +1287,7 @@ extern "C" bool net_publish_raw(const char *topic, uint8_t *buf, uint16_t len, u
     if (ok) {
         s_last_uplink_us = esp_timer_get_time(); // §9.4: successful publish resets the idle clock
         // 23 Sep fix: see net_publish()'s own comment above.
-        publish_quiet_gate_issued(&s_publish_quiet);
+        publish_quiet_gate_issued(&s_publish_quiet, esp_timer_get_time());
     }
     return ok;
 }
@@ -1641,6 +1641,17 @@ extern "C" bool net_connect_in_flight(void)
     // own doc comment in net.h for why this is a separate accessor from
     // net_modem_busy(), not folded into it.
     return net_connect_guard_in_flight(&s_connect_guard);
+}
+
+extern "C" bool net_publish_in_flight(void)
+{
+    // 23 Sep release-build fix (44-byte publish corruption, publish_quiet.h's
+    // own module comment): true while a pager-originated publish's AT round
+    // trip is outstanding AND still within its own PUBLISH_SLEEP_HOLD_MAX_US
+    // (15s) window -- bounded the same way net_connect_in_flight()'s 30s
+    // connect timeout is bounded, so a lost PUBLISHED URC cannot pin the
+    // device awake forever.
+    return publish_quiet_gate_hold_sleep(&s_publish_quiet, esp_timer_get_time());
 }
 
 extern "C" bool net_connect_fail_streak_maxed(void)

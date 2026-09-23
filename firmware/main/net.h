@@ -390,6 +390,22 @@ bool net_modem_busy(void);
  * different modem-side transaction. */
 bool net_connect_in_flight(void);
 
+/* 23 Sep release-build fix (44-byte publish corruption on the bench, M4):
+ * true from the moment net_publish()/net_publish_raw() issues a publish
+ * until the matching WALTER_MODEM_MQTT_EVENT_PUBLISHED event runs
+ * (publish_quiet_gate_done()), bounded by PUBLISH_SLEEP_HOLD_MAX_US (15s,
+ * see publish_quiet.h) so a lost PUBLISHED URC cannot pin the device awake
+ * indefinitely -- same shape as net_connect_in_flight() just above, for the
+ * publish window instead of the connect window. Root cause this covers:
+ * net_sleep() deasserted RTS after the modem's '>' data prompt but before
+ * the payload bytes went out, so the modem was left waiting for 44 bytes of
+ * payload; msg_pump()'s retry then queued a new AT+SQNSMQTTPUBLISH command
+ * line that was itself exactly 44 characters, and the modem consumed it as
+ * the outstanding payload and published it verbatim. modes.c's skip_sleep
+ * ORs this in; deliberately NOT folded into pump_blocked, same reasoning as
+ * net_connect_in_flight()'s own doc comment above. */
+bool net_publish_in_flight(void);
+
 /* v0.2 M3 (22 Sep evening): true once net_session_up() has failed
  * NET_SESSION_UP_FAIL_ESCALATE (3, net_connect_guard.h) times in a row at the
  * mqttConfig()/mqttConnect() step -- modes.c's retry branch escalates to

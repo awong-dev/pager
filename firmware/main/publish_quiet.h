@@ -44,18 +44,58 @@ extern "C" {
  * driver stack. */
 #define PUBLISH_QUIET_WINDOW_US ((int64_t) 300 * 1000)
 
+/* 23 Sep release-build fix (docs/PROTOCOL.md field failure, "44-byte publish
+ * corruption"): net_sleep() must not deassert RTS while a publish's AT round
+ * trip (command line -> '>' data prompt -> payload bytes -> OK/ERROR) is
+ * still in flight, or the modem is left waiting for payload bytes that never
+ * arrive — the next retry's own command line then gets consumed as that
+ * leftover payload (observed on the bench: a 44-byte retried command line
+ * was accepted as the 44-byte payload the first attempt had promised, and
+ * published verbatim, tripping the relay's bad-sig check). 15s is bounded
+ * well BELOW the vendored library's own worst-case command timeout
+ * (CONFIG_WALTER_MODEM_CMD_TIMEOUT_MS, 30s/attempt, up to
+ * WALTER_MODEM_DEFAULT_CMD_ATTEMPTS retries) on purpose: this hold only needs
+ * to outlast a NORMAL publish round trip (the data-prompt exchange plus
+ * whatever RRC reconnect time it costs if the modem had gone idle -- a few
+ * seconds), not a fully wedged AT transaction. The other side of that
+ * trade-off is deliberate too: a lost PUBLISHED URC (done() never called)
+ * must never pin the device awake indefinitely, so this hold gives up after
+ * 15s and lets the device sleep even though in_flight is still nonzero --
+ * see publish_quiet_gate_hold_sleep()'s own doc comment for how a later
+ * issued() recovers from that case instead of inheriting the stale
+ * timestamp. */
+#define PUBLISH_SLEEP_HOLD_MAX_US ((int64_t) 15 * 1000 * 1000)
+
 typedef struct {
     uint32_t in_flight;     /* publishes issued but not yet PUBLISHED-acked */
     int64_t quiet_until_us; /* valid only once in_flight has reached 0 at least
                               * once; 0 = "never armed", also treated as "not
                               * quiet" only while in_flight > 0 (see .c) */
+    int64_t issued_us;      /* issue time of the OLDEST outstanding publish,
+                              * valid only while in_flight > 0 -- see
+                              * publish_quiet_gate_issued()/_done()'s own
+                              * comments for how this is maintained without
+                              * keeping a full per-publish timestamp list. */
 } publish_quiet_gate_t;
 
 void publish_quiet_gate_init(publish_quiet_gate_t *g);
 
 /* Call the instant a publish is actually issued to the modem (mqttPublish()
- * returned true, i.e. AT+SQNSMQTTPUBLISH was queued) — increments in_flight. */
-void publish_quiet_gate_issued(publish_quiet_gate_t *g);
+ * returned true, i.e. AT+SQNSMQTTPUBLISH was queued) — increments in_flight.
+ *
+ * issued_us bookkeeping (there is no per-publish timestamp list, only one
+ * "oldest outstanding" estimate): set to `now_us` whenever in_flight was 0
+ * (this publish is the new oldest), and ALSO whenever the existing hold has
+ * already expired (`now_us - issued_us >= PUBLISH_SLEEP_HOLD_MAX_US`) even
+ * though in_flight was already > 0 -- that second case is what stops a
+ * stale in-flight count left behind by a lost URC (done() that never came)
+ * from suppressing this brand-new publish's own hold window; without it a
+ * publish issued minutes after a forgotten one would inherit that forgotten
+ * one's already-expired timestamp and get zero hold protection of its own.
+ * Otherwise (a second publish issued while the first is still genuinely
+ * within its own hold window) the timestamp is left alone -- the oldest
+ * outstanding publish is still the right one to gate on. */
+void publish_quiet_gate_issued(publish_quiet_gate_t *g, int64_t now_us);
 
 /* Call on the PUBLISHED event (the +SQNSMQTTONPUBLISH URC, or the modem's
  * OK/ERROR terminating that command), whether it reports success or
@@ -68,6 +108,16 @@ void publish_quiet_gate_done(publish_quiet_gate_t *g, int64_t now_us);
  * completed less than PUBLISH_QUIET_WINDOW_US ago. False once both
  * conditions are clear. */
 bool publish_quiet_gate_should_wait(const publish_quiet_gate_t *g, int64_t now_us);
+
+/* True while net_sleep() should be skipped: a publish is outstanding AND the
+ * oldest outstanding one was issued less than PUBLISH_SLEEP_HOLD_MAX_US ago
+ * -- see that macro's own comment for why 15s and why this is deliberately
+ * NOT the same condition as publish_quiet_gate_should_wait() (that one gates
+ * a panel write and is allowed to wait indefinitely while in_flight > 0;
+ * this one gates sleep and must give up eventually so a lost URC cannot pin
+ * the device awake). False once in_flight is 0, or once the oldest
+ * outstanding publish's own 15s has elapsed. */
+bool publish_quiet_gate_hold_sleep(const publish_quiet_gate_t *g, int64_t now_us);
 
 #ifdef __cplusplus
 }

@@ -16,6 +16,17 @@
  *    underflow the count or otherwise misbehave
  *  - a fresh gate never waits
  *
+ * Plus (23 Sep release-build fix, M4: the 44-byte publish corruption --
+ * net_sleep() must not deassert RTS while a publish's own AT round trip is
+ * still outstanding) publish_quiet_gate_hold_sleep() coverage:
+ *  - true the instant a publish is issued
+ *  - false once it is done()
+ *  - false PUBLISH_SLEEP_HOLD_MAX_US + 1us after issue with no done() at all
+ *    (bounded: a lost URC must not pin the device awake forever)
+ *  - two overlapping publishes hold sleep off until BOTH are done()
+ *  - a stale in-flight count left behind by a lost URC does not hold a
+ *    later, genuinely fresh publish beyond that later publish's own 15s
+ *
  * NOT host-testable here (see the report): that net.cpp actually calls
  * publish_quiet_gate_issued()/_done() at the right AT-command boundaries
  * (mqttPublish() returning true; the WALTER_MODEM_MQTT_EVENT_PUBLISHED
@@ -60,7 +71,7 @@ static void test_waits_while_in_flight(void)
     publish_quiet_gate_init(&g);
 
     int64_t t0 = 1000 * US_PER_S;
-    publish_quiet_gate_issued(&g);
+    publish_quiet_gate_issued(&g, t0);
     CHECK(publish_quiet_gate_should_wait(&g, t0), "must wait the instant a publish is issued");
     CHECK(publish_quiet_gate_should_wait(&g, t0 + 999 * US_PER_S),
           "must keep waiting indefinitely while still in flight, however long");
@@ -74,7 +85,7 @@ static void test_quiet_window_after_done(void)
     publish_quiet_gate_init(&g);
 
     int64_t t0 = 2000 * US_PER_S;
-    publish_quiet_gate_issued(&g);
+    publish_quiet_gate_issued(&g, t0);
     publish_quiet_gate_done(&g, t0);
 
     CHECK(publish_quiet_gate_should_wait(&g, t0), "must still wait right at done()'s own timestamp");
@@ -95,8 +106,8 @@ static void test_overlapping_publishes_count(void)
     publish_quiet_gate_init(&g);
 
     int64_t t0 = 3000 * US_PER_S;
-    publish_quiet_gate_issued(&g); /* e.g. /status online */
-    publish_quiet_gate_issued(&g); /* e.g. a message ack, moments later */
+    publish_quiet_gate_issued(&g, t0); /* e.g. /status online */
+    publish_quiet_gate_issued(&g, t0); /* e.g. a message ack, moments later */
     CHECK(publish_quiet_gate_should_wait(&g, t0), "must wait with two outstanding");
 
     publish_quiet_gate_done(&g, t0 + 1 * US_PER_S); /* first one completes */
@@ -131,6 +142,101 @@ static void test_spurious_done_does_not_underflow(void)
           "must clear once that window elapses, same as any other done()");
 }
 
+/* hold_sleep() must go true the instant a publish is issued -- same edge as
+ * should_wait(), different bound (see hold_sleep()'s own doc comment). */
+static void test_hold_sleep_true_right_after_issued(void)
+{
+    publish_quiet_gate_t g;
+    publish_quiet_gate_init(&g);
+
+    int64_t t0 = 4000 * US_PER_S;
+    CHECK(!publish_quiet_gate_hold_sleep(&g, t0), "fresh gate must not hold sleep");
+    publish_quiet_gate_issued(&g, t0);
+    CHECK(publish_quiet_gate_hold_sleep(&g, t0), "must hold sleep the instant a publish is issued");
+}
+
+/* Unlike should_wait() (which keeps waiting for PUBLISH_QUIET_WINDOW_US
+ * after done()), hold_sleep() drops immediately on done() -- there is
+ * nothing left in flight for net_sleep() to race against. */
+static void test_hold_sleep_false_after_done(void)
+{
+    publish_quiet_gate_t g;
+    publish_quiet_gate_init(&g);
+
+    int64_t t0 = 5000 * US_PER_S;
+    publish_quiet_gate_issued(&g, t0);
+    publish_quiet_gate_done(&g, t0 + 1 * US_PER_S);
+    CHECK(!publish_quiet_gate_hold_sleep(&g, t0 + 1 * US_PER_S),
+          "must not hold sleep once the publish is done()");
+}
+
+/* Bounded: a lost PUBLISHED URC (done() never comes) must not pin the device
+ * awake past PUBLISH_SLEEP_HOLD_MAX_US. */
+static void test_hold_sleep_bounded_with_no_done(void)
+{
+    publish_quiet_gate_t g;
+    publish_quiet_gate_init(&g);
+
+    int64_t t0 = 6000 * US_PER_S;
+    publish_quiet_gate_issued(&g, t0);
+    CHECK(publish_quiet_gate_hold_sleep(&g, t0 + PUBLISH_SLEEP_HOLD_MAX_US - 1),
+          "must still hold sleep 1us before the bound");
+    CHECK(!publish_quiet_gate_hold_sleep(&g, t0 + PUBLISH_SLEEP_HOLD_MAX_US),
+          "must clear exactly at the bound, even with no done() ever");
+    CHECK(!publish_quiet_gate_hold_sleep(&g, t0 + PUBLISH_SLEEP_HOLD_MAX_US + 1 * US_PER_S),
+          "must stay clear well past the bound");
+}
+
+/* Two overlapping publishes: hold_sleep() must stay true until BOTH are
+ * done(), same in_flight-is-a-count reasoning as should_wait(). */
+static void test_hold_sleep_overlapping_until_both_done(void)
+{
+    publish_quiet_gate_t g;
+    publish_quiet_gate_init(&g);
+
+    int64_t t0 = 7000 * US_PER_S;
+    publish_quiet_gate_issued(&g, t0);                  /* e.g. /status online */
+    publish_quiet_gate_issued(&g, t0 + 1 * US_PER_S);   /* e.g. a message ack, moments later */
+    CHECK(publish_quiet_gate_hold_sleep(&g, t0 + 1 * US_PER_S), "must hold sleep with two outstanding");
+
+    publish_quiet_gate_done(&g, t0 + 2 * US_PER_S); /* first one completes */
+    CHECK(publish_quiet_gate_hold_sleep(&g, t0 + 2 * US_PER_S),
+          "must still hold sleep -- the second publish is still outstanding");
+    CHECK(publish_quiet_gate_hold_sleep(&g, t0 + 2 * US_PER_S + PUBLISH_SLEEP_HOLD_MAX_US - 1),
+          "the still-outstanding second publish's own window was refreshed by done(), so this must "
+          "still hold");
+
+    publish_quiet_gate_done(&g, t0 + 3 * US_PER_S); /* second one completes */
+    CHECK(!publish_quiet_gate_hold_sleep(&g, t0 + 3 * US_PER_S), "must clear once both are done()");
+}
+
+/* A stale in-flight count from a lost URC (first publish issued, done()
+ * never called) must not hold sleep off forever, AND must not deny a later,
+ * genuinely new publish its own fresh 15s window -- see
+ * publish_quiet_gate_issued()'s own doc comment for why issued() resets the
+ * timestamp when the existing hold has already expired. */
+static void test_hold_sleep_stale_in_flight_does_not_pin_later_publish(void)
+{
+    publish_quiet_gate_t g;
+    publish_quiet_gate_init(&g);
+
+    int64_t t0 = 8000 * US_PER_S;
+    publish_quiet_gate_issued(&g, t0); /* lost URC: done() never comes for this one */
+    CHECK(!publish_quiet_gate_hold_sleep(&g, t0 + PUBLISH_SLEEP_HOLD_MAX_US + 5 * US_PER_S),
+          "the stale publish's own hold must have already expired");
+
+    /* A brand-new publish arrives long after the stale one's hold expired,
+     * with the stale in_flight count (1) still sitting there uncleared. */
+    int64_t t1 = t0 + PUBLISH_SLEEP_HOLD_MAX_US + 5 * US_PER_S;
+    publish_quiet_gate_issued(&g, t1);
+    CHECK(publish_quiet_gate_hold_sleep(&g, t1),
+          "the new publish must get its own fresh hold, not inherit the stale timestamp");
+    CHECK(publish_quiet_gate_hold_sleep(&g, t1 + PUBLISH_SLEEP_HOLD_MAX_US - 1),
+          "the new publish's own window must run its own full 15s");
+    CHECK(!publish_quiet_gate_hold_sleep(&g, t1 + PUBLISH_SLEEP_HOLD_MAX_US),
+          "the new publish must not hold sleep beyond its OWN 15s either");
+}
+
 int main(void)
 {
     test_fresh_gate_never_waits();
@@ -138,6 +244,11 @@ int main(void)
     test_quiet_window_after_done();
     test_overlapping_publishes_count();
     test_spurious_done_does_not_underflow();
+    test_hold_sleep_true_right_after_issued();
+    test_hold_sleep_false_after_done();
+    test_hold_sleep_bounded_with_no_done();
+    test_hold_sleep_overlapping_until_both_done();
+    test_hold_sleep_stale_in_flight_does_not_pin_later_publish();
 
     if (g_failures == 0) {
         printf("PASS: publish quiet gate (23 Sep display-corruption fix), 0 failures\n");
