@@ -66,7 +66,7 @@ endif
 MAIN_SRC := ../main
 BUILD := build
 
-TESTS := test_cbor test_auth test_setup test_input test_msg test_lock test_loc test_cafetch test_catrust test_cfg test_sms test_carrier test_chat_layout test_coverage
+TESTS := test_cbor test_auth test_setup test_input test_msg test_lock test_loc test_cafetch test_catrust test_cfg test_sms test_carrier test_chat_layout test_coverage test_wifi_policy
 TEST_BINS := $(TESTS:%=$(BUILD)/%)
 
 # ASSETS: tools/mkassets.py's default output location (docs/DEVICE_TASKS.md
@@ -282,4 +282,15 @@ $(BUILD)/test_coverage.o: test_coverage.c $(MAIN_SRC)/coverage.h | $(BUILD)
 	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ test_coverage.c
 
 $(BUILD)/test_coverage: $(BUILD)/coverage.o $(BUILD)/test_coverage.o
+	$(CC) $(CFLAGS) -o $@ $^
+
+# test_wifi_policy: wifi_policy.c (whole file -- no ESP-IDF dependency at
+# all, see wifi_policy.h's own module comment) + test_wifi_policy.c.
+$(BUILD)/wifi_policy.o: $(MAIN_SRC)/wifi_policy.c $(MAIN_SRC)/wifi_policy.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $(MAIN_SRC)/wifi_policy.c
+
+$(BUILD)/test_wifi_policy.o: test_wifi_policy.c $(MAIN_SRC)/wifi_policy.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ test_wifi_policy.c
+
+$(BUILD)/test_wifi_policy: $(BUILD)/wifi_policy.o $(BUILD)/test_wifi_policy.o
 	$(CC) $(CFLAGS) -o $@ $^
