@@ -319,13 +319,17 @@ static void pager_mqtt_event_handler(WMMQTTEventType event, const WMMQTTEventDat
 
     switch (event) {
     case WALTER_MODEM_MQTT_EVENT_CONNECTED:
-        // v0.2 M1: any CONNECTED event, success or failure rc, proves the
-        // connect round trip was answered at all -- it is no longer the
-        // "silently wedged" case net_service_session()'s connect timeout
-        // exists for. Cleared here unconditionally, before the rc check
-        // below, on purpose.
-        net_connect_guard_clear(&s_connect_guard);
+        // v0.2 M1/M2: a SUCCESSFUL CONNECTED does NOT clear the guard -- the
+        // connect stays "in flight" until SUBSCRIBED, because s_mqtt_connected
+        // is only set there and modes.c's retry branch keys on it: with the
+        // guard cleared here, the CONNECTED->SUBSCRIBED window (~150 ms on
+        // the bench) read as "not connected, nothing in flight" and a second
+        // AT+SQNSMQTTCONNECT went out, answered +CME ERROR: 4 (phase1-boot.log
+        // 121605-121655, and every boot before it). A FAILED CONNECTED is a
+        // real answer, so it does clear the guard and the ordinary rc
+        // classification below takes over.
         if (data->rc != WALTER_MODEM_MQTT_SUCCESS) {
+            net_connect_guard_clear(&s_connect_guard);
             s_last_rc = data->rc;
             s_last_class = classify_mqtt_rc(data->rc);
             s_disconnect_edge = true;
@@ -366,10 +370,10 @@ static void pager_mqtt_event_handler(WMMQTTEventType event, const WMMQTTEventDat
         break;
 
     case WALTER_MODEM_MQTT_EVENT_SUBSCRIBED:
-        // v0.2 M1: belt-and-suspenders alongside the CONNECTED clear above
-        // (SUBSCRIBED always follows a real CONNECTED in the ordinary
-        // flow, so this is normally a no-op, but the spec calls for
-        // clearing on either event).
+        // v0.2 M1/M2: THE clearing point for a successful connect -- the
+        // session is usable from here, and s_mqtt_connected (set below)
+        // takes over as modes.c's "no retry needed" signal. See the
+        // CONNECTED case above for why it is not cleared earlier.
         net_connect_guard_clear(&s_connect_guard);
         if (data->rc != WALTER_MODEM_MQTT_SUCCESS) {
             ESP_LOGI(TAG, "MQTT subscribe failed, rc=%d", data->rc);

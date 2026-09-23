@@ -2110,7 +2110,12 @@ void modes_run(void)
             break;
         }
 
-        if (net_take_registered_edge() && !s_loc_suppress && !s_ca_apply_suppress) {
+        // The registered edge also fires once at boot, ~300 ms after
+        // modes_boot()'s own net_session_up(): with a connect in flight there
+        // is nothing to regain, and resetting the backoff here used to let
+        // the retry branch below issue a second CONNECT (phase1-boot.log).
+        if (net_take_registered_edge() && !s_loc_suppress && !s_ca_apply_suppress &&
+            !net_connect_in_flight()) {
             // Coverage is back. Retry at once instead of waiting out a backoff
             // that grew while there was no network. And a session that was
             // "connected" across the gap cannot be trusted: on this modem the

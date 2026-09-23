@@ -7,8 +7,8 @@
  *
  * Coverage required by the task brief:
  *  - the 30s connect timeout fires exactly once, not before its bound
- *  - cleared by CONNECTED (net_connect_guard_clear(), no timeout after)
- *  - cleared by SUBSCRIBED (same call, same effect)
+ *  - cleared by SUBSCRIBED or a failed CONNECTED (net_connect_guard_clear(),
+ *    no timeout after); a successful CONNECTED does not clear it (net.cpp)
  *  - cleared by net_session_down() (same call again -- net.cpp's
  *    net_session_down() calls net_connect_guard_clear() directly)
  *  - 3 consecutive net_session_up() failures -> should_escalate() true;

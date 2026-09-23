@@ -62,8 +62,12 @@ void net_connect_guard_init(net_connect_guard_t *g);
  * accepted CONFIG/CONNECT this time, whatever happens next. */
 void net_connect_guard_issued(net_connect_guard_t *g, int64_t now_us);
 
-/* Call on CONNECTED, on SUBSCRIBED, and from net_session_down() -- any of
- * the three proves the connect round trip is no longer silently unanswered
+/* Call on SUBSCRIBED (the session is usable), on a FAILED CONNECTED (a
+ * real answer, just a bad one), and from net_session_down() -- any of the
+ * three proves the connect round trip is no longer silently unanswered. A
+ * successful CONNECTED deliberately does NOT clear it: until SUBSCRIBED
+ * arrives modes.c still sees mqtt_connected == false, and an unguarded
+ * window there re-issued CONNECT on every boot (net.cpp's CONNECTED case)
  * (net_session_down() covers the case where the caller is deliberately
  * tearing the client down, e.g. the F3 permanent-failure path or a
  * host-detected-dead branch, and no new connect has been issued yet). Safe
