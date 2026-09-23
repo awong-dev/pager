@@ -11,15 +11,19 @@ import time
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel
+from google.api_core.exceptions import AlreadyExists
+from pydantic import BaseModel, Field
 
-from app.auth import AuthedUser, require_user
+from app.auth import AuthedUser, require_admin, require_user
 from app.location import Location, NoLocatableDevice
 from app.routing import Routing
 from app.store import allow as allow_store
+from app.store import conversations as conversations_store
 from app.store import devices as devices_store
 from app.store import messages as messages_store
 from app.store import users as users_store
+from app.store.conversations import Conversation
+from app.store.users import InvalidAlias
 from app.wire import (
     BODY_MAX_CODEPOINTS,
     BODY_MAX_UTF8_BYTES,
@@ -102,10 +106,18 @@ def mark_read(
     # segment unchecked -- any alias would 200 regardless of whether it
     # named this message's conversation. Verify it does, 404ing (same
     # status/detail as "message not found") if not, so a mismatched alias
-    # can't silently succeed.
+    # can't silently succeed. `alias` names either a user (the DM peer) or a
+    # group (docs/GROUP_CHAT_DESIGN.md §3's "mark_read gains a group
+    # branch") -- try the DM resolution first, since a group alias never has
+    # a `uid` field to resolve (`app/store/conversations.py`'s docstring).
     peer_uid = users_store.get_uid_for_alias(alias)
-    if peer_uid is None or msg.convKey != messages_store.conv_key(authed.uid, peer_uid):
-        raise HTTPException(status_code=404, detail="no such message")
+    if peer_uid is not None:
+        if msg.convKey != messages_store.conv_key(authed.uid, peer_uid):
+            raise HTTPException(status_code=404, detail="no such message")
+    else:
+        group = conversations_store.get_by_alias(alias)
+        if group is None or msg.convKey != group.convKey or authed.uid not in group.uids:
+            raise HTTPException(status_code=404, detail="no such message")
 
     bid = messages_store.find_delivery_by_kind(msg, "webapp")
     if bid is None:
@@ -119,6 +131,104 @@ def mark_read(
         msg.id, bid, None, "read", int(time.time()), clear_unread_uid=authed.uid
     )
     return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Group admin API -- docs/GROUP_CHAT_DESIGN.md §3. All `require_user`;
+# creation is admin-only in v1 (`require_admin`).
+# ---------------------------------------------------------------------------
+
+
+class CreateGroupRequest(BaseModel):
+    name: str
+    alias: str
+    memberUids: list[str] = Field(min_length=2)
+
+
+class CreateGroupResponse(BaseModel):
+    convKey: str
+    alias: str
+
+
+def _create_missing_allow_edges(member_uids: list[str]) -> None:
+    """Decision 2 (docs/GROUP_CHAT_DESIGN.md, "Decisions" section): creating
+    or joining a group auto-creates `allow` edges in both directions between
+    every member pair, so the send-time allow-list gate never
+    partial-delivers. Only *missing* edges are created -- an edge that
+    already exists (whatever its `message`/`locate` flags) is left alone, so
+    this can never silently widen or narrow an admin's existing, deliberate
+    allow-list decision."""
+    for a in member_uids:
+        for b in member_uids:
+            if a == b:
+                continue
+            if allow_store.get_edge(a, b) is None:
+                allow_store.set_edge(a, b, message=True, locate=True)
+
+
+@router.post("", status_code=201)
+def create_group(
+    req: CreateGroupRequest,
+    authed: Annotated[AuthedUser, Depends(require_admin)],
+) -> CreateGroupResponse:
+    member_uids = sorted(set(req.memberUids))
+    for uid in member_uids:
+        if users_store.get_user(uid) is None:
+            raise HTTPException(status_code=404, detail=f"no such user: {uid!r}")
+
+    try:
+        conv = conversations_store.create_group(
+            name=req.name, alias=req.alias, member_uids=member_uids, created_by=authed.uid
+        )
+    except InvalidAlias as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except AlreadyExists as exc:
+        raise HTTPException(status_code=409, detail="alias already taken") from exc
+
+    _create_missing_allow_edges(conv.uids)
+    return CreateGroupResponse(convKey=conv.convKey, alias=req.alias)
+
+
+class AddMemberRequest(BaseModel):
+    uid: str
+
+
+@router.post("/{alias}/members", status_code=200)
+def add_group_member(
+    alias: str,
+    req: AddMemberRequest,
+    authed: Annotated[AuthedUser, Depends(require_user)],
+) -> Conversation:
+    group = conversations_store.get_by_alias(alias)
+    if group is None:
+        raise HTTPException(status_code=404, detail="no such group")
+    if authed.uid not in group.uids:
+        raise HTTPException(status_code=403, detail="not a member of this group")
+    if users_store.get_user(req.uid) is None:
+        raise HTTPException(status_code=404, detail=f"no such user: {req.uid!r}")
+
+    updated = conversations_store.add_member(group.convKey, req.uid)
+    # Decision 2 again -- joining auto-creates the missing edges between the
+    # new member and every *existing* member (the new member's own pairing
+    # with `authed.uid` is covered by this too, since `authed.uid` is one of
+    # `updated.uids`).
+    _create_missing_allow_edges(updated.uids)
+    return updated
+
+
+@router.delete("/{alias}/members/me", status_code=200)
+def leave_group(
+    alias: str,
+    authed: Annotated[AuthedUser, Depends(require_user)],
+) -> Conversation:
+    group = conversations_store.get_by_alias(alias)
+    if group is None:
+        raise HTTPException(status_code=404, detail="no such group")
+    if authed.uid not in group.uids:
+        raise HTTPException(status_code=404, detail="not a member of this group")
+    return conversations_store.remove_member(group.convKey, authed.uid)
 
 
 # ---------------------------------------------------------------------------

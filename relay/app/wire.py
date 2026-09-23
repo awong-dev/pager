@@ -321,6 +321,12 @@ class DownEnvelope(BaseModel):
     kind: Literal["msg", "loc_req"] = "msg"
     from_: str | None = Field(default=None, alias="from")
     body: str | None = None
+    # docs/GROUP_CHAT_DESIGN.md §4, docs/PROTOCOL.md §3.1: the author's alias
+    # on a `msg` belonging to a group conversation, where `from` names the
+    # *group* instead of a person -- absent on every one-to-one page (byte-
+    # identical to today) and never on a `loc_req` (group `/locate` is out of
+    # scope).
+    sndr: str | None = None
     ack: str | None = None
 
     @field_validator("id")
@@ -343,6 +349,13 @@ class DownEnvelope(BaseModel):
             raise ValueError("invalid 'from' alias format")
         return value
 
+    @field_validator("sndr")
+    @classmethod
+    def _check_sndr(cls, value: str | None) -> str | None:
+        if value is not None and not is_valid_alias(value):
+            raise ValueError("invalid 'sndr' alias format")
+        return value
+
     @model_validator(mode="after")
     def _check_shape(self) -> DownEnvelope:
         if self.ack is not None:
@@ -357,6 +370,9 @@ class DownEnvelope(BaseModel):
             if self.body:
                 # §3.2: a loc_req has no body.
                 raise ValueError("loc_req down envelope must not carry a body")
+            if self.sndr is not None:
+                # §4 (group chat): `sndr` is only ever on a `msg`.
+                raise ValueError("loc_req down envelope must not carry 'sndr'")
         else:
             if not self.body:
                 raise ValueError("msg down envelope requires a non-empty body")
@@ -459,21 +475,29 @@ def build_down_payload(
     v: int = 1,
     kind: Literal["msg", "loc_req"] = "msg",
     from_: str = "parent",
+    sndr: str | None = None,
 ) -> bytes:
-    """Minified UTF-8 JSON. Field order v,id,ts,kind,from,body,ack per §3.1
-    (publishers SHOULD emit `kind` right after `ts`; `kind` is omitted
+    """Minified UTF-8 JSON. Field order v,id,ts,kind,from,sndr,body,ack per
+    §3.1 (publishers SHOULD emit `kind` right after `ts`; `kind` is omitted
     entirely when it is the default `msg`, per §3.1's "SHOULD omit kind
     when it is msg"). §3.2: a `loc_req` down envelope has no `body`; a `msg`
     down envelope, conversely, always requires a real (non-empty) body --
     `DownEnvelope` rejects an empty body for `kind="msg"`, so building one
     here would silently produce a payload the device drops as malformed
-    (§3.4)."""
+    (§3.4). `sndr` (docs/GROUP_CHAT_DESIGN.md §4) is omitted entirely when
+    absent -- the default -- so every existing (DM) call site's output is
+    byte-identical; passing it with `kind="loc_req"` raises, mirroring
+    `DownEnvelope`'s own shape rule."""
     if kind != "loc_req" and not body:
         raise ValueError("msg down payload requires a non-empty body")
+    if kind == "loc_req" and sndr is not None:
+        raise ValueError("loc_req down payload must not carry 'sndr'")
     obj: dict[str, Any] = {"v": v, "id": msg_id, "ts": ts}
     if kind != "msg":
         obj["kind"] = kind
     obj["from"] = from_
+    if sndr is not None:
+        obj["sndr"] = sndr
     if kind != "loc_req":
         obj["body"] = body
     obj["ack"] = None

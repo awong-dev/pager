@@ -78,6 +78,38 @@ Step 4 (inline delivery) calls straight into `app/backends/*` through the
 kind -> Backend registry (`app/backends/registry.py`); each backend module
 owns its own delivery-state transaction (see `backends/base.py`'s
 docstring), so this module never touches `deliveries.*` directly.
+
+**Group fan-out** (docs/GROUP_CHAT_DESIGN.md §3): `send()` checks, before
+any of the above, whether `recipient_alias` resolves to a *group*
+conversation (`app/store/conversations.py:get_by_alias`) rather than a user.
+If so, `_send_group` takes over entirely: recipients = the group's members
+minus the sender (403-equivalent `RejectedRecipient(reason="not_member")` if
+the sender isn't one of them), one `allocate_seq()` call mints a `seq`
+shared by every copy, and every per-recipient `create_message` call carries
+the group's `convKey`, that one `seq`, a shared `groupMsgId` and the
+sender's alias. The allow-list gate still runs per recipient exactly as in
+the DM path -- **group membership is not a substitute for an allow edge**
+(docs/GROUP_CHAT_DESIGN.md §3 step 5): a missing edge drops that one
+recipient (logged `SECURITY`) without touching the others. The self-loop
+guard in `_create_and_deliver` is exercised the same way it always is (and
+stays a no-op here, since the sender is already excluded from the recipient
+set).
+
+`groupMsgId`: when this call carries a `wire_id` (a device-originated `/up`
+with `to: <group alias>`, which already has one -- its own envelope id),
+`groupMsgId` is set *to that same value* rather than a freshly minted one.
+This is a deliberate reading of docs/GROUP_CHAT_DESIGN.md §3's "device sends
+already carry a wireId" beyond what it says outright: minting a separate
+random `groupMsgId` on every call would mean a QoS-1 redelivery that repairs
+a partial fan-out mints a *different* `groupMsgId` for the copies it
+creates than the ones that already landed on the first attempt, breaking
+"one id shared by every copy of one logical group message" (§2) for exactly
+the retry case §3's "Failure modes" section says this is supposed to repair.
+Reusing `wire_id` makes a device-originated group send's `groupMsgId`
+idempotent under redelivery, matching its message-document dedup (`wireIds`)
+for free. A web-originated send (no incoming `wire_id`) mints a fresh
+`groupMsgId` and, per §3's text, uses it as the per-recipient `wireIds`
+dedup key too -- see `_send_group`'s body for exactly where.
 """
 
 from __future__ import annotations
@@ -90,17 +122,20 @@ from typing import Literal
 from app.backends.base import Backend, DeliverResult
 from app.backends.registry import build_registry
 from app.broker import BrokerClient
+from app.ids import new_id
 from app.store import allow as allow_store
 from app.store import backends as backends_store
+from app.store import conversations as conversations_store
 from app.store import devices as devices_store
 from app.store import messages as messages_store
 from app.store import users as users_store
 from app.store.backends import Backend as BackendRow
+from app.store.conversations import Conversation
 from app.store.messages import Delivery, Message, MessageKind
 
 logger = logging.getLogger("relay.routing")
 
-RejectReason = Literal["unknown_alias", "not_allowed"]
+RejectReason = Literal["unknown_alias", "not_allowed", "not_member"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,6 +180,22 @@ class Routing:
         ts: int | None = None,
     ) -> SendResult:
         ts = ts if ts is not None else int(time.time())
+
+        if recipient_alias is not None:
+            group = conversations_store.get_by_alias(recipient_alias)
+            if group is not None:
+                return self._send_group(
+                    sender_uid=sender_uid,
+                    group=group,
+                    kind=kind,
+                    body=body,
+                    loc=loc,
+                    origin_backend_kind=origin_backend_kind,
+                    origin_backend_id=origin_backend_id,
+                    wire_id=wire_id,
+                    ts=ts,
+                )
+
         candidates, rejected = self._candidate_recipients(sender_uid, recipient_alias, device_id)
 
         created: list[Message] = []
@@ -199,6 +250,77 @@ class Routing:
         if default_uid is not None:
             return [default_uid], []
         return allow_store.allowed_recipients(sender_uid), []
+
+    # ---- group fan-out (docs/GROUP_CHAT_DESIGN.md §3) ----
+
+    def _send_group(
+        self,
+        *,
+        sender_uid: str,
+        group: Conversation,
+        kind: MessageKind,
+        body: str | None,
+        loc: dict | None,
+        origin_backend_kind: str,
+        origin_backend_id: str | None,
+        wire_id: str | None,
+        ts: int,
+    ) -> SendResult:
+        if sender_uid not in group.uids:
+            logger.warning(
+                "SECURITY sender %s is not a member of group %s (alias=%r)",
+                sender_uid,
+                group.convKey,
+                group.alias,
+            )
+            return SendResult(
+                messages=[],
+                rejected=[
+                    RejectedRecipient(alias=group.alias, uid=sender_uid, reason="not_member")
+                ],
+            )
+
+        sender = users_store.get_user(sender_uid)
+        sender_alias = sender.alias if sender is not None else sender_uid
+
+        seq = messages_store.allocate_seq()
+        # See this module's docstring for why a device-originated send
+        # (wire_id already given) reuses it as groupMsgId rather than
+        # minting a second, independent id.
+        group_msg_id = wire_id if wire_id is not None else new_id("gm_")
+
+        created: list[Message] = []
+        rejected: list[RejectedRecipient] = []
+        for recipient_uid in sorted(uid for uid in group.uids if uid != sender_uid):
+            if not allow_store.is_message_allowed(sender_uid, recipient_uid):
+                logger.warning(
+                    "SECURITY sender %s not allowed to message group member %s (group=%s)",
+                    sender_uid,
+                    recipient_uid,
+                    group.convKey,
+                )
+                rejected.append(
+                    RejectedRecipient(alias=group.alias, uid=recipient_uid, reason="not_allowed")
+                )
+                continue
+            msg = self._create_and_deliver(
+                sender_uid=sender_uid,
+                recipient_uid=recipient_uid,
+                kind=kind,
+                body=body,
+                loc=loc,
+                origin_backend_kind=origin_backend_kind,
+                origin_backend_id=origin_backend_id,
+                wire_id=group_msg_id,
+                ts=ts,
+                conv_key=group.convKey,
+                seq=seq,
+                group_msg_id=group_msg_id,
+                sender_alias=sender_alias,
+            )
+            if msg is not None:
+                created.append(msg)
+        return SendResult(messages=created, rejected=rejected)
 
     def redeliver_pager(self, msg: Message, device_id: str) -> bool:
         """Re-invokes the `pager` backend's `deliver()` for `msg`'s delivery
@@ -264,6 +386,10 @@ class Routing:
         origin_backend_id: str | None,
         wire_id: str | None,
         ts: int,
+        conv_key: str | None = None,
+        seq: int | None = None,
+        group_msg_id: str | None = None,
+        sender_alias: str | None = None,
     ) -> Message | None:
         # Self-loop guard only (see this module's docstring for why it is
         # scoped to recipient_uid == sender_uid rather than a blanket
@@ -318,6 +444,10 @@ class Routing:
             origin_backend_id=origin_backend_id,
             deliveries=deliveries,
             pending_device_ids=pending_device_ids,
+            conv_key=conv_key,
+            seq=seq,
+            group_msg_id=group_msg_id,
+            sender_alias=sender_alias,
         )
         if msg is None:
             # §5.2 step 3's dedup: this (wireId, recipient) pair was already

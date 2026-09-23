@@ -7,6 +7,7 @@ import json
 import pytest
 from pydantic import ValidationError
 
+from app import devauth, wirecbor
 from app.wire import (
     CellInfo,
     DownEnvelope,
@@ -526,6 +527,147 @@ def test_build_down_payload_msg_no_body_raises_before_producing_bad_json():
     reject as malformed."""
     with pytest.raises(ValueError):
         build_down_payload(msg_id="m_aaaaaaaa", ts=1_700_000_000, kind="msg")
+
+
+# ---- §3.1/§4 `sndr` (group chat, docs/GROUP_CHAT_DESIGN.md), task G3 ----
+
+
+def test_down_envelope_sndr_absent_is_valid_and_none():
+    """A DM page never carries `sndr` -- absent parses cleanly to `None`,
+    exactly today's shape."""
+    env = DownEnvelope.model_validate(
+        {"v": 1, "id": "m_aaaaaaaa", "ts": 1_700_000_000, "from": "mom", "body": "hi", "ack": None}
+    )
+    assert env.sndr is None
+
+
+def test_down_envelope_sndr_present_on_group_msg():
+    env = DownEnvelope.model_validate(
+        {
+            "v": 1,
+            "id": "m_aaaaaaaa",
+            "ts": 1_700_000_000,
+            "from": "family",
+            "sndr": "mom",
+            "body": "hi",
+            "ack": None,
+        }
+    )
+    assert env.sndr == "mom"
+    assert env.from_ == "family"
+
+
+def test_down_envelope_invalid_sndr_alias_is_malformed():
+    with pytest.raises(ValidationError):
+        DownEnvelope.model_validate(
+            {
+                "v": 1,
+                "id": "m_aaaaaaaa",
+                "ts": 1_700_000_000,
+                "from": "family",
+                "sndr": "Bad Alias!",
+                "body": "hi",
+                "ack": None,
+            }
+        )
+
+
+def test_down_envelope_sndr_on_loc_req_is_malformed():
+    """§4: `sndr` only ever appears on a `msg` -- group `/locate` is out of
+    scope, so a `loc_req` carrying it is malformed."""
+    with pytest.raises(ValidationError):
+        DownEnvelope.model_validate(
+            {
+                "v": 1,
+                "id": "m_aaaaaaaa",
+                "ts": 1_700_000_000,
+                "kind": "loc_req",
+                "from": "mom",
+                "sndr": "mom",
+                "ack": None,
+            }
+        )
+
+
+def test_build_down_payload_omits_sndr_by_default():
+    raw = build_down_payload(msg_id="m_aaaaaaaa", ts=1_700_000_000, body="hi", from_="mom")
+    assert "sndr" not in json.loads(raw)
+
+
+def test_build_down_payload_dm_bytes_byte_identical_regardless_of_sndr_support():
+    """Pins the exact bytes of an ordinary (DM) down payload -- adding
+    `sndr` support must not change a single byte of a page that doesn't use
+    it."""
+    raw = build_down_payload(msg_id="m_aaaaaaaa", ts=1_700_000_000, body="hi", from_="mom")
+    assert raw == b'{"v":1,"id":"m_aaaaaaaa","ts":1700000000,"from":"mom","body":"hi","ack":null}'
+
+
+def test_build_down_payload_with_sndr_round_trips_and_orders_after_from():
+    raw = build_down_payload(
+        msg_id="m_aaaaaaaa", ts=1_700_000_000, body="hi", from_="family", sndr="mom"
+    )
+    obj = json.loads(raw)
+    assert obj["sndr"] == "mom"
+    # Field order: from, then sndr, then body (docs/PROTOCOL.md's amended
+    # "SHOULD emit" order: sndr takes the slot `to` would occupy).
+    keys = list(obj.keys())
+    assert keys.index("from") < keys.index("sndr") < keys.index("body")
+    DownEnvelope.model_validate(obj)
+
+
+def test_build_down_payload_sndr_on_loc_req_raises():
+    with pytest.raises(ValueError):
+        build_down_payload(msg_id="m_aaaaaaaa", ts=1_700_000_000, kind="loc_req", sndr="mom")
+
+
+def test_group_down_page_carries_sndr_in_both_encodings():
+    raw = build_down_payload(
+        msg_id="m_aaaaaaaa", ts=1_700_000_000, body="hi", from_="family", sndr="mom"
+    )
+    obj = json.loads(raw)
+    assert obj["sndr"] == "mom"
+
+    cbor_bytes = wirecbor.encode(obj)
+    assert wirecbor.KEYMAP["sndr"] == 51
+    decoded = wirecbor.decode(cbor_bytes)
+    assert decoded["sndr"] == "mom"
+    assert decoded["from"] == "family"
+
+
+def test_down_worst_case_group_message_signed_fits_640_bytes_both_encodings():
+    """docs/GROUP_CHAT_DESIGN.md §3.3: the worst-case signed group `/down
+    msg` -- 16-char id, 16-char `from` (the group alias), 16-char `sndr`
+    (the author's alias), body at 160 code points / 320 UTF-8 bytes -- fits
+    under the 640-byte hard limit in both encodings, matching §3.3's own
+    ~505-byte (signed JSON) figure. Uses the real `app.devauth` signer (the
+    same one `app/broker.py`'s `publish_down` calls), so this is the actual
+    production wire size, not an estimate."""
+    body = "ñ" * 160  # 160 code points, 320 UTF-8 bytes -- validate_body's
+    # heaviest legal body shape, same as test_up_worst_case_up_message_...
+    obj = {
+        "v": 1,
+        "id": "m" * 16,
+        "ts": 1_700_000_000,
+        "from": "g" * 16,
+        "sndr": "s" * 16,
+        "body": body,
+        "n": 2**53 - 1,  # worst-case 52-bit replay counter (§14.2)
+        "ack": None,
+    }
+    key = b"k" * 32
+    topic = "pager/pgr-0001/down"
+
+    json_signed = devauth.sign_json(key, topic, obj)
+    assert len(json_signed) <= 640
+    assert len(json_signed) > 400  # sanity: a near-worst-case payload
+
+    cbor_signed = devauth.sign_cbor(key, topic, obj)
+    assert len(cbor_signed) <= 640
+
+    # The unsigned shape (sans `n`, which DownEnvelope doesn't model -- it's
+    # bolted on at sign time, same as every other down envelope) is a valid
+    # group `msg`.
+    DownEnvelope.model_validate({k: v for k, v in obj.items() if k != "n"})
 
 
 # ---- §13.2 LocEnvelope ----

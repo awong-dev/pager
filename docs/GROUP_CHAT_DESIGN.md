@@ -201,8 +201,10 @@ The 640-byte limit does not move and no other payload grows.
 the chat header. `sndr` is the per-message author line inside the thread. The device needs nothing
 else — **no member list, ever** — and it never fans out: one `/up` with `to: <group alias>`, relay
 does the rest. The group appears in the book as a contact `{a: <group alias>, n: <group name>,
-t: "web"}` (`relay/app/devcfg.py:197-211` gains groups; the ≤10 cap and
-`_assert_within_envelope_limit` at `:240-272` already protect the envelope).
+t: "grp"}` (amended 23 Sep, firmware review: the pick screen labels a row from `book_contact_t.type`
+verbatim, so a group needs its own type rather than reusing `web` — `t` gains a fourth value, `grp`,
+docs/PROTOCOL.md §3.1's `c[].t` row and §10's `c[]` key list) (`relay/app/devcfg.py:197-211` gains
+groups; the ≤10 cap and `_assert_within_envelope_limit` at `:240-272` already protect the envelope).
 
 **What today's firmware does with a page carrying `sndr`: ignores it, verified.** The `/down` CBOR
 parse loop's `default:` arm calls `cbor_r_skip()` on any key it does not know
@@ -334,7 +336,7 @@ this document §4.
 **Do:** for a group copy, `from` = the group alias and `sndr` = `msg.senderAlias`; **`body` is
 untouched and never prefixed or truncated**. Add `sndr` to the CBOR keymap as key 51 and to the JSON
 builder's field order (after `to`, before `ack`). Omit `sndr` entirely on DM pages. List the owner's
-groups as book contacts (`t: "web"`, name = group name) inside the existing ≤10 cap.
+groups as book contacts (`t: "grp"`, name = group name) inside the existing ≤10 cap.
 **Verify:** DM pages byte-identical to today (assert the exact bytes for one); a group page carries
 `sndr` in both encodings; a worst-case group page (16-char `id`, 16-char `from`, 16-char `sndr`,
 160-cp/320-byte `body`, signed) asserts ≤640 bytes and matches §3.3's ≈505 figure;

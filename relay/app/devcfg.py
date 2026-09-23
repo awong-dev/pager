@@ -91,6 +91,7 @@ from app.ids import new_message_id
 from app.store import allow as allow_store
 from app.store import backends as backends_store
 from app.store import contacts as contacts_store
+from app.store import conversations as conversations_store
 from app.store import devices as devices_store
 from app.store import users as users_store
 from app.wire import MAX_ENVELOPE_BYTES
@@ -194,6 +195,23 @@ def _contact_type_hint(uid: str) -> str:
     return "web"
 
 
+def _group_contacts(owner_uid: str) -> list[dict[str, Any]]:
+    """docs/GROUP_CHAT_DESIGN.md §4: every group `owner_uid` is a member of,
+    as a book contact -- `t: "grp"` (amended 23 Sep on firmware review: the
+    pick screen labels a row from `book_contact_t.type` verbatim, so a group
+    needs its own type distinct from `web`, docs/PROTOCOL.md §3.1's `c[].t`
+    row). A group with no `alias` yet (should not happen --
+    `conversations_store.create_group` always sets one in the same
+    transaction as the conversation doc -- but `alias` is optional on the
+    `Conversation` model because a DM conversation never has one) is
+    skipped rather than emitting an unaddressable contact."""
+    return [
+        {"a": conv.alias, "n": (conv.name or conv.alias)[:_BOOK_NAME_MAX_CODEPOINTS], "t": "grp"}
+        for conv in conversations_store.list_groups_for_member(owner_uid)
+        if conv.alias is not None
+    ]
+
+
 def _approved_contacts(owner_uid: str) -> list[dict[str, Any]]:
     contacts: list[dict[str, Any]] = []
     for uid in allow_store.allowed_recipients(owner_uid):
@@ -207,6 +225,7 @@ def _approved_contacts(owner_uid: str) -> list[dict[str, Any]]:
                 "t": _contact_type_hint(uid),
             }
         )
+    contacts.extend(_group_contacts(owner_uid))
     contacts.sort(key=lambda c: c["a"])
     return contacts[:MAX_APPROVED_CONTACTS]
 

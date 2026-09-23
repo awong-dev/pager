@@ -137,7 +137,7 @@ Base envelope:
 | `name` | string | `contact_req` only | ≤16 code points, ≤48 UTF-8 bytes | Contact display name (§4.2). |
 | `ph` | string | `contact_req` only | E.164 or absent | Phone number `+…` or alias reference (§4.2). |
 | `d` | string | `book` only | same regex as `from` | Default recipient alias (§4.3). |
-| `c` | array of objects | `book` only | ≤10 contacts | Approved contacts; each has `a` (alias), `n` (name ≤16 cp), `t` (type: `web`/`sms`/`chat`) (§4.3). |
+| `c` | array of objects | `book` only | ≤10 contacts | Approved contacts; each has `a` (alias), `n` (name ≤16 cp), `t` (type: `web`/`sms`/`chat`/`grp`, the last for a group conversation) (§4.3). |
 | `p` | array of objects | `book` only | ≤4 pending requests | Pending `contact_req`; each has `n` (name), `s` (status: `pend`/`no`) (§4.3). |
 | `more` | bool | `book` only | — | Reserved for chunking if the cap moves (§4.3). |
 | `cfg` | object | `/down` `cfg` kind only | — | Configuration map carrying `lock` (object with `clear` bool and `auto` int minutes; a dangling cross-reference to "§5.8" for its full shape predates this table's current section numbering and is flagged, not fixed, here), `ca` (v0.2, §4.4) and `sms` (v0.2, §3.6 — the SMS contact allow-list). |
@@ -154,7 +154,9 @@ Additional rules:
 - **Unknown fields MUST be ignored, not rejected.** This is the forward-compatibility rule that
   makes §11 additive.
 - Field order is unspecified; a receiver MUST NOT depend on it. Publishers SHOULD emit
-  `v,id,ts,kind,from,to,body,ack,…,n,sig` in that order to keep logs diffable. **`sig` MUST be
+  `v,id,ts,kind,from,to,sndr,body,ack,…,n,sig` in that order to keep logs diffable (`sndr`,
+  v0.3, only ever appears on a `/down msg` and takes the slot `to` would occupy on an up
+  envelope — the two never appear together on the same envelope). **`sig` MUST be
   the last pair** (§2.4).
 - A publisher SHOULD omit `kind` when it is `msg` and omit `to` when it has no recipient to name;
   both defaults are defined precisely so the common payload does not grow.
@@ -1300,7 +1302,7 @@ Devices emit CBOR (§3) with this integer keymap. The relay accepts both JSON (t
 0…268435455), `rsrp=4` (int, dBm, optional). Unknown sub-keys are ignored, per §3.1's usual
 forward-compatibility rule.
 
-`c[]` contact object (inside `/down` `book`): `a=0` (alias), `n=1` (name), `t=2` (type web/sms/chat).
+`c[]` contact object (inside `/down` `book`): `a=0` (alias), `n=1` (name), `t=2` (type web/sms/chat/grp).
 
 `p[]` pending request object (inside `/down` `book`): `n=0` (name), `s=1` (status pend/no).
 

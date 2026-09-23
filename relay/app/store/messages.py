@@ -92,6 +92,12 @@ class Message(BaseModel):
     createdAt: datetime | None = None
     deliveries: dict[str, Delivery] = {}
     pendingDeviceIds: list[str] = []
+    # docs/GROUP_CHAT_DESIGN.md §2: one id shared by every copy of one
+    # logical group message (web dedupe key / push collapse key), and the
+    # author's alias, denormalised so the pager page and the push payload
+    # never need a `users/{uid}` read per delivery. Both `None` on a DM copy.
+    groupMsgId: str | None = None
+    senderAlias: str | None = None
 
 
 class Conversation(BaseModel):
@@ -99,6 +105,12 @@ class Conversation(BaseModel):
 
     convKey: str
     uids: list[str]
+    # docs/GROUP_CHAT_DESIGN.md §2: absent MUST be read as 'dm' -- every
+    # conversation document written before this field existed is a DM.
+    kind: Literal["dm", "group"] = "dm"
+    name: str | None = None
+    alias: str | None = None
+    createdBy: str | None = None
     lastMessageAt: datetime | None = None
     lastPreview: str = ""
     unread: dict[str, int] = {}
@@ -106,6 +118,14 @@ class Conversation(BaseModel):
 
 def conv_key(uid_a: str, uid_b: str) -> str:
     return "_".join(sorted([uid_a, uid_b]))
+
+
+# `create_message` below takes a `conv_key` keyword argument (a group send's
+# override of the derived DM key, docs/GROUP_CHAT_DESIGN.md §3) which shadows
+# this module-level function's name within that function's body -- this
+# alias is what lets it still call the derivation for the default (no
+# override given) case.
+_derive_conv_key = conv_key
 
 
 def _messages():
@@ -124,6 +144,31 @@ def _meta_ref():
     return get_db().collection("settings").document("meta")
 
 
+def allocate_seq() -> int:
+    """Standalone version of the read-then-increment on
+    `settings/meta.seqCounter` that `create_message` normally does inline --
+    its own transaction, used by a group send's T1
+    (docs/GROUP_CHAT_DESIGN.md §3) to mint *one* `seq` shared by every
+    fan-out copy. Each of T2..Tn then passes that value straight into
+    `create_message` via its `seq` keyword argument instead of reading/
+    incrementing `settings/meta` itself, which is what makes every member's
+    `orderBy(seq)` agree on one order for one logical group message."""
+    meta_ref = _meta_ref()
+
+    def _txn(transaction: Transaction) -> int:
+        meta_snap = meta_ref.get(transaction=transaction)
+        seq = ((meta_snap.get("seqCounter") if meta_snap.exists else 0) or 0) + 1
+        if meta_snap.exists:
+            transaction.update(meta_ref, {"seqCounter": seq})
+        else:
+            transaction.set(
+                meta_ref, {"schemaVersion": 2, "lastSweepAt": None, "seqCounter": seq}
+            )
+        return seq
+
+    return run_transaction(_txn)
+
+
 def create_message(
     *,
     sender_uid: str,
@@ -137,14 +182,41 @@ def create_message(
     origin_backend_id: str | None = None,
     deliveries: dict[str, dict] | None = None,
     pending_device_ids: list[str] | None = None,
+    conv_key: str | None = None,
+    uids: list[str] | None = None,
+    seq: int | None = None,
+    group_msg_id: str | None = None,
+    sender_alias: str | None = None,
 ) -> Message | None:
     """One transaction: dedup on `wireId` (if given), increment
-    `settings/meta.seqCounter`, create the message, upsert the conversation
-    summary. Returns `None` if `wire_id` was already recorded for this
-    recipient (dedup fired, no document created)."""
+    `settings/meta.seqCounter` (unless `seq` is given -- see below), create
+    the message, upsert the conversation summary. Returns `None` if
+    `wire_id` was already recorded for this recipient (dedup fired, no
+    document created).
+
+    Four keyword arguments exist only for a group copy
+    (docs/GROUP_CHAT_DESIGN.md §3); every default below reproduces today's
+    DM behaviour exactly:
+
+    - `conv_key`: the group's minted convKey, in place of the derived
+      `conv_key(sender_uid, recipient_uid)` pair key.
+    - `uids`: this message document's own `uids` field. Per §2 this is
+      *always* the `[senderUid, recipientUid]` pair, group copy or not --
+      the parameter exists so a group-send caller can pass that pair
+      explicitly alongside `conv_key`/`seq`/`group_msg_id` rather than the
+      function silently deriving one input while trusting the caller for
+      the other three.
+    - `seq`: when given (allocated once, up front, by `allocate_seq()`),
+      used as-is and `settings/meta.seqCounter` is not read or written by
+      this call at all -- T2..Tn of a group send never touch it, only T1
+      does. When omitted, behaves exactly as before: read-then-increment
+      in this same transaction.
+    - `group_msg_id` / `sender_alias`: written straight through to the new
+      `groupMsgId`/`senderAlias` message fields (`None` on a DM copy).
+    """
     msg_id = new_id("m_")
-    key = conv_key(sender_uid, recipient_uid)
-    uids = sorted([sender_uid, recipient_uid])
+    key = conv_key if conv_key is not None else _derive_conv_key(sender_uid, recipient_uid)
+    pair = uids if uids is not None else sorted([sender_uid, recipient_uid])
     msg_ref = _messages().document(msg_id)
     conv_ref = _conversations().document(key)
     meta_ref = _meta_ref()
@@ -153,12 +225,12 @@ def create_message(
 
     def _txn(transaction: Transaction) -> None:
         # Firestore transactions require every read before any write is
-        # staged (the client enforces this locally) -- so both reads happen
+        # staged (the client enforces this locally) -- so every read happens
         # first, and every write (including the wireId dedup `create()`) is
         # staged afterwards. The dedup guarantee is unaffected: `create()`
         # still fails the whole transaction at commit if the document
         # exists by then, which is what matters.
-        meta_snap = meta_ref.get(transaction=transaction)
+        meta_snap = None if seq is not None else meta_ref.get(transaction=transaction)
         conv_snap = conv_ref.get(transaction=transaction)
 
         if wire_ref is not None:
@@ -174,20 +246,23 @@ def create_message(
             # doc is gone).
             transaction.create(wire_ref, {"messageId": msg_id, "createdAt": SERVER_TIMESTAMP})
 
-        seq = ((meta_snap.get("seqCounter") if meta_snap.exists else 0) or 0) + 1
-        if meta_snap.exists:
-            transaction.update(meta_ref, {"seqCounter": seq})
+        if seq is not None:
+            new_seq = seq
         else:
-            transaction.set(
-                meta_ref, {"schemaVersion": 2, "lastSweepAt": None, "seqCounter": seq}
-            )
+            new_seq = ((meta_snap.get("seqCounter") if meta_snap.exists else 0) or 0) + 1
+            if meta_snap.exists:
+                transaction.update(meta_ref, {"seqCounter": new_seq})
+            else:
+                transaction.set(
+                    meta_ref, {"schemaVersion": 2, "lastSweepAt": None, "seqCounter": new_seq}
+                )
 
         transaction.set(
             msg_ref,
             {
-                "seq": seq,
+                "seq": new_seq,
                 "convKey": key,
-                "uids": uids,
+                "uids": pair,
                 "senderUid": sender_uid,
                 "recipientUid": recipient_uid,
                 "kind": kind,
@@ -200,20 +275,33 @@ def create_message(
                 "createdAt": SERVER_TIMESTAMP,
                 "deliveries": deliveries or {},
                 "pendingDeviceIds": pending_device_ids or [],
+                "groupMsgId": group_msg_id,
+                "senderAlias": sender_alias,
             },
         )
 
         unread = dict(conv_snap.get("unread") or {}) if conv_snap.exists else {}
         unread[recipient_uid] = unread.get(recipient_uid, 0) + 1
-        conv_data = {
-            "uids": uids,
+        conv_data: dict[str, object] = {
             "lastMessageAt": SERVER_TIMESTAMP,
             "lastPreview": preview,
             "unread": unread,
         }
         if conv_snap.exists:
+            # Deliberately does NOT include "uids" here: for a DM this
+            # value never changes anyway (it's the same derived pair every
+            # time), but for a group conversation `uids` is the *member
+            # list*, already set by `app/store/conversations.py:create_group`
+            # -- overwriting it with `pair` (just sender+recipient) on every
+            # message would silently drop every other member from the
+            # conversation.
             transaction.update(conv_ref, conv_data)
         else:
+            # Only the DM path creates its own conversation doc lazily like
+            # this; a group conversation is created up front by
+            # `create_group`, so this branch's `uids: pair` is correct for
+            # DMs and not reachable in practice for a group send.
+            conv_data["uids"] = pair
             transaction.set(conv_ref, conv_data)
 
     try:

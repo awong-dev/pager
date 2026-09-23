@@ -36,6 +36,7 @@ from pydantic import BaseModel, ConfigDict
 
 from app.backends.base import DeliverResult, LinkStep
 from app.broker import BrokerClient
+from app.store import conversations as conversations_store
 from app.store import messages as messages_store
 from app.store import users as users_store
 from app.store.backends import Backend as BackendRow
@@ -47,18 +48,34 @@ logger = logging.getLogger("relay.backends.pager")
 SYSTEM_ALIAS = "system"
 
 
-def _build_down_obj(*, msg_id: str, ts: int, kind: str, from_: str, body: str | None) -> dict[str, Any]:
+def _build_down_obj(
+    *,
+    msg_id: str,
+    ts: int,
+    kind: str,
+    from_: str,
+    body: str | None,
+    sndr: str | None = None,
+) -> dict[str, Any]:
     """The §3.1/§3.2 down envelope's fields, as a plain dict for
     `BrokerClient.publish_down` (which adds `n`/`sig` itself, per S1.4).
     Mirrors `wire.build_down_payload`'s own field-omission rules (`kind`
     omitted when it is the default `msg`; `loc_req` never carries a `body`;
     `ack` is always present and `None`) without depending on that function,
     which returns pre-serialised JSON bytes rather than a dict and is
-    outside this task's `Files` list -- see docs/DEVICE_TASKS.md S1.4."""
+    outside this task's `Files` list -- see docs/DEVICE_TASKS.md S1.4.
+
+    `sndr` (docs/GROUP_CHAT_DESIGN.md §4) is the group-message author's
+    alias, in the field-order slot `to` would occupy on an up envelope
+    (§3.1's "SHOULD emit ... from,to,sndr,body,ack ..."); omitted entirely
+    when `None` (every DM page, and every `loc_req`), so a DM page's bytes
+    are unaffected by this field's existence."""
     obj: dict[str, Any] = {"v": 1, "id": msg_id, "ts": ts}
     if kind != "msg":
         obj["kind"] = kind
     obj["from"] = from_
+    if sndr is not None:
+        obj["sndr"] = sndr
     if kind != "loc_req":
         obj["body"] = body
     obj["ack"] = None
@@ -85,12 +102,14 @@ class PagerBackend:
             return DeliverResult(ok=False, state="failed", error="pager backend missing deviceId")
 
         down_kind = "loc_req" if msg.kind == "loc_req" else "msg"
+        from_alias, sndr_alias = self._from_and_sndr(msg, down_kind)
         obj = _build_down_obj(
             msg_id=msg.id,
             ts=msg.ts,
             kind=down_kind,
-            from_=self._sender_alias(msg.senderUid),
+            from_=from_alias,
             body=msg.body,
+            sndr=sndr_alias,
         )
         ok = self._broker.publish_down(device_id, obj)
         if ok:
@@ -114,3 +133,24 @@ class PagerBackend:
     def _sender_alias(sender_uid: str) -> str:
         user = users_store.get_user(sender_uid)
         return user.alias if user is not None else SYSTEM_ALIAS
+
+    @classmethod
+    def _from_and_sndr(cls, msg: Message, down_kind: str) -> tuple[str, str | None]:
+        """docs/GROUP_CHAT_DESIGN.md §4: on a group copy (`msg.groupMsgId`
+        set), `from` becomes the *group's* alias -- the thread identity the
+        device's address book and reply both key on -- and `sndr` is the
+        author, taken straight from `msg.senderAlias` (denormalised
+        specifically so this never needs a `users/{uid}` read per delivery,
+        see `app/store/messages.py`'s `Message.senderAlias` docstring). A DM
+        copy (`groupMsgId` absent, the overwhelming common case) is
+        unaffected: `from` is the sender's own alias and `sndr` is `None`,
+        byte-identical to every page built before this field existed. Never
+        set on a `loc_req` (group `/locate` is out of scope) even if a
+        caller somehow got here with one -- defensive, since `_send_group`
+        never sends a `loc_req`."""
+        if msg.groupMsgId is None or down_kind != "msg":
+            return cls._sender_alias(msg.senderUid), None
+        conv = conversations_store.get_conversation(msg.convKey)
+        if conv is not None and conv.alias is not None:
+            return conv.alias, msg.senderAlias
+        return cls._sender_alias(msg.senderUid), msg.senderAlias

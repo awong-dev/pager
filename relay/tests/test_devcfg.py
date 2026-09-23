@@ -28,6 +28,7 @@ from app.main import create_app
 from app.store import allow as allow_store
 from app.store import backends as backends_store
 from app.store import contacts as contacts_store
+from app.store import conversations as conversations_store
 from app.store import devices as devices_store
 from app.store import users as users_store
 from tests.conftest import (
@@ -211,6 +212,60 @@ def test_build_book_excludes_approved_requests_from_pending_list():
     obj = devcfg.build_book("pgr-b-7")
 
     assert obj["p"] == []
+
+
+def test_build_book_lists_owners_group_as_grp_contact():
+    """docs/GROUP_CHAT_DESIGN.md §4 (amended 23 Sep): a group the device's
+    owner belongs to is listed in the book as `t: "grp"`, distinct from
+    `web`/`sms`/`chat` -- the pick screen labels a row from
+    `book_contact_t.type` verbatim."""
+    _make_user("student8g", "student8g")
+    _make_pager_device("pgr-b-8g", "student8g")
+    _make_user("groupmate8g", "groupmate8g")
+    conversations_store.create_group(
+        name="Family", alias="fam-book", member_uids=["student8g", "groupmate8g"], created_by="student8g"
+    )
+
+    obj = devcfg.build_book("pgr-b-8g")
+
+    assert {"a": "fam-book", "n": "Family", "t": "grp"} in obj["c"]
+
+
+def test_build_book_group_contact_not_listed_for_non_member():
+    _make_user("student9g", "student9g")
+    _make_pager_device("pgr-b-9g", "student9g")
+    _make_user("m1-9g", "m1-9g")
+    _make_user("m2-9g", "m2-9g")
+    conversations_store.create_group(
+        name="Others", alias="fam-not-mine", member_uids=["m1-9g", "m2-9g"], created_by="m1-9g"
+    )
+
+    obj = devcfg.build_book("pgr-b-9g")
+
+    assert obj["c"] == []
+
+
+def test_build_book_caps_approved_contacts_at_ten_including_groups():
+    _make_user("student10g", "student10g")
+    _make_pager_device("pgr-b-10g", "student10g")
+    for i in range(8):
+        uid = f"contact10g_{i}"
+        _make_user(uid, f"c10g{i:02d}")
+        _approve("student10g", uid)
+    for i in range(4):
+        mate = f"groupmate10g_{i}"
+        _make_user(mate, mate)
+        conversations_store.create_group(
+            name=f"Group{i}",
+            alias=f"grp10g{i}",
+            member_uids=["student10g", mate],
+            created_by="student10g",
+        )
+
+    obj = devcfg.build_book("pgr-b-10g")
+
+    assert len(obj["c"]) == 10
+    assert any(c["t"] == "grp" for c in obj["c"])
 
 
 # ---------------------------------------------------------------------------

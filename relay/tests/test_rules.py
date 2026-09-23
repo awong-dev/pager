@@ -28,6 +28,7 @@ from app.store import allow as allow_store
 from app.store import backends as backends_store
 from app.store import cas as cas_store
 from app.store import cells as cells_store
+from app.store import conversations as conversations_store
 from app.store import device_secrets as device_secrets_store
 from app.store import devices as devices_store
 from app.store import messages as messages_store
@@ -667,3 +668,166 @@ def test_sms_contacts_field_not_client_writable(two_pairs):
         {"smsContacts": "hacked"},
     )
     assert resp_write.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# Group chat (docs/GROUP_CHAT_DESIGN.md §2, §8.5, task G5). No rule change:
+# a group conversation's `uids` is the member list and a group copy's
+# `uids` is still the sender/recipient pair, so `messages/{id}` and
+# `conversations/{k}`'s existing "party to this document"/"member of this
+# conversation" rules already cover both -- these tests are what proves
+# that rather than assuming it.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def group_convo():
+    """A 3-member group g1/g2/g3 (an outsider, g4, is unrelated to it) with
+    one logical group message from g1 -- two copies, `messages/{}` addressed
+    `g1->g2` and `g1->g3`, sharing one `groupMsgId`/`seq` and the group's
+    `convKey`."""
+    for uid, email, alias in (
+        ("g1", "g1@example.com", "galice"),
+        ("g2", "g2@example.com", "gbob"),
+        ("g3", "g3@example.com", "gcarol"),
+        ("g4", "g4@example.com", "goutsider"),
+    ):
+        fb_auth.create_user(uid=uid, email=email)
+        users_store.create_user(uid=uid, alias=alias, display_name=alias)
+
+    conv = conversations_store.create_group(
+        name="Family", alias="rules-fam", member_uids=["g1", "g2", "g3"], created_by="g1"
+    )
+    seq = messages_store.allocate_seq()
+    group_msg_id = "gm_rules1"
+    copy_to_g2 = messages_store.create_message(
+        sender_uid="g1",
+        recipient_uid="g2",
+        kind="text",
+        ts=1000,
+        body="hi",
+        conv_key=conv.convKey,
+        uids=sorted(["g1", "g2"]),
+        seq=seq,
+        group_msg_id=group_msg_id,
+        sender_alias="galice",
+    )
+    copy_to_g3 = messages_store.create_message(
+        sender_uid="g1",
+        recipient_uid="g3",
+        kind="text",
+        ts=1000,
+        body="hi",
+        conv_key=conv.convKey,
+        uids=sorted(["g1", "g3"]),
+        seq=seq,
+        group_msg_id=group_msg_id,
+        sender_alias="galice",
+    )
+    return conv, copy_to_g2, copy_to_g3
+
+
+def test_group_member_can_read_conversation_and_own_copy(group_convo):
+    conv, copy_to_g2, _copy_to_g3 = group_convo
+    token = mint_id_token("g2")
+    resp_conv = _get(f"conversations/{conv.convKey}", token)
+    assert resp_conv.status_code == 200
+    resp_msg = _get(f"messages/{copy_to_g2.id}", token)
+    assert resp_msg.status_code == 200
+
+
+def test_group_non_member_cannot_read_conversation_or_any_copy(group_convo):
+    conv, copy_to_g2, copy_to_g3 = group_convo
+    token = mint_id_token("g4")
+    assert _get(f"conversations/{conv.convKey}", token).status_code == 403
+    assert _get(f"messages/{copy_to_g2.id}", token).status_code == 403
+    assert _get(f"messages/{copy_to_g3.id}", token).status_code == 403
+
+
+def test_group_member_cannot_read_a_copy_addressed_to_a_different_member(group_convo):
+    """Per-copy visibility (docs/GROUP_CHAT_DESIGN.md §0, §2): a group copy's
+    own `uids` field is the sender/recipient *pair*, not the full member
+    list, so a member who isn't party to a particular copy can't read it --
+    even though they can read the group's `conversations/{k}` summary and
+    every copy addressed to *them*."""
+    _conv, _copy_to_g2, copy_to_g3 = group_convo
+    token = mint_id_token("g2")
+    resp = _get(f"messages/{copy_to_g3.id}", token)
+    assert resp.status_code == 403
+
+
+def test_group_thread_convkey_only_query_is_denied(group_convo):
+    """Same rule `test_thread_list_query_without_the_uids_filter_is_denied`
+    pins for a DM thread, exercised again for a group's minted `convKey`."""
+    conv, _copy_to_g2, _copy_to_g3 = group_convo
+    body = {
+        "structuredQuery": {
+            "from": [{"collectionId": "messages"}],
+            "where": {
+                "fieldFilter": {
+                    "field": {"fieldPath": "convKey"},
+                    "op": "EQUAL",
+                    "value": {"stringValue": conv.convKey},
+                }
+            },
+        }
+    }
+    resp = _run_query("", mint_id_token("g1"), body)
+    assert resp.status_code == 403, resp.text
+
+
+def test_group_sender_can_list_query_both_of_their_own_copies(group_convo):
+    """The sender's uid is in *every* copy's pair (docs/GROUP_CHAT_DESIGN.md
+    §2: "the sender holds N-1 copies of their own message"), so the same
+    `convKey` + `uids array-contains <self>` query the DM thread view uses
+    returns both copies to the sender -- this is exactly what the web
+    client's `groupMsgId` dedupe (§5) exists to collapse back into one
+    bubble; the rules layer's job is only to prove both reads are allowed."""
+    conv, _copy_to_g2, _copy_to_g3 = group_convo
+    body = {
+        "structuredQuery": {
+            "from": [{"collectionId": "messages"}],
+            "where": {
+                "compositeFilter": {
+                    "op": "AND",
+                    "filters": [
+                        {
+                            "fieldFilter": {
+                                "field": {"fieldPath": "convKey"},
+                                "op": "EQUAL",
+                                "value": {"stringValue": conv.convKey},
+                            }
+                        },
+                        {
+                            "fieldFilter": {
+                                "field": {"fieldPath": "uids"},
+                                "op": "ARRAY_CONTAINS",
+                                "value": {"stringValue": "g1"},
+                            }
+                        },
+                    ],
+                }
+            },
+        }
+    }
+    resp = _run_query("", mint_id_token("g1"), body)
+    assert resp.status_code == 200, resp.text
+    docs = [entry for entry in resp.json() if "document" in entry]
+    assert len(docs) == 2
+
+
+def test_former_group_member_keeps_old_copies_but_loses_the_summary(group_convo):
+    """docs/GROUP_CHAT_DESIGN.md §8.5: pin that a **former** member keeps
+    read access to copies they were party to (intended -- per-copy
+    visibility never depends on current membership) and loses the
+    conversation summary (which freezes their unread badge -- cosmetic, per
+    the same risk note)."""
+    conv, copy_to_g2, _copy_to_g3 = group_convo
+    conversations_store.remove_member(conv.convKey, "g2")
+    token = mint_id_token("g2")
+
+    resp_msg = _get(f"messages/{copy_to_g2.id}", token)
+    assert resp_msg.status_code == 200
+
+    resp_conv = _get(f"conversations/{conv.convKey}", token)
+    assert resp_conv.status_code == 403

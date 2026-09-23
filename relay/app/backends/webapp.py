@@ -22,6 +22,7 @@ from typing import Protocol
 from pydantic import BaseModel, ConfigDict
 
 from app.backends.base import DeliverResult, LinkStep
+from app.store import conversations as conversations_store
 from app.store import messages as messages_store
 from app.store import push_tokens as push_tokens_store
 from app.store import users as users_store
@@ -68,28 +69,63 @@ class WebappBackend:
         try:
             tokens = push_tokens_store.list_tokens(msg.recipientUid)
             if tokens:
-                # docs/SERVER_PLAN.md §7.6: the payload contract both the
-                # relay and the web service worker (`onBackgroundMessage`)
-                # honour. FCM data maps are string-only, so every value here
-                # is already a `str`. `senderAlias` falls back to the raw
-                # uid on a lookup miss (e.g. a deleted sender) rather than
-                # failing the push outright -- this send is best-effort
-                # (see the `except Exception` below).
-                sender = users_store.get_user(msg.senderUid)
-                sender_alias = sender.alias if sender is not None else msg.senderUid
-                self._fcm.send_data(
-                    tokens,
-                    {
-                        "kind": "message",
-                        "convKey": msg.convKey,
-                        "id": msg.id,
-                        "senderUid": msg.senderUid,
-                        "senderAlias": sender_alias,
-                        "title": sender_alias,
-                        "body": (msg.body or "")[:PREVIEW_MAX_CHARS],
-                        "url": f"/chat/{sender_alias}",
-                    },
-                )
+                # docs/SERVER_PLAN.md §7.6 / docs/GROUP_CHAT_DESIGN.md §6:
+                # the payload contract both the relay and the web service
+                # worker (`onBackgroundMessage`) honour. FCM data maps are
+                # string-only, so every value here is already a `str`.
+                is_group = msg.groupMsgId is not None
+                # docs/GROUP_CHAT_DESIGN.md §2: `senderAlias` is denormalised
+                # onto a group copy specifically so this never needs a
+                # `users/{uid}` read per delivery; a DM copy never sets it
+                # (it's `None`), so the lookup below is still the only
+                # source for a DM push, same as before this field existed.
+                # `sender_alias` falls back to the raw uid on a lookup miss
+                # (e.g. a deleted sender) rather than failing the push
+                # outright -- this send is best-effort (see the `except
+                # Exception` below).
+                if is_group and msg.senderAlias is not None:
+                    sender_alias = msg.senderAlias
+                else:
+                    sender = users_store.get_user(msg.senderUid)
+                    sender_alias = sender.alias if sender is not None else msg.senderUid
+
+                # §6: for a group copy, `title` = the group name and `url`
+                # names the group's own alias, not the sender's -- the
+                # thread this push should open is the group, not a DM with
+                # whoever happened to send this particular message. A DM
+                # copy is unaffected: both still key off `sender_alias`,
+                # byte-identical to before groups existed.
+                if is_group:
+                    conv = conversations_store.get_conversation(msg.convKey)
+                    title = conv.name if conv is not None and conv.name else sender_alias
+                    chat_alias = conv.alias if conv is not None and conv.alias else sender_alias
+                else:
+                    title = sender_alias
+                    chat_alias = sender_alias
+
+                data = {
+                    "kind": "message",
+                    "convKey": msg.convKey,
+                    "id": msg.id,
+                    "senderUid": msg.senderUid,
+                    "senderAlias": sender_alias,
+                    "title": title,
+                    "body": (msg.body or "")[:PREVIEW_MAX_CHARS],
+                    "url": f"/chat/{chat_alias}",
+                }
+                if msg.groupMsgId is not None:
+                    # §6: "One push per member copy, collapse key =
+                    # groupMsgId." `FCMClient.send_data`'s `data` map is the
+                    # only channel this seam has to the client -- there is no
+                    # separate FCM-protocol collapse-key parameter wired up
+                    # here (`app/backends/fcm.py`'s `send_data` takes a plain
+                    # string-value data map, nothing else) -- so the
+                    # collapse key travels as a data field the service
+                    # worker can key its own notification tag on. Absent
+                    # entirely on a DM push, same as `groupMsgId` is absent
+                    # on a DM message.
+                    data["groupMsgId"] = msg.groupMsgId
+                self._fcm.send_data(tokens, data)
         except Exception:
             # FCM is best-effort: the message is already visible to the
             # browser's Firestore listener regardless of whether the push

@@ -38,7 +38,9 @@ import cbor2
 # v0.2 additions 39-48 (44-47 are docs/V02_DESIGN.md §6's sms_log-only
 # fields: `peer`/`dir`/`st`/`sms_ts`), 49 is the `/loc` `cell` field
 # (§13.2 -- cell-tower location fallback), 50 is `/status`'s `link`
-# (docs/V02_DESIGN.md §9.5/§7, this task -- MQTT-session generation counter).
+# (docs/V02_DESIGN.md §9.5/§7, this task -- MQTT-session generation counter),
+# 51 is `/down msg`'s group-author field `sndr` (docs/GROUP_CHAT_DESIGN.md
+# §4, docs/PROTOCOL.md §3.1/§10 -- the next free integer after `link=50`).
 KEYMAP: dict[str, int] = {
     "v": 0,
     "id": 1,
@@ -99,6 +101,9 @@ KEYMAP: dict[str, int] = {
     # docs/V02_DESIGN.md §9.5/§7 (this task): `/status`'s MQTT-session
     # generation counter within a boot.
     "link": 50,
+    # docs/GROUP_CHAT_DESIGN.md §4 (v0.3): `/down msg`'s group-author alias,
+    # absent on every one-to-one page.
+    "sndr": 51,
 }
 REVERSE_KEYMAP: dict[int, str] = {v: k for k, v in KEYMAP.items()}
 

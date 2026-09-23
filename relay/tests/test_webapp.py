@@ -14,6 +14,7 @@ persisted *user* (for the `senderAlias` lookup) and push token.
 from __future__ import annotations
 
 from app.backends.webapp import WebappBackend
+from app.store import conversations as conversations_store
 from app.store import push_tokens as push_tokens_store
 from app.store import users as users_store
 from app.store.backends import Backend as BackendRow
@@ -106,3 +107,67 @@ def test_deliver_with_no_tokens_does_not_call_fcm():
     backend.deliver(msg, msg.deliveries["be1"], BackendRow(id="be1", kind="webapp"))
 
     assert fcm.calls == []
+
+
+# ---------------------------------------------------------------------------
+# Group copies -- docs/GROUP_CHAT_DESIGN.md §6, task G4.
+# ---------------------------------------------------------------------------
+
+
+def test_deliver_group_copy_uses_group_name_and_alias_and_collapse_key():
+    users_store.create_user(uid="galice", alias="galice-alias", display_name="G Alice")
+    users_store.create_user(uid="gbob", alias="gbob-alias", display_name="G Bob")
+    conv = conversations_store.create_group(
+        name="Family", alias="fam-push", member_uids=["galice", "gbob"], created_by="galice"
+    )
+    push_tokens_store.add_token("gbob", "tok_gbob")
+
+    fcm = _RecordingFCMClient()
+    backend = WebappBackend(fcm_client=fcm)
+    msg = _message(
+        convKey=conv.convKey,
+        senderUid="galice",
+        recipientUid="gbob",
+        uids=["galice", "gbob"],
+        groupMsgId="gm_push1",
+        senderAlias="galice-alias",
+    )
+    backend.deliver(msg, msg.deliveries["be1"], BackendRow(id="be1", kind="webapp"))
+
+    assert len(fcm.calls) == 1
+    tokens, data = fcm.calls[0]
+    assert tokens == ["tok_gbob"]
+    assert set(data.keys()) == {
+        "kind",
+        "convKey",
+        "id",
+        "senderUid",
+        "senderAlias",
+        "title",
+        "body",
+        "url",
+        "groupMsgId",
+    }
+    assert data["kind"] == "message"
+    assert data["convKey"] == conv.convKey
+    assert data["senderUid"] == "galice"
+    # denormalised straight off the message, no `users/{uid}` lookup needed.
+    assert data["senderAlias"] == "galice-alias"
+    assert data["title"] == "Family"
+    assert data["url"] == f"/chat/{conv.alias}"
+    assert data["groupMsgId"] == "gm_push1"
+
+
+def test_deliver_dm_copy_has_no_group_msg_id_key():
+    """The DM payload's key set is unchanged by the group feature existing
+    -- no `groupMsgId` key at all, not even an empty one."""
+    users_store.create_user(uid="alice", alias="alice-alias", display_name="Alice")
+    push_tokens_store.add_token("bob", "tok_bob")
+
+    fcm = _RecordingFCMClient()
+    backend = WebappBackend(fcm_client=fcm)
+    msg = _message()
+    backend.deliver(msg, msg.deliveries["be1"], BackendRow(id="be1", kind="webapp"))
+
+    _, data = fcm.calls[0]
+    assert "groupMsgId" not in data
