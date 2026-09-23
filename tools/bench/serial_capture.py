@@ -8,7 +8,10 @@ outfile = sys.argv[1]
 total = float(sys.argv[2])
 cmds = sorted([(float(a.split(':', 1)[0]), a.split(':', 1)[1]) for a in sys.argv[3:]])
 t0 = time.time(); i = 0; s = None; gaps = 0; absent = 0.0
-f = open(outfile, 'ab', buffering=0)
+# 'wb', not 'ab': on 23 Sep a re-used filename appended a new boot after an
+# old one and the seam was read as an unexplained reset and a failed check.
+# One capture, one file. Port drops within a run reopen the port, not the file.
+f = open(outfile, 'wb', buffering=0)
 ansi = re.compile(rb'\x1b\[[0-9;]*[A-Za-z]')
 while time.time() - t0 < total:
     now = time.time()
