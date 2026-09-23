@@ -66,6 +66,10 @@ export interface DeviceStatusDoc {
   // docs/V02_DESIGN.md §6 (device SMS): audit-queue entries dropped on the
   // pager before they could be uploaded. Absent on older firmware.
   smsLost?: number | null;
+  // docs/WIFI_DESIGN.md §6: which transport carried the most recent MQTT
+  // session, display/diagnosis only. Absent on firmware built before W7/W8
+  // (older firmware never sends `xport`) -- render nothing, not "undefined".
+  xport?: "lte" | "wifi" | null;
   updatedAt: Timestamp | null;
 }
 

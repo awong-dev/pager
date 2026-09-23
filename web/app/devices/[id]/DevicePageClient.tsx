@@ -58,7 +58,9 @@ import DeleteIcon from "@mui/icons-material/Delete";
 import AppShell from "@/components/AppShell";
 import DeviceTrustChip from "@/components/DeviceTrustChip";
 import RequireAuth from "@/components/RequireAuth";
+import WifiPanel from "@/components/WifiPanel";
 import { ApiError, api } from "@/lib/api";
+import { xportChipInfo } from "@/lib/deviceTrust";
 import { getFirestoreDb } from "@/lib/firebase";
 import {
   PHONE_E164_EXAMPLE,
@@ -247,6 +249,7 @@ function DeviceInner() {
   }
 
   const smsLost = device?.status?.smsLost ?? 0;
+  const xportChip = xportChipInfo(device?.status?.xport);
 
   return (
     <Stack spacing={2}>
@@ -258,6 +261,7 @@ function DeviceInner() {
           {device?.label ?? id} <Typography component="span" variant="body2" color="text.secondary">({id})</Typography>
         </Typography>
         <DeviceTrustChip tls={device?.status?.tls} caFp={device?.status?.caFp} />
+        {xportChip && <Chip size="small" label={xportChip.label} color={xportChip.color} />}
       </Stack>
 
       {deviceError && <Alert severity="warning">{deviceError}</Alert>}
@@ -268,6 +272,8 @@ function DeviceInner() {
           they could be uploaded.
         </Alert>
       )}
+
+      {id && id !== "_" && <WifiPanel deviceId={id} />}
 
       <Card variant="outlined">
         <CardContent>

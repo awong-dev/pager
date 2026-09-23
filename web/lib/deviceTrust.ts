@@ -60,3 +60,17 @@ export function locBackoffLabel(locBackoffS: number | null | undefined): string 
   const minutes = Math.max(1, Math.round(locBackoffS / 60));
   return `next GPS attempt allowed in ~${minutes} min`;
 }
+
+export interface XportChipInfo {
+  label: string;
+  color: "success" | "default";
+}
+
+/** `docs/WIFI_DESIGN.md` §6 / `WIFI_TASKS.md` W8: the transport chip beside
+ * the TLS chip. `null` means "render nothing" -- an absent `xport` (older
+ * firmware that predates W7/W8). */
+export function xportChipInfo(xport: "lte" | "wifi" | null | undefined): XportChipInfo | null {
+  if (xport === "wifi") return { label: "WiFi", color: "success" };
+  if (xport === "lte") return { label: "LTE", color: "default" };
+  return null;
+}
