@@ -379,6 +379,14 @@ void net_service_session(void);
  * `/status` `xport` field (docs/WIFI_DESIGN.md §6) has something to read. */
 net_xport_t net_xport_active(void);
 
+/* docs/WIFI_TASKS.md W5: the only writer of the transport seam's active
+ * transport (see net.cpp's own doc comment on this function for the full
+ * teardown/wait/bring-up contract). A no-op if `to` is already active.
+ * Callers today: main.c's debug-build `wifi on`/`wifi off` console commands
+ * only -- no automatic policy calls this in phase 1 (docs/WIFI_DESIGN.md
+ * §3: "nothing turns it on by itself"). */
+void net_xport_switch(net_xport_t to);
+
 /* docs/WIFI_TASKS.md W4: the three suppressions that used to gate
  * modes.c's net_service_session() call site (coverage duty cycle, location
  * route 2, a CA-apply trial -- all about the *modem*) now gate the LTE

@@ -61,3 +61,17 @@ CONFIG_WALTER_MODEM_MAX_TLS_PROFILES=6
 # data download); the loop feeds it every pass.
 CONFIG_ESP_TASK_WDT_PANIC=y
 CONFIG_ESP_TASK_WDT_TIMEOUT_S=60
+
+# docs/WIFI_TASKS.md W5: esp-mqtt over the ESP32-S3's own WiFi station.
+# WPA2-PSK STA only -- docs/WIFI_DESIGN.md §4 explicitly rejects a SoftAP
+# setup portal ("DEVICE_PLAN.md §3.0 already rejected ... at ~450 kB of
+# Wi-Fi stack"), and this device never runs a websocket transport (esp-mqtt
+# always dials the broker directly over TLS, same broker LTE already uses).
+# Both trimmed for flash headroom (design §8's flash risk; W0's own
+# before/after measurement never ran on this branch -- see the task report).
+# WPA3-Personal (CONFIG_ESP_WIFI_ENABLE_WPA3_SAE) and MQTT-over-SSL
+# (CONFIG_MQTT_TRANSPORT_SSL) are left at their ESP-IDF defaults (both `y`)
+# -- WPA3 costs nothing extra to leave enabled (a WPA2/WPA3 transition AP
+# still associates as WPA2) and MQTT-over-SSL is required.
+CONFIG_ESP_WIFI_SOFTAP_SUPPORT=n
+CONFIG_WS_TRANSPORT=n

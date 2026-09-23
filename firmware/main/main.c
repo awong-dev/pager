@@ -6,6 +6,7 @@
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "esp_system.h"
+#include "esp_sleep.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -29,6 +30,20 @@
 #include "setup.h"
 #include "sms.h"
 #include "ui.h"
+
+// docs/WIFI_TASKS.md W5: console control + wifisleeptest are debug-build
+// only (both live inside start_normal_console(), itself
+// PAGER_DEBUG_NO_LIGHT_SLEEP-gated, same as every other block below that
+// includes these three) -- release main.c never touches a WiFi symbol.
+// esp_wifi.h is only needed for wifisleeptest's own
+// esp_wifi_sta_get_ap_info() probe; wifi_sta.h's own API deliberately never
+// exposes a wifi_ap_record_t so ordinary callers stay decoupled from
+// esp_wifi's headers.
+#ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
+#include "wifi_sta.h"
+#include "wificred.h"
+#include "esp_wifi.h"
+#endif
 
 static const char *TAG = "school_pager";
 
@@ -872,6 +887,264 @@ static int cmd_disptest(int argc, char **argv)
     return 1;
 }
 
+// docs/WIFI_TASKS.md W5: `wifi set|clear|on|off|status|scan`. Debug build
+// only -- phase 1's manual selection policy (docs/WIFI_DESIGN.md §2/§3:
+// "the console turns it on; nothing turns it on by itself") lives entirely
+// here for now, not in wifi_policy.c (that module is pure/host-tested and
+// has no caller yet -- see this task's own report).
+#define WIFI_ON_IP_WAIT_MS 15000
+#define WIFI_ON_MQTT_WAIT_MS 10000
+
+static int wifi_do_set(int argc, char **argv)
+{
+    if (argc != 4) {
+        printf("usage: wifi set <ssid> <psk>\n");
+        return 1;
+    }
+    const char *ssid = argv[2];
+    const char *psk = argv[3];
+    size_t slen = strlen(ssid);
+    size_t plen = strlen(psk);
+    if (!wificred_valid_ssid(ssid, slen) || !wificred_valid_psk(psk, plen)) {
+        printf("wifi set: invalid ssid (1-32 bytes, no embedded NUL) or psk (8-63 bytes)\n");
+        return 1;
+    }
+    // Replace-wholesale (wificred.h): a console `wifi set` always carries
+    // exactly the one network phase 1 uses -- any second network previously
+    // stored via `cfg.wifi` is dropped, matching "the console is the
+    // phase-1 switch" framing (docs/WIFI_DESIGN.md §2).
+    wificred_candidate_t cand = { .ssid = ssid, .ssid_len = slen, .psk = psk, .psk_len = plen };
+    wificred_set_t set;
+    if (!wificred_apply_candidates(&cand, 1, &set) || !wificred_store(&set)) {
+        printf("wifi set: failed to store\n");
+        return 1;
+    }
+    printf("wifi: credentials stored for '%s' (psk <set>)\n", ssid);
+    return 0;
+}
+
+static int wifi_do_on(void)
+{
+    if (net_xport_active() == NET_XPORT_WIFI) {
+        printf("wifi: already on\n");
+        return 0;
+    }
+    if (wificred_count() == 0) {
+        printf("wifi: no credentials stored -- run `wifi set <ssid> <psk>` first\n");
+        return 1;
+    }
+    if (catrust_get_state() != CATRUST_PINNED) {
+        // Same sentence W7/W8's own 409 guard uses (docs/WIFI_DESIGN.md §5,
+        // docs/WIFI_TASKS.md W8) -- kept identical so the console and the
+        // web app never describe this refusal two different ways.
+        printf("wifi: this device is not reporting a verified TLS connection; push a CA first\n");
+        return 1;
+    }
+    if (!wifi_sta_start()) {
+        printf("wifi: station failed to start (see log)\n");
+        return 1;
+    }
+    if (!wifi_sta_associate()) {
+        printf("wifi: association could not be queued (see log)\n");
+        return 1;
+    }
+    int waited_ms = 0;
+    while (!wifi_sta_got_ip() && waited_ms < WIFI_ON_IP_WAIT_MS) {
+        vTaskDelay(pdMS_TO_TICKS(200)); // NEVER a tight busy-loop
+        waited_ms += 200;
+    }
+    if (!wifi_sta_got_ip()) {
+        printf("wifi: no IP after %ds (see log for association state)\n", WIFI_ON_IP_WAIT_MS / 1000);
+        return 1;
+    }
+
+    net_xport_switch(NET_XPORT_WIFI);
+
+    net_mqtt_status_t st = { 0 };
+    waited_ms = 0;
+    while (waited_ms < WIFI_ON_MQTT_WAIT_MS) {
+        net_get_mqtt_status(&st);
+        if (st.mqtt_connected) {
+            break;
+        }
+        vTaskDelay(pdMS_TO_TICKS(200));
+        waited_ms += 200;
+    }
+    // Persisted regardless of whether the MQTT session reached SUBSCRIBED
+    // in time -- `en` records the user's own choice (wificred.h), not
+    // whether this attempt happened to succeed.
+    wificred_set_enabled(true);
+
+    if (!st.mqtt_connected) {
+        printf("wifi: association/IP ok but MQTT did not reach SUBSCRIBED within %ds (see log)\n",
+               WIFI_ON_MQTT_WAIT_MS / 1000);
+        return 1;
+    }
+
+    int rssi = 0;
+    wifi_sta_get_rssi(&rssi);
+    char ip[16] = "";
+    wifi_sta_get_ip(ip, sizeof(ip));
+    printf("wifi: on (ip=%s rssi=%d, MQTT subscribed)\n", ip, rssi);
+    // Orchestrator addendum to docs/WIFI_TASKS.md W0/W5: W0 never measured a
+    // real heap watermark on this branch, so log it here instead, one INFO
+    // line, now that the WiFi station + TLS + esp-mqtt session is actually
+    // up -- W6's bench diffs this against modes_boot()'s own boot-time line.
+    ESP_LOGI(TAG, "heap after WiFi+TLS+MQTT up: free=%u minimum_free=%u",
+             (unsigned) esp_get_free_heap_size(), (unsigned) esp_get_minimum_free_heap_size());
+    return 0;
+}
+
+static int wifi_do_off(void)
+{
+    wificred_set_enabled(false);
+    if (net_xport_active() == NET_XPORT_WIFI) {
+        net_xport_switch(NET_XPORT_LTE);
+    }
+    wifi_sta_disassociate();
+    wifi_sta_stop(); // power effect: radio off, current returns to the LTE-only floor
+    printf("wifi: off (LTE)\n");
+    return 0;
+}
+
+static int wifi_do_status(void)
+{
+    wificred_net_t net;
+    bool have_creds = wificred_get(0, &net);
+    printf("wifi: %s, credentials %s\n", wificred_enabled() ? "enabled" : "disabled",
+           have_creds ? "set" : "unset");
+    if (have_creds) {
+        printf("  ssid: %s\n", net.ssid); // never the psk (wificred.h's own hard rule)
+    }
+    printf("  associated: %s\n", wifi_sta_associated() ? "yes" : "no");
+    int rssi = 0;
+    if (wifi_sta_get_rssi(&rssi)) {
+        printf("  rssi: %d dBm\n", rssi);
+    }
+    char ip[16] = "";
+    printf("  ip: %s\n", wifi_sta_get_ip(ip, sizeof(ip)) ? ip : "(none)");
+    int dtim = wifi_sta_get_dtim_period();
+    if (dtim >= 0) {
+        printf("  dtim: %d\n", dtim);
+    } else {
+        printf("  dtim: n/a (not exposed by esp_wifi's public API on this IDF version)\n");
+    }
+    printf("  transport: %s\n", net_xport_active() == NET_XPORT_WIFI ? "WIFI" : "LTE");
+    return 0;
+}
+
+static int wifi_do_scan(void)
+{
+    if (!wifi_sta_start()) {
+        printf("wifi scan: station failed to start (see log)\n");
+        return 1;
+    }
+    wifi_sta_scan_result_t results[16];
+    int n = wifi_sta_scan(results, (int) (sizeof(results) / sizeof(results[0])));
+    if (n < 0) {
+        printf("wifi scan: failed (see log)\n");
+        return 1;
+    }
+    printf("wifi scan: %d network(s)\n", n);
+    for (int i = 0; i < n; i++) {
+        printf("  %-32s rssi=%4d ch=%2u auth=%u\n", results[i].ssid, (int) results[i].rssi,
+               (unsigned) results[i].channel, (unsigned) results[i].authmode);
+    }
+    return 0;
+}
+
+static int cmd_wifi(int argc, char **argv)
+{
+    static const char *USAGE =
+        "usage: wifi set <ssid> <psk> | wifi clear | wifi on | wifi off | wifi status | wifi scan\n";
+    if (argc < 2) {
+        printf("%s", USAGE);
+        return 1;
+    }
+    if (strcmp(argv[1], "set") == 0) {
+        return wifi_do_set(argc, argv);
+    }
+    if (strcmp(argv[1], "clear") == 0) {
+        wificred_clear();
+        printf("wifi: credentials cleared\n");
+        return 0;
+    }
+    if (strcmp(argv[1], "on") == 0) {
+        return wifi_do_on();
+    }
+    if (strcmp(argv[1], "off") == 0) {
+        return wifi_do_off();
+    }
+    if (strcmp(argv[1], "status") == 0) {
+        return wifi_do_status();
+    }
+    if (strcmp(argv[1], "scan") == 0) {
+        return wifi_do_scan();
+    }
+    printf("%s", USAGE);
+    return 1;
+}
+
+// docs/WIFI_DESIGN.md §9, docs/WIFI_TASKS.md W5's own last step (run before
+// W6): does a manual esp_light_sleep_start() keep a WiFi association (and
+// its MQTT session) alive on this IDF if esp_sleep_enable_wifi_wakeup() is
+// armed and ESP_PD_DOMAIN_MODEM is left powered? The answer decides whether
+// W9 (CONFIG_PM_ENABLE) is needed at all (§9: "if yes ... the whole
+// PM_ENABLE risk evaporates"). Requires `wifi on` to have already brought a
+// WiFi MQTT session up to SUBSCRIBED. This is the SECOND esp_light_sleep_start()
+// call site in this tree (net.cpp's net_sleep() being the first) --
+// deliberately: it is a temporary bench experiment gated the same way
+// nettest/mqtttest are (PAGER_DEBUG_NO_LIGHT_SLEEP, "remove once
+// root-caused"/here, once §9 is answered), not a second production sleep
+// path.
+static int cmd_wifisleeptest(int argc, char **argv)
+{
+    (void) argv;
+    if (argc != 1) {
+        printf("usage: wifisleeptest -- no arguments; run `wifi on` first\n");
+        return 1;
+    }
+    if (net_xport_active() != NET_XPORT_WIFI) {
+        printf("wifisleeptest: WiFi is not the active transport -- run `wifi on` first\n");
+        return 1;
+    }
+    net_mqtt_status_t st;
+    net_get_mqtt_status(&st);
+    if (!st.mqtt_connected) {
+        printf("wifisleeptest: the WiFi MQTT session is not SUBSCRIBED yet -- check `wifi status` "
+               "and retry\n");
+        return 1;
+    }
+
+    modes_publish_status_now();
+    vTaskDelay(pdMS_TO_TICKS(500)); // let that publish clear before the first sleep cycle
+
+    esp_sleep_enable_wifi_wakeup();
+    esp_sleep_pd_config(ESP_PD_DOMAIN_MODEM, ESP_PD_OPTION_ON);
+
+    int survived = 0;
+    for (int cycle = 1; cycle <= 10; cycle++) {
+        if (cycle == 6) {
+            printf("wifisleeptest: cycle 6 -- send a page from the relay now\n");
+        }
+        esp_sleep_enable_timer_wakeup(5ULL * 1000000ULL);
+        esp_light_sleep_start();
+
+        wifi_ap_record_t rec;
+        esp_err_t ap_err = esp_wifi_sta_get_ap_info(&rec);
+        net_get_mqtt_status(&st);
+        printf("wifisleeptest: cycle %d: ap_info=%s rssi=%d mqtt_connected=%d\n", cycle,
+               (ap_err == ESP_OK) ? "OK" : "FAIL", (ap_err == ESP_OK) ? (int) rec.rssi : 0,
+               (int) st.mqtt_connected);
+        if (ap_err == ESP_OK && st.mqtt_connected) {
+            survived++;
+        }
+    }
+    printf("wifisleeptest: %d/10 cycles kept the association and the MQTT session up\n", survived);
+    printf("wifisleeptest: check the relay/EMQX log for whether the cycle-6 page arrived\n");
+    return (survived == 10) ? 0 : 1;
+}
+
 static void start_normal_console(void)
 {
     esp_console_repl_t *repl = NULL;
@@ -984,6 +1257,26 @@ static void start_normal_console(void)
         .func = &cmd_disptest,
     };
     ESP_ERROR_CHECK(esp_console_cmd_register(&disptest_cmd));
+
+    const esp_console_cmd_t wifi_cmd = {
+        .command = "wifi",
+        .help = "wifi set <ssid> <psk> | clear | on | off | status | scan -- docs/WIFI_TASKS.md "
+                 "W5: manual WiFi transport control (never turns on by itself; `wifi status` "
+                 "never prints the psk)",
+        .hint = NULL,
+        .func = &cmd_wifi,
+    };
+    ESP_ERROR_CHECK(esp_console_cmd_register(&wifi_cmd));
+
+    const esp_console_cmd_t wifisleeptest_cmd = {
+        .command = "wifisleeptest",
+        .help = "wifisleeptest -- docs/WIFI_DESIGN.md §9 experiment: 10x 5s light-sleep cycles "
+                 "with the WiFi association held, reporting whether it (and the MQTT session) "
+                 "survive each one. Requires `wifi on` first.",
+        .hint = NULL,
+        .func = &cmd_wifisleeptest,
+    };
+    ESP_ERROR_CHECK(esp_console_cmd_register(&wifisleeptest_cmd));
 
     ESP_ERROR_CHECK(esp_console_start_repl(repl));
     ESP_LOGD(TAG, "debug console REPL started in normal mode (PAGER_DEBUG_NO_LIGHT_SLEEP)");

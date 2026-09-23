@@ -66,6 +66,25 @@ typedef struct {
  * this as the (today, only) active transport. */
 const net_xport_ops_t *xport_lte_ops(void);
 
+/* Implemented in xport_wifi.c (docs/WIFI_TASKS.md W5): esp-mqtt over the
+ * ESP32-S3's own WiFi station (wifi_sta.c/.h), TLS via esp-tls/mbedtls,
+ * reusing ident_get_ca()'s pinned PEM and net_connect_guard/publish_quiet
+ * unchanged. Refuses to bring a session up (`.up()` returns false) unless
+ * catrust_get_state() == CATRUST_PINNED (docs/WIFI_DESIGN.md §5: no
+ * plaintext fallback on WiFi, ever). net_xport_switch() (net.cpp) is the
+ * only caller that selects this transport. */
+const net_xport_ops_t *xport_wifi_ops(void);
+
+/* net.cpp's own trampoline to the single callback registered via
+ * net_set_msg_cb() (net.h: "registers one callback that both transports
+ * call"). xport_wifi.c calls this instead of reaching into
+ * net_internal.h's s_msg_cb directly -- that header is deliberately
+ * restricted to net.cpp/xport_lte.cpp (its own module comment: "never ...
+ * a future xport_wifi.c"), the mechanical leftover of the W4 file split,
+ * not part of this vtable's own contract. No-op if no callback is
+ * registered yet. */
+void net_dispatch_msg(const char *topic, const char *body, uint16_t len);
+
 #ifdef __cplusplus
 }
 #endif

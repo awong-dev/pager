@@ -21,6 +21,7 @@
 #include "placeholder_ca.h"
 #include "net_connect_guard.h"
 #include "publish_quiet.h"
+#include "wifi_sta.h"
 
 #include "WalterModem.h"
 
@@ -995,13 +996,104 @@ extern "C" void net_set_lte_suppressed(bool suppressed)
     s_lte_suppressed = suppressed;
 }
 
+// docs/WIFI_DESIGN.md §2/§1, docs/WIFI_TASKS.md W5: the only writer of
+// s_active_xport besides net_init()'s own static initializer. Tears the old
+// transport's session down, waits (bounded) for its own DISCONNECTED, then
+// brings the new one up -- "at most one MQTT client object exists at a
+// time" is the hard invariant this function exists to hold (design §2/§8:
+// EMQX kicks the older session on a client-id collision otherwise, which
+// looks exactly like "pages stopped arriving").
+//
+// Deviation from docs/WIFI_TASKS.md W5's literal wording ("asserted"): a
+// real assert()/abort() here would let a console typo or a slow broker
+// crash a device that is otherwise fine on its old transport. This logs at
+// ERROR and proceeds with the switch instead -- the new transport's own
+// .up() starts a fresh client regardless, so a slow-to-disconnect old one
+// costs at most an EMQX-side kick (a delivery gap on the transport being
+// abandoned anyway), never a crash. Flagged for the architect.
+#define NET_XPORT_SWITCH_WAIT_US ((int64_t) 2 * 1000000)
+
+static const char *xport_name(net_xport_t x)
+{
+    return (x == NET_XPORT_WIFI) ? "WIFI" : "LTE";
+}
+
+extern "C" void net_xport_switch(net_xport_t to)
+{
+    if (to == s_active_xport) {
+        return;
+    }
+    net_xport_t from = s_active_xport;
+    const net_xport_ops_t *old_ops = s_xport_ops;
+
+    old_ops->down();
+
+    net_mqtt_status_t st = {};
+    int64_t deadline = esp_timer_get_time() + NET_XPORT_SWITCH_WAIT_US;
+    do {
+        old_ops->status(&st);
+        if (!st.mqtt_connected) {
+            break;
+        }
+        vTaskDelay(pdMS_TO_TICKS(50));
+    } while (esp_timer_get_time() < deadline);
+    if (st.mqtt_connected) {
+        ESP_LOGE(TAG, "xport switch %s -> %s: old transport still reports connected after %llds, "
+                      "switching anyway",
+                 xport_name(from), xport_name(to), (long long) (NET_XPORT_SWITCH_WAIT_US / 1000000));
+    }
+
+    s_active_xport = to;
+    s_xport_ops = (to == NET_XPORT_WIFI) ? xport_wifi_ops() : xport_lte_ops();
+    // Power effect: logged once per transport change (docs/WIFI_TASKS.md
+    // W5's own verify step) -- LTE keeps the modem's MQTT session (a TLS
+    // handshake, ~5kB); WIFI brings up esp-mqtt over the STA (a second,
+    // independent TLS handshake, no modem involvement at all).
+    ESP_LOGI(TAG, "xport: %s -> %s", xport_name(from), xport_name(to));
+
+    if (!s_xport_ops->up()) {
+        ESP_LOGI(TAG, "xport switch %s -> %s: new transport's up() failed (see its own log line)",
+                 xport_name(from), xport_name(to));
+    }
+}
+
 extern "C" void net_set_msg_cb(void (*cb)(const char *topic, const char *body, uint16_t len))
 {
     s_msg_cb = cb;
 }
 
+// docs/WIFI_TASKS.md W5: xport_wifi.c's own trampoline to s_msg_cb -- see
+// net_xport.h's doc comment on this function for why it exists instead of a
+// direct net_internal.h include from that file.
+extern "C" void net_dispatch_msg(const char *topic, const char *body, uint16_t len)
+{
+    if (s_msg_cb) {
+        s_msg_cb(topic, body, len);
+    }
+}
+
 extern "C" void net_sleep(uint32_t ms)
 {
+    // docs/WIFI_DESIGN.md §3/§9, docs/WIFI_TASKS.md W5: transport-aware.
+    // ESP-IDF documents that a WiFi association is not maintained across a
+    // manual esp_light_sleep_start() (sleep_modes.rst:49-51); the supported
+    // way to keep one is Modem-sleep + *automatic* light sleep
+    // (CONFIG_PM_ENABLE, W9), which phase 1 does not enable. So on WiFi this
+    // is a plain, bounded vTaskDelay(): CPU/USB/log stay up, current stays
+    // at the ~38-40 mA WiFi-associated floor (docs/WIFI_DESIGN.md §0's
+    // table, row (a)) for `ms` -- known and accepted for phase 1 (USB/bench
+    // power only, §3's own framing); battery viability is W9/W10's job, not
+    // this function's. wifi_sta_set_ps_sleep()/_active() around the delay
+    // is the one power lever phase 1 has without PM_ENABLE: WIFI_PS_MAX_MODEM
+    // (listen_interval 10) for the duration of the delay, back to
+    // WIFI_PS_MIN_MODEM once it returns.
+    if (s_active_xport == NET_XPORT_WIFI) {
+        wifi_sta_set_ps_sleep();
+        vTaskDelay(pdMS_TO_TICKS(ms));
+        wifi_sta_set_ps_active();
+        return;
+    }
+
     // Power effect: ESP32 draws the vendor-documented ~1 mA light-sleep
     // floor (WalterModem.h sleep() doc comment) for up to `ms`; the modem
     // is untouched and keeps paging on its own eDRX cycle.
