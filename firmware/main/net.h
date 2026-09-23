@@ -608,15 +608,33 @@ typedef struct {
  * as net_check()/net_get_rssi(). */
 bool net_get_cell_info(net_cell_info_t *out);
 
-/* Arms LIS3DH INT1 (pins.h PAGER_PIN_LIS3DH_INT1) as a second light-sleep
- * wake source alongside the button's ext0 (net_sleep()). Call once, from
- * accel.c, only after a successful WHO_AM_I probe — never call this if the
- * chip is absent, or an unwired/floating IO2 armed as a wake source would
- * wake the ESP32 on every light-sleep cycle for nothing. See net_sleep()'s
- * own comment for why this needs ext1 (not a second ext0) and which level
- * mode it uses. Power effect: none by itself; adds an early-wake path to
+/* Enables or disables LIS3DH INT1 (pins.h PAGER_PIN_LIS3DH_INT1) as a
+ * second light-sleep wake source alongside the button's ext0
+ * (net_sleep()). A1 (docs/DEVICE_NEXT_TASKS.md): evaluated fresh on every
+ * net_sleep() call rather than latched once, so accel.c can disarm it for
+ * a refractory window after each edge it reports to the motion classifier
+ * -- CTRL_REG5's LIR_INT1 latch plus ext1's ANY_HIGH mode would otherwise
+ * end light sleep up to ~10x/s (10 Hz ODR) while the pager is being
+ * carried, for no benefit to a classifier that only needs two edges >=60s
+ * apart. Call with `true` only after a successful WHO_AM_I probe -- an
+ * unwired/floating IO2 armed as a wake source would wake the ESP32 on
+ * every light-sleep cycle for nothing. See net_sleep()'s own comment for
+ * why this needs ext1 (not a second ext0) and which level mode it uses.
+ * Power effect: none by itself; adds/removes an early-wake path to/from
  * the existing ~1 mA light-sleep floor. */
+void net_set_accel_wake(bool on);
+
+/* Back-compat wrapper for net_set_accel_wake(true) -- accel_init()'s own
+ * "the chip just answered WHO_AM_I, arm the wake source" call. */
 void net_enable_accel_wake(void);
+
+/* Count of esp_light_sleep_start() returns (net_sleep()) whose wakeup
+ * cause was ESP_SLEEP_WAKEUP_EXT1 (the LIS3DH motion pin), since boot.
+ * A1's before/after storm-guard measurement counter: A2's `acceltest`
+ * prints it, A4 measures with it on the bench (refr 0 vs. refr 20, walk
+ * 60s each, expect roughly two orders of magnitude fewer with the guard
+ * on). Power effect: none -- read-only counter. */
+uint32_t net_get_ext1_wakes(void);
 
 /* ---------------------------------------------------------------------
  * SMS (docs/V02_DESIGN.md §6). main/sms.c is the only caller; it owns the

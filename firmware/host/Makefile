@@ -75,7 +75,7 @@ endif
 MAIN_SRC := ../main
 BUILD := build
 
-TESTS := test_cbor test_auth test_setup test_input test_msg test_lock test_loc test_cafetch test_catrust test_cfg test_sms test_carrier test_chat_layout test_coverage test_net_connect_guard test_publish_quiet
+TESTS := test_cbor test_auth test_setup test_input test_msg test_lock test_loc test_cafetch test_catrust test_cfg test_sms test_carrier test_chat_layout test_coverage test_net_connect_guard test_publish_quiet test_accel_rate
 TEST_BINS := $(TESTS:%=$(BUILD)/%)
 
 # ASSETS: tools/mkassets.py's default output location (docs/DEVICE_TASKS.md
@@ -322,4 +322,17 @@ $(BUILD)/test_publish_quiet.o: test_publish_quiet.c $(MAIN_SRC)/publish_quiet.h 
 	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ test_publish_quiet.c
 
 $(BUILD)/test_publish_quiet: $(BUILD)/publish_quiet.o $(BUILD)/test_publish_quiet.o
+# test_accel_rate: accel.c's pure section only (accel_edge_wanted() -- no
+# ESP-IDF dependency, see accel.c's own `#ifdef ESP_PLATFORM` split, A1) +
+# loc.c's pure section (loc_trigger_motion_event(), so the refractory gate
+# and the 60s-within-3min classifier are tested together, matching
+# accel_poll()'s real on-device call order) + cbor.c (loc.c pulls it in) +
+# test_accel_rate.c.
+$(BUILD)/accel.o: $(MAIN_SRC)/accel.c $(MAIN_SRC)/accel.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $(MAIN_SRC)/accel.c
+
+$(BUILD)/test_accel_rate.o: test_accel_rate.c $(MAIN_SRC)/accel.h $(MAIN_SRC)/loc.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ test_accel_rate.c
+
+$(BUILD)/test_accel_rate: $(BUILD)/accel.o $(BUILD)/loc.o $(BUILD)/cbor.o $(BUILD)/test_accel_rate.o
 	$(CC) $(CFLAGS) -o $@ $^

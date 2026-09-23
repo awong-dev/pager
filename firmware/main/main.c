@@ -14,6 +14,7 @@
 
 #include <stdio.h>
 
+#include "accel.h"
 #include "catrust.h"
 #include "ident.h"
 #include "watchdog.h"
@@ -552,6 +553,145 @@ static int cmd_smslist(int argc, char **argv)
     return 0;
 }
 
+// A2 (docs/DEVICE_NEXT_TASKS.md): `acceltest` -- LIS3DH register/sample
+// dump and runtime tuning, entirely through accel.h's accel_debug_*() API
+// (this file never touches I2C or the LIS3DH's registers directly). Every
+// form re-probes WHO_AM_I first (accel_debug_status()'s own contract), so
+// the owner can wire the chip and start typing without a reboot -- if it
+// now answers and had not been configured yet, this prints that once.
+// Runs on this console task; the IDF I2C driver is per-port mutexed, so
+// concurrent ui_poll_keyboard()/accel_poll() (modes_run()'s task) is safe.
+// `acceltest samples 600` blocks THIS task (never modes_run()'s) for ~60s
+// (100ms/sample at the LIS3DH's 10Hz ODR).
+static const char *ACCELTEST_USAGE =
+    "acceltest                 -- WHO_AM_I, CTRL_REG1-5, INT1_CFG/THS/DURATION/SRC, THS in mg, "
+    "the refractory setting, edges reported, and ext1 wake count\n"
+    "acceltest samples <n>     -- n (1..600) live x/y/z samples at 10Hz, plus INT1_SRC when IA is set\n"
+    "acceltest ths <0-127>     -- write INT1_THS, echo the read-back\n"
+    "acceltest dur <0-127>     -- write INT1_DURATION, echo the read-back\n"
+    "acceltest refr <seconds>  -- set A1's refractory window (0 = off, reproduces the wake storm)\n";
+
+static int cmd_acceltest(int argc, char **argv)
+{
+    accel_debug_status_t st;
+    bool newly_configured = false;
+    bool present = accel_debug_status(&st, &newly_configured);
+    if (newly_configured) {
+        printf("acceltest: LIS3DH now answers WHO_AM_I -- configured\n");
+    }
+
+    if (argc == 1) {
+        if (!present) {
+            printf("acceltest: not present\n");
+            return 1;
+        }
+        printf("acceltest: present=1 WHO_AM_I=0x%02x\n", (unsigned) st.who_am_i);
+        printf("acceltest: CTRL_REG1=0x%02x CTRL_REG2=0x%02x CTRL_REG3=0x%02x CTRL_REG4=0x%02x "
+               "CTRL_REG5=0x%02x\n",
+               (unsigned) st.ctrl_reg1, (unsigned) st.ctrl_reg2, (unsigned) st.ctrl_reg3,
+               (unsigned) st.ctrl_reg4, (unsigned) st.ctrl_reg5);
+        printf("acceltest: INT1_CFG=0x%02x INT1_THS=0x%02x (%u mg) INT1_DURATION=0x%02x "
+               "INT1_SRC=0x%02x\n",
+               (unsigned) st.int1_cfg, (unsigned) st.int1_ths, (unsigned) st.ths_mg,
+               (unsigned) st.int1_duration, (unsigned) st.int1_src);
+        printf("acceltest: refractory=%llds edges_reported=%u ext1_wakes=%u\n",
+               (long long) (st.refractory_us / 1000000), (unsigned) st.edges_reported,
+               (unsigned) st.ext1_wakes);
+        return 0;
+    }
+
+    if (strcmp(argv[1], "samples") == 0) {
+        if (argc != 3) {
+            printf("usage: acceltest samples <n>\n");
+            return 1;
+        }
+        char *end = NULL;
+        long n = strtol(argv[2], &end, 10);
+        if (!end || *end != '\0' || n < 1 || n > 600) {
+            printf("acceltest: n must be 1..600\n");
+            return 1;
+        }
+        if (!present) {
+            printf("acceltest: not present\n");
+            return 1;
+        }
+        for (long i = 0; i < n; i++) {
+            int16_t x_mg = 0, y_mg = 0, z_mg = 0;
+            uint8_t src = 0;
+            if (!accel_debug_sample(&x_mg, &y_mg, &z_mg, &src)) {
+                printf("acceltest: sample %ld: I2C read failed\n", i);
+            } else {
+                printf("acceltest: x=%d y=%d z=%d mg\n", (int) x_mg, (int) y_mg, (int) z_mg);
+                if (src & 0x40) { // IA
+                    printf("acceltest: INT1_SRC=0x%02x\n", (unsigned) src);
+                }
+            }
+            vTaskDelay(pdMS_TO_TICKS(100)); // 10 Hz ODR
+        }
+        return 0;
+    }
+
+    if (strcmp(argv[1], "ths") == 0) {
+        if (argc != 3) {
+            printf("usage: acceltest ths <0-127>\n");
+            return 1;
+        }
+        char *end = NULL;
+        long v = strtol(argv[2], &end, 10);
+        if (!end || *end != '\0' || v < 0 || v > 127) {
+            printf("acceltest: ths must be 0..127\n");
+            return 1;
+        }
+        uint8_t readback = 0;
+        if (!accel_debug_set_ths((uint8_t) v, &readback)) {
+            printf("acceltest: not present, or the write failed\n");
+            return 1;
+        }
+        printf("acceltest: INT1_THS=0x%02x (%u mg)\n", (unsigned) readback,
+               (unsigned) readback * 16);
+        return 0;
+    }
+
+    if (strcmp(argv[1], "dur") == 0) {
+        if (argc != 3) {
+            printf("usage: acceltest dur <0-127>\n");
+            return 1;
+        }
+        char *end = NULL;
+        long v = strtol(argv[2], &end, 10);
+        if (!end || *end != '\0' || v < 0 || v > 127) {
+            printf("acceltest: dur must be 0..127\n");
+            return 1;
+        }
+        uint8_t readback = 0;
+        if (!accel_debug_set_dur((uint8_t) v, &readback)) {
+            printf("acceltest: not present, or the write failed\n");
+            return 1;
+        }
+        printf("acceltest: INT1_DURATION=0x%02x\n", (unsigned) readback);
+        return 0;
+    }
+
+    if (strcmp(argv[1], "refr") == 0) {
+        if (argc != 3) {
+            printf("usage: acceltest refr <seconds>\n");
+            return 1;
+        }
+        char *end = NULL;
+        long v = strtol(argv[2], &end, 10);
+        if (!end || *end != '\0' || v < 0) {
+            printf("acceltest: seconds must be >= 0 (0 disables the refractory guard)\n");
+            return 1;
+        }
+        accel_debug_set_refractory_s((uint32_t) v);
+        printf("acceltest: refractory=%lds\n", v);
+        return 0;
+    }
+
+    printf("%s", ACCELTEST_USAGE);
+    return 1;
+}
+
 // Bench harness for the garbled-bands bug (disp.c's partial_refresh_locked()
 // comment, docs task-disp-fix.md): a deterministic, keyboard-free,
 // network-free reproduction. Paints a known pattern and drives
@@ -822,6 +962,16 @@ static void start_normal_console(void)
         .func = &cmd_smslist,
     };
     ESP_ERROR_CHECK(esp_console_cmd_register(&smslist_cmd));
+
+    const esp_console_cmd_t acceltest_cmd = {
+        .command = "acceltest",
+        .help = "acceltest [samples <n>|ths <0-127>|dur <0-127>|refr <seconds>] -- LIS3DH "
+                 "register/sample dump and runtime tuning (docs/DEVICE_NEXT_TASKS.md A2); run "
+                 "`acceltest` with no args for the full usage",
+        .hint = NULL,
+        .func = &cmd_acceltest,
+    };
+    ESP_ERROR_CHECK(esp_console_cmd_register(&acceltest_cmd));
 
     const esp_console_cmd_t disptest_cmd = {
         .command = "disptest",
