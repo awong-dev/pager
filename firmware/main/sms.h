@@ -60,6 +60,27 @@ extern "C" {
 #define SMS_LOG_ID_MAX 11  /* "s_" + 8 hex + NUL, PROTOCOL.md §1/§3.6 */
 #define SMS_PEER_MAX SMS_PHONE_MAX
 
+/* S2 (docs/DEVICE_NEXT_TASKS.md, multipart/UDH reassembly): concurrent
+ * in-flight concatenated messages this device tracks at once. 2, not more —
+ * a normal owner/parent conversation essentially never has two different
+ * multipart texts arriving interleaved from two different senders at the
+ * same time, and every slot costs real RAM (SMS_REASM_MAX_PARTS *
+ * SMS_BODY_MAX bytes each, see sms_reasm_slot_t below). */
+#define SMS_REASM_SLOTS 2
+/* Generous cap on parts-per-message: real GSM-7/UCS-2 concatenated SMS this
+ * device could ever reassemble already tops out around 2-3 parts before the
+ * combined body would exceed SMS_BODY_MAX (320 bytes) anyway (§6's own
+ * single-SMS caps: 153 GSM-7 septets or 67 UCS-2 units per part after the
+ * UDH). A `total` above this is rejected outright (SMS_REASM_DROPPED) as
+ * something this device cannot represent, not a crash risk. */
+#define SMS_REASM_MAX_PARTS 4
+/* 120 s from the first part (S2's own instruction): long enough that a
+ * normal two-part text — sent back-to-back by every carrier this project has
+ * seen — always lands before its slot would expire, short enough that a
+ * stalled/lost middle part never blocks the next unrelated concatenated
+ * message from using this ring for more than two minutes. */
+#define SMS_REASM_WINDOW_US (120LL * 1000000LL)
+
 /* ---------------------------------------------------------------------
  * Allow-list (pure section) — no ESP-IDF dependency.
  * --------------------------------------------------------------------- */
@@ -309,6 +330,127 @@ bool sms_parse_cmgr_header(const char *raw, size_t len, sms_cmgr_header_t *out);
  * empty string in that case, `*out_shown` unaffected. */
 bool sms_decode_received(const char *body, size_t body_len, int dcs, char *out, size_t out_cap,
                          size_t *out_len, bool *out_shown, bool *out_used_fallback);
+
+/* ---------------------------------------------------------------------
+ * S2 (docs/DEVICE_NEXT_TASKS.md, pure logic only — device wiring is S3's
+ * job): multipart (concatenated SMS) UDH decode + reassembly.
+ *
+ * 3GPP TS 23.040 §9.2.3.24: a concatenated-SMS UDH is `UDHL` (one byte, the
+ * length of everything that follows in the UDH) followed by one or more
+ * Information Elements, each `IEI` (1 byte) `IEDL` (1 byte, length of this
+ * IE's own data) `<IEDL bytes of data>`. This device only recognises the two
+ * concatenation IEIs (everything else in a UDH — port addressing, etc. — is
+ * out of scope and causes rejection, not a crash): IEI 0x00 (8-bit reference,
+ * 3-byte data: ref, total, part -> a 5-byte IE incl. its own IEI/IEDL) and
+ * IEI 0x08 (16-bit reference, 4-byte data: ref-hi, ref-lo, total, part -> a
+ * 6-byte IE). Only the FIRST recognised concatenation IE in the UDH is used;
+ * any other IEs present are skipped over (their IEDL is still bounds-checked)
+ * rather than rejected, since a UDH carrying an unrelated IE alongside
+ * concatenation info (e.g. a port-addressed concatenated message) is legal.
+ * --------------------------------------------------------------------- */
+
+/* `tpdu_udh`/`len` is the UDH INCLUDING its own leading UDHL byte (exactly
+ * what a caller would slice out of a decoded TPDU-UD, before the actual
+ * message text). Returns false, `*ref`/`*total`/`*part` untouched, for:
+ * anything that is not IEI 0x00 or 0x08 (no recognised concatenation IE
+ * found anywhere in the UDH), a length mismatch (UDHL, or an individual IE's
+ * IEDL, running past `len`), `total == 0`, `part == 0`, or `part > total`.
+ *
+ * NOTE on the 16-bit reference (IEI 0x08): `*ref` is `uint8_t` (matching
+ * IEI 0x00's native 8-bit reference), so a 16-bit reference is folded to its
+ * LOW byte. This device only needs `ref` to disambiguate the handful of
+ * concurrently in-flight concatenated messages this device ever tracks at
+ * once (SMS_REASM_SLOTS, 2) — a same-low-byte collision between two
+ * genuinely different 16-bit references arriving in the same ~2-minute
+ * window is astronomically unlikely for a personal-use pager, and even if it
+ * happened the failure mode is a garbled reassembly of one already-rare
+ * multipart text, not data loss elsewhere or a crash. Documented risk,
+ * same convention as sms_numbers_match()'s own accepted-risk comment. */
+bool sms_parse_udh(const uint8_t *tpdu_udh, size_t len, uint8_t *ref, uint8_t *total,
+                   uint8_t *part);
+
+typedef enum {
+    SMS_REASM_COMPLETE = 0, /* every part 1..total now present; `out`/`*out_len` filled */
+    SMS_REASM_PENDING = 1,  /* stored; still waiting on at least one more part */
+    SMS_REASM_DROPPED = 2,  /* invalid input, or the completed message would not fit `out_cap` */
+} sms_reasm_result_t;
+
+typedef struct {
+    bool in_use;
+    uint8_t ref;
+    uint8_t total;
+    uint8_t parts_seen_mask; /* bit (part-1) set once that part has arrived; total <= SMS_REASM_MAX_PARTS <= 8 */
+    char part_body[SMS_REASM_MAX_PARTS][SMS_BODY_MAX];
+    size_t part_len[SMS_REASM_MAX_PARTS];
+    int64_t first_part_us; /* esp_timer_get_time() at this slot's first part — monotonic, NEVER wall
+                            * clock (the same deviation msg.h documents for pending_up.created_us) */
+} sms_reasm_slot_t;
+
+typedef struct {
+    sms_reasm_slot_t slots[SMS_REASM_SLOTS];
+} sms_reasm_t;
+
+void sms_reasm_init(sms_reasm_t *r);
+
+/* Adds one already-decoded part (`text`/`len` — the part's OWN body, UDH
+ * already stripped by the caller, decoded to UTF-8 the same way a
+ * single-part message already is by sms_decode_received()) to the
+ * reassembly ring. `ref`/`total`/`part` as decoded by sms_parse_udh() (this
+ * function re-validates them independently, so a caller that skips
+ * sms_parse_udh() cannot desync the ring). `now_us` is monotonic
+ * (esp_timer_get_time()), used only for this slot's 120 s window
+ * (SMS_REASM_WINDOW_US) and for oldest-slot eviction.
+ *
+ * A slot is identified by (ref, total) — a duplicate `part` for a slot
+ * already holding that part number simply overwrites it (idempotent, no
+ * double-count). If neither existing slot matches (ref, total) and both are
+ * already in_use, the OLDEST slot (by first_part_us) is evicted to make
+ * room — "a third concurrent reference evicts the oldest slot" (S2's own
+ * instruction) — losing whatever partial progress it had; nothing calls
+ * sms_reasm_expire() for it first, so that eviction is not separately
+ * reported as "expired".
+ *
+ * Returns SMS_REASM_DROPPED (nothing stored) for: `total == 0`, `part == 0`,
+ * `part > total`, `total > SMS_REASM_MAX_PARTS` (cannot represent), or
+ * `len >= SMS_BODY_MAX` (one part alone cannot possibly fit). Returns
+ * SMS_REASM_PENDING once this part is stored but at least one other part
+ * for this (ref, total) has not arrived yet. Returns SMS_REASM_COMPLETE the
+ * moment every part 1..total is present, with the parts concatenated IN
+ * PART-NUMBER ORDER (not arrival order — this is what makes out-of-order
+ * arrival transparent to the caller) into `out`/`*out_len`; if the
+ * concatenated length would not fit `out_cap`, the slot is freed and
+ * SMS_REASM_DROPPED is returned instead (out/`*out_len` untouched) rather
+ * than silently truncating (msg.c's own "never truncate" convention). A
+ * completed or dropped-for-overflow slot is freed immediately; there is
+ * nothing left to expire. */
+int sms_reasm_add(sms_reasm_t *r, uint8_t ref, uint8_t total, uint8_t part, const char *text,
+                  size_t len, int64_t now_us, char *out, size_t out_cap, size_t *out_len);
+
+typedef struct {
+    uint8_t ref;
+    uint8_t total;
+    char body[SMS_BODY_MAX]; /* whichever parts had arrived, concatenated in part order; a still-
+                              * missing part is simply skipped (never invented/blanked-in), per
+                              * §6's "never silently lose a text" rule: deliver what exists rather
+                              * than nothing at all. */
+    size_t body_len;
+} sms_reasm_expired_t;
+
+/* Frees and reports every slot whose window (SMS_REASM_WINDOW_US from its
+ * first part) has elapsed as of `now_us` — the caller (S3) is expected to
+ * log each one and still deliver its (partial) `body` via
+ * msg_insert_sms_in() rather than dropping it silently, per the same
+ * "never silently lose a text" rule sms_reasm_add()'s overflow case follows.
+ * A backwards/stalled `now_us` (`now_us < first_part_us`) never expires a
+ * slot early — elapsed time is computed as a plain subtraction and only
+ * ever compared as ">=", so a clock that has not advanced simply leaves
+ * every slot pending, it can never wedge into an incorrect early expiry.
+ * Returns the number of slots expired (0..SMS_REASM_SLOTS), writing that
+ * many entries to `out` (capped at `out_cap`; a slot beyond `out_cap` is
+ * still freed and counted in the return value, just not reported in detail
+ * — `out_cap >= SMS_REASM_SLOTS` from every caller in this codebase means
+ * this never actually happens in practice). */
+int sms_reasm_expire(sms_reasm_t *r, int64_t now_us, sms_reasm_expired_t *out, int out_cap);
 
 /* ---------------------------------------------------------------------
  * Audit ring (pure) — the "at least 16 entries, oldest dropped, sms_lost

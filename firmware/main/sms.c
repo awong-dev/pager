@@ -647,6 +647,208 @@ bool sms_decode_received(const char *body, size_t body_len, int dcs, char *out, 
 }
 
 // ---------------------------------------------------------------------------
+// S2: multipart (UDH) reassembly (pure). See sms.h's own module comment on
+// this section for the 3GPP TS 23.040 §9.2.3.24 UDH shape.
+// ---------------------------------------------------------------------------
+
+bool sms_parse_udh(const uint8_t *tpdu_udh, size_t len, uint8_t *ref, uint8_t *total,
+                   uint8_t *part)
+{
+    if (!tpdu_udh || len < 1) {
+        return false;
+    }
+    uint8_t udhl = tpdu_udh[0];
+    if (udhl == 0 || (size_t) (1 + udhl) > len) {
+        return false; // UDHL claims more bytes than this buffer actually has
+    }
+    size_t off = 1;
+    size_t end = 1 + (size_t) udhl;
+
+    while (off < end) {
+        if (off + 2 > end) {
+            return false; // truncated IE header (IEI with no room for its own IEDL)
+        }
+        uint8_t iei = tpdu_udh[off];
+        uint8_t iedl = tpdu_udh[off + 1];
+        off += 2;
+        if (off + iedl > end) {
+            return false; // this IE's own IEDL runs past the UDH
+        }
+
+        if (iei == 0x00) {
+            if (iedl != 3) {
+                return false;
+            }
+            uint8_t r = tpdu_udh[off];
+            uint8_t t = tpdu_udh[off + 1];
+            uint8_t p = tpdu_udh[off + 2];
+            if (t == 0 || p == 0 || p > t) {
+                return false;
+            }
+            *ref = r;
+            *total = t;
+            *part = p;
+            return true;
+        }
+        if (iei == 0x08) {
+            if (iedl != 4) {
+                return false;
+            }
+            // 16-bit reference folded to its low byte — see sms.h's own doc
+            // comment on sms_parse_udh() for the accepted collision risk.
+            uint8_t r = tpdu_udh[off + 1];
+            uint8_t t = tpdu_udh[off + 2];
+            uint8_t p = tpdu_udh[off + 3];
+            if (t == 0 || p == 0 || p > t) {
+                return false;
+            }
+            *ref = r;
+            *total = t;
+            *part = p;
+            return true;
+        }
+        // Some other IE (e.g. port addressing) — skip over it, keep looking.
+        off += iedl;
+    }
+    return false; // no recognised concatenation IE anywhere in this UDH
+}
+
+void sms_reasm_init(sms_reasm_t *r) { memset(r, 0, sizeof(*r)); }
+
+int sms_reasm_add(sms_reasm_t *r, uint8_t ref, uint8_t total, uint8_t part, const char *text,
+                  size_t len, int64_t now_us, char *out, size_t out_cap, size_t *out_len)
+{
+    if (out_len) {
+        *out_len = 0;
+    }
+    if (total == 0 || part == 0 || part > total || total > SMS_REASM_MAX_PARTS ||
+        len >= SMS_BODY_MAX || !text) {
+        return SMS_REASM_DROPPED;
+    }
+
+    // Find an existing slot already reassembling this (ref, total).
+    int slot_idx = -1;
+    for (int i = 0; i < SMS_REASM_SLOTS; i++) {
+        if (r->slots[i].in_use && r->slots[i].ref == ref && r->slots[i].total == total) {
+            slot_idx = i;
+            break;
+        }
+    }
+
+    if (slot_idx < 0) {
+        // New (ref, total): use a free slot, or evict the OLDEST in-use one
+        // (by first_part_us) — "a third concurrent reference evicts the
+        // oldest slot" (sms.h's own doc comment on this function).
+        for (int i = 0; i < SMS_REASM_SLOTS; i++) {
+            if (!r->slots[i].in_use) {
+                slot_idx = i;
+                break;
+            }
+        }
+        if (slot_idx < 0) {
+            int oldest = 0;
+            for (int i = 1; i < SMS_REASM_SLOTS; i++) {
+                if (r->slots[i].first_part_us < r->slots[oldest].first_part_us) {
+                    oldest = i;
+                }
+            }
+            slot_idx = oldest;
+        }
+        sms_reasm_slot_t *s = &r->slots[slot_idx];
+        memset(s, 0, sizeof(*s));
+        s->in_use = true;
+        s->ref = ref;
+        s->total = total;
+        s->first_part_us = now_us;
+    }
+
+    sms_reasm_slot_t *s = &r->slots[slot_idx];
+
+    // Store (or idempotently overwrite, for a duplicate) this part.
+    memcpy(s->part_body[part - 1], text, len);
+    s->part_body[part - 1][len] = '\0';
+    s->part_len[part - 1] = len;
+    s->parts_seen_mask = (uint8_t) (s->parts_seen_mask | (1u << (part - 1)));
+
+    uint8_t want_mask = (uint8_t) ((1u << total) - 1);
+    if ((s->parts_seen_mask & want_mask) != want_mask) {
+        return SMS_REASM_PENDING;
+    }
+
+    // Every part present: concatenate in PART-NUMBER order (not arrival
+    // order), regardless of how they arrived.
+    size_t total_len = 0;
+    for (uint8_t i = 0; i < total; i++) {
+        total_len += s->part_len[i];
+    }
+    if (out_cap == 0 || total_len >= out_cap) {
+        s->in_use = false; // cannot deliver whole; never truncate (msg.c's own convention)
+        return SMS_REASM_DROPPED;
+    }
+    size_t off = 0;
+    for (uint8_t i = 0; i < total; i++) {
+        memcpy(out + off, s->part_body[i], s->part_len[i]);
+        off += s->part_len[i];
+    }
+    out[off] = '\0';
+    if (out_len) {
+        *out_len = off;
+    }
+    s->in_use = false;
+    return SMS_REASM_COMPLETE;
+}
+
+int sms_reasm_expire(sms_reasm_t *r, int64_t now_us, sms_reasm_expired_t *out, int out_cap)
+{
+    int expired = 0;
+    for (int i = 0; i < SMS_REASM_SLOTS; i++) {
+        sms_reasm_slot_t *s = &r->slots[i];
+        if (!s->in_use) {
+            continue;
+        }
+        int64_t elapsed = now_us - s->first_part_us; // never expires early on a backwards/stalled
+                                                      // clock: a negative/small elapsed just fails
+                                                      // this ">=" check, nothing else reads it
+        if (elapsed < SMS_REASM_WINDOW_US) {
+            continue;
+        }
+
+        if (out && expired < out_cap) {
+            sms_reasm_expired_t *e = &out[expired];
+            e->ref = s->ref;
+            e->total = s->total;
+            size_t off = 0;
+            for (uint8_t p = 0; p < s->total; p++) {
+                if (!(s->parts_seen_mask & (1u << p))) {
+                    continue; // missing part skipped, never invented/blanked-in
+                }
+                // Bounded, not "never truncate": e->body is SMS_BODY_MAX
+                // (a single message's own cap), but SMS_REASM_MAX_PARTS
+                // present parts could in principle sum past it. This is
+                // already the degraded "partial, on expiry" path (S2's own
+                // "deliver what it has" rule); dropping the tail of an
+                // over-length partial here is strictly better than
+                // overflowing `e->body`.
+                size_t n = s->part_len[p];
+                if (off + n > sizeof(e->body) - 1) {
+                    n = sizeof(e->body) - 1 - off;
+                }
+                memcpy(e->body + off, s->part_body[p], n);
+                off += n;
+                if (off >= sizeof(e->body) - 1) {
+                    break;
+                }
+            }
+            e->body[off] = '\0';
+            e->body_len = off;
+        }
+        expired++;
+        s->in_use = false;
+    }
+    return expired;
+}
+
+// ---------------------------------------------------------------------------
 // Audit ring (pure).
 // ---------------------------------------------------------------------------
 
@@ -1098,7 +1300,7 @@ static void process_inbound(int idx, const net_sms_read_t *r)
 
     if (found >= 0) {
         char thread_id[MSG_ID_MAX];
-        if (msg_insert_sms_in(match.name, decoded, (uint16_t) decoded_len, thread_id,
+        if (msg_insert_sms_in(match.name, decoded, (uint16_t) decoded_len, sms_ts, thread_id,
                               sizeof(thread_id))) {
             modes_alert_incoming(thread_id, match.name);
         }

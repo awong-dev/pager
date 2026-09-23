@@ -340,6 +340,172 @@ static void test_msghist_decode_rejects_corruption(void)
           "a record with an unknown version was accepted");
 }
 
+/* S1 (docs/DEVICE_NEXT_TASKS.md): msg_insert_sms_in() now stores the
+ * caller's already-fetched net_get_clock() result instead of hardcoding 0 —
+ * itself not host-testable (sms.c/msg.c's ESP_PLATFORM-guarded section), but
+ * the codec it now actually exercises with a nonzero `ts` is: an "x_"-id,
+ * MSG_ACK_READ, MSG_DIR_DOWN entry (msg_insert_sms_in()'s exact shape) with
+ * a real ts round-trips; with ts 0 (no clock yet, §3.5's existing sentinel,
+ * "today's behaviour" pre-S1) it round-trips identically. */
+static void test_msghist_roundtrip_sms_ts(void)
+{
+    msg_t with_ts = make_msg("x_deadbeef", "mom", "", "call me back", MSG_DIR_DOWN, MSG_ACK_READ, 0,
+                             1757700000);
+    uint8_t buf[MSGHIST_REC_MAX];
+    size_t len = msghist_record_encode(&with_ts, 21, buf, sizeof(buf));
+    CHECK(len > 0, "encode of an SMS-shaped record with a real ts returned 0");
+    msg_t out;
+    uint32_t seq = 0;
+    CHECK(msghist_record_decode(buf, len, &out, &seq), "decode of an SMS-shaped record failed");
+    CHECK(out.ts == 1757700000, "ts mismatch after round trip: %lld != 1757700000",
+          (long long) out.ts);
+    CHECK(out.dir == MSG_DIR_DOWN, "dir mismatch");
+    CHECK(out.ack_state == MSG_ACK_READ, "ack_state mismatch");
+
+    msg_t no_ts = make_msg("x_cafef00d", "mom", "", "call me back", MSG_DIR_DOWN, MSG_ACK_READ, 0, 0);
+    len = msghist_record_encode(&no_ts, 22, buf, sizeof(buf));
+    CHECK(len > 0, "encode of an SMS-shaped record with ts 0 returned 0");
+    CHECK(msghist_record_decode(buf, len, &out, &seq), "decode of the ts-0 record failed");
+    CHECK(out.ts == 0, "ts-0 record decoded with ts == %lld, want 0", (long long) out.ts);
+}
+
+/* G7 (docs/GROUP_CHAT_DESIGN.md §4): `sndr` round-trips through the v2
+ * codec, and a 16-char `sndr` alongside a full 320-byte body still fits
+ * MSGHIST_REC_MAX (420). */
+static void test_msghist_roundtrip_sndr(void)
+{
+    msg_t m = make_msg("m_7f3a", "family-grp", "", "Pickup at 3:15 by the gym", MSG_DIR_DOWN,
+                       MSG_ACK_SHOWN, 0, 1757700000);
+    strncpy(m.sndr, "alice", sizeof(m.sndr) - 1);
+
+    uint8_t buf[MSGHIST_REC_MAX];
+    size_t len = msghist_record_encode(&m, 9, buf, sizeof(buf));
+    CHECK(len > 0, "encode of a record with sndr returned 0");
+
+    msg_t out;
+    uint32_t seq = 0;
+    CHECK(msghist_record_decode(buf, len, &out, &seq), "decode of a record with sndr failed");
+    CHECK(strcmp(out.sndr, "alice") == 0, "sndr mismatch after round trip: '%s' != 'alice'",
+          out.sndr);
+    CHECK(strcmp(out.from, m.from) == 0, "from mismatch after round trip (should stay the group alias)");
+
+    /* Worst case: a 16-char sndr (MSG_FROM_MAX - 1) plus a full 320-byte
+     * body plus full-length id/from/to must still fit MSGHIST_REC_MAX. */
+    msg_t big = make_msg("m_deadbeefdeadbe", "0123456789abcdef", "0123456789abcdef", "", MSG_DIR_DOWN,
+                         MSG_ACK_UNSHOWN, 0, 1700000000);
+    char full_body[321];
+    memset(full_body, 'x', 320);
+    full_body[320] = '\0';
+    memcpy(big.body, full_body, 320);
+    big.body[320] = '\0';
+    big.body_len = 320;
+    strncpy(big.sndr, "0123456789abcdef", sizeof(big.sndr) - 1);
+
+    len = msghist_record_encode(&big, 11, buf, sizeof(buf));
+    CHECK(len > 0 && len <= MSGHIST_REC_MAX,
+          "worst-case sndr+body record out of range: %u (cap %u)", (unsigned) len,
+          (unsigned) MSGHIST_REC_MAX);
+    CHECK(msghist_record_decode(buf, len, &out, &seq), "decode of the worst-case record failed");
+    CHECK(strcmp(out.sndr, "0123456789abcdef") == 0, "worst-case sndr mismatch: '%s'", out.sndr);
+}
+
+/* --- little-endian raw encoder, mirroring msg.c's private w_*() helpers,
+ * used only to hand-build a version-1 (pre-G7, no `sndr` field) record byte
+ * for byte the way msg.c's OLD encoder would have, so this test does not
+ * depend on msghist_record_encode() (which, post-G7, only ever writes
+ * version 2). msghist_crc32() is msg.c-private too, so it is reimplemented
+ * here bit for bit from its own doc comment ("the same one zlib/PNG/
+ * esp_rom_crc32_le() use"). --- */
+static uint32_t crc32_like_msg_c(const uint8_t *data, size_t len)
+{
+    uint32_t crc = 0xFFFFFFFFu;
+    for (size_t i = 0; i < len; i++) {
+        crc ^= data[i];
+        for (int b = 0; b < 8; b++) {
+            uint32_t mask = (uint32_t) (-(int32_t) (crc & 1u));
+            crc = (crc >> 1) ^ (0xEDB88320u & mask);
+        }
+    }
+    return ~crc;
+}
+
+static void put_u8(uint8_t *buf, size_t *off, uint8_t v) { buf[(*off)++] = v; }
+
+static void put_u16(uint8_t *buf, size_t *off, uint16_t v)
+{
+    buf[(*off)++] = (uint8_t) (v & 0xFF);
+    buf[(*off)++] = (uint8_t) (v >> 8);
+}
+
+static void put_u32(uint8_t *buf, size_t *off, uint32_t v)
+{
+    buf[(*off)++] = (uint8_t) (v & 0xFF);
+    buf[(*off)++] = (uint8_t) ((v >> 8) & 0xFF);
+    buf[(*off)++] = (uint8_t) ((v >> 16) & 0xFF);
+    buf[(*off)++] = (uint8_t) ((v >> 24) & 0xFF);
+}
+
+static void put_i64(uint8_t *buf, size_t *off, int64_t v)
+{
+    uint64_t u = (uint64_t) v;
+    put_u32(buf, off, (uint32_t) (u & 0xFFFFFFFFu));
+    put_u32(buf, off, (uint32_t) (u >> 32));
+}
+
+static void put_str_field(uint8_t *buf, size_t *off, const char *s)
+{
+    size_t len = strlen(s);
+    put_u8(buf, off, (uint8_t) len);
+    memcpy(buf + *off, s, len);
+    *off += len;
+}
+
+/* Builds a version-1-format record (header, id/from/to, body_len, body,
+ * crc32 over everything before the crc) — no `sndr` field at all, matching
+ * exactly what a pre-G7 firmware would have written to `msghist`. */
+static size_t encode_v1_record(uint8_t *out, uint32_t seq, int64_t ts, uint8_t dir,
+                               uint8_t ack_state, uint8_t flags, const char *id, const char *from,
+                               const char *to, const char *body, uint16_t body_len)
+{
+    size_t off = 0;
+    put_u8(out, &off, 1); /* version */
+    put_u32(out, &off, seq);
+    put_i64(out, &off, ts);
+    put_u8(out, &off, dir);
+    put_u8(out, &off, ack_state);
+    put_u8(out, &off, flags);
+    put_str_field(out, &off, id);
+    put_str_field(out, &off, from);
+    put_str_field(out, &off, to);
+    put_u16(out, &off, body_len);
+    memcpy(out + off, body, body_len);
+    off += body_len;
+    uint32_t crc = crc32_like_msg_c(out, off);
+    put_u32(out, &off, crc);
+    return off;
+}
+
+/* G7's dual-read requirement: "a v1 record round-trips through the v2
+ * decoder with sndr == ''". Without this, every message a pre-G7 firmware
+ * ever persisted would be dropped (decode failure) on the first boot after
+ * the upgrade — msg.h's own comment on MSGHIST_REC_VERSION. */
+static void test_msghist_v1_record_decodes_with_empty_sndr(void)
+{
+    uint8_t buf[MSGHIST_REC_MAX];
+    size_t len = encode_v1_record(buf, 3, 1700000000, MSG_DIR_DOWN, MSG_ACK_READ, 0, "m_old",
+                                  "mom", "", "hi there", 8);
+    CHECK(len > 0 && len <= MSGHIST_REC_MAX, "v1 record encode out of range");
+
+    msg_t out;
+    uint32_t seq = 0;
+    CHECK(msghist_record_decode(buf, len, &out, &seq), "v2 decoder rejected a valid v1 record");
+    CHECK(seq == 3, "v1 decode: seq == %u, want 3", (unsigned) seq);
+    CHECK(strcmp(out.id, "m_old") == 0, "v1 decode: id mismatch");
+    CHECK(strcmp(out.from, "mom") == 0, "v1 decode: from mismatch");
+    CHECK(strcmp(out.body, "hi there") == 0, "v1 decode: body mismatch");
+    CHECK(out.sndr[0] == '\0', "v1 decode: sndr should be empty, got '%s'", out.sndr);
+}
+
 static void test_msghist_terminal_ack(void)
 {
     CHECK(!msghist_is_terminal_ack(MSG_DIR_DOWN, MSG_ACK_UNSHOWN), "UNSHOWN reported terminal");
@@ -386,13 +552,16 @@ int main(void)
 
     test_msghist_roundtrip_basic();
     test_msghist_roundtrip_edges();
+    test_msghist_roundtrip_sms_ts();
+    test_msghist_roundtrip_sndr();
+    test_msghist_v1_record_decodes_with_empty_sndr();
     test_msghist_decode_rejects_corruption();
     test_msghist_terminal_ack();
     test_msghist_restore_order();
 
     if (g_failures == 0) {
         printf("PASS: msg.c composer (320-byte/160-codepoint caps, 3-byte code point atomicity) "
-               "and msghist record codec/terminal-ack/restore-order, 0 failures\n");
+               "and msghist record codec/terminal-ack/restore-order (v1+v2, G7 sndr), 0 failures\n");
         return 0;
     }
     printf("FAIL: %d failure(s)\n", g_failures);
