@@ -153,7 +153,11 @@ void (*s_msg_cb)(const char *, const char *, uint16_t) = nullptr;
 // is one of those thin wrappers; the real logic is the unmodified code moved
 // to xport_lte.cpp (see that file's own module comment).
 // ---------------------------------------------------------------------------
-static const net_xport_ops_t *s_xport_ops = nullptr;
+// Defaults to the LTE implementation at load, NOT in net_init(): modes_boot()
+// paints the boot screen (draw_status_bar() -> net_get_mqtt_status()) before
+// net_init() runs, and a null vtable here boot-looped the pager on 23 Sep
+// (LoadProhibited at net.cpp's status dispatcher, phaseU-inject.log).
+static const net_xport_ops_t *s_xport_ops = xport_lte_ops();
 static net_xport_t s_active_xport = NET_XPORT_LTE;
 // v0.2 §9.4's three suppressions (coverage duty cycle, location route 2, a CA
 // -apply trial), moved here from modes.c's net_service_session() call site --
