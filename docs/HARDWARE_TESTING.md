@@ -140,10 +140,18 @@ Dark Star (AT&T) SIMs.
   1500`): garbled bands in odd/even pattern, never settling. Post-fix (`disptest again 1` + `bars` +
   `seq 0 12 1500`): all 13 adjacent 8-row bands correct, pattern read as `w b w b w b w b w b w b w`
   matching prediction exactly. Typing on the physical CardKB: characters appear cleanly, the
-  composer holds the right text, and the screen stays clean after typing stops. NOT verified: a
-  multi-character burst through the console (`key efghijkl`) produced no redraw at all and no
-  `partial_count` increment — see "Not yet seen working" for that open item; it is a console-feed
-  path only, and does not affect typing on the keyboard.
+  composer holds the right text, and the screen stays clean after typing stops.
+- MQTT self-healing verified on the wire (commits 71f6c06, c3f910c, 22-23 Sep): one AT+SQNSMQTTCONNECT
+  per boot, no +CME ERROR: 4, liveness ping at 300 s idle answered in 370 ms, modem-initiated
+  disconnect recovered in one retry 5 s later (`phaseQ-*.log`).
+- Display register-loss fix (07995ff, 23 Sep) verified at the glass: `disptest bars` → `disptest
+  swreset` → `disptest bars` → `disptest seq 0 3 1500` all clean; owner read the inverted-columns
+  pattern exactly as predicted (`phaseU-inject2.log`). Every refresh now shows a short BUSY (~3-10 ms)
+  before the real one.
+- Composer overflow (tasks 1.0-1.3, 23 Sep) accepted: leading "…" marker, no overprint, counter only
+  from 120 chars, backspace reveals hidden text, Enter sent the whole reply (38 keystroke partials of
+  8-16 rows, `phaseU-composer.log`).
+- Publish/refresh gate observed: refresh delayed 560 ms for an in-flight publish (`phaseS-gate.log`)
 
 ## Not yet seen working
 
@@ -166,16 +174,13 @@ In the order worth testing:
 4. **End-to-end `/loc` cell answer:** send a `loc_req`, confirm the relay receives a `cell` envelope
    key 49 and resolves it, confirm the relay stores `src: "cell"` in the fix.
 
-5. Replies from the pager through the web app, end to end: the pager side now works (above);
-   check the relay stores the reply and the web app shows it.
+5. A CA push from the web app, with a right and a wrong CA.
 
-6. A CA push from the web app, with a right and a wrong CA.
-
-7. `gnsstest` outdoors: which radio route the modem accepts (in-place or `CFUN=4` window), time to
+6. `gnsstest` outdoors: which radio route the modem accepts (in-place or `CFUN=4` window), time to
    fix cold and hot, re-attach time. Record numbers for tuning attempt and backoff budgets.
 
-8. SMS at all: the SIM may not carry it. Then texts from listed and unlisted numbers.
+7. SMS at all: the SIM may not carry it. Then texts from listed and unlisted numbers.
 
-9. The accelerometer, and the button.
+8. The accelerometer, and the button.
 
 Registration takes about two minutes at the bench location on AT&T, a second or two on T-Mobile.

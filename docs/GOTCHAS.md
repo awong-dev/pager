@@ -155,6 +155,32 @@ a slow display plus that line. Bench-found 22 Sep while wiring the CardKB.
 E-paper partial refreshes ghost. A message that *changes the screen* (greeting to chat) takes a
 full refresh; messages into an open chat stay partial.
 
+## The SSD1680 loses registers under LTE bursts
+
+**Symptom:** a torn full refresh, then every refresh garbled / half black, `dirty_rows=0` on the
+host. A bare `disptest swreset` reproduces it.
+
+**Cause:** the SSD1680 loses its register configuration during LTE uplink bursts (three events
+22-23 Sep); RAM retained. The init sequence (SW reset 0x12 + registers) restores it.
+
+**Rule:** re-send the init registers before every refresh (07995ff). Now a garbled panel that a
+reboot fixes is register loss, not a driver bug. The firmware holds display writes while a
+publish is in flight, bounded 1.5 s (disp.c `disp_pre_write_gate_hook()`), which gates the
+uplink/write collision.
+
+## Release build: publish payload replaced by command text
+
+**Symptom:** relay logs `SECURITY bad-sig` with `first64=b'AT+SQNSMQTTPUBLISH...'` — the modem's
+outbound payload is the text of the publish command instead of the message bytes.
+
+**Cause (release build only):** publish command issued → modem `>` prompt waiting for payload →
+device light-sleeps (RTS deasserted) before payload bytes go out → library timeout → msg_pump
+retry → modem still owed N bytes takes the retry's N-character command line as the payload. Debug
+build cannot show it (never sleeps).
+
+**Rule:** hold skip_sleep while a publish is in flight, bounded 15 s (net_publish_in_flight(),
+publish_quiet.h, 985a343). The debug build cannot show this issue; catch it in release soak tests.
+
 ## The SSD1680 two-plane differential update
 
 **Symptom:** vertical bands about one character wide remain garbled after typing in the chat
@@ -188,6 +214,27 @@ by eye, and predict the expected black/white bar pattern in advance (e.g. `w b w
 Reading the bars off the glass as a `b w b w ...` list and diffing that against the prediction is
 what finally settled it; "looks right except one band" cost a whole round of chasing a defect that
 did not exist.
+
+## Tools and workflow
+
+**`serial_capture.py` overwrites without warning:**
+Old filename reused → appended a boot after an old one → the seam was read as a reset (d3ad364).
+Always check the log file is fresh before starting a capture.
+
+**esptool reset and `serial_capture.py` collide on the USB port:**
+esptool's reset handshake and a running `serial_capture.py` cannot share the USB-Serial/JTAG
+port; a collision parks the chip in the ROM bootloader (`boot:0x22 DOWNLOAD`). Recover with a
+solo `esptool.py --after hard_reset chip_id`, then start captures in the same shell line as the
+flash.
+
+**`gcloud logging read` needs `--project kid-pager`:**
+The shell's default project is another one; the read silently returns other services' logs and
+misses relay output.
+
+**Worktrees created by agents branch from origin/main:**
+A worktree created by an agent branches from origin/main, not the local main; merge conflicts
+against the cleanup and Makefile test lists followed (23 Sep). Push first, or create the
+worktree by hand from main.
 
 ## Finding out what the modem really sends
 
