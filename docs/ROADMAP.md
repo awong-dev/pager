@@ -13,6 +13,22 @@ Details in `docs/V03_PLAN.md` (decisions) and `docs/V03_TASKS.md` (agent-runnabl
 
 Hardware tests still to run are listed in `HARDWARE_TESTING.md`. This is everything else.
 
+## Design needed: input and display power gating (owner, 23 Sep 2026)
+
+The CardKB is polled over I2C every 10 ms while the UI is awake and every wake cycle while asleep,
+and the e-paper panel stays powered between refreshes. Two ways to take both off the idle budget,
+to be designed and decided:
+
+1. **An alternate CardKB 1.1 firmware that is power-saving aware**: the keyboard's own MCU sleeps,
+   raises a wake line on a keypress (into the ESP32's `ext1` mask next to the LIS3DH), and only
+   then is polled.
+2. **Explicit power gating**: cut VCC to both the e-ink (already gated via IO15) and the keyboard
+   until the wake button is pressed; re-init both on wake. Interacts with the 23 Sep finding that
+   the panel controller loses its registers under LTE bursts (a re-init before every refresh now
+   covers that).
+
+Either way the wake button becomes the only always-on input. Power numbers first, then pick.
+
 ## Decisions waiting on the owner
 
 - **Soracom** (`SORACOM_EVAL.md`). If adopted, the pager's TLS and CA handling become unnecessary
