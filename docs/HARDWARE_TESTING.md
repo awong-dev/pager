@@ -78,6 +78,23 @@ that can be read off as a pattern (e.g. `w b w b w b w b ...`) and compared agai
 sequence. The leftmost columns (before the starting column of the `seq` range) never change and
 appear wrong if the reading is off by one.
 
+### Accelerometer (LIS3DH) bench wiring
+
+I2C bus shared with the CardKB, same two pins (`pins.h`'s own bench note next to
+`PAGER_PIN_KB_SDA`: "was 8/9 the other way round") — **not** the other way round:
+
+- SDA -> IO9, SCL -> IO8
+- Address 0x18 (SDO/SA0 tied low). If SDO/SA0 is pulled high instead, the chip answers at 0x19
+  and `i2cscan` shows 0x19, not 0x18 — `accel_init()` looks only at 0x18 and will report "not
+  found" until either the wiring or `PAGER_I2C_ADDR_LIS3DH` (`pins.h`) changes.
+- INT1 -> IO2 (`PAGER_PIN_LIS3DH_INT1`), push-pull, active high, no external pull-up needed.
+- Power from the 3V3 peripheral rail (the one `board_power_init()` turns on by driving GPIO0
+  low) — not directly from a separate 3V3 source.
+
+`i2cscan` is the one-line pre-flight check: expect `0x5F` (CardKB) and `0x18` (or `0x19` per the
+address note above). Neither showing up means wiring, not firmware, before anything else is
+worth trying (A2's `acceltest` will just say "not present").
+
 ## Seen working on hardware
 
 Debug build, v0.2, against the production relay and broker. Google Fi (T-Mobile) and US Mobile
