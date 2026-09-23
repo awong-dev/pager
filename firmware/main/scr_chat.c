@@ -31,6 +31,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 // ---------------------------------------------------------------------------
 // Chat row layout (owner request 2026-09-20: "wrap long messages in the
@@ -144,6 +145,70 @@ bool chat_layout_is_last_row_visible(const int *msg_rows, int count, int rows, i
         }
     }
     return cum >= scroll && cum <= scroll + rows - 1;
+}
+
+// ---------------------------------------------------------------------------
+// Composer viewport (v0.3 task 1.1, docs/V03_PLAN.md §1: "the reply buffer
+// is fine ... the problem is purely the viewport") — pure index arithmetic,
+// no gfx.h/msg.h/ESP-IDF dependency, same split/host-test pattern as the
+// chat row layout block above. The composer render (chat_render(), in the
+// ESP-only section below) measures each codepoint's own advance with
+// gfx_glyph_advance() into an adv[] array and hands it here; this only
+// works out which slice of that array is visible.
+// ---------------------------------------------------------------------------
+
+// Given per-codepoint advances adv[0..n-1] (px), the span available for
+// text (px), and the width of the "…" marker (px), return the index of the
+// first codepoint to draw and whether the marker is needed. Draws the
+// longest suffix that fits; when everything fits, start = 0 and no marker.
+// n == 0 -> start 0, no marker. If the marker itself does not fit in
+// avail_px (a pathologically narrow span), returns n with marker true — the
+// renderer then draws only the marker, no text.
+int chat_composer_viewport(const uint8_t *adv, int n, int avail_px, int marker_px, bool *marker)
+{
+    if (n <= 0) {
+        if (marker) {
+            *marker = false;
+        }
+        return 0;
+    }
+
+    int total = 0;
+    for (int i = 0; i < n; i++) {
+        total += adv[i];
+    }
+    if (total <= avail_px) {
+        // Exact fit (total == avail_px) or plenty of room: the whole text is
+        // visible, no marker needed.
+        if (marker) {
+            *marker = false;
+        }
+        return 0;
+    }
+
+    if (marker) {
+        *marker = true;
+    }
+    int budget = avail_px - marker_px;
+    if (budget <= 0) {
+        return n; // marker alone does not fit either -- draw only it
+    }
+
+    // Walk from the end accumulating advances; the first (further-left)
+    // codepoint that would push the running sum past `budget` stops the
+    // walk -- `start` is left at the index just past it, i.e. the longest
+    // suffix that still fits.
+    int sum = 0;
+    int start = n;
+    for (int i = n - 1; i >= 0; i--) {
+        int next_sum = sum + adv[i];
+        if (next_sum > budget) {
+            break;
+        }
+        sum = next_sum;
+        start = i;
+    }
+    return start;
 }
 
 #ifdef ESP_PLATFORM
