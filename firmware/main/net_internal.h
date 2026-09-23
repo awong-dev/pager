@@ -24,6 +24,7 @@
 
 #include "net_connect_guard.h"
 #include "publish_quiet.h"
+#include "net.h"
 #include "WalterModem.h"
 
 /* ---------------------------------------------------------------------
@@ -53,6 +54,12 @@ extern net_connect_guard_t s_connect_guard;
 extern publish_quiet_gate_t s_publish_quiet;
 extern volatile bool s_mqtt_connected;
 extern volatile bool s_disconnect_edge;
+
+/* RCA_SLEEP_PUBLISH.md §3 instrumentation: xport_lte.cpp's 12-entry publish
+ * ring (see its own module comment above s_publish_ring). net.cpp's
+ * net_get_publish_ring() (net.h) forwards to this directly -- always safe to
+ * call regardless of the active transport, same as the state above. */
+uint32_t lte_get_publish_ring(net_publish_ring_entry_t *out, uint32_t cap);
 
 /* The MQTT event handler itself (moved to xport_lte.cpp), registered from
  * net.cpp's net_bringup() and net_bootstrap_attach() via

@@ -160,6 +160,13 @@ static int cmd_mqtttest(int argc, char **argv)
     if (argc == 4 && strcmp(argv[3], "emptyca") == 0) tls_mode = 3;
     bool ok = net_check_mqtt(argv[1], (uint16_t) port, tls_mode);
     printf("mqtttest: %s\n", ok ? "CONNECTED" : "NOT CONNECTED (see log above)");
+    // RCA_SLEEP_PUBLISH.md §3 instrumentation: a natural place to glance at
+    // the vendored library's four "orphaned prompt" counters (PATCHES.md
+    // 1.12) alongside a manual MQTT probe.
+    net_pager_counters_t pc = net_get_pager_counters();
+    printf("modem counters: datatx_retx=%u prompt_orphan=%u buf_drop_queue=%u buf_drop_pool=%u\n",
+           (unsigned) pc.datatx_retx, (unsigned) pc.prompt_orphan, (unsigned) pc.buf_drop_queue,
+           (unsigned) pc.buf_drop_pool);
     return ok ? 0 : 1;
 }
 

@@ -304,3 +304,74 @@ the buffer without effect. Parser-side only, no power effect.
 `DATA_TX_WAIT` command line at all while the modem may still be in data mode. Failing the command
 instead is correct but incomplete on its own — the modem would then eat the *next* AT line — and
 what the Sequans accepts as a prompt abort is not documented in this repo.
+
+## 1.12 DATA_TX_WAIT timeout sends the payload instead of the AT command line, plus RCA §3 instrumentation counters (`src/WalterModem.cpp`, `src/WalterModem.h`, `src/WalterDefines.h`)
+
+Bench evidence settling `docs/RCA_SLEEP_PUBLISH.md` §4 item 2's open question ("what does the
+Sequans accept as a prompt abort — UNKNOWN"), `build/bench-logs/phaseW-prompt.log`:
+
+```
+D (827577) WalterModem: TX: AT+SQNSMQTTPUBLISH=0,"pager/test-pager/up",1,44
+D (827587) WalterModem: RX: \r\n> 
+W (857577) WalterModem: Command time-out (TX) Attempt 1 of 3
+D (857577) WalterModem: TX: AT+SQNSMQTTPUBLISH=0,"pager/test-pager/up",1,44
+D (857587) WalterModem: RX: \r\n+SQNSMQTTPUBLISH: 5\r\n
+D (857587) WalterModem: RX: \r\n\r\n
+D (857587) WalterModem: RX: OK\r\n
+D (857587) WalterModem: RX: \r\n+CME ERROR: 4\r\n
+D (858137) WalterModem: RX: \r\n+SQNSMQTTONPUBLISH:0,5,0\r\n
+```
+
+The modem answered the `> ` prompt and then waited the full 30 s command timeout with **no
+self-timeout of its own** — it was still sitting at the prompt, owed 44 bytes, when
+`_processModemCMD()`'s old retry re-transmitted the 44-byte AT command line itself. The modem
+consumed exactly 5 of those bytes as the promised payload (`AT+SQ`, hence `+SQNSMQTTPUBLISH: 5`
+acking a 5-byte publish) and answered the leftover 39 bytes with `+CME ERROR: 4` (bad
+parameter) — i.e. the *bytes owed to the prompt* are satisfied by whatever the host sends next,
+genuine payload or not, and once satisfied the modem happily reports success on the truncated
+mess. `+SQNSMQTTONPUBLISH:0,5,0` (rc 0 = success) confirms the modem's own bookkeeping believed
+that 5-byte publish succeeded.
+
+**Fix**: `_processModemCMD()`'s `DATA_TX_WAIT`/`TX_WAIT` retry branch, on a **timeout** (not a
+`RETRY_AFTER_ERROR` resend, and only when `cmd->type == WALTER_MODEM_CMD_TYPE_DATA_TX_WAIT &&
+cmd->payload != NULL`): on the FIRST such timeout, send `cmd->payload`/`cmd->payloadSize` bytes
+directly (the same `uart_write_bytes()`/`_uart->write()` the prompt handler itself uses) instead
+of re-transmitting the AT command line, and keep waiting for the normal `OK`. This is a late but
+genuine completion of the original publish if the modem is still at the prompt (as the bench log
+shows happening *by accident* via the old command-line retransmit); if the modem was not actually
+at the prompt, these bytes are read as a bogus command line and answered with `+CME ERROR`/timeout,
+which the existing error/retry path already handles — strictly better than the old behaviour, which
+published the AT command *text* as the message body. On a SECOND timeout (tracked by the new
+`WalterModemCmd::dataTxPayloadRetried` flag, reset to `false` for every new command in
+`_queueModemCMD()`), the command fails outright (`WALTER_MODEM_STATE_TIMEOUT`) instead of trying a
+third time — retrying blind against a modem in an unknown state is what caused the original bug;
+`net.cpp`'s own `DATA_TX_WAIT`-timeout recovery (session teardown/reconnect) is the honest way to
+recover from there, per §4 item 2's "treat a DATA_TX_WAIT timeout as a dead session" rule.
+
+**Power effect**: none beyond the pre-existing 30s-per-attempt command timeout window; the failure
+path now takes at most 2 attempts (~60s) instead of up to 3 (~90s) before `net.cpp`'s reconnect
+recovery runs.
+
+### RCA §3 instrumentation (same patch, no behaviour change)
+
+Four free-running counters, declared in `src/WalterDefines.h` as
+`walter_modem_pager_counters_t`/`walter_modem_pager_counters()` (the read-only accessor,
+`extern "C"`, defined once in `WalterModem.cpp`) so `firmware/main/net.cpp` can expose them to
+`modes.c`'s sleeptest report — the only thing that survives the USB-dead light-sleep window:
+
+- `datatx_retx` — incremented in `_processModemCMD()` (above) each time the payload-instead-of-
+  command-line retransmit runs.
+- `prompt_orphan` — incremented in `_parseRxData()` each time patch 1.11's bare `"> "` `prompt3`
+  case matches. This is the discriminator for whether RCA §2's orphaned-prompt mechanism is what is
+  actually happening on a given bench run.
+- `buf_drop_queue` — incremented in `_queueRxBuffer()` (`WalterModem.cpp`) when the 8-slot
+  `_taskQueue` is full and a fully-parsed buffer is dropped instead of queued.
+- `buf_drop_pool` — incremented in `_getFreeBuffer()` (`WalterModem.cpp`) when the 8-buffer pool is
+  exhausted and a buffer allocation fails.
+
+`firmware/main/xport_lte.cpp` separately keeps a 12-entry RAM ring of recent `mqttPublish()`
+attempts (topic tail, length, issue time, outcome, elapsed ms), exposed via `net_get_publish_ring()`
+(`net.h`) — outside this vendored component, documented in `net.h`'s own comment on
+`net_publish_ring_entry_t`. Both are printed by `modes_debug_sleeptest_report()`
+(`firmware/main/modes.c`) and, for the counters, by the `mqtttest` debug console command
+(`firmware/main/main.c`).

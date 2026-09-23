@@ -24,6 +24,7 @@
 #include "wifi_sta.h"
 
 #include "WalterModem.h"
+#include "WalterDefines.h" // walter_modem_pager_counters() (PATCHES.md 1.12)
 
 #include <string.h>
 #include <stdio.h>
@@ -1361,6 +1362,30 @@ extern "C" uint32_t net_take_oversize_delta(void)
 extern "C" const char *net_get_device_id(void)
 {
     return ident_get_dev_id();
+}
+
+extern "C" net_pager_counters_t net_get_pager_counters(void)
+{
+    // RCA_SLEEP_PUBLISH.md §3 instrumentation: the vendored component's
+    // counters (WalterDefines.h/PATCHES.md 1.12) are transport-independent
+    // (they live inside the WalterModem C++ class this file always links
+    // against, whatever net_xport_active() reports), so this reads them
+    // directly rather than through the xport ops vtable. Power effect: none.
+    walter_modem_pager_counters_t c = walter_modem_pager_counters();
+    net_pager_counters_t out;
+    out.datatx_retx = c.datatx_retx;
+    out.prompt_orphan = c.prompt_orphan;
+    out.buf_drop_queue = c.buf_drop_queue;
+    out.buf_drop_pool = c.buf_drop_pool;
+    return out;
+}
+
+extern "C" uint32_t net_get_publish_ring(net_publish_ring_entry_t *out, uint32_t cap)
+{
+    // RCA_SLEEP_PUBLISH.md §3 instrumentation: the ring lives in
+    // xport_lte.cpp (the only transport this bug applies to); read directly,
+    // same reasoning as net_get_pager_counters() above.
+    return lte_get_publish_ring(out, cap);
 }
 
 extern "C" bool net_check_sim(void)

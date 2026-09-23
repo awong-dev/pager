@@ -255,6 +255,51 @@ bool net_publish_raw(const char *topic, uint8_t *buf, uint16_t len, uint8_t qos)
  * about to happen, up to max_wait_ms. */
 uint32_t net_publish_quiet_wait_ms(uint32_t max_wait_ms);
 
+/* RCA_SLEEP_PUBLISH.md §3 instrumentation: the vendored walter-modem
+ * component's four free-running "orphaned prompt" counters (PATCHES.md
+ * 1.12), read-only here. modes.c's sleeptest report prints these so a
+ * bench run's evidence survives the USB-dead light-sleep window (the counters
+ * themselves live in RAM inside the component and reset only on a full
+ * reset/power cycle, same as the rest of RAM). Power effect: none -- four
+ * plain reads. */
+typedef struct {
+    uint32_t datatx_retx;    /* patch 1.12: DATA_TX_WAIT timeouts answered by
+                              * sending the payload instead of the AT command line */
+    uint32_t prompt_orphan;  /* patch 1.11's bare "> " prompt case matched --
+                              * the discriminator for RCA §2 */
+    uint32_t buf_drop_queue; /* a fully-parsed RX buffer dropped, 8-slot queue full */
+    uint32_t buf_drop_pool;  /* an RX buffer allocation failed, 8-buffer pool exhausted */
+} net_pager_counters_t;
+net_pager_counters_t net_get_pager_counters(void);
+
+/* RCA_SLEEP_PUBLISH.md §3 instrumentation: a 12-entry ring of the most recent
+ * net_publish()/net_publish_raw() attempts over the LTE transport (topic
+ * tail, byte length, issue time, outcome and how long the blocking AT round
+ * trip took), for the same sleeptest report. Always safe to call regardless
+ * of the active transport (net_xport_active()) -- empty if nothing has
+ * published over LTE yet this boot. Entries are returned oldest-first, up to
+ * `cap` of them; the return value is the number actually written (<= cap and
+ * <= however many have occurred, whichever is smaller). Power effect: none
+ * -- a RAM copy, no AT traffic. */
+typedef enum {
+    NET_PUBLISH_RING_OK = 0,
+    NET_PUBLISH_RING_TIMEOUT,
+    NET_PUBLISH_RING_ERROR,
+} net_publish_outcome_t;
+
+typedef struct {
+    int64_t issued_us;               /* esp_timer_get_time() at issue */
+    char topic_tail[8];              /* last up to 7 chars of the topic + NUL */
+    uint16_t len;
+    net_publish_outcome_t outcome;
+    uint32_t elapsed_ms;             /* wall time the blocking mqttPublish() call took */
+} net_publish_ring_entry_t;
+/* Capacity of the ring xport_lte.cpp maintains and net_get_publish_ring()
+ * reads -- shared here so callers can size a snapshot array without a
+ * separate xport_lte.cpp-only constant. */
+#define NET_PUBLISH_RING_MAX 12
+uint32_t net_get_publish_ring(net_publish_ring_entry_t *out, uint32_t cap);
+
 /* Register the callback invoked once per inbound MQTT message, after net.c
  * has already bounds-checked it (§3.4/F6) and fetched it via mqttReceive().
  * Runs on the modem library's _eventProcessingTask (L4), not an ISR and not
@@ -432,20 +477,36 @@ bool net_modem_busy(void);
  * different modem-side transaction. */
 bool net_connect_in_flight(void);
 
-/* 23 Sep release-build fix (44-byte publish corruption on the bench, M4):
+/* 23 Sep release-build fix, corrected by docs/RCA_SLEEP_PUBLISH.md (23 Sep):
  * true from the moment net_publish()/net_publish_raw() issues a publish
  * until the matching WALTER_MODEM_MQTT_EVENT_PUBLISHED event runs
  * (publish_quiet_gate_done()), bounded by PUBLISH_SLEEP_HOLD_MAX_US (15s,
  * see publish_quiet.h) so a lost PUBLISHED URC cannot pin the device awake
  * indefinitely -- same shape as net_connect_in_flight() just above, for the
- * publish window instead of the connect window. Root cause this covers:
- * net_sleep() deasserted RTS after the modem's '>' data prompt but before
- * the payload bytes went out, so the modem was left waiting for 44 bytes of
- * payload; msg_pump()'s retry then queued a new AT+SQNSMQTTPUBLISH command
- * line that was itself exactly 44 characters, and the modem consumed it as
- * the outstanding payload and published it verbatim. modes.c's skip_sleep
- * ORs this in; deliberately NOT folded into pump_blocked, same reasoning as
- * net_connect_in_flight()'s own doc comment above. */
+ * publish window instead of the connect window.
+ *
+ * What this hold actually does (RCA §4 item 3, §1's original-mechanism
+ * table): net_publish()/net_publish_raw()'s underlying mqttPublish() call is
+ * SYNCHRONOUS -- it blocks the calling task until the whole AT round trip
+ * completes -- so a publish issued from the *modes* task (the `/up` ack via
+ * msg_pump(), `/status` heartbeats, `/loc`, sms_log, book) already cannot
+ * reach net_sleep() while this hold would apply; RCA §1 refutes "our own
+ * light sleep during our own publish" as that bug's mechanism. This hold's
+ * real, currently-unobserved effect is closing the *event-task* publish
+ * window instead -- `/status` on the incoming-page mode edge and setup.c's
+ * `/up` setup ack, both issued from WalterModem's own _eventProcessingTask,
+ * which net_sleep() (running on the modes task, priority 1 against the event
+ * task's priority 4) previously had no guard against at all outside of
+ * s_handler_busy's incidental MESSAGE/CONNECTED coverage.
+ *
+ * The observed bench corruption (a 44-byte publish's own retried AT command
+ * line consumed as its payload, tripping the relay's bad-sig check) is NOT
+ * this race: it is the "> " data prompt being orphaned inside the parser
+ * (RCA §2) followed by the old unconditional command-line retry on timeout
+ * (RCA §4 item 2) -- fixed by patches 1.11 and 1.12 (PATCHES.md), not by
+ * this gate. modes.c's skip_sleep ORs this in; deliberately NOT folded into
+ * pump_blocked, same reasoning as net_connect_in_flight()'s own doc comment
+ * above. */
 bool net_publish_in_flight(void);
 
 /* v0.2 M3 (22 Sep evening): true once net_session_up() has failed

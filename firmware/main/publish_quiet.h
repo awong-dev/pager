@@ -44,16 +44,32 @@ extern "C" {
  * driver stack. */
 #define PUBLISH_QUIET_WINDOW_US ((int64_t) 300 * 1000)
 
-/* 23 Sep release-build fix (docs/PROTOCOL.md field failure, "44-byte publish
- * corruption"): net_sleep() must not deassert RTS while a publish's AT round
- * trip (command line -> '>' data prompt -> payload bytes -> OK/ERROR) is
- * still in flight, or the modem is left waiting for payload bytes that never
- * arrive — the next retry's own command line then gets consumed as that
- * leftover payload (observed on the bench: a 44-byte retried command line
- * was accepted as the 44-byte payload the first attempt had promised, and
- * published verbatim, tripping the relay's bad-sig check). 15s is bounded
- * well BELOW the vendored library's own worst-case command timeout
- * (CONFIG_WALTER_MODEM_CMD_TIMEOUT_MS, 30s/attempt, up to
+/* 23 Sep release-build fix, corrected by docs/RCA_SLEEP_PUBLISH.md: net_sleep()
+ * should not deassert RTS while a publish's AT round trip (command line ->
+ * '>' data prompt -> payload bytes -> OK/ERROR) is still in flight, since
+ * that is exactly the kind of RTS/flow-control choreography the RCA's
+ * candidate (c) blames for bytes lost on the wire at a light-sleep boundary
+ * (PLAUSIBLE, not confirmed by logs). This gate's real, currently measured
+ * effect is on the *event-task* publishes (`/status` on the incoming-page
+ * mode edge, setup.c's `/up` setup ack) -- those run on WalterModem's own
+ * _eventProcessingTask, which net_sleep() (modes task) had no guard against
+ * at all before RCA §4 item 3, outside of s_handler_busy's incidental
+ * MESSAGE/CONNECTED coverage.
+ *
+ * What this gate does NOT explain: the specific bench failure that motivated
+ * it ("44-byte publish corruption", a 44-byte retried AT command line
+ * consumed as its own payload and published verbatim, tripping the relay's
+ * bad-sig check) was an `/up` ack from msg_pump() on the *modes* task --
+ * mqttPublish() is synchronous, so that task is blocked inside it for the
+ * whole timeout and cannot reach net_sleep() regardless of this gate (RCA
+ * §1). The actual mechanism there is the modem's "> " data prompt being
+ * orphaned inside the vendored library's own parser (RCA §2) and the
+ * library's old unconditional command-line retry on a DATA_TX_WAIT timeout
+ * (RCA §4 item 2) -- both fixed in the vendored component (PATCHES.md 1.11,
+ * 1.12), independent of this gate.
+ *
+ * 15s is bounded well BELOW the vendored library's own worst-case command
+ * timeout (CONFIG_WALTER_MODEM_CMD_TIMEOUT_MS, 30s/attempt, up to
  * WALTER_MODEM_DEFAULT_CMD_ATTEMPTS retries) on purpose: this hold only needs
  * to outlast a NORMAL publish round trip (the data-prompt exchange plus
  * whatever RRC reconnect time it costs if the modem had gone idle -- a few

@@ -61,6 +61,35 @@
 // defined once in WalterModem.cpp so this component still builds standalone.
 extern "C" void walter_modem_block_tick(void);
 
+// PAGER PATCH: (RCA_SLEEP_PUBLISH.md §3 / PATCHES.md 1.12) four free-running,
+// never-reset counters for the "orphaned > data prompt" investigation. All
+// four are read-only outside this component; firmware/main/net.cpp exposes
+// them to modes.c's sleeptest report (the only thing that survives the
+// USB-dead light-sleep window) via walter_modem_pager_counters(). No
+// behaviour change: increments only, no extra AT traffic, no power effect.
+//   datatx_retx    - WalterModem.cpp's _processModemCMD(): incremented each
+//                    time a DATA_TX_WAIT command's timeout sends the payload
+//                    bytes instead of re-transmitting the AT command line
+//                    (patch 1.12).
+//   prompt_orphan  - WalterModem.cpp's _parseRxData(): incremented each time
+//                    the bare, already-stripped "> " prompt (patch 1.11's
+//                    prompt3 case) is recognised -- the discriminator for
+//                    whether the orphaned-prompt mechanism (RCA §2) is what
+//                    is actually happening on the bench.
+//   buf_drop_queue - WalterModem.cpp's _queueRxBuffer(): incremented when the
+//                    8-slot _taskQueue is full and a fully-parsed buffer is
+//                    dropped instead of queued.
+//   buf_drop_pool  - WalterModem.cpp's _getFreeBuffer(): incremented when the
+//                    8-buffer pool is exhausted and a buffer allocation fails.
+typedef struct {
+  uint32_t datatx_retx;
+  uint32_t prompt_orphan;
+  uint32_t buf_drop_queue;
+  uint32_t buf_drop_pool;
+} walter_modem_pager_counters_t;
+
+extern "C" walter_modem_pager_counters_t walter_modem_pager_counters(void);
+
 // NOLINT(readability-identifier-naming.PrivateFunctionPrefix)
 /**
  * @brief Convert a digit to a string literal.

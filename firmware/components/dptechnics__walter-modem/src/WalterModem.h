@@ -3122,6 +3122,16 @@ typedef struct sWalterModemCmd {
   TickType_t attemptStart = 0;
 
   /**
+   * @brief PAGER PATCH 1.12: true once this command's first DATA_TX_WAIT
+   * timeout has already sent the payload bytes instead of re-transmitting
+   * the AT command line (see _processModemCMD() and PATCHES.md 1.12). Reset
+   * to false for every new command in _queueModemCMD(). A second timeout
+   * after this is already true fails the command outright instead of
+   * retrying a second time.
+   */
+  bool dataTxPayloadRetried = false;
+
+  /**
    * @brief A lock and condition variable used to implement the blocking API.
    */
   WalterModemCmdLock cmdLock = {};

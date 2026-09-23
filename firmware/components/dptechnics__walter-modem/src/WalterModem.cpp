@@ -81,6 +81,27 @@
 // override) when vendored elsewhere.
 extern "C" __attribute__((weak)) void walter_modem_block_tick(void) {}
 
+// PAGER PATCH: (RCA_SLEEP_PUBLISH.md §3 / PATCHES.md 1.12) storage for the
+// four counters declared in WalterDefines.h. Plain uint32_t, not atomics:
+// every increment site runs on this component's own single UART/URC
+// processing task, never concurrently with this accessor's read (a torn
+// 32-bit read on ESP32-S3 is not a correctness concern for a diagnostic
+// counter that only needs to be "close enough" once per sleeptest report).
+static uint32_t s_pagerCntDataTxRetx = 0;
+static uint32_t s_pagerCntPromptOrphan = 0;
+static uint32_t s_pagerCntBufDropQueue = 0;
+static uint32_t s_pagerCntBufDropPool = 0;
+
+extern "C" walter_modem_pager_counters_t walter_modem_pager_counters(void)
+{
+  walter_modem_pager_counters_t c;
+  c.datatx_retx = s_pagerCntDataTxRetx;
+  c.prompt_orphan = s_pagerCntPromptOrphan;
+  c.buf_drop_queue = s_pagerCntBufDropQueue;
+  c.buf_drop_pool = s_pagerCntBufDropPool;
+  return c;
+}
+
 #pragma region CONFIG
 
 /**
@@ -1051,6 +1072,10 @@ WalterModemBuffer* WalterModem::_getFreeBuffer(void)
 
   if(chosenBuf == NULL) {
     ESP_LOGE("WalterModem", "No free buffers");
+    /* PAGER PATCH: (RCA_SLEEP_PUBLISH.md §3 / PATCHES.md 1.12) instrumentation
+     * only, no behaviour change. See buf_drop_pool's doc comment in
+     * WalterDefines.h. */
+    s_pagerCntBufDropPool++;
   }
 
   return chosenBuf;
@@ -1138,6 +1163,10 @@ void WalterModem::_queueRxBuffer()
          */
         _parserData.buf->free = true;
         ESP_LOGW("WalterParser", "unable to queue the buffer");
+        /* PAGER PATCH: (RCA_SLEEP_PUBLISH.md §3 / PATCHES.md 1.12)
+         * instrumentation only, no behaviour change. See buf_drop_queue's doc
+         * comment in WalterDefines.h. */
+        s_pagerCntBufDropQueue++;
       }
     } else {
       /* Release empty buffers immediately */
@@ -1493,6 +1522,15 @@ void WalterModem::_parseRxData(char* rx_data, size_t rx_len)
     bool prompt3 = (_parserData.buf && _parserData.buf->size == 2 &&
                     _parserData.buf->data[0] == '>' && _parserData.buf->data[1] == ' ');
 
+    if(prompt3) {
+      /* PAGER PATCH: (RCA_SLEEP_PUBLISH.md §3 / PATCHES.md 1.12)
+       * instrumentation only, no behaviour change. This is the discriminator
+       * for whether the orphaned-prompt mechanism (RCA §2, fixed by patch
+       * 1.11 above) is actually occurring on the bench: see prompt_orphan's
+       * doc comment in WalterDefines.h. */
+      s_pagerCntPromptOrphan++;
+    }
+
     if(prompt1 || prompt2 || prompt3 || nullbyte) {
       _queueRxBuffer();
     }
@@ -1717,6 +1755,7 @@ WalterModemCmd* WalterModem::_queueModemCMD(
   cmd->state = WALTER_MODEM_CMD_STATE_NEW;
   cmd->attempt = 0;
   cmd->attemptStart = 0;
+  cmd->dataTxPayloadRetried = false; // PAGER PATCH 1.12
   cmd->stringsBuffer = stringsBuffer;
   *(cmd->rsp) = {};
 
@@ -1792,6 +1831,69 @@ TickType_t WalterModem::_processModemCMD(WalterModemCmd* cmd, bool queueError)
                    cmd->maxAttempts);
         }
         _receivingPayload = false;
+
+        /*
+         * PAGER PATCH 1.12 (docs/RCA_SLEEP_PUBLISH.md §4 item 2,
+         * build/bench-logs/phaseW-prompt.log): a DATA_TX_WAIT command times
+         * out with no self-timeout on the modem's own "> " prompt (30s+ with
+         * no reply, per the bench log). The old code below re-transmitted
+         * the same AT command line, which the modem -- still sitting at the
+         * prompt, owed cmd->payloadSize bytes from the first attempt --
+         * consumed as the payload and published verbatim (patch 1.11 closes
+         * the parser-side cause of the orphaned prompt; this closes the
+         * retry-side consequence for whatever orphans still happen for a
+         * different reason, e.g. candidate (c) in the RCA, bytes lost on the
+         * wire/at the light-sleep boundary).
+         *
+         * On the FIRST timeout of a DATA_TX_WAIT command that still has a
+         * payload, send the payload bytes instead of the AT command line: if
+         * the modem is genuinely still at the prompt, this is a late but
+         * correct completion of the original publish (exactly what the
+         * phaseW-prompt.log bench run showed happening BY ACCIDENT via the
+         * old command-line retransmit -- +SQNSMQTTPUBLISH: 5 acked the
+         * publish before the leftover 3 bytes of the retransmitted command
+         * line drew +CME ERROR: 4). If the modem was not actually at the
+         * prompt, these bytes are read as a bogus command line and answered
+         * with +CME ERROR/timeout, which the existing error/retry path below
+         * already handles -- strictly better than the old behaviour, which
+         * published the AT command text as the message body.
+         *
+         * On a SECOND timeout (this already happened once for this command)
+         * the command fails outright instead of trying a third time:
+         * retrying blind against a modem in an unknown state is what caused
+         * the original bug, and net.cpp's DATA_TX_WAIT-timeout recovery
+         * (session teardown/reconnect, RCA §4 item 2) is the honest way to
+         * recover from here.
+         *
+         * Power effect: none beyond the pre-existing 30s-per-attempt command
+         * timeout window; the failure path now takes at most 2 attempts (up
+         * to ~60s) instead of up to 3 (~90s) before that recovery runs.
+         */
+        if(timedOut && cmd->type == WALTER_MODEM_CMD_TYPE_DATA_TX_WAIT && cmd->payload != NULL) {
+          if(!cmd->dataTxPayloadRetried) {
+            cmd->dataTxPayloadRetried = true;
+            s_pagerCntDataTxRetx++; // RCA §3 instrumentation, see WalterDefines.h
+            ESP_LOGW("WalterModem",
+                     "DATA_TX_WAIT time-out: sending %u payload byte(s) instead of "
+                     "re-transmitting the AT command line (see PATCHES.md 1.12)",
+                     (unsigned) cmd->payloadSize);
+
+#ifdef ARDUINO
+            _uart->write(cmd->payload, cmd->payloadSize);
+#else
+            uart_write_bytes(_uartNo, cmd->payload, cmd->payloadSize);
+#endif
+
+            cmd->attempt += 1;
+            cmd->attemptStart = xTaskGetTickCount();
+            cmd->state = WALTER_MODEM_CMD_STATE_PENDING;
+            return WALTER_MODEM_CMD_TIMEOUT_TICKS;
+          } else {
+            _finishModemCMD(cmd, WALTER_MODEM_STATE_TIMEOUT);
+            break;
+          }
+        }
+
         if(cmd->attempt >= cmd->maxAttempts) {
           _finishModemCMD(cmd, timedOut ? WALTER_MODEM_STATE_TIMEOUT : WALTER_MODEM_STATE_ERROR);
         } else {

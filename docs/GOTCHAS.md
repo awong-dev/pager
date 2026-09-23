@@ -173,13 +173,29 @@ uplink/write collision.
 **Symptom:** relay logs `SECURITY bad-sig` with `first64=b'AT+SQNSMQTTPUBLISH...'` — the modem's
 outbound payload is the text of the publish command instead of the message bytes.
 
-**Cause (release build only):** publish command issued → modem `>` prompt waiting for payload →
-device light-sleeps (RTS deasserted) before payload bytes go out → library timeout → msg_pump
-retry → modem still owed N bytes takes the retry's N-character command line as the payload. Debug
-build cannot show it (never sleeps).
+**Cause (root-caused in `docs/RCA_SLEEP_PUBLISH.md`, release build only, one bench occurrence
+"solved by accident" in `build/bench-logs/phaseW-prompt.log`):** NOT the device light-sleeping
+mid-publish — the `/up` ack this bug hit is issued from `msg_pump()` on the modes task, and
+`mqttPublish()` is synchronous, so that task is blocked inside it for the whole 30 s command
+timeout and cannot reach `net_sleep()` at all (RCA §1). The real mechanism is in the vendored
+walter-modem component: the modem's `"> "` data prompt arrives with its leading CRLF split from a
+buffered residue by an interleaved URC or a light-sleep-boundary byte loss, so the library's parser
+(`_parseRxData()`) never recognises it as the prompt (RCA §2) — the modem is left sitting at the
+prompt, owed N payload bytes, with **no timeout of its own** on the prompt (confirmed on the bench:
+it waited the full 30 s). The library's old retry logic then re-transmitted the same N-character AT
+command line, which the modem consumed as the outstanding payload and published verbatim.
 
-**Rule:** hold skip_sleep while a publish is in flight, bounded 15 s (net_publish_in_flight(),
-publish_quiet.h, 985a343). The debug build cannot show this issue; catch it in release soak tests.
+**Rule:** two vendored-component patches (`firmware/components/dptechnics__walter-modem/PATCHES.md`):
+patch 1.11 recognises the bare, already-stripped `"> "` prompt so it is not orphaned in the first
+place; patch 1.12 changes the timeout retry itself — a `DATA_TX_WAIT` command's first timeout now
+sends the payload bytes (not the AT command line) in case the modem is still genuinely at the
+prompt, and a second timeout fails the command outright rather than retrying blind a third time.
+`net_publish_in_flight()`/`publish_quiet.h`'s skip-sleep hold (985a343, 23 Sep) is real but guards a
+different, narrower window (the event-task publishes, e.g. `/status` on the incoming-page edge) —
+see that function's own doc comment in `net.h` for what it does and does not explain. The debug
+build cannot show this issue (`sleeptest`'s own light-sleep window is the closest analogue); catch
+it in release soak tests, and watch the `datatx_retx`/`prompt_orphan` counters (PATCHES.md 1.12) if
+it recurs.
 
 ## The SSD1680 two-plane differential update
 

@@ -1072,7 +1072,9 @@ void modes_debug_sleeptest_start(uint32_t minutes, uint32_t yield_ms_override, u
 // The report as text, so it can be kept in NVS: after a sleep window the USB
 // port often does not re-enumerate until the pager is reset, and a reset
 // would otherwise lose everything that was recorded.
-static char s_st_text[1800];
+// RCA_SLEEP_PUBLISH.md §3: raised from 1800 to 2400 for the ~400 chars the
+// four library counters and the 12-entry publish ring add below.
+static char s_st_text[2400];
 
 static void st_appendf(size_t *n, const char *fmt, ...)
 {
@@ -1173,6 +1175,31 @@ void modes_debug_sleeptest_report(void)
     if (ne == 0) {
         st_appendf(&n, "  no events: nothing was received during the window or the %u s after it closed\n",
                    (unsigned) ST_GRACE_S);
+    }
+    // RCA_SLEEP_PUBLISH.md §3 instrumentation: the vendored library's four
+    // "orphaned prompt" counters (PATCHES.md 1.12) and xport_lte.cpp's
+    // publish ring, appended so a bench run's evidence survives the
+    // USB-dead sleep window -- this text (not just the log line below) is
+    // what sleeptest_save() writes to NVS.
+    net_pager_counters_t pc = net_get_pager_counters();
+    st_appendf(&n, "modem counters: datatx_retx=%u prompt_orphan=%u buf_drop_queue=%u buf_drop_pool=%u\n",
+               (unsigned) pc.datatx_retx, (unsigned) pc.prompt_orphan, (unsigned) pc.buf_drop_queue,
+               (unsigned) pc.buf_drop_pool);
+    net_publish_ring_entry_t ring[NET_PUBLISH_RING_MAX];
+    uint32_t nring = net_get_publish_ring(ring, NET_PUBLISH_RING_MAX);
+    if (nring == 0) {
+        st_appendf(&n, "publish ring: empty\n");
+    } else {
+        st_appendf(&n, "publish ring (%u entr%s, oldest first):\n", (unsigned) nring, nring == 1 ? "y" : "ies");
+        for (uint32_t i = 0; i < nring; i++) {
+            const net_publish_ring_entry_t *r = &ring[i];
+            const char *outcome = (r->outcome == NET_PUBLISH_RING_OK)        ? "OK"
+                                  : (r->outcome == NET_PUBLISH_RING_TIMEOUT) ? "TIMEOUT"
+                                                                              : "ERROR";
+            st_appendf(&n, "  +%4d s  ...%-7s %4u B  %-7s %4u ms\n",
+                       (int) ((r->issued_us - s_st_start_us) / 1000000), r->topic_tail, (unsigned) r->len,
+                       outcome, (unsigned) r->elapsed_ms);
+        }
     }
     ESP_LOGI(TAG, "sleeptest report:\n%s", s_st_text);
     if (now >= s_st_until_us) {
@@ -1820,14 +1847,19 @@ void modes_run(void)
         // lost CONNACK cannot pin the device awake indefinitely -- see
         // net_connect_in_flight()'s own doc comment (net.h) for why this
         // feeds skip_sleep only, not pump_blocked. OR (23 Sep release-build
-        // fix, M4) net_publish_in_flight(): the CONNECT window above was
-        // fixed but a publish has the exact same RTS-vs-payload race --
-        // observed on the bench (phaseS-release-boot.log): net_sleep()
-        // deasserted RTS right after the modem's '>' data prompt but before
-        // the 44 payload bytes went out, so the retried
-        // `AT+SQNSMQTTPUBLISH=0,"pager/test-pager/up",1` command line (also
-        // exactly 44 characters) got consumed as that outstanding payload and
-        // published verbatim, tripping the relay's bad-sig check. Bounded by
+        // fix, M4; mechanism corrected by docs/RCA_SLEEP_PUBLISH.md)
+        // net_publish_in_flight(): closes the same RTS-vs-in-flight-AT-
+        // transaction window net_connect_in_flight() closes above, but for
+        // a publish rather than a connect -- see net_publish_in_flight()'s
+        // own doc comment (net.h) for exactly which publishes this guards
+        // (the event-task ones) and which bug it does NOT explain (the
+        // bench's "44-byte publish corruption": an `/up` ack from the
+        // *modes* task, which mqttPublish()'s synchronous block already
+        // keeps out of net_sleep() regardless of this term -- RCA §1). That
+        // bug's real mechanism -- the modem's "> " data prompt orphaned
+        // inside the vendored library's parser, then its old command-line
+        // retry on timeout -- is fixed in the vendored component itself
+        // (PATCHES.md 1.11, 1.12), not by this flag. Bounded by
         // PUBLISH_SLEEP_HOLD_MAX_US (15s, publish_quiet.h) so a lost
         // PUBLISHED URC cannot pin the device awake indefinitely.
         bool btn_busy = input_button_busy();

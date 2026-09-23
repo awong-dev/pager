@@ -108,6 +108,53 @@ net_connect_guard_t s_connect_guard;
 // matters for the panel).
 publish_quiet_gate_t s_publish_quiet;
 
+// RCA_SLEEP_PUBLISH.md §3 instrumentation: a 12-entry RAM ring of the most
+// recent net_publish()/net_publish_raw() attempts (topic tail, length, issue
+// time, outcome, blocking-call elapsed time), read by modes.c's sleeptest
+// report via net_get_publish_ring() (net.cpp forwards to
+// lte_get_publish_ring() below, net_internal.h). RAM only, not
+// RTC_DATA_ATTR: sleeptest only light-sleeps and reads this right before its
+// own deliberate hard reset (the report is saved to NVS text before that
+// reset), never across a real deep sleep. No behaviour change: this only
+// records the outcome of a publish this file was already going to attempt.
+#define PUBLISH_RING_N NET_PUBLISH_RING_MAX
+static net_publish_ring_entry_t s_publish_ring[PUBLISH_RING_N];
+static uint32_t s_publish_ring_next = 0;  // next slot to write (wraps)
+static uint32_t s_publish_ring_count = 0; // number of valid entries, saturates at PUBLISH_RING_N
+
+static void publish_ring_record(const char *topic, uint16_t len, int64_t issued_us,
+                                 WalterModemState result, int64_t elapsed_us)
+{
+    net_publish_ring_entry_t *e = &s_publish_ring[s_publish_ring_next];
+    e->issued_us = issued_us;
+    size_t tlen = strlen(topic);
+    const char *tail = (tlen > sizeof(e->topic_tail) - 1) ? topic + tlen - (sizeof(e->topic_tail) - 1) : topic;
+    snprintf(e->topic_tail, sizeof(e->topic_tail), "%s", tail);
+    e->len = len;
+    e->outcome = (result == WALTER_MODEM_STATE_OK)        ? NET_PUBLISH_RING_OK
+                 : (result == WALTER_MODEM_STATE_TIMEOUT) ? NET_PUBLISH_RING_TIMEOUT
+                                                           : NET_PUBLISH_RING_ERROR;
+    e->elapsed_ms = (uint32_t) (elapsed_us / 1000);
+    s_publish_ring_next = (s_publish_ring_next + 1) % PUBLISH_RING_N;
+    if (s_publish_ring_count < PUBLISH_RING_N) {
+        s_publish_ring_count = s_publish_ring_count + 1;
+    }
+}
+
+// net_internal.h declares this for net.cpp's net_get_publish_ring() to call.
+// Returns entries oldest-first.
+uint32_t lte_get_publish_ring(net_publish_ring_entry_t *out, uint32_t cap)
+{
+    uint32_t n = (s_publish_ring_count < cap) ? s_publish_ring_count : cap;
+    // Oldest valid entry is s_publish_ring_next when the ring is full;
+    // when it is not yet full, the oldest entry is always slot 0.
+    uint32_t start = (s_publish_ring_count < PUBLISH_RING_N) ? 0 : s_publish_ring_next;
+    for (uint32_t i = 0; i < n; i++) {
+        out[i] = s_publish_ring[(start + i) % PUBLISH_RING_N];
+    }
+    return n;
+}
+
 // v0.2 §9.4 (session liveness / silent-resume repair, net_service_session()).
 // All written from pager_mqtt_event_handler() (_eventProcessingTask) and/or
 // net_service_session() (modes_run()'s own task) -- same "single-word,
@@ -405,15 +452,36 @@ static bool lte_publish(const char *topic, char *buf, uint16_t len, uint8_t qos)
                  (unsigned) len, (unsigned) PAGER_MAX_PAYLOAD);
         return false;
     }
+    // RCA_SLEEP_PUBLISH.md §4 item 3: mark the publish in flight BEFORE the
+    // command is queued, not after mqttPublish() returns. mqttPublish() is
+    // synchronous (no cb passed, _returnAfterReply() blocks this call for
+    // the whole AT round trip) -- the old ordering called
+    // publish_quiet_gate_issued() only once that whole round trip had
+    // already completed, so the gate never actually covered the transaction
+    // it exists to protect (985a343's no-op, per the RCA §1 table). Moving
+    // it here closes the event-task publish window (real, previously
+    // unobserved -- setup.c:827 and modes.c's set_mode()->publish_status_online()
+    // both call in from the modem event task); it does NOT fix the
+    // corrupted-publish bug itself -- RCA §1 shows the ack publish this bug
+    // hits blocks the *modes* task for the full timeout and cannot reach
+    // net_sleep() regardless of this gate. That bug is patches 1.11/1.12.
+    int64_t issued_us = esp_timer_get_time();
+    publish_quiet_gate_issued(&s_publish_quiet, issued_us);
+    WalterModemRsp rsp = {};
     // L6: mqttPublish() takes non-const uint8_t*; publish from a mutable buffer.
-    bool ok = WalterModem::mqttPublish(topic, (uint8_t *) buf, len, qos);
+    bool ok = WalterModem::mqttPublish(topic, (uint8_t *) buf, len, qos, &rsp);
     if (ok) {
         s_last_uplink_us = esp_timer_get_time(); // §9.4: successful publish resets the idle clock
-        // 23 Sep fix: the AT+SQNSMQTTPUBLISH round trip is now outstanding;
         // matching publish_quiet_gate_done() call is the PUBLISHED event
-        // above.
-        publish_quiet_gate_issued(&s_publish_quiet, esp_timer_get_time());
+        // handler above (the later +SQNSMQTTONPUBLISH URC/OK/ERROR).
+    } else {
+        // The AT command itself never queued successfully (synchronous
+        // ERROR/TIMEOUT) -- no PUBLISHED URC will ever arrive to clear this
+        // one, so undo the issued() above here instead of leaking the
+        // in-flight count for up to PUBLISH_SLEEP_HOLD_MAX_US.
+        publish_quiet_gate_done(&s_publish_quiet, esp_timer_get_time());
     }
+    publish_ring_record(topic, len, issued_us, rsp.result, esp_timer_get_time() - issued_us);
     return ok;
 }
 
@@ -433,12 +501,23 @@ static bool lte_publish_raw(const char *topic, uint8_t *buf, uint16_t len, uint8
     // i.e. exactly buf_size raw bytes, no NUL-termination or escaping
     // applied to the payload. Same call as net_publish() above, just typed
     // for a CBOR byte buffer instead of a text one.
-    bool ok = WalterModem::mqttPublish(topic, buf, len, qos);
+    //
+    // RCA_SLEEP_PUBLISH.md §4 item 3: same issued-before-queued ordering as
+    // lte_publish() above, see that function's own comment for why.
+    int64_t issued_us = esp_timer_get_time();
+    publish_quiet_gate_issued(&s_publish_quiet, issued_us);
+    WalterModemRsp rsp = {};
+    bool ok = WalterModem::mqttPublish(topic, buf, len, qos, &rsp);
     if (ok) {
         s_last_uplink_us = esp_timer_get_time(); // §9.4: successful publish resets the idle clock
-        // 23 Sep fix: see net_publish()'s own comment above.
-        publish_quiet_gate_issued(&s_publish_quiet, esp_timer_get_time());
+        // matching publish_quiet_gate_done() call is the PUBLISHED event
+        // handler above.
+    } else {
+        // See lte_publish()'s own comment: no PUBLISHED URC is coming for a
+        // publish that never queued successfully, so undo issued() here.
+        publish_quiet_gate_done(&s_publish_quiet, esp_timer_get_time());
     }
+    publish_ring_record(topic, len, issued_us, rsp.result, esp_timer_get_time() - issued_us);
     return ok;
 }
 
