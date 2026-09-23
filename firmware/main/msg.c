@@ -296,7 +296,8 @@ size_t msghist_record_encode(const msg_t *m, uint32_t seq, uint8_t *out, size_t 
         !w_i64(out, out_cap, &off, m->ts) || !w_u8(out, out_cap, &off, m->dir) ||
         !w_u8(out, out_cap, &off, m->ack_state) || !w_u8(out, out_cap, &off, m->flags) ||
         !w_str_field(out, out_cap, &off, m->id) || !w_str_field(out, out_cap, &off, m->from) ||
-        !w_str_field(out, out_cap, &off, m->to) || !w_u16(out, out_cap, &off, m->body_len) ||
+        !w_str_field(out, out_cap, &off, m->to) || !w_str_field(out, out_cap, &off, m->sndr) ||
+        !w_u16(out, out_cap, &off, m->body_len) ||
         !w_bytes(out, out_cap, &off, m->body, m->body_len)) {
         return 0;
     }
@@ -317,18 +318,29 @@ bool msghist_record_decode(const uint8_t *buf, size_t len, msg_t *out, uint32_t 
     uint32_t seq;
     int64_t ts;
     uint8_t dir, ack_state, flags;
-    char id[MSG_ID_MAX], from[MSG_FROM_MAX], to[MSG_TO_MAX];
+    char id[MSG_ID_MAX], from[MSG_FROM_MAX], to[MSG_TO_MAX], sndr[MSG_FROM_MAX];
     uint16_t body_len;
 
-    if (!r_u8(buf, len, &off, &version) || version != MSGHIST_REC_VERSION) {
+    // G7: accept version 1 (pre-`sndr`) and version 2 (adds `sndr`) alike —
+    // rejecting version 1 here would drop every message a pre-G7 firmware
+    // ever persisted on the first boot after the upgrade (msg.h's own
+    // comment on MSGHIST_REC_VERSION).
+    if (!r_u8(buf, len, &off, &version) || version < 1 || version > MSGHIST_REC_VERSION) {
         return false;
     }
     if (!r_u32(buf, len, &off, &seq) || !r_i64(buf, len, &off, &ts) ||
         !r_u8(buf, len, &off, &dir) || dir > 1 || !r_u8(buf, len, &off, &ack_state) ||
         !r_u8(buf, len, &off, &flags) || !r_str_field(buf, len, &off, id, sizeof(id)) ||
         !r_str_field(buf, len, &off, from, sizeof(from)) ||
-        !r_str_field(buf, len, &off, to, sizeof(to)) || !r_u16(buf, len, &off, &body_len) ||
-        (size_t) body_len > MSG_RAM_BODY_MAX - 1 || off + body_len > len) {
+        !r_str_field(buf, len, &off, to, sizeof(to))) {
+        return false;
+    }
+    sndr[0] = '\0';
+    if (version >= 2 && !r_str_field(buf, len, &off, sndr, sizeof(sndr))) {
+        return false;
+    }
+    if (!r_u16(buf, len, &off, &body_len) || (size_t) body_len > MSG_RAM_BODY_MAX - 1 ||
+        off + body_len > len) {
         return false;
     }
     const uint8_t *body_ptr = buf + off;
@@ -347,6 +359,7 @@ bool msghist_record_decode(const uint8_t *buf, size_t len, msg_t *out, uint32_t 
     memcpy(out->id, id, sizeof(id));
     memcpy(out->from, from, sizeof(from));
     memcpy(out->to, to, sizeof(to));
+    memcpy(out->sndr, sndr, sizeof(sndr));
     memcpy(out->body, body_ptr, body_len);
     out->body[body_len] = '\0';
     out->body_len = body_len;
@@ -444,6 +457,7 @@ static const char *TAG = "msg";
 #define MK_KIND 6
 #define MK_TO 7
 #define MK_N 12
+#define MK_SNDR 51 // G7 (docs/GROUP_CHAT_DESIGN.md §4): group-message author alias, down-only
 
 // ---------------------------------------------------------------------------
 // RTC wiring (msg.h: msg_bind_rtc()).
@@ -1023,6 +1037,10 @@ static bool warm_recover_unread(void)
     entry.ack_state = MSG_ACK_SHOWN; // unread[0] only holds shown-not-read messages
     entry.flags = MSG_F_RECOVERED;
     entry.in_use = true;
+    // G7: entry.sndr is left "" (entry was zero-initialised above) — msg_unread_t
+    // has no sndr field (msg.h's own comment on that struct), so a warm-recovered
+    // group page's author line is lost here; only its `from` (the group alias)
+    // survives. Accepted: this path only runs when msghist itself is unavailable.
     s_lock();
     thread_insert_locked(&entry);
     s_unlock();
@@ -1111,6 +1129,8 @@ static bool cold_recover_unread(void)
         entry.ack_state = MSG_ACK_SHOWN;
         entry.flags = MSG_F_RECOVERED;
         entry.in_use = true;
+        // G7: same "sndr lost" acceptance as warm_recover_unread() above —
+        // msg_unread_t carries no sndr, entry.sndr stays "" (zero-initialised).
         thread_insert_locked(&entry);
     }
     s_unlock();
@@ -1216,7 +1236,8 @@ static bool body_rules_ok(const char *body, size_t body_len)
 // caller's own storage (this function makes its own bounded copies before
 // returning).
 static msg_ingest_t ingest_common(const char *id_str, int64_t ts, const char *from_str,
-                                   const char *body_str, size_t body_len, const msg_t **out)
+                                   const char *sndr_str, const char *body_str, size_t body_len,
+                                   const msg_t **out)
 {
     uint32_t digest = id_digest(id_str);
     char id_copy[MSG_ID_MAX];
@@ -1227,6 +1248,9 @@ static msg_ingest_t ingest_common(const char *id_str, int64_t ts, const char *fr
     char from_copy[MSG_FROM_MAX];
     strncpy(from_copy, from_str, MSG_FROM_MAX - 1);
     from_copy[MSG_FROM_MAX - 1] = '\0';
+    char sndr_copy[MSG_FROM_MAX];
+    strncpy(sndr_copy, sndr_str, MSG_FROM_MAX - 1);
+    sndr_copy[MSG_FROM_MAX - 1] = '\0';
     char body_copy[MSG_RAM_BODY_MAX];
     strncpy(body_copy, body_str, MSG_RAM_BODY_MAX - 1);
     body_copy[MSG_RAM_BODY_MAX - 1] = '\0';
@@ -1274,6 +1298,7 @@ static msg_ingest_t ingest_common(const char *id_str, int64_t ts, const char *fr
     strncpy(entry.id, id_copy, MSG_ID_MAX - 1);
     strncpy(entry.from, from_copy, MSG_FROM_MAX - 1);
     entry.to[0] = '\0'; // down messages have no outbound `to`
+    strncpy(entry.sndr, sndr_copy, MSG_FROM_MAX - 1); // G7: "" unless this is a group page
     strncpy(entry.body, body_copy, MSG_RAM_BODY_MAX - 1);
     entry.body_len = (uint16_t) body_len;
     entry.dir = (uint8_t) MSG_DIR_DOWN;
@@ -1344,6 +1369,7 @@ msg_ingest_t msg_ingest_down_cbor(const uint8_t *buf, uint16_t len, const msg_t 
 
     char id_local[MSG_ID_MAX] = "";
     char from_local[MSG_FROM_MAX] = "";
+    char sndr_local[MSG_FROM_MAX] = ""; // G7: absent/bad -> stays "" (author line falls back to `from`)
     char body_local[MSG_RAM_BODY_MAX] = "";
     int64_t ts = 0;
     size_t body_len = 0;
@@ -1416,6 +1442,28 @@ msg_ingest_t msg_ingest_down_cbor(const uint8_t *buf, uint16_t len, const msg_t 
             from_local[slen] = '\0';
             have_from = true;
             break;
+        }
+        case MK_SNDR: {
+            // G7 (docs/GROUP_CHAT_DESIGN.md §4): absent is normal (every DM
+            // and every pre-G7 page), bad is ignored, never malformed —
+            // length-only, exactly the rule MK_FROM gets above, minus the
+            // "must be present" requirement. Only a truncated/unreadable
+            // CBOR head (cbor_r_skip() also failing) is malformed, which is
+            // already true of every other key.
+            const char *s;
+            size_t slen;
+            if (!cbor_r_tstr(&r, &s, &slen)) { // wrong CBOR type (e.g. a uint): ignore it
+                if (!cbor_r_skip(&r)) {
+                    msg_count_malformed();
+                    return MSG_INGEST_MALFORMED;
+                }
+                break;
+            }
+            if (slen > 0 && slen < sizeof(sndr_local)) {
+                memcpy(sndr_local, s, slen);
+                sndr_local[slen] = '\0';
+            }
+            break; // empty or >16 chars: stays ""
         }
         case MK_BODY: {
             const char *s;
@@ -1522,7 +1570,7 @@ msg_ingest_t msg_ingest_down_cbor(const uint8_t *buf, uint16_t len, const msg_t 
         }
     }
 
-    return ingest_common(id_local, ts, from_local, body_local, body_len, out);
+    return ingest_common(id_local, ts, from_local, sndr_local, body_local, body_len, out);
 }
 
 // ---------------------------------------------------------------------------

@@ -490,6 +490,71 @@ static void test_skip_unknown_key(void)
     CHECK(cbor_r_tstr(&r, &s, &slen) && slen == 4 && memcmp(s, "kept", 4) == 0, "skip: value 2");
 }
 
+/* G7 (docs/GROUP_CHAT_DESIGN.md §4, msg.c's `case MK_SNDR:`): a down `msg`
+ * carrying an unknown-to-this-build key 51 with a `tstr` value must be
+ * skippable exactly like any other unrecognised key, via the same
+ * `default: cbor_r_skip()` arm msg.c's parse loop already uses for
+ * everything it does not know — an un-updated firmware ignores a group
+ * page's `sndr` gracefully rather than choking on it (§4's own "consequence
+ * for rollout" claim). */
+static void test_unknown_key_51_tstr_skipped(void)
+{
+    /* {0: 1, 51: "alice", 2: "kept"} */
+    uint8_t buf[64];
+    cbor_w_t w;
+    cbor_w_init(&w, buf, sizeof(buf));
+    CHECK(cbor_w_map(&w, 3), "key51: map header");
+    CHECK(cbor_w_uint(&w, 0, 1), "key51: key 0");
+    CHECK(cbor_w_tstr(&w, 51, "alice", 5), "key51: key 51 tstr");
+    CHECK(cbor_w_tstr(&w, 2, "kept", 4), "key51: key 2");
+    CHECK(!w.err, "key51: no overflow expected");
+
+    cbor_r_t r;
+    cbor_r_init(&r, buf, w.len);
+    uint32_t n;
+    CHECK(cbor_r_map(&r, &n) && n == 3, "key51: read back map header");
+
+    uint32_t key;
+    uint64_t u;
+    CHECK(cbor_r_key(&r, &key) && key == 0, "key51: key 0");
+    CHECK(cbor_r_uint(&r, &u) && u == 1, "key51: value 0");
+
+    CHECK(cbor_r_key(&r, &key) && key == 51, "key51: key 51 seen");
+    CHECK(cbor_r_skip(&r), "key51: cbor_r_skip over the tstr value");
+
+    const char *s;
+    size_t slen;
+    CHECK(cbor_r_key(&r, &key) && key == 2, "key51: key 2 reached after skip");
+    CHECK(cbor_r_tstr(&r, &s, &slen) && slen == 4 && memcmp(s, "kept", 4) == 0,
+          "key51: value 2 intact");
+}
+
+/* msg.c's `case MK_SNDR:` relies on cbor_r_tstr() restoring `r->pos` when the
+ * value is the wrong CBOR type (e.g. a uint, per the rule "absent is normal,
+ * bad is ignored, never malformed") so the subsequent cbor_r_skip() call
+ * starts from the same, un-consumed position rather than mid-value. */
+static void test_tstr_failure_leaves_pos_unmoved(void)
+{
+    /* A bare uint value (major type 0, value 7 — one byte, 0x07) where a
+     * tstr is expected: exactly what a reader sees mid-map right after
+     * cbor_r_key(), if the sender encoded key 51's value as a uint instead
+     * of a tstr. */
+    uint8_t raw[1] = { 0x07 };
+
+    cbor_r_t r;
+    cbor_r_init(&r, raw, sizeof(raw));
+    size_t before = r.pos;
+    const char *s;
+    size_t slen;
+    CHECK(!cbor_r_tstr(&r, &s, &slen), "tstr read of a uint must fail");
+    CHECK(r.pos == before, "cbor_r_tstr() must restore pos on failure: %zu != %zu", r.pos, before);
+
+    /* And the position it restored to is still a valid, fully-decodable
+     * value — this is exactly msg.c's fallback path (cbor_r_skip() after a
+     * failed cbor_r_tstr()). */
+    CHECK(cbor_r_skip(&r), "cbor_r_skip() must still succeed from the restored position");
+}
+
 /* docs/PROTOCOL.md §10 key 50 (`link`, v0.2 §9.5 — MQTT-session generation
  * counter within a boot, modes.c's STK_LINK). No pinned /status vector
  * exists in this directory (modes.c's build_status_cbor() is not part of
@@ -529,6 +594,8 @@ int main(void)
     test_indefinite_length_rejected();
     test_roundtrip_scalars();
     test_skip_unknown_key();
+    test_unknown_key_51_tstr_skipped();
+    test_tstr_failure_leaves_pos_unmoved();
     test_link_key_50_matches_relay_vector();
 
     vector_t vectors[MAX_VECTORS];

@@ -248,7 +248,13 @@ static void load_row_src(const msg_t *m, const char *newest_unread_id, chat_row_
     if (dir == (uint8_t) MSG_DIR_UP) {
         strncpy(out->who, "you", sizeof(out->who) - 1);
     } else {
-        strncpy(out->who, m->from, sizeof(out->who) - 1);
+        // G7 (docs/GROUP_CHAT_DESIGN.md §4): a group page's per-message
+        // author line replaces `from` (the group's own alias, the thread
+        // identity) on row 0 only — no extra row, no chat_build_rows()
+        // change (wrap_width_row0() measures from this same `who` string).
+        // `sndr` is "" on every DM/pre-G7 page, so this is a no-op there.
+        const char *who = (m->sndr[0] != '\0') ? m->sndr : m->from;
+        strncpy(out->who, who, sizeof(out->who) - 1);
     }
     out->who[sizeof(out->who) - 1] = '\0';
 

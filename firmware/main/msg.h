@@ -112,6 +112,13 @@ typedef struct {
     char id[MSG_ID_MAX];
     char from[MSG_FROM_MAX];
     char to[MSG_TO_MAX]; /* peer alias for up messages; empty = default, §5.6 */
+    /* G7 (docs/GROUP_CHAT_DESIGN.md §4, CBOR key 51): the group-message
+     * author's alias, set only on a down `msg` belonging to a group
+     * conversation ("" otherwise, which is the whole of every DM/pre-G7
+     * page and the common case). `from` stays the group's own alias — the
+     * thread identity and reply target — so this is purely an additional
+     * per-row author label, never sent on `/up`. */
+    char sndr[MSG_FROM_MAX];
     char body[MSG_RAM_BODY_MAX];
     uint16_t body_len;
     uint8_t dir;       /* msg_dir_t */
@@ -186,15 +193,21 @@ typedef struct {
  * queues above, which this partition neither reads nor replaces. This
  * partition only ever affects what is *drawn*, never what is *sent*.
  * --------------------------------------------------------------------- */
-#define MSGHIST_REC_VERSION 1
-#define MSGHIST_REC_MAX 400 /* header + 3 full-length names + 320-byte body + crc, see msg.c */
+/* G7: bumped 1 -> 2 to add `sndr` as a fourth length-prefixed string,
+ * written after `to`, before `body_len`. msghist_record_decode() accepts
+ * BOTH versions: 1 reads id/from/to then body_len exactly as before this
+ * task and leaves `sndr` empty; 2 also reads the new field. Without that
+ * dual read, every message persisted by pre-G7 firmware would be dropped
+ * (decode failure) on the first boot after the upgrade — see msg.c. */
+#define MSGHIST_REC_VERSION 2
+#define MSGHIST_REC_MAX 420 /* header + 4 full-length names + 320-byte body + crc, see msg.c */
 
 /* Pure record codec — no ESP-IDF/NVS dependency, host-tested by
  * firmware/host/test_msg.c the same way msg.c's composer section above is
  * (this whole block sits above msg.c's own `#ifdef ESP_PLATFORM` split).
  * Encoding is variable-length (a one-byte length prefix ahead of each of
- * id/from/to, a two-byte length ahead of body, not a fixed
- * 17/17/17/321-byte layout) so a short "ok" reply costs far fewer NVS
+ * id/from/to/sndr, a two-byte length ahead of body, not a fixed
+ * 17/17/17/17/321-byte layout) so a short "ok" reply costs far fewer NVS
  * bytes than a full 320-byte page — NVS blobs of different sizes coexist
  * fine across successive writes under the same key. Returns the encoded
  * length, or 0 if it cannot possibly fit `out_cap` (never happens for
@@ -202,12 +215,14 @@ typedef struct {
 size_t msghist_record_encode(const msg_t *m, uint32_t seq, uint8_t *out, size_t out_cap);
 
 /* Decodes a record written by msghist_record_encode(). Returns false (and
- * leaves `out`/`out_seq` untouched) for anything that doesn't check out: a
- * version mismatch, a truncated buffer, or a CRC mismatch (a torn write
- * from a power loss mid-nvs_commit(), or a key from a future/older
- * firmware) — msg.c's history_restore() treats false as "skip this slot",
- * never fatal, the same corruption-handling rule this codebase uses
- * everywhere else (see e.g. gfx.c's asset-header validation). */
+ * leaves `out`/`out_seq` untouched) for anything that doesn't check out: an
+ * unrecognised version (below 1 or above MSGHIST_REC_VERSION), a truncated
+ * buffer, or a CRC mismatch (a torn write from a power loss mid-
+ * nvs_commit(), or a key from a future/older firmware) — msg.c's
+ * history_restore() treats false as "skip this slot", never fatal, the
+ * same corruption-handling rule this codebase uses everywhere else (see
+ * e.g. gfx.c's asset-header validation). A version-1 record (pre-G7,
+ * no `sndr` field) decodes successfully with `out->sndr == ""`. */
 bool msghist_record_decode(const uint8_t *buf, size_t len, msg_t *out, uint32_t *out_seq);
 
 /* True once `ack_state` is the LAST state this direction's ack state
@@ -258,6 +273,12 @@ typedef struct {
     char id[MSG_ID_MAX];
     char from[MSG_FROM_MAX];
     bool in_use;
+    /* G7: deliberately NO `sndr` field here — pager_rtc_t's 1184-byte
+     * budget is nearly full (this struct's own module comment above). The
+     * only cost is that warm_recover_unread()/cold_recover_unread()'s
+     * single reconstructed row (used only when `msghist` itself is
+     * unavailable) loses its group-author line; msghist-restored rows are
+     * unaffected since they carry `sndr` in the NVS record, not here. */
 } msg_unread_t;
 
 typedef struct {
