@@ -32,6 +32,17 @@ typedef enum {
     NET_MQTT_RC_TLS_FAIL,      /* WALTER_MODEM_MQTT_TLS(-8) -> provisioning bug, 300s steady */
 } net_mqtt_rc_class_t;
 
+/* The MQTT session transport (docs/WIFI_DESIGN.md §1, docs/WIFI_TASKS.md W4).
+ * Declared here, not in net_xport.h, so this header stays includable from
+ * modes.c (a plain C file) without pulling in the ops-vtable header that
+ * only net.cpp's dispatcher and the xport_*.c(pp) implementations need.
+ * Today (W4) NET_XPORT_LTE is the only implementation that exists; WIFI is a
+ * named placeholder for W5. */
+typedef enum {
+    NET_XPORT_LTE = 0,
+    NET_XPORT_WIFI,
+} net_xport_t;
+
 typedef struct {
     bool                 mqtt_connected;   /* true from SUBSCRIBED(rc==0) until the next DISCONNECTED */
     bool                 disconnect_edge;  /* set once per fresh loss; caller must ack it */
@@ -353,8 +364,31 @@ void net_ack_disconnect_edge(void);
  * Power effect: nothing when idle and under the ping interval; otherwise one
  * AT round trip (the RRC time for one subscribe if the modem was idle, ~0
  * extra if it was already active) at most once per PAGER_MQTT_PING_S, or (on
- * either dead-detection edge) one AT+SQNSMQTTDISCONNECT. */
+ * either dead-detection edge) one AT+SQNSMQTTDISCONNECT.
+ *
+ * docs/WIFI_TASKS.md W4: modes.c now calls this unconditionally, every wake
+ * cycle; the three suppressions (coverage duty cycle, location route 2, a
+ * CA-apply trial) that used to gate the call site instead gate the LTE
+ * transport internally via net_set_lte_suppressed() below -- they are about
+ * the *modem*, so they must not also silence a future WiFi transport's
+ * service tick. */
 void net_service_session(void);
+
+/* docs/WIFI_TASKS.md W4: the transport seam's read side. Always
+ * NET_XPORT_LTE until W5 adds a second transport; exists now so a future
+ * `/status` `xport` field (docs/WIFI_DESIGN.md §6) has something to read. */
+net_xport_t net_xport_active(void);
+
+/* docs/WIFI_TASKS.md W4: the three suppressions that used to gate
+ * modes.c's net_service_session() call site (coverage duty cycle, location
+ * route 2, a CA-apply trial -- all about the *modem*) now gate the LTE
+ * transport's service tick from inside net_service_session() instead, so a
+ * future WiFi transport's tick is never silenced by them. modes.c calls this
+ * with the same boolean expression it used to guard the call site with,
+ * every wake cycle, before calling net_service_session() unconditionally.
+ * Power effect: none of its own -- it only decides whether the next
+ * net_service_session() call is allowed to touch the modem. */
+void net_set_lte_suppressed(bool suppressed);
 
 /* Acknowledge (clear) the session_restart_edge latched in
  * net_get_mqtt_status(). Exactly one call site in modes.c should call this,

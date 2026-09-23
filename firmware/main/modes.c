@@ -2301,10 +2301,13 @@ void modes_run(void)
         // modes_set_ca_apply_suppress()'s own doc comments, and the coverage
         // duty-cycle reasoning at s_coverage_owns_radio above): none of them
         // want an extra AT transaction landing while they deliberately own
-        // the radio/session.
-        if (!s_coverage_owns_radio && !s_loc_suppress && !s_ca_apply_suppress) {
-            net_service_session();
-        }
+        // the radio/session. docs/WIFI_TASKS.md W4: these three are about
+        // the *modem*, so they now gate the LTE transport internally
+        // (net_set_lte_suppressed(), net.h) instead of this call site --
+        // net_service_session() itself is called unconditionally, every wake
+        // cycle, so a future WiFi transport's tick is never silenced by them.
+        net_set_lte_suppressed(s_coverage_owns_radio || s_loc_suppress || s_ca_apply_suppress);
+        net_service_session();
 
         watchdog_kick(WD_PUMP);
         if (!pump_blocked && st.mqtt_connected && esp_timer_get_time() >= s_next_pump_us) {
