@@ -29,6 +29,14 @@ to be designed and decided:
 
 Either way the wake button becomes the only always-on input. Power numbers first, then pick.
 
+**Owner, 23 Sep morning:** both the CardKB and the e-ink are on the board's `3v3_en` rail, which
+firmware already switches (the panel VCC gate on IO15, `disp_power_on()`), so option 2 needs no
+hardware change: cut the rail on sleep entry, re-enable on the wake button (`ext0`) or on a page
+arrival, re-init the panel (RAM lost, so the first refresh is a full one — `disp_init()`'s
+priming already forces it; the glass keeps its last image unpowered) and re-probe the keyboard.
+Costs one full refresh per wake that draws. `disp_power_off()` was removed as dead code on
+23 Sep (`3a3c969`); revive it from that commit when this is built.
+
 ## Decisions waiting on the owner
 
 - **Soracom** (`SORACOM_EVAL.md`). If adopted, the pager's TLS and CA handling become unnecessary
@@ -72,6 +80,10 @@ Firmware
   log level the debug build raises in net.cpp's `net_bringup()`).
 
 Relay
+- `build_book`'s envelope-limit assertion already fails for ten contacts at maximal field lengths
+  (16-char alias + 16-codepoint name each: 707 bytes signed vs the 640 cap), with or without group
+  contacts (found 23 Sep while adding `t:"grp"`; pre-existing). Either the cap, the contact
+  count, or the field lengths has to give.
 - No retention sweep for the SMS audit log; it grows for ever.
 - `ca_resolve.resolve_broker_ca()` is never called at startup, so the CA comes only from
   `BROKER_CA_PEM`.
