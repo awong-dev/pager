@@ -236,30 +236,12 @@ static void draw_status_bar(void)
     // bar).
     char buf[32];
     snprintf(buf, sizeof(buf), "new: %d  unsent: %d", unread, unsent);
-    int x = gfx_text(0, UI_STATUS_TEXT_Y, GFX_FONT_NORMAL, buf) + 3;
+    gfx_text(0, UI_STATUS_TEXT_Y, GFX_FONT_NORMAL, buf);
 
-    // v0.2 §4.3: TLS trust-state padlock — closed while pinned, broken while
-    // broken, nothing at all while unpinned (docs/V02_DESIGN.md §4.3's own
-    // "none (this is the chosen default, not a fault)"). Redrawn every
-    // partial refresh like every other status-bar icon; no dedicated
-    // "redraw on state change" tracking of its own (disp.c's own
-    // no-op-if-unchanged partial refresh already makes a steady state free).
-    switch (catrust_get_state()) {
-    case CATRUST_PINNED:
-        gfx_icon(x, 0, GFX_ICON_TLS_PINNED);
-        x += GFX_ICON_W + UI_STATUS_ICON_GAP;
-        break;
-    case CATRUST_BROKEN:
-        gfx_icon(x, 0, GFX_ICON_TLS_BROKEN);
-        x += GFX_ICON_W + UI_STATUS_ICON_GAP;
-        break;
-    case CATRUST_UNPINNED:
-    default:
-        break;
-    }
-
-    // Right, at the user's request: MQTT link, then signal bars, then
-    // battery, battery flush against the right edge same as before.
+    // Right, at the user's request: TLS padlock, MQTT link, signal bars,
+    // battery, battery flush against the right edge. (The padlock moved
+    // here from the left on 23 Sep 2026, owner's request: it belongs with
+    // the other link indicators.)
     int batt_x = GFX_SCREEN_W - GFX_ICON_W;
     gfx_icon(batt_x, 0, (gfx_icon_t) (GFX_ICON_BATTERY_0 + segs_from_batt_mv(modes_get_batt_mv())));
 
@@ -276,6 +258,25 @@ static void draw_status_bar(void)
     net_get_mqtt_status(&st);
     int mqtt_x = bars_x - GFX_ICON_W - UI_STATUS_ICON_GAP;
     gfx_icon(mqtt_x, 0, st.mqtt_connected ? GFX_ICON_LINK_OK : GFX_ICON_LINK_X);
+
+    // v0.2 §4.3: TLS trust-state padlock, leftmost of the right cluster —
+    // closed while pinned, broken while broken, nothing at all while
+    // unpinned (docs/V02_DESIGN.md §4.3's own "none (this is the chosen
+    // default, not a fault)"). Redrawn every partial refresh like every
+    // other status-bar icon (disp.c's no-op-if-unchanged partial refresh
+    // makes a steady state free).
+    int tls_x = mqtt_x - GFX_ICON_W - UI_STATUS_ICON_GAP;
+    switch (catrust_get_state()) {
+    case CATRUST_PINNED:
+        gfx_icon(tls_x, 0, GFX_ICON_TLS_PINNED);
+        break;
+    case CATRUST_BROKEN:
+        gfx_icon(tls_x, 0, GFX_ICON_TLS_BROKEN);
+        break;
+    case CATRUST_UNPINNED:
+    default:
+        break;
+    }
 
     gfx_hline(0, GFX_SCREEN_W - 1, UI_STATUS_H);
 }
