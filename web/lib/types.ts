@@ -138,14 +138,29 @@ export interface MessageDoc {
   createdAt: Timestamp | null;
   deliveries: Record<string, DeliveryDoc>;
   pendingDeviceIds: string[];
+  // docs/GROUP_CHAT_DESIGN.md §2: one id shared by every copy of one logical
+  // group message (the sender holds N-1 copies of their own message; the
+  // client dedupes bubbles on this) and the author's alias, denormalised so
+  // the client never needs a `users/{uid}` read to label a bubble. Both
+  // null/absent on a DM or pager-originated message -- "not a group copy".
+  groupMsgId: string | null;
+  senderAlias: string | null;
 }
 
 // ---- conversations/{convKey} -- app/store/messages.py ----
 export interface ConversationDoc {
-  uids: [string, string];
+  // docs/GROUP_CHAT_DESIGN.md §2: widened from a `[string, string]` DM pair
+  // to the full member list for a group; a DM's `uids` is still exactly two
+  // entries. `kind`/`name`/`alias`/`createdBy` are absent on every DM
+  // document today -- absent `kind` MUST be read as `"dm"`.
+  uids: string[];
   lastMessageAt: Timestamp | null;
   lastPreview: string;
   unread: Record<string, number>;
+  kind?: "dm" | "group";
+  name?: string;
+  alias?: string;
+  createdBy?: string;
 }
 
 // ---- settings/retention -- app/store/settings.py ----

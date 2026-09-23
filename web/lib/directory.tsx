@@ -44,11 +44,11 @@ import {
   useMemo,
   useState,
 } from "react";
-import { collection, onSnapshot } from "firebase/firestore";
+import { collection, onSnapshot, query, where } from "firebase/firestore";
 
 import { useAuth } from "./auth-context";
 import { getFirestoreDb } from "./firebase";
-import type { UserDoc } from "./types";
+import type { ConversationDoc, UserDoc } from "./types";
 
 const STORAGE_KEY = "pager.directory.v1";
 
@@ -80,6 +80,29 @@ function saveStored(data: StoredDirectory): void {
   }
 }
 
+// docs/GROUP_CHAT_DESIGN.md §5: the "New group" dialog's checkbox list of
+// existing contacts. Populated by the same admin-only `users` snapshot as
+// `uidToAliasMap` below, just kept in list (not map) form -- only ever
+// non-empty for an admin, same gate as `isComplete`.
+export interface Contact {
+  uid: string;
+  alias: string;
+  displayName: string;
+}
+
+// docs/GROUP_CHAT_DESIGN.md §5: a group conversation this member belongs
+// to, keyed by the group's own `alias` field so `ThreadPageClient.tsx` can
+// resolve `/chat/[alias]` to a `convKey` without a new query or index (the
+// listener below is the same `uids array-contains me` shape
+// `web/app/chat/page.tsx` already runs and `firestore.rules` already
+// allows).
+export interface GroupInfo {
+  convKey: string;
+  alias: string;
+  name: string;
+  uids: string[];
+}
+
 interface DirectoryContextValue {
   /** `undefined` if this alias has never been resolved by this browser. */
   aliasToUid: (alias: string) => string | undefined;
@@ -88,6 +111,12 @@ interface DirectoryContextValue {
   learn: (uid: string, alias: string) => void;
   /** True once an admin's full-directory snapshot has loaded at least once. */
   isComplete: boolean;
+  /** Admin-only; empty for a member (see `Contact`'s docstring). */
+  contacts: Contact[];
+  /** `undefined` if `alias` names no group this member belongs to (either
+   * it's a DM peer's alias, or a group this account isn't a member of --
+   * indistinguishable from here, same as `aliasToUid`'s `undefined`). */
+  groupByAlias: (alias: string) => GroupInfo | undefined;
 }
 
 const DirectoryContext = createContext<DirectoryContextValue | null>(null);
@@ -101,6 +130,8 @@ export function DirectoryProvider({ children }: { children: ReactNode }) {
     () => new Map(Object.entries(loadStored().uidToAlias))
   );
   const [isComplete, setIsComplete] = useState(false);
+  const [contacts, setContacts] = useState<Contact[]>([]);
+  const [groupsByAlias, setGroupsByAlias] = useState<Map<string, GroupInfo>>(new Map());
 
   // Admins get the whole directory live; a member's map stays whatever
   // localStorage + `learn()` have accumulated (self is folded in below at
@@ -111,18 +142,53 @@ export function DirectoryProvider({ children }: { children: ReactNode }) {
       return;
     }
     const unsubscribe = onSnapshot(collection(getFirestoreDb(), "users"), (snap) => {
+      const nextContacts: Contact[] = [];
       setUidToAliasMap((prev) => {
         const next = new Map(prev);
         snap.forEach((doc) => {
           const data = doc.data() as UserDoc;
           next.set(doc.id, data.alias);
+          nextContacts.push({ uid: doc.id, alias: data.alias, displayName: data.displayName });
         });
         return next;
       });
+      setContacts(nextContacts);
       setIsComplete(true);
     });
     return unsubscribe;
   }, [isAdmin]);
+
+  // Group conversations this member belongs to -- every signed-in account,
+  // not just admins (membership, not admin status, is what scopes a group
+  // read; `firestore.rules` agrees). A DM's `conversations` doc has no
+  // `alias` field and is simply skipped.
+  useEffect(() => {
+    if (!me) {
+      // Signed out: leave whatever the map already held rather than
+      // setState-ing synchronously in the effect body (the same
+      // `react-hooks/set-state-in-effect` constraint the admin-directory
+      // effect above sidesteps by never resetting on `!isAdmin` either) --
+      // harmless, since nothing reads this map while signed out.
+      return;
+    }
+    const q = query(collection(getFirestoreDb(), "conversations"), where("uids", "array-contains", me.uid));
+    const unsubscribe = onSnapshot(q, (snap) => {
+      const next = new Map<string, GroupInfo>();
+      snap.forEach((d) => {
+        const data = d.data() as ConversationDoc;
+        if (data.kind === "group" && data.alias) {
+          next.set(data.alias, {
+            convKey: d.id,
+            alias: data.alias,
+            name: data.name ?? data.alias,
+            uids: data.uids,
+          });
+        }
+      });
+      setGroupsByAlias(next);
+    });
+    return unsubscribe;
+  }, [me]);
 
   const learn = useCallback((uid: string, alias: string) => {
     setUidToAliasMap((prev) => {
@@ -148,6 +214,8 @@ export function DirectoryProvider({ children }: { children: ReactNode }) {
     uidToAlias: (uid) => (me && uid === me.uid ? me.alias : uidToAliasMap.get(uid)),
     learn,
     isComplete,
+    contacts,
+    groupByAlias: (alias) => groupsByAlias.get(alias),
   };
 
   return <DirectoryContext.Provider value={value}>{children}</DirectoryContext.Provider>;

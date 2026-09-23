@@ -32,7 +32,7 @@ import {
   query,
   where,
 } from "firebase/firestore";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import Alert from "@mui/material/Alert";
 import Box from "@mui/material/Box";
@@ -96,6 +96,26 @@ function seqRangeOf(messages: MessageRow[]): SeqRange | null {
   return { first: messages[0]!.seq, last: messages[messages.length - 1]!.seq };
 }
 
+/** docs/GROUP_CHAT_DESIGN.md §2/§5: a group message's sender holds N-1
+ * copies of it, one per recipient, all sharing one `groupMsgId` -- collapse
+ * those into the single bubble a member should see. `groupMsgId` is absent
+ * on a DM/pager message, so those pass through one row per document,
+ * unchanged. Assumes `rows` is already `seq`-sorted; keeps the first (i.e.
+ * lowest-`seq`) copy of each logical message, which is arbitrary but
+ * deterministic -- every copy's `body`/`ts`/`senderAlias` are identical by
+ * construction (§2), only `deliveries` differs per recipient. */
+function dedupeByGroupMsgId(rows: MessageRow[]): MessageRow[] {
+  const seen = new Set<string>();
+  const result: MessageRow[] = [];
+  for (const row of rows) {
+    const key = row.groupMsgId ?? row.id;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(row);
+  }
+  return result;
+}
+
 function codePointLength(s: string): number {
   return Array.from(s).length;
 }
@@ -131,10 +151,23 @@ function LocReqRow({ message, mine }: { message: MessageRow; mine: boolean }) {
   );
 }
 
-function MessageBubble({ message, mine }: { message: MessageRow; mine: boolean }) {
+function MessageBubble({
+  message,
+  mine,
+  isGroup,
+}: {
+  message: MessageRow;
+  mine: boolean;
+  isGroup: boolean;
+}) {
   const atMs = (message.ts ?? 0) * 1000;
   return (
     <Stack sx={{ alignItems: mine ? "flex-end" : "flex-start", my: 0.75 }}>
+      {isGroup && message.senderAlias && (
+        <Typography variant="caption" color="text.secondary" sx={{ px: 0.5 }}>
+          {message.senderAlias}
+        </Typography>
+      )}
       <Box
         sx={{
           px: 1.5,
@@ -175,8 +208,14 @@ function LocMessageRow({ message, mine }: { message: MessageRow; mine: boolean }
 
 function ThreadInner({ alias }: { alias: string }) {
   const { me } = useAuth();
-  const { aliasToUid, learn } = useDirectory();
+  const { aliasToUid, learn, groupByAlias } = useDirectory();
+  const router = useRouter();
   const peerUid = aliasToUid(alias);
+  // docs/GROUP_CHAT_DESIGN.md §5: `alias` resolves to either a DM peer
+  // (above) or a group conversation (below) -- the two namespaces are
+  // disjoint server-side (§2), so at most one of `peerUid`/`group` is ever
+  // set for a given alias.
+  const group = groupByAlias(alias);
 
   const [messages, setMessages] = useState<MessageRow[]>([]);
   const [pageSize, setPageSize] = useState(PAGE_SIZE_STEP);
@@ -188,6 +227,7 @@ function ThreadInner({ alias }: { alias: string }) {
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
   const [locateBusy, setLocateBusy] = useState(false);
+  const [leaving, setLeaving] = useState(false);
   const [snack, setSnack] = useState<string | null>(null);
   const [showNewMessagesChip, setShowNewMessagesChip] = useState(false);
 
@@ -209,7 +249,7 @@ function ThreadInner({ alias }: { alias: string }) {
   const prevScrollHeightRef = useRef<number | null>(null);
   const reducedMotion = useMediaQuery("(prefers-reduced-motion: reduce)");
 
-  const convKey = me && peerUid ? [me.uid, peerUid].sort().join("_") : null;
+  const convKey = group ? group.convKey : me && peerUid ? [me.uid, peerUid].sort().join("_") : null;
 
   // Thread listener -- docs/SERVER_PLAN.md §7.2: `orderBy(seq, desc)
   // limit(50)`. `pageSize` grows on "load older"; re-subscribing with a
@@ -238,7 +278,10 @@ function ThreadInner({ alias }: { alias: string }) {
       const rows: MessageRow[] = [];
       snap.forEach((d) => rows.push({ id: d.id, ...(d.data() as MessageDoc) }));
       rows.sort((a, b) => a.seq - b.seq);
-      setMessages(rows);
+      // docs/GROUP_CHAT_DESIGN.md §5: collapse a group message's N-1 copies
+      // (one per recipient, shared `groupMsgId`) into one bubble. A no-op
+      // for DM/pager rows, which have no `groupMsgId`.
+      setMessages(dedupeByGroupMsgId(rows));
     });
     return unsubscribe;
   }, [convKey, me, pageSize]);
@@ -463,7 +506,12 @@ function ThreadInner({ alias }: { alias: string }) {
         { body: composer }
       );
       setComposer("");
-      if (!peerUid) {
+      // Bootstrap the directory from the message we can always read back --
+      // skipped for a group (`!peerUid` is also true there, but there is no
+      // single peer to learn: `resp.id` names one arbitrary fan-out copy,
+      // and `data.recipientUid` would be one member picked essentially at
+      // random, wrongly `learn()`-ing this group's alias as a DM with them).
+      if (!peerUid && !group) {
         const snap = await getDoc(doc(getFirestoreDb(), "messages", resp.id));
         if (snap.exists()) {
           const data = snap.data() as MessageDoc;
@@ -499,16 +547,44 @@ function ThreadInner({ alias }: { alias: string }) {
   // absent on older firmware or once the backoff has cleared.
   const locateBackoffLabel = device ? locBackoffLabel(device.status.locBackoffS) : null;
 
+  // docs/GROUP_CHAT_DESIGN.md §5: leave action -> `DELETE
+  // /api/conversations/{alias}/members/me`.
+  async function handleLeave() {
+    if (!group || leaving) return;
+    if (!window.confirm(`Leave "${group.name}"? You'll keep read access to messages you already received.`)) {
+      return;
+    }
+    setLeaving(true);
+    try {
+      await api.del(`/conversations/${encodeURIComponent(alias)}/members/me`);
+      router.push("/chat");
+    } catch (err) {
+      setSnack(err instanceof ApiError ? String(err.detail ?? "Failed to leave group.") : "Failed to leave group.");
+    } finally {
+      setLeaving(false);
+    }
+  }
+
   return (
     <Stack spacing={2} sx={{ height: "calc(100vh - 140px)" }}>
       <Stack direction="row" spacing={2} sx={{ alignItems: "center" }}>
-        <Typography variant="h6">@{alias}</Typography>
+        <Typography variant="h6">{group ? group.name : `@${alias}`}</Typography>
+        {group && (
+          <Typography variant="caption" color="text.secondary">
+            @{alias}
+          </Typography>
+        )}
         {device && (
           <Typography variant="caption" color="text.secondary">
             pager: {device.status.state ?? "unknown"}
           </Typography>
         )}
         <Box sx={{ flexGrow: 1 }} />
+        {group && (
+          <Button size="small" color="inherit" disabled={leaving} onClick={() => void handleLeave()}>
+            Leave
+          </Button>
+        )}
         {allowLocate && (
           <Stack spacing={0.25} sx={{ alignItems: "flex-end" }}>
             <Button
@@ -541,7 +617,7 @@ function ThreadInner({ alias }: { alias: string }) {
         />
       )}
 
-      {!peerUid && (
+      {!peerUid && !group && (
         <Alert severity="info">
           No conversation with @{alias} yet on this account. Send a message below to start one.
         </Alert>
@@ -579,7 +655,7 @@ function ThreadInner({ alias }: { alias: string }) {
             const mine = m.senderUid === me?.uid;
             if (m.kind === "loc_req") return <LocReqRow key={m.id} message={m} mine={mine} />;
             if (m.kind === "loc") return <LocMessageRow key={m.id} message={m} mine={mine} />;
-            return <MessageBubble key={m.id} message={m} mine={mine} />;
+            return <MessageBubble key={m.id} message={m} mine={mine} isGroup={Boolean(group)} />;
           })}
         </Box>
         {showNewMessagesChip && (
