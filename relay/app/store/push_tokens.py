@@ -16,6 +16,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from google.cloud.firestore import SERVER_TIMESTAMP
+from google.cloud.firestore_v1.base_query import FieldFilter
 from pydantic import BaseModel, ConfigDict
 
 from app.db.firestore import get_db
@@ -35,14 +36,38 @@ def _tokens(uid: str):
 
 def add_token(uid: str, token: str) -> None:
     """Idempotent: re-registering the same token resets `errorCount` to 0
-    but keeps the original `createdAt` (merge, not overwrite)."""
+    but keeps the original `createdAt` (merge, not overwrite). The token
+    value is mirrored into the `token` field (in addition to being the doc
+    id) purely so `remove_token_anywhere()` below can find a doc by token
+    value alone via a `collection_group` query."""
     _tokens(uid).document(token).set(
-        {"createdAt": SERVER_TIMESTAMP, "errorCount": 0}, merge=True
+        {"token": token, "createdAt": SERVER_TIMESTAMP, "errorCount": 0}, merge=True
     )
 
 
 def remove_token(uid: str, token: str) -> None:
     _tokens(uid).document(token).delete()
+
+
+def remove_token_anywhere(token: str) -> bool:
+    """Delete a push token doc without already knowing which user owns it.
+
+    `app/backends/fcm.py`'s `FirebaseFCMClient.send_data(tokens, data)` only
+    ever sees the bare token strings FCM handed back (docs/V03_TASKS.md
+    3a.1's `send_data(tokens, data)` seam carries no uid), so it cannot call
+    `remove_token(uid, token)` directly. A `collection_group` query on the
+    `token` field (mirrored onto every doc by `add_token()` above) finds the
+    doc regardless of which user's `pushTokens` subcollection it lives in.
+    Returns whether a doc was actually found and deleted, for callers/tests
+    that want to know.
+    """
+    db = get_db()
+    matches = list(
+        db.collection_group("pushTokens").where(filter=FieldFilter("token", "==", token)).stream()
+    )
+    for snap in matches:
+        snap.reference.delete()
+    return bool(matches)
 
 
 def list_tokens(uid: str) -> list[str]:

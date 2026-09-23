@@ -70,6 +70,16 @@ class Settings:
     # issue a setup code/push rather than silently sending an unpinned
     # bundle (docs/V02_DESIGN.md §4.4's "refuse ... with a clear error").
     public_base_url: str | None = None
+    # docs/V03_PLAN.md §3a / docs/V03_TASKS.md 3a.1: "fcm" injects a real
+    # `app.backends.fcm.FirebaseFCMClient` into `build_registry()`'s
+    # `webapp` backend (app/main.py); "null" (the default, in dev and every
+    # test) keeps `app/backends/webapp.py`'s `NullFCMClient` no-op, so
+    # pytest and local dev never need real Firebase Cloud Messaging
+    # credentials. Any other value is treated as "null" rather than raising,
+    # matching this module's fail-safe-not-fail-closed defaults for optional
+    # integrations (see `TWILIO_BASE_URL`/`GCHAT_AUDIENCE` in
+    # relay/.env.example).
+    push_backend: str = "null"
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -92,4 +102,5 @@ class Settings:
             broker_host=os.environ.get("BROKER_HOST", "localhost"),
             broker_ca_pem=os.environ.get("BROKER_CA_PEM") or None,
             public_base_url=(os.environ.get("PUBLIC_BASE_URL") or "").rstrip("/") or None,
+            push_backend=os.environ.get("PUSH_BACKEND", "null").strip().lower(),
         )

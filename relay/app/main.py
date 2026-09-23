@@ -58,7 +58,19 @@ def create_app(
         # backend's `start_link()` (docs/SERVER_PLAN.md §6.1: "e.g. send a
         # code") right after creating it, which is not something
         # `Routing`'s `send()`-only surface exposes.
-        app.state.backend_registry = build_registry(app.state.broker)
+        #
+        # `PUSH_BACKEND` (docs/V03_PLAN.md §3a) selects the `webapp`
+        # backend's FCM client: "fcm" constructs the real
+        # `FirebaseFCMClient` (only import site for `firebase_admin.
+        # messaging` in the whole app); anything else (default "null", every
+        # test) passes `None` through and `WebappBackend` falls back to its
+        # own `NullFCMClient` -- dev/test never need real FCM credentials.
+        fcm_client = None
+        if settings.push_backend == "fcm":
+            from app.backends.fcm import FirebaseFCMClient
+
+            fcm_client = FirebaseFCMClient()
+        app.state.backend_registry = build_registry(app.state.broker, fcm_client=fcm_client)
         # One Routing instance per app -- shared by the webhook path (via
         # Ingest) and every API router that sends a message, so
         # `app/backends/pager.py`'s `BrokerClient` and

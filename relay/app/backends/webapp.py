@@ -24,6 +24,7 @@ from pydantic import BaseModel, ConfigDict
 from app.backends.base import DeliverResult, LinkStep
 from app.store import messages as messages_store
 from app.store import push_tokens as push_tokens_store
+from app.store import users as users_store
 from app.store.backends import Backend as BackendRow
 from app.store.messages import Delivery, Message
 from app.store.users import User
@@ -67,13 +68,26 @@ class WebappBackend:
         try:
             tokens = push_tokens_store.list_tokens(msg.recipientUid)
             if tokens:
+                # docs/SERVER_PLAN.md §7.6: the payload contract both the
+                # relay and the web service worker (`onBackgroundMessage`)
+                # honour. FCM data maps are string-only, so every value here
+                # is already a `str`. `senderAlias` falls back to the raw
+                # uid on a lookup miss (e.g. a deleted sender) rather than
+                # failing the push outright -- this send is best-effort
+                # (see the `except Exception` below).
+                sender = users_store.get_user(msg.senderUid)
+                sender_alias = sender.alias if sender is not None else msg.senderUid
                 self._fcm.send_data(
                     tokens,
                     {
+                        "kind": "message",
                         "convKey": msg.convKey,
                         "id": msg.id,
                         "senderUid": msg.senderUid,
+                        "senderAlias": sender_alias,
+                        "title": sender_alias,
                         "body": (msg.body or "")[:PREVIEW_MAX_CHARS],
+                        "url": f"/chat/{sender_alias}",
                     },
                 )
         except Exception:
