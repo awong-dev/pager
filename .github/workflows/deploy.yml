@@ -215,6 +215,13 @@ jobs:
       # public; the project is protected by Firestore/Auth rules, not by
       # hiding this config -- so they're repo variables, matching
       # broker_api_url/broker_host's own vars.* pattern above.
+      #
+      # NEXT_PUBLIC_FIREBASE_VAPID_KEY (docs/V03_PLAN.md §3a, task 3a.3) is
+      # the odd one out: a repository *secret*, not a repo variable, per
+      # that task. It is read client-side by getToken() only; the SW
+      # generator (web/scripts/gen-sw.mjs, task 3a.2) does NOT need it, so
+      # a build without it succeeds and only push enrolment fails at
+      # runtime. See infra/README.md step 9 for how to create and set it.
       - name: Build web app
         working-directory: web
         env:
@@ -225,6 +232,7 @@ jobs:
           NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET: ${{ vars.FIREBASE_STORAGE_BUCKET }}
           NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID: ${{ vars.FIREBASE_MESSAGING_SENDER_ID }}
           NEXT_PUBLIC_FIREBASE_APP_ID: ${{ vars.FIREBASE_APP_ID }}
+          NEXT_PUBLIC_FIREBASE_VAPID_KEY: ${{ secrets.NEXT_PUBLIC_FIREBASE_VAPID_KEY }}
         run: |
           npm ci
           npm run build

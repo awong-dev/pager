@@ -46,3 +46,8 @@ broker_host = "<your-deployment>.emqxsl.com"
 # use_broker_gce         = false   # EMQX Cloud Serverless is the default plan (D2)
 # broker_domain          = ""      # required if use_broker_gce = true
 # letsencrypt_email      = ""      # required if use_broker_gce = true
+
+# PUSH_BACKEND is not a tfvars knob here -- this env's main.tf passes
+# push_backend = "fcm" to the relay-service module unconditionally (docs/
+# V03_PLAN.md §3a, task 3a.3). See infra/README.md step 9 for the
+# NEXT_PUBLIC_FIREBASE_VAPID_KEY repo secret this depends on client-side.

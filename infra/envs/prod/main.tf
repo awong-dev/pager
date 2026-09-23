@@ -83,6 +83,13 @@ module "relay_service" {
   cell_geo_provider          = var.cell_geo_provider
   cell_geo_api_key_secret_id = var.enable_cell_geo_secret ? module.secrets.secret_ids.cell_geo_api_key : null
 
+  # docs/V03_PLAN.md §3a / task 3a.3: production always wants real push once
+  # the web app can request one (its NEXT_PUBLIC_FIREBASE_VAPID_KEY secret,
+  # infra/README.md step 9) -- fixed here rather than exposed as another
+  # envs/prod variable/tfvars knob, since there is no legitimate prod state
+  # where this should be "null" (relay-service's own default) once 3a ships.
+  push_backend = "fcm"
+
   oidc_audience       = local.relay_oidc_audience
   oidc_allowed_emails = local.scheduler_caller_email
 

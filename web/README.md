@@ -23,6 +23,16 @@ npm install
 cp .env.local.example .env.local   # values already match relay/docker-compose.yml
 ```
 
+`.env.local.example`'s `NEXT_PUBLIC_FIREBASE_VAPID_KEY` (used by `lib/notifications.ts`'s
+`registerForPush()` to subscribe for real push notifications, docs/V03_PLAN.md §3a) is empty by
+default -- fine for the emulator stack, where push isn't wired up either way. In production, this
+comes from the `NEXT_PUBLIC_FIREBASE_VAPID_KEY` **GitHub Actions secret** (not a repo variable,
+unlike the other six `NEXT_PUBLIC_FIREBASE_*` values -- see `infra/README.md` step 9), created by
+hand: Firebase console → Project settings → Cloud Messaging → Web Push certificates → Generate key
+pair → paste the public key in as that secret's value. `.github/workflows/deploy.yml`'s build step
+passes it into `npm run build`; leaving the secret unset fails that build, since the prebuild
+service-worker generator (3a.2) rejects any missing `NEXT_PUBLIC_FIREBASE_*` value.
+
 ## Local dev against the emulator stack
 
 ```bash

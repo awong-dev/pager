@@ -20,6 +20,7 @@ locals {
     # password reset) delivery silently failing on a fresh project.
     "cloudfunctions.googleapis.com",
     "firebaseextensions.googleapis.com", # required by some google_firebase_* resources
+    "fcm.googleapis.com",                # Firebase Cloud Messaging: relay's firebase_admin.messaging sends (docs/V03_PLAN.md §3a, task 3a.3) call this API directly, separate from firebase.googleapis.com's project/hosting/web-app management surface
     "secretmanager.googleapis.com",      # secret containers
     "artifactregistry.googleapis.com",   # relay container images
     "iam.googleapis.com",

@@ -187,6 +187,26 @@ Read that workflow's own top-of-file comment for the exact gating mechanism firs
 - Repo **secrets** (Settings → Secrets and variables → Actions → Secrets):
   - `GCP_WORKLOAD_IDENTITY_PROVIDER` = `terraform output -raw ci_deploy_workload_identity_provider` (from `infra/envs/prod`)
   - `GCP_DEPLOY_SERVICE_ACCOUNT` = `terraform output -raw ci_deploy_service_account_email`
+  - `NEXT_PUBLIC_FIREBASE_VAPID_KEY` (docs/V03_PLAN.md §3a, task 3a.3 -- real push notifications).
+    A repo secret rather than a repo variable, per that task's explicit call, even though a Web
+    Push certificate's public key is not sensitive the way the two secrets above are. **Manual
+    step, Firebase console:** Project settings → Cloud Messaging → "Web Push certificates" →
+    Generate key pair → copy the public key string → paste it in as this secret's value. Do this
+    *before* the first deploy that includes 3a.2's `firebase-messaging-sw.js` generator: that
+    prebuild script fails the build if any `NEXT_PUBLIC_FIREBASE_*` value -- including this one --
+    is empty, so an unset secret breaks `firebase-deploy` entirely once 3a.2 lands, not just push
+    notifications specifically. `infra/envs/prod/main.tf` separately sets the relay Cloud Run
+    service's `PUSH_BACKEND=fcm` (no repo variable/secret needed for that half -- it's a fixed
+    value in Terraform); the two are independent (this secret lets the *browser* subscribe to
+    push, `PUSH_BACKEND` lets the *relay* send it) and both are needed for 3a to work end to end.
+    **IAM, already covered:** the relay service account already has `roles/
+    firebasecloudmessaging.admin` (`infra/modules/relay-service/main.tf`'s `relay_roles` list,
+    granted for a different reason originally -- "webapp backend's FCM sends") which includes the
+    `firebasecloudmessaging.messages.create` permission `firebase_admin.messaging.send_each_for_
+    multicast()` needs; no new binding was required for this task. `infra/bootstrap/main.tf` does
+    now also enable `fcm.googleapis.com` (added by this task) -- rerun bootstrap's `terraform
+    apply` (step 2) if this deployment predates that line, or the relay's first real FCM send
+    will 403.
 - Repo **variables** (same page, "Variables" tab):
   - `GCP_PROJECT_ID`, `GCP_REGION`, `BROKER_API_URL`, `BROKER_HOST` (same values as `terraform.tfvars`)
   - `BROKER_CA_PEM_FILE` (optional; same value as `terraform.tfvars`' `broker_ca_pem_file`, e.g.

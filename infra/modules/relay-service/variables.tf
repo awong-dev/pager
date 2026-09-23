@@ -116,6 +116,16 @@ variable "oidc_allowed_emails" {
   type        = string
 }
 
+variable "push_backend" {
+  description = "relay/app/config.py's PUSH_BACKEND -- \"fcm\" wires firebase_admin.messaging (docs/V03_PLAN.md §3a) as the FirebaseFCMClient send_data() implementation; \"null\" (the default here, matching relay/app/config.py's own default) keeps the no-op null client dev and tests run against. Left at \"null\" by default so this module stays usable for a hypothetical non-prod environment without FCM configured; infra/envs/prod sets this to \"fcm\" once the web app's VAPID key exists (task 3a.3)."
+  type        = string
+  default     = "null"
+  validation {
+    condition     = contains(["fcm", "null"], var.push_backend)
+    error_message = "relay/app/config.py's PUSH_BACKEND only supports \"fcm\" or \"null\"."
+  }
+}
+
 variable "tasks_mode" {
   description = "relay/app/tasks.py's TASKS_MODE. Only \"inline\" is usable end-to-end today; \"cloud_tasks\" builds tasks but has nowhere to dispatch them yet (see that module's docstring's known-gap section). The variable exists so the eventual flip is a tfvars change, not a module edit."
   type        = string

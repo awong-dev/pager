@@ -170,6 +170,16 @@ resource "google_cloud_run_v2_service" "relay" {
         value = var.oidc_audience
       }
       env {
+        # docs/V03_PLAN.md §3a: real push via firebase_admin, gated by this
+        # setting so dev/tests keep running against the null client
+        # (relay/app/config.py's own default). Not secret -- just selects
+        # which send_data() implementation main.py's build_registry() wires
+        # up; the actual FCM sends are authorized by the relay SA's
+        # roles/firebasecloudmessaging.admin binding above, not by this var.
+        name  = "PUSH_BACKEND"
+        value = var.push_backend
+      }
+      env {
         name  = "OIDC_ALLOWED_EMAILS"
         value = var.oidc_allowed_emails
       }
