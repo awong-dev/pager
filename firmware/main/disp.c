@@ -667,6 +667,19 @@ static void disp_gpio_init(void)
     };
     gpio_config(&out_cfg);
 
+    // docs/RCA_SLEEP_URC.md: CONFIG_ESP_SLEEP_GPIO_RESET_WORKAROUND makes
+    // IDF isolate every GPIO (driver off, floating) for the whole of each
+    // light sleep. A floating RST is a controller reset waiting to happen
+    // (the 23 Sep register-loss failures), a floating VCC_EN gate drops the
+    // 3v3_en rail that also feeds the CardKB, and a floating CS/DC turns
+    // noise into commands. Keep these four pads driven through sleep, same
+    // as net.cpp does for the modem's RTS. The SPI clock/data pads are
+    // peripheral-muxed and idle between transfers; not held.
+    gpio_sleep_sel_dis((gpio_num_t) PAGER_PIN_DISP_RST);
+    gpio_sleep_sel_dis((gpio_num_t) PAGER_PIN_DISP_DC);
+    gpio_sleep_sel_dis((gpio_num_t) PAGER_PIN_DISP_CS);
+    gpio_sleep_sel_dis((gpio_num_t) PAGER_PIN_DISP_VCC_EN);
+
     gpio_config_t busy_cfg = {
         .pin_bit_mask = (1ULL << PAGER_PIN_DISP_BUSY),
         .mode = GPIO_MODE_INPUT,
