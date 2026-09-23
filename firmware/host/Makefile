@@ -75,7 +75,7 @@ endif
 MAIN_SRC := ../main
 BUILD := build
 
-TESTS := test_cbor test_auth test_setup test_input test_msg test_lock test_loc test_cafetch test_catrust test_cfg test_sms test_carrier test_chat_layout test_coverage test_net_connect_guard test_publish_quiet test_accel_rate
+TESTS := test_cbor test_auth test_setup test_input test_msg test_lock test_loc test_cafetch test_catrust test_cfg test_sms test_carrier test_chat_layout test_coverage test_net_connect_guard test_publish_quiet test_accel_rate test_wifi_policy test_wificred
 TEST_BINS := $(TESTS:%=$(BUILD)/%)
 
 # ASSETS: tools/mkassets.py's default output location (docs/DEVICE_TASKS.md
@@ -335,4 +335,27 @@ $(BUILD)/test_accel_rate.o: test_accel_rate.c $(MAIN_SRC)/accel.h $(MAIN_SRC)/lo
 	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ test_accel_rate.c
 
 $(BUILD)/test_accel_rate: $(BUILD)/accel.o $(BUILD)/loc.o $(BUILD)/cbor.o $(BUILD)/test_accel_rate.o
+# test_wifi_policy: wifi_policy.c (whole file -- no ESP-IDF dependency at
+# all, see wifi_policy.h's own module comment) + test_wifi_policy.c.
+$(BUILD)/wifi_policy.o: $(MAIN_SRC)/wifi_policy.c $(MAIN_SRC)/wifi_policy.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $(MAIN_SRC)/wifi_policy.c
+
+$(BUILD)/test_wifi_policy.o: test_wifi_policy.c $(MAIN_SRC)/wifi_policy.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ test_wifi_policy.c
+
+$(BUILD)/test_wifi_policy: $(BUILD)/wifi_policy.o $(BUILD)/test_wifi_policy.o
+	$(CC) $(CFLAGS) -o $@ $^
+
+# test_wificred: wificred.c's pure section (SSID/PSK validation, the
+# replace-wholesale candidate applier, the `cfg.wifi` sub-map decode -- W3
+# adds the cbor.c dependency for that last one) + cbor.c + test_wificred.c.
+# Everything past its own `#ifdef ESP_PLATFORM` split needs NVS and is not
+# built here.
+$(BUILD)/wificred.o: $(MAIN_SRC)/wificred.c $(MAIN_SRC)/wificred.h $(MAIN_SRC)/cbor.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $(MAIN_SRC)/wificred.c
+
+$(BUILD)/test_wificred.o: test_wificred.c $(MAIN_SRC)/wificred.h $(MAIN_SRC)/cbor.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ test_wificred.c
+
+$(BUILD)/test_wificred: $(BUILD)/wificred.o $(BUILD)/cbor.o $(BUILD)/test_wificred.o
 	$(CC) $(CFLAGS) -o $@ $^

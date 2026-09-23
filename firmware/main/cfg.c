@@ -15,6 +15,7 @@
 #define CFG_KEY_LOCK 0
 #define CFG_KEY_CA 1
 #define CFG_KEY_SMS 2
+#define CFG_KEY_WIFI 3
 
 /* Records the current position as the start of a value, skips it (recursing
  * through nested maps/arrays as needed), and reports the [start,len) span —
@@ -59,6 +60,12 @@ static bool parse_cfg_submap(cbor_r_t *r, cfg_dispatch_t *out)
                 return false;
             }
             out->have_sms = true;
+            break;
+        case CFG_KEY_WIFI:
+            if (!skip_capture(r, &out->wifi_off, &out->wifi_len)) {
+                return false;
+            }
+            out->have_wifi = true;
             break;
         default:
             /* "unknown cfg keys must be skipped, not treated as malformed"
@@ -142,6 +149,7 @@ bool cfg_parse(const uint8_t *buf, uint16_t len, bool sig_pair_present, cfg_disp
 #include "lock.h"
 #include "msg.h"
 #include "sms.h"
+#include "wificred.h"
 
 bool cfg_ingest_cbor(const uint8_t *buf, uint16_t len)
 {
@@ -162,6 +170,12 @@ bool cfg_ingest_cbor(const uint8_t *buf, uint16_t len)
          * (see sms_apply_cfg_submap()'s own doc comment) — same
          * immediate-apply-and-ack timing `cfg.lock` already uses. */
         sms_apply_cfg_submap(buf + d.sms_off, (uint16_t) d.sms_len, d.id);
+    }
+    if (d.have_wifi) {
+        /* docs/WIFI_TASKS.md W3: applies + acks `shown` immediately (see
+         * wificred_apply_cfg_submap()'s own doc comment) — same
+         * immediate-apply-and-ack timing `cfg.lock`/`cfg.sms` already use. */
+        wificred_apply_cfg_submap(buf + d.wifi_off, (uint16_t) d.wifi_len, d.id);
     }
 
     return true;
