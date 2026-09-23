@@ -215,6 +215,10 @@ static int64_t s_clock_epoch_us = 0; // esp_timer_get_time() at the moment s_clo
 
 static bool s_wake_sources_armed = false;
 
+// A1 (docs/DEVICE_NEXT_TASKS.md): count of light-sleep returns woken by
+// ext1 (the LIS3DH motion pin), since boot. net_get_ext1_wakes().
+static uint32_t s_ext1_wakes = 0;
+
 // v0.2 §5 (location, loc.c): GNSS event handoff, same single-flag pattern as
 // the msg-callback path above. Written only by pager_gnss_event_handler()
 // (WalterModem's _eventProcessingTask), read/cleared only by
@@ -1235,24 +1239,34 @@ extern "C" void net_sleep(uint32_t ms)
     // replicate its RTS choreography by hand instead.
     if (!s_wake_sources_armed) {
         esp_sleep_enable_ext0_wakeup((gpio_num_t) PAGER_PIN_BUTTON, 0 /* active low */);
-        // v0.2 §5 trigger 2 (motion): a second, independent wake pin needs
-        // ext1, not a second ext0 -- the ESP32-S3 (like every ESP32 variant)
-        // has exactly one ext0 source (a single fixed RTC GPIO, already
-        // spoken for by the button) but ext1 takes a bitmask of any number
-        // of RTC GPIOs sharing one level mode. IO2 (LIS3DH INT1) is
-        // configured push-pull active-high (accel.c), so ANY_HIGH is the
-        // right mode for a one-pin mask; it does not need to agree with
-        // ext0's own (unrelated) active-low button polarity -- the two wake
-        // sources are independent and can coexist armed simultaneously.
-        // Only armed once accel.c has confirmed the chip actually answers
-        // WHO_AM_I (net_enable_accel_wake()) -- an unwired/floating IO2
-        // armed as ANY_HIGH would wake the ESP32 on every light-sleep cycle
-        // for nothing, which is expected to be the common case on the
-        // owner's bench unit (accel.c's own module comment).
-        if (s_accel_wake_enabled) {
-            esp_sleep_enable_ext1_wakeup(1ULL << PAGER_PIN_LIS3DH_INT1, ESP_EXT1_WAKEUP_ANY_HIGH);
-        }
         s_wake_sources_armed = true;
+    }
+    // v0.2 §5 trigger 2 (motion): a second, independent wake pin needs ext1,
+    // not a second ext0 -- the ESP32-S3 (like every ESP32 variant) has
+    // exactly one ext0 source (a single fixed RTC GPIO, already spoken for
+    // by the button) but ext1 takes a bitmask of any number of RTC GPIOs
+    // sharing one level mode. IO2 (LIS3DH INT1) is configured push-pull
+    // active-high (accel.c), so ANY_HIGH is the right mode for a one-pin
+    // mask; it does not need to agree with ext0's own (unrelated) active-low
+    // button polarity -- the two wake sources are independent and can
+    // coexist armed simultaneously.
+    //
+    // A1: unlike ext0/button above, this is evaluated fresh on *every*
+    // net_sleep() call rather than latched once -- accel.c toggles
+    // s_accel_wake_enabled off for a refractory window after every edge it
+    // reports (net_set_accel_wake()), so a wake storm while the pager is
+    // being carried does not end light sleep ~10x/s
+    // (docs/DEVICE_NEXT_TASKS.md A1). Still never armed at all if the chip
+    // never answered WHO_AM_I (accel.c's own module comment: an
+    // unwired/floating IO2 armed as ANY_HIGH would wake the ESP32 on every
+    // light-sleep cycle for nothing).
+    if (s_accel_wake_enabled) {
+        esp_sleep_enable_ext1_wakeup(1ULL << PAGER_PIN_LIS3DH_INT1, ESP_EXT1_WAKEUP_ANY_HIGH);
+    } else {
+        // Harmless (ESP_ERR_INVALID_STATE, ignored) if ext1 was never armed
+        // in the first place -- e.g. the chip is absent, or this is the
+        // very first net_sleep() call before accel_init() has run yet.
+        esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_EXT1);
     }
     esp_sleep_enable_timer_wakeup((uint64_t) ms * 1000ULL);
 
@@ -1266,6 +1280,14 @@ extern "C" void net_sleep(uint32_t ms)
     gpio_set_level((gpio_num_t) CONFIG_WALTER_MODEM_PIN_RTS, 1);
 
     esp_light_sleep_start();
+
+    // A1: count ext1 (motion) wakes, before anything below can touch the
+    // wakeup-cause register -- net_get_ext1_wakes() is A2's `acceltest`
+    // print and A4's bench measurement of this task's whole justification
+    // (refr 0 vs. refr 20, expect roughly two orders of magnitude fewer).
+    if (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_EXT1) {
+        s_ext1_wakes++;
+    }
 
     // Re-enable RTS/CTS hardware flow control after waking, exactly as the
     // library does on its own light-sleep return path.
@@ -1933,9 +1955,19 @@ extern "C" bool net_get_cell_info(net_cell_info_t *out)
     return s_cell_cache.valid;
 }
 
+extern "C" void net_set_accel_wake(bool on)
+{
+    s_accel_wake_enabled = on;
+}
+
 extern "C" void net_enable_accel_wake(void)
 {
-    s_accel_wake_enabled = true;
+    net_set_accel_wake(true);
+}
+
+extern "C" uint32_t net_get_ext1_wakes(void)
+{
+    return s_ext1_wakes;
 }
 
 // ---------------------------------------------------------------------------
