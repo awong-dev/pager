@@ -1473,7 +1473,27 @@ void WalterModem::_parseRxData(char* rx_data, size_t rx_len)
     bool nullbyte =
         (_parserData.buf && _parserData.buf->size == 1 && _parserData.buf->data[0] == '\0');
 
-    if(prompt1 || prompt2 || nullbyte) {
+    /*
+     * PAGER PATCH: (1.11, orphaned data prompt) prompt1 above only matches when the buffer holds
+     * exactly "\r\n> ", i.e. when the prompt's own leading CRLF is still at data[0..1]. If the
+     * parser buffer was non-empty when that CRLF arrived, the CRLF terminates the residue: the
+     * check at the top of this block (_getCRLFPosition with findWhole=true matches a CRLF
+     * ANYWHERE in the buffer, not only at the end) queues the residue, and the remaining "> "
+     * starts a fresh buffer of size 2 -- too short for that same check (size > 2) and too short
+     * for prompt1 (size >= 4). The prompt is then never queued, _processModemRSP()'s prompt
+     * handler never runs, the DATA_TX_WAIT payload is never written, and the command times out
+     * with the modem still owed payloadSize bytes -- which _processModemCMD() then satisfies with
+     * the re-transmitted AT command line itself (see docs/RCA_SLEEP_PUBLISH.md).
+     *
+     * Recognise the bare, already-stripped prompt too. Safe by construction: _processModemRSP()'s
+     * "> " handler acts only when the current command is a DATA_TX_WAIT with a payload, so a
+     * spurious 2-byte "> " with no such command pending is freed without effect. No power effect:
+     * parser-side only, no extra AT traffic.
+     */
+    bool prompt3 = (_parserData.buf && _parserData.buf->size == 2 &&
+                    _parserData.buf->data[0] == '>' && _parserData.buf->data[1] == ' ');
+
+    if(prompt1 || prompt2 || prompt3 || nullbyte) {
       _queueRxBuffer();
     }
   }

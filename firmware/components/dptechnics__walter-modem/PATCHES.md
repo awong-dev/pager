@@ -273,3 +273,34 @@ command that is genuinely wedged (not just slow) still trips the task watchdog w
 "modem health check" breadcrumb intact rather than looping forever. `watchdog_kick()` resets that
 per-stage budget so each main-loop stage starts fresh. See `firmware/main/watchdog.h`/`.c` for the
 full arithmetic and `firmware/main/watchdog.h`'s doc comment on `walter_modem_block_tick()`.
+
+## 1.11 Orphaned `> ` data prompt (`src/WalterModem.cpp`, `_parseRxData()`)
+
+`_parseRxData()` recognises the modem's data prompt only as `prompt1`:
+`buf->size >= 4 && buf->data[2] == '>' && buf->data[3] == ' '` — i.e. only when the prompt's own
+leading CRLF is still at `data[0..1]`. The check immediately above it queues the buffer as soon as
+`_getCRLFPosition(buf->data + 2, buf->size - 2, /* findWhole */ true)` finds a CRLF **anywhere**
+past offset 2, not only at the end. So when the parser buffer is non-empty at the moment the
+prompt's `\r\n` arrives, that CRLF terminates the residue and is consumed with it; the remaining
+`> ` starts a new buffer of size 2, which is too short for the CRLF check (`size > 2`) and too
+short for `prompt1` (`size >= 4`). The prompt is never queued, `_processModemRSP()`'s `"> "`
+handler never runs, and the `WALTER_MODEM_CMD_TYPE_DATA_TX_WAIT` payload is never written.
+
+The consequence is not a lost publish but a corrupt one. The modem stays at the prompt owed
+`payloadSize` bytes; `_processModemCMD()` times out after `CONFIG_WALTER_MODEM_CMD_TIMEOUT_MS`
+and **re-transmits the same AT command line**, which the modem consumes as the payload. Observed
+on the bench as the relay logging
+`SECURITY bad-sig ... first64=b'AT+SQNSMQTTPUBLISH=0,"pager/test-pager/up",1'` — 44 bytes of the
+pager's own command line published as a message (`build/bench-logs/phaseV-relay-raw.json`,
+2026-09-23 15:13:24Z). Release builds only, because the residue that consumes the prompt's CRLF
+comes from bytes truncated at a light-sleep boundary; the debug build never light-sleeps.
+
+**Fix**: a `prompt3` case for the bare, already-stripped prompt (`size == 2 && data[0] == '>' &&
+data[1] == ' '`). Safe by construction — `_processModemRSP()`'s prompt handler acts only when the
+current command is a `DATA_TX_WAIT` with a payload, so a spurious match with nothing pending frees
+the buffer without effect. Parser-side only, no power effect.
+
+**Not fixed here** (see `docs/RCA_SLEEP_PUBLISH.md` §4.2): `_processModemCMD()` re-transmitting a
+`DATA_TX_WAIT` command line at all while the modem may still be in data mode. Failing the command
+instead is correct but incomplete on its own — the modem would then eat the *next* AT line — and
+what the Sequans accepts as a prompt abort is not documented in this repo.
