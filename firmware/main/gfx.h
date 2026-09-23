@@ -193,6 +193,15 @@ int gfx_text(int x, int y, gfx_font_t size, const char *utf8);
  * own placeholder width). */
 int gfx_text_width(gfx_font_t size, const char *utf8);
 
+/* Advance width (pixels) of one already-decoded codepoint, same value
+ * gfx_text()/gfx_text_width() use per codepoint internally (a missing glyph
+ * returns its tofu placeholder width, same as they do) — added for v0.3
+ * task 1.2's composer tail-scroll (docs/V03_PLAN.md §1): the renderer
+ * decodes the composer text's codepoints itself (to know the byte offset
+ * each one starts at) and calls this per codepoint to fill an advances
+ * array for chat_composer_viewport() (scr_chat.c). */
+int gfx_glyph_advance(gfx_font_t size, uint32_t cp);
+
 /* Splits `utf8` into lines no wider than max_width_px, wrapping on space
  * boundaries for scripts that have them and per-character for CJK
  * (docs/DEVICE_PLAN.md §5.2) — a codepoint >= 0x2E80 (CJK radicals and

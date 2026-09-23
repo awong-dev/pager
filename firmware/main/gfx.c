@@ -392,6 +392,11 @@ int gfx_text(int x, int y, gfx_font_t size, const char *utf8)
     return pen;
 }
 
+int gfx_glyph_advance(gfx_font_t size, uint32_t cp)
+{
+    return glyph_adv(size, cp);
+}
+
 int gfx_text_width(gfx_font_t size, const char *utf8)
 {
     int w = 0;

@@ -736,6 +736,49 @@ static void chat_on_key(input_key_t key)
     }
 }
 
+// Decodes one UTF-8 codepoint starting at `p`, returning a pointer to the
+// next codepoint's start. v0.3 task 1.2's Files list gives gfx.c/.h exactly
+// ONE new accessor (gfx_glyph_advance(), below) -- a thin wrapper over its
+// *glyph* lookup, not a UTF-8 splitter to reuse (gfx.c's own utf8_next() is
+// static/private, same as sms.c's independent utf8_decode_one() already is
+// for the same reason) -- so the composer render decodes the byte pattern
+// itself here, byte-for-byte identical to gfx.c's utf8_next(), to learn
+// both each codepoint's advance (via gfx_glyph_advance()) and the byte
+// offset it starts at (needed to draw the tail with one gfx_text() call).
+static const char *composer_utf8_next(const char *p, uint32_t *cp)
+{
+    const uint8_t *u = (const uint8_t *) p;
+    uint8_t b0 = u[0];
+    int extra;
+    uint32_t v;
+    if (b0 < 0x80) {
+        *cp = b0;
+        return p + 1;
+    } else if ((b0 & 0xE0) == 0xC0) {
+        extra = 1;
+        v = b0 & 0x1F;
+    } else if ((b0 & 0xF0) == 0xE0) {
+        extra = 2;
+        v = b0 & 0x0F;
+    } else if ((b0 & 0xF8) == 0xF0) {
+        extra = 3;
+        v = b0 & 0x07;
+    } else {
+        *cp = 0xFFFD;
+        return p + 1;
+    }
+    for (int i = 1; i <= extra; i++) {
+        uint8_t bi = u[i];
+        if (bi == 0 || (bi & 0xC0) != 0x80) {
+            *cp = 0xFFFD;
+            return p + 1;
+        }
+        v = (v << 6) | (bi & 0x3F);
+    }
+    *cp = v;
+    return p + 1 + extra;
+}
+
 static void chat_render(void)
 {
     gfx_font_t sz = ui_text_size();
@@ -805,11 +848,16 @@ static void chat_render(void)
 
     // Composer row — always drawn (docs/DEVICE_PLAN.md §5.5's mockup shows
     // it as a permanent bottom line, not something that only appears once
-    // typing starts). Single line, not wrapped: the mockup shows exactly
-    // one line and the 296px body only fits ~45 normal-size characters, so
-    // a reply near the 160-byte cap runs off the visible edge (gfx_text()'s
-    // own edge clip) while remaining fully intact in msg.c's buffer and
-    // fully sent — a cosmetic viewport limitation, not a data limitation.
+    // typing starts). Single line, not wrapped ("Not chosen: wrapping to
+    // two lines" per docs/V03_PLAN.md §1 — it costs a message row at the
+    // normal font size and a pager reply does not need the whole draft
+    // visible). v0.3 task 1.2: longer than the line shows the tail with a
+    // leading "…" (chat_composer_viewport(), this file's own pure section
+    // above) instead of overprinting or silently running off the edge — the
+    // full text is always intact in msg.c's buffer and fully sent regardless
+    // (a cosmetic viewport limitation, not a data limitation); the counter
+    // appears only from 120 codepoints (40 remaining), so ordinary typing
+    // keeps the full span and a small, tidy dirty band.
     // v0.2 §6: tighter GSM-7/UCS-2 counter while the composer's leading
     // `@word` resolves (unambiguously) to an SMS contact — a render-time-only
     // peek (composer_targets_sms()), never the authoritative encoding
@@ -833,10 +881,56 @@ static void chat_render(void)
     } else {
         snprintf(counter, sizeof(counter), "%u/160", (unsigned) msg_composer_len());
     }
-    int cw = gfx_text_width(GFX_FONT_NORMAL, counter);
-    int x = gfx_text(0, y, GFX_FONT_NORMAL, "> ");
-    gfx_text(x, y, GFX_FONT_NORMAL, msg_composer_text());
-    gfx_text(GFX_SCREEN_W - cw, y, GFX_FONT_NORMAL, counter);
+    bool show_counter = msg_composer_codepoint_count() >= 120;
+    int cw = show_counter ? gfx_text_width(GFX_FONT_NORMAL, counter) : 0;
+
+    int pen = gfx_text(0, y, GFX_FONT_NORMAL, "> ");
+
+    // Decode the composer text's codepoints once: each one's advance (for
+    // chat_composer_viewport()) and its own starting byte offset (so the
+    // tail, once the helper picks a start index, draws with a single
+    // gfx_text() call — gfx_text() stops at the string's own NUL, which is
+    // exactly where the composer text ends).
+    uint8_t adv[MSG_COMPOSER_MAX_CODEPOINTS];
+    const char *cp_start[MSG_COMPOSER_MAX_CODEPOINTS];
+    int n = 0;
+    const char *cur = msg_composer_text();
+    while (*cur && n < MSG_COMPOSER_MAX_CODEPOINTS) {
+        cp_start[n] = cur;
+        uint32_t cp;
+        cur = composer_utf8_next(cur, &cp);
+        adv[n] = (uint8_t) gfx_glyph_advance(GFX_FONT_NORMAL, cp);
+        n++;
+    }
+
+    static const char MARKER[] = "…";
+    int marker_w = gfx_text_width(GFX_FONT_NORMAL, MARKER);
+    const int caret_w = 2;
+    const int caret_h = 12; // composer always draws GFX_FONT_NORMAL (gfx.h: "12 px")
+    int avail = GFX_SCREEN_W - pen - (show_counter ? cw + 6 : 0) - caret_w;
+
+    bool marker;
+    int start = chat_composer_viewport(adv, n, avail, marker_w, &marker);
+
+    if (marker) {
+        pen = gfx_text(pen, y, GFX_FONT_NORMAL, MARKER);
+    }
+    if (start < n) {
+        pen = gfx_text(pen, y, GFX_FONT_NORMAL, cp_start[start]);
+    }
+
+    // Caret: a solid caret_w x caret_h bar right after the drawn text — the
+    // composer has no cursor editing (only append/backspace at the end), so
+    // this is always where the next typed character lands. gfx.h has no
+    // filled-rectangle primitive (gfx_rect() is an outline), so this fills
+    // one gfx_hline() per row instead.
+    for (int cy = y; cy < y + caret_h; cy++) {
+        gfx_hline(pen, pen + caret_w - 1, cy);
+    }
+
+    if (show_counter) {
+        gfx_text(GFX_SCREEN_W - cw, y, GFX_FONT_NORMAL, counter);
+    }
     // No key-hint footer (owner decision 2026-09-20): the space goes to the
     // message rows' leading instead.
 }
