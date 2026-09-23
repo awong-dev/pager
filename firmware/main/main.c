@@ -174,9 +174,11 @@ static int cmd_mqtttest(int argc, char **argv)
 // Debug build only: `sleeptest <minutes> [yield_ms] [interval_ms]` opens a
 // window of real light sleep (modes.c); `sleeptest` alone prints the report
 // again. yield_ms overrides the post-wake yield (default
-// PAGER_POST_WAKE_YIELD_MS, 50); interval_ms overrides the wake interval
+// PAGER_POST_WAKE_YIELD_MS, 200); interval_ms overrides the wake interval
 // (default: 2000/5000 by mode) -- task 3's "how long must the pager stay
-// awake after a wake to receive a held URC" question.
+// awake after a wake to receive a held URC" question. Either override may be
+// given as 0, which means "use the build default" (the same thing omitting it
+// does), so the documented `sleeptest 6 0 0` form works.
 static int cmd_sleeptest(int argc, char **argv)
 {
     if (argc == 1) {
@@ -185,22 +187,29 @@ static int cmd_sleeptest(int argc, char **argv)
     }
     long m = strtol(argv[1], NULL, 10);
     if (m < 1 || m > 120) {
-        printf("usage: sleeptest [<minutes 1..120> [yield_ms 30..10000] [interval_ms 200..60000]]\n");
+        printf("usage: sleeptest [<minutes 1..120> [yield_ms 0|30..10000] "
+               "[interval_ms 0|200..60000]]   (0 = build default)\n");
         return 1;
     }
     long yield_ms = 0;    // 0 = use PAGER_POST_WAKE_YIELD_MS
     long interval_ms = 0; // 0 = use the normal active/sleep interval
+    // 0 means "keep the build default" for both overrides, exactly as
+    // modes_debug_sleeptest_start() already treats them (modes.c's
+    // s_st_yield_ms/s_st_interval_ms are only applied when non-zero) and as
+    // docs/RCA_SLEEP_PUBLISH.md §3's own console sequence assumes. Before
+    // this, `sleeptest 6 0 0` was rejected by the range checks below and the
+    // documented command line did not run at all.
     if (argc >= 3) {
         yield_ms = strtol(argv[2], NULL, 10);
-        if (yield_ms < 30 || yield_ms > 10000) {
-            printf("usage: sleeptest <minutes> [yield_ms 30..10000] [interval_ms 200..60000]\n");
+        if (yield_ms != 0 && (yield_ms < 30 || yield_ms > 10000)) {
+            printf("usage: sleeptest <minutes> [yield_ms 0|30..10000] [interval_ms 0|200..60000]\n");
             return 1;
         }
     }
     if (argc >= 4) {
         interval_ms = strtol(argv[3], NULL, 10);
-        if (interval_ms < 200 || interval_ms > 60000) {
-            printf("usage: sleeptest <minutes> [yield_ms] [interval_ms 200..60000]\n");
+        if (interval_ms != 0 && (interval_ms < 200 || interval_ms > 60000)) {
+            printf("usage: sleeptest <minutes> [yield_ms 0|30..10000] [interval_ms 0|200..60000]\n");
             return 1;
         }
     }

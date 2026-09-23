@@ -1148,6 +1148,36 @@ extern "C" void net_sleep(uint32_t ms)
     uart_set_hw_flow_ctrl(PAGER_MODEM_UART, UART_HW_FLOWCTRL_DISABLE, 0);
     gpio_set_direction((gpio_num_t) CONFIG_WALTER_MODEM_PIN_RTS, GPIO_MODE_OUTPUT);
     gpio_set_level((gpio_num_t) CONFIG_WALTER_MODEM_PIN_RTS, 1);
+    // docs/RCA_SLEEP_URC.md §2: the three lines above do NOT actually hold RTS
+    // high across the sleep. CONFIG_ESP_SLEEP_GPIO_RESET_WORKAROUND=y
+    // (firmware/sdkconfig:825) makes IDF run esp_sleep_config_gpio_isolate()
+    // + esp_sleep_enable_gpio_switch(true) at system init
+    // (esp-idf/components/esp_hw_support/sleep_gpio.c:187-199): every valid
+    // GPIO gets SLP_OE=0 / SLP_IE=0 / no pull in its IO_MUX *sleep* fields and
+    // its SLP_SEL bit set, so the pad hardware switches to "output driver off,
+    // floating" for the whole of esp_light_sleep_start() and back on wake. No
+    // software runs at that moment; nothing above can prevent it. The modem's
+    // CTS input is therefore driven by a board pull we do not control for
+    // ~2000 ms of every 2200 ms cycle, which turns PROTOCOL.md §8.3/M5's "does
+    // the Sequans queue or drop while CTS is deasserted" into "is the Sequans
+    // even seeing CTS deasserted" -- and a modem that reads CTS as asserted
+    // transmits its held +SQNSMQTTONMESSAGE into a UART whose clock is gated,
+    // i.e. straight onto the floor.
+    //
+    // Excluding RTS from the automatic switch keeps the awake configuration
+    // (plain GPIO output, level 1) live through the sleep, which is what the
+    // vendor's own WalterModem::sleep() (WalterModem.cpp:5054-5097) always
+    // believed it was doing. One IO_MUX register write per sleep; no power
+    // cost (the pad is driven high either way, into a CMOS input).
+    //
+    // What proves it: pages must stop showing the 35 s / 136 s / 182 s tail
+    // (GOTCHAS.md "Pages never arrive while the pager sleeps";
+    // build/bench-logs/phase1-savedreport.log) and instead land within one
+    // wake cycle. The counter to add for a quantitative answer is
+    // "bytes read from the modem UART in the first 50 ms after each wake"
+    // in the sleeptest report: near-zero per wake today, a burst on the wake
+    // after a page once this holds.
+    gpio_sleep_sel_dis((gpio_num_t) CONFIG_WALTER_MODEM_PIN_RTS);
 
     esp_light_sleep_start();
 

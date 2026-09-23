@@ -511,18 +511,12 @@ static void partial_refresh_locked(void)
         return;
     }
 
-    // 00:40 field failure — see full_refresh_locked()'s identical call and
-    // its own comment.
-    disp_pre_write_gate_hook();
-
-    // Re-arm the SSD1680's registers before touching RAM — see
-    // disp_pre_refresh_reset()'s own banner comment (23 Sep field failure).
-    // Safe for the two-RAM-plane state this function depends on: 0x12 (SW
-    // reset) resets registers only, never RAM.
-    if (!disp_pre_refresh_reset("partial refresh")) {
-        return;
-    }
-
+    // The diff comes FIRST. ui_render() runs on every modes_run() iteration
+    // while the UI is awake, so this function is a no-op ~8 times a second
+    // for 30 s after every keystroke; the gate and the register re-arm
+    // below must only run when there is something to write. (23 Sep,
+    // phaseY-keycrash2.log: with the re-arm ahead of the diff, an idle
+    // awake pager did a SW reset + two BUSY waits every 120 ms.)
     int first = -1, last = -1;
     for (int r = 0; r < GFX_FB_ROWS; r++) {
         if (memcmp(gfx_fb_native_row(r), s_fb_old[r], GFX_FB_ROW_BYTES) != 0) {
@@ -534,6 +528,18 @@ static void partial_refresh_locked(void)
     }
     if (first < 0) {
         return; // nothing changed, not worth a refresh or a cadence tick
+    }
+
+    // 00:40 field failure — see full_refresh_locked()'s identical call and
+    // its own comment.
+    disp_pre_write_gate_hook();
+
+    // Re-arm the SSD1680's registers before touching RAM — see
+    // disp_pre_refresh_reset()'s own banner comment (23 Sep field failure).
+    // Safe for the two-RAM-plane state this function depends on: 0x12 (SW
+    // reset) resets registers only, never RAM.
+    if (!disp_pre_refresh_reset("partial refresh")) {
+        return;
     }
 
     // Widen/align to whole PAGER_UI_PARTIAL_ROW_ALIGN-row chunks (Task 3:

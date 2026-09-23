@@ -124,7 +124,7 @@ re-prints at the next boot (`modes_debug_sleeptest_print_saved()`, `modes.c:1105
 returns after the harness's own `watchdog_hard_reset()`):
 
 ```
-sleeptest 6 0 0
+sleeptest 6 0 0    # 0 0 = keep the build's own yield/interval; `sleeptest 6` is equivalent
 # from the host, 60 s in and again 180 s in:
 relay/.venv/bin/python tools/bench/send_test_page.py test-pager "rca1"
 relay/.venv/bin/python tools/bench/send_test_page.py test-pager "rca2"
