@@ -23,6 +23,7 @@
 #include "ident.h"
 #include "net_connect_guard.h"
 #include "publish_quiet.h"
+#include "resub_verdict.h"
 
 #include "WalterModem.h"
 
@@ -174,6 +175,28 @@ static volatile bool s_session_restart_edge = false; // set once the resume repa
 // carries that classification across the round trip.
 static volatile bool s_resub_is_resume = false;
 
+// S2 (docs/SLEEP_URC_DESIGN.md §6, "SUBACK collision"): a page URC flushed
+// together with a re-SUBSCRIBE's SUBACK can consume the SUBACK, which used
+// to make the Step 5 no-SUBACK-in-30s branch below declare a perfectly
+// healthy session dead. s_last_down_ingest_us is set on every MESSAGE event
+// on the (single) down-topic subscription -- a page arriving IS a working
+// subscription, whether or not its own SUBACK round trip is what proves it.
+// s_resub_second_try distinguishes "this is the second re-SUBSCRIBE of the
+// current liveness cycle" so the dead verdict only fires once BOTH go
+// unanswered; s_resub_first_swallowed counts how often the first one alone
+// was swallowed, for the sleeptest report.
+static volatile int64_t s_last_down_ingest_us = 0;
+static volatile bool s_resub_second_try = false;
+static volatile uint32_t s_resub_first_swallowed = 0;
+
+// S2 (docs/SLEEP_URC_DESIGN.md §6): net_internal.h declares this for
+// net.cpp's net_get_resub_swallowed_count() to call, for the sleeptest
+// report. Power effect: none -- one plain read.
+uint32_t lte_get_resub_swallowed_count(void)
+{
+    return s_resub_first_swallowed;
+}
+
 static volatile bool s_handler_busy = false; // true while the MQTT event
                                              // handler is inside an AT
                                              // transaction or the app
@@ -290,6 +313,7 @@ void pager_mqtt_event_handler(WMMQTTEventType event, const WMMQTTEventData *data
         s_last_uplink_us = esp_timer_get_time();
         if (s_resub_wait) {
             s_resub_wait = false;
+            s_resub_second_try = false; // S2: this liveness cycle is resolved, whichever attempt it was
             if (s_resub_is_resume) {
                 s_resub_is_resume = false;
                 s_session_restart_edge = true;
@@ -334,6 +358,14 @@ void pager_mqtt_event_handler(WMMQTTEventType event, const WMMQTTEventData *data
         // question into a message-loss one. modes_run() ORs
         // net_modem_busy() into its skip_sleep condition.
         s_handler_busy = true;
+        // S2 (docs/SLEEP_URC_DESIGN.md §6): any MESSAGE event on the down
+        // topic proves that subscription is alive right now, regardless of
+        // whether the payload turns out to be oversize below -- lte_service_
+        // session()'s Step 5 branch uses this to tell "SUBACK lost in a URC
+        // flush" apart from a genuinely dead session.
+        if (strcmp(data->topic, s_down_topic) == 0) {
+            s_last_down_ingest_us = esp_timer_get_time();
+        }
         {
             // PROTOCOL.md §2: pager/boot/{bid}/... (setup.c, F3.5) gets the
             // 4 kB bundle cap; every other topic keeps the 640-byte
@@ -380,6 +412,7 @@ void pager_mqtt_event_handler(WMMQTTEventType event, const WMMQTTEventData *data
         s_resub_wait = false;
         s_resub_pending = false;
         s_resub_is_resume = false;
+        s_resub_second_try = false;
         ESP_LOGI(TAG, "MQTT disconnected, rc=%d", data->rc);
         break;
 
@@ -573,16 +606,57 @@ static void lte_service_session(void)
     }
 
     // Step 5: no SUBACK within 30s (two wake cycles plus RRC setup) means the
-    // session is dead -- far earlier than the modem's own ~6 minute silent
-    // resume. mqttConnect() (net_session_up(), driven by the ordinary F1/F3
-    // backoff this disconnect edge triggers) frees the topic table, so the
-    // next subscribe after a real reconnect is a normal one.
-    if (s_resub_wait && (now - s_resub_sent_us) > 30 * 1000000LL) {
+    // session MIGHT be dead -- far earlier than the modem's own ~6 minute
+    // silent resume. mqttConnect() (net_session_up(), driven by the ordinary
+    // F1/F3 backoff this disconnect edge triggers) frees the topic table, so
+    // the next subscribe after a real reconnect is a normal one.
+    //
+    // S2 (docs/SLEEP_URC_DESIGN.md §6, "SUBACK collision"): a page URC
+    // flushed together with this SUBACK in the same burst can consume it,
+    // which used to make this branch declare a perfectly healthy session
+    // dead (phaseAB-report.log: page at +441s, "LOST (rc=0)" at +446s, an
+    // 82s teardown+reconnect and the page's own delivery both paid for a
+    // false verdict). Two changes: (i) a /down message ingested after this
+    // re-SUBSCRIBE was sent is itself proof the subscription is alive, no
+    // matter whose SUBACK went missing -- no verdict, no teardown; (ii)
+    // absent that proof, re-send the re-SUBSCRIBE once and only declare the
+    // session dead once a SECOND one also goes unanswered for 30s, so one
+    // swallowed SUBACK costs one extra AT round trip (~0.1 mAh) instead of a
+    // teardown (0.33 mAh of stall + this branch's own ~82s reconnect + a
+    // lost page).
+    resub_verdict_t resub_verdict =
+        resub_verdict_check(s_resub_wait, s_resub_sent_us, s_last_down_ingest_us, s_resub_second_try, now);
+    if (resub_verdict == RESUB_VERDICT_ALIVE) {
+        s_resub_wait = false;
+        s_resub_is_resume = false;
+        s_resub_second_try = false;
+        ESP_LOGI(TAG, "liveness ping got no SUBACK in 30s, but a /down message arrived since it "
+                      "was sent -- the session is alive, its SUBACK was lost in a URC flush");
+        return;
+    }
+    if (resub_verdict == RESUB_VERDICT_RETRY) {
+        s_resub_first_swallowed = s_resub_first_swallowed + 1; // volatile: avoid deprecated ++ (C++20)
+        char cmd[32 + sizeof(s_down_topic)];
+        snprintf(cmd, sizeof(cmd), "AT+SQNSMQTTSUBSCRIBE=0,\"%s\",1", s_down_topic);
+        if (WalterModem::sendCmd(cmd)) {
+            ESP_LOGI(TAG, "liveness ping got no SUBACK in 30s: re-sending once (idle %llds) "
+                          "before declaring the session dead",
+                     (long long) ((now - s_last_uplink_us) / 1000000));
+            s_resub_sent_us = now;
+            s_resub_second_try = true;
+            return;
+        }
+        ESP_LOGI(TAG, "liveness ping: second re-SUBSCRIBE could not be sent -- declaring the "
+                      "session dead now");
+        resub_verdict = RESUB_VERDICT_DEAD; // no second chance to give -- fall into the dead verdict below
+    }
+    if (resub_verdict == RESUB_VERDICT_DEAD) {
         s_mqtt_connected = false;
         s_last_class = NET_MQTT_RC_TRANSIENT;
         s_resub_wait = false;
         s_resub_is_resume = false;
-        ESP_LOGI(TAG, "liveness ping got no SUBACK in 30 s: treating the MQTT session as dead");
+        s_resub_second_try = false;
+        ESP_LOGI(TAG, "liveness ping got no SUBACK after a second try: treating the MQTT session as dead");
         // v0.2 M3 fix (tonight's phaseO-recover.log): this branch used to
         // only set s_disconnect_edge and rely on modes.c's F1/F3 backoff to
         // call net_session_up() again -- which then hit exactly tonight's
@@ -598,6 +672,9 @@ static void lte_service_session(void)
         s_disconnect_edge = true;
         return;
     }
+    // RESUB_VERDICT_NONE: nothing outstanding, or not timed out yet -- fall
+    // through to the idle_ping/resume_repair check below, which is itself
+    // gated on !s_resub_wait so it correctly does nothing while one is.
 
     bool resume_repair = s_resub_pending;
     bool idle_ping = s_mqtt_connected && !s_resub_wait &&
@@ -622,6 +699,7 @@ static void lte_service_session(void)
     }
     s_resub_sent_us = now;
     s_resub_wait = true;
+    s_resub_second_try = false; // S2: a brand new liveness cycle, not a retry of an old one
     s_resub_pending = false;
     s_resub_is_resume = resume_repair;
     s_last_uplink_us = now;

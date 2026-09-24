@@ -1529,6 +1529,13 @@ extern "C" uint32_t net_get_publish_ring(net_publish_ring_entry_t *out, uint32_t
     return lte_get_publish_ring(out, cap);
 }
 
+extern "C" uint32_t net_get_resub_swallowed_count(void)
+{
+    // S2: same reasoning as net_get_publish_ring() above -- the counter
+    // lives in xport_lte.cpp (the only transport this fix applies to).
+    return lte_get_resub_swallowed_count();
+}
+
 extern "C" bool net_check_sim(void)
 {
     if (!WalterModem::begin(PAGER_MODEM_UART)) {

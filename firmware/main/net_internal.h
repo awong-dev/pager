@@ -61,6 +61,12 @@ extern volatile bool s_disconnect_edge;
  * call regardless of the active transport, same as the state above. */
 uint32_t lte_get_publish_ring(net_publish_ring_entry_t *out, uint32_t cap);
 
+/* S2 (docs/SLEEP_URC_DESIGN.md §6): xport_lte.cpp's count of how often a
+ * liveness ping's first re-SUBSCRIBE went unanswered (whether rescued by
+ * downlink proof or a second re-SUBSCRIBE). net.cpp's
+ * net_get_resub_swallowed_count() (net.h) forwards to this directly. */
+uint32_t lte_get_resub_swallowed_count(void);
+
 /* The MQTT event handler itself (moved to xport_lte.cpp), registered from
  * net.cpp's net_bringup() and net_bootstrap_attach() via
  * WalterModem::setMQTTEventHandler(). */

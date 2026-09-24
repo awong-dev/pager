@@ -1241,6 +1241,11 @@ void modes_debug_sleeptest_report(void)
                (unsigned) probec.noqueue);
     st_appendf(&n, "post-wake UART bytes (50ms sample): max=%u wakes_with_bytes=%u\n",
                (unsigned) s_st_wake_bytes_max, (unsigned) s_st_wake_bytes_nonzero);
+    // S2 (docs/SLEEP_URC_DESIGN.md §6): how often a liveness ping's first
+    // re-SUBSCRIBE was swallowed (rescued by downlink proof or a second
+    // re-SUBSCRIBE, never by a teardown) -- zero MQTT session LOST lines
+    // alongside a non-zero count here is this fix working.
+    st_appendf(&n, "resub_first_swallowed=%u\n", (unsigned) net_get_resub_swallowed_count());
     net_publish_ring_entry_t ring[NET_PUBLISH_RING_MAX];
     uint32_t nring = net_get_publish_ring(ring, NET_PUBLISH_RING_MAX);
     if (nring == 0) {

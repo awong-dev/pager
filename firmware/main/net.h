@@ -300,6 +300,15 @@ typedef struct {
 #define NET_PUBLISH_RING_MAX 12
 uint32_t net_get_publish_ring(net_publish_ring_entry_t *out, uint32_t cap);
 
+/* S2 (docs/SLEEP_URC_DESIGN.md §6, "SUBACK collision"): count of how often a
+ * liveness ping's first re-SUBSCRIBE went unanswered for 30s (whether the
+ * session was then proven alive by a /down message, rescued by a second
+ * re-SUBSCRIBE, or -- if that second one also went unanswered -- declared
+ * dead). Zero across a whole sleeptest window is the expected/healthy case;
+ * a non-zero count with zero `MQTT session LOST` lines is this fix working
+ * as intended. Power effect: none -- one plain read. */
+uint32_t net_get_resub_swallowed_count(void);
+
 /* Register the callback invoked once per inbound MQTT message, after net.c
  * has already bounds-checked it (§3.4/F6) and fetched it via mqttReceive().
  * Runs on the modem library's _eventProcessingTask (L4), not an ISR and not

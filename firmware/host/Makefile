@@ -75,7 +75,7 @@ endif
 MAIN_SRC := ../main
 BUILD := build
 
-TESTS := test_cbor test_auth test_setup test_input test_msg test_lock test_loc test_cafetch test_catrust test_cfg test_sms test_carrier test_chat_layout test_coverage test_net_connect_guard test_net_probe_guard test_publish_quiet test_accel_rate test_wifi_policy test_wificred
+TESTS := test_cbor test_auth test_setup test_input test_msg test_lock test_loc test_cafetch test_catrust test_cfg test_sms test_carrier test_chat_layout test_coverage test_net_connect_guard test_net_probe_guard test_resub_verdict test_publish_quiet test_accel_rate test_wifi_policy test_wificred
 TEST_BINS := $(TESTS:%=$(BUILD)/%)
 
 # ASSETS: tools/mkassets.py's default output location (docs/DEVICE_TASKS.md
@@ -322,6 +322,18 @@ $(BUILD)/test_net_probe_guard.o: test_net_probe_guard.c $(MAIN_SRC)/net_probe_gu
 	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ test_net_probe_guard.c
 
 $(BUILD)/test_net_probe_guard: $(BUILD)/net_probe_guard.o $(BUILD)/test_net_probe_guard.o
+	$(CC) $(CFLAGS) -o $@ $^
+
+# test_resub_verdict: resub_verdict.c (whole file -- no ESP-IDF dependency at
+# all, see resub_verdict.h's own module comment) + test_resub_verdict.c. S2
+# (docs/SLEEP_URC_TASKS.md): the SUBACK-collision liveness verdict.
+$(BUILD)/resub_verdict.o: $(MAIN_SRC)/resub_verdict.c $(MAIN_SRC)/resub_verdict.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $(MAIN_SRC)/resub_verdict.c
+
+$(BUILD)/test_resub_verdict.o: test_resub_verdict.c $(MAIN_SRC)/resub_verdict.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ test_resub_verdict.c
+
+$(BUILD)/test_resub_verdict: $(BUILD)/resub_verdict.o $(BUILD)/test_resub_verdict.o
 	$(CC) $(CFLAGS) -o $@ $^
 
 # test_publish_quiet: publish_quiet.c (whole file -- no ESP-IDF dependency
