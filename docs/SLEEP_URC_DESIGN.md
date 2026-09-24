@@ -401,3 +401,24 @@ experiment); or accept the bar as "≤ 30 s typical, ≤ 50 s worst case" and sa
   (ext0/ext1, no UART-wake byte loss at all), then send one `AT` to flush. That retires §3(c)'s
   clipping problem and the whole of S9's parser risk. Worth asking before spending firmware time on
   S9.
+
+## Phase 3 candidate (24 Sep 2026): the ULP-RISC-V as a byte-capturing coprocessor
+
+Owner's question: could the ULP run permanently during light sleep, collate the bytes the modem
+sends before the main core is awake, and hand them down, so no URC byte is ever clipped?
+
+Feasibility: the modem's TX0 lands on IO14, an RTC GPIO, readable by the ULP-RISC-V in light
+sleep. At 115200 baud one bit is 8.7 us = ~150 ULP cycles at 17.5 MHz, enough for a bit-banged
+receiver (RTC clock accuracy and calibration are the risk). RTC memory (8 kB) holds any URC.
+Power: on the order of 100 uA continuous, small against the ~1 mA light-sleep floor. The hard
+part is the handoff, not the receiver: the ULP must keep capturing until the main core has
+re-enabled the UART and signalled takeover, and the host must splice the ULP bytes ahead of the
+UART stream without double-counting the overlap. It is a new component invisible to host tests.
+
+Ranking: behind two cheaper gates. (1) Explicit queue read after wake: if
+`AT+SQNSMQTTRCVMESSAGE=0,"<topic>"` returns a PENDING message without the URC's message id
+(S8 only showed the empty case answers +CME ERROR: 4, which is a usable negative), phase 2 is
+"wake on RX activity, discard the clipped line, read the queue" and no coprocessor is needed.
+(2) Measure the clip: bytes lost between the first RX edge and the UART being live; a handful is
+a resync rule, not a coprocessor. If both fail, the ULP receiver gets its own design document
+with the handoff protocol as the centrepiece.
