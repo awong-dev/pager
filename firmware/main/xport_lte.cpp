@@ -383,7 +383,29 @@ void pager_mqtt_event_handler(WMMQTTEventType event, const WMMQTTEventData *data
                 s_oversize_count = s_oversize_count + 1; // volatile: avoid deprecated ++ (C++20)
                 ESP_LOGI(TAG, "oversize MQTT message dropped: %u bytes > %u cap",
                          (unsigned) data->msg_length, (unsigned) payload_cap);
-                WalterModem::mqttReceive(data->topic, data->mid, s_mqtt_rx_buf, sizeof(s_mqtt_rx_buf));
+                // S13 (docs/SLEEP_URC_DESIGN.md §8.2 hypothesis 2, docs/
+                // SLEEP_URC_TASKS.md S13): the normal path below passes the
+                // real data->msg_length, so the library's _expectingPayload()
+                // (WalterModem.cpp) sets _receivingPayload's byte count to
+                // exactly what the modem is about to send and it always
+                // balances. This drain path used to pass sizeof(s_mqtt_rx_buf)
+                // (4096, sized for the boot topic's larger cap) unconditionally
+                // -- for any oversize non-boot message with
+                // PAGER_MAX_PAYLOAD (640) < msg_length <= 4096, that asks the
+                // modem to send more bytes than the message actually
+                // contains. The modem sends the real (shorter) message and
+                // stops; the parser, still expecting the requested (longer)
+                // count, leaves _receivingPayload stuck true -- consuming
+                // every subsequent response/URC line as payload -- until an
+                // unrelated command's timeout force-clears it 30 s later
+                // (WalterModem.cpp's _processModemCMD() timeout paths). Pass
+                // the real length instead, capped at the buffer's physical
+                // size for the (still oversize-by-cap) case where even that
+                // is bigger than the buffer.
+                uint16_t drain_len = (data->msg_length < sizeof(s_mqtt_rx_buf))
+                                         ? data->msg_length
+                                         : (uint16_t) sizeof(s_mqtt_rx_buf);
+                WalterModem::mqttReceive(data->topic, data->mid, s_mqtt_rx_buf, drain_len);
                 s_handler_busy = false;
                 break;
             }
