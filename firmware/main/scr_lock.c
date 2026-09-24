@@ -59,25 +59,15 @@ static void collect_unread(int *count, char *names, size_t names_cap)
 
 static void try_unlock(void)
 {
-    if (lock_is_locked_out()) {
-        char toast[40];
-        snprintf(toast, sizeof(toast), "wait %us", (unsigned) lock_backoff_remaining_s());
-        ui_show_toast(toast);
-        return;
-    }
-
+    // No retry lockout (owner decision, 2026-09-23, docs/DEVICE_PLAN.md
+    // §5.8): PBKDF2's own ~50-100ms per attempt already deters guessing, so
+    // a wrong code just clears the entry and shows a toast — no wait.
     bool ok = lock_try_passcode(s_buf, s_len);
     s_buf[0] = '\0';
     s_len = 0;
 
     if (!ok) {
-        if (lock_is_locked_out()) {
-            char toast[40];
-            snprintf(toast, sizeof(toast), "wrong - wait %us", (unsigned) lock_backoff_remaining_s());
-            ui_show_toast(toast);
-        } else {
-            ui_show_toast("wrong passcode");
-        }
+        ui_show_toast("wrong passcode");
         return;
     }
 
@@ -110,9 +100,6 @@ static void lock_on_key(input_key_t key)
     // (esc, tab, arrows) is a deliberate no-op, not just "unhandled".
     switch (key.type) {
     case INPUT_KEY_CHAR:
-        if (lock_is_locked_out()) {
-            break; // locked out: typing does nothing, matches the countdown-only state
-        }
         if (s_len + 1 < sizeof(s_buf)) {
             s_buf[s_len++] = key.ch;
             s_buf[s_len] = '\0';
@@ -136,7 +123,10 @@ static void lock_render(void)
     const int sz = GFX_FONT_NORMAL;
     int y = UI_BODY_TOP + 6;
 
-    const char *title = "Locked";
+    // Owner's beta request, verbatim: "the lock screen should show the words
+    // 'screen locked' somewhere" — the literal phrase, not just "Locked"
+    // (docs/DEVICE_PLAN.md §5.8's mockup updated to match).
+    const char *title = "screen locked";
     int tw = gfx_text_width(sz, title);
     gfx_text((GFX_SCREEN_W - tw) / 2, y, sz, title);
     y += 16;
@@ -153,20 +143,17 @@ static void lock_render(void)
     gfx_text(8, y, sz, line);
     y += 16;
 
-    if (lock_is_locked_out()) {
-        snprintf(line, sizeof(line), "locked out: %us", (unsigned) lock_backoff_remaining_s());
-        gfx_text(8, y, sz, line);
-    } else {
-        char mask[LOCK_INPUT_MAX + 1];
-        size_t i = 0;
-        for (; i < s_len; i++) {
-            mask[i] = '*';
-        }
-        mask[i++] = '_';
-        mask[i] = '\0';
-        snprintf(line, sizeof(line), "passcode  %s", mask);
-        gfx_text(8, y, sz, line);
+    // Owner's beta request: "when typing a pass code, it should show * or
+    // similar" — one '*' per digit typed so far, nothing else about the
+    // code (no length number, no cursor glyph past the last '*').
+    char mask[LOCK_INPUT_MAX + 1];
+    size_t i = 0;
+    for (; i < s_len; i++) {
+        mask[i] = '*';
     }
+    mask[i] = '\0';
+    snprintf(line, sizeof(line), "passcode  %s", mask);
+    gfx_text(8, y, sz, line);
 
     gfx_text(0, UI_FOOTER_Y, sz, "enter unlock            btn hold = nothing");
 }

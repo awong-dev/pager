@@ -1304,6 +1304,16 @@ void app_main(void)
     ESP_LOGI(TAG, "school_pager boot");
     watchdog_boot(); // logs why we reset and where the loop was; arms the RTC watchdog
 
+    // Owner request, beta feedback 2026-09-23: flag a crash/watchdog/brownout
+    // reset in the status bar until the first key press (ui.c's
+    // GFX_ICON_CRASH slot) -- set here, before ui_init() even runs, since the
+    // flag only gates a render-time icon, not any ui.c init ordering. No
+    // modem or sleep-state effect.
+    if (watchdog_last_reset_was_crash()) {
+        ESP_LOGI(TAG, "boot crash indicator: %s", watchdog_last_reset_reason_str());
+        ui_set_crash_indicator(true);
+    }
+
     board_power_init(); // 3V3 peripheral rail on -- must precede any display/I2C use
 
     // NVS init only; no modem/radio access, no power effect beyond the

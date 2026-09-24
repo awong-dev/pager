@@ -38,6 +38,13 @@ static RTC_NOINIT_ATTR uint32_t s_magic;
 static RTC_NOINIT_ATTR uint32_t s_stage;
 static RTC_NOINIT_ATTR uint32_t s_resets;
 
+// Ordinary (non-RTC) statics: the boot crash classification, computed once
+// by watchdog_boot() and read back by main.c to decide whether to raise the
+// status-bar crash indicator (ui.c). This-boot-only, like every other
+// ordinary static in this file -- nothing here needs to survive a reset.
+static bool s_last_abnormal = false;
+static const char *s_last_reason_str = "unknown";
+
 static const char *watchdog_stage_name(uint32_t stage)
 {
     static const char *const k_names[] = {
@@ -88,6 +95,11 @@ void watchdog_boot(void)
         ESP_LOGI(TAG, "reset reason: %s%s%s", reason_name(r), valid ? "; last stage: " : "",
                  valid ? watchdog_stage_name(s_stage) : "");
     }
+    // Classification for main.c's boot crash indicator (ui.c's status-bar
+    // icon) -- captured before s_stage resets to WD_BOOT below, though only
+    // `abnormal`/`r` (not s_stage) feed it.
+    s_last_abnormal = abnormal;
+    s_last_reason_str = reason_name(r);
     s_stage = WD_BOOT;
 
     // Arm the RTC watchdog through the HAL (the rtc_wdt.h convenience API is
@@ -104,6 +116,9 @@ void watchdog_boot(void)
     ESP_LOGI(TAG, "RTC watchdog armed (%u s); task watchdog %d s", (unsigned) (WD_RTC_TIMEOUT_MS / 1000),
              CONFIG_ESP_TASK_WDT_TIMEOUT_S);
 }
+
+bool watchdog_last_reset_was_crash(void) { return s_last_abnormal; }
+const char *watchdog_last_reset_reason_str(void) { return s_last_reason_str; }
 
 void watchdog_loop_begin(void)
 {

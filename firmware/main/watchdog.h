@@ -16,6 +16,7 @@
 #ifndef WATCHDOG_H
 #define WATCHDOG_H
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -43,6 +44,22 @@ typedef enum {
 /* Call once, early in app_main(): logs why the chip last reset and where the
  * main loop was, then arms the RTC watchdog. */
 void watchdog_boot(void);
+
+/* True iff watchdog_boot() classified the last reset as a crash worth
+ * flagging to the user at boot: a panic, a task/RTC watchdog, or a
+ * brownout. False for a power-on, an external/USB (esptool) reset, and this
+ * firmware's own deliberate restarts — esp_restart() (reports ESP_RST_SW,
+ * never in the "abnormal" set below) and watchdog_hard_reset() (reports a
+ * watchdog reset, but excluded via the WD_DELIBERATE_RESTART stage marker
+ * watchdog_boot() checks before classifying). Valid only after
+ * watchdog_boot() has run. No modem or sleep-state effect: reads a static
+ * set at boot. */
+bool watchdog_last_reset_was_crash(void);
+
+/* Human-readable reason for the last reset (e.g. "PANIC (crash)", "TASK
+ * WATCHDOG") — the same string watchdog_boot()'s own boot log line uses.
+ * Valid only after watchdog_boot() has run. */
+const char *watchdog_last_reset_reason_str(void);
 /* Call from the main loop's task before its loop: subscribes it to the task watchdog. */
 void watchdog_loop_begin(void);
 /* Feed both watchdogs and leave a breadcrumb. */

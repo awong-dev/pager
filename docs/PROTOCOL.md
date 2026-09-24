@@ -1157,8 +1157,8 @@ id, state, attempts.)
 | `auth.down_n` | 4 | Highest accepted `n` for `/down` messages (§2.5) |
 | `auth.down_bits` | 4 | 64-bit bitmap of recent `/down` counter values for the replay window (§2.5) |
 | `ui_state` | 4 | UI flags and settings (e.g., last screen) |
-| `lock` (`locked`, `fail_count`, `backoff_until_us`, padding) | 16 | Device lock state (§5.8); `locked` flag, wrong-passcode attempt counter, backoff expiry, padding |
-| **Total** | **≈ 460 of 1184** | ~724 B headroom |
+| `lock` (`locked`, padding) | 8 | Device lock state (§5.8); `locked` flag, padding. Was 16 B (also `fail_count`, `backoff_until_us`) before the retry lockout was removed, 2026-09-23 — a wrong passcode now just clears the entry, no attempt counter or backoff deadline left to persist. |
+| **Total** | **≈ 452 of 1184** | ~732 B headroom |
 
 `modes.c` remains the sole owner of the struct, its single `magic`/`crc32` pair and `rtc_save()`
 (§11's "one transition funnel" discipline applies to RTC writes too). `msg.c` receives a typed

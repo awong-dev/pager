@@ -783,6 +783,23 @@ static void render_screen_tls_icons(void)
     draw_padlock_scaled(200, y - 10, GFX_ICON_TLS_BROKEN, 6);
 }
 
+// Owner request, beta feedback 2026-09-23: the boot crash indicator icon
+// (GFX_ICON_CRASH, gfx.h), shown the same 1x/3x/6x way render_screen_tls_icons()
+// above shows the padlock shapes -- reuses draw_padlock_scaled() as-is, since
+// it only ever samples gfx_icon()'s own 12x12 output for whatever id it is
+// given, despite the padlock-specific name.
+static void render_screen_crash_icon(void)
+{
+    gfx_clear();
+    draw_fixture_status_bar(3, true, 0, 0, 3);
+
+    int y = FIXTURE_BODY_TOP + 2;
+    gfx_text(0, y, GFX_FONT_NORMAL, "crash indicator (1x, 3x, 6x):");
+    draw_padlock_scaled(140, y - 2, GFX_ICON_CRASH, 1);
+    draw_padlock_scaled(160, y - 6, GFX_ICON_CRASH, 3);
+    draw_padlock_scaled(200, y - 10, GFX_ICON_CRASH, 6);
+}
+
 int main(int argc, char **argv)
 {
     const char *assets_path = (argc > 1) ? argv[1] : "../../build/assets.bin";
@@ -817,6 +834,7 @@ int main(int argc, char **argv)
         { "screen_greeting_sim_missing", render_screen_greeting_sim_missing },
         { "screen_greeting_shutting_down", render_screen_greeting_shutting_down },
         { "screen_tls_icons", render_screen_tls_icons },
+        { "screen_crash_icon", render_screen_crash_icon },
     };
 
     int status = 0;

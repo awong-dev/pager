@@ -55,22 +55,6 @@ bool lock_pbkdf2(const char *passcode, size_t passcode_len, const uint8_t salt[L
                                          LOCK_HASH_LEN, out_hash) == 0;
 }
 
-uint32_t lock_backoff_seconds(uint32_t fail_count)
-{
-    if (fail_count <= LOCK_FREE_ATTEMPTS) {
-        return 0;
-    }
-    uint32_t n = fail_count - LOCK_FREE_ATTEMPTS; // 1, 2, 3, ...
-    if (n > 32) {
-        return LOCK_BACKOFF_CAP_S; // guard against a uint64 shift overflow; the cap applies long before this
-    }
-    uint64_t s = (uint64_t) LOCK_BACKOFF_BASE_S << (n - 1);
-    if (s > LOCK_BACKOFF_CAP_S) {
-        s = LOCK_BACKOFF_CAP_S;
-    }
-    return (uint32_t) s;
-}
-
 // PROTOCOL.md §10 keymap subset this file reads, plus relay/app/wirecbor.py's
 // CFG_KEYMAP={"lock":0} / LOCK_KEYMAP={"clear":0,"auto":1} sub-map keys
 // (neither is in PROTOCOL.md's own §10 table verbatim for the `cfg.lock`
@@ -359,22 +343,13 @@ void lock_init(bool rtc_was_valid)
     load_from_nvs(); // power effect: a few NVS reads
 
     s_lock();
-    if (s_have_hash) {
-        // See lock.h's own lock_init() doc comment for the full reasoning.
-        s_rtc->locked = 1;
-        if (rtc_was_valid) {
-            uint32_t secs = lock_backoff_seconds(s_rtc->fail_count);
-            s_rtc->backoff_until_us =
-                (secs > 0) ? (esp_timer_get_time() + (int64_t) secs * 1000000) : 0;
-        } else {
-            s_rtc->fail_count = 0;
-            s_rtc->backoff_until_us = 0;
-        }
-    } else {
-        s_rtc->locked = 0;
-        s_rtc->fail_count = 0;
-        s_rtc->backoff_until_us = 0;
-    }
+    // See lock.h's own lock_init() doc comment for the full reasoning.
+    // rtc_was_valid no longer changes anything here — it only ever fed the
+    // now-removed backoff recompute — but the parameter stays (lock_bind_rtc()
+    // callers pass it, mirroring msg_init()'s own signature) in case a future
+    // RTC-resident lock field needs the same warm-vs-cold distinction again.
+    (void) rtc_was_valid;
+    s_rtc->locked = s_have_hash ? 1 : 0;
     s_save();
     s_unlock();
 }
@@ -445,8 +420,6 @@ void lock_clear_passcode(void)
     memset(s_salt, 0, sizeof(s_salt));
     memset(s_hash, 0, sizeof(s_hash));
     s_rtc->locked = 0;
-    s_rtc->fail_count = 0;
-    s_rtc->backoff_until_us = 0;
     s_save();
     s_unlock();
 }
@@ -467,26 +440,6 @@ void lock_set_preview(bool on)
     nvs_write_u8("prev", on ? 1 : 0); // power effect: one NVS write
 }
 
-bool lock_is_locked_out(void)
-{
-    s_lock();
-    int64_t now = esp_timer_get_time();
-    bool out = s_rtc->backoff_until_us != 0 && now < s_rtc->backoff_until_us;
-    s_unlock();
-    return out;
-}
-
-uint32_t lock_backoff_remaining_s(void)
-{
-    s_lock();
-    int64_t rem = s_rtc->backoff_until_us - esp_timer_get_time();
-    s_unlock();
-    if (rem <= 0) {
-        return 0;
-    }
-    return (uint32_t) ((rem + 999999) / 1000000); // round up to the next second
-}
-
 bool lock_try_passcode(const char *passcode, size_t len)
 {
     s_lock();
@@ -495,8 +448,6 @@ bool lock_try_passcode(const char *passcode, size_t len)
     uint8_t want[LOCK_HASH_LEN];
     memcpy(salt, s_salt, sizeof(salt));
     memcpy(want, s_hash, sizeof(want));
-    int64_t now = esp_timer_get_time();
-    bool locked_out = s_rtc->backoff_until_us != 0 && now < s_rtc->backoff_until_us;
     s_unlock();
 
     if (!have) {
@@ -505,37 +456,26 @@ bool lock_try_passcode(const char *passcode, size_t len)
         // to protect).
         s_lock();
         s_rtc->locked = 0;
-        s_rtc->fail_count = 0;
-        s_rtc->backoff_until_us = 0;
         s_save();
         s_unlock();
         return true;
-    }
-    if (locked_out) {
-        return false; // caller shows the countdown (lock_backoff_remaining_s()); no attempt consumed
     }
 
     uint8_t got[LOCK_HASH_LEN];
     // Power effect: ~50-100ms CPU-bound PBKDF2 compute (UNVERIFIED), done
     // with the RTC lock released — matches msg.c's own no-blocking-work-
-    // under-lock discipline.
+    // under-lock discipline. No retry lockout (owner decision, 2026-09-23):
+    // this compute now runs on every attempt, including a wrong one — see
+    // lock.h's own module comment.
     bool computed = lock_pbkdf2(passcode, len, salt, got);
     bool match = computed && memcmp(got, want, LOCK_HASH_LEN) == 0;
 
-    s_lock();
     if (match) {
+        s_lock();
         s_rtc->locked = 0;
-        s_rtc->fail_count = 0;
-        s_rtc->backoff_until_us = 0;
-    } else {
-        if (s_rtc->fail_count < 255) {
-            s_rtc->fail_count++;
-        }
-        uint32_t secs = lock_backoff_seconds(s_rtc->fail_count);
-        s_rtc->backoff_until_us = (secs > 0) ? (esp_timer_get_time() + (int64_t) secs * 1000000) : 0;
+        s_save();
+        s_unlock();
     }
-    s_save();
-    s_unlock();
     return match;
 }
 

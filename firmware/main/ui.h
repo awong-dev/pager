@@ -245,8 +245,20 @@ void ui_on_awake_lapse(void);
 
 /* Routes one decoded key/nav event to the top screen's on_key(). Does not
  * render — the caller (modes.c) calls ui_render() once after draining every
- * event for a given wake-and-drain iteration. */
+ * event for a given wake-and-drain iteration. Also clears the boot crash
+ * indicator (see ui_set_crash_indicator() below) on its way in, if it was
+ * still showing -- "the first keyboard interaction", any key event, not
+ * gated on lock state or which screen is on top. */
 void ui_dispatch_key(input_key_t key);
+
+/* Call once, at boot (main.c, right after watchdog_boot()), if
+ * watchdog_last_reset_was_crash() is true: raises a small icon
+ * (GFX_ICON_CRASH, gfx.h) in the status bar's right-hand cluster,
+ * immediately left of the TLS padlock slot, drawn by every draw_status_bar()
+ * call until ui_dispatch_key() sees the first key press -- a page arriving
+ * (ui_incoming()) does not clear it. No modem or sleep-state effect: a
+ * render-time flag only. */
+void ui_set_crash_indicator(bool show);
 
 /* Global button semantics, docs/DEVICE_PLAN.md §5.5 (Home's Keys bullet,
  * stated as applying "from anywhere", not just on Home): short press opens

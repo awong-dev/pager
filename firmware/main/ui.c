@@ -226,6 +226,13 @@ static void count_unread_unsent(int *unread, int *unsent)
 // 4px after the "u<n>" text it followed).
 #define UI_STATUS_ICON_GAP 4
 
+// Boot crash indicator (owner request, beta feedback 2026-09-23) — see
+// ui_set_crash_indicator()'s own doc comment (ui.h) for the full contract.
+// Set once at boot by main.c; cleared by ui_dispatch_key() on the first key.
+static bool s_crash_indicator = false;
+
+void ui_set_crash_indicator(bool show) { s_crash_indicator = show; }
+
 static void draw_status_bar(void)
 {
     int unread = 0, unsent = 0;
@@ -276,6 +283,17 @@ static void draw_status_bar(void)
     case CATRUST_UNPINNED:
     default:
         break;
+    }
+
+    // Boot crash indicator (owner request, beta feedback 2026-09-23):
+    // immediately left of the TLS padlock slot, for the whole boot after a
+    // panic / task-or-RTC watchdog / brownout reset -- see
+    // ui_set_crash_indicator()'s own doc comment (ui.h) for the full
+    // contract. Its own fixed slot, independent of whether the padlock
+    // itself drew anything this frame (CATRUST_UNPINNED draws nothing).
+    if (s_crash_indicator) {
+        int crash_x = tls_x - GFX_ICON_W - UI_STATUS_ICON_GAP;
+        gfx_icon(crash_x, 0, GFX_ICON_CRASH);
     }
 
     gfx_hline(0, GFX_SCREEN_W - 1, UI_STATUS_H);
@@ -343,6 +361,14 @@ void ui_on_awake_lapse(void)
 
 void ui_dispatch_key(input_key_t key)
 {
+    if (s_crash_indicator) {
+        // "the first keyboard interaction (any key event; a page arriving
+        // does not clear it)" — ui_incoming() below never calls this
+        // function, only modes.c's key-drain path does, so that split is
+        // free here.
+        s_crash_indicator = false;
+        ESP_LOGI(TAG, "boot crash indicator cleared by key press");
+    }
     const ui_screen_t *top = ui_top();
     if (top && top->on_key) {
         top->on_key(key);

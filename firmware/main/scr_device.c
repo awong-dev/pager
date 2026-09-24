@@ -189,9 +189,10 @@ static void device_on_key_pw(input_key_t key)
     case INPUT_KEY_ENTER:
         if (s_pw_modal == PW_MODAL_CURRENT) {
             // §5.8: "asks for the current passcode first" — verified via
-            // the same lock_try_passcode() the Locked screen itself uses
-            // (shares its fail_count/backoff, deterring brute-forcing from
-            // either surface with one shared schedule).
+            // the same lock_try_passcode() the Locked screen itself uses. No
+            // retry lockout (owner decision, 2026-09-23): PBKDF2's own
+            // ~50-100ms per attempt is the only thing slowing down guesses
+            // from either surface now.
             bool ok = lock_try_passcode(s_pw_buf, s_pw_len);
             s_pw_len = 0;
             s_pw_buf[0] = '\0';
@@ -199,7 +200,7 @@ static void device_on_key_pw(input_key_t key)
                 s_pw_modal = PW_MODAL_NEW;
                 s_pw_allow_off = true;
             } else {
-                ui_show_toast(lock_is_locked_out() ? "wrong - locked out" : "wrong passcode");
+                ui_show_toast("wrong passcode");
                 s_pw_modal = PW_MODAL_NONE;
             }
         } else if (s_pw_modal == PW_MODAL_NEW) {

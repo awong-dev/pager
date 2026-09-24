@@ -1,7 +1,9 @@
 /* test_lock.c — host test harness for main/lock.c's pure functions (task
- * F6.5): PBKDF2 hash round-trip + timing, the wrong-passcode backoff
- * schedule, passcode-shape validation, and the `cfg` `lock` map parser
- * against tools/authvectors.json's "cfg" vector.
+ * F6.5): PBKDF2 hash round-trip + timing, passcode-shape validation, and the
+ * `cfg` `lock` map parser against tools/authvectors.json's "cfg" vector.
+ * No retry-lockout test: the wrong-passcode backoff schedule (and
+ * lock_backoff_seconds()) was removed at the owner's request, 2026-09-23 —
+ * PBKDF2's own per-attempt cost is the only throttle left.
  *
  * Builds and links the *real* mbedtls (see firmware/host/Makefile's own
  * comment on why: lock.c's lock_pbkdf2()/lock_parse_cfg() are not gated by
@@ -87,27 +89,6 @@ static void test_pbkdf2_round_trip_and_timing(void)
     CHECK(lock_pbkdf2("hunter2", 7, salt2, hash_d), "lock_pbkdf2() must succeed with a different salt");
     CHECK(memcmp(hash_a, hash_d, LOCK_HASH_LEN) != 0,
           "different salts must produce different hashes for the same passcode");
-}
-
-/* ---------------------------------------------------------------------
- * lock_backoff_seconds(): docs/DEVICE_PLAN.md §5.8's schedule.
- * --------------------------------------------------------------------- */
-
-static void test_backoff_schedule(void)
-{
-    CHECK(lock_backoff_seconds(0) == 0, "0 failures -> no backoff");
-    for (uint32_t i = 1; i <= LOCK_FREE_ATTEMPTS; i++) {
-        CHECK(lock_backoff_seconds(i) == 0, "fail_count=%u (<= %u free attempts) -> no backoff",
-              (unsigned) i, (unsigned) LOCK_FREE_ATTEMPTS);
-    }
-    CHECK(lock_backoff_seconds(LOCK_FREE_ATTEMPTS + 1) == 30, "1st backoff step must be 30s");
-    CHECK(lock_backoff_seconds(LOCK_FREE_ATTEMPTS + 2) == 60, "2nd backoff step must be 60s (doubling)");
-    CHECK(lock_backoff_seconds(LOCK_FREE_ATTEMPTS + 3) == 120, "3rd backoff step must be 120s");
-    CHECK(lock_backoff_seconds(LOCK_FREE_ATTEMPTS + 4) == 240, "4th backoff step must be 240s");
-    CHECK(lock_backoff_seconds(LOCK_FREE_ATTEMPTS + 5) == 480, "5th backoff step must be 480s");
-    CHECK(lock_backoff_seconds(LOCK_FREE_ATTEMPTS + 6) == 600, "6th backoff step must be capped at 600s");
-    CHECK(lock_backoff_seconds(LOCK_FREE_ATTEMPTS + 7) == 600, "7th step must stay capped at 600s");
-    CHECK(lock_backoff_seconds(255) == 600, "a very large fail_count must stay capped at 600s");
 }
 
 /* ---------------------------------------------------------------------
@@ -306,7 +287,6 @@ int main(void)
 {
     test_passcode_valid();
     test_pbkdf2_round_trip_and_timing();
-    test_backoff_schedule();
     test_parse_cfg_vector();
 
     if (g_failures == 0) {

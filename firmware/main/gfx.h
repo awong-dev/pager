@@ -127,6 +127,16 @@ typedef enum {
      * this TLS trust padlock). */
     GFX_ICON_TLS_PINNED,  /* closed padlock: CA pinned, last connect validated */
     GFX_ICON_TLS_BROKEN,  /* broken padlock: CA pinned, running unvalidated */
+    /* Boot crash indicator (owner request, beta feedback 2026-09-23): shown
+     * in the status bar's right-hand cluster, immediately left of the TLS
+     * padlock slot (ui.c's draw_status_bar()), for the whole boot after the
+     * last reset was classified a crash -- a panic, a task/RTC watchdog, or
+     * a brownout (watchdog.c) -- cleared on the first keyboard interaction.
+     * A starburst/"explosion" glyph, reading as U+1F4A5 at 12px: a filled
+     * centre with 8 short radiating strokes. Drawn from code exactly like
+     * every other icon here (icon_crash(), gfx.c), not from the assets
+     * partition. */
+    GFX_ICON_CRASH,
     GFX_ICON_COUNT,
 } gfx_icon_t;
 #define GFX_ICON_W 12

@@ -288,7 +288,8 @@ stays conformant.
   being unextractable, and the eFuse-burning release mode is not something a household should be
   asked to get right.
 - **RTC changes** (`pager_rtc_t`, bump `PAGER_RTC_MAGIC`): add `auth.up_lo` (4), `auth.down_n`
-  (4), `auth.down_bits` (4), 4 B of UI state and 16 B of lock state (§5.8); and, per §5.6, the
+  (4), `auth.down_bits` (4), 4 B of UI state and 8 B of lock state (§5.8, shrunk from 16 B once the
+  retry lockout was removed); and, per §5.6, the
   reply and unread *bodies* leave RTC for NVS (≈ −480 B). Net ≈ 928 → ≈ 480 of 1184 B. `_Static_assert` stays, with room to spare
   for the first time.
 
@@ -931,10 +932,10 @@ set. Status bar as usual; nothing else is reachable.
 ```
 [|||.] ok                              new 2  [###.]
 
-                 Locked
+              screen locked
         2 new  ·  mom, dad
 
-        passcode  ****_
+        passcode  ****
 enter unlock                          btn hold = nothing
 ```
 
@@ -1001,9 +1002,10 @@ brute-forced offline, or NVS simply erased (which yields an unprovisioned device
   as for a device that was off. On unlock the newest-unread chat opens, the refresh completes, and
   the deferred `shown` acks go out through the normal pending-ack queue. `read` is unchanged.
   Location requests (§13) are answered regardless of lock state — the lock is about the screen.
-- **Wrong passcode.** Five free attempts, then a backoff of 30 s doubling to a 10-minute cap,
-  shown as a countdown on the lock screen. `fail_count` and `backoff_until_us` live in RTC so a
-  restart does not reset them.
+- **Wrong passcode.** No retry lockout (owner decision, beta feedback 2026-09-23): a wrong code
+  clears the entry field and shows a toast, nothing more. PBKDF2's own ≈50–100 ms per attempt is
+  the only thing slowing down guessing, and typing on a CardKB one key at a time is already slow
+  enough. There is no attempt counter left in RTC.
 - **Forgotten passcode — recovery without a cable.** Web app *Devices → Clear passcode* publishes
   a signed `/down` of a new kind, `cfg`, carrying `lock:{clear:true}`. The device honours it
   because the signature proves it came from the relay that owns `K_dev`; it clears the `lock`
@@ -1012,8 +1014,8 @@ brute-forced offline, or NVS simply erased (which yields an unprovisioned device
   on the Device screen. `cfg` follows `book`'s rules: not a thread entry, acked `shown` on apply,
   only the newest re-published. Holding the button for 10 s at boot (factory reset, §3.5) remains
   the path that always works and always yields an unprovisioned device.
-- **RTC**: `locked` (1), `fail_count` (1), `backoff_until_us` (8) — 16 B with padding, inside the
-  room §2.7 opened.
+- **RTC**: `locked` (1) — 8 B with padding, inside the room §2.7 opened. (Was 16 B, also carrying
+  `fail_count`/`backoff_until_us` for the now-removed retry lockout.)
 
 ---
 

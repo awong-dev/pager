@@ -1,6 +1,16 @@
 /* lock.h — passcode lock: PBKDF2 hash storage (NVS namespace "lock"),
- * auto-lock, wrong-passcode backoff, and the `cfg` `lock` map handler
- * (docs/DEVICE_TASKS.md F6.5, docs/DEVICE_PLAN.md §5.8).
+ * auto-lock, and the `cfg` `lock` map handler (docs/DEVICE_TASKS.md F6.5,
+ * docs/DEVICE_PLAN.md §5.8).
+ *
+ * No retry lockout: owner decision (beta feedback, 2026-09-23) — PBKDF2's
+ * own ~50-100ms per attempt (LOCK_PBKDF2_ITERATIONS) is already slow enough
+ * to deter guessing on a device typed one CardKB key at a time, so a wrong
+ * passcode just clears the entry field and shows a toast; there is no wait
+ * timer. lock_backoff_seconds()/lock_is_locked_out()/
+ * lock_backoff_remaining_s() and the RTC `fail_count`/`backoff_until_us`
+ * fields this comment used to describe are gone — see lock_rtc_t's own
+ * comment below for why the counter itself was dropped, not just the
+ * schedule.
  *
  * "What it protects against" / the offline-brute-force caveat: see
  * docs/DEVICE_PLAN.md §5.8's own opening paragraph — flash is unencrypted by
@@ -10,19 +20,18 @@
  *
  * Split the same way auth.c/setup.c already are (see their own module
  * comments for the full rationale): the pure functions below this banner —
- * lock_passcode_valid(), lock_pbkdf2(), lock_backoff_seconds(),
- * lock_parse_cfg() — have no ESP-IDF dependency and are host-tested by
- * firmware/host/test_lock.c. lock_pbkdf2() links the *real* mbedtls on the
- * host (mbedtls_pkcs5_pbkdf2_hmac, same reasoning setup.c's HKDF/AES-GCM
- * gives: both ESP-IDF and the host link the same well-tested implementation
- * of this exact primitive, so nothing about the crypto itself goes untested
- * by using it on both sides). lock_parse_cfg() only needs cbor.h, itself
- * already host-buildable (firmware/host/test_cbor.c).
+ * lock_passcode_valid(), lock_pbkdf2(), lock_parse_cfg() — have no ESP-IDF
+ * dependency and are host-tested by firmware/host/test_lock.c. lock_pbkdf2()
+ * links the *real* mbedtls on the host (mbedtls_pkcs5_pbkdf2_hmac, same
+ * reasoning setup.c's HKDF/AES-GCM gives: both ESP-IDF and the host link the
+ * same well-tested implementation of this exact primitive, so nothing about
+ * the crypto itself goes untested by using it on both sides). lock_parse_cfg()
+ * only needs cbor.h, itself already host-buildable (firmware/host/test_cbor.c).
  *
- * Everything else — NVS I/O, the RTC-resident locked/fail_count/
- * backoff_until_us binding, the auto-lock check (esp_timer), and
- * lock_ingest_cfg_cbor() (calls msg_mark_shown()) — is `#ifdef
- * ESP_PLATFORM`-only, device-only, mirroring msg.c/auth.c/setup.c.
+ * Everything else — NVS I/O, the RTC-resident `locked` binding, the
+ * auto-lock check (esp_timer), and lock_ingest_cfg_cbor() (calls
+ * msg_mark_shown()) — is `#ifdef ESP_PLATFORM`-only, device-only, mirroring
+ * msg.c/auth.c/setup.c.
  *
  * RTC ownership: same pattern as msg_rtc_t (msg.h) / auth_rtc_t (auth.h) —
  * modes.c embeds `lock_rtc_t` inside its own pager_rtc_t and owns the
@@ -56,23 +65,25 @@ extern "C" {
 #define LOCK_HASH_LEN 32
 #define LOCK_PBKDF2_ITERATIONS 10000u
 
-#define LOCK_FREE_ATTEMPTS 5u   /* five free attempts before any backoff */
-#define LOCK_BACKOFF_BASE_S 30u /* first backoff step */
-#define LOCK_BACKOFF_CAP_S 600u /* 10-minute cap */
-
 /* ---------------------------------------------------------------------
- * RTC-resident sub-struct — docs/DEVICE_PLAN.md §5.8's "RTC" bullet: 16 B
- * with padding (`locked` (1), `fail_count` (1), `backoff_until_us` (8) +
- * padding), docs/PROTOCOL.md §9.3's table row. Explicit `_pad` (rather than
- * relying on default struct padding) so sizeof() is exactly 16 on every ABI
- * this project builds for — same style auth_rtc_t/msg_rtc_t's own plain,
- * unambiguous field lists use. `locked`/`fail_count` are plain uint8_t, not
- * bool/bitfields, for the same reason. */
+ * RTC-resident sub-struct — 8 B with padding (`locked` (1) + padding).
+ * Explicit `_pad` (rather than relying on default struct padding) so
+ * sizeof() is exactly 8 on every ABI this project builds for — same style
+ * auth_rtc_t/msg_rtc_t's own plain, unambiguous field lists use. `locked` is
+ * a plain uint8_t, not bool/a bitfield, for the same reason.
+ *
+ * Was 16 B (`locked`, `fail_count`, `backoff_until_us`, padding) before the
+ * owner's beta feedback (2026-09-23) removed the wrong-passcode retry
+ * lockout — PBKDF2's own ~50-100ms per attempt already deters guessing, so
+ * there is no wait schedule left to drive off a fail count. `fail_count` is
+ * dropped rather than kept as unused state: nothing else in the tree ever
+ * read it (only lock.c's own backoff math and doc comments in
+ * lock.h/scr_lock.c/scr_device.c referenced it, all gone with the schedule).
+ * modes.c bumps PAGER_RTC_MAGIC for this layout change, same discipline as
+ * every other lock_rtc_t/pager_rtc_t resize (see its own comment). */
 typedef struct {
     uint8_t locked; /* 0/1 */
-    uint8_t fail_count;
-    uint8_t _pad[6];
-    int64_t backoff_until_us; /* monotonic esp_timer_get_time() deadline; 0 = no active backoff */
+    uint8_t _pad[7];
 } lock_rtc_t;
 
 /* ---------------------------------------------------------------------
@@ -93,13 +104,6 @@ bool lock_passcode_valid(const char *passcode, size_t len);
  * CPU-bound computation over caller-owned memory. */
 bool lock_pbkdf2(const char *passcode, size_t passcode_len, const uint8_t salt[LOCK_SALT_LEN],
                   uint8_t out_hash[LOCK_HASH_LEN]);
-
-/* Wrong-passcode backoff schedule (docs/DEVICE_PLAN.md §5.8): 0 for the
- * first LOCK_FREE_ATTEMPTS cumulative failures, then LOCK_BACKOFF_BASE_S
- * doubling with every additional failure, capped at LOCK_BACKOFF_CAP_S (10
- * minutes) — fail_count 6->30s, 7->60s, 8->120s, ... capped from 11 on.
- * Pure function of the cumulative fail count, no state, no I/O. */
-uint32_t lock_backoff_seconds(uint32_t fail_count);
 
 /* Decodes a `/down` envelope already reduced to `count` map pairs the same
  * way msg.c's own MK_* switch does — `sig_pair_present` stands in for
@@ -154,20 +158,8 @@ void lock_bind_rtc(lock_rtc_t *rtc, lock_rtc_lock_fn lock, lock_rtc_unlock_fn un
  * restart), so a stale "unlocked" RTC value cannot be trusted regardless of
  * which kind of reset this was.
  *
- * `fail_count` survives a warm reset unchanged (docs/DEVICE_PLAN.md §5.8:
- * "`fail_count` ... live[s] in RTC so a restart does not reset them" — a
- * battery-pull attack on the attempt counter must not work). `backoff_
- * until_us`, an absolute esp_timer_get_time() deadline from before the
- * reset, is NOT trusted verbatim against the new (reset-to-~0) clock —
- * comparing a stale large absolute value against a freshly-reset small
- * counter would leave the device locked out far longer than the 10-minute
- * cap. Instead it is recomputed fresh from *this* boot's clock using the
- * same fail_count-driven schedule (lock_backoff_seconds()), so the
- * enforced wait matches the schedule immediately after a restart rather
- * than being silently voided OR silently extended. A cold boot (RTC lost)
- * has no fail_count/backoff_until_us to preserve either way — both reset to
- * zero. No modem or sleep-state effect beyond a handful of NVS reads and
- * (on a warm reset with a nonzero fail_count) one NVS-free RTC write. */
+ * No modem or sleep-state effect beyond a handful of NVS reads and (on a
+ * warm reset where `locked` needed forcing to 1) one NVS-free RTC write. */
 void lock_init(bool rtc_was_valid);
 
 bool lock_is_set(void);      /* a passcode is configured */
@@ -186,8 +178,8 @@ bool lock_preview(void);     /* show sender aliases on the Locked screen */
 bool lock_set_passcode(const char *passcode, size_t len);
 
 /* Erases `salt`/`hash` from NVS, clears the in-RAM cache, and unlocks
- * immediately (`locked`, `fail_count`, `backoff_until_us` all -> 0 — no
- * passcode left to brute-force). Power effect: one NVS erase+commit. */
+ * immediately (`locked` -> 0 — no passcode left to brute-force). Power
+ * effect: one NVS erase+commit. */
 void lock_clear_passcode(void);
 
 /* Persists `auto_min` (0 = never; §5.5's cycle: 0,1,2,5,10,30,60) / the
@@ -196,21 +188,16 @@ void lock_clear_passcode(void);
 void lock_set_auto_min(uint8_t minutes);
 void lock_set_preview(bool on);
 
-/* Checks `passcode` (len bytes) against the stored hash. If
- * lock_is_locked_out() is currently true, returns false WITHOUT computing
- * the hash or touching fail_count/backoff (caller should check
- * lock_is_locked_out()/lock_backoff_remaining_s() first and show the
- * countdown instead of even trying). If no passcode is configured, always
- * succeeds (unlocks) — nothing to check. On a real check: success unlocks
- * and resets fail_count/backoff to 0; failure increments fail_count and
- * (re)computes backoff_until_us from lock_backoff_seconds(). Power effect:
- * the same ~50-100ms PBKDF2 compute as lock_set_passcode() (skipped
- * entirely while locked out, so a rapid-fire lockout does not also burn
- * CPU/battery on wasted hashing). */
+/* Checks `passcode` (len bytes) against the stored hash. No retry lockout
+ * (owner decision, 2026-09-23 — see this header's own module comment): every
+ * call actually computes the hash and checks it, every time. If no passcode
+ * is configured, always succeeds (unlocks) — nothing to check. On a real
+ * check: success unlocks; failure just leaves `locked` at 1 for the caller
+ * to clear the entry field and show a toast. Power effect: ~50-100ms
+ * CPU-bound PBKDF2 compute (UNVERIFIED), same as lock_set_passcode() —
+ * unconditionally, on every attempt including a wrong one, now that there is
+ * no lockout to skip it during. */
 bool lock_try_passcode(const char *passcode, size_t len);
-
-bool lock_is_locked_out(void);         /* backoff_until_us is in the future */
-uint32_t lock_backoff_remaining_s(void); /* seconds left, rounded up; 0 if not locked out */
 
 /* Auto-lock check (docs/DEVICE_PLAN.md §5.8): call on every input event and
  * every UI wake, with the current esp_timer_get_time(). Locks (RTC `locked`
