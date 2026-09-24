@@ -980,11 +980,28 @@ static volatile int64_t s_st_grace_until_us = 0;
 #define ST_GRACE_S 25
 static uint32_t s_st_sleeps = 0, s_st_wake_timer = 0, s_st_wake_other = 0;
 // Where the awake time goes, per wake: cumulative microseconds per loop segment.
-#define ST_SEG_N 7
-static const char *const k_st_seg_name[ST_SEG_N] = { "post-wake yield", "input+ui+render", "mqtt status/retry",
-                                                    "msg_pump+health", "accel+loc", "sms", "catrust+heartbeat+rtc_save" };
+// S0 (docs/SLEEP_URC_DESIGN.md §1 item 4): bucket 0 used to be charged both
+// the post-wake yield of iterations that actually called net_sleep() AND the
+// whole ST_MARK(7)->ST_MARK(0/1) span of iterations that skipped it (loop
+// top, the skipped net_sleep(), the 20/100 ms poll delay) -- two different
+// things sharing one bucket, and every bucket's printed avg divided by
+// s_st_sleeps (the sleep-only count) even for buckets that run on every
+// iteration. Split into two buckets (index 0 = post-wake yield, sleeping
+// iterations only; index 1 = awake-loop (no sleep), skip_sleep iterations
+// only) and give every bucket its own sample count (s_st_seg_n) so avg
+// divides by the count that actually contributed to it.
+#define ST_SEG_N 8
+static const char *const k_st_seg_name[ST_SEG_N] = { "post-wake yield", "awake-loop (no sleep)",
+                                                    "input+ui+render", "mqtt status/retry",
+                                                    "msg_pump+health", "accel+loc", "sms",
+                                                    "catrust+heartbeat+rtc_save" };
 static int64_t s_st_seg_us[ST_SEG_N];
 static int64_t s_st_seg_max_us[ST_SEG_N];
+static uint32_t s_st_seg_n[ST_SEG_N];
+// Longest single iteration's total awake work (sum of that iteration's own
+// segment spans, i.e. excluding the actual light-sleep duration) -- S0's
+// "longest single iteration" summary line.
+static int64_t s_st_iter_max_us = 0;
 static int64_t s_st_mark_us = 0;
 // Raw per-cycle timestamps for the first cycles: esp_timer before and after
 // net_sleep(), and the RTC's own clock across the same call, to tell real
@@ -1000,6 +1017,7 @@ static uint32_t s_st_ncyc = 0;
             int64_t _n = esp_timer_get_time();                                                      \
             int64_t _d = _n - s_st_mark_us;                                                         \
             s_st_seg_us[i] += _d;                                                                   \
+            s_st_seg_n[i]++;                                                                        \
             if (_d > s_st_seg_max_us[i]) s_st_seg_max_us[i] = _d;                                   \
             s_st_mark_us = _n;                                                                      \
         }                                                                                           \
@@ -1051,6 +1069,8 @@ void modes_debug_sleeptest_start(uint32_t minutes, uint32_t yield_ms_override, u
     s_st_mark_us = esp_timer_get_time();
     memset(s_st_seg_us, 0, sizeof(s_st_seg_us));
     memset(s_st_seg_max_us, 0, sizeof(s_st_seg_max_us));
+    memset(s_st_seg_n, 0, sizeof(s_st_seg_n));
+    s_st_iter_max_us = 0;
     s_st_start_us = esp_timer_get_time();
     s_st_until_us = s_st_start_us + (int64_t) minutes * 60 * 1000000;
     s_st_grace_until_us = 0;
@@ -1074,7 +1094,10 @@ void modes_debug_sleeptest_start(uint32_t minutes, uint32_t yield_ms_override, u
 // would otherwise lose everything that was recorded.
 // RCA_SLEEP_PUBLISH.md §3: raised from 1800 to 2400 for the ~400 chars the
 // four library counters and the 12-entry publish ring add below.
-static char s_st_text[2400];
+// S0: raised from 2400 to 2800 for the new "awake-loop (no sleep)" bucket
+// line, the "(n=%u)" suffix added to all eight bucket lines, and the new
+// "awake total ... longest single iteration ..." summary line.
+static char s_st_text[2800];
 
 static void st_appendf(size_t *n, const char *fmt, ...)
 {
@@ -1135,11 +1158,29 @@ void modes_debug_sleeptest_report(void)
                (long long) (s_st_asleep_us / 1000000),
                span_us > 0 ? (int) (s_st_asleep_us * 100 / span_us) : 0, (unsigned) s_st_wake_timer,
                (unsigned) s_st_wake_other);
-    for (int i = 0; i < ST_SEG_N && s_st_sleeps > 0; i++) {
-        st_appendf(&n, "  awake in %-28s avg %5lld ms/wake, max %5lld ms\n", k_st_seg_name[i],
-                   (long long) (s_st_seg_us[i] / 1000 / s_st_sleeps),
-                   (long long) (s_st_seg_max_us[i] / 1000));
+    // S0: avg now divides by the count that actually contributed to that
+    // bucket (s_st_seg_n[i]), not s_st_sleeps -- buckets 2-7 run on every
+    // iteration (sleep or not), while bucket 0 (post-wake yield) only runs
+    // on iterations that slept and bucket 1 (awake-loop) only on iterations
+    // that did not. A bucket with no samples yet is skipped rather than
+    // dividing by zero.
+    int64_t st_awake_total_us = 0;
+    for (int i = 0; i < ST_SEG_N; i++) {
+        st_awake_total_us += s_st_seg_us[i];
+        if (s_st_seg_n[i] == 0) {
+            continue;
+        }
+        st_appendf(&n, "  awake in %-28s avg %5lld ms/wake, max %5lld ms  (n=%u)\n", k_st_seg_name[i],
+                   (long long) (s_st_seg_us[i] / 1000 / s_st_seg_n[i]),
+                   (long long) (s_st_seg_max_us[i] / 1000), (unsigned) s_st_seg_n[i]);
     }
+    // Bucket 2 ("input+ui+render") runs unconditionally on every loop
+    // iteration, sleeping or not, so its sample count is the total
+    // iteration count; bucket 1's count is how many of those did not sleep.
+    st_appendf(&n, "  awake total %lld s over %u iterations (%u without a sleep); longest single "
+                    "iteration %lld ms\n",
+               (long long) (st_awake_total_us / 1000000), (unsigned) s_st_seg_n[2],
+               (unsigned) s_st_seg_n[1], (long long) (s_st_iter_max_us / 1000));
     for (uint32_t i = 0; i < s_st_ncyc; i++) {
         const st_cycle_t *c = &s_st_cyc[i];
         st_appendf(&n, "  cycle %u: net_sleep %lld ms by esp_timer, %lld ms by the RTC; awake before it %lld ms\n",
@@ -1977,7 +2018,15 @@ void modes_run(void)
         }
 
 #ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
-        ST_MARK(0);
+        // S0: s_st_mark_us at this point is either the timestamp ST_MARK_BEGIN()
+        // set right after net_sleep() returned (skip_sleep == false: this
+        // iteration slept), or the timestamp the previous iteration's
+        // ST_MARK(7) left behind (skip_sleep == true: this iteration did not
+        // sleep) -- either way it is this iteration's own start-of-awake-work
+        // reference, good enough to measure "longest single iteration" below
+        // without adding a second clock read.
+        int64_t st_iter_begin_us = s_st_mark_us;
+        ST_MARK(skip_sleep ? 1 : 0);
 #endif
         watchdog_kick(WD_INPUT_UI);
         input_poll(); // power effect: one GPIO read (button FSM step) - see input.h
@@ -2125,7 +2174,7 @@ void modes_run(void)
         rtc_unlock();
 
 #ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
-        ST_MARK(1);
+        ST_MARK(2);
 #endif
         watchdog_kick(WD_MQTT);
         net_mqtt_status_t st;
@@ -2366,7 +2415,7 @@ void modes_run(void)
         // every 100ms - PROTOCOL.md §9.5's rationale against turning a 50ms
         // wake into a multi-second one.
 #ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
-        ST_MARK(2);
+        ST_MARK(3);
 #endif
         // v0.2 §9.4: idle-uplink liveness ping / silent-resume repair, once
         // per wake-and-drain iteration. Same three suppressions the
@@ -2410,7 +2459,7 @@ void modes_run(void)
         // attempt is in progress). Neither blocks for more than one small,
         // bounded piece of work — see accel.h/loc.h's own doc comments.
 #ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
-        ST_MARK(3);
+        ST_MARK(4);
 #endif
         watchdog_kick(WD_LOC);
         accel_poll();
@@ -2426,7 +2475,7 @@ void modes_run(void)
         // sms_log audit publish (msg_pump()'s own tail call into sms.c,
         // above) needs the MQTT session up.
 #ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
-        ST_MARK(4);
+        ST_MARK(5);
 #endif
         watchdog_kick(WD_SMS);
         sms_service();
@@ -2439,7 +2488,7 @@ void modes_run(void)
         // same one handle_mqtt_loss()/the reconnect branch above already
         // saw, not a fresh net_get_mqtt_status() call).
 #ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
-        ST_MARK(5);
+        ST_MARK(6);
 #endif
         watchdog_kick(WD_CATRUST);
         catrust_service(&st);
@@ -2460,7 +2509,15 @@ void modes_run(void)
         rtc_save();
         rtc_unlock();
 #ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
-        ST_MARK(6);
+        ST_MARK(7);
+        // S0 summary stat: this iteration's total awake work (sum of its own
+        // segment spans, excluding the light-sleep duration itself).
+        if (sleeptest_active_flag()) {
+            int64_t st_iter_us = esp_timer_get_time() - st_iter_begin_us;
+            if (st_iter_us > s_st_iter_max_us) {
+                s_st_iter_max_us = st_iter_us;
+            }
+        }
 #endif
     }
 }
