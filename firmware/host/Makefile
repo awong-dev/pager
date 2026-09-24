@@ -75,7 +75,7 @@ endif
 MAIN_SRC := ../main
 BUILD := build
 
-TESTS := test_cbor test_auth test_setup test_input test_msg test_lock test_loc test_cafetch test_catrust test_cfg test_sms test_carrier test_chat_layout test_coverage test_net_connect_guard test_publish_quiet test_accel_rate test_wifi_policy test_wificred
+TESTS := test_cbor test_auth test_setup test_input test_msg test_lock test_loc test_cafetch test_catrust test_cfg test_sms test_carrier test_chat_layout test_coverage test_net_connect_guard test_net_probe_guard test_publish_quiet test_accel_rate test_wifi_policy test_wificred
 TEST_BINS := $(TESTS:%=$(BUILD)/%)
 
 # ASSETS: tools/mkassets.py's default output location (docs/DEVICE_TASKS.md
@@ -309,6 +309,19 @@ $(BUILD)/test_net_connect_guard.o: test_net_connect_guard.c $(MAIN_SRC)/net_conn
 	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ test_net_connect_guard.c
 
 $(BUILD)/test_net_connect_guard: $(BUILD)/net_connect_guard.o $(BUILD)/test_net_connect_guard.o
+	$(CC) $(CFLAGS) -o $@ $^
+
+# test_net_probe_guard: net_probe_guard.c (whole file -- no ESP-IDF
+# dependency at all, see net_probe_guard.h's own module comment) +
+# test_net_probe_guard.c. S1 (docs/SLEEP_URC_TASKS.md): the per-wake URC
+# drain probe's single-slot in-flight guard.
+$(BUILD)/net_probe_guard.o: $(MAIN_SRC)/net_probe_guard.c $(MAIN_SRC)/net_probe_guard.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $(MAIN_SRC)/net_probe_guard.c
+
+$(BUILD)/test_net_probe_guard.o: test_net_probe_guard.c $(MAIN_SRC)/net_probe_guard.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ test_net_probe_guard.c
+
+$(BUILD)/test_net_probe_guard: $(BUILD)/net_probe_guard.o $(BUILD)/test_net_probe_guard.o
 	$(CC) $(CFLAGS) -o $@ $^
 
 # test_publish_quiet: publish_quiet.c (whole file -- no ESP-IDF dependency

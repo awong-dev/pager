@@ -20,6 +20,7 @@
 #include "watchdog.h"
 #include "placeholder_ca.h"
 #include "net_connect_guard.h"
+#include "net_probe_guard.h"
 #include "publish_quiet.h"
 #include "wifi_sta.h"
 
@@ -190,6 +191,20 @@ static int64_t s_clock_epoch = 0;    // 0 = no network time yet (§3.5)
 static int64_t s_clock_epoch_us = 0; // esp_timer_get_time() at the moment s_clock_epoch was read
 
 static bool s_wake_sources_armed = false;
+
+// S1 (docs/SLEEP_URC_DESIGN.md §5(1)): true once WalterModem::begin() has
+// succeeded and stays false only across a net_recover_modem() reset --
+// net_urc_probe()'s "modem is not begun / is in a reset" guard. Written only
+// by net_bringup()/net_bootstrap_attach()/net_recover_modem(), all on the
+// caller's task (single-threaded with respect to net_urc_probe()'s own
+// caller, modes.c's main loop).
+static bool s_modem_begun = false;
+
+// S1 (docs/SLEEP_URC_DESIGN.md §3(a)/§5): the URC drain probe's single-slot
+// in-flight guard (net_probe_guard.h) -- declared here, near the rest of
+// this file's state, and initialised alongside s_connect_guard/
+// s_publish_quiet in net_init()/net_recover_modem() (see those call sites).
+static net_probe_guard_t s_probe_guard;
 
 // A1 (docs/DEVICE_NEXT_TASKS.md): count of light-sleep returns woken by
 // ext1 (the LIS3DH motion pin), since boot. net_get_ext1_wakes().
@@ -569,6 +584,7 @@ static bool net_bringup(int attach_wait_s)
         ESP_LOGI(TAG, "WalterModem::begin() failed");
         return false;
     }
+    s_modem_begun = true; // S1: net_urc_probe()'s "not begun" guard clears here
 
     WalterModem::setMQTTEventHandler(pager_mqtt_event_handler, nullptr);
     WalterModem::setNetworkEventHandler(pager_network_event_handler, nullptr);
@@ -679,6 +695,7 @@ extern "C" bool net_init(void)
     s_session_configured = false;
     net_connect_guard_init(&s_connect_guard); // v0.2 M1/M3: fresh boot, nothing outstanding
     publish_quiet_gate_init(&s_publish_quiet); // 23 Sep fix: fresh boot, nothing in flight
+    net_probe_guard_init(&s_probe_guard); // S1: fresh boot, nothing outstanding
     return net_bringup(PAGER_ATTACH_POLL_CAP_S);
 }
 
@@ -833,6 +850,7 @@ extern "C" bool net_bootstrap_attach(const char *apn)
         ESP_LOGI(TAG, "WalterModem::begin() failed (bootstrap)");
         return false;
     }
+    s_modem_begun = true; // S1: net_urc_probe()'s "not begun" guard clears here too
 
     WalterModem::setMQTTEventHandler(pager_mqtt_event_handler, nullptr);
     WalterModem::setNetworkEventHandler(pager_network_event_handler, nullptr);
@@ -1219,6 +1237,97 @@ extern "C" bool net_check(void)
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// S1 (docs/SLEEP_URC_DESIGN.md §3(a)/§5): per-wake URC drain probe.
+// ---------------------------------------------------------------------------
+
+// The guard's decision logic (single-slot in-flight, stuck-after-3-wakes, no
+// double queue) is pure C, unit tested on the host without a device --
+// firmware/host/test_net_probe_guard.c -- same split as net_connect_guard.h
+// (s_probe_guard itself is declared with the rest of this file's state,
+// above). The library's command queue and pool are 8 slots shared with real
+// commands (WalterModem.h:127,3501), which is why this guard exists at all:
+// a stuck probe must not starve mqttConnect(). Written only by
+// net_urc_probe() and probe_cb() below, both effectively single-threaded
+// with respect to each other for any one probe (probe_cb() only ever runs
+// after net_urc_probe() has already returned, whether asynchronously on the
+// library's own task, or synchronously from inside net_urc_probe()'s own
+// checkComm() call -- see probe_cb()'s doc comment).
+
+// Runs on WalterModem's own task for a genuinely queued probe (checkComm()'s
+// async contract), or synchronously on the calling task, from inside
+// net_urc_probe()'s own checkComm() call, if the queue/pool was full
+// (WalterDefines.h's _runCmd macro: cb != NULL still returns true from
+// checkComm() itself in that case, but calls cb once with
+// WALTER_MODEM_STATE_NO_MEMORY before checkComm() returns -- so
+// checkComm()'s own return value cannot tell the two apart, only rsp->result
+// here can). Sets flags/counters and nothing else: no logging, no AT calls,
+// no net_check() registration semantics (docs/SLEEP_URC_DESIGN.md §5(1)).
+static void probe_cb(const WalterModemRsp *rsp, void *args)
+{
+    (void) args;
+    if (rsp != NULL && rsp->result == WALTER_MODEM_STATE_OK) {
+        net_probe_guard_answered(&s_probe_guard);
+    } else {
+        net_probe_guard_noqueue(&s_probe_guard);
+    }
+}
+
+extern "C" bool net_urc_probe(void)
+{
+    if (s_active_xport == NET_XPORT_WIFI || !s_modem_begun) {
+        return false; // no bare AT over WiFi; nothing to probe before begin()/mid-reset
+    }
+    if (!net_probe_guard_poll(&s_probe_guard)) {
+        // Either still outstanding, or just declared stuck this wake (its
+        // "OK" was lost in the flush burst, or it queued behind an
+        // already-stalled command, docs/SLEEP_URC_DESIGN.md §1 item 5) --
+        // the caller (modes.c) watches net_get_probe_counters().stuck for
+        // the F4 escalation after 6 consecutive stuck probes, not this
+        // function.
+        return false;
+    }
+    if (net_publish_in_flight()) {
+        // RCA_SLEEP_PUBLISH.md §1: a modem parked at a "> " data prompt would
+        // consume this probe's "AT\r\n" as payload bytes, not a command.
+        // The guard was never told a probe was issued, so it is still ready
+        // to try again next wake.
+        return false;
+    }
+    net_probe_guard_attempt(&s_probe_guard); // before the call: see probe_cb()'s doc comment
+    WalterModem::checkComm(NULL, probe_cb, NULL);
+    if (s_probe_guard.outstanding) {
+        // No synchronous net_probe_guard_noqueue() ran inside the call above,
+        // so this was genuinely queued.
+        net_probe_guard_issued(&s_probe_guard);
+        return true;
+    }
+    return false; // probe_cb() already ran synchronously and counted noqueue
+}
+
+extern "C" net_probe_counters_t net_get_probe_counters(void)
+{
+    net_probe_counters_t out;
+    out.issued = s_probe_guard.issued;
+    out.answered = s_probe_guard.answered;
+    out.stuck = s_probe_guard.stuck;
+    out.noqueue = s_probe_guard.noqueue;
+    return out;
+}
+
+extern "C" uint32_t net_uart_rx_buffered_bytes(void)
+{
+    // RCA_SLEEP_URC.md fix 1's discriminator. PAGER_MODEM_UART is `static
+    // constexpr` inside this file (private linkage), same reasoning as
+    // net_sleep()'s own comment on why callers use the Kconfig pin macros
+    // instead -- this accessor is the one modes.c needs instead.
+    size_t len = 0;
+    if (uart_get_buffered_data_len(PAGER_MODEM_UART, &len) != ESP_OK) {
+        return 0;
+    }
+    return (uint32_t) len;
+}
+
 extern "C" bool net_take_registered_edge(void)
 {
     bool e = s_reg_regained_edge;
@@ -1240,12 +1349,14 @@ extern "C" bool net_recover_modem(void)
     // own cold-boot path (L5). Power effect: full modem power cycle +
     // re-attach - modes.c must rate-limit this to 1/10min.
     ESP_LOGI(TAG, "modem unresponsive: issuing hard reset + full re-init (F4)");
+    s_modem_begun = false; // S1: net_urc_probe() must not queue against a modem mid-reset
     s_mqtt_connected = false;
     // v0.2 M1/M3: a physical reset wipes the modem's MQTT client outright,
     // so nothing is in flight and the fail streak that led here is moot --
     // reset both rather than let a stale streak immediately re-escalate.
     net_connect_guard_init(&s_connect_guard);
     publish_quiet_gate_init(&s_publish_quiet); // same reasoning: a reset drops any outstanding publish too
+    net_probe_guard_init(&s_probe_guard); // same reasoning: the reset drops any outstanding probe too
     if (!WalterModem::reset()) {
         ESP_LOGI(TAG, "WalterModem::reset() failed");
         return false;

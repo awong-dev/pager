@@ -1002,6 +1002,10 @@ static uint32_t s_st_seg_n[ST_SEG_N];
 // segment spans, i.e. excluding the actual light-sleep duration) -- S0's
 // "longest single iteration" summary line.
 static int64_t s_st_iter_max_us = 0;
+// S1 / RCA_SLEEP_URC.md fix 1's discriminator: bytes buffered in the modem
+// UART's RX ring 50 ms after each wake.
+static uint32_t s_st_wake_bytes_max = 0;
+static uint32_t s_st_wake_bytes_nonzero = 0;
 static int64_t s_st_mark_us = 0;
 // Raw per-cycle timestamps for the first cycles: esp_timer before and after
 // net_sleep(), and the RTC's own clock across the same call, to tell real
@@ -1071,6 +1075,8 @@ void modes_debug_sleeptest_start(uint32_t minutes, uint32_t yield_ms_override, u
     memset(s_st_seg_max_us, 0, sizeof(s_st_seg_max_us));
     memset(s_st_seg_n, 0, sizeof(s_st_seg_n));
     s_st_iter_max_us = 0;
+    s_st_wake_bytes_max = 0;
+    s_st_wake_bytes_nonzero = 0;
     s_st_start_us = esp_timer_get_time();
     s_st_until_us = s_st_start_us + (int64_t) minutes * 60 * 1000000;
     s_st_grace_until_us = 0;
@@ -1226,6 +1232,15 @@ void modes_debug_sleeptest_report(void)
     st_appendf(&n, "modem counters: datatx_retx=%u prompt_orphan=%u buf_drop_queue=%u buf_drop_pool=%u\n",
                (unsigned) pc.datatx_retx, (unsigned) pc.prompt_orphan, (unsigned) pc.buf_drop_queue,
                (unsigned) pc.buf_drop_pool);
+    // S1: the URC drain probe's own counters, next to the modem counters
+    // above, plus RCA_SLEEP_URC.md fix 1's discriminator (bytes buffered in
+    // the modem UART's RX ring, sampled 50 ms after each wake).
+    net_probe_counters_t probec = net_get_probe_counters();
+    st_appendf(&n, "probe counters: probe_issued=%u probe_answered=%u probe_stuck=%u probe_noqueue=%u\n",
+               (unsigned) probec.issued, (unsigned) probec.answered, (unsigned) probec.stuck,
+               (unsigned) probec.noqueue);
+    st_appendf(&n, "post-wake UART bytes (50ms sample): max=%u wakes_with_bytes=%u\n",
+               (unsigned) s_st_wake_bytes_max, (unsigned) s_st_wake_bytes_nonzero);
     net_publish_ring_entry_t ring[NET_PUBLISH_RING_MAX];
     uint32_t nring = net_get_publish_ring(ring, NET_PUBLISH_RING_MAX);
     if (nring == 0) {
@@ -1584,6 +1599,37 @@ static void run_modem_health_check(void)
     // limit still applies.
     if (rate_limited_modem_recover("modem unresponsive after 3 retries over 3s")) {
         note_session_up_attempt(net_session_up());
+    }
+}
+
+// S1 (docs/SLEEP_URC_DESIGN.md §5(3)(i)): net_urc_probe() itself never
+// touches rate_limited_modem_recover() -- it only counts `stuck` (a probe
+// unanswered for 3 wake intervals) and clears its own flag so probing
+// resumes. This is "run_modem_health_check()'s owner" driving the existing
+// F4 path after 6 CONSECUTIVE stuck probes (any answered probe in between
+// resets the streak, mirroring run_modem_health_check()'s own "any success
+// returns early" shape) -- no new recovery machinery, same rate limit.
+// Called every wake, right after net_urc_probe(); cheap (a struct return and
+// two comparisons) and not gated on mode/loc_suppress/ca_apply_suppress/
+// coverage_owns_radio: a bare "AT" going unanswered six times running means
+// the modem's command path is wedged, which none of those states explain.
+static void check_probe_stuck_escalation(void)
+{
+    static uint32_t s_last_answered = 0, s_last_stuck = 0, s_consecutive_stuck = 0;
+    net_probe_counters_t pc = net_get_probe_counters();
+    if (pc.answered != s_last_answered) {
+        s_last_answered = pc.answered;
+        s_consecutive_stuck = 0;
+    }
+    if (pc.stuck != s_last_stuck) {
+        s_consecutive_stuck += (pc.stuck - s_last_stuck);
+        s_last_stuck = pc.stuck;
+        if (s_consecutive_stuck >= 6) {
+            s_consecutive_stuck = 0;
+            if (rate_limited_modem_recover("URC probe stuck 6x in a row")) {
+                note_session_up_attempt(net_session_up());
+            }
+        }
     }
 }
 
@@ -1970,6 +2016,19 @@ void modes_run(void)
 #endif
             watchdog_kick(WD_SLEEP_ENTER);
             net_sleep(interval_ms);
+            // S1 (docs/SLEEP_URC_DESIGN.md §3(a)/§5): first statement after
+            // net_sleep() returns, before the yield -- flow control is
+            // restored by then. Every wake that actually called net_sleep(),
+            // in both ACTIVE and SLEEP mode (unlike run_modem_health_check()
+            // below, this is not gated on g_rtc.mode/loc_suppress/
+            // ca_apply_suppress/coverage_owns_radio: a bare "AT" says nothing
+            // about registration and resets nothing, so none of health
+            // check's reasons to skip apply here). Fire-and-forget: returns
+            // as soon as the command is queued (or is skipped), never blocks.
+            // Power effect: none of its own -- the answer lands inside the
+            // yield below.
+            net_urc_probe();
+            check_probe_stuck_escalation();
             watchdog_kick(WD_SLEEP_EXIT);
 #ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
             if (s_st_ncyc < ST_CYC_MAX) {
@@ -2000,7 +2059,31 @@ void modes_run(void)
                 yield_ms = s_st_yield_ms;
             }
 #endif
+#ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
+            // RCA_SLEEP_URC.md fix 1's discriminator: bytes sitting in the
+            // modem UART's RX ring 50 ms after this wake -- near-zero on an
+            // ordinary wake, a burst on the wake after a page once the
+            // URC-drain probe (S1) and the RTS hold (ab5927c) are both doing
+            // their job. Split the yield around the 50 ms sample point
+            // instead of adding time to it, so this measurement changes
+            // nothing about the yield's total length.
+            uint32_t first_ms = (yield_ms < 50u) ? yield_ms : 50u;
+            vTaskDelay(pdMS_TO_TICKS(first_ms));
+            if (sleeptest_active_flag()) {
+                uint32_t buffered = net_uart_rx_buffered_bytes();
+                if (buffered > s_st_wake_bytes_max) {
+                    s_st_wake_bytes_max = buffered;
+                }
+                if (buffered > 0) {
+                    s_st_wake_bytes_nonzero++;
+                }
+            }
+            if (yield_ms > first_ms) {
+                vTaskDelay(pdMS_TO_TICKS(yield_ms - first_ms));
+            }
+#else
             vTaskDelay(pdMS_TO_TICKS(yield_ms));
+#endif
             assert(yield_ms >= 30); // F7, debug builds only
         } else if (btn_busy) {
             vTaskDelay(pdMS_TO_TICKS(PAGER_BTN_POLL_MS)); // button FSM debounce/timing granularity

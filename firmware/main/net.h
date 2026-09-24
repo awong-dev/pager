@@ -323,6 +323,56 @@ void net_set_msg_cb(void (*cb)(const char *topic, const char *body, uint16_t len
  * eDRX cycle. */
 void net_sleep(uint32_t ms);
 
+/* S1 (docs/SLEEP_URC_DESIGN.md §3(a)/§5): per-wake URC drain probe. Issues
+ * one asynchronous, fire-and-forget WalterModem::checkComm(NULL, cb, NULL) --
+ * one bare "AT", no retries, no net_check() registration semantics, no
+ * watchdog interaction -- so a URC the modem is holding for lack of a
+ * command to release it on is freed inside the wake's existing yield. Call
+ * on every wake, in both ACTIVE and SLEEP mode, as the first statement after
+ * net_sleep() returns (flow control is restored by then) -- NOT under the
+ * `mode == SLEEP` / `loc_suppress` / `ca_apply_suppress` / `coverage_owns_
+ * radio` gates run_modem_health_check() uses: a bare "AT" says nothing about
+ * registration and resets nothing, so none of those reasons to skip the
+ * health check apply here.
+ * Single-slot in-flight guard: returns false without issuing anything if a
+ * previous probe is still outstanding, if net_publish_in_flight() (a modem
+ * parked at a "> " prompt would consume this probe's "AT\r\n" as payload --
+ * RCA_SLEEP_PUBLISH.md §1), on the WiFi transport, or if the modem is not
+ * begun / is mid-reset. An outstanding probe not answered within 3 further
+ * calls to this function (3 wake intervals) is declared stuck (counted,
+ * flag cleared so probing resumes) -- see net_get_probe_counters(). This
+ * function never touches rate_limited_modem_recover() itself; a caller that
+ * wants the existing F4 escalation after repeated stuck probes must drive
+ * it from net_get_probe_counters().stuck.
+ * Power effect: none of its own -- the answer (<10ms) lands inside the
+ * existing post-wake yield; +0 ms of window, +0 air bytes. */
+bool net_urc_probe(void);
+
+/* net_urc_probe()'s counters since boot, for the sleeptest report:
+ * issued    - probes actually queued;
+ * answered  - queued probes whose "OK" came back;
+ * stuck     - probes given up on after 3 wake intervals unanswered;
+ * noqueue   - checkComm() could not queue the probe at all (8-slot queue/
+ *             pool full -- WalterModem.h:127,3501), counted instead of
+ *             issued, no retry.
+ * Power effect: none -- four plain reads. */
+typedef struct {
+    uint32_t issued;
+    uint32_t answered;
+    uint32_t stuck;
+    uint32_t noqueue;
+} net_probe_counters_t;
+net_probe_counters_t net_get_probe_counters(void);
+
+/* RCA_SLEEP_URC.md fix 1's discriminator: bytes currently sitting in the
+ * modem UART's RX ring (uart_get_buffered_data_len()), for modes.c to sample
+ * 50 ms after each wake -- near-zero on an ordinary wake, a burst on the
+ * wake after a page once a held URC is actually being released. Returns 0
+ * on a driver error, same as an empty ring (this is a diagnostic, not a
+ * correctness signal). Power effect: none -- one UART driver software
+ * counter read, no AT traffic. */
+uint32_t net_uart_rx_buffered_bytes(void);
+
 /* checkComm() + getNetworkRegState(). Returns true if the modem answered
  * "AT" with "OK" and is still registered (HOME or ROAMING); false is the
  * F4 modem-not-responding signal.
