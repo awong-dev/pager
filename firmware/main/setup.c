@@ -749,9 +749,16 @@ bool setup_run(const char *code)
         return fail(ui_ok, "code damaged"); /* bad tag: wrong key or corrupted bundle */
     }
 
-    static ident_t id; /* static: 4 kB+ struct, keep it off the task stack (see ident_load()) */
+    /* W13 (WIFI_DESIGN.md §10.3): ident_scratch() is the one shared 4,460 B
+     * buffer, not a private static. This function's own task ends in
+     * esp_restart() below, so "release on every exit path" only matters for
+     * the early-return failure branches between here and the last use of
+     * `id` — released there, and again (harmlessly, no re-entry) right
+     * after the last read of `id` on the success path. */
+    ident_t *id = ident_scratch();
     static setup_ca_ptr_t ca_ptr;
-    if (!decode_and_validate_bundle(plain, plain_len, &id, &ca_ptr)) {
+    if (!decode_and_validate_bundle(plain, plain_len, id, &ca_ptr)) {
+        ident_scratch_release();
         net_session_down();
         ESP_LOGI(TAG, "bundle decrypted (%u bytes) but CBOR decode/validate failed",
                  (unsigned) plain_len);
@@ -766,7 +773,7 @@ bool setup_run(const char *code)
     // mqtt_survived flag checks at runtime (docs/V02_DESIGN.md §4.4's
     // UNVERIFIED item). "Both present or both absent" was already enforced
     // by decode_and_validate_bundle(); "prefer the pointer" when an inline
-    // `ca` was ALSO present just falls out of overwriting id.ca/id.ca_len
+    // `ca` was ALSO present just falls out of overwriting id->ca/id->ca_len
     // below with the fetched PEM.
     if (ca_ptr.have_ptr) {
         static char fetched_pem[CAFETCH_PEM_MAX];
@@ -783,21 +790,23 @@ bool setup_run(const char *code)
                  "mqtt_survived_second_socket=%d",
                  ca_ptr.url, http_status, (unsigned) bytes, (unsigned) elapsed_ms, (int) fetch_ok,
                  (int) mqtt_survived);
-        if (!fetch_ok || fetched_len >= sizeof(id.ca)) {
+        if (!fetch_ok || fetched_len >= sizeof(id->ca)) {
+            ident_scratch_release();
             net_session_down();
             return fail(ui_ok, "cannot reach broker");
         }
-        memcpy(id.ca, fetched_pem, fetched_len);
-        id.ca[fetched_len] = '\0';
-        id.ca_len = fetched_len;
+        memcpy(id->ca, fetched_pem, fetched_len);
+        id->ca[fetched_len] = '\0';
+        id->ca_len = fetched_len;
     }
     // ident.h's own field doc: "SHA-256 of the CA currently written to modem
-    // slot 12" — computed here, once, over whatever ended up in id.ca
+    // slot 12" — computed here, once, over whatever ended up in id->ca
     // (empty/inline/fetched), rather than inside decode_and_validate_bundle()
     // (which no longer has the final answer once a pointer is involved).
-    mbedtls_sha256((const unsigned char *) id.ca, id.ca_len, id.ca_hash, 0);
+    mbedtls_sha256((const unsigned char *) id->ca, id->ca_len, id->ca_hash, 0);
 
-    if (!ident_store(&id)) {
+    if (!ident_store(id)) {
+        ident_scratch_release();
         net_session_down();
         ESP_LOGI(TAG, "bundle valid but ident_store() (NVS write) failed");
         return fail(ui_ok, "code damaged"); /* NVS write failure; no better bucket among the four */
@@ -806,10 +815,12 @@ bool setup_run(const char *code)
     // Power effect: one NVRAM write on the modem's own storage, no RRC; see
     // net_write_ca()'s own doc comment.
     /* No CA in the bundle: nothing to write, net_init() runs unpinned. */
-    if (id.ca[0] != '\0' && !net_write_ca(id.ca)) {
+    if (id->ca[0] != '\0' && !net_write_ca(id->ca)) {
+        ident_scratch_release();
         net_session_down();
         return fail(ui_ok, "cannot reach broker"); /* modem-side failure, same session as above */
     }
+    ident_scratch_release(); // last read of `id` above; harmless no-op before esp_restart() either way
     ESP_LOGI(TAG, "SETUP bundle");
     if (ui_ok) {
         ui_show_toast("SETUP bundle");

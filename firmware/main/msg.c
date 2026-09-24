@@ -416,6 +416,7 @@ int msghist_restore_order(const uint32_t *seqs, int n, int *order_out, int max_o
 #include <stdio.h>
 #include <stdlib.h>
 
+#include "esp_heap_caps.h" // heap_caps_malloc()/heap_caps_free() for history_restore()'s decoded[] (W13)
 #include "esp_log.h"
 #include "esp_random.h"
 #include "esp_rom_crc.h"
@@ -709,7 +710,19 @@ static void history_restore(void)
         return; // namespace not created yet: msghist mounted fine but nothing was ever written
     }
 
-    static msg_t decoded[MSG_THREAD_DEPTH]; // static: this runs once at boot, keep it off the stack
+    // W13 (WIFI_DESIGN.md §10.3): heap, not `static` — this ran once at boot
+    // anyway, so a 13,056 B buffer parked in .bss for the rest of the boot
+    // bought nothing. Freed on every exit path below, including the early
+    // returns. If the allocation fails, skip the restore rather than fail
+    // boot: a pager with no scrollback still delivers pages, and this is
+    // the point in boot where the heap is at its emptiest anyway.
+    msg_t *decoded = heap_caps_malloc(sizeof(msg_t) * MSG_THREAD_DEPTH, MALLOC_CAP_8BIT);
+    if (decoded == NULL) {
+        nvs_close(h);
+        ESP_LOGI(TAG, "msghist: restore skipped, no heap for %u bytes",
+                 (unsigned) (sizeof(msg_t) * MSG_THREAD_DEPTH));
+        return;
+    }
     uint32_t seqs[MSG_THREAD_DEPTH];
     int n = 0;
     uint32_t max_seq = 0;
@@ -737,6 +750,7 @@ static void history_restore(void)
     nvs_close(h);
 
     if (n == 0) {
+        heap_caps_free(decoded);
         return;
     }
 
@@ -752,6 +766,8 @@ static void history_restore(void)
     }
     s_hist_next_seq = max_seq + 1;
     s_unlock();
+
+    heap_caps_free(decoded);
 
     ESP_LOGI(TAG, "msghist: restored %d of %d decoded record(s), newest seq=%u", fill, n,
              (unsigned) max_seq);

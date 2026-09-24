@@ -4,6 +4,7 @@
  */
 #include "ident.h"
 
+#include <assert.h>
 #include <string.h>
 
 #include "esp_log.h"
@@ -13,6 +14,26 @@ static const char *TAG = "ident";
 static const char *NVS_NS = "ident";
 
 static ident_t s_ident;
+
+/* W13 (WIFI_DESIGN.md §10.3): the one shared scratch, see ident.h's doc
+ * comment on ident_scratch(). This is the "keep one of them" copy — the
+ * ident.c one is the natural home since ident_load() already needed a
+ * static, off-the-stack ident_t before this task. */
+static ident_t s_scratch;
+static bool s_scratch_busy;
+
+ident_t *ident_scratch(void)
+{
+    assert(!s_scratch_busy);
+    s_scratch_busy = true;
+    memset(&s_scratch, 0, sizeof(s_scratch));
+    return &s_scratch;
+}
+
+void ident_scratch_release(void)
+{
+    s_scratch_busy = false;
+}
 
 /* docs/PROTOCOL.md §1: `^[a-z0-9][a-z0-9-]{2,23}$`, max len 24 (3..24
  * chars total: one leading [a-z0-9] plus 2..23 of [a-z0-9-]). */
@@ -125,27 +146,28 @@ bool ident_load(void)
         return false;
     }
 
-    /* static, not a stack local: ident_t carries a 4 kB `ca` buffer and this
-     * runs on the main task. As a local it overflowed that stack on the first
-     * boot that actually had an identity in NVS (confirmed on hardware: reset
-     * loop straight after the first successful setup). Boot is single-threaded
-     * here, so a static scratch copy is safe. */
-    static ident_t tmp;
-    memset(&tmp, 0, sizeof(tmp));
+    /* W13 (WIFI_DESIGN.md §10.3): the shared scratch, not a private static —
+     * ident_t carries a 4 kB `ca` buffer and this runs on the main task; as a
+     * plain stack local it overflowed that stack on the first boot that
+     * actually had an identity in NVS (confirmed on hardware: reset loop
+     * straight after the first successful setup). Boot is single-threaded
+     * and runs before anything else could hold the scratch, so acquiring it
+     * here is safe. Released on every exit path below. */
+    ident_t *tmp = ident_scratch();
 
     /* Required: no identity without these (`ca` below is the exception). */
     bool ok = true;
-    ok = ok && read_str(h, "dev_id", tmp.dev_id, sizeof(tmp.dev_id)) == FIELD_OK;
-    ok = ok && read_str(h, "mqtt_pw", tmp.mqtt_pw, sizeof(tmp.mqtt_pw)) == FIELD_OK;
-    ok = ok && read_blob(h, "kdev", tmp.kdev, sizeof(tmp.kdev)) == FIELD_OK;
-    ok = ok && read_str(h, "host", tmp.host, sizeof(tmp.host)) == FIELD_OK;
-    ok = ok && read_u16(h, "port", &tmp.port) == FIELD_OK;
+    ok = ok && read_str(h, "dev_id", tmp->dev_id, sizeof(tmp->dev_id)) == FIELD_OK;
+    ok = ok && read_str(h, "mqtt_pw", tmp->mqtt_pw, sizeof(tmp->mqtt_pw)) == FIELD_OK;
+    ok = ok && read_blob(h, "kdev", tmp->kdev, sizeof(tmp->kdev)) == FIELD_OK;
+    ok = ok && read_str(h, "host", tmp->host, sizeof(tmp->host)) == FIELD_OK;
+    ok = ok && read_u16(h, "port", &tmp->port) == FIELD_OK;
     /* `ca` is optional: empty/absent means the production session pins no
      * CA (net_init() then uses validation off). Only a read error fails. */
-    ok = ok && read_str(h, "ca", tmp.ca, sizeof(tmp.ca)) != FIELD_ERROR;
+    ok = ok && read_str(h, "ca", tmp->ca, sizeof(tmp->ca)) != FIELD_ERROR;
 
-    if (ok && !valid_dev_id(tmp.dev_id, strlen(tmp.dev_id))) {
-        ESP_LOGD(TAG, "dev_id '%s' fails PROTOCOL.md %%1 regex", tmp.dev_id);
+    if (ok && !valid_dev_id(tmp->dev_id, strlen(tmp->dev_id))) {
+        ESP_LOGD(TAG, "dev_id '%s' fails PROTOCOL.md %%1 regex", tmp->dev_id);
         ok = false;
     }
 
@@ -154,16 +176,16 @@ bool ident_load(void)
      * value is not something to silently paper over). */
     field_status_t st;
 
-    st = read_str(h, "apn", tmp.apn, sizeof(tmp.apn));
+    st = read_str(h, "apn", tmp->apn, sizeof(tmp->apn));
     ok = ok && st != FIELD_ERROR;
 
-    st = read_str(h, "label", tmp.label, sizeof(tmp.label));
+    st = read_str(h, "label", tmp->label, sizeof(tmp->label));
     ok = ok && st != FIELD_ERROR;
 
-    st = read_u32(h, "flags", &tmp.flags);
+    st = read_u32(h, "flags", &tmp->flags);
     ok = ok && st != FIELD_ERROR;
 
-    st = read_blob(h, "ca_hash", tmp.ca_hash, sizeof(tmp.ca_hash));
+    st = read_blob(h, "ca_hash", tmp->ca_hash, sizeof(tmp->ca_hash));
     ok = ok && st != FIELD_ERROR;
 
     /* v0.2 (docs/V02_DESIGN.md §3): "n_epoch32" (u32) is the current key.
@@ -175,27 +197,29 @@ bool ident_load(void)
      * the next epoch bump (modes.c's on_auth_epoch_wrap()) persists the
      * migrated value there and the legacy key is simply never touched
      * again. */
-    st = read_u32(h, "n_epoch32", &tmp.n_epoch);
+    st = read_u32(h, "n_epoch32", &tmp->n_epoch);
     if (st == FIELD_MISSING) {
         uint16_t legacy_epoch = 0;
         field_status_t legacy_st = read_u16(h, "n_epoch", &legacy_epoch);
         ok = ok && legacy_st != FIELD_ERROR;
-        tmp.n_epoch = legacy_epoch; /* 0 if legacy_st == FIELD_MISSING too */
+        tmp->n_epoch = legacy_epoch; /* 0 if legacy_st == FIELD_MISSING too */
     } else {
         ok = ok && st != FIELD_ERROR;
     }
 
-    st = read_u8(h, "claimed", &tmp.claimed);
+    st = read_u8(h, "claimed", &tmp->claimed);
     ok = ok && st != FIELD_ERROR;
 
     nvs_close(h);
 
     if (!ok) {
+        ident_scratch_release();
         return false;
     }
 
-    tmp.ca_len = strlen(tmp.ca);
-    s_ident = tmp;
+    tmp->ca_len = strlen(tmp->ca);
+    s_ident = *tmp;
+    ident_scratch_release();
     return true;
 }
 

@@ -402,26 +402,29 @@ static void ack_apply(const char *id, bool shown)
 
 static void begin_unpin(const char *id)
 {
-    static ident_t snap; // static: same "too big for this task's stack" reasoning modes.c's on_auth_epoch_wrap() documents
-    memset(&snap, 0, sizeof(snap));
-    strncpy(snap.dev_id, ident_get_dev_id(), sizeof(snap.dev_id) - 1);
-    strncpy(snap.mqtt_pw, ident_get_mqtt_pw(), sizeof(snap.mqtt_pw) - 1);
-    memcpy(snap.kdev, ident_get_kdev(), sizeof(snap.kdev));
-    strncpy(snap.host, ident_get_host(), sizeof(snap.host) - 1);
-    snap.port = ident_get_port();
-    snap.ca[0] = '\0';
-    snap.ca_len = 0;
-    strncpy(snap.apn, ident_get_apn(), sizeof(snap.apn) - 1);
-    snap.flags = ident_get_flags();
-    strncpy(snap.label, ident_get_label(), sizeof(snap.label) - 1);
-    memset(snap.ca_hash, 0, sizeof(snap.ca_hash));
-    snap.n_epoch = ident_get_n_epoch();
-    snap.claimed = ident_get_claimed();
+    // W13 (WIFI_DESIGN.md §10.3): ident_scratch() is the one shared 4,460 B
+    // buffer, not a private static; released on every exit path below.
+    ident_t *snap = ident_scratch();
+    strncpy(snap->dev_id, ident_get_dev_id(), sizeof(snap->dev_id) - 1);
+    strncpy(snap->mqtt_pw, ident_get_mqtt_pw(), sizeof(snap->mqtt_pw) - 1);
+    memcpy(snap->kdev, ident_get_kdev(), sizeof(snap->kdev));
+    strncpy(snap->host, ident_get_host(), sizeof(snap->host) - 1);
+    snap->port = ident_get_port();
+    snap->ca[0] = '\0';
+    snap->ca_len = 0;
+    strncpy(snap->apn, ident_get_apn(), sizeof(snap->apn) - 1);
+    snap->flags = ident_get_flags();
+    strncpy(snap->label, ident_get_label(), sizeof(snap->label) - 1);
+    memset(snap->ca_hash, 0, sizeof(snap->ca_hash));
+    snap->n_epoch = ident_get_n_epoch();
+    snap->claimed = ident_get_claimed();
 
-    if (!ident_store(&snap)) {
+    if (!ident_store(snap)) {
+        ident_scratch_release();
         ESP_LOGI(TAG, "un-pin: ident_store() failed - CA left pinned, will retry on the next push");
         return;
     }
+    ident_scratch_release();
     net_tls_configure(NET_TLS_CA_SLOT, false);
     set_broken(false);
     clear_pend_fail();
@@ -511,21 +514,23 @@ static void service_fetching(void)
 
 static void commit_apply(void)
 {
-    static ident_t snap;
-    memset(&snap, 0, sizeof(snap));
-    strncpy(snap.dev_id, ident_get_dev_id(), sizeof(snap.dev_id) - 1);
-    strncpy(snap.mqtt_pw, ident_get_mqtt_pw(), sizeof(snap.mqtt_pw) - 1);
-    memcpy(snap.kdev, ident_get_kdev(), sizeof(snap.kdev));
-    strncpy(snap.host, ident_get_host(), sizeof(snap.host) - 1);
-    snap.port = ident_get_port();
-    strncpy(snap.ca, s_apply_pem, sizeof(snap.ca) - 1);
-    snap.ca_len = strlen(snap.ca);
-    strncpy(snap.apn, ident_get_apn(), sizeof(snap.apn) - 1);
-    snap.flags = ident_get_flags();
-    strncpy(snap.label, ident_get_label(), sizeof(snap.label) - 1);
-    memcpy(snap.ca_hash, s_apply_sha, sizeof(snap.ca_hash));
-    snap.n_epoch = ident_get_n_epoch();
-    snap.claimed = ident_get_claimed();
+    // W13 (WIFI_DESIGN.md §10.3): ident_scratch() is the one shared 4,460 B
+    // buffer, not a private static; released as soon as ident_store() has
+    // consumed it below, before anything else that could re-enter it.
+    ident_t *snap = ident_scratch();
+    strncpy(snap->dev_id, ident_get_dev_id(), sizeof(snap->dev_id) - 1);
+    strncpy(snap->mqtt_pw, ident_get_mqtt_pw(), sizeof(snap->mqtt_pw) - 1);
+    memcpy(snap->kdev, ident_get_kdev(), sizeof(snap->kdev));
+    strncpy(snap->host, ident_get_host(), sizeof(snap->host) - 1);
+    snap->port = ident_get_port();
+    strncpy(snap->ca, s_apply_pem, sizeof(snap->ca) - 1);
+    snap->ca_len = strlen(snap->ca);
+    strncpy(snap->apn, ident_get_apn(), sizeof(snap->apn) - 1);
+    snap->flags = ident_get_flags();
+    strncpy(snap->label, ident_get_label(), sizeof(snap->label) - 1);
+    memcpy(snap->ca_hash, s_apply_sha, sizeof(snap->ca_hash));
+    snap->n_epoch = ident_get_n_epoch();
+    snap->claimed = ident_get_claimed();
 
     // ident.h's own field doc: "SHA-256 of the CA currently written to modem
     // slot 12" — computed over the PEM actually being stored (same
@@ -533,9 +538,10 @@ static void commit_apply(void)
     // the pushed cfg's own `sha` (which cafetch_result() already confirmed
     // matches the raw HTTP body, not necessarily byte-identical to the
     // extracted PEM in the rare case of extra bytes around it).
-    mbedtls_sha256((const unsigned char *) snap.ca, snap.ca_len, snap.ca_hash, 0);
+    mbedtls_sha256((const unsigned char *) snap->ca, snap->ca_len, snap->ca_hash, 0);
 
-    bool stored = ident_store(&snap);
+    bool stored = ident_store(snap);
+    ident_scratch_release();
     net_write_ca_slot(NET_TLS_CA_SLOT, s_apply_pem); // best-effort; profile already points at the scratch
                                                      // slot's bytes for THIS session either way
     net_tls_configure(NET_TLS_CA_SLOT, true);

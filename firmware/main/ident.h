@@ -134,6 +134,27 @@ bool ident_set_slot12_populated(void);
 bool ident_get_tls_broken(void);
 bool ident_set_tls_broken(bool broken);
 
+/* WIFI_DESIGN.md §10.3 (W13): the one shared `ident_t`-sized scratch buffer,
+ * replacing five per-call-site static copies (ident.c's own ident_load()
+ * `tmp`, modes.c's on_auth_epoch_wrap() `snap`, setup.c's setup bundle `id`,
+ * catrust.c's begin_unpin()/commit_apply() `snap`s) that each cost 4,460 B.
+ * Every caller builds a snapshot from the ident_get_*() getters (or a
+ * decoded bundle), mutates a field or two, and calls ident_store() with it —
+ * all inside one function, on the main or console task, with no call into
+ * another ident_scratch() user while holding it. That non-reentrancy is
+ * assumed, not enforced by a lock: ident_scratch() does not change the "no
+ * dynamic allocation, one static ident_t" module contract above, it just
+ * stops four copies of it existing. It IS guarded: a debug-build assert
+ * catches a future caller that breaks the assumption instead of silently
+ * corrupting another caller's in-flight snapshot.
+ *
+ * ident_scratch() asserts the scratch is not already held, marks it held,
+ * zero-fills it and returns it. The caller MUST call
+ * ident_scratch_release() on every exit path (including early returns)
+ * before the buffer is next needed. */
+ident_t *ident_scratch(void);
+void ident_scratch_release(void);
+
 #ifdef __cplusplus
 }
 #endif

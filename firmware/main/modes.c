@@ -484,31 +484,33 @@ static void on_auth_epoch_wrap(void)
 {
     // Power effect: one NVS (flash) write. No modem or sleep-state effect.
     // ident_t has no per-field setter, so this snapshots every getter into a
-    // local copy, bumps n_epoch, and writes the whole struct back via
+    // scratch copy, bumps n_epoch, and writes the whole struct back via
     // ident_store() (same contract setup.c's own first-time write uses).
-    static ident_t snap; /* static: 4 kB+ struct, too big for this task's stack (see ident_load()) */
-    memset(&snap, 0, sizeof(snap));
-    strncpy(snap.dev_id, ident_get_dev_id(), sizeof(snap.dev_id) - 1);
-    strncpy(snap.mqtt_pw, ident_get_mqtt_pw(), sizeof(snap.mqtt_pw) - 1);
-    memcpy(snap.kdev, ident_get_kdev(), sizeof(snap.kdev));
-    strncpy(snap.host, ident_get_host(), sizeof(snap.host) - 1);
-    snap.port = ident_get_port();
-    strncpy(snap.ca, ident_get_ca(), sizeof(snap.ca) - 1);
-    snap.ca_len = ident_get_ca_len();
-    strncpy(snap.apn, ident_get_apn(), sizeof(snap.apn) - 1);
-    snap.flags = ident_get_flags();
-    strncpy(snap.label, ident_get_label(), sizeof(snap.label) - 1);
-    memcpy(snap.ca_hash, ident_get_ca_hash(), sizeof(snap.ca_hash));
-    snap.n_epoch = (uint16_t) (ident_get_n_epoch() + 1);
-    snap.claimed = ident_get_claimed();
+    // W13 (WIFI_DESIGN.md §10.3): ident_scratch() is the one shared 4,460 B
+    // buffer, not a private static; released before every return below.
+    ident_t *snap = ident_scratch();
+    strncpy(snap->dev_id, ident_get_dev_id(), sizeof(snap->dev_id) - 1);
+    strncpy(snap->mqtt_pw, ident_get_mqtt_pw(), sizeof(snap->mqtt_pw) - 1);
+    memcpy(snap->kdev, ident_get_kdev(), sizeof(snap->kdev));
+    strncpy(snap->host, ident_get_host(), sizeof(snap->host) - 1);
+    snap->port = ident_get_port();
+    strncpy(snap->ca, ident_get_ca(), sizeof(snap->ca) - 1);
+    snap->ca_len = ident_get_ca_len();
+    strncpy(snap->apn, ident_get_apn(), sizeof(snap->apn) - 1);
+    snap->flags = ident_get_flags();
+    strncpy(snap->label, ident_get_label(), sizeof(snap->label) - 1);
+    memcpy(snap->ca_hash, ident_get_ca_hash(), sizeof(snap->ca_hash));
+    snap->n_epoch = (uint16_t) (ident_get_n_epoch() + 1);
+    snap->claimed = ident_get_claimed();
 
-    if (!ident_store(&snap)) {
+    if (!ident_store(snap)) {
         ESP_LOGI(TAG, "failed to persist n_epoch=%u after up_lo wrap (§2.5) - "
                       "next boot's replay window may see a gap",
-                 (unsigned) snap.n_epoch);
+                 (unsigned) snap->n_epoch);
     } else {
-        ESP_LOGI(TAG, "n_epoch bumped to %u after up_lo wrap (§14.2)", (unsigned) snap.n_epoch);
+        ESP_LOGI(TAG, "n_epoch bumped to %u after up_lo wrap (§14.2)", (unsigned) snap->n_epoch);
     }
+    ident_scratch_release();
 }
 
 // ---------------------------------------------------------------------------
