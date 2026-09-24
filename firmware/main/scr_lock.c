@@ -8,9 +8,9 @@
 // gated on lock_is_locked() so the button truly does nothing while locked,
 // matching this screen's own "btn hold = nothing" footer.
 //
-// Book.c does not exist yet (F7.1): the sender list below is the raw `from`
-// field, same simplification scr_home.c/scr_chat.c already use — nicknames
-// are a book.c feature.
+// The screen shows nothing about the waiting messages: no count, no sender
+// names (owner decision, 24 Sep 2026 — a leak, and redundant with the status
+// bar). Unlocking still lands on the newest unread chat.
 
 #include "ui.h"
 #include "lock.h"
@@ -28,32 +28,6 @@ static void lock_on_event(ui_evt_t evt)
     if (evt == UI_EVT_ENTER) {
         s_buf[0] = '\0';
         s_len = 0;
-    }
-}
-
-// README R6-style discipline (msg.h): copies fields out promptly per index
-// rather than holding a raw msg_t* across any work. Up to 3 distinct
-// senders, matching the mockup's "mom, dad" style list — a cheap substring
-// de-dup, good enough for the short aliases this protocol allows (§1).
-static void collect_unread(int *count, char *names, size_t names_cap)
-{
-    *count = 0;
-    names[0] = '\0';
-    int shown_names = 0;
-    size_t n = msg_thread_count();
-    for (size_t i = 0; i < n; i++) {
-        const msg_t *m = msg_thread_at(i);
-        if (!m || m->dir != (uint8_t) MSG_DIR_DOWN || m->ack_state == MSG_ACK_READ) {
-            continue;
-        }
-        (*count)++;
-        if (shown_names < 3 && !strstr(names, m->from)) {
-            if (names[0] != '\0') {
-                strncat(names, ", ", names_cap - strlen(names) - 1);
-            }
-            strncat(names, m->from, names_cap - strlen(names) - 1);
-            shown_names++;
-        }
     }
 }
 
@@ -131,21 +105,14 @@ static void lock_render(void)
     gfx_text((GFX_SCREEN_W - tw) / 2, y, sz, title);
     y += 16;
 
-    int count = 0;
-    char names[48];
-    collect_unread(&count, names, sizeof(names));
-    char line[64];
-    if (count > 0 && lock_preview() && names[0] != '\0') {
-        snprintf(line, sizeof(line), "%d new  - %s", count, names);
-    } else {
-        snprintf(line, sizeof(line), "%d new", count);
-    }
-    gfx_text(8, y, sz, line);
-    y += 16;
+    // No unread count or sender names here (owner, 24 Sep 2026 beta
+    // feedback): it leaks who is writing to a locked pager, and the status
+    // bar's unread indicator already says there is something waiting.
 
     // Owner's beta request: "when typing a pass code, it should show * or
     // similar" — one '*' per digit typed so far, nothing else about the
     // code (no length number, no cursor glyph past the last '*').
+    char line[64];
     char mask[LOCK_INPUT_MAX + 1];
     size_t i = 0;
     for (; i < s_len; i++) {

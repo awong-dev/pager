@@ -907,14 +907,13 @@ counters  memfull 0  drops 0  resets 0
 > Re-sync address book
   Text size: normal
   Passcode: set          Auto-lock: 5 min
-  Show senders when locked: on
   Set up again
   Factory reset
 ```
 
 - **Re-sync address book** — publishes a `/status` now (it carries `bv`), which is the sync trigger.
 - **Text size** — toggles 1×/2×.
-- **Passcode / Auto-lock / Show senders** — §5.8. *Passcode* cycles set → change → off, asking
+- **Passcode / Auto-lock** — §5.8. *Passcode* cycles set → change → off, asking
   for the current one first; *Auto-lock* cycles 0 (never), 1, 2, 5, 10, 30, 60 minutes.
 - **Set up again** — enters Setup mode (§3.2) to take a new setup code: rotation or re-homing. The
   current identity is kept until the new bundle has been verified and written, so a cancelled or
@@ -933,7 +932,6 @@ set. Status bar as usual; nothing else is reachable.
 [|||.] ok                              new 2  [###.]
 
               screen locked
-        2 new  ·  mom, dad
 
         passcode  ****
 enter unlock                          btn hold = nothing
@@ -984,16 +982,18 @@ brute-forced offline, or NVS simply erased (which yields an unprovisioned device
 - **Passcode.** 4–16 printable ASCII characters, so a digits-only PIN is just a short passcode.
   Typed on the CardKB, masked, IME bypassed. Stored in NVS namespace `lock`: `salt` (16 random
   bytes), `hash` = PBKDF2-HMAC-SHA256(passcode, salt, 10 000 iterations) via mbedTLS
-  (`UNVERIFIED`: ≈ 50–100 ms on the S3, §10), `auto_min` (u8; 0 = never; default **5**),
-  `preview` (u8; default 1). Setting or changing asks for the current passcode first; *off* too.
+  (`UNVERIFIED`: ≈ 50–100 ms on the S3, §10), `auto_min` (u8; 0 = never; default **5**).
+  Setting or changing asks for the current passcode first; *off* too. (A `preview` key existed
+  until 24 Sep 2026; see the Locked screen below.)
 - **Auto-lock, no timer.** `last_input_us` is the monotonic time of the last key or button event.
   On every input event and every UI wake: `if (passcode set && auto_min && now − last_input_us ≥
   auto_min × 60 s) lock()`. The UI already sleeps after 30 s (§5.3), so what the student sees is:
   press the button after the interval, get the lock screen. After a **restart** the monotonic
   clock is gone and the device comes up locked whenever a passcode is set — the safe default.
   `locked` lives in RTC so a crash does not unlock. *Lock now* on Home locks immediately.
-- **Locked screen.** Count of unread down messages and, if `preview` is on, the sender aliases or
-  nicknames — never a body. Incoming messages are stored normally and the count updates; the
+- **Locked screen.** Nothing about the waiting messages: no count, no sender names, no body
+  (owner decision, 24 Sep 2026 beta feedback: the names leak who is writing, and the status bar's
+  unread indicator already says something is waiting). Incoming messages are stored normally; the
   button and every key other than the passcode field do nothing.
 - **Acks while locked — the rule that keeps §4 honest.** `shown` means "the e-paper refresh that
   displayed the body completed" (`PROTOCOL.md` §4). A body that arrived while locked has not been
@@ -1173,7 +1173,7 @@ Listed here so the diff to the authoritative document is reviewable on its own. 
 | H10 | UI-awake window 30 s, keyboard poll 100 ms | Accept as compile-time defaults; retune on M-numbers |
 | H14 | Wire encoding | **Decided: CBOR** for devices, JSON kept for tools (§2.4). Still open: hand-written subset codec (recommended; ~300 lines, no dependency, static buffers) vs the `espressif/cbor` registry component |
 | H15 | IMEs | Not in this plan; the hook, Unicode buffers and `assets` partition are (§5.3). When one is wanted: hangul first (algorithmic, no dictionary), then pinyin or kana→kanji with a dictionary sized to the partition |
-| H16 | Lock screen shows sender names (`preview`) by default | Yes; a parent's name on a locked screen is not a leak, and it is what tells a kid whether to bother unlocking |
+| H16 | Lock screen shows sender names (`preview`) by default | **Reversed 24 Sep 2026 at the glass:** no count and no names on the Locked screen — it leaks who is writing, and the status bar's unread indicator already covers "something is waiting". The setting and its NVS key are gone |
 | H17 | Auto-lock default 5 min; passcode optional or required | 5 min; optional, with a one-time prompt after setup. A parent can push `cfg lock.auto` from the web; a "required" policy is a one-field addition to `cfg` if wanted |
 
 ## 10. Unverified assumptions introduced by this plan

@@ -263,7 +263,9 @@ static bool s_have_hash = false;
 static uint8_t s_salt[LOCK_SALT_LEN];
 static uint8_t s_hash[LOCK_HASH_LEN];
 static uint8_t s_auto_min = 5;
-static uint8_t s_preview = 1;
+// NVS key "prev" (the Locked-screen sender preview) is no longer read or
+// written: the Locked screen shows nothing about waiting messages (owner
+// decision, 24 Sep 2026). A stale value in an existing partition is ignored.
 
 // RAM-only (this-boot-only, monotonic) — see lock_check_autolock()'s own doc
 // comment in lock.h for why this is deliberately not an RTC field.
@@ -277,7 +279,6 @@ static void load_from_nvs(void)
 {
     s_have_hash = false;
     s_auto_min = 5;
-    s_preview = 1;
     memset(s_salt, 0, sizeof(s_salt));
     memset(s_hash, 0, sizeof(s_hash));
 
@@ -293,9 +294,6 @@ static void load_from_nvs(void)
     uint8_t v;
     if (nvs_get_u8(h, "auto", &v) == ESP_OK) {
         s_auto_min = v;
-    }
-    if (nvs_get_u8(h, "prev", &v) == ESP_OK) {
-        s_preview = v;
     }
     nvs_close(h);
 }
@@ -378,14 +376,6 @@ uint8_t lock_auto_min(void)
     return v;
 }
 
-bool lock_preview(void)
-{
-    s_lock();
-    bool v = s_preview != 0;
-    s_unlock();
-    return v;
-}
-
 bool lock_set_passcode(const char *passcode, size_t len)
 {
     if (!lock_passcode_valid(passcode, len)) {
@@ -430,14 +420,6 @@ void lock_set_auto_min(uint8_t minutes)
     s_auto_min = minutes;
     s_unlock();
     nvs_write_u8("auto", minutes); // power effect: one NVS write
-}
-
-void lock_set_preview(bool on)
-{
-    s_lock();
-    s_preview = on ? 1 : 0;
-    s_unlock();
-    nvs_write_u8("prev", on ? 1 : 0); // power effect: one NVS write
 }
 
 bool lock_try_passcode(const char *passcode, size_t len)

@@ -11,7 +11,7 @@
 //     (already true before this task; unchanged here).
 //   - "Text size: normal/large" [REAL]: ui_text_size()/ui_toggle_text_size()
 //     (ui.c), NVS-backed.
-//   - "Passcode / Auto-lock / Show senders when locked" [REAL, F6.5]:
+//   - "Passcode / Auto-lock" [REAL, F6.5]:
 //     lock.c now exists. "Passcode" cycles set -> change -> off per
 //     docs/DEVICE_PLAN.md §5.8 ("asks for the current passcode first" for
 //     both change and off) as: not-yet-set -> straight to a "new passcode"
@@ -28,8 +28,9 @@
 //     its own selectable line rather than sharing "Passcode"'s mockup row,
 //     for the same reason: two independently-actionable settings need two
 //     selectable rows in this line-based menu, however the schematic
-//     mockup happens to lay them out visually). "Show senders when locked"
-//     toggles lock_preview().
+//     mockup happens to lay them out visually). The former "Show senders
+//     when locked" row is gone: the Locked screen no longer shows anything
+//     about the waiting messages (owner decision, 24 Sep 2026).
 //   - "Set up again" [STUBBED — see this file's own note below `MROW_SETUP_AGAIN`
 //     for why this is a documented blocker, not a simple omission]: setup.c's
 //     own module comment states its no-live-session-overlap assumption holds
@@ -68,7 +69,6 @@ typedef enum {
     MROW_TEXTSIZE,
     MROW_PASSCODE,
     MROW_AUTOLOCK,
-    MROW_SENDERS,
     MROW_CARRIER,
     MROW_SETUP_AGAIN,
     MROW_FACTORY_RESET,
@@ -278,9 +278,6 @@ static void device_on_key(input_key_t key)
             lock_set_auto_min(k_autolock_steps[idx]);
             break;
         }
-        case MROW_SENDERS:
-            lock_set_preview(!lock_preview());
-            break;
         case MROW_CARRIER: {
             // Cycle Automatic -> Carrier default -> each built-in carrier
             // (carrier.h). A custom APN set from the console is replaced by
@@ -409,9 +406,6 @@ static void device_render_normal(void)
     } else {
         snprintf(lines[n], DEVICE_LINE_LEN, "Auto-lock: %u min", (unsigned) auto_min);
     }
-    selectable[n++] = true;
-    snprintf(lines[n], DEVICE_LINE_LEN, "Show senders when locked: %s",
-             lock_preview() ? "on" : "off");
     selectable[n++] = true;
     if (carrier_get_mode() == CARRIER_MODE_AUTO && carrier_last_detected()[0]) {
         snprintf(lines[n], DEVICE_LINE_LEN, "Carrier: auto (%s)", carrier_last_detected());

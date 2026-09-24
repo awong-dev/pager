@@ -37,7 +37,7 @@
  * modes.c embeds `lock_rtc_t` inside its own pager_rtc_t and owns the
  * storage, the magic/CRC pair, and the lock/unlock/save callbacks handed
  * over via lock_bind_rtc(). The same lock/unlock pair also guards this
- * module's own RAM-resident state (the NVS-cached auto_min/preview/
+ * module's own RAM-resident state (the NVS-cached auto_min/
  * passcode-configured flag, and the one-shot admin-clear toast) — reused for
  * the same reason msg.h's own header comment gives for msg.c's RAM state:
  * lock_ingest_cfg_cbor() can run on WalterModem's _eventProcessingTask (via
@@ -146,8 +146,8 @@ typedef void (*lock_rtc_save_fn)(void); /* must be called with the lock already 
 void lock_bind_rtc(lock_rtc_t *rtc, lock_rtc_lock_fn lock, lock_rtc_unlock_fn unlock,
                     lock_rtc_save_fn save);
 
-/* Loads NVS namespace "lock" (whether a passcode is configured, `auto_min`,
- * `preview`) into this module's own RAM cache. Then, regardless of
+/* Loads NVS namespace "lock" (whether a passcode is configured, `auto_min`)
+ * into this module's own RAM cache. Then, regardless of
  * `rtc_was_valid`: if a passcode is configured, forces `locked = 1` —
  * docs/DEVICE_PLAN.md §5.8: "After a restart the monotonic clock is gone and
  * the device comes up locked whenever a passcode is set — the safe
@@ -165,7 +165,6 @@ void lock_init(bool rtc_was_valid);
 bool lock_is_set(void);      /* a passcode is configured */
 bool lock_is_locked(void);   /* current RTC `locked` state */
 uint8_t lock_auto_min(void); /* 0 = never */
-bool lock_preview(void);     /* show sender aliases on the Locked screen */
 
 /* Sets/replaces the passcode: validates (lock_passcode_valid()), generates a
  * fresh random salt (esp_random()), computes the PBKDF2 hash
@@ -182,11 +181,9 @@ bool lock_set_passcode(const char *passcode, size_t len);
  * effect: one NVS erase+commit. */
 void lock_clear_passcode(void);
 
-/* Persists `auto_min` (0 = never; §5.5's cycle: 0,1,2,5,10,30,60) / the
- * sender-preview flag to NVS and updates the RAM cache. Power effect: one
- * NVS write each. */
+/* Persists `auto_min` (0 = never; §5.5's cycle: 0,1,2,5,10,30,60) to NVS
+ * and updates the RAM cache. Power effect: one NVS write. */
 void lock_set_auto_min(uint8_t minutes);
-void lock_set_preview(bool on);
 
 /* Checks `passcode` (len bytes) against the stored hash. No retry lockout
  * (owner decision, 2026-09-23 — see this header's own module comment): every
