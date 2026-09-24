@@ -142,10 +142,13 @@ static void test_noqueue_undoes_attempt(void)
 
 /* failed() (the library's own per-command timeout on the probe's "AT", which
  * patch 1.14 makes a 2 s / 1-attempt budget and therefore a normal outcome)
- * clears outstanding and counts `stuck` -- NOT `noqueue`, which means
- * "checkComm() could not queue it at all" and is what S7 reads -- and leaves
- * the guard ready to probe again the very next wake. */
-static void test_failed_counts_stuck_not_noqueue(void)
+ * clears outstanding and counts `timedout` -- NOT `noqueue`, which means
+ * "checkComm() could not queue it at all" and is what S7 reads, and NOT
+ * `stuck`, which modes.c's check_probe_stuck_escalation() escalates to a full
+ * F4 modem reset after six in a row (docs/SLEEP_URC_DESIGN.md §9.2: six 2 s
+ * timeouts are twelve seconds in ACTIVE mode, and that must not reset the
+ * modem). Leaves the guard ready to probe again the very next wake. */
+static void test_failed_counts_timedout_not_stuck(void)
 {
     net_probe_guard_t g;
     net_probe_guard_init(&g);
@@ -156,19 +159,35 @@ static void test_failed_counts_stuck_not_noqueue(void)
     net_probe_guard_failed(&g); /* WALTER_MODEM_STATE_TIMEOUT after 2 s */
 
     CHECK(!g.outstanding, "failed() must clear outstanding");
-    CHECK(g.stuck == 1, "failed() must count exactly one stuck, got %u", (unsigned) g.stuck);
+    CHECK(g.timedout == 1, "failed() must count exactly one timedout, got %u", (unsigned) g.timedout);
+    CHECK(g.stuck == 0, "failed() must NOT count stuck (it drives the F4 reset), got %u",
+          (unsigned) g.stuck);
     CHECK(g.noqueue == 0, "failed() must not touch noqueue, got %u", (unsigned) g.noqueue);
     CHECK(g.answered == 0, "failed() must not count an answer, got %u", (unsigned) g.answered);
     CHECK(g.issued == 1, "failed() must not un-count the issue, got %u", (unsigned) g.issued);
     CHECK(net_probe_guard_poll(&g), "must be free to try again the very next wake");
 
-    /* The same probe must not be counted stuck twice: poll() only ages a
-     * probe that is still outstanding, and failed() already cleared it. */
+    /* The same probe must not be counted twice: poll() only ages a probe that
+     * is still outstanding, and failed() already cleared it. */
     for (unsigned i = 0; i <= NET_PROBE_GUARD_STUCK_WAKES; i++) {
         net_probe_guard_poll(&g);
     }
-    CHECK(g.stuck == 1, "an already-failed probe must not be aged out again, stuck=%u",
+    CHECK(g.timedout == 1, "an already-failed probe must not be counted again, timedout=%u",
+          (unsigned) g.timedout);
+    CHECK(g.stuck == 0, "an already-failed probe must not be aged out into stuck, stuck=%u",
           (unsigned) g.stuck);
+
+    /* Six consecutive 2 s timeouts -- the exact shape of the S7b regression --
+     * must leave `stuck` at zero, i.e. must not arm the F4 escalation. */
+    net_probe_guard_init(&g);
+    for (unsigned i = 0; i < 6; i++) {
+        CHECK(net_probe_guard_poll(&g), "wake %u must offer a probe", i);
+        net_probe_guard_attempt(&g);
+        net_probe_guard_issued(&g);
+        net_probe_guard_failed(&g);
+    }
+    CHECK(g.timedout == 6, "six 2 s timeouts must count six timedout, got %u", (unsigned) g.timedout);
+    CHECK(g.stuck == 0, "six 2 s timeouts must leave stuck at 0 (no F4), got %u", (unsigned) g.stuck);
 }
 
 int main(void)
@@ -177,7 +196,7 @@ int main(void)
     test_stuck_after_exactly_n_wakes();
     test_answered_clears_and_counts();
     test_noqueue_undoes_attempt();
-    test_failed_counts_stuck_not_noqueue();
+    test_failed_counts_timedout_not_stuck();
 
     if (g_failures == 0) {
         printf("PASS: net probe guard (in-flight / stuck-after-%u / no double queue), 0 failures\n",

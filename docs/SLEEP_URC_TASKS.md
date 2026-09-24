@@ -29,6 +29,15 @@ first: **S11 (done, in this commit) → S12 → S10 → S13 → S7b (the new gat
 S8 retired §3(b) and answered the RI question (§8.7); S7's old criteria 1 and 3 are replaced by
 S7b's.
 
+**23 Sep (late) update — S7b ran and is VOID: the window went offline, not slow** (four
+`MQTT session LOST (rc=-13)`, no page, and ~93 s of its `asleep` total was a modem reset;
+`build/bench-logs/phaseAI-report.log`). Root cause: S11 redefined `probe_stuck` to include a cheap
+2 s probe timeout while leaving `check_probe_stuck_escalation()` (`modes.c:1635`) reading six of
+them as "the modem is wedged" → F4. **Read `docs/SLEEP_URC_DESIGN.md` §9 first.** Order for what
+is left: **S10 → S17 → S13 → S12 → S15 (gated on S10) → S7c (the new gate) → S16 → S14 → S5 → S9.**
+§9.4's four edits (`net_probe_guard.{c,h}`, `net.cpp`, `net.h`, `modes.c`, plus the host test) are
+already in the tree, uncommitted, and are part of the S7c image.
+
 ---
 
 ## S0 — the sleeptest report mis-attributes awake time — firmware-dev, timebox 1 h
@@ -265,8 +274,13 @@ Every task below names the **report line that proves it**. Smallest first. `docs
 (`net.cpp`, `PAGER_URC_PROBE_ATTEMPTS`/`PAGER_URC_PROBE_TIMEOUT_MS`); `probe_cb()` now counts a
 non-OK, non-NO_MEMORY result as `stuck` via the new `net_probe_guard_failed()` instead of lying about
 `noqueue`. Host test added. Defaults unchanged for every other caller, including `net_check()`.
-**Still to verify:** S7b. Expected: `stalled command:` either absent or `elapsed=2000 ms`; no `/up`
-entry above ~2 100 ms; `awake-loop (no sleep)` under 10 s.
+**23 Sep (late) correction — that last sentence was the S7b regression.** Counting a 2 s timeout as
+`stuck` collided with `check_probe_stuck_escalation()` (`modes.c:1635-1653`), which resets the modem
+after six consecutive `stuck` — twelve seconds in ACTIVE mode (`docs/SLEEP_URC_DESIGN.md` §9.2).
+It now counts a separate `timedout`; the budget itself (1 attempt / 2 s) is unchanged and is still
+unverified on the bench. **Still to verify:** S7c, and S16 for the budget A/B. Expected:
+`stalled command:` either absent or `elapsed=2000 ms`; no `/up` entry above ~2 100 ms;
+`awake-loop (no sleep)` under 10 s; `probe_timedout` may be large, `probe_stuck` must not be.
 
 ## S12 — the two 15 s display BUSY bounds, and the gate that fails open — firmware-dev, 1 h
 
@@ -336,6 +350,12 @@ response line in between — the same 30 s class of stall S7 measured, but deter
 
 ## S7b — PHASE-1 ACCEPTANCE, second attempt — bench-tester, one window, ~15 min
 
+**RUN AND VOID, 23 Sep 22:2x (`build/bench-logs/phaseAI-report.log`).** The image was bc5e023,
+i.e. S11 only — S12 and S13 were never in it — and the window went offline instead of slow: four
+`MQTT session LOST (rc=-13)`, no reconnect, no page. Read `docs/SLEEP_URC_DESIGN.md` §9 before
+re-running anything; the re-run, its new bar 8 and its flash order are **S7c** below. Bars 1-7 as
+written here still stand.
+
 Replaces S7. Same procedure (`sleeptest 6`, pages at 90 s and 250 s, relay poll in a second log,
 capture the post-reset reprint), with S11-S13 flashed and **honest bars**:
 1. `asleep … (P%)` with **P >= 85**; predicted band **86-90%** (`docs/SLEEP_URC_DESIGN.md` §8.5's
@@ -378,3 +398,107 @@ Unchanged in intent (see above), with two corrections from `docs/SLEEP_URC_DESIG
   wake pad. Wiring it turns phase 2 into "wake on RI (ext0/ext1), then one `AT` to flush" with **no**
   byte loss and **no** parser risk, and retires this task's whole clipping problem. One question,
   potentially days saved.
+
+---
+
+# 23 Sep (late) — post-S7b tasks
+
+`docs/SLEEP_URC_DESIGN.md` §9 holds the reasoning and the file:line evidence; do not re-derive it.
+The S7b regression itself is **fixed in the tree, uncommitted** (§9.4's four edits: the
+`stuck`/`timedout` split, the escalation's underflow, `s_modem_begun` on a failed reset, and four
+new report fields). **S10 is now the highest-priority task in this file** — §9.2's one remaining
+open item is the response/command desync, and S10 is what settles it. Smallest first below.
+
+## S17 — the F4 reset's own 90 s failure mode (`+SYSSTART` discarded) — firmware-dev, 1 h
+
+**Proof line:** `asleep 253 s` against `80 light sleeps` at a 2 s interval = 160 s of real sleep
+(`build/bench-logs/phaseAI-report.log:3`), i.e. ~93 s spent awake inside the block `modes.c:2043-2060`
+charges to sleep; 1 s + 3 × 30 s = 91 s is `WalterModem::reset()` waiting for a `+SYSSTART` it threw
+away (`docs/SLEEP_URC_DESIGN.md` §9.2 item 3).
+**Read:** §9.1-9.2; `WalterModem.cpp:5073-5086` (`reset()`: pin pulse, `vTaskDelay(1000)`, then a
+`TX_WAIT` on `"+SYSSTART"` with the library's 3 × 30 s default), `:1444-1450` (`_parseRxData()`
+returns immediately while `_hardwareReset` is true — every byte discarded), `:1856-1877` and
+`:1965-1973` (attempts/timeout); `firmware/main/net.cpp` `net_recover_modem()`.
+**Files:** `firmware/components/dptechnics__walter-modem/src/WalterModem.cpp`, `PATCHES.md`
+(append 1.15 or 1.16 — check which number S15 took), `firmware/main/net.cpp` only if the call site
+needs a shorter budget.
+**Do:** two independent halves, both small. (a) Stop discarding the banner: `_hardwareReset` exists
+to drop the garbage a reset pin pulse puts on the line, so clear it as soon as the pin is released
+and the line has settled rather than after the 1000 ms delay *and* the command queue — or, simpler
+and provably safe, keep discarding but recognise a `+SYSSTART` that arrives during the window by
+setting a `_sawSysStart` flag the queued command consults on its first evaluation. (b) Give the
+reset's `+SYSSTART` wait a budget that matches the modem's datasheet boot time rather than 3 × 30 s
+(patch 1.13/1.14 already made attempts/timeout per-command): the GM02SP boots in ~2-3 s, so 1
+attempt / 10 s fails **80 s earlier** with no loss of function, and `net_recover_modem()`'s caller
+already handles a false return. Do (b) even if (a) turns out to be wrong — it is the cheap half.
+**Power effect to state in the commit message:** 80 s × 40 mA ≈ 0.9 mAh per failed F4, and the F4
+is rate-limited to 6/hour, so the worst case this removes is ~5 mAh/h. Estimated (§2), not measured.
+**Verify:** host tests 21/21 (no host build for the library — say so). One bench boot: `net_recover`
+from the console (or `sleeptest` with a forced escalation) and confirm from the live log that the
+reset completes in seconds and `s_modem_begun`/the probe come back. Then S7c.
+
+## S15 — the library's response pairing: refuse an answer that predates the question — firmware-dev, 2 h, GATED
+
+**Gate:** do **not** start until S10 has run one window and `rsp_no_cmd` is **non-zero**. If it is
+zero, hypothesis 1 is dead and this task is closed unstarted — say so and stop.
+**Proof line (S7b):** `stalled command: "AT+SQNSMQTTCONNECT=0,"s1" elapsed=30000 ms cts=0` with
+`buf_drop_queue=0 buf_drop_pool=0 txdone_timeouts=0` — nothing was dropped and the bytes went out,
+so a 30 s wait for an `OK` means the `OK` went to someone else
+(`docs/SLEEP_URC_DESIGN.md` §8.2 hypothesis 1, still open per §9.2's closing note).
+**Read:** `docs/SLEEP_URC_DESIGN.md` §8.1-8.2 and §9.2; `WalterModem.cpp:1650-1706`
+(`_cmdProcessingTask` — one FIFO for commands *and* response buffers, `_processModemRSP(_curCmd, …)`
+at `:1660`, `_curCmd` cleared and the next command popped at `:1694-1706`), `:1856-1877`
+(`attemptStart` is stamped at *transmit*, not at queue time), `:2387-2426` (`ERROR`/`+CME ERROR`/
+`+CMS ERROR` set `result` and do **not** consult `atRsp`), `:4002-4016` (the completion test),
+`:1176-1203` (`_queueRxBuffer`), `WalterDefines.h:85-131`.
+**Files:** `firmware/components/dptechnics__walter-modem/src/WalterModem.cpp`, `WalterDefines.h`,
+`PATCHES.md`. No `firmware/main/` change.
+**Do:** stamp each response buffer with a monotonic tick in `_queueRxBuffer()` (one `TickType_t`
+field on `WalterModemBuffer`, set immediately before the `xQueueSend`), and in
+`_processModemRSP()`'s completion test at `:4011` require that stamp to be **>= `cmd->attemptStart`**
+before either arm (`atRsp` match *or* `result != OK`) may finish the command. A buffer already
+sitting in the queue when the current attempt was transmitted cannot be its answer; free it and
+count it instead. Add one counter `rsp_predates_cmd` next to S10's, on the same report line. Do
+**not** change the URC dispatch paths, do **not** change what happens when `cmd == NULL`, and do
+**not** touch the retry/timeout arithmetic — a command whose answer is now correctly refused simply
+times out one attempt later, as it does today.
+**Power effect to state in the commit message:** none directly; it removes 30 s command stalls, each
+~0.33 mAh of awake ESP plus up to 45 s of sleep-hold (§9.4's arithmetic; 40 mA awake / 1 mA asleep,
+estimated).
+**Verify:** host tests 21/21 (no host build for this file — say so). One boot: identity attaches, CA
+pins, `MQTT session usable` inside 3 s, `rsp_predates_cmd` printed. Then S7c. **Revert immediately
+if any boot-time command starts timing out** — that is the patch refusing a legitimate answer, i.e.
+the stamp or `attemptStart` is wrong.
+
+## S16 — probe budget: 2 s vs the old 30 s, A/B on one flash — firmware-dev + bench-tester, 1 h
+
+**Proof line:** phaseAF (30 s budget) = 45% asleep, `stalled command: "AT" elapsed=30000 ms`, two
+`/up` acks at 29 824 ms, **zero session losses**; phaseAI (2 s budget) = a modem reset, four
+`MQTT session LOST (rc=-13)` and no page. Two runs, three differences (the budget, ACTIVE vs SLEEP
+interval, and §9.4's fixes), so neither budget is attributable yet.
+**Read:** `docs/SLEEP_URC_DESIGN.md` §9.4 option (b) and §8.4; `firmware/main/net.cpp`'s
+`PAGER_URC_PROBE_ATTEMPTS`/`PAGER_URC_PROBE_TIMEOUT_MS` and `net_urc_probe()`; `PATCHES.md` 1.14.
+**Files:** `firmware/main/net.cpp`, `modes.c` (console command only).
+**Do:** make the two constants a runtime pair settable from the existing debug console (default
+unchanged: 1 attempt / 2 s), so **one flash** runs `sleeptest 6` twice — once at 1/2 s, once at
+3/30 s — with everything else identical, including the wake interval (pass `sleeptest 6 0 5000` both
+times so ACTIVE vs SLEEP cannot be the hidden variable). Print the pair in the report header next to
+`yield=`/`interval=`. No other behaviour change.
+**Verify:** the two reports side by side: asleep%, `awake-loop (no sleep)`, `stalled command:`,
+`probe_timedout`, `probe_stuck`, `MQTT session LOST` count, `modem_resets`, and the page latencies.
+Recommend a default in one sentence with the mAh/day difference (§8.5's duty table converts asleep%
+to mA). Expect S15, if it lands, to make the difference small — which is itself the answer.
+
+## S7c — PHASE-1 ACCEPTANCE, third attempt — bench-tester, one window, ~15 min
+
+**Flash order (all of it, then the window):** S10 → S17 → S13 → S12 → §9.4's four `net.cpp`/
+`modes.c`/`net_probe_guard.*` edits (already in the tree, uncommitted). S15 only if its gate opened.
+**Do:** exactly S7b's procedure — `sleeptest 6`, pages at 90 s and 250 s, relay poll in a second
+log, capture the post-reset reprint.
+**Bars:** S7b's 1-7, with bar 4 now reading `probe_timedout` (cheap and expected) rather than
+`probe_stuck`, plus:
+8. `probe_issued` > 0 and `probe_skip_down` ≈ 0 — the drain probe was alive for the window being
+   scored. `probe_stuck` > 0 is now a real fault signal again; report it.
+9. `modem_resets` = 0. A window containing an F4 is **void, not failed** — ~93 s of its `asleep`
+   total is not sleep (§9.1), so nothing in it can be scored. Re-run, and report the F4 separately.
+**Verify:** if 1-6, 8 and 9 pass, phase 1 is done regardless of 7 (latency is S14's eDRX call).

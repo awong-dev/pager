@@ -402,6 +402,168 @@ experiment); or accept the bar as "≤ 30 s typical, ≤ 50 s worst case" and sa
   clipping problem and the whole of S9's parser risk. Worth asking before spending firmware time on
   S9.
 
+---
+
+## 9. 23 Sep (late) — S7b read: one counter changed meaning, and it reset the modem (debug image bc5e023, `phaseAI-*`)
+
+S7b **fails 3, 5 and 7 and cannot be scored on 1-2**: the pager did not deliver pages late, it went
+**offline inside the window and never came back** — four `MQTT session LOST (rc=-13)`, zero
+`MQTT session (re)connected`, no publish at all inside the window (the ring's two entries are at
+−152 s and −54 s), and **no page received** for two pages sent at +92 s and +250 s (never acked at
+the relay, no SECURITY lines). `asleep 253 s (70%)` is not a sleep-policy reading at all — §9.1
+shows 93 s of it was not sleep. The image was also never a complete S7b image: S12 and S13 were not
+in it, only S11 plus 9c9f506 and W13.
+
+### 9.1 The arithmetic that names the event: 93 s of "sleep" that was not sleep
+
+Two independent readings of the same report disagree, and the gap is the whole story:
+
+- `80 light sleeps` at the ACTIVE interval the cycle list prints (2001-2049 ms, `modes.c:116-117`)
+  is **160 s** of `esp_light_sleep_start()`.
+- the report says **`asleep 253 s`**, and `253 + 106 (awake total) = 359 s ≈ the 360 s window`, so
+  the total is self-consistent — the *attribution* is not.
+
+`s_st_asleep_us` is accumulated from *before* `net_sleep()` to *after* `net_urc_probe()` **and
+`check_probe_stuck_escalation()`** (`modes.c:2043-2060`). So **~93 s of the "asleep" total was spent
+awake inside that block**, and the only thing in it that can take seconds is
+`check_probe_stuck_escalation()` → `rate_limited_modem_recover()` → `net_recover_modem()` → a full
+F4 modem reset. Separately, `probe_issued=0` alongside `probe_answered=2 probe_stuck=1` is
+impossible without a mid-window `net_probe_guard_init()` (`answered`/`stuck` only come from
+`probe_cb()`, `net.cpp:1272-1287`, which cannot run for a probe never counted `issued`, and the one
+synchronous callback would have shown as `noqueue`), and `net_recover_modem()` (`net.cpp:1392`) is
+the only caller of that outside boot. **Two unrelated report fields both say an F4 ran.**
+
+### 9.2 Mechanism (six lines, file:line)
+
+1. **eb2a578 changed what `stuck` means.** A probe the library fails inside its own 2 s budget now
+   counted `stuck` (`net.cpp:1280-1286` → `net_probe_guard_failed()`,
+   `net_probe_guard.c:46-51`) — patch 1.14's whole point being that such a probe is *cheap and
+   expendable* (§8.4).
+2. **Its consumer was left reading the old meaning.** `check_probe_stuck_escalation()`
+   (`modes.c:1635-1653`) treats **six consecutive `stuck` as "the modem's command path is wedged"**
+   and calls `rate_limited_modem_recover()`. In ACTIVE mode, one probe per 2 s wake, that is **12
+   seconds** of the cheapest possible failure buying a full modem reset. In phaseAF the same 8
+   unanswered probes never escalated, because every `answered` in between reset the streak
+   (`:1639-1642`) — the 30 s budget always eventually answered. The 2 s budget does not.
+3. **The F4's own reset then failed slowly.** `WalterModem::reset()` pulses the reset pin, waits
+   1000 ms, and then queues a `TX_WAIT` for `"+SYSSTART"` (`WalterModem.cpp:5073-5086`) — but
+   `_parseRxData()` **discards every received byte while `_hardwareReset` is true** (`:1446`), which
+   is exactly that 1 s window. A boot banner landing inside it is gone, and the wait then costs the
+   library default of 3 × 30 s. 1 s + 90 s = **91 s ≈ §9.1's 93 s**. That is the whole excess, to
+   within the measurement.
+4. **A failed reset latched the drain probe off.** `net_recover_modem()` sets `s_modem_begun = false`
+   before the reset (`net.cpp:1385`) and returns false without restoring it (`:1393`), while
+   `WalterModem::begin()` — which is where the flag is otherwise set (`:587`) — is never reached.
+   `net_urc_probe()` no-ops from then on: `probe_issued=0` for all 80 wakes, and the next F4 is
+   rate-limited for 10 minutes (`modes.c:1577`). The residual `answered=2 stuck=1` are callbacks
+   from probes the library still held when `net_probe_guard_init()` zeroed the counters at `:1392`.
+5. **The reset also destroyed the session it was supposed to rescue.** It cleared
+   `s_session_configured`/`s_registered` (`:1401-1402`) and the physical reset wiped the modem's TLS
+   profile and MQTT client, so every later attempt had to redo `configure_session()` and then a
+   **blocking** `mqttConnect()` (`xport_lte.cpp:453`) — `stalled command: "AT+SQNSMQTTCONNECT=0,"s1"
+   elapsed=30000 ms` and `mqtt status/retry max 30013 ms` are that call, on the modes task, which
+   is also why the pager could not light-sleep through it (§8.5 item 2).
+6. **`rc=-13` is the modem's own verdict and the four gaps are the retry loop.** `s_last_rc` starts
+   at 0 (`xport_lte.cpp:89`) and is written only by the wire-fed CONNECTED-failed / DISCONNECTED
+   handlers (`:259`, `:407`); both host-side "dead" verdicts set only `s_last_class` (`:599`,
+   `:655`) and `resub_first_swallowed=0` says neither fired. `classify_mqtt_rc()`'s `default`
+   (`:230-234`) makes −13 TRANSIENT → `handle_mqtt_loss()` → `schedule_backoff()`. The gaps between
+   the four losses are **36 / 46 / 91 s = one 30 s CONNECT stall plus backoff 5 / 15 / 60 s**
+   (`modes.c:157`) — three for three.
+
+One more defect found in the same function: after `net_probe_guard_init()` zeroes the counters,
+`check_probe_stuck_escalation()`'s own `s_last_stuck` static still holds the pre-reset value, so
+`s_consecutive_stuck += (0 - 6)` **underflows an unsigned** to ~4.3e9, which is `>= 6`, which
+escalates again on the very next wake. Only `rate_limited_modem_recover()`'s 10-minute limit
+absorbed it.
+
+§8.2's hypothesis 1 (response/command desync inside the flush burst) is **still open and still
+unmeasured** — it is the best explanation for why a 30 s `AT+SQNSMQTTCONNECT` never saw its `OK`
+when `buf_drop_queue=0 buf_drop_pool=0 txdone_timeouts=0` say nothing was dropped and the bytes went
+out, and item 3's silent byte-discard is a second instance of the same class. S10 is what settles
+it; it was never run, and it is now the highest-priority task in the file.
+
+### 9.3 What this is *not*: W13's shared ident scratch, and the identity
+
+Ruled out, positively. `ident_scratch()` (`ident.c:22-33`) opens with `assert(!s_scratch_busy)` and
+this is an assertion-level-2 build (`sdkconfig:518,522`), so a genuine two-task overlap — and one is
+reachable in principle: `on_auth_epoch_wrap()` (`modes.c:483`) is bound as a callback into
+`msg.c`/`book.c`/`loc.c`/`sms.c` and can therefore run on the modem event task, against
+`ident_load()`/`catrust.c` on the main task — **aborts and reboots**. The window's uptime is
+continuous to 525 s with no gap in the cycle list, so no overlap happened. A silent clobber is not
+available either: the scratch is not `s_ident`, `net_session_up()` reads the live getters
+(`xport_lte.cpp:453`), a wrong password answers −11/−5 rather than −13, and `phaseAI-live.log:11-22`
+shows the same NVS identity attaching, pinning the CA and reaching "MQTT session usable" in 2 s
+right after the reboot. The latent crash stands as a defect and belongs with the next epoch-wrap
+change, not here.
+
+### 9.4 The change, and the options it was chosen from
+
+**Done — four surgical edits, `firmware/main/` only, no library patch:**
+
+1. **`net_probe_guard_failed()` counts a new `timedout`, not `stuck`** (`net_probe_guard.{c,h}`,
+   plumbed through `net_probe_counters_t` and the report line). `stuck` goes back to meaning only
+   what its consumer was written against: the library had not released the command after
+   `NET_PROBE_GUARD_STUCK_WAKES` wake intervals. This is the fix for §9.2 items 1-2 and it is the
+   one that matters: **a 2 s probe timeout can no longer reset the modem.** Host test extended with
+   the exact regression shape (six consecutive 2 s timeouts must leave `stuck == 0`).
+2. **`check_probe_stuck_escalation()` resynchronises instead of subtracting** when the counters go
+   backwards, killing the unsigned underflow (`modes.c`).
+3. **A failed `WalterModem::reset()` restores `s_modem_begun`** (`net.cpp`) so it can never again
+   silently disable the URC drain probe for ten minutes (§9.2 item 4). Two lines.
+4. **Instrumentation so none of §9.1 has to be arithmetic next time**: `probe_timedout`,
+   `probe_skip_busy`, `probe_skip_down` on the probe line and `modem_resets` (`g_rtc`, already kept)
+   on the modem line. Cumulative since boot and deliberately *not* cleared by
+   `net_probe_guard_init()`.
+
+**Power and latency.** All four are bookkeeping; none adds or removes an AT round trip in the
+healthy path, so the steady-state duty cycle of §8.5 is unchanged (SLEEP 4.4% → 2.72 mA, ACTIVE
+10.4% → 5.1 mA). What they remove is one measured **93 s** of full-current awake time plus the
+reset's own re-attach — 93 s × 40 mA ≈ **1.0 mAh per occurrence**, and this window had one in six
+minutes; left alone, the 10-minute rate limit caps it at 6/hour ≈ **6 mAh/h ≈ 144 mAh/day**, i.e.
+more than the entire 95-107 mAh/day budget. It also removes the eight-minute session outage and the
+two lost pages, which is the part that actually matters. Assumptions unchanged: 40 mA awake / 1 mA
+asleep (§2), **estimated, not measured on this board**. **Delivery latency is untouched** — still
+the 2 × 20.48 s eDRX bill of §8.6 (S14's call), and the ≥85% asleep bar should now be readable for
+the first time, since 93 s of the previous number was mis-attributed.
+
+**Considered and not taken:**
+
+- **(a) a probe with a unique terminal response** (e.g. `AT+CMEE?` matched on `+CMEE:` instead of a
+  bare `OK`) does not close the hole: the information line is unique, but the **trailing `OK` still
+  arrives**, and `_cmdProcessingTask` clears `_curCmd` and pops the next queued command
+  (`WalterModem.cpp:1694-1706`) between the two buffers, so the orphan `OK` can still complete
+  whatever is behind it. It narrows the race from seconds to microseconds at the price of a new
+  probe command whose side effects are unverified. Revisit only if S10 says the orphan `OK` is the
+  dominant term.
+- **(b) restore a probe budget ≥ the longest observed flush burst.** The longest observed is
+  `elapsed=30000 ms`, so this *is* the pre-eb2a578 behaviour: 45% asleep and two 29 824 ms `/up`
+  acks. With the `stuck`/`timedout` split above, the 2 s budget no longer has the consequence that
+  made it look dangerous, so there is nothing left to buy here — but the orphan-vs-slot-hold trade
+  is a measurement, not an argument, so it is kept as **S16**: an A/B behind a runtime flag on one
+  flash, same wake interval both times.
+- **(c) patch the library's pairing.** The defect is real and localised (`:4011-4013` finishes
+  `_curCmd` on *any* error line with no `atRsp` check at all, `:2387-2426`), and the honest fix is
+  small — refuse to complete a command with a buffer that was queued before that command's own
+  `attemptStart`. But whether it fired in this window is still inference, and a wrong patch here
+  mispairs every command on the device. Specced as **S15**, gated on S10's `rsp_no_cmd` > 0.
+- **skipping the probe on `net_connect_in_flight()`/`net_modem_busy()`** was written, then reverted
+  as dead code: `net_urc_probe()` only runs inside `modes.c`'s `if (!skip_sleep)` branch and
+  `skip_sleep` already ORs all three terms (`modes.c:1986`).
+
+### 9.5 Amended S7b sequence
+
+Flash order: **S10 first** (counters only, settles §9.2's open item), then S13, then S12, then
+§9.4's four edits (already in the tree, uncommitted); S15 only if its gate opened. Bars 1-7 of S7b
+stand, plus: **bar 8** — `probe_issued` > 0 and `probe_skip_down` ≈ 0, i.e. the drain probe was
+alive for the window being scored, with `probe_timedout` reported and interpreted as cheap (bar 4's
+reading now attaches to `probe_timedout`, and `probe_stuck` goes back to being a real fault signal);
+**bar 9** — `modem_resets` = 0. A window containing an F4 is **void, not failed**: ~93 s of its
+`asleep` total is not sleep, so no asleep% or latency reading from it means anything. Re-run it and
+report the F4 as its own finding.
+
+---
+
 ## Phase 3 candidate (24 Sep 2026): the ULP-RISC-V as a byte-capturing coprocessor
 
 Owner's question: could the ULP run permanently during light sleep, collate the bytes the modem

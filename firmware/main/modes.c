@@ -193,7 +193,12 @@ static const uint32_t k_backoff_s[] = { 5, 15, 60, 300 };
 // §9.3's table row): the single route-to-the-radio byte loc.c remembers
 // (V02_DESIGN.md §5). Everything else location-related is deliberately
 // RAM-only (loc.h's own module comment), so this is the whole addition.
-#define PAGER_RTC_MAGIC 0x50475236u // "PGR" + layout version 6
+// Beta feedback, 2026-09-23: bumped 6 -> 7 — lock_rtc_t shrank 16 -> 8 B
+// (`fail_count`/`backoff_until_us` dropped along with the wrong-passcode
+// retry lockout, docs/DEVICE_PLAN.md §5.8/lock.h's own comment); a stale
+// layout-6 struct would decode 8 bytes of whatever now follows `lock` in
+// memory as its old `fail_count`/`backoff_until_us`.
+#define PAGER_RTC_MAGIC 0x50475237u // "PGR" + layout version 7
 
 typedef enum {
     PAGER_MODE_SLEEP = 0,
@@ -1231,9 +1236,14 @@ void modes_debug_sleeptest_report(void)
     // USB-dead sleep window -- this text (not just the log line below) is
     // what sleeptest_save() writes to NVS.
     net_pager_counters_t pc = net_get_pager_counters();
-    st_appendf(&n, "modem counters: datatx_retx=%u prompt_orphan=%u buf_drop_queue=%u buf_drop_pool=%u\n",
+    // S7b post-mortem (docs/SLEEP_URC_DESIGN.md §9): modem_resets is the F4
+    // counter g_rtc already keeps (rate_limited_modem_recover()). Printing it
+    // here is what turns "an F4 must have run inside this window, because the
+    // probe counters do not otherwise add up" into a reading.
+    st_appendf(&n, "modem counters: datatx_retx=%u prompt_orphan=%u buf_drop_queue=%u buf_drop_pool=%u "
+                    "modem_resets=%u\n",
                (unsigned) pc.datatx_retx, (unsigned) pc.prompt_orphan, (unsigned) pc.buf_drop_queue,
-               (unsigned) pc.buf_drop_pool);
+               (unsigned) pc.buf_drop_pool, (unsigned) g_rtc.modem_resets);
     // S3 (patch 1.13, docs/RCA_SLEEP_URC.md §5 fix 3-4): attribution for the
     // two 30s stalls fix 1's arithmetic could not tell apart -- which write
     // path actually moved bytes, whether uart_wait_tx_done() ever timed out,
@@ -1250,9 +1260,17 @@ void modes_debug_sleeptest_report(void)
     // above, plus RCA_SLEEP_URC.md fix 1's discriminator (bytes buffered in
     // the modem UART's RX ring, sampled 50 ms after each wake).
     net_probe_counters_t probec = net_get_probe_counters();
-    st_appendf(&n, "probe counters: probe_issued=%u probe_answered=%u probe_stuck=%u probe_noqueue=%u\n",
+    // S7b post-mortem: skip_busy/skip_down are cumulative since BOOT and are
+    // deliberately not cleared by net_recover_modem()'s net_probe_guard_init(),
+    // unlike the four above -- `probe_issued=0 probe_answered=2` was only
+    // explainable by an F4 reset zeroing the first four while probes were
+    // still live in the library, and these two are what makes that readable
+    // without the arithmetic (docs/SLEEP_URC_DESIGN.md §9).
+    st_appendf(&n, "probe counters: probe_issued=%u probe_answered=%u probe_stuck=%u probe_noqueue=%u "
+                    "probe_timedout=%u probe_skip_busy=%u probe_skip_down=%u\n",
                (unsigned) probec.issued, (unsigned) probec.answered, (unsigned) probec.stuck,
-               (unsigned) probec.noqueue);
+               (unsigned) probec.noqueue, (unsigned) probec.timedout, (unsigned) probec.skip_busy,
+               (unsigned) probec.skip_down);
     st_appendf(&n, "post-wake UART bytes (50ms sample): max=%u wakes_with_bytes=%u\n",
                (unsigned) s_st_wake_bytes_max, (unsigned) s_st_wake_bytes_nonzero);
     // S2 (docs/SLEEP_URC_DESIGN.md §6): how often a liveness ping's first
@@ -1632,10 +1650,28 @@ static void run_modem_health_check(void)
 // two comparisons) and not gated on mode/loc_suppress/ca_apply_suppress/
 // coverage_owns_radio: a bare "AT" going unanswered six times running means
 // the modem's command path is wedged, which none of those states explain.
+// 23 Sep S7b post-mortem (docs/SLEEP_URC_DESIGN.md §9.2): `stuck` deliberately
+// does NOT include a probe the library failed inside its own 2 s budget any
+// more (that is `timedout`, net_probe_guard.h) -- six cheap 2 s timeouts, i.e.
+// twelve seconds in ACTIVE mode, must never reach the F4 reset below. What is
+// counted here is still the original signal this escalation was written
+// against: the library had not released the command after 3 wake intervals,
+// six times running.
 static void check_probe_stuck_escalation(void)
 {
     static uint32_t s_last_answered = 0, s_last_stuck = 0, s_consecutive_stuck = 0;
     net_probe_counters_t pc = net_get_probe_counters();
+    // Counters going BACKWARDS means net_probe_guard_init() zeroed them (a F4
+    // recovery, net.cpp's net_recover_modem()). Resynchronise instead of
+    // subtracting: `s_consecutive_stuck += (0 - 6)` underflows an unsigned to
+    // ~4.3e9, which is >= 6, which escalated again on the very next wake --
+    // absorbed only by rate_limited_modem_recover()'s 10 minute limit.
+    if (pc.answered < s_last_answered || pc.stuck < s_last_stuck) {
+        s_last_answered = pc.answered;
+        s_last_stuck = pc.stuck;
+        s_consecutive_stuck = 0;
+        return;
+    }
     if (pc.answered != s_last_answered) {
         s_last_answered = pc.answered;
         s_consecutive_stuck = 0;

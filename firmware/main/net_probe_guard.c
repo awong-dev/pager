@@ -9,6 +9,7 @@ void net_probe_guard_init(net_probe_guard_t *g)
     g->answered = 0;
     g->stuck = 0;
     g->noqueue = 0;
+    g->timedout = 0;
 }
 
 bool net_probe_guard_poll(net_probe_guard_t *g)
@@ -47,7 +48,7 @@ void net_probe_guard_failed(net_probe_guard_t *g)
 {
     g->outstanding = false;
     g->wakes_waited = 0;
-    g->stuck++;
+    g->timedout++; /* NOT stuck: see the header's doc comment (S7b, §9.2) */
 }
 
 void net_probe_guard_answered(net_probe_guard_t *g)

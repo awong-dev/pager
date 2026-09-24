@@ -376,12 +376,33 @@ bool net_urc_probe(void);
  * noqueue   - checkComm() could not queue the probe at all (8-slot queue/
  *             pool full -- WalterModem.h:127,3501), counted instead of
  *             issued, no retry.
- * Power effect: none -- four plain reads. */
+ * timedout  - probes the library failed inside their own 2 s budget. Cheap
+ *             and expected (docs/SLEEP_URC_DESIGN.md §8.4); split out of
+ *             `stuck` by §9.2 because modes.c escalates six consecutive
+ *             `stuck` to a full F4 modem reset and a 2 s timeout is not that
+ *             signal. A high count here with `stuck` at 0 is the S7b
+ *             regression's own fingerprint.
+ * skip_busy - wakes where the probe was deliberately not attempted because
+ *             the library's single in-flight command slot was (very likely)
+ *             already occupied: a publish at a "> " prompt, a connect in
+ *             flight, or the MQTT event handler inside its own AT
+ *             transaction. See net_urc_probe()'s call site for why this is
+ *             not a failure but the fix for a probe backlog.
+ * skip_down - wakes where there was no modem to probe at all (the WiFi
+ *             transport, or WalterModem::begin()/a failed net_recover_modem()
+ *             left the modem not begun). A large number here with
+ *             issued == 0 means the drain probe is OFF, which is the one
+ *             reading of `probe_issued=0` the report could not previously
+ *             distinguish from "the probe was never reached".
+ * Power effect: none -- seven plain reads. */
 typedef struct {
     uint32_t issued;
     uint32_t answered;
     uint32_t stuck;
     uint32_t noqueue;
+    uint32_t timedout;
+    uint32_t skip_busy;
+    uint32_t skip_down;
 } net_probe_counters_t;
 net_probe_counters_t net_get_probe_counters(void);
 

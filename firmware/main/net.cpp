@@ -206,6 +206,14 @@ static bool s_modem_begun = false;
 // s_publish_quiet in net_init()/net_recover_modem() (see those call sites).
 static net_probe_guard_t s_probe_guard;
 
+// S7b post-mortem (docs/SLEEP_URC_DESIGN.md §9): the two "the probe was not
+// even attempted this wake" counts. Deliberately NOT in net_probe_guard_t:
+// they are not part of the guard's decision logic (nothing reads them back),
+// they are report fields, and keeping them here leaves the host-tested pure
+// module untouched. Written only by net_urc_probe(), on modes.c's task.
+static uint32_t s_probe_skip_busy = 0;
+static uint32_t s_probe_skip_down = 0;
+
 // A1 (docs/DEVICE_NEXT_TASKS.md): count of light-sleep returns woken by
 // ext1 (the LIS3DH motion pin), since boot. net_get_ext1_wakes().
 static uint32_t s_ext1_wakes = 0;
@@ -1289,7 +1297,13 @@ static void probe_cb(const WalterModemRsp *rsp, void *args)
 extern "C" bool net_urc_probe(void)
 {
     if (s_active_xport == NET_XPORT_WIFI || !s_modem_begun) {
-        return false; // no bare AT over WiFi; nothing to probe before begin()/mid-reset
+        // no bare AT over WiFi; nothing to probe before begin()/mid-reset.
+        // Counted (23 Sep S7b post-mortem, phaseAI-report.log:30): a window
+        // whose whole report reads `probe_issued=0 probe_answered=2
+        // probe_stuck=1` could not say whether the probe was never reached or
+        // was silently switched off here for 80 wakes running.
+        s_probe_skip_down++;
+        return false;
     }
     if (!net_probe_guard_poll(&s_probe_guard)) {
         // Either still outstanding, or just declared stuck this wake (its
@@ -1305,6 +1319,13 @@ extern "C" bool net_urc_probe(void)
         // consume this probe's "AT\r\n" as payload bytes, not a command.
         // The guard was never told a probe was issued, so it is still ready
         // to try again next wake.
+        //
+        // 23 Sep S7b post-mortem: adding net_connect_in_flight()/
+        // net_modem_busy() here was considered and dropped as dead code --
+        // this function is only ever called from inside modes.c's
+        // `if (!skip_sleep)` branch, and skip_sleep already ORs all three
+        // (modes.c:1986), so they are false by construction at this point.
+        s_probe_skip_busy++;
         return false;
     }
     net_probe_guard_attempt(&s_probe_guard); // before the call: see probe_cb()'s doc comment
@@ -1345,6 +1366,9 @@ extern "C" net_probe_counters_t net_get_probe_counters(void)
     out.answered = s_probe_guard.answered;
     out.stuck = s_probe_guard.stuck;
     out.noqueue = s_probe_guard.noqueue;
+    out.timedout = s_probe_guard.timedout;
+    out.skip_busy = s_probe_skip_busy;
+    out.skip_down = s_probe_skip_down;
     return out;
 }
 
@@ -1391,6 +1415,23 @@ extern "C" bool net_recover_modem(void)
     publish_quiet_gate_init(&s_publish_quiet); // same reasoning: a reset drops any outstanding publish too
     net_probe_guard_init(&s_probe_guard); // same reasoning: the reset drops any outstanding probe too
     if (!WalterModem::reset()) {
+        // 23 Sep S7b post-mortem (docs/SLEEP_URC_DESIGN.md §9): s_modem_begun
+        // must NOT stay false here. This call can fail without the modem
+        // being in a reset at all -- WalterModem::reset() waits for
+        // "+SYSSTART", and _processModemRSP() finishes whatever command is
+        // current on ANY error line regardless of its expected response
+        // (WalterModem.cpp:2387-2408 sets result=ERROR, :4011-4013 then calls
+        // _finishModemCMD(cmd, result) with no atRsp check at all), so one
+        // orphaned "+CME ERROR: 4" from an earlier command fails this reset
+        // immediately. Every other caller in this file keeps commanding the
+        // modem after we return false (modes.c backs off and calls
+        // net_session_up() again), so leaving the flag false silently
+        // disables ONLY the per-wake URC drain probe -- the one mechanism
+        // ~30 s page delivery depends on -- until the next F4, which
+        // rate_limited_modem_recover() holds off for 10 minutes
+        // (modes.c:1577). phaseAI-report.log is what that looks like:
+        // probe_issued=0 over 80 wakes and no page received in 6 minutes.
+        s_modem_begun = true;
         ESP_LOGI(TAG, "WalterModem::reset() failed");
         return false;
     }

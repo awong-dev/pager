@@ -43,6 +43,7 @@ typedef struct {
     uint32_t answered;      /* queued probes whose "OK" came back */
     uint32_t stuck;         /* probes given up on after NET_PROBE_GUARD_STUCK_WAKES wakes unanswered */
     uint32_t noqueue;       /* checkComm() could not queue the probe at all, no retry, not counted as issued */
+    uint32_t timedout;      /* probes the library itself failed inside their own (2 s) budget -- see net_probe_guard_failed() */
 } net_probe_guard_t;
 
 void net_probe_guard_init(net_probe_guard_t *g);
@@ -79,13 +80,22 @@ void net_probe_guard_noqueue(net_probe_guard_t *g);
 /* Call from the probe's own callback when the probe came back with any
  * non-OK, non-NO_MEMORY result -- in practice the library's own per-command
  * timeout (patch 1.14 gives the probe 1 attempt / 2 s, so this is the
- * "the modem did not answer this AT" case). Clears `outstanding` and counts
- * it `stuck`, exactly as an aged-out poll() would: a probe that did not
- * answer is a stuck probe whoever noticed first, and counting it here rather
- * than waiting NET_PROBE_GUARD_STUCK_WAKES further wakes keeps `stuck` from
- * double-counting the same probe. Deliberately NOT noqueue(): that counter
- * means "checkComm() could never queue it at all" and the S7 acceptance
- * criterion reads it that way. */
+ * "the modem did not answer this AT inside 2 s" case). Clears `outstanding`
+ * so the next wake may probe again, and counts `timedout`.
+ *
+ * 23 Sep S7b post-mortem (docs/SLEEP_URC_DESIGN.md §9.2): this used to count
+ * `stuck`, which was a category error with a very expensive consumer.
+ * `stuck` means "the library still had not released the command after
+ * NET_PROBE_GUARD_STUCK_WAKES wake intervals", and modes.c's
+ * check_probe_stuck_escalation() reads SIX of those in a row as "the modem's
+ * command path is wedged" and issues a full F4 modem reset. A 2 s budget
+ * expiring means nothing of the sort -- patch 1.14 chose 2 s precisely
+ * because an unanswered probe is cheap and expendable -- and in ACTIVE mode
+ * (2 s wake interval) six of them take twelve seconds, so the two meanings
+ * sharing one counter turned the cheapest possible failure into a modem
+ * reset. Separate counter, same clearing behaviour, no F4.
+ * Deliberately NOT noqueue() either: that counter means "checkComm() could
+ * never queue it at all" and the S7 acceptance criterion reads it that way. */
 void net_probe_guard_failed(net_probe_guard_t *g);
 
 /* Call from the probe's own callback when the "OK" genuinely came back.
