@@ -2117,6 +2117,18 @@ void modes_run(void)
             vTaskDelay(pdMS_TO_TICKS(100));
         }
 
+        // S4 (docs/SLEEP_URC_DESIGN.md §6 "Ack stall" fix (i)): if the modem
+        // UART still has bytes buffered right now, this wake's drain burst
+        // is still arriving (or just landed and is not drained yet) -- defer
+        // this iteration's ack publish to the next wake (<=5s later in sleep
+        // mode, <=2s in active mode; nothing bounds ack latency) instead of
+        // racing msg_pump()'s own AT transaction against it. One flag, no
+        // timers, no new state; release and debug builds both compute it
+        // (this is a real behaviour change, not sleeptest-only reporting).
+        // Power cost: zero -- one UART driver software-counter read
+        // (net_uart_rx_buffered_bytes(), net.h), no AT traffic.
+        bool wake_bytes_pending = net_uart_rx_buffered_bytes() > 0;
+
 #ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
         // S0: s_st_mark_us at this point is either the timestamp ST_MARK_BEGIN()
         // set right after net_sleep() returned (skip_sleep == false: this
@@ -2532,7 +2544,11 @@ void modes_run(void)
         net_service_session();
 
         watchdog_kick(WD_PUMP);
-        if (!pump_blocked && st.mqtt_connected && esp_timer_get_time() >= s_next_pump_us) {
+        // S4: wake_bytes_pending skips this iteration only -- s_next_pump_us
+        // is deliberately NOT advanced, so the very next wake (not gated on
+        // PAGER_PUMP_MIN_INTERVAL_US) gets to try again.
+        if (!pump_blocked && !wake_bytes_pending && st.mqtt_connected &&
+            esp_timer_get_time() >= s_next_pump_us) {
             msg_pump();
             s_next_pump_us = esp_timer_get_time() + PAGER_PUMP_MIN_INTERVAL_US;
         }
