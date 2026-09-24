@@ -13,6 +13,13 @@ Relay: `cd relay && .venv/bin/pytest`.
 
 Order: W0 → W1 → W2 → W3 → W7 → W4 → W5 → **W6 (phase 1 milestone)** → W8 → W9 → W10 → W11 → W12.
 
+**Amended 2026-09-23** after W6's first bench attempt (`build/bench-logs/phaseAG-wifi.log`;
+reading in `docs/WIFI_DESIGN.md` §10): W0 never ran on this branch and its go/no-go ("stop if the
+heap watermark falls below 40 kB") was never applied — the real numbers are now in §10.1/§10.3, and
+they fail that test. Order becomes
+**W14 (10 min, no hardware) → W6-attempt-2 → [W13 if W6's step 1 shows < 10 kB of margin] → W15 →
+W8 → W9 → …**, with W13 promoted ahead of everything else if W6 step 1 fails outright.
+
 W7 (relay) is deliberately early: `V02_DESIGN.md` §0's rule is that the relay accepts a new field
 **before** any firmware that sends it is flashed.
 
@@ -197,6 +204,72 @@ battery). Four captures, each bounded and foreground:
 table (latency on each transport, `link` values seen, EMQX client count) added to
 `docs/HARDWARE_TESTING.md` "Seen working". Report any log line that prints a PSK as a **blocker**.
 
+### W6, amended after the first attempt (2026-09-23)
+
+The first attempt is `build/bench-logs/phaseAG-wifi.log` / `phaseAG-wifioff.log` (debug image
+`ea05271`). It got further than expected and then failed for a reason that was not TLS: association
+in 1.4 s, WPA3-SAE, DTIM 1, DHCP at +4.4 s, `xport: LTE -> WIFI`, then
+`mbedtls_ssl_setup returned -0x7F00` (`MBEDTLS_ERR_SSL_ALLOC_FAILED`) — a heap failure. See
+`docs/WIFI_DESIGN.md` §10 for the full reading. What W6 must do differently:
+
+**Prerequisites before the next W6 run (all three, in order).**
+1. **Regenerate the config.** `rm firmware/sdkconfig && idf.py reconfigure`. An existing
+   `sdkconfig` overrides `sdkconfig.defaults`, which is why W5's own `SOFTAP_SUPPORT=n` /
+   `WS_TRANSPORT=n` were never in the phaseAG image, and why §10.3's mbedtls/WiFi buffer values
+   would not be either. **Paste the seven changed values out of the regenerated file into the
+   report** — if they are not there, the run measures nothing.
+2. W13 (below) is **not** a prerequisite for a first green W6, but it is a prerequisite for the
+   ≥ 40 kB headroom the design asks for. If step 4 below shows a margin under 10 kB, stop and do
+   W13 before calling W6 passed.
+3. Build the **debug** image (`PAGER_DEBUG_NO_LIGHT_SLEEP=1`): the `wifi` console commands only
+   exist there, and in a release build the whole WiFi/TLS/MQTT tree is garbage-collected out
+   (`WIFI_DESIGN.md` §10.1). Do not try W6 on a release image.
+
+**Amended acceptance sequence.** One flash, USB power throughout, four bounded foreground captures.
+
+1. **Heap before anything else.** `wifi set <ssid> <psk>`, then `wifi on`. Record, in order:
+   - `modes: heap at boot: free=… minimum_free=…`
+   - `wifi_sta: wifi: station started …; heap free=… largest_8bit_block=…` ← new
+   - `net: pre-TLS heap: free=… largest_8bit_block=…` ← new, one per connect attempt
+   **Acceptance A (RAM):** the pre-TLS `largest_8bit_block` is **> 8,493 B** (that is
+   `MBEDTLS_SSL_IN_CONTENT_LEN=8192` + ~300 B of record overhead) **and** `free` is **> 30 kB**.
+   Report the three numbers as a table against `WIFI_DESIGN.md` §10.3's predictions (driver-up free
+   ≈ 38.6 kB, handshake peak ≈ 27–32 kB). If A fails, W6 stops here and W13 runs — no amount of
+   retrying fixes a contiguous-block shortage.
+2. **First session.** Expect `MQTT connected, resubscribing to …` → `MQTT session usable
+   (subscribed to 'pager/<id>/down')` → `published /status online` with `xport` = `wifi`. Send a
+   page; record send→render latency (design §7 step 1 expects < 2 s).
+3. **The failure path, on purpose** — this is the part the first attempt could not reach and the
+   part the two 2026-09-23 fixes exist for. Easiest trigger with no AP fiddling: `wifi on` while
+   the broker is unreachable (block 8883 on the AP, or `wifi set` a good SSID and point
+   `ident`'s host at a dead one on a scratch device). Expect, and **assert on the absence of the
+   old behaviour**:
+   - `net: MQTT disconnected, rc=… (connect-fail streak=1)`
+   - `modes: MQTT session lost (rc=…), transient - retrying with backoff` — and **never**
+     `modes: TLS handshake failed while pinned`, **never** `SECURITY tls-broken`, and `/status`
+     `tls` still `pinned` afterwards. (A WiFi TLS failure must not touch the modem's CA state:
+     `WIFI_DESIGN.md` §10.4 item 1.)
+   - retries at **~5 s, then ~15 s** — count the `retrying MQTT session (backoff idx=…)` lines:
+     **at most one per attempt**, with `idx` incrementing. More than ~5 lines in 60 s is a
+     regression of the storm (the first attempt logged 530+ in 75 s).
+   - `net: WiFi MQTT client is up but not connected and no connect in flight - destroying it and
+     issuing a fresh connect` once per retry.
+   - after the third failure: `net: WiFi MQTT failed 3 times in a row - giving the session back to
+     LTE`, then `xport: WIFI -> LTE`, then an LTE session usable within ~5 s, and a page delivered
+     over LTE. Whole episode should be **25–45 s** from `wifi on`.
+   - **Also time the main loop**: `wifi_down()` can block its caller up to ~5 s per retry
+     (`WIFI_DESIGN.md` §10.4). Note the largest gap between consecutive `modes:` lines during the
+     episode; if it exceeds 6 s, say so — that is the trigger for the
+     `esp_mqtt_client_reconnect()` variant.
+4. **No double session.** Unchanged from the original W6 step 3: `poll_emqx_client.py` every 5 s
+   across both switches; `/clients/{id}` never two entries; `connected_at` changes exactly once per
+   switch. The first attempt passed this (the broker showed exactly one client — the LTE one —
+   throughout).
+5. **`wifisleeptest`.** Unchanged from the original W6 step 4. Note that this AP's **DTIM is 1**,
+   not 10, so the §3 row this decides between is 40.1 mA (no PM) vs 2.45 mA (auto light sleep).
+6. **`wifi status`** still prints `dtim: n/a`; the real value is in the driver's own
+   `AP's beacon interval = … DTIM period = …` line. Report it from there. Not a blocker.
+
 ---
 
 ## W7. Relay: `xport`, and the `cfg.wifi` push — backend-dev
@@ -314,3 +387,117 @@ to `GOTCHAS.md` in that file's symptom-first shape; record the measured numbers 
 `WIFI_DESIGN.md` §3 and the open items in `ROADMAP.md`.
 **Verify:** no number in the docs is left as `(estimate)` when a measured one exists; every
 remaining `UNVERIFIED` names its experiment.
+
+---
+
+## W13. Give 31 kB of `.bss` back to the heap — firmware-dev
+
+**Why:** `docs/WIFI_DESIGN.md` §10.3. `.dram0.bss` is **198,768 B** and the whole dynamic heap is
+**132,684 B**; the TLS handshake needs ~30 kB of that with one contiguous 8.5 kB block. The
+`sdkconfig` changes alone leave a ~7–12 kB margin. This task is what turns that into ~37–42 kB, and
+it hands the LTE-only release image the same 31 kB. Two items, no third.
+
+**Read:** `firmware/main/msg.c:700-760` (`msghist_restore()` and its `decoded[]`),
+`firmware/main/ident.h:12-40` (the "no dynamic allocation, one static `ident_t`" module contract —
+this task does not change that contract, it stops four *copies* of it existing),
+`docs/WIFI_DESIGN.md` §10.3.
+**Files:** `firmware/main/msg.c`, `firmware/main/ident.c`, `firmware/main/ident.h`,
+`firmware/main/modes.c` (one function), `firmware/main/setup.c` (one function),
+`firmware/main/catrust.c` (two functions), `firmware/host/` tests that touch either.
+**Do:**
+1. `msg.c:712` `static msg_t decoded[MSG_THREAD_DEPTH]` — **13,056 B** for a buffer used once,
+   inside the boot-time history restore. `heap_caps_malloc()` it at the top of that function and
+   free it on every exit path, including the early-return ones. If the allocation fails, skip the
+   restore and log it: a pager with no scrollback still delivers pages, and this runs at boot when
+   the heap is at its emptiest anyway.
+2. The five static `ident_t` scratch copies, **4,460 B each = 22,300 B**: `ident.c:133` (`tmp`),
+   `modes.c:489` (`snap`), `setup.c:752` (`id`), `catrust.c:405` (`snap`), `catrust.c:514` (`snap`).
+   Each is a scratch buffer inside one function; every one is on the main or console task and none
+   is reentrant with another. Add **one** shared scratch in `ident.c` behind
+   `ident_t *ident_scratch(void)` and use it in all five places. Keep **one** of them (the
+   `ident.c` one is the natural home), so this is +17.8 kB, not +22.3 kB.
+   **Guard the sharing, do not assume it:** a `static bool s_scratch_busy` with an
+   `assert(!s_scratch_busy)` on entry and a clear on exit, so a future caller that breaks the
+   non-reentrancy assumption fails loudly in a debug build instead of corrupting an identity.
+**Do not touch:** `disp.c:57`/`disp.c:64` (`s_fb_old`/`s_fb_snap`, 9,472 B) — those are the e-paper
+diff planes and they are load-bearing. `xport_lte.cpp:210` `s_mqtt_rx_buf` — hot path.
+**Verify:** `make -C firmware/host test` green (21 suites). `xtensa-esp32s3-elf-size -A
+build/school_pager.elf` before and after: report the `.dram0.bss` delta and the `heap at boot:
+free=` delta from one boot log — **acceptance: `.dram0.bss` down by ≥ 30,000 B and the boot heap up
+by the same, with no change in behaviour**. Then a 30-minute LTE-only regression (boot, session up,
+one page, one reply, history restored across a reboot with the scrollback intact) — item 1 touches
+the msghist restore path, so a reboot with a non-empty thread is mandatory, not optional.
+**Next tier, only if a measured margin is still under 20 kB:** `cafetch.c:495` `s_parser` 4,644 B,
+`setup.c:630 s_bundle_buf` + `setup.c:741 plain` 8,192 B, `catrust.c:320 s_apply_pem` +
+`setup.c:772 fetched_pem` 8,194 B. All three are "live during one operation only".
+
+---
+
+## W14. Does EMQX honour `max_fragment_length`? — 10 minutes, no hardware
+
+**Why:** if it does, `MBEDTLS_SSL_IN_CONTENT_LEN` stops mattering at any static footprint and W13's
+urgency drops. `docs/WIFI_DESIGN.md` §10.3 lists this as **UNVERIFIED**.
+**Do:** on the laptop, `openssl s_client -maxfraglen 512 -connect <broker>:8883 -servername
+<broker> </dev/null 2>&1 | head -40`, and separately `-msg` to see whether the ServerHello echoes
+the `max_fragment_length` extension. Also record the served chain's total DER size
+(`openssl s_client -showcerts`) — that is the number `IN_CONTENT_LEN` actually has to clear.
+**Verify:** one paragraph in `WIFI_DESIGN.md` §10.3 replacing the `UNVERIFIED`, with the measured
+chain size. If the extension **is** honoured, propose the `esp_tls` knob that sets it (there may not
+be one on IDF 5.2 — say so rather than assuming) and leave `IN_CONTENT_LEN=8192` alone until there
+is.
+
+---
+
+## W15. `catrust_on_mqtt_connected()` is transport-blind too — firmware-dev, small
+
+**Why:** the mirror image of `WIFI_DESIGN.md` §10.4 item 1, found by inspection, **not yet observed
+on hardware**. `modes.c:2390` calls `catrust_on_mqtt_connected()` on whichever transport just became
+usable. On WiFi that resets `s_validated_fail_streak` and, if the state is `broken`, heals it back to
+`pinned` — i.e. a successful **ESP32** handshake would silently declare the **modem's** pinned CA
+good again and publish `tls: "pinned"`. Same rule as §5: an outcome on one transport is not evidence
+about the other. Related, lower risk: `modes.c:2491` calls `catrust_before_reconnect()` on every
+retry regardless of transport, which is a no-op unless the state is `broken` but can issue an
+`AT+SQNSPCFG` on the modem for a **WiFi** reconnect.
+**Files:** `firmware/main/catrust.c` only (`modes.c` is not the right place — the guard belongs next
+to the side effects it protects: an NVS write, a modem AT command and a `/status` field).
+**Do:** in `catrust.c`, make `catrust_on_mqtt_connected()` and `catrust_before_reconnect()` return
+early when `net_xport_active() != NET_XPORT_LTE`, each with a one-line comment naming
+`WIFI_DESIGN.md` §5 and §10.4. Do **not** add a guard to `catrust_on_mqtt_tls_fail()`: the
+2026-09-23 fix already stops WiFi reporting the class that reaches it, and a second guard for the
+same path is the "defensive code nobody verified" this project deletes at review time.
+**Verify:** `make -C firmware/host test` green; then on the bench, with the device deliberately in
+`tls: "broken"` (an LTE-side CA mismatch), bring WiFi up successfully and confirm `/status` still
+reports `broken` and the log does **not** say `TLS validated again: state broken -> pinned`.
+Sequence it after a green W6 — it needs a working WiFi session to test at all.
+
+---
+
+## W16. `wifi_sta_start()` / `wifi_sta_stop()` are not a clean cycle — firmware-dev, small
+
+**Why:** the 2026-09-23 §2 fallback (`xport_wifi.c`'s `wifi_service_session()`) makes
+stop-then-start a routine path, not just something the console does by hand. Two defects by
+inspection of `firmware/main/wifi_sta.c`, **neither observed on hardware yet** — the second one is
+the RAM-budget-relevant one:
+
+1. `wifi_sta.c:96-99` registers the WIFI_EVENT and IP_EVENT handler instances inside
+   `wifi_sta_start()`, which runs again after every `wifi_sta_stop()` (`s_started` goes false, but
+   nothing unregisters). `esp_event_handler_instance_register()` does not de-duplicate, so the
+   second `wifi on` gets two instances of `wifi_event_handler` and every association/IP event is
+   handled twice. Harmless today (idempotent flag writes and a duplicated log line) and unbounded in
+   principle. Fix: a `static bool s_handlers_registered` guard, or unregister in `wifi_sta_stop()`.
+2. `wifi_sta_stop()` (`wifi_sta.c:132-144`) calls `esp_wifi_stop()` but never `esp_wifi_deinit()`,
+   and never destroys the netif. `esp_wifi_init()` returns `ESP_OK` immediately when already
+   initialised (`esp-idf/components/esp_wifi/src/wifi_init.c:254-256`), so the cycle *works* — but
+   **the driver's ~16 kB of static RX buffers, its 6,656 B task and the netif stay allocated for the
+   rest of the boot**. The radio is off, so there is no power cost; the cost is that the LTE-only
+   heap never comes back after WiFi has been started once, which is exactly the headroom
+   `WIFI_DESIGN.md` §10.3 is counting. Fix: `esp_wifi_deinit()` (legal after `esp_wifi_stop()`) and
+   `esp_netif_destroy_default_wifi(s_netif)` + `s_netif = NULL` in `wifi_sta_stop()`, with the
+   handler unregistration from item 1 so the ordering is defined.
+**Files:** `firmware/main/wifi_sta.c` only.
+**Verify:** host tests green (this file has none — say so). Then on the bench:
+`wifi on` → `wifi off` → `wifi on` → `wifi off`, capturing the two new heap lines
+(`wifi: station started …; heap free=…`) each time. **Acceptance: the free-heap number after the
+second `wifi on` matches the first within ~2 kB, and the number after `wifi off` returns to within
+~5 kB of the boot value** — i.e. the driver's memory is genuinely released. Also confirm each
+`got ip` line appears exactly once per association, not twice.

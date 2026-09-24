@@ -9,6 +9,7 @@
 #include "esp_wifi.h"
 #include "esp_netif.h"
 #include "esp_event.h"
+#include "esp_heap_caps.h"
 
 #include "wificred.h"
 
@@ -116,7 +117,15 @@ bool wifi_sta_start(void)
     }
 
     s_started = true;
-    ESP_LOGI(TAG, "wifi: station started (WiFi driver up, not yet associated)");
+    // The number the 2026-09-23 W6 bench was missing: mbedtls_ssl_setup()
+    // needs ONE contiguous MBEDTLS_SSL_IN_CONTENT_LEN+~300 byte block, so the
+    // largest free block matters more than the total. main.c's own "heap after
+    // WiFi+TLS+MQTT up" line is only reached on the success path, which is
+    // exactly the path that did not happen. Cost: one INFO line per `wifi on`.
+    ESP_LOGI(TAG, "wifi: station started (WiFi driver up, not yet associated); "
+                  "heap free=%u largest_8bit_block=%u",
+             (unsigned) heap_caps_get_free_size(MALLOC_CAP_8BIT),
+             (unsigned) heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
     return true;
 }
 

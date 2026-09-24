@@ -15,6 +15,7 @@
 #include "publish_quiet.h"
 #include "ident.h"
 #include "catrust.h"
+#include "wifi_sta.h" // the §2 fallback stops the radio it is done with
 
 #include "mqtt_client.h"
 
@@ -23,6 +24,7 @@
 
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -52,6 +54,17 @@ static volatile int s_last_rc = 0;
 static volatile net_mqtt_rc_class_t s_last_class = NET_MQTT_RC_NONE;
 static volatile int64_t s_last_uplink_us = 0;
 static volatile uint32_t s_oversize_count = 0;
+// Diagnosis only (never feeds a decision): how many times esp-tls/mbedtls has
+// refused a handshake on this transport since boot. See the
+// MQTT_ERROR_TYPE_TCP_TRANSPORT case for why this is not a class modes.c sees.
+static volatile uint32_t s_tls_fail_count = 0;
+// docs/WIFI_DESIGN.md §2's "fall back to LTE on 3 consecutive failures of
+// {association, DHCP, TLS handshake, MQTT CONNECT}", counted for the two this
+// file owns. Reset on MQTT_EVENT_SUBSCRIBED and when the fallback fires, so a
+// later manual `wifi on` starts from zero (phase 1 is manual-only: nothing
+// re-arms WiFi by itself, docs/WIFI_DESIGN.md §3 phase 1).
+#define WIFI_CONNECT_FAIL_MAX 3u
+static volatile uint32_t s_connect_fail_streak = 0;
 
 static net_connect_guard_t s_connect_guard;
 static publish_quiet_gate_t s_publish_quiet;
@@ -82,6 +95,7 @@ static void wifi_mqtt_event_handler(void *handler_args, esp_event_base_t base, i
             break;
         }
         s_mqtt_connected = true;
+        s_connect_fail_streak = 0; // the session is usable: §2's streak is broken
         s_last_uplink_us = esp_timer_get_time();
         ESP_LOGI(TAG, "MQTT session usable (subscribed to '%s')", s_down_topic);
         break;
@@ -131,10 +145,21 @@ static void wifi_mqtt_event_handler(void *handler_args, esp_event_base_t base, i
         break;
 
     case MQTT_EVENT_DISCONNECTED:
+        // A DISCONNECTED that arrives without the session ever having reached
+        // SUBSCRIBED is a failed CONNECT, not a lost session -- that is
+        // docs/WIFI_DESIGN.md §2's "3 consecutive failures ... -> fall back to
+        // LTE" counter. net_connect_guard's own fail_streak cannot carry this:
+        // net_connect_guard_issued() clears it on every fresh attempt
+        // (net_connect_guard.h:60-63), and this failure is asynchronous, after
+        // the attempt was successfully issued.
+        if (!s_mqtt_connected) {
+            s_connect_fail_streak = s_connect_fail_streak + 1;
+        }
         net_connect_guard_clear(&s_connect_guard);
         s_mqtt_connected = false;
         s_disconnect_edge = true;
-        ESP_LOGI(TAG, "MQTT disconnected, rc=%d", s_last_rc);
+        ESP_LOGI(TAG, "MQTT disconnected, rc=%d (connect-fail streak=%u)", s_last_rc,
+                 (unsigned) s_connect_fail_streak);
         break;
 
     case MQTT_EVENT_ERROR:
@@ -156,17 +181,34 @@ static void wifi_mqtt_event_handler(void *handler_args, esp_event_base_t base, i
             case MQTT_ERROR_TYPE_TCP_TRANSPORT:
                 if (event->error_handle->esp_tls_stack_err != 0 ||
                     event->error_handle->esp_tls_cert_verify_flags != 0) {
-                    s_last_class = NET_MQTT_RC_TLS_FAIL;
-                    // docs/WIFI_DESIGN.md §5: reported/logged/counted only --
-                    // NEVER calls catrust_on_mqtt_tls_fail(). That state
-                    // machine's job is deciding whether to keep validating
-                    // on LTE; a WiFi TLS failure is not evidence about the
-                    // modem, and WiFi always has LTE to fall back to (§5's
-                    // "an unverifiable broker is a reason to switch
-                    // transport, not to lower the bar").
+                    // W6 defect, 2026-09-23 (build/bench-logs/phaseAG-wifi.log
+                    // line 95 -> 262): this used to report
+                    // NET_MQTT_RC_TLS_FAIL. This file never calls
+                    // catrust_on_mqtt_tls_fail() -- but modes.c's
+                    // handle_mqtt_loss() (modes.c:1497-1518) calls it FOR the
+                    // caller on exactly that class, so reporting it made the
+                    // WiFi transport drive the LTE CA state machine anyway:
+                    // one more failure would have run net_tls_configure(slot,
+                    // false) on the MODEM and written ident_set_tls_broken()
+                    // (=> /status tls:"broken", which per docs/WIFI_DESIGN.md
+                    // §4 then refuses cfg.wifi.nets pushes) because an
+                    // esp-tls heap allocation failed on the ESP32.
+                    // docs/WIFI_DESIGN.md §5 is the rule: a TLS failure on
+                    // this transport is "reported, logged, counted" and is
+                    // NOT evidence about the modem's pinned CA. So the class
+                    // reported to modes.c is TRANSIENT (ordinary 5/15/60/300
+                    // backoff, which is what §5's "a reason to switch
+                    // transport" wants); the TLS detail lives in this log
+                    // line and in s_tls_fail_count. This holds for a real
+                    // certificate failure (verify_flags != 0) too: a
+                    // certificate the ESP32 cannot verify is still not
+                    // evidence about the modem.
+                    s_last_class = NET_MQTT_RC_TRANSIENT;
+                    s_tls_fail_count = s_tls_fail_count + 1;
                     ESP_LOGI(TAG,
-                             "MQTT TLS failure (WiFi transport, reported only): "
+                             "MQTT TLS failure (WiFi transport, reported only, count=%u): "
                              "stack_err=%d verify_flags=0x%x",
+                             (unsigned) s_tls_fail_count,
                              event->error_handle->esp_tls_stack_err,
                              event->error_handle->esp_tls_cert_verify_flags);
                 } else {
@@ -188,6 +230,8 @@ static void wifi_mqtt_event_handler(void *handler_args, esp_event_base_t base, i
     }
 }
 
+static void wifi_down(void); // defined below; wifi_up() reaps a dead client
+
 static bool wifi_up(void)
 {
     if (!s_guards_inited) {
@@ -196,9 +240,29 @@ static bool wifi_up(void)
         s_guards_inited = true;
     }
     if (s_client) {
-        // net_xport_switch() never calls .up() on an already-active
-        // transport; defensive only.
-        return true;
+        if (s_mqtt_connected || net_connect_guard_in_flight(&s_connect_guard)) {
+            // A usable session, or one whose CONNECT is still outstanding.
+            // net_xport_switch() never calls .up() on an already-active
+            // transport, so this is the modes.c retry path finding there is
+            // nothing to do; the in-flight guard is what holds that branch.
+            return true;
+        }
+        // W6 defect, 2026-09-23 (build/bench-logs/phaseAG-wifi.log: 530+
+        // "retrying MQTT session (backoff idx=1)" lines, one per 100 ms loop
+        // pass, for 75 s). With network.disable_auto_reconnect = true,
+        // esp-mqtt's client task exits after a failed connect but the client
+        // HANDLE stays allocated, so s_client != NULL means "dead client"
+        // here, not "session up". Returning true for it told modes.c's retry
+        // branch (modes.c:2493) that net_session_up() succeeded, so it never
+        // reached its schedule_backoff() -- next_session_retry_us stayed in
+        // the past -- and it armed no connect guard, so net_connect_in_flight()
+        // (modes.c:2486) did not hold the branch either. Destroy the dead
+        // client and fall through to a real attempt: that is what makes the
+        // failure observable to modes.c's 5/15/60/300 ladder, exactly like
+        // xport_lte.cpp's up(), which always issues a real CONNECT.
+        ESP_LOGI(TAG, "WiFi MQTT client is up but not connected and no connect in flight - "
+                      "destroying it and issuing a fresh connect");
+        wifi_down();
     }
     // docs/WIFI_DESIGN.md §5: mandatory, no plaintext fallback, ever.
     if (catrust_get_state() != CATRUST_PINNED) {
@@ -243,6 +307,16 @@ static bool wifi_up(void)
         return false;
     }
     esp_mqtt_client_register_event(s_client, MQTT_EVENT_ANY, wifi_mqtt_event_handler, NULL);
+
+    // The whole TLS handshake happens inside esp_mqtt_client_start()'s task,
+    // and 2026-09-23's failure was mbedtls_ssl_setup() -> -0x7F00
+    // (MBEDTLS_ERR_SSL_ALLOC_FAILED), i.e. one contiguous
+    // MBEDTLS_SSL_IN_CONTENT_LEN + ~300 B block that did not exist. Log both
+    // numbers here so the next bench run says which of the two it was rather
+    // than leaving it to be inferred. One INFO line per connect attempt.
+    ESP_LOGI(TAG, "pre-TLS heap: free=%u largest_8bit_block=%u",
+             (unsigned) heap_caps_get_free_size(MALLOC_CAP_8BIT),
+             (unsigned) heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
 
     if (esp_mqtt_client_start(s_client) != ESP_OK) {
         ESP_LOGI(TAG, "esp_mqtt_client_start() failed");
@@ -349,6 +423,24 @@ static uint32_t wifi_publish_quiet_wait_ms(uint32_t max_wait_ms)
 // xport_lte.cpp's M1 bound (net_connect_guard.h).
 static void wifi_service_session(void)
 {
+    // docs/WIFI_DESIGN.md §2: "fall back to LTE on ... 3 consecutive failures
+    // of {association, DHCP, TLS handshake, MQTT CONNECT}". Runs here and
+    // nowhere else because this is the only WiFi code that runs on modes.c's
+    // own task: net_xport_switch() calls wifi_down() -> esp_mqtt_client_stop(),
+    // which mqtt_client.h forbids from inside the esp-mqtt event handler.
+    // Power effect: this is the line that ends a ~38 mA idle (design §3 row
+    // (a)) that is buying nothing, and returns the device to the 4.0-4.5 mA
+    // LTE floor. Phase 1 is manual, so nothing re-arms WiFi: `wifi on` does.
+    if (s_connect_fail_streak >= WIFI_CONNECT_FAIL_MAX) {
+        ESP_LOGI(TAG, "WiFi MQTT failed %u times in a row - giving the session back to LTE "
+                      "(docs/WIFI_DESIGN.md §2); `wifi on` to try WiFi again",
+                 (unsigned) s_connect_fail_streak);
+        s_connect_fail_streak = 0;
+        net_xport_switch(NET_XPORT_LTE); // tears this transport down, brings LTE up
+        wifi_sta_disassociate();
+        wifi_sta_stop();
+        return;
+    }
     if (!s_client) {
         return;
     }

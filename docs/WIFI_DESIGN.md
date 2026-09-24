@@ -366,3 +366,175 @@ Pass = association survives all ten, the MQTT session is still up, and the page 
 Two smaller unknowns, same treatment: (a) whether the AP's DTIM is 1 or 3 (read it from
 `wifi_ap_record_t` after association — it decides which row of §3's table applies); (b) the real
 per-PINGREQ energy at keepalive 60 s, which is the only estimate in §3's winning row.
+
+---
+
+## 10. 2026-09-23: what the first W6 bench session changed (RAM, catrust, retry storm)
+
+Sources: `build/bench-logs/phaseAG-wifi.log`, `phaseAG-wifioff.log`, `phaseAF-boot.log`;
+`firmware/build/school_pager.elf` at `ea05271`; two builds made for this section under the
+session scratchpad. Numbers marked `(measured)` come from one of those; `(estimate)` still names
+its assumption and, now, the log line that will replace it.
+
+### 10.1 The flash and the RAM the pager actually has
+
+- **WiFi is in the debug image only, today** `(measured)`. Every caller of `wifi_sta_start()` /
+  `net_xport_switch(NET_XPORT_WIFI)` is the console, and the console block is inside
+  `#ifdef PAGER_DEBUG_NO_LIGHT_SLEEP` (`firmware/main/main.c:1113-1300`), so `--gc-sections` drops
+  `esp_wifi`, `esp-tls`, mbedtls' TLS record layer and `esp-mqtt` from a release build entirely.
+  Release app image **642,128 B (31 % of the 2 MB slot)**, no `esp_wifi_init` symbol; debug app
+  image **1,239,200 B (59 %)**. The delta — **597 kB** — is the measured answer to §8's
+  "490–650 kB" flash estimate. Consequence to plan for: the first non-console way to turn WiFi on
+  (W3's `cfg.wifi`, or the device menu) moves that 597 kB and the whole RAM budget below into the
+  **release** image too. That is the moment this section's configuration stops being optional.
+- Static DRAM, debug image `(measured)`: `.dram0.data` 37,988 B + `.dram0.bss` **198,768 B**;
+  `.iram0.text` 99,499 B. Heap left over: **132,684 B in three regions** (77,608 + 22,308 + 32,768;
+  `phaseAF-boot.log:20-22`), no PSRAM. Free at `modes_boot()`: **80,212 B**
+  (`phaseAF-boot.log:54`) — the other ~52 kB goes to the 16 kB main-task stack, the modem library,
+  NVS, the console REPL and the event loop.
+- Both cache levers are already spent or nearly free: `CONFIG_ESP32S3_INSTRUCTION_CACHE_16KB` is
+  already set. `CONFIG_ESP32S3_DATA_CACHE_32KB` → `16KB` would add **one more 16 KiB DRAM region**
+  at `0x3C000000` (`esp-idf/components/heap/port/esp32s3/memory_layout.c:94-99`) at the cost of
+  halving the flash-rodata cache for *both* transports. **Held in reserve, not taken.**
+
+### 10.2 Why `mbedtls_ssl_setup` returned `-0x7F00`
+
+`MBEDTLS_ERR_SSL_ALLOC_FAILED`. With `CONFIG_MBEDTLS_ASYMMETRIC_CONTENT_LEN=y`,
+`IN_CONTENT_LEN=16384` and `OUT_CONTENT_LEN=4096`, that one call wants **one contiguous 16,685 B
+block** plus a second of 4,397 B, before any certificate is parsed. Peak at the handshake, old
+configuration `(estimate)`:
+
+| Term | Bytes | Note |
+|---|---|---|
+| mbedtls in buffer | 16,685 | **one contiguous block** — this is the alloc that failed |
+| mbedtls out buffer | 4,397 | contiguous |
+| esp-mqtt task stack + in/out buffers | ~8,200 | `MQTT_TASK_STACK` 6144 + 2 × `buffer.size` 1024 |
+| pinned CA + peer chain as `mbedtls_x509_crt` | ~8,000 | EMQX leaf + one DigiCert intermediate, ~2.8 kB DER |
+| ECDHE (secp256r1) + RSA-2048 verify working set | ~5,000 | transient |
+| ssl context / config / entropy / ctr_drbg | ~2,000 | |
+| **peak** | **≈44 kB** | of which 16,685 B must be one block |
+
+Against it: `esp_wifi` + lwIP take **45–52 kB** `(estimate)` of the 80,212 B — 10 × 1600 B static RX
+buffers (16,000), 5 static RX mgmt buffers, the 6,656 B driver task stack, PHY/RF calibration, the
+3,072 B tcpip task, netif/DHCP, and WPA3-SAE state. That leaves **≈32 kB free** and a largest block
+well under 16,685 B. The handshake could not start. Nothing about TLS was wrong.
+
+**The estimate is now instrumented, not inferred.** `firmware/main/wifi_sta.c:124-129` logs
+`heap free=… largest_8bit_block=…` the instant the driver is up, and
+`firmware/main/xport_wifi.c:317-319` logs the same pair immediately before
+`esp_mqtt_client_start()`. Those two lines decide between "not enough total" and "not enough
+contiguous" without another guess. (`main.c:1009`'s existing heap line sits *after* the
+`!st.mqtt_connected` early return, so the failing path never reached it.)
+
+### 10.3 The configuration, and the honest verdict
+
+Committed to `firmware/sdkconfig.defaults` (WiFi-path-only: `grep -n 'esp_tls\|mbedtls_ssl'
+firmware/main/*.c*` finds no user outside `xport_wifi.c`'s error reporting — LTE does TLS inside
+the Sequans modem, and `setup.c`/`auth.c` use mbedtls for HKDF/HMAC/SHA only, so **none of it can
+regress LTE**):
+
+| Symbol | Was | Now | Effect |
+|---|---|---|---|
+| `MBEDTLS_SSL_IN_CONTENT_LEN` | 16384 | **8192** | contiguous need 16,685 → **8,493 B** |
+| `MBEDTLS_SSL_OUT_CONTENT_LEN` | 4096 | **2048** | 4,397 → 2,349 B |
+| `MBEDTLS_DYNAMIC_BUFFER` | n | **y** | both buffers become per-record and are freed when idle; turns the two rows above from a peak into a transient |
+| `MBEDTLS_CERTIFICATE_BUNDLE` | y (FULL) | **n** | **64,057 B of flash** (`build/esp-idf/mbedtls/x509_crt_bundle`), no RAM effect. §5 already rejects the bundle as a trust store and nothing calls `esp_crt_bundle_attach()` |
+| `ESP_WIFI_STATIC_RX_BUFFER_NUM` | 10 | **6** | −6,400 B, permanently, at `esp_wifi_init()` |
+| `ESP_WIFI_DYNAMIC_RX_BUFFER_NUM` | 32 | **12** | a cap: −~32 kB off the burst peak |
+| `ESP_WIFI_DYNAMIC_TX_BUFFER_NUM` | 32 | **12** | a cap: −~30 kB off the TX peak |
+
+The WiFi buffer numbers sit between ESP-IDF's own ESP32-S3 "Default" (8/32/32, 183.9 kB available)
+and "Minimum" (3/6/6, 273.6 kB) ranks (`esp-idf/docs/en/api-guides/wifi.rst`, "How to Configure
+Parameters"); `ESP_WIFI_RX_BA_WIN=6` stays legal (that table's rule: BA win ≤ min(2 × static_rx,
+dynamic_rx) = min(12, 12)). Throughput is irrelevant here — one ≤640 B message every few minutes.
+`MBEDTLS_DYNAMIC_FREE_CONFIG_DATA` is **not** set: its own Kconfig help says the caller must
+re-register the certificate and key afterwards, which is a correctness risk on the reconnect path
+for ~2 kB. `IN_CONTENT_LEN=4096` is **not** taken: EMQX's flight is ~3.3 kB, so 4096 has no margin
+for a broker certificate rotation that adds a chain link; 8192 has 2.5×.
+
+**Predicted after these changes** `(estimate — the two new log lines settle it)`: free after the
+driver is up **≈38.6 kB**; handshake peak **≈27–32 kB**; margin **≈7–12 kB**. That fits, and it is
+also the honest bad news:
+
+> **WiFi TLS does not fit alongside the current static footprint with the ≥ 40 kB of headroom this
+> review was asked for.** `sdkconfig` alone buys a thin pass. The 40 kB target needs 194 kB of
+> `.bss` to give back ~31 kB, and two items carry all of it:
+>
+> - `firmware/main/msg.c:712` `static msg_t decoded[MSG_THREAD_DEPTH]` — **13,056 B**, used once,
+>   inside the boot-time msghist restore. Heap-allocate and free it there: **+13.1 kB**, permanently.
+> - five static `ident_t` scratch copies, **4,460 B each = 22,300 B**: `ident.c:133`,
+>   `modes.c:489`, `setup.c:752`, `catrust.c:405`, `catrust.c:514`. Every one is a scratch buffer
+>   inside one function, all on the main/console task, none reentrant with another. Collapse to one
+>   shared scratch: **+17.8 kB**.
+>
+> Together **+30.9 kB** → free after the driver is up ≈**69 kB**, margin ≈**37–42 kB**. Both also
+> hand the LTE-only release image the same 31 kB. Next tier if ever needed, in order:
+> `cafetch.c:495 s_parser` 4,644 B (live only during a CA fetch), `setup.c:630 s_bundle_buf` +
+> `setup.c:741 plain` 8,192 B (setup only), `catrust.c:320 s_apply_pem` + `setup.c:772 fetched_pem`
+> 8,194 B (PEM scratch). `disp.c:57/:64`'s `s_fb_old`/`s_fb_snap` (9,472 B) are the e-paper diff
+> planes and are **not** candidates.
+
+Two open questions this section does not answer, with their cheapest experiments:
+**(a)** does EMQX serverless honour RFC 6066 `max_fragment_length`? If it does, a 512 B fragment
+makes `IN_CONTENT_LEN` a non-issue at any static footprint. Laptop-only check, no hardware:
+`openssl s_client -maxfraglen 512 -connect <host>:8883` and look for the extension echoed in the
+ServerHello. **UNVERIFIED.** **(b)** the exact `esp_wifi` + lwIP heap cost on this board — the two
+new log lines, one `wifi on`.
+
+### 10.4 Two firmware defects the session exposed
+
+1. **A WiFi TLS failure drove the LTE CA state machine.** `xport_wifi.c` never calls
+   `catrust_on_mqtt_tls_fail()` — but `modes.c`'s `handle_mqtt_loss()` (`modes.c:1497-1518`) calls
+   it *for* any transport that reports `NET_MQTT_RC_TLS_FAIL`, which is what produced
+   `modes: TLS handshake failed while pinned` (`phaseAG-wifi.log:262`) from an ESP32-side heap
+   failure. One more failure would have run `net_tls_configure(slot, false)` on the **modem** and
+   written `ident_set_tls_broken()` — i.e. `/status tls:"broken"`, which per §4 then refuses
+   `cfg.wifi.nets` pushes. A WiFi RAM problem would have downgraded the LTE security posture and
+   locked out WiFi provisioning. **§5's rule is therefore about the class reported, not only about
+   who calls what**: the WiFi transport reports `NET_MQTT_RC_TRANSIENT` and keeps the TLS detail in
+   its own log line and a counter (`xport_wifi.c:190-212`). This holds for `verify_flags != 0` too:
+   a certificate the ESP32 cannot verify is still not evidence about the modem.
+2. **A failed WiFi connect never backed off.** With `network.disable_auto_reconnect = true`,
+   esp-mqtt's client task parks in `MQTT_STATE_WAIT_RECONNECT` after a failed connect and the client
+   *handle* stays allocated (`esp-idf/components/mqtt/esp-mqtt/mqtt_client.c:1661-1680`). `wifi_up()`
+   returned `true` for that handle, so `net_session_up()` reported success: `modes.c:2493`'s
+   `up_ok` path never reaches `schedule_backoff()`, `next_session_retry_us` stayed in the past, and
+   no connect guard was armed so `net_connect_in_flight()` (`modes.c:2486`) did not hold the branch
+   either → **one retry log line per 100 ms loop pass for 75 s, and a WiFi transport that could not
+   recover without `wifi off`**. Fixed where the lie was told, not in `modes.c`: `wifi_up()` now
+   reaps a client that is neither connected nor in flight and issues a real connect
+   (`xport_wifi.c:242-262`), so every WiFi attempt is observable to the existing 5/15/60/300 ladder
+   exactly like `xport_lte.cpp`'s. §2's "3 consecutive failures → LTE" is now real too, counted on
+   `MQTT_EVENT_DISCONNECTED`-without-SUBSCRIBED and acted on in `wifi_service_session()`
+   (the only WiFi code that runs on `modes.c`'s task, which matters because
+   `esp_mqtt_client_stop()` may not be called from the esp-mqtt event handler).
+   **No `modes.c` edit was needed.**
+
+Two costs this creates, both bounded and both worth a line in the next bench report:
+`esp_mqtt_client_stop()` waits on `STOPPED_BIT` while the parked task is inside a poll of
+`wait_timeout_ms / 2 / portTICK_PERIOD_MS` = 500 ticks, so **`wifi_down()` can block its caller up
+to ~5 s** — once per retry, on the main loop, while WiFi is already down. If that shows up as a
+delivery delay, `esp_mqtt_client_reconnect()` is the cheaper reap (no task churn, no 5 s wait) and
+the fix becomes one line instead of a destroy/recreate. Second: after the §2 fallback, `modes.c`'s
+`backoff_index` still holds whatever WiFi grew it to, so a *failing* LTE bring-up after a fallback
+could wait out up to 300 s; the bring-up inside `net_xport_switch()` itself is immediate.
+
+### 10.5 Corrections to earlier sections
+
+- §4's "a WPA2/WPA3 transition AP will associate as WPA2" is **false on this AP** `(measured)`:
+  `phaseAG-wifi.log:67` reports `security: WPA3-SAE` with `threshold.authmode = WIFI_AUTH_WPA2_PSK`
+  set — the threshold is a floor, not a ceiling. `CONFIG_ESP_WIFI_ENABLE_WPA3_SAE` must stay `y`,
+  and SAE's association-time heap is part of §10.2's WiFi term.
+- §3's DTIM question is answered for this AP `(measured)`: `DTIM period = 1`, beacon 102400 µs
+  (`phaseAG-wifi.log:73`), with `ps type: 1` (`WIFI_PS_MIN_MODEM`) and `li: 10`. So the §3 rows to
+  plan against are the **DTIM 1** columns: 40.1 mA plain Modem-sleep, 2.45 mA with automatic light
+  sleep — not the DTIM 10 figures row (c) quotes. `wifi status` still prints `dtim: n/a`.
+  Re-read §3's conclusion with that substitution: phase 2 lands at ≈2.8–3.1 mA, which is **better
+  than LTE's 4.0–4.5 mA but not the 2.5–3× win** row (c) claims.
+- `WIFI_DESIGN.md` §8's "trim to 6/16 if W0's heap watermark is uncomfortable" is superseded by
+  §10.3's table (6/12/12).
+- `firmware/sdkconfig` **overrides** `sdkconfig.defaults` — an existing one keeps whatever it had
+  (the same trap `CONFIG_WALTER_MODEM_MAX_TLS_PROFILES` documents in that file). It is why W5's own
+  `CONFIG_ESP_WIFI_SOFTAP_SUPPORT=n` / `CONFIG_WS_TRANSPORT=n` were still `y` in the phaseAG image,
+  and why they are worth **58,828 B of `.flash.text`** the moment the file is regenerated
+  `(measured)`. Delete `firmware/sdkconfig` and `idf.py reconfigure` before the next bench build.
