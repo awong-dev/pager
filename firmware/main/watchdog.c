@@ -1,6 +1,8 @@
 // watchdog.c — see watchdog.h.
 #include "watchdog.h"
 
+#include <stdbool.h>
+
 #include "esp_attr.h"
 #include "esp_log.h"
 #include "esp_system.h"
@@ -10,6 +12,7 @@
 #include "freertos/task.h"
 #include "hal/wdt_hal.h"
 #include "soc/rtc.h"
+#include "net.h" // S6: net_get_pager_counters() for the 5s-stall attribution log below
 
 static const char *TAG = "watchdog";
 static TaskHandle_t s_loop_task = NULL; // the one task subscribed to the task watchdog
@@ -24,6 +27,10 @@ static TaskHandle_t s_loop_task = NULL; // the one task subscribed to the task w
  * "modem health check" breadcrumb intact rather than running forever. */
 #define WD_MODEM_BLOCK_BUDGET_MS 95000u
 static int64_t s_block_start_us;
+// S6 (docs/SLEEP_URC_DESIGN.md §6 "Watchdog arithmetic"): edge-triggered so
+// the 5s-stall log below fires once per stage/command block, not once a
+// second for the rest of a long stall. Reset alongside s_block_start_us.
+static bool s_block_5s_logged;
 
 // RTC_NOINIT: survives software, panic and watchdog resets; garbage after a
 // power-on, hence the magic.
@@ -135,6 +142,7 @@ void watchdog_kick(wd_stage_t stage)
 {
     s_stage = (uint32_t) stage;
     s_block_start_us = 0; // PAGER PATCH 1.10: fresh block budget for this stage
+    s_block_5s_logged = false; // S6: fresh stage, allow the 5s-stall log to fire again
     watchdog_feed();
 }
 
@@ -151,7 +159,26 @@ void walter_modem_block_tick(void)
     if (s_block_start_us == 0) {
         s_block_start_us = now;
     }
-    if ((uint64_t) (now - s_block_start_us) < (uint64_t) WD_MODEM_BLOCK_BUDGET_MS * 1000ULL) {
+    int64_t blocked_us = now - s_block_start_us;
+    // S6 (docs/SLEEP_URC_DESIGN.md §6 "Watchdog arithmetic"): so the next
+    // reboot is attributable, not just "the task watchdog fired somewhere".
+    // Names the stage (this file's own breadcrumb) and, best-effort, which
+    // command S3's per-command stall snapshot last saw running long -- that
+    // snapshot is written by a different task (_cmdProcessingTask) and may
+    // belong to an earlier command in the same stage if several ran, but it
+    // is the only command-level attribution this component exposes.
+    if (!s_block_5s_logged && blocked_us >= 5 * 1000000LL) {
+        s_block_5s_logged = true;
+        net_pager_counters_t pc = net_get_pager_counters();
+        if (pc.stall_cmd[0] != '\0') {
+            ESP_LOGI(TAG, "stage '%s' blocked >= 5s on a modem command, last seen: \"%s\" (%u ms so far)",
+                     watchdog_stage_name(s_stage), pc.stall_cmd, (unsigned) pc.stall_elapsed_ms);
+        } else {
+            ESP_LOGI(TAG, "stage '%s' blocked >= 5s on a modem command (no command name available yet)",
+                     watchdog_stage_name(s_stage));
+        }
+    }
+    if ((uint64_t) blocked_us < (uint64_t) WD_MODEM_BLOCK_BUDGET_MS * 1000ULL) {
         rtc_feed();
         if (s_loop_task != NULL && xTaskGetCurrentTaskHandle() == s_loop_task) {
             esp_task_wdt_reset();

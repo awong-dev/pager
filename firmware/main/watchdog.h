@@ -65,7 +65,22 @@ void watchdog_hard_reset(void);
  * each in this project's sdkconfig), so one slow command (AT+COPS=0 during a
  * network search) can hold the queue for up to 3 * 30 s = 90 s, which is
  * already past the 60 s task watchdog timeout (the IDF maximum) even before
- * the next queued command (net_check()'s health-check AT) gets a turn. */
+ * the next queued command (net_check()'s health-check AT) gets a turn.
+ *
+ * S6 (docs/SLEEP_URC_DESIGN.md §6 "Watchdog arithmetic"): task WDT 60 s,
+ * RTC WDT 180 s, WD_MODEM_BLOCK_BUDGET_MS 95 s (watchdog.c) reset per
+ * *stage* by watchdog_kick(). One stalled command at the 30 s/3-attempt
+ * default = 90 s, fits inside the 95 s budget (survives). Two stalled
+ * commands in one stage do not (180 s): feeding stops at 95 s and the task
+ * watchdog reboots ~60 s later -- the likely explanation of the uncaptured
+ * phaseAA reboot. Patch 1.13's 10 s/2-attempt timeout for the MQTT publish/
+ * subscribe/disconnect/config commands brings one such stall down to 20 s,
+ * so four of them fit in one stage (80 s) inside the same 95 s budget.
+ * This function also logs (ESP_LOGI, once per stage) the stage name and,
+ * best-effort, which command was running long, the first time a block
+ * reaches 5 s -- so a subsequent reboot is attributable to a specific stage/
+ * command instead of just "the watchdog fired somewhere". No watchdog
+ * constant changed here; the arithmetic above is why none needed to. */
 void walter_modem_block_tick(void);
 
 #ifdef __cplusplus
