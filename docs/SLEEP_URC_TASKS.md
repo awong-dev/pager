@@ -38,6 +38,20 @@ is left: **S10 → S17 → S13 → S12 → S15 (gated on S10) → S7c (the new g
 §9.4's four edits (`net_probe_guard.{c,h}`, `net.cpp`, `net.h`, `modes.c`, plus the host test) are
 already in the tree, uncommitted, and are part of the S7c image.
 
+**24 Sep update — S7c ran: the sleep half PASSED and the delivery half failed completely**
+(95% asleep, 69/69 timer wakes, zero session losses, zero resets, all modem drop counters 0 — and
+**no page received**, neither of the two; `build/bench-logs/phaseAK-report.log`). Sleep policy is
+done; delivery is not. **Read `docs/SLEEP_URC_DESIGN.md` §10 before touching anything below** — it
+retires three numbers this file has been quoting (`probe_first_attempt_ms` is a cross-probe
+artefact; FreeRTOS ticks do not advance across light sleep, so every library timeout is in *awake*
+time; `ESP_LOGD` was compiled out, so no image has ever been able to print an AT trace). Owner's
+ruling, 24 Sep: *"3 s is okay honestly"* — hold the wake window open until the probe is answered and
+lengthen the cadence; WAKE0/IO46 is a later optimisation. Order for what is left:
+**S18 (done, in the tree) → S7d (the new gate) → S14 → S16 → S5 → S9.** S15's gate is open
+(`rsp_no_cmd=3`) but it is **deprioritised**: §10.2(B) makes the orphaned-`OK` count a predicted
+consequence of a 2 s budget under a 200 ms window, so re-read `rsp_no_cmd` from S7d's window before
+patching the library.
+
 ---
 
 ## S0 — the sleeptest report mis-attributes awake time — firmware-dev, timebox 1 h
@@ -502,3 +516,60 @@ log, capture the post-reset reprint.
 9. `modem_resets` = 0. A window containing an F4 is **void, not failed** — ~93 s of its `asleep`
    total is not sleep (§9.1), so nothing in it can be scored. Re-run, and report the F4 separately.
 **Verify:** if 1-6, 8 and 9 pass, phase 1 is done regardless of 7 (latency is S14's eDRX call).
+
+## S18 — hold the wake window open until the drain probe is ANSWERED — DONE, in the tree, uncommitted
+
+**Why:** `docs/SLEEP_URC_DESIGN.md` §10.1. The modem releases a held page URC only when it accepts
+a command, and it does not accept one inside the 200 ms post-wake yield. Every 200 ms-window run
+delivered nothing (phaseAB, phaseAC, phaseAK); the one run that stayed awake seconds delivered in
+10 s (phaseAD).
+**Files touched:** `firmware/main/modes.c`, `net.cpp`, `net.h`, `modes.h`, `main.c`,
+`firmware/sdkconfig.defaults`. No library patch.
+**What it does:**
+1. `modes.c:2264` `wait_for_probe_answer(interval_ms)` (helper at `:1772`), after the post-wake
+   yield and after the sleeptest bookkeeping so the time is charged to `post-wake yield`, not to
+   `asleep`. Polls `net_urc_probe_in_flight()` every 20 ms, bounded by `PAGER_PROBE_WAIT_MS`
+   (4 000, `modes.c:152`), armed only when `interval_ms >= PAGER_PROBE_WAIT_MIN_INTERVAL_MS`
+   (10 000, `:163`). **With the shipped 5 000/2 000 wake constants that gate is closed, so release
+   behaviour is unchanged.** No watchdog kick inside the loop (bounded well inside the 95 s stage
+   budget, and kicking would reset it for a caller making no progress).
+2. `net.cpp:1271` `PAGER_URC_PROBE_TIMEOUT_MS` 2 000 → 6 000, still 1 attempt: a library budget
+   shorter than the host's wait structurally orphans the answer (phaseAK `probe_timedout=10`,
+   `rsp_no_cmd=3`).
+3. `net.cpp:1418`/`net.h:451` `net_urc_probe_in_flight()`; `answer_ms last/max/n` recorded only on
+   the answered branch, on a new `probe answer:` report line with the wait's own avg/max/n/gaveup.
+4. `main.c` `sleeptest <min> [yield_ms] [interval_ms] [probe_wait_ms]` — 4th argument, debug only.
+5. `sdkconfig.defaults` `CONFIG_LOG_MAXIMUM_LEVEL_DEBUG=y` — §10.2(C): the AT trace is `ESP_LOGD`
+   and was compiled out of every image ever built. Runtime default stays INFO. Measured cost
+   **+21 kB flash release, +35 kB debug**, no timing or power change.
+**Power effect (estimated, §2's 40 mA/1 mA, not measured):** zero in any released image; at the
+experiment's T=20 s + 3 s answer it is 14% duty ≈ 8.0 mA ≈ **191 mAh/day** against today's
+96 mAh/day — see §10.3's table, which is the point of the experiment.
+**Not done deliberately:** `PAGER_WAKE_INTERVAL_SLEEP_MS` is still 5 000. The cadence is S7d's
+output, not its input.
+**Verified:** host tests **21/21**; both images build (debug `0x139490`, release `0xa2040`).
+
+## S7d — PHASE-1 ACCEPTANCE, fourth attempt — bench-tester, one window, ~12 min
+
+**Image:** debug (`PAGER_DEBUG_NO_LIGHT_SLEEP=1`), S18 in the tree. One hardware agent, foreground
+captures, kill stale bench processes first.
+**Do:**
+1. Boot, wait for `MQTT session usable`. `at AT+SQNIPSCFG?` then `at AT+SQNPSCFG?` and capture the
+   `RX:` lines — these commands exist (`phaseAL-ps.log`) but their values have never been read.
+   Retires §3(d) either way. ~2 min.
+2. `sleeptest 6 0 20000 4000`. Relay pages at +90 s and +250 s; relay poll in a second log.
+3. Capture the post-reset reprint of the report.
+**Bars:**
+1. Both pages received AND acked at the relay.
+2. Page latency **20-30 s** after the relay stamp (bar, not a note: this is the ≤30 s typical call).
+3. `asleep >= 84%` (§10.5 predicts 86% at a 3.0 s answer; below 84% means the answer is slower
+   than the owner's 3 s and the cadence has to lengthen).
+4. `awake-loop (no sleep)` under 10 s — §8.5's stall detector.
+5. `probe answer: answer_ms` printed with `n` ≈ 18 and a plausible `max`. **This is the number the
+   whole cadence table is parameterised on and it has never been measured.** Report it first.
+6. `wait gaveup=0`; `probe_timedout=0`; `rsp_no_cmd=0`. Any of these non-zero means the 6 s budget
+   is still short, i.e. the answer is slower than 3 s — report the value, do not re-run blind.
+7. Zero `MQTT session LOST`; `modem_resets=0` (a window with an F4 is **void, not failed**, §9.5).
+**Then:** feed `answer_ms` back into §10.3's table and pick the shipping
+`PAGER_WAKE_INTERVAL_SLEEP_MS` in one sentence with its mAh/day. Sub-second answer → T=10 s;
+~3 s → T=20 s; slower than 5 s → the wait is not affordable and §3(c)/WAKE0 moves ahead of it.

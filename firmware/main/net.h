@@ -413,7 +413,20 @@ bool net_urc_probe(void);
  *             up, because the flush that unblocks the queue already happened
  *             when the modem accepted the command, not when the host sees
  *             the answer.
- * Power effect: none -- eight plain reads. */
+ * answer_ms_last / answer_ms_max / answer_n - S18 (docs/SLEEP_URC_DESIGN.md
+ *             §10): first_attempt_ms above is a last-writer-wins sample with
+ *             no provenance -- it is overwritten by whichever callback ran
+ *             last, answered or timed out, and (phaseAK) by a LATE callback
+ *             for an older probe measured against a NEWER probe's issue
+ *             stamp, which is how a 1-attempt / 2 s budget produced
+ *             `probe_first_attempt_ms=2997`. These three are the honest
+ *             version: recorded ONLY on the answered branch (so the units
+ *             are "modem answered a bare AT this many ms after the host
+ *             re-asserted RTS"), with a max and a sample count so one
+ *             outlier cannot be mistaken for the distribution. This is the
+ *             constant the whole wake-window design rests on and it has
+ *             never actually been measured.
+ * Power effect: none -- eleven plain reads. */
 typedef struct {
     uint32_t issued;
     uint32_t answered;
@@ -423,8 +436,19 @@ typedef struct {
     uint32_t skip_busy;
     uint32_t skip_down;
     uint32_t first_attempt_ms;
+    uint32_t answer_ms_last;
+    uint32_t answer_ms_max;
+    uint32_t answer_n;
 } net_probe_counters_t;
 net_probe_counters_t net_get_probe_counters(void);
+
+/* S18: true while a drain probe issued by net_urc_probe() has not yet had
+ * its callback run (answered, timed out, or refused). modes.c polls this to
+ * keep the wake window open -- RTS asserted, UART clocked -- until the modem
+ * has actually answered, which is also when any URC it was holding has been
+ * flushed. Plain bool read of the guard's `outstanding`, no AT traffic; the
+ * power cost is entirely in how long the caller is willing to wait. */
+bool net_urc_probe_in_flight(void);
 
 /* RCA_SLEEP_URC.md fix 1's discriminator: bytes currently sitting in the
  * modem UART's RX ring (uart_get_buffered_data_len()), for modes.c to sample

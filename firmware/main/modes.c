@@ -141,6 +141,34 @@ static const char *TAG = "modes";
 // UNVERIFIED: the minimum, and whether an AT poke right after the wake would
 // let it be shorter (docs/ROADMAP.md).
 #define PAGER_POST_WAKE_YIELD_MS 200u
+// S18 (docs/SLEEP_URC_DESIGN.md §10). The yield above is a fixed guess; this
+// is the bound on the *conditional* extra awake time that keeps RTS asserted
+// until the drain probe has actually been answered. The modem only releases a
+// held URC once it accepts a command, and (phaseAD/phaseAK) it does not
+// accept one within 200 ms of the host re-asserting RTS, so a 200 ms window
+// delivers nothing: 95% asleep and zero pages. Waiting for the answer costs
+// real current -- see the duty table in §10 -- which is why it is bounded and
+// why it is only armed on a lengthened wake cadence.
+#define PAGER_PROBE_WAIT_MS 4000u
+// Armed only when this wake's interval is at least this long. At the 5 s
+// SLEEP / 2 s ACTIVE cadence a 4 s wait would be a 44-67% duty cycle, which
+// is not a power budget, it is a wall socket; the wait only makes sense
+// paired with a cadence long enough to amortise it (§10's table recommends
+// 20 s). Keying on interval_ms rather than on g_rtc.mode is deliberate: it
+// means `sleeptest <min> 0 20000` exercises the wait in BOTH modes, so the
+// second page of a window -- which lands after the first has already forced
+// ACTIVE mode for 10 minutes -- is measured under the same policy as the
+// first. With the shipped 5000/2000 constants this gate is closed and the
+// release image behaves exactly as it does today.
+#define PAGER_PROBE_WAIT_MIN_INTERVAL_MS 10000u
+// S18's own accounting (see wait_for_probe_answer() below). Declared here so
+// modes_debug_sleeptest_start() can clear them; counted in release builds too,
+// since the wait itself is release behaviour once the cadence is lengthened.
+#ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
+static uint32_t s_probe_wait_ms_override = 0; // sleeptest arg 4, 0 = build default
+#endif
+static uint32_t s_probe_wait_n = 0, s_probe_wait_giveups = 0;
+static int64_t s_probe_wait_total_us = 0, s_probe_wait_max_us = 0;
 #define PAGER_ACTIVE_IDLE_TIMEOUT_S (10 * 60) // 10 min, firmware/README.md
 #define PAGER_STATUS_HEARTBEAT_S 3600u         // §5.4(d)
 #define PAGER_CHECKCOMM_EVERY_N_WAKES 60u      // F4: ~5 min at T=5s
@@ -1072,7 +1100,8 @@ static void sleeptest_note(char kind, int32_t a, const char *id)
     s_st_n_events = s_st_n_events + 1;
 }
 
-void modes_debug_sleeptest_start(uint32_t minutes, uint32_t yield_ms_override, uint32_t interval_ms_override)
+void modes_debug_sleeptest_start(uint32_t minutes, uint32_t yield_ms_override,
+                                 uint32_t interval_ms_override, uint32_t probe_wait_ms_override)
 {
     s_st_n_events = 0;
     s_st_sleeps = s_st_wake_timer = s_st_wake_other = 0;
@@ -1090,6 +1119,9 @@ void modes_debug_sleeptest_start(uint32_t minutes, uint32_t yield_ms_override, u
     s_st_grace_until_us = 0;
     s_st_yield_ms = yield_ms_override;
     s_st_interval_ms = interval_ms_override;
+    s_probe_wait_ms_override = probe_wait_ms_override;
+    s_probe_wait_n = s_probe_wait_giveups = 0;
+    s_probe_wait_total_us = s_probe_wait_max_us = 0;
     s_st_report_due = true;
     // The AT trace is hundreds of lines a minute, and a USB console with no
     // host listening (the port dies in light sleep) can stall each write;
@@ -1111,7 +1143,8 @@ void modes_debug_sleeptest_start(uint32_t minutes, uint32_t yield_ms_override, u
 // S0: raised from 2400 to 2800 for the new "awake-loop (no sleep)" bucket
 // line, the "(n=%u)" suffix added to all eight bucket lines, and the new
 // "awake total ... longest single iteration ..." summary line.
-static char s_st_text[2800];
+// S18: raised from 2800 to 2950 for the new "probe answer:" line.
+static char s_st_text[2950];
 
 static void st_appendf(size_t *n, const char *fmt, ...)
 {
@@ -1281,6 +1314,20 @@ void modes_debug_sleeptest_report(void)
     st_appendf(&n, "stall discriminator: rsp_no_cmd=%u payload_stuck_ms=%u probe_first_attempt_ms=%u\n",
                (unsigned) pc.rsp_no_cmd, (unsigned) pc.payload_stuck_ms,
                (unsigned) probec.first_attempt_ms);
+    // S18 (docs/SLEEP_URC_DESIGN.md §10). probe_answer_ms is the number the
+    // wake-window length is chosen from and it has never been measured:
+    // unlike probe_first_attempt_ms above it is recorded only on the
+    // ANSWERED branch, with a max and a count. wait_* is what that answer
+    // latency cost in awake time -- avg/max per wake that actually waited,
+    // plus how many hit the bound without an answer (cheap: the guard still
+    // owns the probe, nothing is reset).
+    st_appendf(&n, "probe answer: answer_ms last=%u max=%u n=%u; wait avg=%lld ms max=%lld ms n=%u "
+                    "gaveup=%u\n",
+               (unsigned) probec.answer_ms_last, (unsigned) probec.answer_ms_max,
+               (unsigned) probec.answer_n,
+               (long long) (s_probe_wait_n ? (s_probe_wait_total_us / 1000 / s_probe_wait_n) : 0),
+               (long long) (s_probe_wait_max_us / 1000), (unsigned) s_probe_wait_n,
+               (unsigned) s_probe_wait_giveups);
     st_appendf(&n, "post-wake UART bytes (50ms sample): max=%u wakes_with_bytes=%u\n",
                (unsigned) s_st_wake_bytes_max, (unsigned) s_st_wake_bytes_nonzero);
     // S2 (docs/SLEEP_URC_DESIGN.md §6): how often a liveness ping's first
@@ -1699,6 +1746,60 @@ static void check_probe_stuck_escalation(void)
                 note_session_up_attempt(net_session_up());
             }
         }
+    }
+}
+
+// S18 (docs/SLEEP_URC_DESIGN.md §10): keep the wake window open -- RTS
+// asserted, UART clocked, ESP at ~40 mA -- until the drain probe issued a few
+// lines earlier has actually been answered. The modem releases the URCs it
+// held during light sleep when it ACCEPTS a command, and it does not accept
+// one inside the 200 ms post-wake yield; every window that went back to sleep
+// on the yield alone delivered no page at all (phaseAB, phaseAC, phaseAK),
+// and the one window that stayed awake >=3 s delivered in 10 s (phaseAD).
+//
+// Bounded twice over: PAGER_PROBE_WAIT_MS of wall clock, and only on wake
+// intervals >= PAGER_PROBE_WAIT_MIN_INTERVAL_MS (the constant's own comment
+// has the duty-cycle arithmetic). Polls a plain RAM flag every 20 ms; no AT
+// traffic of its own. It does NOT wait for the message fetch that a flushed
+// +SQNSMQTTONMESSAGE kicks off -- modes_run()'s skip_sleep already ORs
+// net_modem_busy()/net_publish_in_flight(), so the loop stays awake on the
+// 100 ms poll for exactly as long as that fetch takes and no longer.
+//
+// Timeouts here are cheap and expected, not a fault: a probe still in flight
+// at the bound is left to the existing guard (it will be counted timedout or,
+// after NET_PROBE_GUARD_STUCK_WAKES, stuck). Nothing is reset, nothing is
+// retried.
+static void wait_for_probe_answer(uint32_t interval_ms)
+{
+    uint32_t bound_ms = PAGER_PROBE_WAIT_MS;
+#ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
+    if (sleeptest_active() && s_probe_wait_ms_override) {
+        bound_ms = s_probe_wait_ms_override;
+    }
+#endif
+    if (bound_ms == 0 || interval_ms < PAGER_PROBE_WAIT_MIN_INTERVAL_MS) {
+        return;
+    }
+    if (!net_urc_probe_in_flight()) {
+        return; // answered inside the yield already, or no probe was issued
+    }
+    int64_t t0 = esp_timer_get_time();
+    int64_t deadline_us = t0 + (int64_t) bound_ms * 1000;
+    while (net_urc_probe_in_flight()) {
+        if (esp_timer_get_time() >= deadline_us) {
+            s_probe_wait_giveups++;
+            break;
+        }
+        // No watchdog_kick() here on purpose: the loop is bounded well inside
+        // watchdog.c's 95 s per-stage budget, and kicking every 20 ms would
+        // reset that budget for a caller that has not made progress.
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+    int64_t waited_us = esp_timer_get_time() - t0;
+    s_probe_wait_n++;
+    s_probe_wait_total_us += waited_us;
+    if (waited_us > s_probe_wait_max_us) {
+        s_probe_wait_max_us = waited_us;
     }
 }
 
@@ -2154,6 +2255,13 @@ void modes_run(void)
             vTaskDelay(pdMS_TO_TICKS(yield_ms));
 #endif
             assert(yield_ms >= 30); // F7, debug builds only
+            // S18: and then, only on a lengthened cadence, hold the window
+            // open until the probe is answered. Placed AFTER the yield (and
+            // after the #ifdef bookkeeping above, which is what closes out
+            // s_st_asleep_us) so this time is charged to the report's
+            // `post-wake yield` bucket, where it belongs -- not to `asleep`,
+            // which is the mis-attribution §9.1 had to unpick by arithmetic.
+            wait_for_probe_answer(interval_ms);
         } else if (btn_busy) {
             vTaskDelay(pdMS_TO_TICKS(PAGER_BTN_POLL_MS)); // button FSM debounce/timing granularity
         } else if (btn_stuck) {

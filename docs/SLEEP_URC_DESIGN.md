@@ -564,6 +564,151 @@ report the F4 as its own finding.
 
 ---
 
+## 10. 24 Sep — S7c read: the sleep half passed, the delivery half failed, and three of the numbers we were reading are artefacts (`phaseAK-report.log`, `phaseAL-ps.log`)
+
+S7c: **bars 1, 5, 6, 8, 9 pass; bars 2, 3, 7 fail.** 95% asleep, 69/69 timer wakes, zero session
+losses, zero resets, all four modem drop counters 0 — and **no page received at all**, neither of
+the two (+92 s, +250 s), never acked at the relay. The sleep policy is finished; the delivery path
+is not, and the window that was supposed to settle *why* produced three unreadable numbers.
+
+### 10.1 Mechanism, four lines
+
+1. The modem holds a page URC while RTS is deasserted and releases it only when it **accepts** a
+   command; the host's drain probe (`net_urc_probe()`) is that command.
+2. The probe is not accepted inside the 200 ms post-wake window — the only windows that ever
+   delivered were the ones that stayed awake seconds (phaseAD, 10 s delivery).
+3. So the ESP is back asleep, RTS high, UART clock gated, long before the URC and the multi-step
+   fetch it triggers (`+SQNSMQTTONMESSAGE` → `AT+SQNSMQTTRCVMESSAGE` → ~100 B → the ack publish)
+   can complete. Nothing is lost on the wire; nothing is ever handed over either.
+4. Fix: **hold the wake window open, RTS asserted, until the probe is ANSWERED (bounded), and
+   lengthen the wake cadence so that cost is amortised.** Owner's ruling, 24 Sep: *"3 s is okay
+   honestly"* — design around the answer latency, do not chase it. WAKE0/IO46 is a later
+   optimisation, not the beta path.
+
+### 10.2 Three artefacts, because they change what the rest of this section may assume
+
+**(A) `probe_first_attempt_ms=2997` is not "the modem answers in 3.0 s".** It is one
+last-writer-wins field (`net.cpp` `probe_cb()`) written by *every* callback branch —
+answered, timed out, refused — against `s_probe_issue_us`, which is re-stamped by *every* new
+probe. In a window with 18 issues, 8 answers, 10 timeouts and **12 stucks**, a late callback for an
+old probe is routinely measured against a newer probe's stamp. Neither branch can produce 2997
+honestly: an *answered* probe cannot exceed its own 2 000 ms budget, and a *timed-out* one should
+land at ~2 000 ms. Same class as `tx_ring_free=0` (§8.1) and `avg 870 ms / max 198 ms` (§1 item 4).
+**The modem's answer latency has never been measured.** S18 adds `answer_ms last/max/n`, recorded
+only on the answered branch, which is the first honest measurement of it.
+
+**(B) FreeRTOS ticks do not advance across `esp_light_sleep_start()`, so every library command
+timeout is denominated in *awake* time.** IDF's light-sleep exit adjusts `esp_timer` only
+(`esp-idf/components/esp_hw_support/sleep_modes.c:1263`, `esp_timer_private_set`); there is no
+`vTaskStepTick`/`xTaskCatchUpTicks` on the manual path, and the library's budgets are all
+`xTaskGetTickCount()` diffs (`WalterModem.cpp:1929`, `:2045`). Proof from this window alone, no
+source needed: the probe carries **1 attempt / 2 000 ms** and yet `probe_stuck=12` — twelve probes
+were still outstanding three wake intervals (15 s of wall clock) after being issued. Impossible
+under real-time ticks. At phaseAK's 4.2% duty a "2 s" budget is **~48 s of wall clock** and the
+library's 30 s default is **~12 minutes**. This does not invalidate §8/§9 (those windows were 45-70%
+awake, so the factor was ~2, not ~24) but it does mean no timeout constant in this system means what
+it reads until the host is awake — which, with S18's wait, is exactly the window that matters.
+
+**(C) There has never been an AT trace, in any image.** `CONFIG_LOG_MAXIMUM_LEVEL=3` (INFO)
+compiled `ESP_LOGD` out, and the whole trace is `ESP_LOGD` (`WalterModem.cpp:2086` `RX:`,
+`:2428` `TX:`). Every `esp_log_level_set("WalterModem", ESP_LOG_DEBUG)` in `main.c`'s `at` command
+and in `modes_debug_sleeptest_start()` has been a no-op. That is why §8.2 had to say "nothing in the
+S7 artefacts is an in-window AT trace", and why `phaseAL-ps.log` could only print `at: OK`:
+**`AT+SQNIPSCFG?` and `AT+SQNPSCFG?` both exist** (they answered OK; `AT+SQNHWCFG=?`, `AT+CSCLK?`,
+`AT+SQNWAKECFG?`, `AT+SQNPMU?`, `AT+SQNSLEEP?` all ERROR, i.e. do not), but their **values were
+never captured**. Fixed in `sdkconfig.defaults` (`CONFIG_LOG_MAXIMUM_LEVEL_DEBUG=y`): compiled in,
+runtime default still INFO, **+21 kB flash release / +35 kB debug** (measured), no timing or power
+change. Capture for the values is now just: boot, wait for `MQTT session usable`, then
+`at AT+SQNIPSCFG?` — the `RX:` line prints.
+
+### 10.3 The cadence table (the decision)
+
+Assumptions, all from §2 and **estimated, not measured on this board**: `I_awake` = 40 mA,
+`I_sleep` = 1.0 mA, plus §2's other loads (liveness pings 1.2 mA + UI/display 0.2-0.7 mA) taken as a
+flat **+1.5 mA**. Awake per wake = `t_ans` (the modem's answer latency, §10.2(A): **unmeasured**;
+tabulated at the owner's 3.0 s and, for contrast, at 0.5 s) + 0.25 s of work (phaseAK: 196 ms yield
++ 32 ms `msg_pump+health`). Period = `T` + awake. Latency = eDRX (mean 10.2 s, worst 20.5 s of the
+20.48 s cycle; §8.6's missed occasion doubles it) + wait for the next wake (mean `T/2`, worst `T`) +
+`t_ans` + fetch 0.5 s + render ~2 s.
+
+| T | duty | mA (t_ans=3.0) | **mAh/day** | days on 1500 mAh | mA (t_ans=0.5) | mAh/day | typical latency | worst (1 eDRX) |
+|---|---|---|---|---|---|---|---|---|
+| 5 s *(today, no wait)* | 3.8% | 4.0 | **96** | 15.6 | — | — | *never delivers* | — |
+| 10 s | 24.5% | 12.1 | **290** | 5.2 | 5.2 | 125 | 20.7 s | 36 s |
+| **20 s** | **14.0%** | **8.0** | **191** | **7.9** | **3.9** | **94** | **25.7 s** | **46 s** |
+| 30 s | 9.8% | 6.3 | **151** | 9.9 | 3.5 | 83 | 30.7 s | 56 s |
+| 60 s | 5.1% | 4.5 | **108** | 13.9 | 3.0 | 72 | 45.7 s | 86 s |
+
+The "≤ 30 s typical" bar needs **T ≤ 28 s**. Nothing in the 3.0 s column also meets the ~100 mAh/day
+budget: that is the honest shape of the trade, and it is why the two columns matter more than the
+recommendation — **WAKE0/IO46, or §3(c)'s RTS-through-sleep, is worth 97 mAh/day at T=20 s**, which
+is the entire budget. They stay on the list as optimisations on top of a delivery path that works.
+
+**Recommendation for beta: T = 20 s, wait bounded at 4 s.** Typical 26 s (inside the bar), worst 46 s
+(stated as such in `PROTOCOL.md`, §8.6's call), 191 mAh/day ≈ 8 days on 1500 mAh at `t_ans` = 3.0 s,
+and 94 mAh/day ≈ today's budget if `t_ans` turns out to be sub-second. **Run the window first**: the
+new `probe answer: answer_ms` line decides between T=20 and T=30 arithmetically, and it is the
+constant this whole table is parameterised on.
+
+Two mechanical answers the cadence change needs: the wake interval **is** a plain constant —
+`PAGER_WAKE_INTERVAL_SLEEP_MS 5000u` (`modes.c:117`), `PAGER_WAKE_INTERVAL_ACTIVE_MS 2000u` (`:118`),
+`PAGER_WAKE_INTERVAL_UNREGISTERED_MS 30000u` (`:131`) — and the `sleeptest` override
+(`modes.c:2048`) replaces it in **both** modes, which is what lets one window measure both pages
+under the same policy. And the ext wakes are unaffected: `net_sleep()` arms ext0 (button, IO1) and
+ext1 (LIS3DH INT1, IO2) on every call independently of `esp_sleep_enable_timer_wakeup()`
+(`net.cpp:1136-1167`), so a longer timer only lengthens the *timer* path. The real UX cost is the
+**CardKB**, which is I2C-polled and not a wake source at all: in SLEEP mode a keypress is already
+ignored until the next wake, and T=20 s makes that up to 20 s. The button still wakes instantly.
+
+### 10.4 The change (S18), and what it does not do
+
+Smallest edit that makes the experiment runnable; **release behaviour is unchanged** because the
+wait is gated on a cadence the shipped constants do not use.
+
+- `modes.c:2264` — `wait_for_probe_answer(interval_ms)` (helper at `modes.c:1772`) after the post-wake yield: polls
+  `net_urc_probe_in_flight()` every 20 ms until the probe is answered, bounded by
+  `PAGER_PROBE_WAIT_MS` (4 000) and armed only when `interval_ms >= PAGER_PROBE_WAIT_MIN_INTERVAL_MS`
+  (10 000). Placed *after* the `#ifdef` bookkeeping so the time lands in the report's
+  `post-wake yield` bucket, not in `asleep` (§9.1's mis-attribution). It does **not** wait for the
+  message fetch — `skip_sleep` already ORs `net_modem_busy()`/`net_publish_in_flight()`, so the loop
+  stays on its 100 ms poll for exactly as long as the fetch takes.
+- `net.cpp:1271` `PAGER_URC_PROBE_TIMEOUT_MS` 2 000 → **6 000** (still 1 attempt). With a 2 s library
+  budget under a 4 s host wait the answer is *structurally* orphaned: the library gives up, clears
+  `_curCmd`, and the late `OK` arrives with no command — which is phaseAK's `probe_timedout=10` and
+  `rsp_no_cmd=3`, both of which have been read as modem misbehaviour and are host bookkeeping.
+- `net.cpp:1418`/`net.h:451` — `net_urc_probe_in_flight()`, and `answer_ms last/max/n` recorded only on the
+  answered branch (§10.2(A)).
+- `main.c` — `sleeptest <min> [yield_ms] [interval_ms] [probe_wait_ms]`, 4th argument, debug only.
+- `sdkconfig.defaults` — `CONFIG_LOG_MAXIMUM_LEVEL_DEBUG=y` (§10.2(C)).
+
+Failure modes: a probe unanswered at the bound is counted `gaveup`, left to the existing guard
+(`timedout`, then `stuck` after 3 wakes) — nothing is reset and nothing is retried; the 4 s loop is
+bounded well inside `watchdog.c`'s 95 s stage budget and deliberately does **not** kick it; ACTIVE
+mode and every released image keep today's 200 ms window because of the interval gate.
+
+**Not done, deliberately:** `PAGER_WAKE_INTERVAL_SLEEP_MS` is still 5 000. The cadence is the
+*result* of the experiment, not an input to it, and shipping a 20 s constant before `answer_ms` has
+ever been read would be exactly the unverified change the bench rules forbid.
+
+### 10.5 The bench sequence (one window, ~12 min)
+
+Debug image, `PAGER_DEBUG_NO_LIGHT_SLEEP=1`. One hardware agent, foreground captures.
+
+1. Boot, wait for `MQTT session usable`. Capture `at AT+SQNIPSCFG?` and `at AT+SQNPSCFG?` — the
+   `RX:` lines now print (§10.2(C)). ~2 min, and it retires §3(d) either way.
+2. `sleeptest 6 0 20000 4000`. Pages from the relay at +90 s and +250 s, relay poll in a second log.
+3. Capture the post-reset reprint.
+
+**Predictions, so the run can falsify something.** `probe answer: answer_ms last/max n≈18`: if the
+owner's 3 s is right, 2 500-3 500 ms; `wait avg` ≈ `answer_ms`, `gaveup` = 0. Delivery: both pages,
+**20-30 s** after the relay stamp, both acked. Asleep: `1 − (answer_ms+0.25)/(20+answer_ms+0.25)`
+→ **86%** at 3.0 s answer, 96% at 0.5 s; the report's `awake-loop (no sleep)` must stay under 10 s
+(§8.5's stall detector). `probe_timedout` and `rsp_no_cmd` should now be **0** — if they are not, the
+6 s budget is still short and the answer is slower than 3 s. If `answer_ms` comes back sub-second,
+the whole table shifts to its cheap column and T should drop to 10 s, not rise.
+
+---
+
 ## Phase 3 candidate (24 Sep 2026): the ULP-RISC-V as a byte-capturing coprocessor
 
 Owner's question: could the ULP run permanently during light sleep, collate the bytes the modem

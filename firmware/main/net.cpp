@@ -1253,7 +1253,22 @@ extern "C" bool net_check(void)
 // WalterModem::checkComm()'s two new pass-through parameters). See the call
 // site in net_urc_probe() for the measurement that set these.
 #define PAGER_URC_PROBE_ATTEMPTS 1
-#define PAGER_URC_PROBE_TIMEOUT_MS 2000u
+// S18 (docs/SLEEP_URC_DESIGN.md §10), raised from 2000: the host now stays
+// awake with RTS asserted until this probe is ANSWERED (modes.c's
+// wait_for_probe_answer(), bounded by PAGER_PROBE_WAIT_MS), so a budget
+// SHORTER than that wait guarantees the answer is orphaned -- the library
+// gives up, clears _curCmd, and the modem's "OK" arrives with no command to
+// pair it against (phaseAK: probe_timedout=10 of 18, rsp_no_cmd=3). The
+// budget must therefore exceed the host's own wait bound, not undercut it.
+// Still ONE attempt: the flush this probe exists to trigger happens when the
+// modem accepts the command, so a retry buys nothing (§8.4).
+// NOTE, and it is load-bearing: this budget is in FreeRTOS ticks, which do
+// NOT advance across a manual esp_light_sleep_start() (ESP-IDF adjusts only
+// esp_timer, sleep_modes.c:1263; there is no vTaskStepTick/xTaskCatchUpTicks
+// on that path). While the pager light-sleeps at a ~4% duty a "6 s" budget is
+// ~150 s of wall clock. It is a real 6 s only while the host stays awake --
+// which, with the wait above, is exactly the window that matters.
+#define PAGER_URC_PROBE_TIMEOUT_MS 6000u
 
 // The guard's decision logic (single-slot in-flight, stuck-after-3-wakes, no
 // double queue) is pure C, unit tested on the host without a device --
@@ -1283,12 +1298,25 @@ extern "C" bool net_check(void)
 // the same single-probe-at-a-time reasoning documented above probe_cb().
 static int64_t s_probe_issue_us = 0;
 static uint32_t s_probe_first_attempt_ms = 0;
+// S18: the same elapsed time, but recorded only when the probe was genuinely
+// ANSWERED, with a max and a count (net.h documents why the single
+// last-writer-wins field above cannot be read as "the modem's answer
+// latency"). This is the number the wake-window length is chosen from.
+static uint32_t s_probe_answer_ms_last = 0;
+static uint32_t s_probe_answer_ms_max = 0;
+static uint32_t s_probe_answer_n = 0;
 
 static void probe_cb(const WalterModemRsp *rsp, void *args)
 {
     (void) args;
-    s_probe_first_attempt_ms = (uint32_t) ((esp_timer_get_time() - s_probe_issue_us) / 1000);
+    uint32_t elapsed_ms = (uint32_t) ((esp_timer_get_time() - s_probe_issue_us) / 1000);
+    s_probe_first_attempt_ms = elapsed_ms;
     if (rsp != NULL && rsp->result == WALTER_MODEM_STATE_OK) {
+        s_probe_answer_ms_last = elapsed_ms;
+        if (elapsed_ms > s_probe_answer_ms_max) {
+            s_probe_answer_ms_max = elapsed_ms;
+        }
+        s_probe_answer_n++;
         net_probe_guard_answered(&s_probe_guard);
     } else if (rsp != NULL && rsp->result == WALTER_MODEM_STATE_NO_MEMORY) {
         net_probe_guard_noqueue(&s_probe_guard);
@@ -1381,7 +1409,20 @@ extern "C" net_probe_counters_t net_get_probe_counters(void)
     out.skip_busy = s_probe_skip_busy;
     out.skip_down = s_probe_skip_down;
     out.first_attempt_ms = s_probe_first_attempt_ms;
+    out.answer_ms_last = s_probe_answer_ms_last;
+    out.answer_ms_max = s_probe_answer_ms_max;
+    out.answer_n = s_probe_answer_n;
     return out;
+}
+
+extern "C" bool net_urc_probe_in_flight(void)
+{
+    // S18: read of the guard's single-slot `outstanding` flag. Set by
+    // net_probe_guard_attempt() before checkComm() and cleared by whichever
+    // of answered()/failed()/noqueue() probe_cb() reaches, so it goes false
+    // exactly when the modem has answered (or the library has given up) --
+    // which is the moment modes.c may stop holding the wake window open.
+    return s_probe_guard.outstanding;
 }
 
 extern "C" uint32_t net_uart_rx_buffered_bytes(void)

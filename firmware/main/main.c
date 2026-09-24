@@ -188,7 +188,8 @@ static int cmd_sleeptest(int argc, char **argv)
     long m = strtol(argv[1], NULL, 10);
     if (m < 1 || m > 120) {
         printf("usage: sleeptest [<minutes 1..120> [yield_ms 0|30..10000] "
-               "[interval_ms 0|200..60000]]   (0 = build default)\n");
+               "[interval_ms 0|200..60000] [probe_wait_ms 0|100..15000]]   "
+               "(0 = build default)\n");
         return 1;
     }
     long yield_ms = 0;    // 0 = use PAGER_POST_WAKE_YIELD_MS
@@ -213,7 +214,22 @@ static int cmd_sleeptest(int argc, char **argv)
             return 1;
         }
     }
-    modes_debug_sleeptest_start((uint32_t) m, (uint32_t) yield_ms, (uint32_t) interval_ms);
+    // S18 (docs/SLEEP_URC_DESIGN.md §10): the bound on how long each wake
+    // holds RTS asserted waiting for the URC drain probe's answer. Only has
+    // an effect together with a long interval_ms (modes.c's
+    // PAGER_PROBE_WAIT_MIN_INTERVAL_MS), so the experiment is
+    // `sleeptest 6 0 20000 4000`.
+    long probe_wait_ms = 0; // 0 = use PAGER_PROBE_WAIT_MS
+    if (argc >= 5) {
+        probe_wait_ms = strtol(argv[4], NULL, 10);
+        if (probe_wait_ms != 0 && (probe_wait_ms < 100 || probe_wait_ms > 15000)) {
+            printf("usage: sleeptest <minutes> [yield_ms 0|30..10000] [interval_ms 0|200..60000] "
+                   "[probe_wait_ms 0|100..15000]\n");
+            return 1;
+        }
+    }
+    modes_debug_sleeptest_start((uint32_t) m, (uint32_t) yield_ms, (uint32_t) interval_ms,
+                                (uint32_t) probe_wait_ms);
     return 0;
 }
 
@@ -1192,7 +1208,7 @@ static void start_normal_console(void)
 
     const esp_console_cmd_t sleeptest_cmd = {
         .command = "sleeptest",
-        .help = "sleeptest [<minutes> [yield_ms] [interval_ms]] -- really light-sleep for a "
+        .help = "sleeptest [<minutes> [yield_ms] [interval_ms] [probe_wait_ms]] -- really light-sleep for a "
                  "while (optionally overriding the post-wake yield and the wake interval), "
                  "then report what arrived",
         .hint = NULL,

@@ -83,8 +83,14 @@ bool modes_publish_status_now(void);
  * PAGER_POST_WAKE_YIELD_MS / active-or-sleep interval; otherwise override
  * both for the duration of the window (main.c's `sleeptest <minutes>
  * [yield_ms] [interval_ms]`, task 3's "how long must the pager stay awake to
- * receive a held URC" question). */
-void modes_debug_sleeptest_start(uint32_t minutes, uint32_t yield_ms_override, uint32_t interval_ms_override);
+ * receive a held URC" question).
+ * probe_wait_ms_override: S18 (docs/SLEEP_URC_DESIGN.md §10), 0 = use
+ * PAGER_PROBE_WAIT_MS; otherwise the bound on how long each wake holds RTS
+ * asserted waiting for the drain probe's answer. Still subject to
+ * PAGER_PROBE_WAIT_MIN_INTERVAL_MS, so it only has an effect when
+ * interval_ms_override is also long -- pass both together. */
+void modes_debug_sleeptest_start(uint32_t minutes, uint32_t yield_ms_override,
+                                 uint32_t interval_ms_override, uint32_t probe_wait_ms_override);
 void modes_debug_sleeptest_report(void);
 
 /* v0.2 §5 (location, loc.c): route 2's deliberate CFUN=4 window tears the
