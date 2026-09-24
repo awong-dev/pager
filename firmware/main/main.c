@@ -764,6 +764,7 @@ static const char *DISPTEST_USAGE =
     "disptest seq [n0] [n1] [ms]  -- `step` for n = n0..n1, ms apart (defaults 2 12 1500; "
     "count clamped to 36, ms clamped to 200..5000)\n"
     "disptest full                -- force one full refresh of whatever is in the framebuffer\n"
+    "disptest black|white         -- paint every pixel one colour and full refresh (wiring check)\n"
     "disptest swreset             -- fault injector: send SW reset (0x12) alone, wait BUSY, "
     "nothing else -- leaves the controller on power-on register defaults (23 Sep field failure)\n"
     "NOTE: do not use `wake` or `key` while disptest is running -- the UI render task would "
@@ -903,6 +904,23 @@ static int cmd_disptest(int argc, char **argv)
         }
         disp_full_refresh();
         printf("disptest: full refresh done\n");
+        return 0;
+    }
+    if (strcmp(argv[1], "black") == 0 || strcmp(argv[1], "white") == 0) {
+        // Wiring sanity check (owner, 24 Sep): the dumbest possible image,
+        // every pixel one colour, then a full refresh. Anything but a
+        // uniform panel afterwards is the SPI/DC/RST/BUSY path, not the
+        // renderer.
+        if (argc != 2) {
+            printf("usage: disptest black|white\n");
+            return 1;
+        }
+        gfx_clear();
+        if (argv[1][0] == 'b') {
+            gfx_invert_rect(0, 0, GFX_SCREEN_W, GFX_SCREEN_H);
+        }
+        disp_full_refresh();
+        printf("disptest: %s painted, full refresh done\n", argv[1]);
         return 0;
     }
     if (strcmp(argv[1], "swreset") == 0) {
