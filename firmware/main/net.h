@@ -289,6 +289,11 @@ typedef struct {
                                 * freed unused -- hypothesis 1 (desync) predicts >= 1 per stall */
     uint32_t payload_stuck_ms; /* how long _receivingPayload had been true when a command last
                                 * timed out with it still set -- hypothesis 2 predicts > 0 */
+    /* PAGER PATCH: 1.18 (docs/SLEEP_PAGE_LOSS_BRIEF.md, build/bench-logs/
+     * phaseBB-report.log c01/c08) -- see WalterDefines.h's own comment on
+     * walter_modem_pager_counters_t. */
+    uint32_t glitch_dropped; /* the stray leading 0xFF dropped at the start of a wake's first
+                               * message, non-payload path, empty parser buffer only */
 } net_pager_counters_t;
 net_pager_counters_t net_get_pager_counters(void);
 
@@ -695,6 +700,32 @@ bool net_check_tcp(const char *host, uint16_t port, bool udp, bool tls);
 /* TEMPORARY diagnostic: plain TCP like net_check_tcp(), but sends a valid HTTP/1.0 GET padded to
  * `bytes` and then waits 12 s so the AT trace shows whether a reply rings (+SQNSRING). */
 bool net_check_tcp_sized(const char *host, uint16_t port, size_t bytes);
+
+/* docs/SLEEP_PAGE_LOSS_BRIEF.md §6 item A, PATCHES.md 1.17: installs (or
+ * clears, with NULL) the vendored library's UART/response trace hook
+ * (WalterModem::setPagerTraceHook() -- this C-linkage wrapper is the only
+ * way a plain-C caller, firmware/main/flightrec.c, can reach it). `fn`'s
+ * signature must match `walter_pager_trace_fn`
+ * (`void (*)(char kind, const uint8_t *data, size_t len)`); not spelled
+ * that way here so this header never needs to include the C++-only
+ * WalterModem.h. Call once, before any modem bring-up -- see
+ * flightrec_init()'s own doc comment. No modem/sleep-state effect: one
+ * function-pointer store. */
+void net_debug_install_trace_hook(void (*fn)(char kind, const uint8_t *data, size_t len));
+
+/* main.c's `rts <0|1|fc>` console command (docs/SLEEP_PAGE_LOSS_BRIEF.md §6
+ * item B/D): the GPIO/UART half only -- the CTS sampling loop and its
+ * prints live in main.c via flightrec_cts_level(), a plain read that does
+ * not belong to this file's own RTS/flow-control state.
+ * mode 0/1: the same three calls net_sleep() makes before
+ * esp_light_sleep_start() (flow control off, RTS as a plain GPIO output),
+ * driven to level `mode`.
+ * mode 2: the same two calls the wake path makes (hardware CTS/RTS flow
+ * control restored).
+ * Power effect: none beyond what the equivalent step already costs inside
+ * net_sleep()/net_urc_probe() every wake -- this just lets it be exercised
+ * awake, on demand, for the experiment. */
+void net_debug_rts(int mode);
 #endif /* PAGER_DEBUG_NO_LIGHT_SLEEP */
 
 /* Debug build only: send one raw AT command; the reply shows in the AT trace. */

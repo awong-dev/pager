@@ -558,3 +558,75 @@ failed F4 falls from ~91 s to ~11 s: (91-11) s x 40 mA / 3600 = ~0.9 mAh per occ
 F4 is rate-limited to 6/hour, so the worst case this removes is ~5 mAh/h (`docs/SLEEP_URC_DESIGN.md`
 §2: 40 mA awake / 1 mA light sleep, estimated, not measured on this board). No extra AT traffic; no
 change to the 4-byte reset sequence itself.
+
+## 1.17 Application-installable UART/response trace hook, for a debug-build flight recorder (`src/WalterModem.h`, `src/WalterModem.cpp`, `src/WalterDefines.h`)
+
+`docs/SLEEP_PAGE_LOSS_BRIEF.md` §6 item A: nobody has ever seen, byte for byte, what the modem
+sends during a wake's post-probe wait -- the USB console dies the moment the pager first light-
+sleeps, so there is no live AT trace across the window that matters. `firmware/main/flightrec.c`
+(debug build only, `PAGER_DEBUG_NO_LIGHT_SLEEP`) adds a PSRAM ring that survives light sleep and
+is dumped after the fact, but it needs a way to see the library's own UART traffic without
+duplicating `WalterModem.cpp`'s RX/TX/response-pairing logic in `firmware/main`.
+
+**Fix.** A single, null-checked function pointer, `walter_pager_trace_fn` (`WalterModem.h`, right
+before `class WalterModem`): `void (*)(char kind, const uint8_t *data, size_t len)`.
+`WalterModem::setPagerTraceHook(fn)` installs it (or clears it with `NULL`) into a file-static
+`s_pagerTraceHook` in `WalterModem.cpp`, next to the existing pager counters (same "plain static,
+single UART/URC task, no atomics" reasoning as those). Called, if non-NULL, at exactly three
+sites, none of which change behaviour or control flow:
+
+- **`'R'`** -- `_handleRxData(void*)`, the ESP-IDF task variant only (the `ARDUINO` variant is
+  dead code on this target and is left untouched), right after `_uartRead()` returns, with
+  `incomingBuf`/`uartBufLen`, only when `uartBufLen > 0`. The rawest possible view of the UART:
+  before `_parseRxData()` does anything with the bytes.
+- **`'T'`** -- inside the `_transmitCmd` macro's ESP-IDF branch (`WalterDefines.h`), once per
+  non-NULL `atCmd[i]` element, right before that element's own `uart_write_bytes()`. The trailing
+  `"\r\n"`/`"\n"` is deliberately not traced separately -- the hook's own doc comment states one
+  call with the command string is enough, and `firmware/main/net.cpp`'s own wake-byte write
+  records its `"\r\n"` itself (kind `'K'`/`'T'` pair, `net_urc_probe()`).
+- **`'U'`** -- `_processModemRSP()`'s `RSP_PROC_FINISH` region, at the exact `s_pagerCntRspNoCmd++`
+  site added by patch 1.15: the same unpaired buffer (`buff->data`, `buff->size`), so the flight
+  recorder sees exactly what that counter counts, not a re-derived approximation of it.
+
+**Power effect**: none -- a null pointer check and, only while a debug build's `sleeptest` window
+has called `flightrec_set_recording(true)`, one function call per already-occurring UART
+read/write/unpaired-buffer event. No extra AT traffic, no new task, no change to any timeout,
+retry, or parsing decision. Release builds link the same three call sites (the hook is not
+`#ifdef`-gated in this component -- only `firmware/main/flightrec.c`'s own body is, per its module
+comment) but `s_pagerTraceHook` is never set to non-NULL outside a `PAGER_DEBUG_NO_LIGHT_SLEEP`
+build, so the branch is always false there.
+
+## 1.18 A stray leading 0xFF at the start of a wake's first message was glued onto the next line, so the probe's own `OK` was never credited and URCs were lost (`src/WalterModem.cpp`, `src/WalterDefines.h`)
+
+`docs/SLEEP_PAGE_LOSS_BRIEF.md`, `build/bench-logs/phaseBB-report.log` (the flight recorder,
+patch 1.17): on every observed wake from light sleep (13/13 cycles), the modem UART delivers
+exactly one `0xFF` byte in the same millisecond as the wake-path UART reconfiguration, before
+anything else. `_parseRxData()` assumes every message starts with `"\r\n"` and looks for the
+trailing CRLF from `buf->data + 2`, so the `0xFF` was glued onto the *next* line instead of being
+its own (zero-length) message: cycle c01, `"\xff\r\nOK\r\n"` -- the probe's own `OK`, not
+credited, so the probe fell through to its 15 s wait and every later command queued behind it;
+cycle c08, `"\xff\r\n+SQNSMQTTONMESSAGE:0,...\r\n"` -- the page URC, not recognised, page lost for
+good (`m_23f9bd83`). Lines that arrive after some other line has already absorbed the `0xFF` (e.g.
+c03's `"\xff\r\n+CME ERROR: 4"`, still parsed as one malformed-looking-but-harmless URC) show the
+same byte, just attached somewhere it does not break anything -- the failure mode above is what
+happens when it lands on a line the modem code actually keys off of.
+
+**Fix.** One rule, at the top of `_parseRxData()`'s per-message loop body, before the known-size
+payload branch: if the current message is not part of a binary payload (`!_receivingPayload` --
+covers both the known-size branch below and the unknown-size-payload case, which reuses the
+CRLF-search path further down), the parser buffer is empty (`_parserData.buf == NULL ||
+_parserData.buf->size == 0`), and the first byte of the message is `0xFF`, drop that one byte
+(`offset += 1; continue;`) and count it (`s_pagerCntGlitchDropped`, exposed as `glitch_dropped` on
+`walter_modem_pager_counters_t` next to patch 1.15's `rsp_no_cmd`/`payload_stuck_ms`, and printed
+in `modes.c`'s `modem counters:` line after `modem_resets=`). Safe by construction: a legitimate AT
+response or URC always begins a fresh, empty parser buffer with `"\r\n"`, never `0xFF`, so the
+condition can only ever match a genuine glitch byte at the very start of a message -- never a byte
+already inside a binary payload (the known-size branch is excluded by `!_receivingPayload`, and
+the unknown-size case only ever reaches this buffer-empty check on its first byte, before any
+payload content has accumulated).
+
+**Power effect**: none of its own -- one comparison and, at most once per wake, one byte dropped
+and one counter incremented. What it *enables*: the probe's `OK` is credited on the wake it
+actually arrives, instead of falling through to the 15 s wait `docs/SLEEP_PAGE_LOSS_BRIEF.md`
+attributes to this bug -- that is where the time (and the page) was actually being lost. No
+change to the wake bytes, the probe, the wait, or any cadence constant.

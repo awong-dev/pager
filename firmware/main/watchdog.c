@@ -44,6 +44,13 @@ static RTC_NOINIT_ATTR uint32_t s_resets;
 // ordinary static in this file -- nothing here needs to survive a reset.
 static bool s_last_abnormal = false;
 static const char *s_last_reason_str = "unknown";
+// Raw values behind the two strings above, for the /status crash-diagnostic
+// keys (modes.c STK_RST/STK_STAGE/STK_ABN): so a crash can be read off the
+// relay when the USB port stays dead after a watchdog/panic reset (it only
+// re-enumerates after a power cycle). This-boot-only, computed once by
+// watchdog_boot(), same as s_last_abnormal/s_last_reason_str above.
+static int s_last_reset_reason = 0;      // esp_reset_reason_t of THIS boot
+static uint32_t s_last_reset_stage = 0;  // previous boot's breadcrumb; 0 if none (no valid RTC breadcrumb)
 
 static const char *watchdog_stage_name(uint32_t stage)
 {
@@ -100,6 +107,8 @@ void watchdog_boot(void)
     // `abnormal`/`r` (not s_stage) feed it.
     s_last_abnormal = abnormal;
     s_last_reason_str = reason_name(r);
+    s_last_reset_reason = (int) r;
+    s_last_reset_stage = valid ? s_stage : 0;
     s_stage = WD_BOOT;
 
     // Arm the RTC watchdog through the HAL (the rtc_wdt.h convenience API is
@@ -119,6 +128,22 @@ void watchdog_boot(void)
 
 bool watchdog_last_reset_was_crash(void) { return s_last_abnormal; }
 const char *watchdog_last_reset_reason_str(void) { return s_last_reason_str; }
+
+// Raw esp_reset_reason_t of THIS boot's reset. No modem or sleep-state
+// effect: reads a static set at boot. Valid only after watchdog_boot().
+int watchdog_last_reset_reason(void) { return s_last_reset_reason; }
+
+// Stage index (watchdog_stage_name()'s table) the main loop reached in the
+// *previous* boot, per the RTC breadcrumb; 0 if there was none (first boot,
+// or the RTC breadcrumb was not valid). No modem or sleep-state effect:
+// reads a static set at boot. Valid only after watchdog_boot().
+int watchdog_last_reset_stage(void) { return (int) s_last_reset_stage; }
+
+// Abnormal (panic/watchdog/brownout) reset count since power-on -- the same
+// RTC counter the "Abnormal resets since power-on" boot log line prints. No
+// modem or sleep-state effect: reads an RTC_NOINIT value set at boot. Valid
+// only after watchdog_boot().
+unsigned watchdog_abnormal_reset_count(void) { return (unsigned) s_resets; }
 
 void watchdog_loop_begin(void)
 {

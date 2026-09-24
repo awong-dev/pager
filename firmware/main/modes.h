@@ -88,9 +88,16 @@ bool modes_publish_status_now(void);
  * PAGER_PROBE_WAIT_MS; otherwise the bound on how long each wake holds RTS
  * asserted waiting for the drain probe's answer. Still subject to
  * PAGER_PROBE_WAIT_MIN_INTERVAL_MS, so it only has an effect when
- * interval_ms_override is also long -- pass both together. */
+ * interval_ms_override is also long -- pass both together.
+ * wake0_ms: docs/SLEEP_PAGE_LOSS_BRIEF.md §6 item F, 0..2000, 0 = pin
+ * untouched (today's behaviour); otherwise IO46/LTE_WAKE0 (pins.h's
+ * PAGER_PIN_WAKE0) is pulsed high for wake0_ms then low on every wake,
+ * right after flow control is restored and before the probe's wake bytes.
+ * Also arms the flight recorder (flightrec.h) for the duration of the
+ * window. */
 void modes_debug_sleeptest_start(uint32_t minutes, uint32_t yield_ms_override,
-                                 uint32_t interval_ms_override, uint32_t probe_wait_ms_override);
+                                 uint32_t interval_ms_override, uint32_t probe_wait_ms_override,
+                                 uint32_t wake0_ms);
 void modes_debug_sleeptest_report(void);
 
 /* v0.2 §5 (location, loc.c): route 2's deliberate CFUN=4 window tears the

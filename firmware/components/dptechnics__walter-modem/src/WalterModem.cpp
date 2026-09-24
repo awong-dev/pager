@@ -113,6 +113,25 @@ static uint32_t s_pagerStallTxRingBytes = 0;
 static uint32_t s_pagerCntRspNoCmd = 0;
 static uint32_t s_pagerPayloadStuckMs = 0;
 
+// PAGER PATCH: 1.17 (docs/SLEEP_PAGE_LOSS_BRIEF.md §6 item A) -- the trace
+// hook installed by WalterModem::setPagerTraceHook(), NULL until a caller
+// installs one (firmware/main/flightrec.c, debug build only). Same "plain
+// static, single UART/URC processing task" reasoning as the counters above;
+// read (never written) from the three call sites below.
+static walter_pager_trace_fn s_pagerTraceHook = NULL;
+
+// PAGER PATCH: 1.18 (docs/SLEEP_PAGE_LOSS_BRIEF.md, build/bench-logs/
+// phaseBB-report.log c01/c08) -- see WalterDefines.h's own comment on
+// walter_modem_pager_counters_t. Same "plain uint32_t, no atomics"
+// reasoning as the counters above: only ever written from _parseRxData(),
+// which runs on this component's own single UART/URC processing task.
+static uint32_t s_pagerCntGlitchDropped = 0;
+
+void WalterModem::setPagerTraceHook(walter_pager_trace_fn fn)
+{
+  s_pagerTraceHook = fn;
+}
+
 extern "C" walter_modem_pager_counters_t walter_modem_pager_counters(void)
 {
   walter_modem_pager_counters_t c;
@@ -129,6 +148,7 @@ extern "C" walter_modem_pager_counters_t walter_modem_pager_counters(void)
   c.stall_tx_ring_bytes = s_pagerStallTxRingBytes;
   c.rsp_no_cmd = s_pagerCntRspNoCmd;
   c.payload_stuck_ms = s_pagerPayloadStuckMs;
+  c.glitch_dropped = s_pagerCntGlitchDropped;
   return c;
 }
 
@@ -1486,6 +1506,30 @@ void WalterModem::_parseRxData(char* rx_data, size_t rx_len)
     size_t message_len = 0;
     bool payloadSizeKnown = (_receivedPayloadSize != SIZE_MAX);
 
+    /*
+     * PAGER PATCH: (1.18, docs/SLEEP_PAGE_LOSS_BRIEF.md, build/bench-logs/
+     * phaseBB-report.log cycles c01/c08) On every observed wake from light
+     * sleep, the modem UART's very first byte is a stray 0xFF, delivered in
+     * the same millisecond as the wake path's UART reconfiguration -- not
+     * part of any AT response or URC (every one of those begins with
+     * "\r\n"). Left alone, _addATBytesToBuffer() glues that byte onto the
+     * front of the next line ("\xff\r\nOK", "\xff\r\n+SQNSMQTTONMESSAGE:...")
+     * so the probe's own "OK" is never credited (a 15 s wait, every later
+     * command queued behind it) or the next URC is never recognised (the
+     * page is lost). Non-payload path only, and only when the parser buffer
+     * is empty: a legitimate AT response or URC always starts a fresh,
+     * empty buffer, so this can only ever discard a byte at the very start
+     * of a message -- never one already inside a binary payload (those are
+     * handled by the known-size branch below, or arrive with a non-empty
+     * buffer already accumulating payload bytes).
+     */
+    if(!_receivingPayload && (_parserData.buf == NULL || _parserData.buf->size == 0) &&
+       (uint8_t) message[0] == 0xFF) {
+      s_pagerCntGlitchDropped++;
+      offset += 1;
+      continue;
+    }
+
     /* Receiving binary payload with a known total size */
     /* Here we count the amount of bytes to read, and add them to the buffer. Queue when complete
      */
@@ -1662,6 +1706,12 @@ void WalterModem::_handleRxData(void* params)
     }
 
     uartBufLen = _uartRead((uint8_t*) incomingBuf, uartBufLen);
+    // PAGER PATCH: 1.17 -- rawest possible view of the UART: every byte
+    // _uartRead() just handed back, before _parseRxData() does anything
+    // with it. Instrumentation only.
+    if(uartBufLen > 0 && s_pagerTraceHook) {
+      s_pagerTraceHook('R', (const uint8_t*) incomingBuf, uartBufLen);
+    }
     _parseRxData(incomingBuf, uartBufLen);
   }
 }
@@ -4098,6 +4148,11 @@ after_processing_logic:
    */
   if(cmd == NULL) {
     s_pagerCntRspNoCmd++;
+    // PAGER PATCH: 1.17 -- the same unpaired buffer, kind 'U', for the
+    // flight recorder. Instrumentation only.
+    if(s_pagerTraceHook) {
+      s_pagerTraceHook('U', buff->data, buff->size);
+    }
   }
 
   buff->free = true;

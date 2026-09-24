@@ -3359,6 +3359,20 @@ struct WalterModemStpResponseTransferBlock {
 #endif
 #pragma endregion
 #pragma endregion // STRUCTS
+
+/**
+ * PAGER PATCH: 1.17 (docs/SLEEP_PAGE_LOSS_BRIEF.md §6 item A, firmware/main/flightrec.h) --
+ * instrumentation only, no behaviour change. A null-checked trace hook the application layer
+ * can install to observe every raw UART byte in/out and every unpaired ("no command") response
+ * buffer, kind-tagged: 'R' = raw bytes just read off the modem UART, 'T' = bytes just written to
+ * it, 'U' = a response buffer that completed with no command waiting for it (same event
+ * `s_pagerCntRspNoCmd` already counts, patch 1.15). `data`/`len` point at library-owned storage
+ * valid only for the duration of the call -- the hook must copy out what it needs before
+ * returning. Exists so a debug build's flight recorder (firmware/main/flightrec.c) does not need
+ * its own copy of this library's UART/response-buffer plumbing.
+ */
+typedef void (*walter_pager_trace_fn)(char kind, const uint8_t *data, size_t len);
+
 #pragma region CLASS
 /**
  * @brief The WalterModem class allows you to use the Sequans Monarch 2 modem and positioning
@@ -4507,6 +4521,18 @@ public:
   static bool checkComm(WalterModemRsp* rsp = NULL, walterModemCb cb = NULL, void* args = NULL,
                         uint8_t maxAttempts = WALTER_MODEM_DEFAULT_CMD_ATTEMPTS,
                         TickType_t cmdTimeoutTicks = 0);
+
+  /**
+   * PAGER PATCH: 1.17 -- install (or clear, with NULL) the application's UART/response trace
+   * hook (see `walter_pager_trace_fn`'s own comment above the class). Instrumentation only: the
+   * hook is called, if non-NULL, from exactly three sites in this file and is otherwise never
+   * consulted -- no AT traffic, no behaviour change, no power effect either way.
+   *
+   * @param fn The hook to install, or NULL to remove it.
+   *
+   * @return None.
+   */
+  static void setPagerTraceHook(walter_pager_trace_fn fn);
 
   /**
    * @brief Put Walter to deep or light sleep.

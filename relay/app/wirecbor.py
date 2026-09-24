@@ -44,6 +44,19 @@ import cbor2
 # 52 is `/status`'s `xport` (docs/WIFI_DESIGN.md §6/§7, docs/WIFI_TASKS.md
 # W7 -- which physical transport carried this session, the next free
 # integer after `sndr=51`).
+#
+# **Discrepancy, flagged rather than silently resolved:** the task that
+# added `rst`/`stage`/`abn` (crash diagnostics, firmware's new `/status`
+# keys) specified key 52 for `rst`. Key 52 was already `xport` -- both here
+# and in docs/PROTOCOL.md's own keymap table -- by the time that task
+# landed. Per this module's own doc-wins rule, `xport=52` (the documented,
+# already-shipped allocation) was kept, and `rst`/`stage`/`abn` were given
+# the next free integers instead, continuing the same "next free integer"
+# convention every other addition on this list used: 53 `rst`, 54 `stage`,
+# 55 `abn` (docs/PROTOCOL.md §9.6-equivalent crash diagnostics -- see that
+# doc for the value meanings). Firmware and relay must agree on 53/54/55,
+# not 52/53/54, before either side ships.
+
 KEYMAP: dict[str, int] = {
     "v": 0,
     "id": 1,
@@ -110,6 +123,14 @@ KEYMAP: dict[str, int] = {
     # docs/WIFI_DESIGN.md §6/§7, docs/WIFI_TASKS.md W7: `/status`'s
     # transport-in-use field, `lte`/`wifi`, optional.
     "xport": 52,
+    # Crash diagnostics (this task, optional, absent = older firmware):
+    # `rst` = ESP-IDF esp_reset_reason_t of the last reset, `stage` = index
+    # into the firmware's main-loop stage table, `abn` = count of abnormal
+    # resets since power-on. See the module-docstring note above for why
+    # these are 53/54/55, not 52/53/54.
+    "rst": 53,
+    "stage": 54,
+    "abn": 55,
 }
 REVERSE_KEYMAP: dict[int, str] = {v: k for k, v in KEYMAP.items()}
 

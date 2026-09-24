@@ -60,6 +60,26 @@ bool watchdog_last_reset_was_crash(void);
  * WATCHDOG") — the same string watchdog_boot()'s own boot log line uses.
  * Valid only after watchdog_boot() has run. */
 const char *watchdog_last_reset_reason_str(void);
+
+/* Raw esp_reset_reason_t of THIS boot's reset, as an int (cast back to
+ * esp_reset_reason_t if needed) -- for /status's crash-diagnostic keys
+ * (modes.c STK_RST), so a crash can be read off the relay when the USB port
+ * stays dead after a watchdog/panic reset (it only re-enumerates after a
+ * power cycle). No modem or sleep-state effect: reads a static set at boot.
+ * Valid only after watchdog_boot() has run. */
+int watchdog_last_reset_reason(void);
+/* Stage index (this file's own stage-name table) the main loop reached in
+ * the *previous* boot, per the RTC breadcrumb; 0 if there was none (first
+ * boot, or no valid RTC breadcrumb) -- for /status's STK_STAGE. No modem or
+ * sleep-state effect: reads a static set at boot. Valid only after
+ * watchdog_boot() has run. */
+int watchdog_last_reset_stage(void);
+/* Abnormal (panic/watchdog/brownout) reset count since power-on, the same
+ * counter the boot log's "Abnormal resets since power-on" line prints --
+ * for /status's STK_ABN. No modem or sleep-state effect: reads an
+ * RTC_NOINIT value set at boot. Valid only after watchdog_boot() has run. */
+unsigned watchdog_abnormal_reset_count(void);
+
 /* Call from the main loop's task before its loop: subscribes it to the task watchdog. */
 void watchdog_loop_begin(void);
 /* Feed both watchdogs and leave a breadcrumb. */

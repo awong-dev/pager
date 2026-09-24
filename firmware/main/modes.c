@@ -18,6 +18,8 @@
 #include "watchdog.h"
 #include "ui.h"
 #include "disp.h" // S12: disp_busy_timeout_count() for the sleeptest report
+#include "flightrec.h" // docs/SLEEP_PAGE_LOSS_BRIEF.md §6 item A; no-op outside a debug build's sleeptest window
+#include "pins.h" // PAGER_PIN_WAKE0, the sleeptest wake0_ms experiment (§6 item F)
 
 // F6.2 (docs/DEVICE_PLAN.md §5.3): CardKB decode + button FSM (+BTN_STUCK)
 // + the UI-awake window + one input event queue, moved out of this file
@@ -93,6 +95,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "driver/gpio.h" // PAGER_DEBUG_NO_LIGHT_SLEEP's sleeptest wake0_ms experiment (§6 item F) only
 #include "esp_attr.h"
 #include "esp_log.h"
 #include "esp_random.h"
@@ -176,6 +179,13 @@ static const char *TAG = "modes";
 // since the wait itself is release behaviour once the cadence is lengthened.
 #ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
 static uint32_t s_probe_wait_ms_override = 0; // sleeptest arg 4, 0 = build default
+// docs/SLEEP_PAGE_LOSS_BRIEF.md §6 item F: sleeptest arg 5, 0 = pin
+// untouched (today's behaviour). GPIO_NUM_46/PAGER_PIN_WAKE0 is configured
+// as an output the first time this is non-zero and stays that way for the
+// rest of the boot (main.c's `wake0` command may also reconfigure it --
+// see that command's own comment).
+static uint32_t s_st_wake0_ms = 0;
+static bool s_wake0_configured = false;
 #endif
 static uint32_t s_probe_wait_n = 0, s_probe_wait_giveups = 0;
 static int64_t s_probe_wait_total_us = 0, s_probe_wait_max_us = 0;
@@ -580,6 +590,17 @@ static void on_auth_epoch_wrap(void)
 #define STK_SMS_LOST 48      // v0.2 §6/§7: sms_log audit entries dropped for lack of NVS space
 #define STK_LINK 50           // v0.2 §9.5/§7: MQTT-session generation within this boot
 #define STK_XPORT 52          // docs/WIFI_DESIGN.md §5.1/§6, docs/WIFI_TASKS.md W4: "lte"/"wifi"
+// Crash diagnostics so a crash can be read off the relay when the USB port
+// stays dead after a watchdog/panic reset (it only re-enumerates after a
+// power cycle) -- watchdog.c's watchdog_boot() computes all three. NOTE: the
+// task that requested these asked for keys 52/53/54, but 52 is already
+// STK_XPORT above (PROTOCOL.md §9.5's key table); using it again would put
+// two different fields under the same CBOR map key. Took the next free keys,
+// 53/54/55, instead -- flagged for server-architect review alongside the
+// PROTOCOL.md rows below.
+#define STK_RST 53             // esp_reset_reason_t of this boot (watchdog_last_reset_reason())
+#define STK_STAGE 54           // previous boot's stage breadcrumb, 0 if none (watchdog_last_reset_stage())
+#define STK_ABN 55             // abnormal resets since power-on (watchdog_abnormal_reset_count())
 
 // PROTOCOL.md §5.1: batt_mv must be in [2000, 4500] when state:"online".
 #define PAGER_BATT_MV_MIN 2000
@@ -703,10 +724,10 @@ static bool build_status_cbor(uint8_t *out, size_t cap, size_t *out_len, const c
     // v0.2 §5/§7: +3 for loc_period_s/loc_min_s/loc_backoff_s (loc.c's own
     // getters — plain reads of already-resident policy state, no AT round
     // trip of their own beyond what batt_mv/rssi above already cost).
-    uint32_t nfields = 9 + 3 + 1 + 1 + 1 + 1; // + tls, + sms_lost, + link, + xport;
+    uint32_t nfields = 9 + 3 + 1 + 1 + 1 + 1 + 3; // + tls, + sms_lost, + link, + xport, + rst/stage/abn;
                                           // v,state,mode,batt_mv,rssi,
                                           // session,ts,fw,bv,loc_period_s,loc_min_s,loc_backoff_s,
-                                          // tls,sms_lost,link,xport
+                                          // tls,sms_lost,link,xport,rst,stage,abn
     if (have_ca_fp) {
         nfields += 1;
     }
@@ -739,6 +760,15 @@ static bool build_status_cbor(uint8_t *out, size_t cap, size_t *out_len, const c
     // guards on it, and the rising-edge block below increments the counter
     // before its own call), so s_mqtt_link_counter is always >= 1 here.
     cbor_w_uint(&w, STK_LINK, s_mqtt_link_counter);
+
+    // Crash diagnostics (docs/PROTOCOL.md §9.5 keys 53/54/55): so a crash
+    // can be diagnosed from the relay when the USB port is dead (it never
+    // re-enumerates after a watchdog or panic reset, only after a power
+    // cycle). Plain reads of watchdog.c's this-boot-only statics/RTC
+    // counter, no AT round trip or NVS I/O of their own.
+    cbor_w_uint(&w, STK_RST, (uint64_t) (unsigned) watchdog_last_reset_reason());
+    cbor_w_uint(&w, STK_STAGE, (uint64_t) (unsigned) watchdog_last_reset_stage());
+    cbor_w_uint(&w, STK_ABN, (uint64_t) watchdog_abnormal_reset_count());
 
     // docs/WIFI_DESIGN.md §5.1/§6, docs/WIFI_TASKS.md W4 item 1: which
     // physical transport carried this session — display/diagnosis only
@@ -1024,6 +1054,22 @@ static uint32_t s_st_interval_ms = 0;
 // their acks instead of cutting them off.
 static volatile int64_t s_st_grace_until_us = 0;
 #define ST_GRACE_S 25
+// Coordinator addendum, 2026-09-24: the flight recorder (flightrec.h) lives
+// in PSRAM, which survives light sleep, but not a reset -- the old
+// unconditional "print the report, wait 3s, watchdog_hard_reset()" post-
+// window sequence would destroy it before anyone could type `flightrec`.
+// When the window's recorder holds >0 records, hold awake (no light sleep;
+// skip_sleep is already forced true for the whole post-window period, see
+// the `if (!sleeptest_active())` block below) for ST_HOLD_S instead of
+// resetting immediately, printing a status line every
+// ST_HOLD_PRINT_INTERVAL_S so the operator knows both that a dump is
+// available and how long they have left -- the console `flightrec` command
+// works throughout (its task is independent of this one). 0 records: today's
+// behaviour (report, 3s, reset) is unchanged.
+static int64_t s_st_hold_until_us = 0;
+static int64_t s_st_hold_last_print_us = 0;
+#define ST_HOLD_S (15 * 60)
+#define ST_HOLD_PRINT_INTERVAL_S 60
 static uint32_t s_st_sleeps = 0, s_st_wake_timer = 0, s_st_wake_other = 0;
 // Where the awake time goes, per wake: cumulative microseconds per loop segment.
 // S0 (docs/SLEEP_URC_DESIGN.md §1 item 4): bucket 0 used to be charged both
@@ -1111,8 +1157,16 @@ static void sleeptest_note(char kind, int32_t a, const char *id)
 }
 
 void modes_debug_sleeptest_start(uint32_t minutes, uint32_t yield_ms_override,
-                                 uint32_t interval_ms_override, uint32_t probe_wait_ms_override)
+                                 uint32_t interval_ms_override, uint32_t probe_wait_ms_override,
+                                 uint32_t wake0_ms)
 {
+    s_st_wake0_ms = wake0_ms;
+    // flightrec.h: a no-op outside a debug build (it always is one here,
+    // this whole function is PAGER_DEBUG_NO_LIGHT_SLEEP-only) -- starts a
+    // fresh recording so ordinary boot/idle traffic before this point was
+    // never captured.
+    flightrec_clear();
+    flightrec_set_recording(true);
     s_st_n_events = 0;
     s_st_sleeps = s_st_wake_timer = s_st_wake_other = 0;
     s_st_asleep_us = 0;
@@ -1139,10 +1193,10 @@ void modes_debug_sleeptest_start(uint32_t minutes, uint32_t yield_ms_override,
     esp_log_level_set("WalterModem", ESP_LOG_WARN);
     ESP_LOGI(TAG,
              "sleeptest: light sleep ENABLED for %u min (yield=%u ms, interval=%u ms, "
-             "0=build default). The USB log goes quiet now. Send pages; a report prints "
-             "%u s after the window closes.",
+             "wake0_ms=%u, 0=build default/untouched). The USB log goes quiet now. Send pages; "
+             "a report prints %u s after the window closes.",
              (unsigned) minutes, (unsigned) yield_ms_override, (unsigned) interval_ms_override,
-             (unsigned) ST_GRACE_S);
+             (unsigned) wake0_ms, (unsigned) ST_GRACE_S);
 }
 
 // The report as text, so it can be kept in NVS: after a sleep window the USB
@@ -1284,10 +1338,15 @@ void modes_debug_sleeptest_report(void)
     // counter g_rtc already keeps (rate_limited_modem_recover()). Printing it
     // here is what turns "an F4 must have run inside this window, because the
     // probe counters do not otherwise add up" into a reading.
+    // Patch 1.18 (docs/SLEEP_PAGE_LOSS_BRIEF.md, build/bench-logs/
+    // phaseBB-report.log c01/c08): glitch_dropped counts the stray leading
+    // 0xFF _parseRxData() now drops on every wake, printed here so a bench
+    // run's evidence survives the USB-dead light-sleep window like the rest
+    // of this line.
     st_appendf(&n, "modem counters: datatx_retx=%u prompt_orphan=%u buf_drop_queue=%u buf_drop_pool=%u "
-                    "modem_resets=%u\n",
+                    "modem_resets=%u glitch_dropped=%u\n",
                (unsigned) pc.datatx_retx, (unsigned) pc.prompt_orphan, (unsigned) pc.buf_drop_queue,
-               (unsigned) pc.buf_drop_pool, (unsigned) g_rtc.modem_resets);
+               (unsigned) pc.buf_drop_pool, (unsigned) g_rtc.modem_resets, (unsigned) pc.glitch_dropped);
     // S3 (patch 1.13, docs/RCA_SLEEP_URC.md §5 fix 3-4): attribution for the
     // two 30s stalls fix 1's arithmetic could not tell apart -- which write
     // path actually moved bytes, whether uart_wait_tx_done() ever timed out,
@@ -1433,6 +1492,7 @@ static void handle_ingest_result(msg_ingest_t r, const msg_t *out, uint16_t len,
                 lat = (int32_t) (now_s - out->ts);
             }
             sleeptest_note('M', lat, id);
+            flightrec_event('M', lat, 0);
         }
 #endif
         modes_alert_incoming(id, from);
@@ -1795,15 +1855,28 @@ static void wait_for_probe_answer(uint32_t interval_ms)
     }
     int64_t t0 = esp_timer_get_time();
     int64_t deadline_us = t0 + (int64_t) bound_ms * 1000;
+    // flightrec.h §6 item B: sample CTS at entry (the baseline -- no event
+    // for this first sample, only for a later transition away from it) and
+    // on every 20 ms iteration below. Plain gpio_get_level() reads outside
+    // a debug build's sleeptest window (flightrec_cts_level() returns -1,
+    // never equal to a real level, so the comparison below never fires) --
+    // no behaviour change to the wait itself either way.
+    int prev_cts = flightrec_cts_level();
     while (net_urc_probe_in_flight()) {
         if (esp_timer_get_time() >= deadline_us) {
             s_probe_wait_giveups++;
+            flightrec_event('G', (int32_t) ((esp_timer_get_time() - t0) / 1000), 0);
             break;
         }
         // No watchdog_kick() here on purpose: the loop is bounded well inside
         // watchdog.c's 95 s per-stage budget, and kicking every 20 ms would
         // reset that budget for a caller that has not made progress.
         vTaskDelay(pdMS_TO_TICKS(20));
+        int cts = flightrec_cts_level();
+        if (cts != prev_cts) {
+            flightrec_event('C', cts, (int32_t) ((esp_timer_get_time() - t0) / 1000));
+            prev_cts = cts;
+        }
     }
     int64_t waited_us = esp_timer_get_time() - t0;
     s_probe_wait_n++;
@@ -2181,11 +2254,40 @@ void modes_run(void)
                 modes_debug_sleeptest_report();
                 // Proof of life that does not depend on USB: the relay logs this webhook.
                 modes_publish_status_now();
-                // The USB port often does not re-enumerate after light sleep.
-                // A restart always brings it back, and the report (saved to
-                // NVS above) is printed at boot. Unattended testing needs this.
-                vTaskDelay(pdMS_TO_TICKS(3000));
-                watchdog_hard_reset(); // not esp_restart(): that leaves a dead USB port dead
+                // flightrec.h: the window just closed.
+                flightrec_event('E', 0, 0);
+                flightrec_set_recording(false);
+                uint32_t n = flightrec_count();
+                if (n > 0) {
+                    // Coordinator addendum: dump once now (best-effort if the
+                    // USB port is back already) and hold instead of
+                    // resetting -- see the hold state's own comment above.
+                    flightrec_dump();
+                    printf("flightrec: %u records held, type 'flightrec' to dump again "
+                           "(reset in %u min)\n",
+                           (unsigned) n, (unsigned) (ST_HOLD_S / 60));
+                    s_st_hold_until_us = esp_timer_get_time() + (int64_t) ST_HOLD_S * 1000000;
+                    s_st_hold_last_print_us = esp_timer_get_time();
+                } else {
+                    // The USB port often does not re-enumerate after light
+                    // sleep. A restart always brings it back, and the report
+                    // (saved to NVS above) is printed at boot. Unattended
+                    // testing needs this.
+                    vTaskDelay(pdMS_TO_TICKS(3000));
+                    watchdog_hard_reset(); // not esp_restart(): that leaves a dead USB port dead
+                }
+            }
+            if (s_st_hold_until_us != 0) {
+                int64_t now = esp_timer_get_time();
+                if (now >= s_st_hold_until_us) {
+                    watchdog_hard_reset();
+                } else if (now - s_st_hold_last_print_us >= (int64_t) ST_HOLD_PRINT_INTERVAL_S * 1000000) {
+                    s_st_hold_last_print_us = now;
+                    printf("flightrec: %u records held, type 'flightrec' to dump "
+                           "(reset in %u min)\n",
+                           (unsigned) flightrec_count(),
+                           (unsigned) ((s_st_hold_until_us - now) / 1000000 / 60));
+                }
             }
         }
 #endif
@@ -2196,6 +2298,30 @@ void modes_run(void)
 #endif
             watchdog_kick(WD_SLEEP_ENTER);
             net_sleep(interval_ms);
+#ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
+            // flightrec.h: tag every record this wake produces (net_sleep()'s
+            // own 'S'/'W'/'F' plus net_urc_probe()'s 'K'/'T'/'P'/'A' just
+            // below) with the cycle number this wake will have once
+            // s_st_sleeps++ below runs -- read-only here, s_st_sleeps itself
+            // is untouched until its own existing increment site. No-op
+            // outside an open sleeptest window (flightrec_set_cycle() is
+            // cheap either way: one uint16_t store).
+            flightrec_set_cycle((uint16_t) (s_st_sleeps + 1));
+            // docs/SLEEP_PAGE_LOSS_BRIEF.md §6 item F: 0 (default) leaves
+            // IO46/LTE_WAKE0 untouched, today's behaviour. Right after the
+            // 'F' event (inside net_sleep(), above) and before net_urc_probe()
+            // writes its own wake bytes, per the task brief.
+            if (s_st_wake0_ms) {
+                if (!s_wake0_configured) {
+                    gpio_set_direction((gpio_num_t) PAGER_PIN_WAKE0, GPIO_MODE_OUTPUT);
+                    s_wake0_configured = true;
+                }
+                gpio_set_level((gpio_num_t) PAGER_PIN_WAKE0, 1);
+                vTaskDelay(pdMS_TO_TICKS(s_st_wake0_ms));
+                gpio_set_level((gpio_num_t) PAGER_PIN_WAKE0, 0);
+                flightrec_event('X', (int32_t) s_st_wake0_ms, flightrec_cts_level());
+            }
+#endif
             // S1 (docs/SLEEP_URC_DESIGN.md §3(a)/§5): first statement after
             // net_sleep() returns, before the yield -- flow control is
             // restored by then. Every wake that actually called net_sleep(),

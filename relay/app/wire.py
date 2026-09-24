@@ -44,6 +44,39 @@ ALIAS_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,15}$")
 SYSTEM_ALIAS = "system"
 ACK_VALUES = {"shown", "read"}
 
+# Crash diagnostics (this task, docs/PROTOCOL.md §5.1): the firmware
+# main-loop stage table `/status`'s `stage` indexes into. Used only for
+# logging (`stage_name` below) -- the relay stores the raw int either way.
+STAGE_NAMES: tuple[str, ...] = (
+    "?",
+    "boot",
+    "network init",
+    "loop top",
+    "entering light sleep",
+    "just woke from light sleep",
+    "input/ui",
+    "render",
+    "mqtt status/retry",
+    "message pump",
+    "modem health check",
+    "location",
+    "sms",
+    "ca trust",
+    "saving state",
+    "deliberate restart",
+)
+
+
+def stage_name(stage: int | None) -> str | None:
+    """`STAGE_NAMES[stage]`, or the raw int (as a string) if `stage` is out
+    of the table's range -- a future firmware's new stage index must not
+    make this raise; it just logs unresolved."""
+    if stage is None:
+        return None
+    if 0 <= stage < len(STAGE_NAMES):
+        return STAGE_NAMES[stage]
+    return str(stage)
+
 
 def is_valid_alias(value: str) -> bool:
     """§3.1: `from`/`to` shape check -- the alias regex, or the literal
@@ -237,6 +270,16 @@ class StatusEnvelope(BaseModel):
     # relay stores it and never writes it back. Absent means firmware that
     # predates the WiFi transport, or WiFi never enabled on this device.
     xport: Literal["lte", "wifi"] | None = None
+    # Crash diagnostics (this task, docs/PROTOCOL.md §5.1, optional, absent =
+    # firmware that predates them): `rst` is the ESP-IDF esp_reset_reason_t
+    # of the device's last reset, `stage` is an index into the firmware's
+    # main-loop stage table (`STAGE_NAMES` below), `abn` is the count of
+    # abnormal resets since power-on. Display/diagnosis only -- the relay
+    # stores whatever the device reports and never writes it back, same as
+    # `xport`/`link` and the other status-only fields above.
+    rst: int | None = None
+    stage: int | None = None
+    abn: int | None = None
     # §14.2: present on every signed envelope; absent on the unsigned LWT
     # exception (§14.6) and on an unsigned (`authMode: "password"`) device.
     n: int | None = None
@@ -267,6 +310,20 @@ class StatusEnvelope(BaseModel):
     def _check_link(cls, value: int | None) -> int | None:
         if value is not None and value < 0:
             raise ValueError("link must be >= 0")
+        return value
+
+    @field_validator("rst", "stage")
+    @classmethod
+    def _check_rst_stage(cls, value: int | None) -> int | None:
+        if value is not None and not (0 <= value <= 255):
+            raise ValueError("rst/stage out of range")
+        return value
+
+    @field_validator("abn")
+    @classmethod
+    def _check_abn(cls, value: int | None) -> int | None:
+        if value is not None and not (0 <= value <= 65535):
+            raise ValueError("abn out of range")
         return value
 
     @field_validator("n")

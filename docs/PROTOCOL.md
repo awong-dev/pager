@@ -538,9 +538,12 @@ broker-generated LWT.
 | `sms_lost` | int | no | ≥ 0 | *(v0.2, §3.6 — device-direct SMS)* Count of `sms_log` audit entries dropped from the device's NVS queue for lack of space; normally 0. |
 | `link` | int | no | ≥ 0 | *(v0.2, §9.5 — MQTT session liveness)* Counter incremented on every MQTT session restart within the current boot (starts at 1 per boot); `session` alone cannot tell a silent modem-initiated resume from an unbroken session. Absent means firmware older than §9. The relay treats a changed `link` exactly like a changed `session` for §5.3's online-edge re-publish. |
 | `xport` | string | no | `lte` \| `wifi` | *(WiFi transport, `docs/WIFI_DESIGN.md` §6)* Which physical transport carried this MQTT session: the Sequans LTE-M modem or the ESP32-S3's own WiFi station (§4 of that design). Absent means firmware that predates the WiFi transport, or a device with WiFi never enabled. **Display and diagnosis only** — the relay stores whatever the device reports and never writes it back; a transport switch already bumps `link` (§9.5), which the relay already treats as a re-publish edge (§5.3), so `xport` itself carries no additional relay logic. |
+| `rst` | int | no | 0…255 | *(crash diagnostics, added 24 Sep 2026, pending server-architect review)* ESP-IDF `esp_reset_reason_t` of the device's last reset: `1` poweron, `2` ext, `3` sw, `4` panic, `5` int_wdt, `6` task_wdt, `7` wdt, `8` deepsleep, `9` brownout. Absent means firmware that predates this field. **Display and diagnosis only.** |
+| `stage` | int | no | 0…255 | *(crash diagnostics, added 24 Sep 2026, pending server-architect review)* Index into the firmware's main-loop stage table, naming where execution was when this status was sent (or, after a crash, roughly where it last got to): `0` "?", `1` boot, `2` network init, `3` loop top, `4` entering light sleep, `5` just woke from light sleep, `6` input/ui, `7` render, `8` mqtt status/retry, `9` message pump, `10` modem health check, `11` location, `12` sms, `13` ca trust, `14` saving state, `15` deliberate restart. An index outside this table (future firmware) is logged as the raw int. Absent means firmware that predates this field. **Display and diagnosis only.** |
+| `abn` | int | no | 0…65535 | *(crash diagnostics, added 24 Sep 2026, pending server-architect review)* Count of abnormal resets (i.e. `rst` not `poweron`/`deepsleep`) since power-on. Absent means firmware that predates this field. **Display and diagnosis only.** |
 
-*(`loc_period_s`, `loc_min_s`, `tls`, `ca_fp`, `loc_backoff_s`, `sms_lost` and `xport` — seven
-fields — are **display and diagnosis only**; the relay stores the reported
+*(`loc_period_s`, `loc_min_s`, `tls`, `ca_fp`, `loc_backoff_s`, `sms_lost`, `xport`, `rst`, `stage`
+and `abn` — ten fields — are **display and diagnosis only**; the relay stores the reported
 values and never writes them back. The device owns its location duty cycle because the cost being
 traded is GNSS power on its battery (§12 item 8), which the server cannot see. Making these
 server-settable would need a `/cfg` topic, which §11 still only reserves. `link` is the one
@@ -1302,6 +1305,14 @@ Devices emit CBOR (§3) with this integer keymap. The relay accepts both JSON (t
 | 50 | `link` | int | `/status` (v0.2, §9.5 — MQTT-session generation within a boot, optional) |
 | 51 | `sndr` | tstr | `/down` `msg` in a group conversation (v0.3, §3.1 — the author's alias when `from` names the group) |
 | 52 | `xport` | tstr | `/status` (WiFi transport, §5.1 — `lte`/`wifi`, optional) |
+| 53 | `rst` | uint, 0…255 | `/status` (crash diagnostics, §5.1 — `esp_reset_reason_t`, optional; added 24 Sep 2026, pending server-architect review) |
+| 54 | `stage` | uint, 0…255 | `/status` (crash diagnostics, §5.1 — main-loop stage index, optional; added 24 Sep 2026, pending server-architect review) |
+| 55 | `abn` | uint, 0…65535 | `/status` (crash diagnostics, §5.1 — abnormal-reset count since power-on, optional; added 24 Sep 2026, pending server-architect review) |
+
+*(A relay-side task that added `rst`/`stage`/`abn` was briefed with key 52 for `rst`; by the time
+it landed, 52 was already `xport`, both here and in the shipped relay code. Kept `xport=52` as the
+documented, already-shipped allocation and gave the three new fields the next free integers, 53-55,
+instead — flagged here rather than silently resolved so firmware agrees on 53/54/55, not 52/53/54.)*
 
 **Sub-map keys:**
 

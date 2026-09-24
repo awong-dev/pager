@@ -23,6 +23,7 @@
 #include "net_probe_guard.h"
 #include "publish_quiet.h"
 #include "wifi_sta.h"
+#include "flightrec.h" // docs/SLEEP_PAGE_LOSS_BRIEF.md §6 item A; no-op outside a debug build's sleeptest window
 
 #include "WalterModem.h"
 #include "WalterDefines.h" // walter_modem_pager_counters() (PATCHES.md 1.12)
@@ -1215,6 +1216,10 @@ extern "C" void net_sleep(uint32_t ms)
     // after a page once this holds.
     gpio_sleep_sel_dis((gpio_num_t) CONFIG_WALTER_MODEM_PIN_RTS);
 
+    // docs/SLEEP_PAGE_LOSS_BRIEF.md §6 item A/B flight recorder
+    // (flightrec.h): a no-op outside a debug build's `sleeptest` window.
+    flightrec_event('S', (int32_t) ms, flightrec_cts_level());
+
     esp_light_sleep_start();
 
     // A1: count ext1 (motion) wakes, before anything below can touch the
@@ -1241,6 +1246,11 @@ extern "C" void net_sleep(uint32_t ms)
     uart_set_pin(PAGER_MODEM_UART, CONFIG_WALTER_MODEM_PIN_TX, CONFIG_WALTER_MODEM_PIN_RX,
                  CONFIG_WALTER_MODEM_PIN_RTS, CONFIG_WALTER_MODEM_PIN_CTS);
     uart_set_hw_flow_ctrl(PAGER_MODEM_UART, UART_HW_FLOWCTRL_CTS_RTS, CONFIG_UART_BUF_THRESHOLD);
+
+    // flightrec.h: two no-ops outside a debug build's `sleeptest` window.
+    flightrec_event('W', (int32_t) esp_sleep_get_wakeup_cause(),
+                    (int32_t) net_uart_rx_buffered_bytes());
+    flightrec_event('F', flightrec_cts_level(), 0);
 }
 
 extern "C" bool net_check(void)
@@ -1328,6 +1338,7 @@ static void probe_cb(const WalterModemRsp *rsp, void *args)
         }
         s_probe_answer_n++;
         net_probe_guard_answered(&s_probe_guard);
+        flightrec_event('A', (int32_t) elapsed_ms, 0); // flightrec.h: no-op outside a debug build's sleeptest window
     } else if (rsp != NULL && rsp->result == WALTER_MODEM_STATE_NO_MEMORY) {
         net_probe_guard_noqueue(&s_probe_guard);
     } else {
@@ -1404,9 +1415,13 @@ extern "C" bool net_urc_probe(void)
     // characters first and give the interface a moment before the real
     // probe. Raw write on the modem UART, on this task, before the library
     // has anything queued for this wake. Power: two bytes and 60 ms.
+    // flightrec.h: both no-ops outside a debug build's sleeptest window.
+    flightrec_event('K', 0, 0);
+    flightrec_bytes('T', (const uint8_t *) "\r\n", 2);
     uart_write_bytes(PAGER_MODEM_UART, "\r\n", 2);
     vTaskDelay(pdMS_TO_TICKS(60));
     s_probe_issue_us = esp_timer_get_time();
+    flightrec_event('P', flightrec_cts_level(), 0);
     WalterModem::checkComm(NULL, probe_cb, NULL, PAGER_URC_PROBE_ATTEMPTS,
                            pdMS_TO_TICKS(PAGER_URC_PROBE_TIMEOUT_MS));
     if (s_probe_guard.outstanding) {
@@ -1679,6 +1694,9 @@ extern "C" net_pager_counters_t net_get_pager_counters(void)
     // WalterDefines.h's own comment on walter_modem_pager_counters_t.
     out.rsp_no_cmd = c.rsp_no_cmd;
     out.payload_stuck_ms = c.payload_stuck_ms;
+    // Patch 1.18: see WalterDefines.h's own comment on
+    // walter_modem_pager_counters_t.
+    out.glitch_dropped = c.glitch_dropped;
     return out;
 }
 
@@ -1746,6 +1764,36 @@ extern "C" bool net_debug_at(const char *cmd)
 }
 
 #ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
+// docs/SLEEP_PAGE_LOSS_BRIEF.md §6 item A, PATCHES.md 1.17: install the
+// vendored library's UART/response trace hook. See net.h's own doc
+// comment on why this wrapper exists (flightrec.c is plain C and cannot
+// name WalterModem::setPagerTraceHook() or its walter_pager_trace_fn
+// parameter type directly). No modem/sleep-state effect.
+extern "C" void net_debug_install_trace_hook(void (*fn)(char kind, const uint8_t *data, size_t len))
+{
+    WalterModem::setPagerTraceHook(fn);
+}
+
+// main.c's `rts <0|1|fc>` console command -- see net.h's own doc comment.
+extern "C" void net_debug_rts(int mode)
+{
+    switch (mode) {
+    case 0:
+    case 1:
+        uart_set_hw_flow_ctrl(PAGER_MODEM_UART, UART_HW_FLOWCTRL_DISABLE, 0);
+        gpio_set_direction((gpio_num_t) CONFIG_WALTER_MODEM_PIN_RTS, GPIO_MODE_OUTPUT);
+        gpio_set_level((gpio_num_t) CONFIG_WALTER_MODEM_PIN_RTS, mode);
+        break;
+    case 2:
+        uart_set_pin(PAGER_MODEM_UART, CONFIG_WALTER_MODEM_PIN_TX, CONFIG_WALTER_MODEM_PIN_RX,
+                     CONFIG_WALTER_MODEM_PIN_RTS, CONFIG_WALTER_MODEM_PIN_CTS);
+        uart_set_hw_flow_ctrl(PAGER_MODEM_UART, UART_HW_FLOWCTRL_CTS_RTS, CONFIG_UART_BUF_THRESHOLD);
+        break;
+    default:
+        break;
+    }
+}
+
 // docs/ROADMAP.md's "temporary diagnostics" (nettest/mqtttest) no longer
 // ship in the release binary -- debug build only from here down to
 // net_check_mqtt()'s closing brace below.

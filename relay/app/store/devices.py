@@ -109,6 +109,12 @@ class DeviceStatus(BaseModel):
     # refuses to push `cfg.wifi.nets` unless `tls == "pinned"` (not `xport`
     # -- `xport` itself gates nothing, `tls` is the security-relevant field).
     xport: Literal["lte", "wifi"] | None = None
+    # Crash diagnostics (docs/PROTOCOL.md §5.1, this task): display/
+    # diagnosis only, same as `xport`/`tls` above -- the relay stores
+    # whatever the device reports and never writes it back or acts on it.
+    rst: int | None = None
+    stage: int | None = None
+    abn: int | None = None
     updatedAt: datetime | None = None
     # docs/DEVICE_PLAN.md §2.6: set once `sigFailures` crosses
     # AUTH_ALARM_THRESHOLD inside AUTH_ALARM_WINDOW_S; cleared on key

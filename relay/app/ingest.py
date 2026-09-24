@@ -45,6 +45,7 @@ from app.wire import (
     StatusEnvelope,
     UpEnvelope,
     resolve_ts,
+    stage_name,
 )
 
 logger = logging.getLogger("relay.ingest")
@@ -589,6 +590,23 @@ class Ingest:
             wire.log_malformed(topic, payload, str(exc))
             return
 
+        # Crash diagnostics (this task, docs/PROTOCOL.md §5.1): one INFO
+        # line per accepted status, so `gcloud logging read
+        # 'textPayload:"status <device_id>"'` shows the reset reason, the
+        # main-loop stage name (looked up via `stage_name`, falls back to
+        # the raw int for an index this relay's table predates) and the
+        # abnormal-reset count -- all `None` and printed as such on
+        # firmware that predates these fields.
+        logger.info(
+            "status %s: state=%s link=%s rst=%s stage=%s abn=%s",
+            device_id,
+            env.state,
+            env.link,
+            env.rst,
+            stage_name(env.stage),
+            env.abn,
+        )
+
         previous_status = device.status
         resolved_ts = resolve_ts(env.ts) if env.ts is not None else None
         devices_store.update_status(
@@ -608,6 +626,9 @@ class Ingest:
             smsLost=env.sms_lost,
             link=env.link,
             xport=env.xport,
+            rst=env.rst,
+            stage=env.stage,
+            abn=env.abn,
         )
 
         # docs/V02_DESIGN.md §4.3: "on a transition

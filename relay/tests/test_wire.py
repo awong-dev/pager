@@ -269,6 +269,71 @@ def test_status_rejects_bad_xport_value():
         StatusEnvelope.model_validate(_online_status(xport="modem"))
 
 
+# ---------------------------------------------------------------------------
+# Crash diagnostics (this task, docs/PROTOCOL.md §5.1) -- `/status`'s
+# optional `rst`/`stage`/`abn` fields.
+# ---------------------------------------------------------------------------
+
+
+def test_status_accepts_rst_stage_abn():
+    env = StatusEnvelope.model_validate(_online_status(rst=4, stage=6, abn=2))
+    assert env.rst == 4
+    assert env.stage == 6
+    assert env.abn == 2
+
+
+def test_status_rst_stage_abn_are_optional():
+    """Absent-field compatibility: older firmware that predates these
+    fields must still validate, reported as unknown (`None`)."""
+    env = StatusEnvelope.model_validate(_online_status())
+    assert env.rst is None
+    assert env.stage is None
+    assert env.abn is None
+
+
+@pytest.mark.parametrize("field", ["rst", "stage"])
+def test_status_rejects_rst_stage_out_of_range(field):
+    with pytest.raises(ValidationError):
+        StatusEnvelope.model_validate(_online_status(**{field: -1}))
+    with pytest.raises(ValidationError):
+        StatusEnvelope.model_validate(_online_status(**{field: 256}))
+
+
+def test_status_accepts_rst_stage_boundary_values():
+    assert StatusEnvelope.model_validate(_online_status(rst=0)).rst == 0
+    assert StatusEnvelope.model_validate(_online_status(rst=255)).rst == 255
+    assert StatusEnvelope.model_validate(_online_status(stage=0)).stage == 0
+    assert StatusEnvelope.model_validate(_online_status(stage=255)).stage == 255
+
+
+def test_status_rejects_abn_out_of_range():
+    with pytest.raises(ValidationError):
+        StatusEnvelope.model_validate(_online_status(abn=-1))
+    with pytest.raises(ValidationError):
+        StatusEnvelope.model_validate(_online_status(abn=65536))
+
+
+def test_status_accepts_abn_boundary_values():
+    assert StatusEnvelope.model_validate(_online_status(abn=0)).abn == 0
+    assert StatusEnvelope.model_validate(_online_status(abn=65535)).abn == 65535
+
+
+def test_status_rst_stage_abn_round_trip_cbor():
+    """docs/PROTOCOL.md §10: keys 53/54/55 -- next free integers after the
+    already-shipped `xport=52` (see wirecbor.py's own discrepancy note)."""
+    obj = _online_status(rst=4, stage=6, abn=2)
+    assert wirecbor.KEYMAP["rst"] == 53
+    assert wirecbor.KEYMAP["stage"] == 54
+    assert wirecbor.KEYMAP["abn"] == 55
+    cbor_bytes = wirecbor.encode(obj)
+    decoded = wirecbor.decode(cbor_bytes)
+    assert decoded["rst"] == 4
+    assert decoded["stage"] == 6
+    assert decoded["abn"] == 2
+    env = StatusEnvelope.model_validate(decoded)
+    assert (env.rst, env.stage, env.abn) == (4, 6, 2)
+
+
 def test_status_still_ignores_a_genuinely_unknown_field():
     """The pre-existing `extra='ignore'` forward-compat guarantee, still
     true for a field this relay has no opinion on at all (as opposed to the

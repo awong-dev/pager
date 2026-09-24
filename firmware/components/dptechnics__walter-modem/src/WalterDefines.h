@@ -138,6 +138,13 @@ extern "C" void walter_modem_block_tick(void);
 //                      Overwritten on every such observation, so it reflects
 //                      the most recently observed stuck-payload timeout, not
 //                      necessarily one still stuck.
+// PAGER PATCH: 1.18 (docs/SLEEP_PAGE_LOSS_BRIEF.md, build/bench-logs/
+// phaseBB-report.log c01/c08). The stray 0xFF byte the modem UART delivers
+// at the start of every observed light-sleep wake, before anything else.
+//   glitch_dropped - WalterModem.cpp's _parseRxData(): incremented each time
+//                     that leading 0xFF is dropped (non-payload path, empty
+//                     parser buffer only -- see the patch comment at the
+//                     drop site). Free-running, never reset.
 typedef struct {
   uint32_t datatx_retx;
   uint32_t prompt_orphan;
@@ -152,6 +159,7 @@ typedef struct {
   uint32_t stall_tx_ring_bytes;
   uint32_t rsp_no_cmd;
   uint32_t payload_stuck_ms;
+  uint32_t glitch_dropped;
 } walter_modem_pager_counters_t;
 
 extern "C" walter_modem_pager_counters_t walter_modem_pager_counters(void);
@@ -543,6 +551,12 @@ static bool endOfLine DISABLE_USED_WARNING;
     for(int i = 0; i < WALTER_MODEM_COMMAND_MAX_ELEMS; ++i) {                                      \
       if(atCmd[i] == NULL) {                                                                       \
         break;                                                                                     \
+      }                                                                                            \
+      /* PAGER PATCH: 1.17 -- the AT command element(s) about to be written, for the flight     */ \
+      /* recorder; the trailing "\r\n"/"\n" below is not traced separately (see the hook's own  */ \
+      /* doc comment: one call with the command string is enough). Instrumentation only.        */ \
+      if(s_pagerTraceHook) {                                                                       \
+        s_pagerTraceHook('T', (const uint8_t*) atCmd[i], strlen(atCmd[i]));                        \
       }                                                                                            \
       uart_write_bytes(_uartNo, atCmd[i], strlen(atCmd[i]));                                       \
     }                                                                                              \

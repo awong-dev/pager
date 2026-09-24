@@ -7,6 +7,7 @@
 #include "nvs.h"
 #include "esp_system.h"
 #include "esp_sleep.h"
+#include "esp_rom_sys.h" // esp_rom_delay_us(), `rts fc`'s CTS sampling loop (debug build only)
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -17,6 +18,7 @@
 
 #include "accel.h"
 #include "catrust.h"
+#include "flightrec.h" // docs/SLEEP_PAGE_LOSS_BRIEF.md §6 item A; no-op stubs outside a debug build
 #include "ident.h"
 #include "watchdog.h"
 #include "carrier.h"
@@ -183,13 +185,19 @@ static int cmd_sleeptest(int argc, char **argv)
 {
     if (argc == 1) {
         modes_debug_sleeptest_report();
+        // docs/SLEEP_PAGE_LOSS_BRIEF.md §6 item A: let the bench operator
+        // know a byte-level dump is available without having to guess.
+        uint32_t n = flightrec_count();
+        if (n > 0) {
+            printf("flightrec: %u records held, run `flightrec` to dump\n", (unsigned) n);
+        }
         return 0;
     }
     long m = strtol(argv[1], NULL, 10);
     if (m < 1 || m > 120) {
         printf("usage: sleeptest [<minutes 1..120> [yield_ms 0|30..10000] "
-               "[interval_ms 0|200..60000] [probe_wait_ms 0|100..15000]]   "
-               "(0 = build default)\n");
+               "[interval_ms 0|200..60000] [probe_wait_ms 0|100..15000] "
+               "[wake0_ms 0|0..2000]]   (0 = build default)\n");
         return 1;
     }
     long yield_ms = 0;    // 0 = use PAGER_POST_WAKE_YIELD_MS
@@ -224,12 +232,23 @@ static int cmd_sleeptest(int argc, char **argv)
         probe_wait_ms = strtol(argv[4], NULL, 10);
         if (probe_wait_ms != 0 && (probe_wait_ms < 100 || probe_wait_ms > 15000)) {
             printf("usage: sleeptest <minutes> [yield_ms 0|30..10000] [interval_ms 0|200..60000] "
-                   "[probe_wait_ms 0|100..15000]\n");
+                   "[probe_wait_ms 0|100..15000] [wake0_ms 0..2000]\n");
+            return 1;
+        }
+    }
+    // docs/SLEEP_PAGE_LOSS_BRIEF.md §6 item F: 0 (default) leaves IO46
+    // untouched, today's behaviour.
+    long wake0_ms = 0;
+    if (argc >= 6) {
+        wake0_ms = strtol(argv[5], NULL, 10);
+        if (wake0_ms < 0 || wake0_ms > 2000) {
+            printf("usage: sleeptest <minutes> [yield_ms 0|30..10000] [interval_ms 0|200..60000] "
+                   "[probe_wait_ms 0|100..15000] [wake0_ms 0..2000]\n");
             return 1;
         }
     }
     modes_debug_sleeptest_start((uint32_t) m, (uint32_t) yield_ms, (uint32_t) interval_ms,
-                                (uint32_t) probe_wait_ms);
+                                (uint32_t) probe_wait_ms, (uint32_t) wake0_ms);
     return 0;
 }
 
@@ -248,6 +267,108 @@ static int cmd_at(int argc, char **argv)
     bool ok = net_debug_at(line);
     printf("at: %s\n", ok ? "OK" : "ERROR/timeout");
     return ok ? 0 : 1;
+}
+
+// docs/SLEEP_PAGE_LOSS_BRIEF.md §6 item A: `flightrec` dumps the flight
+// recorder ring (flightrec.h); `flightrec clear` resets it (same effect a
+// fresh `sleeptest` start has) without dumping. Debug build only.
+static int cmd_flightrec(int argc, char **argv)
+{
+    if (argc == 2 && strcmp(argv[1], "clear") == 0) {
+        flightrec_clear();
+        printf("flightrec: cleared\n");
+        return 0;
+    }
+    if (argc != 1) {
+        printf("usage: flightrec [clear]\n");
+        return 1;
+    }
+    flightrec_dump();
+    return 0;
+}
+
+// docs/SLEEP_PAGE_LOSS_BRIEF.md §6 items B/D: `rts <0|1|fc>` -- an awake,
+// on-demand version of net_sleep()'s own RTS choreography, for the
+// interface-wake-latency experiment. `rts 0`/`rts 1`: flow control off,
+// RTS driven to that level as a plain GPIO (net_debug_rts(), net.cpp).
+// `rts fc`: hardware CTS/RTS flow control restored, then CTS sampled every
+// 1 ms for 300 ms (esp_rom_delay_us()), printing the initial level and
+// every transition with its ms offset -- flightrec_cts_level() is a plain
+// gpio_get_level() read, meaningful with or without a recording open.
+static int cmd_rts(int argc, char **argv)
+{
+    if (argc != 2) {
+        printf("usage: rts <0|1|fc>\n");
+        return 1;
+    }
+    if (strcmp(argv[1], "0") == 0) {
+        net_debug_rts(0);
+        printf("rts: flow control off, RTS=0\n");
+        return 0;
+    }
+    if (strcmp(argv[1], "1") == 0) {
+        net_debug_rts(1);
+        printf("rts: flow control off, RTS=1\n");
+        return 0;
+    }
+    if (strcmp(argv[1], "fc") == 0) {
+        net_debug_rts(2);
+        int last = flightrec_cts_level();
+        printf("rts: flow control restored; cts@0ms=%d\n", last);
+        for (int ms = 1; ms <= 300; ms++) {
+            esp_rom_delay_us(1000);
+            int lvl = flightrec_cts_level();
+            if (lvl != last) {
+                printf("rts: cts@%dms=%d\n", ms, lvl);
+                last = lvl;
+            }
+        }
+        return 0;
+    }
+    printf("usage: rts <0|1|fc>\n");
+    return 1;
+}
+
+// docs/SLEEP_PAGE_LOSS_BRIEF.md §6 item F: `wake0 <0|1|z>` -- IO46
+// (LTE_WAKE0, pins.h's PAGER_PIN_WAKE0) driven low/high, or set back to a
+// floating input. Independent of `sleeptest`'s own wake0_ms pulse
+// (modes.c) -- this is the awake, on-demand version of the same
+// experiment.
+static int cmd_wake0(int argc, char **argv)
+{
+    if (argc != 2) {
+        printf("usage: wake0 <0|1|z>\n");
+        return 1;
+    }
+    if (strcmp(argv[1], "z") == 0) {
+        gpio_config_t cfg = {
+            .pin_bit_mask = 1ULL << PAGER_PIN_WAKE0,
+            .mode = GPIO_MODE_INPUT,
+            .pull_up_en = GPIO_PULLUP_DISABLE,
+            .pull_down_en = GPIO_PULLDOWN_DISABLE,
+            .intr_type = GPIO_INTR_DISABLE,
+        };
+        gpio_config(&cfg);
+        printf("wake0: input, no pull\n");
+        return 0;
+    }
+    if (strcmp(argv[1], "0") == 0 || strcmp(argv[1], "1") == 0) {
+        gpio_set_direction((gpio_num_t) PAGER_PIN_WAKE0, GPIO_MODE_OUTPUT);
+        gpio_set_level((gpio_num_t) PAGER_PIN_WAKE0, argv[1][0] - '0');
+        printf("wake0: output %c\n", argv[1][0]);
+        return 0;
+    }
+    printf("usage: wake0 <0|1|z>\n");
+    return 1;
+}
+
+// `cts` -- print the current CTS level (IO47). Debug build only.
+static int cmd_cts(int argc, char **argv)
+{
+    (void) argc;
+    (void) argv;
+    printf("cts: %d\n", flightrec_cts_level());
+    return 0;
 }
 
 #endif
@@ -1226,9 +1347,11 @@ static void start_normal_console(void)
 
     const esp_console_cmd_t sleeptest_cmd = {
         .command = "sleeptest",
-        .help = "sleeptest [<minutes> [yield_ms] [interval_ms] [probe_wait_ms]] -- really light-sleep for a "
-                 "while (optionally overriding the post-wake yield and the wake interval), "
-                 "then report what arrived",
+        .help = "sleeptest [<minutes> [yield_ms] [interval_ms] [probe_wait_ms] [wake0_ms]] -- really "
+                 "light-sleep for a while (optionally overriding the post-wake yield, the wake "
+                 "interval, the probe wait, and pulsing IO46/WAKE0 on every wake), then report "
+                 "what arrived; bare `sleeptest` re-prints the last report plus the flightrec "
+                 "summary if one is held",
         .hint = NULL,
         .func = &cmd_sleeptest,
     };
@@ -1241,6 +1364,40 @@ static void start_normal_console(void)
         .func = &cmd_at,
     };
     ESP_ERROR_CHECK(esp_console_cmd_register(&at_cmd));
+
+    const esp_console_cmd_t flightrec_cmd = {
+        .command = "flightrec",
+        .help = "flightrec [clear] -- dump (or reset) the flight recorder's raw UART/wake/probe/"
+                 "sleep ring (docs/SLEEP_PAGE_LOSS_BRIEF.md §6 item A)",
+        .hint = NULL,
+        .func = &cmd_flightrec,
+    };
+    ESP_ERROR_CHECK(esp_console_cmd_register(&flightrec_cmd));
+
+    const esp_console_cmd_t rts_cmd = {
+        .command = "rts",
+        .help = "rts <0|1|fc> -- awake RTS/CTS experiment: 0/1 = flow control off, RTS driven low/"
+                 "high; fc = flow control restored, CTS sampled for 300 ms",
+        .hint = NULL,
+        .func = &cmd_rts,
+    };
+    ESP_ERROR_CHECK(esp_console_cmd_register(&rts_cmd));
+
+    const esp_console_cmd_t wake0_cmd = {
+        .command = "wake0",
+        .help = "wake0 <0|1|z> -- drive IO46/LTE_WAKE0 low/high, or float it as an input",
+        .hint = NULL,
+        .func = &cmd_wake0,
+    };
+    ESP_ERROR_CHECK(esp_console_cmd_register(&wake0_cmd));
+
+    const esp_console_cmd_t cts_cmd = {
+        .command = "cts",
+        .help = "cts -- print the current CTS (IO47) level",
+        .hint = NULL,
+        .func = &cmd_cts,
+    };
+    ESP_ERROR_CHECK(esp_console_cmd_register(&cts_cmd));
 
     register_carrier_cmd();
     register_input_cmds();
@@ -1337,6 +1494,16 @@ void app_main(void)
 {
     ESP_LOGI(TAG, "school_pager boot");
     watchdog_boot(); // logs why we reset and where the loop was; arms the RTC watchdog
+
+    // docs/SLEEP_PAGE_LOSS_BRIEF.md §6 item A: installs the library's UART
+    // trace hook (PATCHES.md 1.17) before any path below can reach
+    // WalterModem::begin() (net_check_sim() in the IDENT-missing branch
+    // just below, or modes_boot() otherwise) -- the hook itself is inert
+    // (every flightrec_* call is a no-op) until a `sleeptest` window arms
+    // recording, so this is safe this early. No modem/sleep-state effect:
+    // one PSRAM allocation and one function-pointer store. No-op stub
+    // outside a debug build.
+    flightrec_init();
 
     // Owner request, beta feedback 2026-09-23: flag a crash/watchdog/brownout
     // reset in the status bar until the first key press (ui.c's

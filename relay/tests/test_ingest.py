@@ -674,6 +674,93 @@ def test_status_without_xport_still_validates_and_leaves_it_unknown():
     assert devices_store.get_device("pgr-xport-2").status.state == "online"
 
 
+# ---- Crash diagnostics (this task, docs/PROTOCOL.md §5.1): `rst`/`stage`/`abn` ----
+
+
+def test_status_persists_rst_stage_abn_and_logs_accepted_status(caplog):
+    _make_user("crashuser1", "crashuser1")
+    _make_pager_device("pgr-crash-1", "crashuser1")
+    ingest, _broker = _ingest()
+
+    with caplog.at_level("INFO", logger="relay.ingest"):
+        ingest.handle_status(
+            status_topic("pgr-crash-1"),
+            online_status_payload("s_00000001", rst=4, stage=6, abn=2, link=1),
+        )
+
+    status = devices_store.get_device("pgr-crash-1").status
+    assert status.rst == 4
+    assert status.stage == 6
+    assert status.abn == 2
+
+    # rst=4 is panic, stage=6 is "input/ui" per the firmware's stage table.
+    assert any(
+        "status pgr-crash-1: state=online link=1 rst=4 stage=input/ui abn=2" in rec.message
+        for rec in caplog.records
+    )
+
+
+def test_status_without_rst_stage_abn_stores_nothing_for_them(caplog):
+    """Absent-field compatibility (docs/PROTOCOL.md §0): firmware that
+    predates these fields must still validate and store, with `rst`/
+    `stage`/`abn` reported as unknown (`None`), and the accepted-status log
+    line still emitted (with `None`s, not a crash)."""
+    _make_user("crashuser2", "crashuser2")
+    _make_pager_device("pgr-crash-2", "crashuser2")
+    ingest, _broker = _ingest()
+
+    with caplog.at_level("INFO", logger="relay.ingest"):
+        ingest.handle_status(
+            status_topic("pgr-crash-2"), online_status_payload("s_00000001")
+        )
+
+    status = devices_store.get_device("pgr-crash-2").status
+    assert status.rst is None
+    assert status.stage is None
+    assert status.abn is None
+    assert status.state == "online"
+    assert any(
+        "status pgr-crash-2: state=online link=None rst=None stage=None abn=None" in rec.message
+        for rec in caplog.records
+    )
+
+
+def test_status_logs_unresolved_stage_index_as_raw_int(caplog):
+    """A `stage` index the relay's table predates (future firmware) is
+    logged as the raw int, not raised."""
+    _make_user("crashuser3", "crashuser3")
+    _make_pager_device("pgr-crash-3", "crashuser3")
+    ingest, _broker = _ingest()
+
+    with caplog.at_level("INFO", logger="relay.ingest"):
+        ingest.handle_status(
+            status_topic("pgr-crash-3"), online_status_payload("s_00000001", stage=200)
+        )
+
+    assert devices_store.get_device("pgr-crash-3").status.stage == 200
+    assert any("stage=200" in rec.message for rec in caplog.records)
+
+
+def test_status_rejects_out_of_range_rst_stage_abn_as_malformed():
+    _make_user("crashuser4", "crashuser4")
+    _make_pager_device("pgr-crash-4", "crashuser4")
+    ingest, _broker = _ingest()
+
+    ingest.handle_status(
+        status_topic("pgr-crash-4"), online_status_payload("s_00000001", rst=256)
+    )
+    ingest.handle_status(
+        status_topic("pgr-crash-4"), online_status_payload("s_00000002", stage=-1)
+    )
+    ingest.handle_status(
+        status_topic("pgr-crash-4"), online_status_payload("s_00000003", abn=65536)
+    )
+
+    # None of the three malformed statuses were accepted -- no status ever
+    # got stored for this device.
+    assert devices_store.get_device("pgr-crash-4").status.state is None
+
+
 def test_status_logs_security_event_on_transition_into_broken(caplog):
     _make_user("catrustuser2", "catrustuser2")
     _make_pager_device("pgr-catrust-2", "catrustuser2")

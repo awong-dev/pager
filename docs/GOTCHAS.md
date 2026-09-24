@@ -135,12 +135,22 @@ and not inside the setup bundle (a Let's Encrypt root is 1.9 kB).
   erase its settings: `esptool.py --chip esp32s3 erase_region 0x9000 0x6000`. Fonts are a separate
   partition at `0x11000`, built by `tools/mkassets.py`.
 - Noto Sans is the text face. Literata was tried on the real panel and rejected.
-- **USB and light sleep:** the USB-Serial-JTAG port dies in light sleep and often does not come
-  back afterwards, even across `esp_restart()`; on the bench it stayed dead for hours and needed
-  a physical reset. The debug build's `sleeptest` now ends with a reset through the RTC watchdog,
-  which resets the USB block too (UNVERIFIED that this brings the port back). A single serial
-  capture spanning a restart shows nothing; open the port again afterwards. The port's name changes
-  (`/dev/cu.usbmodem101`, `...1101`): always glob.
+
+## A stray 0xFF byte on every wake from light sleep
+
+**Symptom:** pages delivered 191–237 s late or never; when delivered, probes answer in 4 ms or not at all; unpaired response lines appear as `rsp_no_cmd` counter.
+
+**Cause (resolved 24 Sep 2026):** the modem UART emits exactly one 0xFF byte in the millisecond when the host reconfigures flow control on wake. The vendored parser assumes messages start with "\r\n" and searches for trailing CRLF from byte 2, so 0xFF glues to the next line: "\xff\r\nOK" (unmatched probe) or "\xff\r\n+SQNSMQTTONMESSAGE:..." (unrecognised notification, lost for good).
+
+**Fix:** library patch 1.18 drops a leading 0xFF when the buffer is empty and no payload is expected, and counts dropped bytes in `glitch_dropped`.
+
+**How to see it:** flash the debug build and run `sleeptest`. The flight recorder logs every UART byte: `flightrec` dumps the PSRAM ring, `flightrec clear` resets it.
+
+## USB and light sleep
+
+**USB dies in light sleep** and often does not come back afterwards, even across `esp_restart()`; on the bench it stayed dead for hours and needed a physical reset. The debug build's `sleeptest` now ends with a reset through the RTC watchdog, which resets the USB block too (UNVERIFIED that this brings the port back). A single serial capture spanning a restart shows nothing; open the port again afterwards. The port's name changes (`/dev/cu.usbmodem101`, `...1101`): always glob.
+
+**15-minute hold on exit:** the debug build holds the CPU running for 15 minutes after a `sleeptest` window ends (printing a "still running" reminder every 60 s), so a USB replug can retrieve the flight recorder PSRAM dump with the `flightrec` console command before the next hard reset.
 
 ## Display
 

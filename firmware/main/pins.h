@@ -34,4 +34,11 @@
 // Button
 #define PAGER_PIN_BUTTON 1  // active-low, RTC GPIO
 
+// LTE_WAKE0 (schematic name): a modem input, unused by firmware and by the
+// vendored library today. docs/SLEEP_PAGE_LOSS_BRIEF.md §6 item F: the
+// debug-build `wake0`/`sleeptest ... wake0_ms` instrumentation pulses it
+// to see whether it affects the modem's UART wake latency. Untouched
+// (input, no pull) unless that instrumentation is used.
+#define PAGER_PIN_WAKE0 46
+
 #endif // PINS_H
