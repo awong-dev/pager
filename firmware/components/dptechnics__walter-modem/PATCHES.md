@@ -375,3 +375,61 @@ attempts (topic tail, length, issue time, outcome, elapsed ms), exposed via `net
 `net_publish_ring_entry_t`. Both are printed by `modes_debug_sleeptest_report()`
 (`firmware/main/modes.c`) and, for the counters, by the `mqtttest` debug console command
 (`firmware/main/main.c`).
+
+## 1.13 Per-command timeout for MQTT publish/subscribe/disconnect/config, plus stall-attribution counters (`src/WalterModem.cpp`, `src/WalterModem.h`, `src/WalterDefines.h`, `src/proto/WalterMQTT.cpp`)
+
+`docs/SLEEP_URC_TASKS.md` S3/S6, `docs/RCA_SLEEP_URC.md` §5 fix 3-4 and §1's own arithmetic
+(`build/bench-logs/phaseAB-report.log:101`, `phaseAD-report.log:29`: two 30 010 ms `/up` publish
+ring entries): every AT command shared one global timeout/attempt count
+(`CONFIG_WALTER_MODEM_CMD_TIMEOUT_MS` × `WALTER_MODEM_DEFAULT_CMD_ATTEMPTS`, 30 s × 3 = 90 s worst
+case per stall), which §1 could not use to tell two simultaneous 30 s stalls apart, and which
+`docs/SLEEP_URC_DESIGN.md` §6's "Watchdog arithmetic" shows **two** such stalls in one watchdog
+stage (180 s) exceed the 95 s budget (`watchdog.c:25`) and stop feeding — the likely mechanism of
+the uncaptured phaseAA reboot.
+
+**Fix (1): per-command timeout.** `WalterModemCmd` gains a `timeoutTicks` field (default `0`,
+meaning "use the library's own `WALTER_MODEM_CMD_TIMEOUT_TICKS` default" — resolved inside
+`_queueModemCMD()`'s own translation unit, since that macro is private to `WalterModem.cpp` and not
+visible from the header). `_queueModemCMD()` gains a matching optional last parameter,
+`cmdTimeoutTicks`; every existing caller that does not pass it keeps the exact 30 s × 3 default.
+`_processModemCMD()`'s `TX_WAIT`/`DATA_TX_WAIT`/`WAIT` deadline checks now read `cmd->timeoutTicks`
+instead of the raw macro. `src/proto/WalterMQTT.cpp`'s `mqttPublish()`, `mqttSubscribe()`,
+`mqttDisconnect()` and `mqttConfig()` — the four commands PROTOCOL.md's own session/keepalive
+traffic actually blocks on — pass `10 s / 2 attempts` (`PAGER_MQTT_CMD_ATTEMPTS`,
+`PAGER_MQTT_CMD_TIMEOUT_TICKS`). `mqttConnect()` (attach/TLS/connect) is left at the 30 s / 3
+default: it already has its own 30 s M1 connect-watchdog in `xport_lte.cpp` on top of the command's
+own timeout, and the task brief asks for attach/TLS/connect to stay untouched. `WalterModem::sendCmd()`
+(the generic raw-AT entry point `xport_lte.cpp`'s liveness-ping re-SUBSCRIBE and the debug console's
+`at` command both use) is also left untouched — it has no way to know which underlying AT command a
+caller is sending, so a blanket override there would change every raw-AT caller's timeout, not just
+MQTT's.
+
+Arithmetic after this fix (docs/SLEEP_URC_DESIGN.md §6): one stalled MQTT command = 10 s × 2 = 20 s
+(was 90 s); the worst case for a stage with four such commands outstanding in sequence is
+4 × 20 s = 80 s, still under the 95 s watchdog budget (S6 confirms patch 1.10 already feeds both
+watchdogs from inside the blocking wait, so this budget is what actually matters). Patch 1.12's
+`DATA_TX_WAIT` payload-write-on-timeout recovery is unchanged — it still fires on a command's first
+timeout, just after 10 s instead of 30 s for these four commands.
+
+**Fix (2): stall attribution.** Four more counters/fields in `walter_modem_pager_counters_t`
+(`WalterDefines.h`): `prompt_handled` (the `"> "` prompt handler in `_processModemRSP()` actually
+wrote a payload — previously implicit, now counted), `payload_bytes_written` (the return value of
+`uart_write_bytes()` at both payload-write sites — the prompt handler and patch 1.12's
+timeout-triggered write — previously discarded entirely), `txdone_timeouts` (`_uartWrite()`'s
+`uart_wait_tx_done(_uartNo, pdMS_TO_TICKS(10))` call now keeps its return value instead of dropping
+it, and counts every non-`ESP_OK` result — 10 ms at 115200 baud is ~115 bytes, so a longer command
+line can legitimately return unflushed), and a stall snapshot (`stall_cmd` — first 24 characters of
+the AT command line; `stall_elapsed_ms`; `stall_cts_level` — `gpio_get_level()` on the CTS pin;
+`stall_tx_ring_bytes` — `uart_get_tx_buffer_free_size()`, which reads 0 on this UART's 0-byte TX
+ring, `uart_driver_install(uartNo, UART_BUF_SIZE * 2, 0, 0, NULL, 0)` in `begin()` — `txdone_timeouts`
+above is the real discriminator for a wire-level stall, this field is included because the task
+asked for it). `WalterModem::_pagerSnapshotStall()` (new private static method) is called from
+`_processModemCMD()` every time it re-evaluates a still-pending command whose current attempt has
+run for >= 5 s, overwriting the previous snapshot — it always reflects the most recently observed
+slow command, not necessarily one still stalled. `firmware/main/net.cpp`/`modes.c` print all of the
+above as two new sleeptest report lines, `tx counters: ...` and (only when `stall_cmd` is non-empty)
+`stalled command: "..." elapsed=... ms cts=... tx_ring_free=... B`.
+
+**Power effect**: none — the timeout/attempt changes only shorten how long a stall can block before
+the existing recovery paths run (a net power *saving* per occurrence, 0.33 mAh → 0.13 mAh per S3's
+own estimate); the counters are plain reads/increments, no extra AT traffic.

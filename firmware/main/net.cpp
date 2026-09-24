@@ -1518,6 +1518,16 @@ extern "C" net_pager_counters_t net_get_pager_counters(void)
     out.prompt_orphan = c.prompt_orphan;
     out.buf_drop_queue = c.buf_drop_queue;
     out.buf_drop_pool = c.buf_drop_pool;
+    // S3 (patch 1.13): see WalterDefines.h's own comment on
+    // walter_modem_pager_counters_t for what each of these means.
+    out.prompt_handled = c.prompt_handled;
+    out.payload_bytes_written = c.payload_bytes_written;
+    out.txdone_timeouts = c.txdone_timeouts;
+    static_assert(sizeof(out.stall_cmd) == sizeof(c.stall_cmd), "net.h/WalterDefines.h stall_cmd size mismatch");
+    memcpy(out.stall_cmd, c.stall_cmd, sizeof(out.stall_cmd));
+    out.stall_elapsed_ms = c.stall_elapsed_ms;
+    out.stall_cts_level = c.stall_cts_level;
+    out.stall_tx_ring_bytes = c.stall_tx_ring_bytes;
     return out;
 }
 

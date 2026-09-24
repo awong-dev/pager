@@ -92,6 +92,18 @@ static uint32_t s_pagerCntPromptOrphan = 0;
 static uint32_t s_pagerCntBufDropQueue = 0;
 static uint32_t s_pagerCntBufDropPool = 0;
 
+// PAGER PATCH: 1.13 (docs/RCA_SLEEP_URC.md §5 fix 3-4) -- see
+// WalterDefines.h's own comment on walter_modem_pager_counters_t for what
+// each of these means. Same "plain uint32_t, no atomics" reasoning as the
+// four counters above.
+static uint32_t s_pagerCntPromptHandled = 0;
+static uint32_t s_pagerCntPayloadBytesWritten = 0;
+static uint32_t s_pagerCntTxdoneTimeouts = 0;
+static char s_pagerStallCmd[25] = { 0 };
+static uint32_t s_pagerStallElapsedMs = 0;
+static int32_t s_pagerStallCtsLevel = -1;
+static uint32_t s_pagerStallTxRingBytes = 0;
+
 extern "C" walter_modem_pager_counters_t walter_modem_pager_counters(void)
 {
   walter_modem_pager_counters_t c;
@@ -99,6 +111,13 @@ extern "C" walter_modem_pager_counters_t walter_modem_pager_counters(void)
   c.prompt_orphan = s_pagerCntPromptOrphan;
   c.buf_drop_queue = s_pagerCntBufDropQueue;
   c.buf_drop_pool = s_pagerCntBufDropPool;
+  c.prompt_handled = s_pagerCntPromptHandled;
+  c.payload_bytes_written = s_pagerCntPayloadBytesWritten;
+  c.txdone_timeouts = s_pagerCntTxdoneTimeouts;
+  memcpy(c.stall_cmd, s_pagerStallCmd, sizeof(c.stall_cmd));
+  c.stall_elapsed_ms = s_pagerStallElapsedMs;
+  c.stall_cts_level = s_pagerStallCtsLevel;
+  c.stall_tx_ring_bytes = s_pagerStallTxRingBytes;
   return c;
 }
 
@@ -963,7 +982,13 @@ size_t WalterModem::_uartWrite(uint8_t* buf, int writeSize)
   _uart->flush();
 #else
   writeSize = uart_write_bytes(_uartNo, buf, writeSize);
-  uart_wait_tx_done(_uartNo, pdMS_TO_TICKS(10));
+  // PAGER PATCH: 1.13 (docs/RCA_SLEEP_URC.md §5 fix 3-4): this return value
+  // used to be discarded entirely -- a CTS-blocked command line could return
+  // from this function unflushed with no counter ever showing it. 10ms at
+  // 115200 is ~115 bytes, so this is a real possibility for anything longer.
+  if(uart_wait_tx_done(_uartNo, pdMS_TO_TICKS(10)) != ESP_OK) {
+    s_pagerCntTxdoneTimeouts++;
+  }
 #endif
 
   return writeSize;
@@ -1726,7 +1751,7 @@ WalterModemCmd* WalterModem::_queueModemCMD(
     walterModemCb userCb, void* userCbArgs,
     void (*completeHandler)(struct sWalterModemCmd* cmd, WalterModemState result),
     void* completeHandlerArg, WalterModemCmdType type, uint8_t* payload, uint16_t payloadSize,
-    WalterModemBuffer* stringsBuffer, uint8_t maxAttempts)
+    WalterModemBuffer* stringsBuffer, uint8_t maxAttempts, TickType_t cmdTimeoutTicks)
 {
   WalterModemCmd* cmd = _cmdPoolGet();
   if(cmd == NULL) {
@@ -1751,6 +1776,12 @@ WalterModemCmd* WalterModem::_queueModemCMD(
   cmd->payload = payload;
   cmd->payloadSize = payloadSize;
   cmd->maxAttempts = maxAttempts;
+  // PAGER PATCH: 1.13. 0 (every caller that does not pass this new,
+  // optional last parameter) means "use the library's own default" --
+  // WALTER_MODEM_CMD_TIMEOUT_TICKS is only visible in this translation
+  // unit, which is exactly why the header default is 0 rather than that
+  // macro (see WalterModem.h's own doc comment on this parameter).
+  cmd->timeoutTicks = cmdTimeoutTicks ? cmdTimeoutTicks : WALTER_MODEM_CMD_TIMEOUT_TICKS;
   cmd->atRspLen = atRsp == NULL ? 0 : strlen(atRsp);
   cmd->state = WALTER_MODEM_CMD_STATE_NEW;
   cmd->attempt = 0;
@@ -1797,6 +1828,31 @@ void WalterModem::_finishModemCMD(WalterModemCmd* cmd, WalterModemState result)
   }
 }
 
+// PAGER PATCH: 1.13 (docs/RCA_SLEEP_URC.md §5 fix 4). See the declaration's
+// own doc comment (WalterModem.h) for the contract.
+void WalterModem::_pagerSnapshotStall(WalterModemCmd* cmd, TickType_t diffTicks)
+{
+  size_t n = 0;
+  for(size_t i = 0; cmd->atCmd[i] != NULL && n + 1 < sizeof(s_pagerStallCmd); i++) {
+    size_t len = strlen(cmd->atCmd[i]);
+    size_t room = sizeof(s_pagerStallCmd) - 1 - n;
+    size_t copy = (len < room) ? len : room;
+    memcpy(s_pagerStallCmd + n, cmd->atCmd[i], copy);
+    n += copy;
+  }
+  s_pagerStallCmd[n] = '\0';
+  s_pagerStallElapsedMs = (uint32_t) (diffTicks * portTICK_PERIOD_MS);
+  s_pagerStallCtsLevel = gpio_get_level((gpio_num_t) WALTER_MODEM_PIN_CTS);
+  // This UART's TX ring buffer is installed with size 0 (this file's own
+  // uart_driver_install() call), so uart_get_tx_buffer_free_size() always
+  // reads 0 here -- see WalterDefines.h's own comment on
+  // walter_modem_pager_counters_t for why txdone_timeouts is the real
+  // discriminator for a wire-level stall, not this field.
+  size_t txFree = 0;
+  uart_get_tx_buffer_free_size(_uartNo, &txFree);
+  s_pagerStallTxRingBytes = (uint32_t) txFree;
+}
+
 TickType_t WalterModem::_processModemCMD(WalterModemCmd* cmd, bool queueError)
 {
   if(queueError) {
@@ -1818,10 +1874,18 @@ TickType_t WalterModem::_processModemCMD(WalterModemCmd* cmd, bool queueError)
       cmd->attempt = 1;
       cmd->attemptStart = xTaskGetTickCount();
       cmd->state = WALTER_MODEM_CMD_STATE_PENDING;
-      return WALTER_MODEM_CMD_TIMEOUT_TICKS;
+      return cmd->timeoutTicks; // PAGER PATCH: 1.13 (was WALTER_MODEM_CMD_TIMEOUT_TICKS)
     } else {
       TickType_t diff = xTaskGetTickCount() - cmd->attemptStart;
-      bool timedOut = diff >= WALTER_MODEM_CMD_TIMEOUT_TICKS;
+      // PAGER PATCH: 1.13 (docs/RCA_SLEEP_URC.md §5 fix 4): attribute a slow
+      // command to the sleeptest report before it necessarily even times
+      // out, so a caller with a shorter override (WalterMQTT.cpp, 10s) and
+      // one still at the 30s default both get named regardless of which one
+      // this particular re-evaluation belongs to.
+      if(diff >= pdMS_TO_TICKS(5000)) {
+        _pagerSnapshotStall(cmd, diff);
+      }
+      bool timedOut = diff >= cmd->timeoutTicks; // PAGER PATCH: 1.13 (was the raw macro)
       if(timedOut || cmd->state == WALTER_MODEM_CMD_STATE_RETRY_AFTER_ERROR) {
         if(timedOut) {
           ESP_LOGW("WalterModem", "Command time-out (TX) Attempt %u of %u", cmd->attempt,
@@ -1880,14 +1944,18 @@ TickType_t WalterModem::_processModemCMD(WalterModemCmd* cmd, bool queueError)
 
 #ifdef ARDUINO
             _uart->write(cmd->payload, cmd->payloadSize);
+            s_pagerCntPayloadBytesWritten += cmd->payloadSize; // PAGER PATCH: 1.13
 #else
-            uart_write_bytes(_uartNo, cmd->payload, cmd->payloadSize);
+            int written = uart_write_bytes(_uartNo, cmd->payload, cmd->payloadSize);
+            if(written > 0) {
+              s_pagerCntPayloadBytesWritten += (uint32_t) written; // PAGER PATCH: 1.13
+            }
 #endif
 
             cmd->attempt += 1;
             cmd->attemptStart = xTaskGetTickCount();
             cmd->state = WALTER_MODEM_CMD_STATE_PENDING;
-            return WALTER_MODEM_CMD_TIMEOUT_TICKS;
+            return cmd->timeoutTicks; // PAGER PATCH: 1.13 (was WALTER_MODEM_CMD_TIMEOUT_TICKS)
           } else {
             _finishModemCMD(cmd, WALTER_MODEM_STATE_TIMEOUT);
             break;
@@ -1901,10 +1969,10 @@ TickType_t WalterModem::_processModemCMD(WalterModemCmd* cmd, bool queueError)
           cmd->attempt += 1;
           cmd->attemptStart = xTaskGetTickCount();
           cmd->state = WALTER_MODEM_CMD_STATE_PENDING;
-          return WALTER_MODEM_CMD_TIMEOUT_TICKS;
+          return cmd->timeoutTicks; // PAGER PATCH: 1.13 (was WALTER_MODEM_CMD_TIMEOUT_TICKS)
         }
       } else {
-        return WALTER_MODEM_CMD_TIMEOUT_TICKS - diff;
+        return cmd->timeoutTicks - diff; // PAGER PATCH: 1.13 (was WALTER_MODEM_CMD_TIMEOUT_TICKS - diff)
       }
     }
     break;
@@ -1913,10 +1981,13 @@ TickType_t WalterModem::_processModemCMD(WalterModemCmd* cmd, bool queueError)
     if(cmd->state == WALTER_MODEM_CMD_STATE_NEW) {
       cmd->attemptStart = xTaskGetTickCount();
       cmd->state = WALTER_MODEM_CMD_STATE_PENDING;
-      return WALTER_MODEM_CMD_TIMEOUT_TICKS;
+      return cmd->timeoutTicks; // PAGER PATCH: 1.13 (was WALTER_MODEM_CMD_TIMEOUT_TICKS)
     } else {
       TickType_t diff = xTaskGetTickCount() - cmd->attemptStart;
-      if(diff >= WALTER_MODEM_CMD_TIMEOUT_TICKS) {
+      if(diff >= pdMS_TO_TICKS(5000)) {
+        _pagerSnapshotStall(cmd, diff); // PAGER PATCH: 1.13
+      }
+      if(diff >= cmd->timeoutTicks) { // PAGER PATCH: 1.13 (was the raw macro)
         ESP_LOGW("WalterModem", "Command time-out (WAIT)");
         _receivingPayload = false;
         _finishModemCMD(cmd, WALTER_MODEM_STATE_TIMEOUT);
@@ -2281,6 +2352,7 @@ void WalterModem::_processModemRSP(WalterModemCmd* cmd, WalterModemBuffer* buff)
   /* Data prompt for data transmission */
   if(_buffStartsWith(buff, "> ") || _buffStartsWith(buff, ">>>")) {
     if(cmd != NULL && cmd->type == WALTER_MODEM_CMD_TYPE_DATA_TX_WAIT && cmd->payload != NULL) {
+      s_pagerCntPromptHandled++; // PAGER PATCH: 1.13
 
 #if CONFIG_LOG_MAXIMUM_LEVEL >= ESP_LOG_DEBUG
       /* Log the payload data being transmitted with escaped characters */
@@ -2294,10 +2366,16 @@ void WalterModem::_processModemRSP(WalterModemCmd* cmd, WalterModemBuffer* buff)
 #ifdef ARDUINO
 
       _uart->write(cmd->payload, cmd->payloadSize);
+      s_pagerCntPayloadBytesWritten += cmd->payloadSize; // PAGER PATCH: 1.13
 
 #else
 
-      uart_write_bytes(_uartNo, cmd->payload, cmd->payloadSize);
+      // PAGER PATCH: 1.13 (docs/RCA_SLEEP_URC.md §5 fix 3-4): this return
+      // value used to be discarded, same as the retry write above.
+      int written = uart_write_bytes(_uartNo, cmd->payload, cmd->payloadSize);
+      if(written > 0) {
+        s_pagerCntPayloadBytesWritten += (uint32_t) written;
+      }
 
 #endif
     }

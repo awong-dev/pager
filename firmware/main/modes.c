@@ -1232,6 +1232,18 @@ void modes_debug_sleeptest_report(void)
     st_appendf(&n, "modem counters: datatx_retx=%u prompt_orphan=%u buf_drop_queue=%u buf_drop_pool=%u\n",
                (unsigned) pc.datatx_retx, (unsigned) pc.prompt_orphan, (unsigned) pc.buf_drop_queue,
                (unsigned) pc.buf_drop_pool);
+    // S3 (patch 1.13, docs/RCA_SLEEP_URC.md §5 fix 3-4): attribution for the
+    // two 30s stalls fix 1's arithmetic could not tell apart -- which write
+    // path actually moved bytes, whether uart_wait_tx_done() ever timed out,
+    // and which command was outstanding the last time one ran >= 5s.
+    st_appendf(&n, "tx counters: prompt_handled=%u payload_bytes_written=%u txdone_timeouts=%u\n",
+               (unsigned) pc.prompt_handled, (unsigned) pc.payload_bytes_written,
+               (unsigned) pc.txdone_timeouts);
+    if (pc.stall_cmd[0] != '\0') {
+        st_appendf(&n, "stalled command: \"%.24s\" elapsed=%u ms cts=%d tx_ring_free=%u B\n",
+                   pc.stall_cmd, (unsigned) pc.stall_elapsed_ms, (int) pc.stall_cts_level,
+                   (unsigned) pc.stall_tx_ring_bytes);
+    }
     // S1: the URC drain probe's own counters, next to the modem counters
     // above, plus RCA_SLEEP_URC.md fix 1's discriminator (bytes buffered in
     // the modem UART's RX ring, sampled 50 ms after each wake).

@@ -50,6 +50,24 @@
 
 #if CONFIG_WALTER_MODEM_ENABLE_MQTT
 #pragma region PUBLIC_METHODS
+
+// PAGER PATCH: 1.13 (docs/SLEEP_URC_DESIGN.md §6 "Watchdog arithmetic" /
+// "Ack stall", docs/RCA_SLEEP_URC.md §5 fix 3-4). MQTT publish/subscribe/
+// disconnect/config commands get a shorter per-command timeout and fewer
+// attempts than the library's 30s/3 default: a stalled command in this
+// group is one of the two 30s-per-attempt stalls RCA_SLEEP_URC.md §1
+// measured (30208+30208+30214+61302+30210+16055 = 198s of a 360s window),
+// and mqttConnect() (attach/TLS/connect, left at the 30s/3 default per the
+// task) already has its own 30s M1 connect-watchdog in xport_lte.cpp on top
+// of this. 10s x 2 attempts = 20s worst case per occurrence (was 90s),
+// leaving four such stalls inside the 95s watchdog budget in one stage
+// instead of one (docs/SLEEP_URC_DESIGN.md §6 "Watchdog arithmetic", S6).
+// Patch 1.12's DATA_TX_WAIT payload-write-on-timeout recovery still applies
+// unchanged -- this only shortens how long each attempt waits before that
+// (or an ordinary command-line retry) fires.
+static constexpr TickType_t PAGER_MQTT_CMD_TIMEOUT_TICKS = pdMS_TO_TICKS(10000);
+static constexpr uint8_t PAGER_MQTT_CMD_ATTEMPTS = 2;
+
 bool WalterModem::mqttConfig(const char* client_id, const char* username, const char* password,
                              uint8_t tls_profile_id, WalterModemRsp* rsp, walterModemCb cb,
                              void* args)
@@ -69,14 +87,19 @@ bool WalterModem::mqttConfig(const char* client_id, const char* username, const 
     buf->size += sprintf((char*) buf->data + buf->size, ",%u", tls_profile_id);
   }
 
+  // PAGER PATCH: 1.13 -- 10s x 2 attempts instead of the 30s x 3 default.
   _runCmd(arr((const char*) buf->data), "OK", rsp, cb, args, NULL, NULL,
-          WALTER_MODEM_CMD_TYPE_TX_WAIT, NULL, 0, buf);
+          WALTER_MODEM_CMD_TYPE_TX_WAIT, NULL, 0, buf, PAGER_MQTT_CMD_ATTEMPTS,
+          PAGER_MQTT_CMD_TIMEOUT_TICKS);
   _returnAfterReply();
 }
 
 bool WalterModem::mqttDisconnect(WalterModemRsp* rsp, walterModemCb cb, void* args)
 {
-  _runCmd(arr("AT+SQNSMQTTDISCONNECT=0"), "OK", rsp, cb, args);
+  // PAGER PATCH: 1.13 -- 10s x 2 attempts instead of the 30s x 3 default.
+  _runCmd(arr("AT+SQNSMQTTDISCONNECT=0"), "OK", rsp, cb, args, NULL, NULL,
+          WALTER_MODEM_CMD_TYPE_TX_WAIT, NULL, 0, NULL, PAGER_MQTT_CMD_ATTEMPTS,
+          PAGER_MQTT_CMD_TIMEOUT_TICKS);
   _returnAfterReply();
 }
 
@@ -97,8 +120,14 @@ bool WalterModem::mqttConnect(const char* hostname, uint16_t port, uint16_t keep
 bool WalterModem::mqttPublish(const char* topic, uint8_t* buf, uint16_t buf_size, uint8_t qos,
                               WalterModemRsp* rsp, walterModemCb cb, void* args)
 {
+  // PAGER PATCH: 1.13 -- 10s x 2 attempts instead of the 30s x 3 default.
+  // Patch 1.12's DATA_TX_WAIT payload-write-on-timeout still fires on this
+  // command's first timeout exactly as before; this only shortens the wait
+  // before that first timeout (and the ordinary command-line retry a
+  // non-DATA_TX_WAIT command would get) from 30s to 10s.
   _runCmd(arr("AT+SQNSMQTTPUBLISH=0,", _atStr(topic), ",", _atNum(qos), ",", _atNum(buf_size)),
-          "OK", rsp, cb, args, NULL, NULL, WALTER_MODEM_CMD_TYPE_DATA_TX_WAIT, buf, buf_size);
+          "OK", rsp, cb, args, NULL, NULL, WALTER_MODEM_CMD_TYPE_DATA_TX_WAIT, buf, buf_size, NULL,
+          PAGER_MQTT_CMD_ATTEMPTS, PAGER_MQTT_CMD_TIMEOUT_TICKS);
   _returnAfterReply();
 }
 
@@ -139,8 +168,10 @@ bool WalterModem::mqttSubscribe(const char* topic, uint8_t qos, WalterModemRsp* 
     }
   };
 
+  // PAGER PATCH: 1.13 -- 10s x 2 attempts instead of the 30s x 3 default.
   _runCmd(arr("AT+SQNSMQTTSUBSCRIBE=0,", _atStr(topic), ",", _atNum(qos)), "OK", rsp, cb, args,
-          completeHandler);
+          completeHandler, NULL, WALTER_MODEM_CMD_TYPE_TX_WAIT, NULL, 0, NULL,
+          PAGER_MQTT_CMD_ATTEMPTS, PAGER_MQTT_CMD_TIMEOUT_TICKS);
   _returnAfterReply();
 }
 

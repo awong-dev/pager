@@ -269,6 +269,18 @@ typedef struct {
                               * the discriminator for RCA §2 */
     uint32_t buf_drop_queue; /* a fully-parsed RX buffer dropped, 8-slot queue full */
     uint32_t buf_drop_pool;  /* an RX buffer allocation failed, 8-buffer pool exhausted */
+    /* S3 (patch 1.13, docs/RCA_SLEEP_URC.md §5 fix 3-4): attribution for the
+     * two 30s stalls fix 1's own arithmetic could not tell apart -- see
+     * WalterDefines.h's own comment on walter_modem_pager_counters_t. */
+    uint32_t prompt_handled;        /* the "> " prompt handler actually wrote a payload */
+    uint32_t payload_bytes_written; /* total bytes actually written by that write, both paths */
+    uint32_t txdone_timeouts;       /* uart_wait_tx_done() did not return ESP_OK */
+    char stall_cmd[25];             /* first 24 chars of the most recently observed slow command's
+                                      * AT line, or "" if none has taken >= 5s yet this boot */
+    uint32_t stall_elapsed_ms;      /* how long that attempt had run when last sampled */
+    int32_t stall_cts_level;        /* CTS pin level at that sample, -1 if unavailable */
+    uint32_t stall_tx_ring_bytes;   /* UART TX ring free bytes at that sample (see
+                                      * WalterDefines.h: reads 0 on this UART's 0-byte TX ring) */
 } net_pager_counters_t;
 net_pager_counters_t net_get_pager_counters(void);
 

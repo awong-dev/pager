@@ -81,11 +81,53 @@ extern "C" void walter_modem_block_tick(void);
 //                    dropped instead of queued.
 //   buf_drop_pool  - WalterModem.cpp's _getFreeBuffer(): incremented when the
 //                    8-buffer pool is exhausted and a buffer allocation fails.
+// PAGER PATCH: 1.13 (docs/RCA_SLEEP_URC.md §5 fix 3-4, docs/SLEEP_URC_TASKS.md
+// S3). Attribution for the two 30s stalls RCA_SLEEP_URC.md §1 could not tell
+// apart: which write path actually moved bytes, whether uart_wait_tx_done()
+// ever timed out, and -- for the last command that stalled at least 5s --
+// which command it was.
+//   prompt_handled         - WalterModem.cpp's "> " prompt handler: the
+//                            payload write actually ran (a DATA_TX_WAIT
+//                            command with a payload was current).
+//   payload_bytes_written  - total bytes actually written by that payload
+//                            write (uart_write_bytes()'s own return value,
+//                            previously discarded), summed with patch 1.12's
+//                            timeout-triggered payload write -- both are
+//                            "the payload write" this counter attributes.
+//   txdone_timeouts        - WalterModem.cpp's _uartWrite(): count of times
+//                            uart_wait_tx_done()'s 10ms wait did NOT return
+//                            ESP_OK (previously discarded entirely).
+//   stall_cmd/stall_elapsed_ms/stall_cts_level/stall_tx_ring_bytes - a
+//                            snapshot of the most recent command whose
+//                            current attempt had been outstanding for >= 5s
+//                            when _processModemCMD() last re-evaluated it
+//                            (see WalterModem::_pagerSnapshotStall()):
+//                            stall_cmd is the first 24 characters of its AT
+//                            command line (NUL-terminated); stall_cts_level
+//                            is gpio_get_level() on the CTS pin at that
+//                            moment (-1 if unavailable); stall_tx_ring_bytes
+//                            is uart_get_tx_buffer_free_size()'s "free"
+//                            count -- this UART is installed with a 0-byte
+//                            TX ring (WalterModem.cpp's own
+//                            uart_driver_install() call), so this reads 0 on
+//                            this target; txdone_timeouts above is the real
+//                            discriminator for a wire-level stall, this
+//                            field is included only because the task asked
+//                            for it. Overwritten on every such observation,
+//                            so it reflects the most recently seen slow
+//                            command, not necessarily one still stalled.
 typedef struct {
   uint32_t datatx_retx;
   uint32_t prompt_orphan;
   uint32_t buf_drop_queue;
   uint32_t buf_drop_pool;
+  uint32_t prompt_handled;
+  uint32_t payload_bytes_written;
+  uint32_t txdone_timeouts;
+  char stall_cmd[25];
+  uint32_t stall_elapsed_ms;
+  int32_t stall_cts_level;
+  uint32_t stall_tx_ring_bytes;
 } walter_modem_pager_counters_t;
 
 extern "C" walter_modem_pager_counters_t walter_modem_pager_counters(void);

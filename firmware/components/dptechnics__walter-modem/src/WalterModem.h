@@ -3112,6 +3112,20 @@ typedef struct sWalterModemCmd {
   uint8_t maxAttempts = WALTER_MODEM_DEFAULT_CMD_ATTEMPTS;
 
   /**
+   * @brief PAGER PATCH: 1.13 (docs/SLEEP_URC_DESIGN.md §6 "Watchdog arithmetic" /
+   * docs/RCA_SLEEP_URC.md §5 fix 3-4). Per-command timeout, in ticks, for one
+   * attempt of this command -- 0 (the default set by every existing caller
+   * that does not pass this new, last _queueModemCMD() parameter) means "use
+   * the library's own WALTER_MODEM_CMD_TIMEOUT_TICKS default", resolved in
+   * _queueModemCMD()'s own translation unit (WalterModem.cpp) where that
+   * macro is visible; a caller that wants a shorter bound (e.g. WalterMQTT.cpp's
+   * publish/subscribe/disconnect/config commands, 10s instead of the default
+   * 30s) passes a non-zero value explicitly. _processModemCMD() checks this
+   * field, never the raw macro, once a command is actually in flight.
+   */
+  TickType_t timeoutTicks = 0;
+
+  /**
    * @brief The current attempt number.
    */
   uint8_t attempt = 0;
@@ -4028,6 +4042,9 @@ private:
    * @param dataSize The number of bytes in the data buffer.
    * @param stringsBuffer Optional pool buffer for remembering non-static string parameters.
    * @param maxAttempts The maximum number of retries for this command.
+   * @param cmdTimeoutTicks PAGER PATCH: 1.13. Per-attempt timeout for this command, in ticks; 0
+   * (every existing caller) means "use the library's own WALTER_MODEM_CMD_TIMEOUT_TICKS default",
+   * resolved inside _queueModemCMD()'s own .cpp (that macro is not visible from this header).
    *
    * @return Pointer to the command on success, NULL when no memory for the command was
    * available.
@@ -4038,7 +4055,7 @@ private:
       void (*completeHandler)(struct sWalterModemCmd* cmd, WalterModemState result) = NULL,
       void* completeHandlerArg = NULL, WalterModemCmdType type = WALTER_MODEM_CMD_TYPE_TX_WAIT,
       uint8_t* data = NULL, uint16_t dataSize = 0, WalterModemBuffer* stringsBuffer = NULL,
-      uint8_t maxAttempts = WALTER_MODEM_DEFAULT_CMD_ATTEMPTS);
+      uint8_t maxAttempts = WALTER_MODEM_DEFAULT_CMD_ATTEMPTS, TickType_t cmdTimeoutTicks = 0);
 
   /**
    * @brief Finish a queue command.
@@ -4069,6 +4086,21 @@ private:
    * command to process.
    */
   static TickType_t _processModemCMD(WalterModemCmd* cmd, bool queueError = false);
+
+  /**
+   * @brief PAGER PATCH: 1.13 (docs/RCA_SLEEP_URC.md §5 fix 4). Snapshot which command has been
+   * outstanding for at least this many ticks, for the pager's sleeptest report ("stalled
+   * command:" line) -- the first 24 characters of its AT command line, the elapsed time, the CTS
+   * pin level, and the UART TX ring's free byte count at the moment of the snapshot. Called from
+   * _processModemCMD() every time it re-evaluates a still-pending TX_WAIT/DATA_TX_WAIT/WAIT
+   * command whose current attempt has run for >= 5 seconds; overwrites the previous snapshot, so
+   * it always reflects the most recently observed slow command, not necessarily still stalled.
+   * Read-only outside this component via walter_modem_pager_counters() (WalterDefines.h).
+   *
+   * @param cmd The command that has been outstanding.
+   * @param diffTicks How long its current attempt has been outstanding, in ticks.
+   */
+  static void _pagerSnapshotStall(WalterModemCmd* cmd, TickType_t diffTicks);
 
   /**
    * @brief Process an AT response from the queue.
