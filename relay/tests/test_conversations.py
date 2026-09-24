@@ -3,6 +3,7 @@ enforcement -> 403/404, success -> 201) and the read-receipt endpoint."""
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterator
 
 import pytest
@@ -54,6 +55,23 @@ def _make_admin(uid: str, alias: str) -> dict[str, str]:
     users_store.create_user(uid=uid, alias=alias, display_name=alias, role="admin")
     fb_auth.set_custom_user_claims(uid, {"admin": True})
     return auth_header(uid)
+
+
+def _make_pager_device(device_id: str, owner_uid: str) -> None:
+    # Same helper `tests/test_contacts.py` uses for a `password`-auth pager
+    # device -- no `deviceSecrets` row needed for `BrokerClient.publish_down`
+    # to succeed against `FakeBrokerClient`.
+    devices_store.create_device(
+        device_id=device_id,
+        owner_uid=owner_uid,
+        label="d",
+        mqtt_username=device_id,
+        mqtt_password_hash="x",
+        auth_mode="password",
+    )
+    backends_store.create_backend(
+        owner_uid, kind="pager", config={"deviceId": device_id}, enabled=True
+    )
 
 
 def test_send_message_success_returns_201_with_id(client: TestClient):
@@ -474,3 +492,128 @@ def test_add_member_by_non_member_is_403(client: TestClient):
         headers=outsider_headers,
     )
     assert resp.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# book push on membership change -- build/bench-logs/group-acceptance.md's
+# "Gap found": create/add-member/leave must bump `devices/{d}.bookVersion`
+# and re-publish the book to any member's device, the same
+# bump_book_version+push_book idiom `app/routers/admin.py`'s contact
+# approve/reject already uses.
+# ---------------------------------------------------------------------------
+
+
+def test_create_group_pushes_book_to_pager_member_but_not_web_only_member(
+    client: TestClient,
+):
+    admin_headers = _make_admin("gbk-admin1", "gbk-admin1")
+    _make_user("gbk-webonly1", "gbk-webonly1")
+    _make_pager_device("gbk-dev1", "gbk-admin1")
+
+    resp = client.post(
+        "/api/conversations",
+        json={
+            "name": "Family",
+            "alias": "gbk-fam1",
+            "memberUids": ["gbk-admin1", "gbk-webonly1"],
+        },
+        headers=admin_headers,
+    )
+    assert resp.status_code == 201, resp.text
+
+    broker = client.app.state.broker
+    pushes = [p for p in broker.published if p.topic == "pager/gbk-dev1/down"]
+    assert len(pushes) == 1
+    sent = json.loads(pushes[0].payload)
+    assert sent["kind"] == "book"
+    assert {"a": "gbk-fam1", "n": "Family", "t": "grp"} in sent["c"]
+
+    # No device for gbk-webonly1 -- nothing to push to, and no other topic
+    # was touched.
+    assert all(p.topic == "pager/gbk-dev1/down" for p in broker.published)
+
+
+def test_create_group_bumps_book_version(client: TestClient):
+    from app.db.firestore import get_db
+
+    admin_headers = _make_admin("gbk-admin2", "gbk-admin2")
+    _make_pager_device("gbk-dev2", "gbk-admin2")
+    _make_user("gbk-kid2", "gbk-kid2")
+
+    before = int(
+        (get_db().collection("devices").document("gbk-dev2").get().to_dict() or {}).get(
+            "bookVersion", 0
+        )
+    )
+
+    resp = client.post(
+        "/api/conversations",
+        json={"name": "Family", "alias": "gbk-fam2", "memberUids": ["gbk-admin2", "gbk-kid2"]},
+        headers=admin_headers,
+    )
+    assert resp.status_code == 201, resp.text
+
+    after = int(
+        (get_db().collection("devices").document("gbk-dev2").get().to_dict() or {}).get(
+            "bookVersion", 0
+        )
+    )
+    assert after == before + 1
+
+
+def test_add_member_pushes_book_to_new_pager_member(client: TestClient):
+    admin_headers = _make_admin("gbk-admin3", "gbk-admin3")
+    _make_user("gbk-kid3", "gbk-kid3")
+    _make_user("gbk-newmem3", "gbk-newmem3")
+    _make_pager_device("gbk-dev3", "gbk-newmem3")
+
+    created = client.post(
+        "/api/conversations",
+        json={"name": "Family", "alias": "gbk-fam3", "memberUids": ["gbk-admin3", "gbk-kid3"]},
+        headers=admin_headers,
+    )
+    assert created.status_code == 201, created.text
+
+    broker = client.app.state.broker
+    broker.published.clear()
+
+    add_resp = client.post(
+        "/api/conversations/gbk-fam3/members",
+        json={"uid": "gbk-newmem3"},
+        headers=admin_headers,
+    )
+    assert add_resp.status_code == 200, add_resp.text
+
+    pushes = [p for p in broker.published if p.topic == "pager/gbk-dev3/down"]
+    assert len(pushes) == 1
+    sent = json.loads(pushes[0].payload)
+    assert sent["kind"] == "book"
+    assert {"a": "gbk-fam3", "n": "Family", "t": "grp"} in sent["c"]
+
+
+def test_leave_group_pushes_book_to_leaving_pager_member_only(client: TestClient):
+    admin_headers = _make_admin("gbk-admin4", "gbk-admin4")
+    kid_headers = _make_user("gbk-kid4", "gbk-kid4")
+    _make_pager_device("gbk-dev4-admin", "gbk-admin4")
+    _make_pager_device("gbk-dev4-kid", "gbk-kid4")
+
+    created = client.post(
+        "/api/conversations",
+        json={"name": "Family", "alias": "gbk-fam4", "memberUids": ["gbk-admin4", "gbk-kid4"]},
+        headers=admin_headers,
+    )
+    assert created.status_code == 201, created.text
+
+    broker = client.app.state.broker
+    broker.published.clear()
+
+    leave_resp = client.delete("/api/conversations/gbk-fam4/members/me", headers=kid_headers)
+    assert leave_resp.status_code == 200, leave_resp.text
+
+    # Only the leaver's device is pushed to -- the remaining member's book
+    # content (their own group memberships) didn't change.
+    topics = {p.topic for p in broker.published}
+    assert topics == {"pager/gbk-dev4-kid/down"}
+    sent = json.loads(broker.published[0].payload)
+    assert sent["kind"] == "book"
+    assert all(c["a"] != "gbk-fam4" for c in sent["c"])

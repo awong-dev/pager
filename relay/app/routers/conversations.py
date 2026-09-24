@@ -14,10 +14,13 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from google.api_core.exceptions import AlreadyExists
 from pydantic import BaseModel, Field
 
+from app import devcfg
 from app.auth import AuthedUser, require_admin, require_user
+from app.broker import BrokerClient
 from app.location import Location, NoLocatableDevice
 from app.routing import Routing
 from app.store import allow as allow_store
+from app.store import contacts as contacts_store
 from app.store import conversations as conversations_store
 from app.store import devices as devices_store
 from app.store import messages as messages_store
@@ -47,6 +50,14 @@ def get_routing(request: Request) -> Routing:
 
 def get_location(request: Request) -> Location:
     return request.app.state.location
+
+
+def get_broker(request: Request) -> BrokerClient:
+    """Same `request.app.state.*` dependency shape as `app/routers/admin.py`'s
+    own `get_broker` -- this router had no need for the broker before a group
+    membership change started re-publishing the book (see
+    `_push_book_to_members` below)."""
+    return request.app.state.broker
 
 
 @router.post("/{alias}/messages", status_code=201)
@@ -150,6 +161,33 @@ class CreateGroupResponse(BaseModel):
     alias: str
 
 
+def _push_book_to_members(uids: list[str], broker: BrokerClient) -> None:
+    """`build/bench-logs/group-acceptance.md`'s "Gap found": a group
+    create/join/leave changes what `devcfg.build_book` computes for an
+    affected member's own device (a `t:"grp"` book contact,
+    docs/GROUP_CHAT_DESIGN.md §4, appears or disappears), but nothing
+    previously bumped `devices/{d}.bookVersion` or re-published the book, so
+    an already-online pager never learned about it -- only the next
+    contact-approval-driven push, or the device's own reported-`bv`-behind
+    check on its next online edge (`app/ingest.py`), would eventually deliver
+    it.
+
+    Same lookup (`devices_store.list_devices(owner_uid=uid)`, one user can in
+    principle own more than one device) and the same two-call idiom
+    (`contacts_store.bump_book_version` then `devcfg.push_book`) as
+    `app/routers/admin.py`'s `approve_contact`/`reject_contact` -- best-effort
+    and idempotent: a `uid` with no device is silently a no-op (the inner
+    loop never runs for them, so a web-only member never gets a spurious
+    push), and re-running this for a member whose book content didn't
+    actually change just bumps `bookVersion` and republishes the same
+    projection again, which a device's existing dedup-by-`id` already
+    tolerates (docs/PROTOCOL.md §4.1 rule 7)."""
+    for uid in uids:
+        for device in devices_store.list_devices(owner_uid=uid):
+            contacts_store.bump_book_version(device.id)
+            devcfg.push_book(device.id, broker)
+
+
 def _create_missing_allow_edges(member_uids: list[str]) -> None:
     """Decision 2 (docs/GROUP_CHAT_DESIGN.md, "Decisions" section): creating
     or joining a group auto-creates `allow` edges in both directions between
@@ -170,6 +208,7 @@ def _create_missing_allow_edges(member_uids: list[str]) -> None:
 def create_group(
     req: CreateGroupRequest,
     authed: Annotated[AuthedUser, Depends(require_admin)],
+    broker: Annotated[BrokerClient, Depends(get_broker)],
 ) -> CreateGroupResponse:
     member_uids = sorted(set(req.memberUids))
     for uid in member_uids:
@@ -188,6 +227,9 @@ def create_group(
         raise HTTPException(status_code=409, detail="alias already taken") from exc
 
     _create_missing_allow_edges(conv.uids)
+    # Every member's book gains this group as a `t:"grp"` contact -- see
+    # `_push_book_to_members`'s docstring.
+    _push_book_to_members(conv.uids, broker)
     return CreateGroupResponse(convKey=conv.convKey, alias=req.alias)
 
 
@@ -200,6 +242,7 @@ def add_group_member(
     alias: str,
     req: AddMemberRequest,
     authed: Annotated[AuthedUser, Depends(require_user)],
+    broker: Annotated[BrokerClient, Depends(get_broker)],
 ) -> Conversation:
     group = conversations_store.get_by_alias(alias)
     if group is None:
@@ -215,6 +258,10 @@ def add_group_member(
     # with `authed.uid` is covered by this too, since `authed.uid` is one of
     # `updated.uids`).
     _create_missing_allow_edges(updated.uids)
+    # The new member's book gains this group; see `_push_book_to_members`'s
+    # docstring for why pushing to every current member (not just the new
+    # one) is harmless.
+    _push_book_to_members(updated.uids, broker)
     return updated
 
 
@@ -222,13 +269,19 @@ def add_group_member(
 def leave_group(
     alias: str,
     authed: Annotated[AuthedUser, Depends(require_user)],
+    broker: Annotated[BrokerClient, Depends(get_broker)],
 ) -> Conversation:
     group = conversations_store.get_by_alias(alias)
     if group is None:
         raise HTTPException(status_code=404, detail="no such group")
     if authed.uid not in group.uids:
         raise HTTPException(status_code=404, detail="not a member of this group")
-    return conversations_store.remove_member(group.convKey, authed.uid)
+    updated = conversations_store.remove_member(group.convKey, authed.uid)
+    # The leaver's own book loses this group -- push to the leaver
+    # specifically (they're no longer in `updated.uids`, so
+    # `_push_book_to_members` would otherwise miss them entirely).
+    _push_book_to_members([authed.uid], broker)
+    return updated
 
 
 # ---------------------------------------------------------------------------

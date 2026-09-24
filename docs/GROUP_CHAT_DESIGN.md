@@ -1,7 +1,10 @@
 # Group chat — basic design
 
-**Status:** design only, nothing implemented. Companion to `docs/SERVER_PLAN.md` (§3 data model,
-§5.2 routing) and subordinate to `docs/PROTOCOL.md` for anything the device sees.
+**Status:** G1-G8 implemented and committed (`d849e61` conversations store/routing/pager/push,
+`ec8749f` firmware `sndr` parse, `ff25132` web UI). G9 (end-to-end acceptance) was passed on the
+wire on 24 Sep 2026 (`build/bench-logs/group-acceptance.md`); the real pager's author-line
+rendering is still pending the owner's own glass check. Companion to `docs/SERVER_PLAN.md` (§3 data
+model, §5.2 routing) and subordinate to `docs/PROTOCOL.md` for anything the device sees.
 
 ## Decisions (22 Sep 2026) — settled, do not re-open
 
