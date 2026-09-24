@@ -281,6 +281,14 @@ typedef struct {
     int32_t stall_cts_level;        /* CTS pin level at that sample, -1 if unavailable */
     uint32_t stall_tx_ring_bytes;   /* UART TX ring free bytes at that sample (see
                                       * WalterDefines.h: reads 0 on this UART's 0-byte TX ring) */
+    /* S10 (docs/SLEEP_URC_DESIGN.md §8.2, docs/SLEEP_URC_TASKS.md S10): the
+     * three counters that discriminate the stall mechanism without a trace --
+     * see WalterDefines.h's own comment on walter_modem_pager_counters_t for
+     * rsp_no_cmd/payload_stuck_ms. */
+    uint32_t rsp_no_cmd;      /* a buffer completed nothing (cmd == NULL, result == OK) and was
+                                * freed unused -- hypothesis 1 (desync) predicts >= 1 per stall */
+    uint32_t payload_stuck_ms; /* how long _receivingPayload had been true when a command last
+                                * timed out with it still set -- hypothesis 2 predicts > 0 */
 } net_pager_counters_t;
 net_pager_counters_t net_get_pager_counters(void);
 
@@ -394,7 +402,18 @@ bool net_urc_probe(void);
  *             issued == 0 means the drain probe is OFF, which is the one
  *             reading of `probe_issued=0` the report could not previously
  *             distinguish from "the probe was never reached".
- * Power effect: none -- seven plain reads. */
+ * first_attempt_ms - S10 (docs/SLEEP_URC_DESIGN.md §8.2, docs/
+ *             SLEEP_URC_TASKS.md S10): the probe's own issue-to-answer
+ *             elapsed time (net_urc_probe()'s checkComm() call to probe_cb()
+ *             running, whichever of answered/timedout/noqueue it was),
+ *             overwritten on every completed attempt. Hypothesis 3 (the
+ *             modem genuinely did not answer) predicts this stays near the
+ *             probe's own 2 s budget during a stall; hypotheses 1 and 2
+ *             predict the probe itself completes quickly once its turn comes
+ *             up, because the flush that unblocks the queue already happened
+ *             when the modem accepted the command, not when the host sees
+ *             the answer.
+ * Power effect: none -- eight plain reads. */
 typedef struct {
     uint32_t issued;
     uint32_t answered;
@@ -403,6 +422,7 @@ typedef struct {
     uint32_t timedout;
     uint32_t skip_busy;
     uint32_t skip_down;
+    uint32_t first_attempt_ms;
 } net_probe_counters_t;
 net_probe_counters_t net_get_probe_counters(void);
 

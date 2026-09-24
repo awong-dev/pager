@@ -3384,6 +3384,18 @@ private:
    */
   static inline bool _receivingPayload = false;
 
+  /**
+   * @brief PAGER PATCH: (1.15, docs/SLEEP_URC_DESIGN.md §8.2, docs/
+   * SLEEP_URC_TASKS.md S10) tick count at the moment `_receivingPayload` was
+   * last set true (`_parseRxData()`), so a command timeout while it is still
+   * true can report how long it had been stuck -- see `payload_stuck_ms`'s
+   * doc comment in WalterDefines.h. One instance-wide field is enough, same
+   * reasoning as `_receivingPayload` itself (one command in flight at a
+   * time). Not reset when `_receivingPayload` clears normally; only read
+   * while `_receivingPayload` is true.
+   */
+  static inline TickType_t _receivingPayloadSetAt = 0;
+
   static inline bool _foundCRLF = false;
 
   static inline size_t currentCRLF = 0;

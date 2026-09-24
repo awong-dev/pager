@@ -1277,9 +1277,17 @@ extern "C" bool net_check(void)
 // checkComm()'s own return value cannot tell the two apart, only rsp->result
 // here can). Sets flags/counters and nothing else: no logging, no AT calls,
 // no net_check() registration semantics (docs/SLEEP_URC_DESIGN.md §5(1)).
+// S10 (docs/SLEEP_URC_DESIGN.md §8.2, docs/SLEEP_URC_TASKS.md S10): the
+// probe's own issue-to-answer elapsed time. Written by net_urc_probe() just
+// before the checkComm() call and read/overwritten by probe_cb() -- safe by
+// the same single-probe-at-a-time reasoning documented above probe_cb().
+static int64_t s_probe_issue_us = 0;
+static uint32_t s_probe_first_attempt_ms = 0;
+
 static void probe_cb(const WalterModemRsp *rsp, void *args)
 {
     (void) args;
+    s_probe_first_attempt_ms = (uint32_t) ((esp_timer_get_time() - s_probe_issue_us) / 1000);
     if (rsp != NULL && rsp->result == WALTER_MODEM_STATE_OK) {
         net_probe_guard_answered(&s_probe_guard);
     } else if (rsp != NULL && rsp->result == WALTER_MODEM_STATE_NO_MEMORY) {
@@ -1348,6 +1356,9 @@ extern "C" bool net_urc_probe(void)
     // plus up to 15 s of publish_quiet's sleep-hold and up to 30 s of
     // net_modem_busy()'s, i.e. up to ~0.8 mAh per page (assumption: 40 mA
     // awake, 1 mA asleep -- docs/SLEEP_URC_DESIGN.md §2, not measured).
+    // S10: stamped immediately before the call so even a synchronous
+    // callback (the noqueue case) measures a valid, near-zero elapsed time.
+    s_probe_issue_us = esp_timer_get_time();
     WalterModem::checkComm(NULL, probe_cb, NULL, PAGER_URC_PROBE_ATTEMPTS,
                            pdMS_TO_TICKS(PAGER_URC_PROBE_TIMEOUT_MS));
     if (s_probe_guard.outstanding) {
@@ -1369,6 +1380,7 @@ extern "C" net_probe_counters_t net_get_probe_counters(void)
     out.timedout = s_probe_guard.timedout;
     out.skip_busy = s_probe_skip_busy;
     out.skip_down = s_probe_skip_down;
+    out.first_attempt_ms = s_probe_first_attempt_ms;
     return out;
 }
 
@@ -1602,6 +1614,10 @@ extern "C" net_pager_counters_t net_get_pager_counters(void)
     out.stall_elapsed_ms = c.stall_elapsed_ms;
     out.stall_cts_level = c.stall_cts_level;
     out.stall_tx_ring_bytes = c.stall_tx_ring_bytes;
+    // S10 (docs/SLEEP_URC_DESIGN.md §8.2, docs/SLEEP_URC_TASKS.md S10): see
+    // WalterDefines.h's own comment on walter_modem_pager_counters_t.
+    out.rsp_no_cmd = c.rsp_no_cmd;
+    out.payload_stuck_ms = c.payload_stuck_ms;
     return out;
 }
 

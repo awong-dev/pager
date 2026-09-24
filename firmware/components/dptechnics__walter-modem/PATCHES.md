@@ -468,3 +468,44 @@ plus up to 15 s of `publish_quiet`'s sleep-hold (`PUBLISH_SLEEP_HOLD_MAX_US`) an
 `net_modem_busy()`'s, i.e. up to ~0.8 mAh per page. Assumptions: 40 mA awake / 1 mA light sleep
 (`docs/SLEEP_URC_DESIGN.md` §2) — estimated, not measured on this board. No extra AT traffic; no
 change to the 4 bytes on the wire.
+
+## 1.15 Stall-mechanism discriminator counters, not a trace (`src/WalterModem.cpp`, `src/WalterModem.h`, `src/WalterDefines.h`)
+
+`docs/SLEEP_URC_TASKS.md` S10, `docs/SLEEP_URC_DESIGN.md` §8.1-§8.2. `phaseAF`'s
+`stalled command: "AT" elapsed=30000 ms` rules out the wire (`txdone_timeouts=0`,
+`buf_drop_queue=0 buf_drop_pool=0`, `probe_answered=13` — the bytes went out, nothing was dropped,
+the retry was answered), which leaves three candidates on the response-pairing side: (1) a response
+completes the wrong command inside a URC flush burst (the shared FIFO pairs whatever buffer arrives
+next with whatever command happens to be `_curCmd` at dequeue time, `_processModemRSP(_curCmd, …)`
+at `_cmdProcessingTask`); (2) `_receivingPayload` sticks true across a burst, so every byte is
+consumed as payload and nothing is queued at all until the command times out; (3) the modem
+genuinely did not answer. There is no in-window AT trace to settle it with — light sleep kills the
+USB CDC — so this patch adds counters instead.
+
+**`rsp_no_cmd`** (`WalterModem.cpp`'s `_processModemRSP()`, `RSP_PROC_FINISH` region): incremented
+when a buffer reaches the function's completion test with `cmd == NULL` and `result == OK`, i.e. it
+falls through unused instead of completing a command or being claimed by an earlier region's own
+`if (cmd == NULL) return`. By the time this point is reached, `cmd == NULL` already implies
+`result == OK` (the `cmd == NULL && result != OK` case returns earlier, patch 1.1). Hypothesis 1
+(desync) predicts >= 1 of these per stall; hypotheses 2 and 3 predict 0.
+
+**`payload_stuck_ms`** (`WalterModem.cpp`'s `_processModemCMD()`, the `TX_WAIT`/`DATA_TX_WAIT` and
+`WAIT` timeout paths, plus one new `TickType_t _receivingPayloadSetAt` on `WalterModem.h` stamped
+wherever `_receivingPayload` is set true in `_parseRxData()`): how long `_receivingPayload` had
+already been true when a command genuinely timed out with it still set. Hypothesis 2 predicts > 0;
+1 and 3 predict 0. Overwritten on every such observation — most recently observed, not necessarily
+still stuck.
+
+**`probe_first_attempt_ms`** (`firmware/main/net.cpp`, not this component): the URC drain probe's
+own issue-to-answer elapsed time, stamped immediately before `WalterModem::checkComm()` and read
+inside `probe_cb()` whichever way the probe resolved. Hypothesis 3 predicts this stays near the
+probe's own 2 s budget during a stall; 1 and 2 predict the probe itself completes quickly, because
+the flush that unblocks the queue happens when the modem *accepts* a command, not when the host
+sees the answer.
+
+All three are printed on one new sleeptest report line, `stall discriminator: rsp_no_cmd=…
+payload_stuck_ms=… probe_first_attempt_ms=…` (`firmware/main/net.cpp`'s `net_get_pager_counters()`/
+`net_get_probe_counters()`, `firmware/main/modes.c`'s report).
+
+**Power effect**: none — three plain reads/increments, no extra AT traffic, no behaviour change.
+This patch does not attempt a fix; the fix depends on which hypothesis the counts support.

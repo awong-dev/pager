@@ -104,6 +104,15 @@ static uint32_t s_pagerStallElapsedMs = 0;
 static int32_t s_pagerStallCtsLevel = -1;
 static uint32_t s_pagerStallTxRingBytes = 0;
 
+// PAGER PATCH: 1.15 (docs/SLEEP_URC_DESIGN.md §8.2, docs/SLEEP_URC_TASKS.md
+// S10) -- see WalterDefines.h's own comment on walter_modem_pager_counters_t.
+// Same "plain uint32_t, no atomics" reasoning as the counters above:
+// s_pagerCntRspNoCmd is only ever written from _cmdProcessingTask (inside
+// _processModemRSP()); s_pagerPayloadStuckMs is only ever written from the
+// same task (inside _processModemCMD()'s timeout paths).
+static uint32_t s_pagerCntRspNoCmd = 0;
+static uint32_t s_pagerPayloadStuckMs = 0;
+
 extern "C" walter_modem_pager_counters_t walter_modem_pager_counters(void)
 {
   walter_modem_pager_counters_t c;
@@ -118,6 +127,8 @@ extern "C" walter_modem_pager_counters_t walter_modem_pager_counters(void)
   c.stall_elapsed_ms = s_pagerStallElapsedMs;
   c.stall_cts_level = s_pagerStallCtsLevel;
   c.stall_tx_ring_bytes = s_pagerStallTxRingBytes;
+  c.rsp_no_cmd = s_pagerCntRspNoCmd;
+  c.payload_stuck_ms = s_pagerPayloadStuckMs;
   return c;
 }
 
@@ -1507,6 +1518,7 @@ void WalterModem::_parseRxData(char* rx_data, size_t rx_len)
        * current message is payload and we expect more data */
       if(_expectingPayload()) {
         _receivingPayload = true;
+        _receivingPayloadSetAt = xTaskGetTickCount(); // PAGER PATCH: 1.15
         continue;
       } else {
         _receivingPayload = false;
@@ -1894,6 +1906,15 @@ TickType_t WalterModem::_processModemCMD(WalterModemCmd* cmd, bool queueError)
           ESP_LOGD("WalterModem", "Command ERROR (TX) Attempt %u of %u", cmd->attempt,
                    cmd->maxAttempts);
         }
+        // PAGER PATCH: 1.15 (docs/SLEEP_URC_DESIGN.md §8.2 hypothesis 2,
+        // docs/SLEEP_URC_TASKS.md S10): a genuine timeout while
+        // _receivingPayload was still true means the parser was consuming
+        // every byte as payload for at least this long instead of queueing
+        // anything -- see payload_stuck_ms's doc comment in WalterDefines.h.
+        if(timedOut && _receivingPayload) {
+          s_pagerPayloadStuckMs =
+              (uint32_t) ((xTaskGetTickCount() - _receivingPayloadSetAt) * portTICK_PERIOD_MS);
+        }
         _receivingPayload = false;
 
         /*
@@ -1989,6 +2010,13 @@ TickType_t WalterModem::_processModemCMD(WalterModemCmd* cmd, bool queueError)
       }
       if(diff >= cmd->timeoutTicks) { // PAGER PATCH: 1.13 (was the raw macro)
         ESP_LOGW("WalterModem", "Command time-out (WAIT)");
+        // PAGER PATCH: 1.15 (docs/SLEEP_URC_DESIGN.md §8.2 hypothesis 2,
+        // docs/SLEEP_URC_TASKS.md S10): see the TX_WAIT/DATA_TX_WAIT site
+        // above for what this records.
+        if(_receivingPayload) {
+          s_pagerPayloadStuckMs =
+              (uint32_t) ((xTaskGetTickCount() - _receivingPayloadSetAt) * portTICK_PERIOD_MS);
+        }
         _receivingPayload = false;
         _finishModemCMD(cmd, WALTER_MODEM_STATE_TIMEOUT);
       } else {
@@ -4019,6 +4047,20 @@ after_processing_logic:
    * If the message doesn't contain an expected response, or if the received message is
    * unsolicited (URC or multi-part response), free the buffer and return.
    */
+
+  /*
+   * PAGER PATCH: (1.15, docs/SLEEP_URC_DESIGN.md §8.2, docs/SLEEP_URC_TASKS.md
+   * S10) instrumentation only, no behaviour change. Reaching this point with
+   * cmd == NULL means result == WALTER_MODEM_STATE_OK (the cmd == NULL &&
+   * result != OK case already returned above) and no earlier region claimed
+   * the buffer with its own "if (cmd == NULL) return" -- i.e. a buffer that
+   * completed nothing and is being freed unused while the queue was idle.
+   * Hypothesis 1 (response/command desync inside a URC flush burst) predicts
+   * >= 1 of these per stall; see rsp_no_cmd's doc comment in WalterDefines.h.
+   */
+  if(cmd == NULL) {
+    s_pagerCntRspNoCmd++;
+  }
 
   buff->free = true;
 

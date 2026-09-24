@@ -1271,6 +1271,15 @@ void modes_debug_sleeptest_report(void)
                (unsigned) probec.issued, (unsigned) probec.answered, (unsigned) probec.stuck,
                (unsigned) probec.noqueue, (unsigned) probec.timedout, (unsigned) probec.skip_busy,
                (unsigned) probec.skip_down);
+    // S10 (docs/SLEEP_URC_DESIGN.md §8.2, docs/SLEEP_URC_TASKS.md S10): three
+    // counters, not a trace -- light sleep kills the USB CDC, so this is what
+    // has to settle the stall mechanism. rsp_no_cmd/payload_stuck_ms come
+    // from the vendored library (WalterDefines.h); probe_first_attempt_ms
+    // from the probe's own issue-to-answer timing (net.cpp). See each field's
+    // doc comment in net.h for what each hypothesis predicts.
+    st_appendf(&n, "stall discriminator: rsp_no_cmd=%u payload_stuck_ms=%u probe_first_attempt_ms=%u\n",
+               (unsigned) pc.rsp_no_cmd, (unsigned) pc.payload_stuck_ms,
+               (unsigned) probec.first_attempt_ms);
     st_appendf(&n, "post-wake UART bytes (50ms sample): max=%u wakes_with_bytes=%u\n",
                (unsigned) s_st_wake_bytes_max, (unsigned) s_st_wake_bytes_nonzero);
     // S2 (docs/SLEEP_URC_DESIGN.md §6): how often a liveness ping's first
