@@ -247,6 +247,17 @@ flash.
 The shell's default project is another one; the read silently returns other services' logs and
 misses relay output.
 
+**An email-link sign-in deletes the account's password:**
+Firebase removes a password from an account the moment that account completes an email-link
+sign-in (documented: "any previous unverified mechanism of sign-in will be removed"). The 23 Sep
+overnight group test signed in as the owner's two web accounts with
+`generate_sign_in_with_email_link` + `signInWithEmailLink` to get ID tokens, and the owner's
+password sign-in stopped working from that moment (`passwordHash` gone from the account export,
+`validSince` = the test's sign-in time). Google's email pipeline is broken on this project, so a
+password is the only way into the web app: never sign in as a real user with an email link. Test
+with throwaway users created with a password, and restore a password with
+`tools/set_web_password.py` (Admin SDK over ADC).
+
 **Worktrees created by agents branch from origin/main:**
 A worktree created by an agent branches from origin/main, not the local main; merge conflicts
 against the cleanup and Makefile test lists followed (23 Sep). Push first, or create the
