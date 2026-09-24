@@ -17,6 +17,7 @@
 #include "net.h"
 #include "watchdog.h"
 #include "ui.h"
+#include "disp.h" // S12: disp_busy_timeout_count() for the sleeptest report
 
 // F6.2 (docs/DEVICE_PLAN.md §5.3): CardKB decode + button FSM (+BTN_STUCK)
 // + the UI-awake window + one input event queue, moved out of this file
@@ -1287,6 +1288,10 @@ void modes_debug_sleeptest_report(void)
     // re-SUBSCRIBE, never by a teardown) -- zero MQTT session LOST lines
     // alongside a non-zero count here is this fix working.
     st_appendf(&n, "resub_first_swallowed=%u\n", (unsigned) net_get_resub_swallowed_count());
+    // S12 (docs/SLEEP_URC_DESIGN.md §8.3, docs/SLEEP_URC_TASKS.md S12): so
+    // "the panel wedged" is this number, not an inference from a bucket max
+    // (phaseAF's `input+ui+render max 31551 ms` used to be the only clue).
+    st_appendf(&n, "disp_busy_timeout_count=%u\n", (unsigned) disp_busy_timeout_count());
     net_publish_ring_entry_t ring[NET_PUBLISH_RING_MAX];
     uint32_t nring = net_get_publish_ring(ring, NET_PUBLISH_RING_MAX);
     if (nring == 0) {

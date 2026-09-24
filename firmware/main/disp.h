@@ -119,6 +119,14 @@ int disp_dirty_rows(void);
 /* Partials since the last full refresh (the 20-partial cadence counter). */
 uint32_t disp_partial_count(void);
 
+/* S12 (docs/SLEEP_URC_DESIGN.md §8.3, docs/SLEEP_URC_TASKS.md S12): count of
+ * times disp_wait_busy_fb()'s polling loop gave up after
+ * PAGER_UI_BUSY_TIMEOUT_US because BUSY was seen asserted and never
+ * deasserted -- never incremented by the separate "BUSY not wired at all"
+ * fallback path. Free-running, never reset; printed in the sleeptest report
+ * so "the panel wedged" is a number, not an inference from a bucket max. */
+uint32_t disp_busy_timeout_count(void);
+
 /* Fault injector for the bench (`disptest swreset`): sends the SSD1680's SW
  * reset (0x12) alone, waits BUSY, and does nothing else, so the controller
  * is left on power-on register defaults exactly like the 23 Sep field

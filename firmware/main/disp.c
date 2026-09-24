@@ -19,7 +19,27 @@
 static const char *TAG = "disp";
 
 #define PAGER_UI_PARTIAL_FULL_EVERY 20 // firmware/README.md, explicit override of "~10"
-#define PAGER_UI_BUSY_TIMEOUT_US (15 * 1000000)
+
+// S12 (docs/SLEEP_URC_DESIGN.md §8.3, docs/SLEEP_URC_TASKS.md S12): this is
+// the bound for the "BUSY line genuinely asserted, then never deasserted"
+// case (disp_wait_busy_fb()'s polling loop below, reached only after BUSY was
+// actually seen high within PAGER_UI_BUSY_FALLBACK_GRACE_US of the call --
+// the "BUSY not wired at all" case uses the separate, unchanged
+// PAGER_UI_BUSY_FALLBACK_*_MS constants instead and never reaches this
+// timeout). Was 15s; phaseAF's `input+ui+render max 31551 ms` is exactly
+// 1500 (the pre-write gate's own budget) + 15009 (this timeout, once) +
+// ~15042 (the one retry's own wait at this same bound) -- 18s of that is this
+// constant, twice. Measured refresh times already in this file (full
+// 3426314 us, partial 454705 us, PAGER_UI_BUSY_FALLBACK_FULL_MS/_PARTIAL_MS
+// above) justify 6s: >70% margin over the slowest measured refresh, and it
+// caps the worst case (gate + timeout + one retry's timeout) at
+// 1.5 + 6 + 6 = 13.5s instead of 31.5s. Power: 18s x 40mA / 3600 = ~0.2mAh
+// less awake ESP time per occurrence of this specific stall (assumption:
+// 40mA awake, docs/SLEEP_URC_DESIGN.md §2, not measured on this board). Does
+// not change any panel command, refresh cadence, or mark_display_dead()'s
+// own retry logic -- only how long disp_wait_busy_fb() will wait for a BUSY
+// line it has already seen asserted before giving up.
+#define PAGER_UI_BUSY_TIMEOUT_US (6 * 1000000)
 
 // Each partial refresh widens its changed-row window to a whole multiple of
 // this many native rows, aligned to it.
@@ -68,6 +88,14 @@ static bool s_spi_ready = false;
 static bool s_display_dead = false; // logged once, then the device runs headless
 static bool s_display_dead_logged = false;
 static uint32_t s_partial_count = 0;
+
+// S12 (docs/SLEEP_URC_DESIGN.md §8.3, docs/SLEEP_URC_TASKS.md S12): a real
+// BUSY-genuinely-asserted timeout (disp_wait_busy_fb()'s polling loop, never
+// the "BUSY not wired" fallback path), so "the panel wedged" is a number in
+// the sleeptest report instead of something inferred from a bucket max.
+// Free-running, never reset; incremented on disp.c's own task, read by
+// modes.c's report.
+static uint32_t s_busy_timeout_count = 0;
 
 // Handoff task D2: partial_refresh_locked()'s own BUSY-timeout recovery used
 // to set s_partial_count = PAGER_UI_PARTIAL_FULL_EVERY to force the next
@@ -198,6 +226,7 @@ static bool disp_wait_busy_fb(uint32_t fallback_ms)
         if (esp_timer_get_time() - start > PAGER_UI_BUSY_TIMEOUT_US) {
             ESP_LOGI(TAG, "BUSY: entry=%d timed out after %d iters (~%lld ms)", entry_level,
                      iters, (esp_timer_get_time() - start) / 1000);
+            s_busy_timeout_count++; // S12: see disp_busy_timeout_count()'s doc comment
             return false;
         }
         vTaskDelay(pdMS_TO_TICKS(10)); // NEVER a tight busy-loop
@@ -842,3 +871,6 @@ int disp_dirty_rows(void)
 }
 
 uint32_t disp_partial_count(void) { return s_partial_count; }
+
+// S12: see the doc comment on s_busy_timeout_count above.
+uint32_t disp_busy_timeout_count(void) { return s_busy_timeout_count; }
