@@ -59,11 +59,12 @@ from __future__ import annotations
 
 import logging
 import os
+import random
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from google.api_core.exceptions import AlreadyExists
+from google.api_core.exceptions import Aborted, AlreadyExists
 from google.cloud.firestore import (
     SERVER_TIMESTAMP,
     ArrayRemove,
@@ -98,6 +99,30 @@ DEFAULT_LOC_REQ_TTL_S = 15 * 60
 # on-demand, not just one that answered a request) -- this module follows
 # that (more precise, implementation-facing) wording.
 CACHED_ANSWER_WINDOW_S = 60
+
+# PROTOCOL.md §13.3 rule 5: under heavy write contention on a single
+# device's `locReqs/{deviceId}` doc (this module's own concurrency test
+# reproduces it with N threads racing one un-claimed device), the
+# google-cloud-firestore client's own transactional retry budget (5 attempts
+# per `db.transaction()` object), chained through `run_transaction`'s own
+# outer retries (`app/db/firestore.py`'s `EXTRA_RETRY_ATTEMPTS`), can still
+# be exhausted on a slow/loaded emulator: `run_transaction` then re-raises
+# the client library's own `ValueError("Failed to commit transaction in N
+# attempts.")`, chaining the losing `Aborted` as `__cause__`. A loser here is
+# not a bug -- Firestore's ABORTED semantics guarantee some *other*
+# transaction touching the same doc already committed by the time ours
+# failed to -- so the right outcome is the same one the `AlreadyExists` path
+# below already produces: join the winner's request rather than surface an
+# error to the caller. Unlike `AlreadyExists`, this cannot safely retry the
+# *whole* claim transaction (that is the operation that just exhausted every
+# attempt it was given); `_join_after_contention` below instead does a
+# bounded number of plain (non-transactional) re-reads of `req_ref`, joining
+# the winner's `requesterUids` via `ArrayUnion` -- a native atomic field
+# transform that needs no transaction of its own -- as soon as the winner's
+# doc is visible.
+CONTENTION_REREAD_ATTEMPTS = 5
+CONTENTION_REREAD_BASE_DELAY_S = 0.05
+CONTENTION_REREAD_MAX_DELAY_S = 0.5
 
 
 def loc_req_ttl_s() -> int:
@@ -544,6 +569,42 @@ def _find_pager_backend(device: devices_store.Device) -> BackendRow | None:
     return None
 
 
+def _join_after_contention(
+    *,
+    requester_uid: str,
+    req_ref: DocumentReference,
+    ttl: int,
+    original_exc: ValueError,
+) -> LocateOutcome:
+    """Called only after `run_transaction`'s claim attempt exhausted its own
+    retry budget with the client library's `ValueError`/`Aborted` pair (see
+    `CONTENTION_REREAD_ATTEMPTS`'s docstring above). Re-reads `req_ref`
+    (plain, non-transactional -- the claim transaction that just failed is
+    proof enough that a transaction is not what is needed here) up to
+    `CONTENTION_REREAD_ATTEMPTS` times, with AWS-style full-jitter
+    exponential backoff between reads, and as soon as the winner's request is
+    visible joins it exactly like the coalesce branch of `_txn` above
+    (`ArrayUnion` -- idempotent and atomic without a transaction) and returns
+    the same shape of outcome. Re-raises `original_exc` if no request ever
+    shows up within the budget -- at that point every explanation left is a
+    real failure, not a race, and swallowing it would silently drop the
+    caller's `/locate` request."""
+    for attempt in range(CONTENTION_REREAD_ATTEMPTS):
+        snap = req_ref.get()
+        if snap.exists:
+            data = snap.to_dict() or {}
+            if _age_seconds(data.get("createdAt")) < ttl:
+                req_ref.update({"requesterUids": ArrayUnion([requester_uid])})
+                return LocateOutcome(request_id=data.get("messageId"), cached=False)
+        if attempt < CONTENTION_REREAD_ATTEMPTS - 1:
+            cap = min(
+                CONTENTION_REREAD_MAX_DELAY_S,
+                CONTENTION_REREAD_BASE_DELAY_S * (2**attempt),
+            )
+            time.sleep(random.uniform(0, cap))
+    raise original_exc
+
+
 class Location:
     """Holds a `Routing` instance so `locate()`'s "claim a fresh slot"
     branch can deliver the new `loc_req` inline through
@@ -708,6 +769,16 @@ class Location:
                 raise
             return self.locate(
                 requester_uid=requester_uid, device=device, ts=ts, _retry_on_conflict=False
+            )
+        except ValueError as exc:
+            # `run_transaction`'s own retry-exhaustion shape (see
+            # CONTENTION_REREAD_ATTEMPTS's docstring above) -- anything else
+            # (a genuine bug raised by `_txn`, e.g. `NoLocatableDevice` is
+            # its own type and never hits this clause) propagates unchanged.
+            if not isinstance(exc.__cause__, Aborted):
+                raise
+            return _join_after_contention(
+                requester_uid=requester_uid, req_ref=req_ref, ttl=ttl, original_exc=exc
             )
 
         if kind == "claimed":
