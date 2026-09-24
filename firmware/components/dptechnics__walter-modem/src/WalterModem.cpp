@@ -5174,9 +5174,23 @@ void WalterModem::sleep(uint32_t sleep_time_s, bool is_light_sleep)
   }
 }
 
-bool WalterModem::checkComm(WalterModemRsp* rsp, walterModemCb cb, void* args)
+// PAGER PATCH: 1.14 (docs/SLEEP_URC_DESIGN.md, 23 Sep S7 post-mortem). The
+// two extra parameters are pass-through only; every pre-existing caller gets
+// WALTER_MODEM_DEFAULT_CMD_ATTEMPTS (3) and cmdTimeoutTicks 0 ("use the
+// library's 30 s default"), i.e. no behaviour change.
+//
+// Why they exist: phaseAF-report.log's `stalled command: "AT" elapsed=30000 ms`
+// is net.cpp's fire-and-forget URC drain probe. Because this "AT" ran at the
+// library default, one unanswered probe held _curCmd -- the single in-flight
+// command slot -- for 30 s per attempt, and the `/up` ack publish queued
+// behind it completed in 29 824 ms twice in one 6 min window. The probe is
+// specified as expendable and non-retrying (docs/SLEEP_URC_DESIGN.md §5(1)),
+// so it wants a short budget; nothing else does.
+bool WalterModem::checkComm(WalterModemRsp* rsp, walterModemCb cb, void* args, uint8_t maxAttempts,
+                            TickType_t cmdTimeoutTicks)
 {
-  _runCmd({ "AT" }, "OK", rsp, cb, args);
+  _runCmd({ "AT" }, "OK", rsp, cb, args, NULL, NULL, WALTER_MODEM_CMD_TYPE_TX_WAIT, NULL, 0, NULL,
+          maxAttempts, cmdTimeoutTicks);
   _returnAfterReply();
 }
 

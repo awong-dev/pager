@@ -210,3 +210,194 @@ the pager, while a genuinely wedged loop still does.
 - **E5 — UART wake byte loss (one sleeptest window, needs a debug flag).** Phase 2's first
   measurement: RTS asserted through sleep + `esp_sleep_enable_uart_wakeup()`; count wakes with
   cause UART and clipped/unparseable lines.
+
+---
+
+## 8. 23 Sep — S7 read, and the corrections it forces (debug image ea05271, `phaseAF-*`)
+
+S7's own verdict: **1-3 of its six criteria — pass, fail, fail.** Pages delivered and acked, zero
+`MQTT session LOST` (S2 works), but 47 s / 46 s against the ≤ 30 s bar and 45% asleep against ≥ 85%.
+Criteria 4-6 also fail. Phase 1 is *not* done, and §4's 87-91% prediction was wrong for a reason
+worth writing down (§8.5).
+
+### 8.1 What the `stalled command:` line does and does not say
+
+`stalled command: "AT" elapsed=30000 ms cts=0 tx_ring_free=0 B`. Three of those four fields rule
+out the wire, not the modem:
+
+- **`tx_ring_free=0 B` is a constant on this target, not a measurement.** The UART is installed with
+  a zero-byte TX ring (`WalterModem.cpp:4944`, `uart_driver_install(uartNo, UART_BUF_SIZE*2, 0, 0,
+  NULL, 0)`), so `uart_get_tx_buffer_free_size()` always reads 0 — already documented at
+  `WalterDefines.h:109-116` and `WalterModem.cpp:1846-1850`. "The `AT` could not leave the ESP's TX
+  ring" is not a thing this field can say. With a 0-byte ring `uart_write_bytes()` writes straight
+  into the FIFO.
+- **`cts=0` means CTS *asserted*, i.e. the modem was ready to receive.** RTS/CTS on the ESP32 are
+  active-low: `uart_ll.h:705-706` ("`sw_rts = 1` generates low level on RTS pin"), and
+  `uart_ll_set_hw_flow_ctrl()` (`:530-545`) gates TX via `conf0.tx_flow_en` on CTS_n. The premise
+  "the modem holds CTS low, not ready" inverts the polarity. This is also the same convention
+  `net_sleep()` relies on when it drives RTS **high** to park the modem (`net.cpp:1167-1168`).
+- **`txdone_timeouts=0`** (patch 1.13, `WalterModem.cpp:989-991`): every `_uartWrite()` saw
+  `uart_wait_tx_done(10 ms)` return `ESP_OK`, so all four bytes of `AT\r\n` were shifted out within
+  10 ms, every time. `buf_drop_queue=0 buf_drop_pool=0`: the parser never dropped a buffer.
+
+So the `AT` went out and the modem was accepting bytes. **The stall is on the response-pairing side,
+not the wire.** `elapsed=30000` is exactly the host's own default per-attempt timeout, not any
+modem-side number, and `probe_answered=13` / `probe_noqueue=0` means attempt 2's `OK` came back.
+
+Corollary: the vendor library has **no** modem UART power-saving configuration to blame. Neither
+`+SQNIPSCFG` nor `+SQNPSCFG` appears anywhere in `firmware/components/` or `firmware/main/` or the
+Kconfig, and `WalterModem::sleep(_, true)` (`WalterModem.cpp:5132-5168`) is nothing but the RTS
+choreography `net_sleep()` already replicates — no dummy byte, no settle delay, no DTR, no wake
+sequence to imitate. S8 confirms from the device: `AT+SQNHWCFG?` → `+CME ERROR: 4` (no such
+command), `AT+CPSMS: 0` (PSM off, so the modem's UART is not in a PSM sleep at all), `+IFC: 2,2`
+(the modem is honouring our RTS in both directions, as designed), `AT&K?` answers bare `OK` (the
+Sequans does not implement `&K`; `+IFC` is the spelling it uses). **There is no CTS problem to fix
+and no vendor wake-up sequence to add.** §3(d) is closed: no "modem ignores CTS" mode was found.
+
+### 8.2 The mechanism: ranked, with the experiment that decides it
+
+Nothing in the S7 artefacts is an in-window AT trace — light sleep kills the USB CDC
+(`modes.c:2021-2023`), so the report is read back from NVS at boot and the `TX:`/`RX:` lines for the
+30 s in question do not exist. Three candidates remain, all inside the parser/queue pairing:
+
+1. **Response/command desync inside the URC flush burst (most likely).** A command completes when
+   the buffer that reaches `_processModemRSP()` *starts with* its expected `atRsp`
+   (`WalterModem.cpp:4011`), which for nearly every command is literally `"OK"`; and the buffer is
+   paired with whatever `_curCmd` happens to be at *dequeue* time (`:1660`), from a single FIFO
+   shared by commands and response buffers (`:1650-1662`). A flush burst delivers several buffers
+   back-to-back. If one of them completes the wrong command, each later command is satisfied by the
+   previous one's terminator and the **last** command in the chain waits its full timeout for an
+   `OK` already consumed — then times out, retries, and resynchronises. Predicted signature: exactly
+   one full-timeout stall per burst, ending at the timeout, self-healing, no drops, CTS fine. That
+   is precisely the report.
+2. **`_receivingPayload` sticks true across the burst.** While it is set (`:1459-1467`) every byte
+   is consumed as payload and **nothing is queued at all**; it clears only when the byte count
+   reaches 0 (`:1465`) or on a command timeout (`:1897`, `:1992`) — hence, again, exactly the
+   timeout. `_expectingPayload()` (`:1408-1439`) takes the count from the *command line's own*
+   requested size, so it balances only if the host asked for exactly what the modem will send. The
+   normal path does (`xport_lte.cpp:393` passes `data->msg_length`), which is why this is second —
+   but the **oversize branch passes `sizeof(s_mqtt_rx_buf)`** (`xport_lte.cpp:386`) and would stick
+   for certain. Latent bug regardless of this run (no oversize message occurred).
+3. **The modem genuinely did not answer for 30 s.** Cannot be excluded without the trace, but it is
+   least likely: `phaseAF-s8.log` shows a bare `AT` answered inside one 10 ms log tick with the
+   session up, and the stall ends at the *host's* number.
+
+**The experiment (task S10, counters not a trace, ~20 lines, no bench time beyond one S7 rerun).**
+Three counters discriminate all three without capturing a byte: `rsp_no_cmd` (buffers reaching
+`_processModemRSP()` with `cmd == NULL` — hypothesis 1 predicts >= 1 per stall, 2 and 3 predict 0);
+`payload_stuck_ms` (how long `_receivingPayload` had been true when a command timed out —
+hypothesis 2 predicts > 0); and the probe's own issue→answer microseconds for attempt 1 vs the
+retry (hypothesis 3 predicts both slow, 1 and 2 predict the retry is fast).
+
+### 8.3 The 31 551 ms "render" is the display, not the modem
+
+Arithmetic, exact: **1500 + 15009 + ~15042 = 31 551 ms.**
+
+- 1500 ms = `disp_pre_write_gate_hook()`'s bound spent in full (`ui.c:539` `PAGER_UI_PUBLISH_QUIET_MAX_WAIT_MS`,
+  `:554-559`) — it waited its whole budget because the 29 824 ms `/up` ack publish was in flight the
+  entire time, then let the refresh start anyway. That is the 23 Sep display-corruption gate
+  *failing open*, which is the interesting part.
+- 15 009 ms = `disp_wait_busy_fb()`'s `PAGER_UI_BUSY_TIMEOUT_US` (`disp.c:22`, reached at `:196-203`,
+  called from `:460` full / `:586` partial).
+- ~15 042 ms = the one retry's `disp_wait_busy()` (`disp.c:463`/`:589` → `:214`, `fallback_ms == 0`,
+  so straight to the same 15 s poll).
+
+This is not inference: **this board did exactly that at this boot** —
+`phaseAF-boot.log:61-63`, `BUSY: entry=1 timed out after 1502 iters (~15009 ms)` then a retry that
+took 9 230 ms, and `:68` `BUSY line never asserted; using fixed waits (check the IO18 wire)`. So:
+not `net_publish_quiet_wait_ms()` (bounded 1.5 s and it behaved), not `disp_busy_idle_hook()`
+(`ui.c:528-534`, one I2C read), not S4's deferral (that is `msg_pump()`, a later bucket). It is a
+flaky BUSY line whose two 15 s bounds are far too long for a battery device, amplified by a publish
+that was stuck for 30 s. **The IO18 BUSY wire is an owner hardware call; the 15 s bounds are ours.**
+
+`ui_wake_status_refresh()` (`modes.c:600-604` → two blocking ATs, `modes.c:2211`, inside the same
+bucket) is a *second*, real exposure of the same kind — but it did not fire in this window:
+`input_awake()` is armed only by keys/buttons and `main.c:289/296`, never by an incoming page
+(`modes_alert_incoming()`, `modes.c:1295-1318`, does not arm it), and no key was pressed.
+
+### 8.4 Probe policy: neither "flow control off" nor "wait for CTS"
+
+§8.1 rules out a CTS problem, so both options in the question are unverified defensive changes and
+are dropped. What the numbers actually indict is the probe's **budget**, and one inverted bound:
+
+- 49 sleeps → 49 `net_probe_guard_poll()` calls → 13 issued + 8 stuck × 4 refused polls + 4
+  leftover = 49 exactly (`net_probe_guard.c:14-26`). So **8 of 13 probes went unanswered for >= 4
+  wake intervals (>= 20 s)**, not 2. The two the publish ring caught are the visible tip.
+- The guard gives up at ~20 s while the library holds the command for 30 s. Inverted: the guard
+  reissues a probe that queues *behind* a still-live one, spending a second of the 8 shared queue
+  slots (`WalterModem.h:127,3501`) for nothing.
+
+**Decision: give the probe 1 attempt / 2 s** (patch 1.14) — which is what §5(1) already specified
+("one `AT`, fire-and-forget… must NOT … retry"); the code simply never matched it. Safe because the
+modem flushes its queued URCs when it **accepts** a command, not when the host sees the answer, so
+the flush has already happened before the 2 s deadline matters. Saving per avoided 30 s block:
+0.33 mAh of awake ESP (30 s × 40 mA) + up to 15 s of `publish_quiet`'s sleep-hold
+(`PUBLISH_SLEEP_HOLD_MAX_US`, `publish_quiet.h:83`) + up to 30 s of `net_modem_busy()`'s ≈ up to
+0.8 mAh per page; ~16 mAh/day at 20 pages/day against a 95-107 mAh/day budget. Assumptions: 40 mA
+awake / 1 mA asleep (§2), not measured on this board.
+
+### 8.5 Why 85% was unreachable, and the honest bar
+
+Two things in §4's prediction were wrong, and one is not a bug:
+
+1. **ACTIVE mode lasts 10 minutes, not 30 s.** `PAGER_ACTIVE_IDLE_TIMEOUT_S` is `10 * 60`
+   (`modes.c:143`), set by `set_mode()` (`:819`) and re-armed by `modes_note_activity()` (`:853`).
+   So from the first page at +140 s the whole rest of the window ran at the 2 s ACTIVE interval
+   (`modes.c:1881-1883`). The report proves it arithmetically: 49 sleeps totalling 164 s solves
+   uniquely to 22 × 5 s + 27 × 2 s.
+2. **§4 assumed the pager still light-sleeps after a page. It does not, for a while.**
+   `skip_sleep` also ORs `net_modem_busy()` and `net_publish_in_flight()` (`modes.c:1972-1973`);
+   with a 30 s stalled command both stay true, so the loop degenerates to the 100 ms poll
+   (`modes.c:2117`). That is the whole of bucket 1: `awake-loop 737 × ~99 ms ≈ 73 s`. It is
+   *caused by* the stall, not by ACTIVE mode. The `ui_awake` term was never involved (§8.3).
+
+Duty-cycle model, taking the per-iteration numbers out of this run (yield 196 ms + non-stall work
+~36 ms = **232 ms awake per wake**; `input+ui+render` (35.4−31.5)/785 ≈ 5 ms and `msg_pump+health`
+(54.2−29.8)/784 ≈ 31 ms):
+
+| phase | duty | note |
+|---|---|---|
+| SLEEP, 5 s interval | 232/5232 = **4.4%** | steady state |
+| ACTIVE, 2 s interval | 232/2232 = **10.4%** | 10 min after every page |
+
+For `sleeptest 6` with pages at 90 s and 250 s, i.e. ~140 s SLEEP + ~220 s ACTIVE:
+140 × 4.4% + 220 × 10.4% = 6.2 + 22.9 = 29 s, plus two renders (≈ 3.5 s each) and ~2 s of
+per-page `handler_busy`/publish-in-flight holds → **awake ≈ 40 s, asleep ≈ 89%**.
+
+So 85% *is* reachable, but only with the stall gone and only because the arithmetic is dominated by
+a term §4 never wrote down. **New bar (S7b): asleep ≥ 85%, predicted band 86-90%**, and the report
+must show `awake-loop (no sleep)` under 10 s — that bucket is the stall detector now.
+
+Daily view (the number that matters, assumptions in §2): SLEEP steady state 0.044×40 + 0.956×1 =
+**2.72 mA**; ACTIVE 0.104×40 + 0.896×1 = **5.1 mA**. Each page costs 10 min of ACTIVE = (5.1−2.72)
+mA × 600 s = **0.40 mAh**; 20 pages/day = 8 mAh/day. Shortening ACTIVE from 10 min to 2 min would
+recover ~6.4 mAh/day of that — real, but a UI-responsiveness policy call for the owner, not a
+firmware fix, and it is **not** the modem-busy interlock (`modes.c:1939-1945` prices that at ~1.5 s
+per message). Nothing here changes `PROTOCOL.md`'s < 5 s active-mode requirement, which the 2 s
+interval is what satisfies.
+
+### 8.6 46-47 s is an eDRX bill, not a host bug
+
+Both pages landed 47 s and 46 s after the relay stamp, and the ring arithmetic says the 30 s stall
+came *after* ingest (page at +140 s; the 29 824 ms `/up` completing at +176 s was therefore issued
+at ~+146 s, 6 s after ingest — same shape at +303/+337). So the stall does not explain the latency.
+`AT+SQNEDRX=2,4,"0010","0001"` (`phaseAF-boot.log:106`) is eDRX value 2 = **20.48 s** with a 2.56 s
+paging time window; 2 × 20.48 + one 5 s wake interval + render ≈ 46-47 s. **A missed first paging
+occasion costs a whole second cycle, and one missed occasion already breaks the ≤ 30 s bar.**
+Levers, costed: eDRX value 1 (10.24 s) makes the two-cycle worst case ≈ 26 s and doubles the
+modem's paging occasions (a modem-side cost this design has no measurement for — that is the
+experiment); or accept the bar as "≤ 30 s typical, ≤ 50 s worst case" and say so in
+`docs/PROTOCOL.md`. This is the single biggest remaining latency term and it is **not** a host fix.
+
+### 8.7 Two options retired by S8, one hardware question sharpened
+
+- **§3(b) explicit polling is dead.** `AT+SQNSMQTTRCVMESSAGE=0,"pager/test-pager/down"` on an empty
+  queue answers `+CME ERROR: 4` (`phaseAF-s8.log:49-53`), so the no-`mid` form is not supported at
+  all. (b) cannot be phase 2's content-recovery path, which means §3(c)'s byte-loss problem has to
+  be solved by a parser resync — or by the next bullet.
+- **The modem has a ring-indicator line: `+SQNRICFG: 1,3,1000`** (`phaseAF-s8.log:27-31`) — enabled,
+  function 3, 1000 ms pulse. `firmware/main/pins.h` routes no modem→ESP wake pad, so this is an
+  owner hardware call. If it were wired, phase 2 becomes clean and cheap: wake the ESP32 on RI
+  (ext0/ext1, no UART-wake byte loss at all), then send one `AT` to flush. That retires §3(c)'s
+  clipping problem and the whole of S9's parser risk. Worth asking before spending firmware time on
+  S9.

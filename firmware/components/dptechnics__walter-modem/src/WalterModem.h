@@ -4466,10 +4466,17 @@ public:
    * @param[out] rsp Pointer to the response structure to save the result in.
    * @param[in] cb Callback function, if not NULL this function will not block.
    * @param[in] args Arguments to pass to the callback.
+   * @param maxAttempts PAGER PATCH: 1.14. Attempts for this "AT"; defaults to the library's own
+   * WALTER_MODEM_DEFAULT_CMD_ATTEMPTS (3), i.e. unchanged for every existing caller.
+   * @param cmdTimeoutTicks PAGER PATCH: 1.14. Per-attempt timeout in ticks; 0 (every existing
+   * caller) means the library's CONFIG_WALTER_MODEM_CMD_TIMEOUT_MS default (30 s). net.cpp's
+   * per-wake URC drain probe passes 1 attempt / 2 s -- see net_urc_probe().
    *
    * @return True on "OK" response, false otherwise.
    */
-  static bool checkComm(WalterModemRsp* rsp = NULL, walterModemCb cb = NULL, void* args = NULL);
+  static bool checkComm(WalterModemRsp* rsp = NULL, walterModemCb cb = NULL, void* args = NULL,
+                        uint8_t maxAttempts = WALTER_MODEM_DEFAULT_CMD_ATTEMPTS,
+                        TickType_t cmdTimeoutTicks = 0);
 
   /**
    * @brief Put Walter to deep or light sleep.

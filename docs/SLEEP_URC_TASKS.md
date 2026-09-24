@@ -23,6 +23,12 @@ Order: **S0 → S1 → S2 → S3 → S4 → S6 → S8 (bench, 15 min) → S7 (be
 S5 → S9**. S0 before everything: until the report's arithmetic is trustworthy, no acceptance
 criterion below can be read.
 
+**23 Sep update — S0-S4, S6, S8 are done; S7 ran and failed 4 of its 6 criteria.** Read
+`docs/SLEEP_URC_DESIGN.md` §8 before touching anything below. New order for what is left, smallest
+first: **S11 (done, in this commit) → S12 → S10 → S13 → S7b (the new gate) → S14 → S5 → S9**.
+S8 retired §3(b) and answered the RI question (§8.7); S7's old criteria 1 and 3 are replaced by
+S7b's.
+
 ---
 
 ## S0 — the sleeptest report mis-attributes awake time — firmware-dev, timebox 1 h
@@ -241,3 +247,134 @@ with M ≥ 2, page latency ≤ 30 s, `asleep ≥ 97%` (200 ms per 30 s cycle), a
 count. Predicted saving if it holds: 5 s → 30 s cadence ≈ −35 to −45 mAh/day (95-107 → ~60).
 Report the clipped-line count even if delivery works — that number decides whether phase 2 needs
 (b)'s explicit `AT+SQNSMQTTRCVMESSAGE` read as its content path.
+
+---
+
+# 23 Sep — post-S7 tasks
+
+Every task below names the **report line that proves it**. Smallest first. `docs/SLEEP_URC_DESIGN.md`
+§8 holds the reasoning and the file:line evidence; do not re-derive it.
+
+## S11 — the probe's budget (DONE in this commit, no bench yet) — 30 min
+
+**Proof line:** `stalled command: "AT" elapsed=30000 ms cts=0 tx_ring_free=0 B` and
+`probe counters: probe_issued=13 probe_answered=13 probe_stuck=8 probe_noqueue=0`
+(`build/bench-logs/phaseAF-report.log:27-28`), plus `... /up 44 B OK 29824 ms` (`:33`, `:41`).
+**Done:** `checkComm()` gained two optional pass-through parameters (PATCHES.md 1.14,
+`WalterModem.cpp:5189-5194`, `WalterModem.h:4477-4479`); `net_urc_probe()` passes 1 attempt / 2 s
+(`net.cpp`, `PAGER_URC_PROBE_ATTEMPTS`/`PAGER_URC_PROBE_TIMEOUT_MS`); `probe_cb()` now counts a
+non-OK, non-NO_MEMORY result as `stuck` via the new `net_probe_guard_failed()` instead of lying about
+`noqueue`. Host test added. Defaults unchanged for every other caller, including `net_check()`.
+**Still to verify:** S7b. Expected: `stalled command:` either absent or `elapsed=2000 ms`; no `/up`
+entry above ~2 100 ms; `awake-loop (no sleep)` under 10 s.
+
+## S12 — the two 15 s display BUSY bounds, and the gate that fails open — firmware-dev, 1 h
+
+**Proof line:** `input+ui+render avg 45 ms/wake, max 31551 ms` (`phaseAF-report.log:6`) against
+`phaseAF-boot.log:61-63` (`BUSY: entry=1 timed out after 1502 iters (~15009 ms)`, retry 9 230 ms)
+and `:68` (`BUSY line never asserted; using fixed waits (check the IO18 wire)`).
+**Read:** `docs/SLEEP_URC_DESIGN.md` §8.3; `firmware/main/disp.c:22` (`PAGER_UI_BUSY_TIMEOUT_US`),
+`:152-213` (`disp_wait_busy_fb()`), `:460-466` and `:586-600` (the timeout + one-retry paths),
+`:124-126` (the fallback constants); `firmware/main/ui.c:536-560` (the pre-write gate and its
+1 500 ms bound).
+**Files:** `firmware/main/disp.c`, `firmware/main/ui.c`, host test if the bound becomes a pure helper.
+**Do:** (a) cut `PAGER_UI_BUSY_TIMEOUT_US` from 15 s to a value justified by the measured refresh
+times already in the file (full 3 426 ms, partial 455 ms — `disp.c:125-126`): 6 s leaves >70% margin
+on the slowest measured refresh and caps the worst case at 1.5 + 6 + 6 = 13.5 s instead of 31.5 s.
+State the mAh in the commit message: 18 s × 40 mA = 0.2 mAh per occurrence. (b) Count BUSY timeouts
+and expose the count in the sleeptest report, so "the panel wedged" is never again inferred from a
+bucket max. (c) Log one line when `disp_pre_write_gate_hook()` spends its **whole** 1 500 ms budget
+and starts the refresh anyway — that is the 23 Sep corruption gate failing open, and today it is
+silent. Change **no** panel command, no refresh cadence, and do not touch `mark_display_dead()`.
+**Do not** raise the gate's 1 500 ms bound: with S11 in place a publish should never be in flight
+that long, and if it is, S10 wants to know.
+**Verify:** host tests green. S7b: no bucket max above 14 000 ms; the new BUSY-timeout counter is
+printed. The IO18 wire itself is an owner hardware call — report it, do not act on it.
+
+## S10 — decide the stall mechanism with three counters, not a trace — firmware-dev, 2 h
+
+**Proof line:** `stalled command: "AT" elapsed=30000 ms` with `txdone_timeouts=0`,
+`buf_drop_queue=0 buf_drop_pool=0` and `probe_answered=13` — i.e. the bytes went out, nothing was
+dropped, and the retry was answered (`phaseAF-report.log:25-28`). §8.1 rules out CTS and the TX
+path; §8.2 lists the three surviving hypotheses. There is no in-window AT trace and there will not
+be one (light sleep kills the USB CDC, `modes.c:2021-2023`), so this is counters.
+**Read:** `docs/SLEEP_URC_DESIGN.md` §8.1-8.2 in full; `WalterModem.cpp:1650-1706`
+(`_cmdProcessingTask`: one FIFO for commands *and* response buffers, `_processModemRSP(_curCmd, …)`
+at `:1660`), `:4002-4016` (completion = "buffer starts with `atRsp`", almost always `"OK"`),
+`:1444-1562` (`_parseRxData`), `:1408-1439` (`_expectingPayload()`), `:1459-1467` and `:1890-1897`,
+`:1986-1993` (where `_receivingPayload` is set and cleared); `WalterDefines.h:85-131`.
+**Files:** `firmware/components/dptechnics__walter-modem/src/WalterModem.cpp`, `WalterDefines.h`,
+`PATCHES.md` (append 1.15), `firmware/main/net.cpp` + `modes.c` (report line only).
+**Do:** three counters in `walter_modem_pager_counters_t`, printed on one new report line:
+(1) `rsp_no_cmd` — buffers reaching `_processModemRSP()` with `cmd == NULL` and `result == OK` (the
+ones that fall through to `:4023` and are freed unused). Hypothesis 1 (desync) predicts >= 1 per
+stall; 2 and 3 predict 0. (2) `payload_stuck_ms` — how long `_receivingPayload` had been true when a
+command timed out at `:1897`/`:1992` (needs one `TickType_t` remembering when it was set at `:1509`).
+Hypothesis 2 predicts > 0. (3) `probe_first_attempt_ms` — the elapsed of the probe's attempt 1 and
+of its answer; hypothesis 3 predicts both slow, 1 and 2 predict the retry is fast. **Counters only —
+change no behaviour.** Do not attempt a fix in this task; the fix depends on the answer.
+**Verify:** host tests green. S7b's report carries the new line. Say in the commit message which
+hypothesis the numbers support, and stop there.
+
+## S13 — the oversize-message payload-length bug — firmware-dev, 30 min
+
+**Proof line:** none in `phaseAF` (no oversize message occurred) — this is a read-found latent bug,
+recorded so it is not re-found the hard way.
+**Read:** `docs/SLEEP_URC_DESIGN.md` §8.2 hypothesis 2; `firmware/main/xport_lte.cpp:379-390` (the
+oversize drain, which passes `sizeof(s_mqtt_rx_buf)`) against `:393` (the normal path, which passes
+`data->msg_length`); `WalterModem.cpp:1408-1439` (`_expectingPayload()` takes the byte count from the
+command line's own requested size) and `:1459-1467`.
+**Files:** `firmware/main/xport_lte.cpp`, host test not applicable (no host build for this path —
+say so).
+**Do:** pass `data->msg_length` on the oversize drain too, capped at `sizeof(s_mqtt_rx_buf)`, so the
+count the parser is told to expect matches what the modem will actually send. As written, an oversize
+message makes `_receivingPayload` stick true until the next command timeout, swallowing every
+response line in between — the same 30 s class of stall S7 measured, but deterministic.
+**Verify:** host tests green; describe the reasoning in the commit message. Bench: optional — send a
+>640 B page and confirm `oversize MQTT message dropped` is followed by ordinary traffic, not a
+`stalled command:` line.
+
+## S7b — PHASE-1 ACCEPTANCE, second attempt — bench-tester, one window, ~15 min
+
+Replaces S7. Same procedure (`sleeptest 6`, pages at 90 s and 250 s, relay poll in a second log,
+capture the post-reset reprint), with S11-S13 flashed and **honest bars**:
+1. `asleep … (P%)` with **P >= 85**; predicted band **86-90%** (`docs/SLEEP_URC_DESIGN.md` §8.5's
+   duty table: 4.4% in SLEEP, 10.4% in ACTIVE, ACTIVE lasts 10 min after each page).
+2. `awake-loop (no sleep)` **under 10 s** — this bucket is the stall detector now (it was 73 s).
+3. `stalled command:` absent, or present with `elapsed=2000 ms` (the probe's new budget). No publish
+   ring entry above ~2 100 ms.
+4. `probe_stuck` and `probe_noqueue` reported separately and interpreted per S11 (`stuck` now also
+   counts a 2 s timeout, which is cheap and expected; it is no longer a failure signal on its own).
+5. zero `MQTT session LOST` (S2 held in S7; it must keep holding).
+6. no bucket `max` above 14 000 ms (S12), and the new BUSY-timeout counter printed.
+7. page latency: report it, **do not gate on 30 s** — §8.6 shows 46-47 s is 2 × the 20.48 s eDRX
+   cycle and is not a host fix. Record the two numbers; S14 owns the bar.
+**If 1-6 pass, phase 1 is done** regardless of 7.
+
+## S14 — the delivery bar is an eDRX decision, not a firmware one — architect + owner, 1 h
+
+**Proof line:** `+ 140 s page m_c5ced4cc received, 47 s after the relay stamped it` and
+`+ 303 s … 46 s …` (`phaseAF-report.log:23-24`), with `AT+SQNEDRX=2,4,"0010","0001"`
+(`phaseAF-boot.log:106`) = eDRX value 2 = 20.48 s, PTW 2.56 s, `+CPSMS: 0`.
+**Read:** `docs/SLEEP_URC_DESIGN.md` §8.6 and §2's delivery budget; `docs/PROTOCOL.md` §8.2-8.3.
+**Do:** no code first. One bench window with `AT+SQNEDRX=2,4,"0001","0001"` (10.24 s) set from the
+console before `sleeptest`, two pages, and report both latencies — the two-cycle worst case should
+fall from ~46 s to ~26 s. Then the owner decides between (a) eDRX 10.24 s, paying whatever the
+modem's extra paging occasions cost (**UNVERIFIED — no current trace exists for this; that is the
+measurement this task is really asking for**), and (b) amending `docs/PROTOCOL.md` to
+"≤ 30 s typical, ≤ 50 s worst case" for sleep mode. Do not change the eDRX default in firmware
+until that ruling exists.
+**Verify:** the two latency lines from each configuration, side by side, and one sentence of owner
+ruling recorded in `docs/PROTOCOL.md`.
+
+## S9 — PHASE 2, amended by S8's answers
+
+Unchanged in intent (see above), with two corrections from `docs/SLEEP_URC_DESIGN.md` §8.7:
+- §3(b) is **dead** as the content-recovery path: `AT+SQNSMQTTRCVMESSAGE=0,"<topic>"` with no `mid`
+  answers `+CME ERROR: 4` (`phaseAF-s8.log:49-53`). If UART-wake clipping is real, the only fix is a
+  parser resync patch.
+- **Ask the owner about the RI line first.** `+SQNRICFG: 1,3,1000` (`phaseAF-s8.log:27-31`) says the
+  modem has a ring indicator, enabled, 1 000 ms pulse; `firmware/main/pins.h` routes no modem→ESP
+  wake pad. Wiring it turns phase 2 into "wake on RI (ext0/ext1), then one `AT` to flush" with **no**
+  byte loss and **no** parser risk, and retires this task's whole clipping problem. One question,
+  potentially days saved.

@@ -1241,6 +1241,12 @@ extern "C" bool net_check(void)
 // S1 (docs/SLEEP_URC_DESIGN.md §3(a)/§5): per-wake URC drain probe.
 // ---------------------------------------------------------------------------
 
+// Per-attempt budget for the probe's single bare "AT" (PAGER PATCH 1.14,
+// WalterModem::checkComm()'s two new pass-through parameters). See the call
+// site in net_urc_probe() for the measurement that set these.
+#define PAGER_URC_PROBE_ATTEMPTS 1
+#define PAGER_URC_PROBE_TIMEOUT_MS 2000u
+
 // The guard's decision logic (single-slot in-flight, stuck-after-3-wakes, no
 // double queue) is pure C, unit tested on the host without a device --
 // firmware/host/test_net_probe_guard.c -- same split as net_connect_guard.h
@@ -1268,8 +1274,15 @@ static void probe_cb(const WalterModemRsp *rsp, void *args)
     (void) args;
     if (rsp != NULL && rsp->result == WALTER_MODEM_STATE_OK) {
         net_probe_guard_answered(&s_probe_guard);
-    } else {
+    } else if (rsp != NULL && rsp->result == WALTER_MODEM_STATE_NO_MEMORY) {
         net_probe_guard_noqueue(&s_probe_guard);
+    } else {
+        // 23 Sep S7 post-mortem: with PAGER_URC_PROBE_TIMEOUT_MS below this
+        // branch is reachable in normal operation (an "AT" the modem did not
+        // answer inside 2 s), so it must not land on noqueue() -- that
+        // counter means "checkComm() could not queue it at all" and S7 reads
+        // it that way. Counted `stuck` instead, same as an aged-out poll().
+        net_probe_guard_failed(&s_probe_guard);
     }
 }
 
@@ -1295,7 +1308,27 @@ extern "C" bool net_urc_probe(void)
         return false;
     }
     net_probe_guard_attempt(&s_probe_guard); // before the call: see probe_cb()'s doc comment
-    WalterModem::checkComm(NULL, probe_cb, NULL);
+    // 23 Sep S7 post-mortem (build/bench-logs/phaseAF-report.log:27-28,33,41).
+    // The probe used to inherit the library's 30 s x 3 default, which
+    // contradicts docs/SLEEP_URC_DESIGN.md §5(1)'s "one AT, fire-and-forget,
+    // no retries": an unanswered probe then held the library's single
+    // in-flight command slot (_curCmd) for 30 s, and everything behind it
+    // waited -- `stalled command: "AT" elapsed=30000 ms`, two `/up` acks at
+    // 29 824 ms, 8 of 13 probes unanswered for >=4 wakes. The flush this
+    // probe exists to trigger happens when the modem ACCEPTS the command,
+    // not when we see its answer, so a short budget cannot lose a page; the
+    // only thing given up is the (useless) knowledge that a late OK arrived.
+    // 2 s is also deliberately shorter than the guard's own stuck bound
+    // (NET_PROBE_GUARD_STUCK_WAKES x the wake interval, >=6 s even in ACTIVE
+    // mode), so the library always releases the slot before the guard
+    // reissues -- previously inverted, which is how a stuck probe could
+    // occupy a second of the 8 shared queue slots for nothing.
+    // Power: each avoided 30 s block is ~0.33 mAh of ESP awake time at 40 mA,
+    // plus up to 15 s of publish_quiet's sleep-hold and up to 30 s of
+    // net_modem_busy()'s, i.e. up to ~0.8 mAh per page (assumption: 40 mA
+    // awake, 1 mA asleep -- docs/SLEEP_URC_DESIGN.md §2, not measured).
+    WalterModem::checkComm(NULL, probe_cb, NULL, PAGER_URC_PROBE_ATTEMPTS,
+                           pdMS_TO_TICKS(PAGER_URC_PROBE_TIMEOUT_MS));
     if (s_probe_guard.outstanding) {
         // No synchronous net_probe_guard_noqueue() ran inside the call above,
         // so this was genuinely queued.

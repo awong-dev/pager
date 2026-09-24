@@ -433,3 +433,38 @@ above as two new sleeptest report lines, `tx counters: ...` and (only when `stal
 **Power effect**: none — the timeout/attempt changes only shorten how long a stall can block before
 the existing recovery paths run (a net power *saving* per occurrence, 0.33 mAh → 0.13 mAh per S3's
 own estimate); the counters are plain reads/increments, no extra AT traffic.
+
+## 1.14 `checkComm()` takes a per-command attempt/timeout budget, so the URC drain probe can be expendable (`src/WalterModem.cpp`, `src/WalterModem.h`)
+
+23 Sep S7 post-mortem (`build/bench-logs/phaseAF-report.log`, lines 27-28/33/41). `checkComm()`
+sends a bare `AT` and is the one library call `firmware/main/net.cpp`'s per-wake URC drain probe
+uses (`net_urc_probe()`, S1). The probe is specified as fire-and-forget and **non-retrying**
+(`docs/SLEEP_URC_DESIGN.md` §5(1)), but `checkComm()` gave it the library default of
+`CONFIG_WALTER_MODEM_CMD_TIMEOUT_MS` × `WALTER_MODEM_DEFAULT_CMD_ATTEMPTS` = 30 s × 3. Because the
+library runs exactly one command at a time (`_curCmd`, `WalterModem.cpp:1650-1706`), one unanswered
+probe held that single slot for a full 30 s attempt and every later command queued behind it:
+`stalled command: "AT" elapsed=30000 ms`, two `/up` ack publishes completing in 29 824 ms in one
+6 min window, and 8 of 13 probes unanswered for >= 4 wake intervals.
+
+**Fix.** Patch 1.13 already put `timeoutTicks`/`maxAttempts` on `WalterModemCmd` and an optional
+`maxAttempts`/`cmdTimeoutTicks` pair on `_queueModemCMD()`. This patch adds the same two optional
+parameters to `checkComm()` and passes them straight through `_runCmd`. Defaults are
+`WALTER_MODEM_DEFAULT_CMD_ATTEMPTS` and `0` ("use the library default"), so **every pre-existing
+caller — including `net_check()`'s blocking health check — is bit-for-bit unchanged**. Only
+`net_urc_probe()` passes the short budget (1 attempt / 2 s, `PAGER_URC_PROBE_ATTEMPTS` /
+`PAGER_URC_PROBE_TIMEOUT_MS` in `net.cpp`).
+
+Why a short budget cannot lose a page: the modem releases its queued URCs when it **accepts** a
+command, not when the host observes the answer, so the flush the probe exists to trigger has already
+happened by the time the 2 s deadline matters. The only thing given up is the knowledge that a late
+`OK` arrived, which nothing uses. It also un-inverts a bound: `net_probe_guard`'s stuck bound is
+`NET_PROBE_GUARD_STUCK_WAKES` (3) further wake intervals, i.e. >= 6 s even in ACTIVE mode, so with
+2 s the library always releases the slot before the guard reissues — previously the guard gave up
+first and queued a second probe behind a still-live one, spending one of the 8 shared queue slots
+for nothing.
+
+**Power effect**: a saving. Each avoided 30 s block is ~0.33 mAh of ESP awake time (30 s × 40 mA),
+plus up to 15 s of `publish_quiet`'s sleep-hold (`PUBLISH_SLEEP_HOLD_MAX_US`) and up to 30 s of
+`net_modem_busy()`'s, i.e. up to ~0.8 mAh per page. Assumptions: 40 mA awake / 1 mA light sleep
+(`docs/SLEEP_URC_DESIGN.md` §2) — estimated, not measured on this board. No extra AT traffic; no
+change to the 4 bytes on the wire.

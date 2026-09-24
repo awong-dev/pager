@@ -43,6 +43,13 @@ void net_probe_guard_noqueue(net_probe_guard_t *g)
     g->noqueue++;
 }
 
+void net_probe_guard_failed(net_probe_guard_t *g)
+{
+    g->outstanding = false;
+    g->wakes_waited = 0;
+    g->stuck++;
+}
+
 void net_probe_guard_answered(net_probe_guard_t *g)
 {
     g->outstanding = false;

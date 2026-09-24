@@ -76,6 +76,18 @@ void net_probe_guard_issued(net_probe_guard_t *g);
  * counts `noqueue` instead, no retry this wake. */
 void net_probe_guard_noqueue(net_probe_guard_t *g);
 
+/* Call from the probe's own callback when the probe came back with any
+ * non-OK, non-NO_MEMORY result -- in practice the library's own per-command
+ * timeout (patch 1.14 gives the probe 1 attempt / 2 s, so this is the
+ * "the modem did not answer this AT" case). Clears `outstanding` and counts
+ * it `stuck`, exactly as an aged-out poll() would: a probe that did not
+ * answer is a stuck probe whoever noticed first, and counting it here rather
+ * than waiting NET_PROBE_GUARD_STUCK_WAKES further wakes keeps `stuck` from
+ * double-counting the same probe. Deliberately NOT noqueue(): that counter
+ * means "checkComm() could never queue it at all" and the S7 acceptance
+ * criterion reads it that way. */
+void net_probe_guard_failed(net_probe_guard_t *g);
+
 /* Call from the probe's own callback when the "OK" genuinely came back.
  * Safe to call even if the guard already declared this probe stuck and
  * moved on (docs/SLEEP_URC_DESIGN.md §5(3)(iv): "a probe answered but no

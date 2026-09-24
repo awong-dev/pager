@@ -140,12 +140,44 @@ static void test_noqueue_undoes_attempt(void)
     CHECK(net_probe_guard_poll(&g), "must be free to try again the very next wake");
 }
 
+/* failed() (the library's own per-command timeout on the probe's "AT", which
+ * patch 1.14 makes a 2 s / 1-attempt budget and therefore a normal outcome)
+ * clears outstanding and counts `stuck` -- NOT `noqueue`, which means
+ * "checkComm() could not queue it at all" and is what S7 reads -- and leaves
+ * the guard ready to probe again the very next wake. */
+static void test_failed_counts_stuck_not_noqueue(void)
+{
+    net_probe_guard_t g;
+    net_probe_guard_init(&g);
+
+    CHECK(net_probe_guard_poll(&g), "fresh guard must offer a probe");
+    net_probe_guard_attempt(&g);
+    net_probe_guard_issued(&g);
+    net_probe_guard_failed(&g); /* WALTER_MODEM_STATE_TIMEOUT after 2 s */
+
+    CHECK(!g.outstanding, "failed() must clear outstanding");
+    CHECK(g.stuck == 1, "failed() must count exactly one stuck, got %u", (unsigned) g.stuck);
+    CHECK(g.noqueue == 0, "failed() must not touch noqueue, got %u", (unsigned) g.noqueue);
+    CHECK(g.answered == 0, "failed() must not count an answer, got %u", (unsigned) g.answered);
+    CHECK(g.issued == 1, "failed() must not un-count the issue, got %u", (unsigned) g.issued);
+    CHECK(net_probe_guard_poll(&g), "must be free to try again the very next wake");
+
+    /* The same probe must not be counted stuck twice: poll() only ages a
+     * probe that is still outstanding, and failed() already cleared it. */
+    for (unsigned i = 0; i <= NET_PROBE_GUARD_STUCK_WAKES; i++) {
+        net_probe_guard_poll(&g);
+    }
+    CHECK(g.stuck == 1, "an already-failed probe must not be aged out again, stuck=%u",
+          (unsigned) g.stuck);
+}
+
 int main(void)
 {
     test_issue_and_no_double_queue();
     test_stuck_after_exactly_n_wakes();
     test_answered_clears_and_counts();
     test_noqueue_undoes_attempt();
+    test_failed_counts_stuck_not_noqueue();
 
     if (g_failures == 0) {
         printf("PASS: net probe guard (in-flight / stuck-after-%u / no double queue), 0 failures\n",
