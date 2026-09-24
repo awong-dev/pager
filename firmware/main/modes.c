@@ -114,8 +114,18 @@ static const char *TAG = "modes";
 // against a real current trace without touching logic.
 // ---------------------------------------------------------------------------
 
-#define PAGER_WAKE_INTERVAL_SLEEP_MS 5000u  // T=5s sleep mode, PROTOCOL.md §8.2
-#define PAGER_WAKE_INTERVAL_ACTIVE_MS 2000u // T=2s active mode
+// 24 Sep 2026 (docs/SLEEP_URC_DESIGN.md §10, bench phaseAO): the modem
+// releases a held page URC only when it accepts a host command, and it does
+// not accept one inside a 200 ms window after RTS is re-asserted. The one
+// configuration that delivered both mid-window pages with no session loss
+// was a 20 s cadence with the post-wake probe held open until answered
+// (wait_for_probe_answer(), armed at intervals >= PAGER_PROBE_WAIT_MIN_INTERVAL_MS).
+// Both modes use an interval that arms it. Typical delivery ~26-47 s;
+// measured asleep 83% (SLEEP), estimated ~190 mAh/day at a 3 s modem answer.
+// PROTOCOL.md §8.2's T=5 s / T=2 s are superseded by this until a cheaper
+// wake (WAKE0/IO46, or RTS asserted through sleep) is proven.
+#define PAGER_WAKE_INTERVAL_SLEEP_MS 20000u  // T=20s sleep mode (was 5 s)
+#define PAGER_WAKE_INTERVAL_ACTIVE_MS 10000u // T=10s active mode (was 2 s)
 // pump_blocked no longer keys on ui_awake/btn_busy/btn_stuck (see its doc
 // comment above), so msg_pump() now runs on every loop iteration once
 // connected, not just once per wake-and-drain cycle. On the 2s/5s wake

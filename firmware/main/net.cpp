@@ -636,6 +636,16 @@ static bool net_bringup(int attach_wait_s)
         ESP_LOGI(TAG, "configEDRX() failed - continuing without a granted eDRX confirmation");
     }
 
+    // 24 Sep 2026: pin the modem's host-interface power saving to the value
+    // every passing sleep window ran with (+SQNIPSCFG: 1,100 — mode 1, 100 ms
+    // idle). A bench experiment set it to 0 and the modem may persist that;
+    // the release must not depend on whatever the bench left behind. Power
+    // effect: none beyond one AT at bring-up (the setting is the modem's
+    // default).
+    if (!WalterModem::sendCmd("AT+SQNIPSCFG=1,100")) {
+        ESP_LOGI(TAG, "AT+SQNIPSCFG=1,100 not accepted - continuing");
+    }
+
     // PROTOCOL.md §12 item 6: periodic voltage monitor, ACTIVE mode only
     // (no autonomous shutdown/sleep side effects - modes.c owns all power
     // decisions). Threshold 30 (3.0V) is a sane LiFePO4 low-battery mark;
