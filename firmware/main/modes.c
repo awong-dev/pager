@@ -159,7 +159,7 @@ static const char *TAG = "modes";
 // delivers nothing: 95% asleep and zero pages. Waiting for the answer costs
 // real current -- see the duty table in §10 -- which is why it is bounded and
 // why it is only armed on a lengthened wake cadence.
-#define PAGER_PROBE_WAIT_MS 4000u
+#define PAGER_PROBE_WAIT_MS 15000u
 // Armed only when this wake's interval is at least this long. At the 5 s
 // SLEEP / 2 s ACTIVE cadence a 4 s wait would be a 44-67% duty cycle, which
 // is not a power budget, it is a wall socket; the wait only makes sense

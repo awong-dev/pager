@@ -1278,7 +1278,7 @@ extern "C" bool net_check(void)
 // on that path). While the pager light-sleeps at a ~4% duty a "6 s" budget is
 // ~150 s of wall clock. It is a real 6 s only while the host stays awake --
 // which, with the wait above, is exactly the window that matters.
-#define PAGER_URC_PROBE_TIMEOUT_MS 6000u
+#define PAGER_URC_PROBE_TIMEOUT_MS 15000u
 
 // The guard's decision logic (single-slot in-flight, stuck-after-3-wakes, no
 // double queue) is pure C, unit tested on the host without a device --
@@ -1396,6 +1396,16 @@ extern "C" bool net_urc_probe(void)
     // awake, 1 mA asleep -- docs/SLEEP_URC_DESIGN.md §2, not measured).
     // S10: stamped immediately before the call so even a synchronous
     // callback (the noqueue case) measures a valid, near-zero elapsed time.
+    // 24 Sep bench (phaseAT): with +SQNIPSCFG: 1,100 the modem answered the
+    // probe in 6 ms when its host interface was awake and not at all within
+    // 6 s when it was not -- the first bytes after RTS re-assert are
+    // swallowed while the interface wakes, and a swallowed "AT" is not an
+    // accepted command, so nothing is released. Send throwaway wake
+    // characters first and give the interface a moment before the real
+    // probe. Raw write on the modem UART, on this task, before the library
+    // has anything queued for this wake. Power: two bytes and 60 ms.
+    uart_write_bytes(PAGER_MODEM_UART, "\r\n", 2);
+    vTaskDelay(pdMS_TO_TICKS(60));
     s_probe_issue_us = esp_timer_get_time();
     WalterModem::checkComm(NULL, probe_cb, NULL, PAGER_URC_PROBE_ATTEMPTS,
                            pdMS_TO_TICKS(PAGER_URC_PROBE_TIMEOUT_MS));
