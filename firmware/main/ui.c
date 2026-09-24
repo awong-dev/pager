@@ -580,7 +580,22 @@ void disp_busy_idle_hook(void)
 void disp_pre_write_gate_hook(void)
 {
     uint32_t waited_ms = net_publish_quiet_wait_ms(PAGER_UI_PUBLISH_QUIET_MAX_WAIT_MS);
-    if (waited_ms > 0) {
+    if (waited_ms >= PAGER_UI_PUBLISH_QUIET_MAX_WAIT_MS) {
+        // S12 (docs/SLEEP_URC_DESIGN.md §8.3, docs/SLEEP_URC_TASKS.md S12):
+        // net_publish_quiet_wait_ms() returns exactly the budget it was
+        // given (not a shorter value) only when it never saw the gate clear
+        // -- i.e. it spent its whole PAGER_UI_PUBLISH_QUIET_MAX_WAIT_MS and
+        // is about to let the refresh start anyway. That is the 23 Sep
+        // display-corruption gate failing open; today it is silent (the
+        // ordinary "waited_ms > 0" line below reads identically whether the
+        // gate cleared early or never cleared at all). S10 wants to know if
+        // this ever fires with a publish actually still stuck -- with S11 in
+        // place a publish should never be in flight this long.
+        ESP_LOGI(TAG,
+                 "publish-quiet gate exhausted its %u ms budget; refreshing anyway "
+                 "(23 Sep corruption gate failing open)",
+                 (unsigned) PAGER_UI_PUBLISH_QUIET_MAX_WAIT_MS);
+    } else if (waited_ms > 0) {
         ESP_LOGI(TAG, "refresh delayed %u ms for an in-flight publish", (unsigned) waited_ms);
     }
 }

@@ -468,3 +468,93 @@ plus up to 15 s of `publish_quiet`'s sleep-hold (`PUBLISH_SLEEP_HOLD_MAX_US`) an
 `net_modem_busy()`'s, i.e. up to ~0.8 mAh per page. Assumptions: 40 mA awake / 1 mA light sleep
 (`docs/SLEEP_URC_DESIGN.md` §2) — estimated, not measured on this board. No extra AT traffic; no
 change to the 4 bytes on the wire.
+
+## 1.15 Stall-mechanism discriminator counters, not a trace (`src/WalterModem.cpp`, `src/WalterModem.h`, `src/WalterDefines.h`)
+
+`docs/SLEEP_URC_TASKS.md` S10, `docs/SLEEP_URC_DESIGN.md` §8.1-§8.2. `phaseAF`'s
+`stalled command: "AT" elapsed=30000 ms` rules out the wire (`txdone_timeouts=0`,
+`buf_drop_queue=0 buf_drop_pool=0`, `probe_answered=13` — the bytes went out, nothing was dropped,
+the retry was answered), which leaves three candidates on the response-pairing side: (1) a response
+completes the wrong command inside a URC flush burst (the shared FIFO pairs whatever buffer arrives
+next with whatever command happens to be `_curCmd` at dequeue time, `_processModemRSP(_curCmd, …)`
+at `_cmdProcessingTask`); (2) `_receivingPayload` sticks true across a burst, so every byte is
+consumed as payload and nothing is queued at all until the command times out; (3) the modem
+genuinely did not answer. There is no in-window AT trace to settle it with — light sleep kills the
+USB CDC — so this patch adds counters instead.
+
+**`rsp_no_cmd`** (`WalterModem.cpp`'s `_processModemRSP()`, `RSP_PROC_FINISH` region): incremented
+when a buffer reaches the function's completion test with `cmd == NULL` and `result == OK`, i.e. it
+falls through unused instead of completing a command or being claimed by an earlier region's own
+`if (cmd == NULL) return`. By the time this point is reached, `cmd == NULL` already implies
+`result == OK` (the `cmd == NULL && result != OK` case returns earlier, patch 1.1). Hypothesis 1
+(desync) predicts >= 1 of these per stall; hypotheses 2 and 3 predict 0.
+
+**`payload_stuck_ms`** (`WalterModem.cpp`'s `_processModemCMD()`, the `TX_WAIT`/`DATA_TX_WAIT` and
+`WAIT` timeout paths, plus one new `TickType_t _receivingPayloadSetAt` on `WalterModem.h` stamped
+wherever `_receivingPayload` is set true in `_parseRxData()`): how long `_receivingPayload` had
+already been true when a command genuinely timed out with it still set. Hypothesis 2 predicts > 0;
+1 and 3 predict 0. Overwritten on every such observation — most recently observed, not necessarily
+still stuck.
+
+**`probe_first_attempt_ms`** (`firmware/main/net.cpp`, not this component): the URC drain probe's
+own issue-to-answer elapsed time, stamped immediately before `WalterModem::checkComm()` and read
+inside `probe_cb()` whichever way the probe resolved. Hypothesis 3 predicts this stays near the
+probe's own 2 s budget during a stall; 1 and 2 predict the probe itself completes quickly, because
+the flush that unblocks the queue happens when the modem *accepts* a command, not when the host
+sees the answer.
+
+All three are printed on one new sleeptest report line, `stall discriminator: rsp_no_cmd=…
+payload_stuck_ms=… probe_first_attempt_ms=…` (`firmware/main/net.cpp`'s `net_get_pager_counters()`/
+`net_get_probe_counters()`, `firmware/main/modes.c`'s report).
+
+**Power effect**: none — three plain reads/increments, no extra AT traffic, no behaviour change.
+This patch does not attempt a fix; the fix depends on which hypothesis the counts support.
+
+## 1.16 A failed hardware `reset()` no longer costs ~91 s: the discarded `+SYSSTART` banner is remembered, and the wait budget matches the datasheet, not the library default (`src/WalterModem.cpp`, `src/WalterModem.h`)
+
+`docs/SLEEP_URC_TASKS.md` S17, `docs/SLEEP_URC_DESIGN.md` §9.1-§9.2 item 3. `phaseAI-report.log`'s
+`asleep 253 s` against `80 light sleeps` at a 2 s interval (160 s of real sleep) left ~93 s
+unaccounted for; the arithmetic that explains it is `reset()`'s own failure mode: `reset()` pulses
+the reset pin, waits 1000 ms for the line to settle, then queues a `TX_WAIT` for `"+SYSSTART"` with
+the library's unmodified default (`WALTER_MODEM_DEFAULT_CMD_ATTEMPTS` x
+`CONFIG_WALTER_MODEM_CMD_TIMEOUT_MS` = 3 x 30 s = 90 s) — but `_parseRxData()` discards every byte
+received while `_hardwareReset` is true, which is exactly that 1000 ms window. If the modem's boot
+banner is transmitted inside it (plausible: it is one of the first things a GM02SP sends, and this
+board's own README notes the datasheet boot time is ~2-3 s, so a 1000 ms window can catch the leading
+edge of it depending on exact timing), the wait then genuinely never sees it and burns the full 90 s
+every time. 1 s + 90 s = 91 s, matching `phaseAI`'s ~93 s excess to within the measurement.
+
+**Fix, two independent halves (per the task brief, either one alone is an improvement; both are
+applied).**
+
+**(a) Remember the banner instead of parsing it.** A new instance-wide flag,
+`_sawSysStartDuringReset` (`WalterModem.h`, next to `_hardwareReset`), is set by `_parseRxData()`
+when the raw bytes it is about to discard (because `_hardwareReset` is true) contain the literal
+substring `"+SYSSTART"` (`memmem()`, already used elsewhere in this file for the same kind of
+substring match). No buffer is queued and no command completes from this check alone — it is purely
+a memory of "the banner arrived, even though nothing can use it yet". `reset()` clears the flag at
+its own start (so a stale `true` from an earlier hardware reset can never leak forward), and
+`_processModemCMD()`'s very first evaluation of a `TX_WAIT`/`DATA_TX_WAIT` command whose `atRsp` is
+literally `"+SYSSTART"` consults and clears it: if set, the command completes immediately with
+`WALTER_MODEM_STATE_OK` instead of transmitting nothing and waiting. Scoped to the exact string, not
+the type, because `softReset()` (`AT^RESET`, no pin pulse) queues an identical `"+SYSSTART"` wait
+without ever setting `_hardwareReset` — the flag is simply never true when its command runs, so this
+change cannot affect that path. Known limitation, stated where the check lives: a `"+SYSSTART"` split
+across two separate UART reads at exactly the discard/no-discard boundary is still missed; rare for a
+9-byte token, and bounded by half (b) below regardless.
+
+**(b) A 10 s, 1-attempt budget for the wait itself** (`PAGER_RESET_SYSSTART_TIMEOUT_TICKS` /
+`PAGER_RESET_SYSSTART_ATTEMPTS`, patches 1.13/1.14's existing `maxAttempts`/`cmdTimeoutTicks`
+parameters on `_queueModemCMD()`, now also passed from `reset()`'s own `_runCmd()` call). The GM02SP
+boots in ~2-3 s; 10 s leaves ample margin without inheriting the library's 30 s x 3 default built for
+ordinary AT commands over an already-attached radio. Applied unconditionally, independent of (a): if
+(a)'s substring scan ever misses the banner (the split-read case above, or a genuinely slow boot),
+this still fails in 10 s instead of 90 s, and `net_recover_modem()`'s caller already handles a false
+return from `reset()` — no new recovery machinery needed.
+
+**Power effect**: (a) removes the ~91 s stall entirely on the common case (the banner reaches the
+flag, the command completes at once); (b) bounds whatever (a) does not catch to 10 s. Worst case per
+failed F4 falls from ~91 s to ~11 s: (91-11) s x 40 mA / 3600 = ~0.9 mAh per occurrence saved, and the
+F4 is rate-limited to 6/hour, so the worst case this removes is ~5 mAh/h (`docs/SLEEP_URC_DESIGN.md`
+§2: 40 mA awake / 1 mA light sleep, estimated, not measured on this board). No extra AT traffic; no
+change to the 4-byte reset sequence itself.

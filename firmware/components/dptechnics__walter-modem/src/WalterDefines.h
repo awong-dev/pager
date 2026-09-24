@@ -116,6 +116,28 @@ extern "C" void walter_modem_block_tick(void);
 //                            for it. Overwritten on every such observation,
 //                            so it reflects the most recently seen slow
 //                            command, not necessarily one still stalled.
+// PAGER PATCH: 1.15 (docs/SLEEP_URC_DESIGN.md §8.2, docs/SLEEP_URC_TASKS.md
+// S10). Counters, not a trace -- light sleep kills the USB CDC
+// (firmware/main/modes.c), so there is no in-window AT log to read back; these
+// two discriminate the three surviving explanations for the 30 s
+// "stalled command:" stalls without capturing a byte.
+//   rsp_no_cmd      - WalterModem.cpp's _processModemRSP(): incremented when a
+//                      buffer reaches the function's completion test with
+//                      cmd == NULL and result == OK, i.e. it falls through
+//                      unused (RSP_PROC_FINISH region) instead of completing a
+//                      command or being claimed by an earlier
+//                      "if (cmd == NULL) return" branch. Hypothesis 1
+//                      (response/command desync inside a URC flush burst)
+//                      predicts >= 1 of these per stall; hypotheses 2
+//                      (_receivingPayload sticks) and 3 (modem genuinely
+//                      silent) predict 0. Free-running, never reset.
+//   payload_stuck_ms - WalterModem.cpp's _processModemCMD(): how long
+//                      _receivingPayload had already been true when a command
+//                      timed out (the TX_WAIT/DATA_TX_WAIT and WAIT timeout
+//                      sites). Hypothesis 2 predicts > 0; 1 and 3 predict 0.
+//                      Overwritten on every such observation, so it reflects
+//                      the most recently observed stuck-payload timeout, not
+//                      necessarily one still stuck.
 typedef struct {
   uint32_t datatx_retx;
   uint32_t prompt_orphan;
@@ -128,6 +150,8 @@ typedef struct {
   uint32_t stall_elapsed_ms;
   int32_t stall_cts_level;
   uint32_t stall_tx_ring_bytes;
+  uint32_t rsp_no_cmd;
+  uint32_t payload_stuck_ms;
 } walter_modem_pager_counters_t;
 
 extern "C" walter_modem_pager_counters_t walter_modem_pager_counters(void);

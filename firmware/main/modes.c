@@ -17,6 +17,7 @@
 #include "net.h"
 #include "watchdog.h"
 #include "ui.h"
+#include "disp.h" // S12: disp_busy_timeout_count() for the sleeptest report
 
 // F6.2 (docs/DEVICE_PLAN.md §5.3): CardKB decode + button FSM (+BTN_STUCK)
 // + the UI-awake window + one input event queue, moved out of this file
@@ -1271,6 +1272,15 @@ void modes_debug_sleeptest_report(void)
                (unsigned) probec.issued, (unsigned) probec.answered, (unsigned) probec.stuck,
                (unsigned) probec.noqueue, (unsigned) probec.timedout, (unsigned) probec.skip_busy,
                (unsigned) probec.skip_down);
+    // S10 (docs/SLEEP_URC_DESIGN.md §8.2, docs/SLEEP_URC_TASKS.md S10): three
+    // counters, not a trace -- light sleep kills the USB CDC, so this is what
+    // has to settle the stall mechanism. rsp_no_cmd/payload_stuck_ms come
+    // from the vendored library (WalterDefines.h); probe_first_attempt_ms
+    // from the probe's own issue-to-answer timing (net.cpp). See each field's
+    // doc comment in net.h for what each hypothesis predicts.
+    st_appendf(&n, "stall discriminator: rsp_no_cmd=%u payload_stuck_ms=%u probe_first_attempt_ms=%u\n",
+               (unsigned) pc.rsp_no_cmd, (unsigned) pc.payload_stuck_ms,
+               (unsigned) probec.first_attempt_ms);
     st_appendf(&n, "post-wake UART bytes (50ms sample): max=%u wakes_with_bytes=%u\n",
                (unsigned) s_st_wake_bytes_max, (unsigned) s_st_wake_bytes_nonzero);
     // S2 (docs/SLEEP_URC_DESIGN.md §6): how often a liveness ping's first
@@ -1278,6 +1288,10 @@ void modes_debug_sleeptest_report(void)
     // re-SUBSCRIBE, never by a teardown) -- zero MQTT session LOST lines
     // alongside a non-zero count here is this fix working.
     st_appendf(&n, "resub_first_swallowed=%u\n", (unsigned) net_get_resub_swallowed_count());
+    // S12 (docs/SLEEP_URC_DESIGN.md §8.3, docs/SLEEP_URC_TASKS.md S12): so
+    // "the panel wedged" is this number, not an inference from a bucket max
+    // (phaseAF's `input+ui+render max 31551 ms` used to be the only clue).
+    st_appendf(&n, "disp_busy_timeout_count=%u\n", (unsigned) disp_busy_timeout_count());
     net_publish_ring_entry_t ring[NET_PUBLISH_RING_MAX];
     uint32_t nring = net_get_publish_ring(ring, NET_PUBLISH_RING_MAX);
     if (nring == 0) {

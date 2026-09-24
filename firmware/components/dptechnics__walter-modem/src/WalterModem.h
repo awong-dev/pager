@@ -3380,9 +3380,39 @@ private:
   static inline bool _hardwareReset = false;
 
   /**
+   * @brief PAGER PATCH: (1.16, docs/SLEEP_URC_DESIGN.md §9.2 item 3, docs/
+   * SLEEP_URC_TASKS.md S17) set by `_parseRxData()` when it recognises the
+   * literal bytes `+SYSSTART` inside data it is about to discard because
+   * `_hardwareReset` is true -- i.e. the boot banner a hardware `reset()`
+   * is waiting for arrived during the ~1 s pin-settle window and would
+   * otherwise be silently thrown away, guaranteeing the queued `"+SYSSTART"`
+   * wait times out even though the modem answered. Consulted (and cleared)
+   * once, by `_processModemCMD()`'s very first evaluation of a `TX_WAIT`/
+   * `DATA_TX_WAIT` command whose `atRsp` is literally `"+SYSSTART"` -- i.e.
+   * only `reset()`'s own queued command, never an unrelated one. Cleared at
+   * the start of every `reset()` call so a stale `true` from a previous
+   * hardware reset can never leak into a later `softReset()` (which shares
+   * the same `"+SYSSTART"` expected response but never sets
+   * `_hardwareReset`).
+   */
+  static inline bool _sawSysStartDuringReset = false;
+
+  /**
    * @brief boolean for when we are doing a hardware reset.
    */
   static inline bool _receivingPayload = false;
+
+  /**
+   * @brief PAGER PATCH: (1.15, docs/SLEEP_URC_DESIGN.md §8.2, docs/
+   * SLEEP_URC_TASKS.md S10) tick count at the moment `_receivingPayload` was
+   * last set true (`_parseRxData()`), so a command timeout while it is still
+   * true can report how long it had been stuck -- see `payload_stuck_ms`'s
+   * doc comment in WalterDefines.h. One instance-wide field is enough, same
+   * reasoning as `_receivingPayload` itself (one command in flight at a
+   * time). Not reset when `_receivingPayload` clears normally; only read
+   * while `_receivingPayload` is true.
+   */
+  static inline TickType_t _receivingPayloadSetAt = 0;
 
   static inline bool _foundCRLF = false;
 
