@@ -125,7 +125,7 @@ static const char *TAG = "modes";
 // PROTOCOL.md §8.2's T=5 s / T=2 s are superseded by this until a cheaper
 // wake (WAKE0/IO46, or RTS asserted through sleep) is proven.
 #define PAGER_WAKE_INTERVAL_SLEEP_MS 20000u  // T=20s sleep mode (was 5 s)
-#define PAGER_WAKE_INTERVAL_ACTIVE_MS 10000u // T=10s active mode (was 2 s)
+#define PAGER_WAKE_INTERVAL_ACTIVE_MS 20000u // T=20s active mode too: the only configuration that delivered both pages (phaseAV); 10 s lost a page on the release (phaseAW)
 // pump_blocked no longer keys on ui_awake/btn_busy/btn_stuck (see its doc
 // comment above), so msg_pump() now runs on every loop iteration once
 // connected, not just once per wake-and-drain cycle. On the 2s/5s wake
