@@ -235,6 +235,37 @@ def bump_book_version(device_id: str) -> int:
     return run_transaction(_txn)
 
 
+def bootstrap_book_version(device_id: str) -> bool:
+    """docs/PROTOCOL.md §5.3/§3.7: "On every online `/status`: if
+    `bookVersion` is 0, bump it to 1 in a transaction that writes only while
+    it is still 0, and publish." This is the *only* path a fresh device
+    (whose `devices/{d}` document was created with no `bookVersion` field at
+    all, or with it explicitly 0) ever gets its first book -- `bv 0 <
+    bookVersion 0` never fires the ordinary behind-check below.
+
+    Returns `True` iff this call performed the 0->1 bump (the caller,
+    `app.ingest.Ingest.handle_status`, publishes only in that case); `False`
+    if `bookVersion` was already nonzero, including the losing side of a
+    race against a concurrent bootstrap for the same device (the "only
+    while it is still 0" guard is what makes that race safe: at most one
+    caller ever sees `True`)."""
+    ref = get_db().collection("devices").document(device_id)
+
+    def _txn(transaction: Transaction) -> bool:
+        snap = ref.get(transaction=transaction)
+        data = (snap.to_dict() or {}) if snap.exists else {}
+        bv = int(data.get("bookVersion", 0) or 0)
+        if bv != 0:
+            return False
+        if snap.exists:
+            transaction.update(ref, {"bookVersion": 1})
+        else:
+            transaction.set(ref, {"bookVersion": 1}, merge=True)
+        return True
+
+    return run_transaction(_txn)
+
+
 def push_book(device_id: str) -> None:
     """**Placeholder for S4.2** (`docs/DEVICE_TASKS.md` S4.2's `push_book`,
     not yet implemented). Every approve/reject is supposed to publish a

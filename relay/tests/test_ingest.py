@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import time
 
-from app import devauth
+from app import devauth, devcfg
 from app.ingest import Ingest
 from app.routing import Routing
 from app.store import allow as allow_store
@@ -266,8 +266,12 @@ def test_v2_republish_on_session_change_resends_still_pending():
 
     broker.fail_publish = False
     ingest.handle_status(status_topic("pgr-v2-7"), online_status_payload("s_00000001"))
-    assert len(broker.published) == 1
-    assert json.loads(broker.published[0].payload)["id"] == msg.id
+    # docs/PROTOCOL.md §5.3/§3.7 (v0.4): this is also this device's very
+    # first online `/status`, so `bookVersion` (0) bootstraps to 1 and
+    # publishes a book alongside the resend -- filter to the resent
+    # message's own id, which this test is actually about.
+    matches = [p for p in broker.published if json.loads(p.payload).get("id") == msg.id]
+    assert len(matches) == 1
 
 
 # ---- docs/V02_DESIGN.md §9.5 (this task): `link`-triggered republish ----
@@ -287,11 +291,16 @@ def test_v2_republish_on_link_change_same_session_resends_still_pending():
     routing = Routing(broker)
     ingest = Ingest(broker, routing)
 
-    # Baseline: session s_00000001, link 1, no pending messages yet.
+    # Baseline: session s_00000001, link 1, no pending messages yet. This is
+    # also the device's very first online `/status`, so `bookVersion` (0)
+    # bootstraps to 1 and publishes a book (docs/PROTOCOL.md §5.3/§3.7,
+    # v0.4) -- cleared here so the rest of this test (about `link`, not
+    # book bootstrap) is unaffected.
     ingest.handle_status(
         status_topic("pgr-v2-link-1"), online_status_payload("s_00000001", link=1)
     )
-    assert broker.published == []
+    assert [json.loads(p.payload)["kind"] for p in broker.published] == ["book"]
+    broker.clear()
 
     broker.fail_publish = True
     result = routing.send(
@@ -309,8 +318,12 @@ def test_v2_republish_on_link_change_same_session_resends_still_pending():
     ingest.handle_status(
         status_topic("pgr-v2-link-1"), online_status_payload("s_00000001", link=2)
     )
-    assert len(broker.published) == 1
-    assert json.loads(broker.published[0].payload)["id"] == msg.id
+    # The still-unacked bootstrap book (docs/PROTOCOL.md §5.3) is also
+    # re-published on this edge, same as any other unacked `book`/`cfg` --
+    # filter to the resent message's own id, which this test is actually
+    # about.
+    matches = [p for p in broker.published if json.loads(p.payload).get("id") == msg.id]
+    assert len(matches) == 1
 
 
 def test_v2_no_republish_when_link_unchanged():
@@ -325,10 +338,15 @@ def test_v2_no_republish_when_link_unchanged():
     routing = Routing(broker)
     ingest = Ingest(broker, routing)
 
+    # This is the device's very first online `/status`, so `bookVersion`
+    # (0) bootstraps to 1 and publishes a book (docs/PROTOCOL.md §5.3/§3.7,
+    # v0.4) -- cleared so the rest of this test (about `link`, not book
+    # bootstrap) is unaffected.
     ingest.handle_status(
         status_topic("pgr-v2-link-2"), online_status_payload("s_00000002", link=1)
     )
-    assert broker.published == []
+    assert [json.loads(p.payload)["kind"] for p in broker.published] == ["book"]
+    broker.clear()
 
     broker.fail_publish = True
     routing.send(
@@ -363,9 +381,14 @@ def test_v2_no_republish_when_link_newly_appears_on_unchanged_session():
     routing = Routing(broker)
     ingest = Ingest(broker, routing)
 
-    # Baseline: no `link` field at all, like today's firmware.
+    # Baseline: no `link` field at all, like today's firmware. Also this
+    # device's very first online `/status`, so `bookVersion` (0) bootstraps
+    # to 1 and publishes a book (docs/PROTOCOL.md §5.3/§3.7, v0.4) --
+    # cleared so the rest of this test (about `link`, not book bootstrap)
+    # is unaffected.
     ingest.handle_status(status_topic("pgr-v2-link-3"), online_status_payload("s_00000003"))
-    assert broker.published == []
+    assert [json.loads(p.payload)["kind"] for p in broker.published] == ["book"]
+    broker.clear()
 
     broker.fail_publish = True
     routing.send(
@@ -823,3 +846,153 @@ def test_status_accepts_n_well_above_the_old_32_bit_ceiling():
     ingest.handle_status(status_t, payload)
     assert devices_store.get_device("pgr-bign").status.state == "online"
     assert device_secrets_store.get("pgr-bign").upN == n_big
+
+
+# ---- docs/PROTOCOL.md §5.3/§3.7 (v0.4): book-pull bootstrap + re-nudge ----
+
+
+def test_status_bootstrap_bumps_zero_to_one_and_pushes():
+    key = _make_hmac_pager_device("pgr-boot-1", "student-boot1")
+    _make_user("student-boot1", "student-boot1")
+    ingest, broker = _ingest()
+    status_t = status_topic("pgr-boot-1")
+
+    online = devauth.sign_json(
+        key,
+        status_t,
+        {
+            "v": 1,
+            "state": "online",
+            "mode": "sleep",
+            "batt_mv": 3300,
+            "rssi": -90,
+            "session": "s_00000001",
+            "ts": 1_700_000_000,
+            "n": 1,
+        },
+    )
+    ingest.handle_status(status_t, online)
+
+    assert devcfg.get_book_version("pgr-boot-1") == 1
+    books = [
+        json.loads(p.payload) for p in broker.published if json.loads(p.payload).get("kind") == "book"
+    ]
+    assert len(books) == 1
+    assert books[0]["bv"] == 1
+
+
+def test_status_bootstrap_is_once():
+    key = _make_hmac_pager_device("pgr-boot-2", "student-boot2")
+    _make_user("student-boot2", "student-boot2")
+    ingest, broker = _ingest()
+    status_t = status_topic("pgr-boot-2")
+
+    online1 = devauth.sign_json(
+        key,
+        status_t,
+        {
+            "v": 1,
+            "state": "online",
+            "mode": "sleep",
+            "batt_mv": 3300,
+            "rssi": -90,
+            "session": "s_00000001",
+            "ts": 1_700_000_000,
+            "n": 1,
+        },
+    )
+    ingest.handle_status(status_t, online1)
+    assert devcfg.get_book_version("pgr-boot-2") == 1
+    broker.clear()
+
+    # Second status, same session -- no offline->online edge, no session/
+    # link change, so `_republish_unacked` does not fire either; the point
+    # of this test is that `bootstrap_book_version` itself is a no-op the
+    # second time (bookVersion is already 1, not 0).
+    online2 = devauth.sign_json(
+        key,
+        status_t,
+        {
+            "v": 1,
+            "state": "online",
+            "mode": "sleep",
+            "batt_mv": 3300,
+            "rssi": -90,
+            "session": "s_00000001",
+            "ts": 1_700_000_001,
+            "n": 2,
+        },
+    )
+    ingest.handle_status(status_t, online2)
+
+    assert devcfg.get_book_version("pgr-boot-2") == 1
+    books = [
+        json.loads(p.payload) for p in broker.published if json.loads(p.payload).get("kind") == "book"
+    ]
+    assert books == []
+
+
+def test_status_bv_behind_renudges_same_id(monkeypatch):
+    monkeypatch.setenv("PUBLIC_BASE_URL", "https://relay.example.com")
+    key = _make_hmac_pager_device("pgr-renudge-1", "student-renudge1")
+    _make_user("student-renudge1", "student-renudge1")
+    ingest, broker = _ingest()
+    status_t = status_topic("pgr-renudge-1")
+
+    # First online status: bootstraps bookVersion 0 -> 1 and (bpull=1 +
+    # hmac + PUBLIC_BASE_URL configured, docs/PROTOCOL.md §3.7's gate)
+    # publishes a nudge, not a full book.
+    online1 = devauth.sign_json(
+        key,
+        status_t,
+        {
+            "v": 1,
+            "state": "online",
+            "mode": "sleep",
+            "batt_mv": 3300,
+            "rssi": -90,
+            "session": "s_00000001",
+            "ts": 1_700_000_000,
+            "bpull": 1,
+            "n": 1,
+        },
+    )
+    ingest.handle_status(status_t, online1)
+
+    books = [
+        json.loads(p.payload) for p in broker.published if json.loads(p.payload).get("kind") == "book"
+    ]
+    assert len(books) == 1
+    first_nudge = books[0]
+    assert "url" in first_nudge
+    assert first_nudge["bv"] == 1
+    broker.clear()
+
+    # Second status, same session (no online-edge republish): reports a
+    # `bv` behind the current `bookVersion` (1) -- the pending nudge's own
+    # `bv` already equals 1, so `renudge_if_behind` re-publishes the same
+    # nudge under the same `id` rather than building a new one.
+    online2 = devauth.sign_json(
+        key,
+        status_t,
+        {
+            "v": 1,
+            "state": "online",
+            "mode": "sleep",
+            "batt_mv": 3300,
+            "rssi": -90,
+            "session": "s_00000001",
+            "ts": 1_700_000_001,
+            "bpull": 1,
+            "bv": 0,
+            "n": 2,
+        },
+    )
+    ingest.handle_status(status_t, online2)
+
+    books2 = [
+        json.loads(p.payload) for p in broker.published if json.loads(p.payload).get("kind") == "book"
+    ]
+    assert len(books2) == 1
+    assert books2[0]["id"] == first_nudge["id"]
+    assert "url" in books2[0]

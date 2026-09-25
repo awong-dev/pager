@@ -115,6 +115,12 @@ class DeviceStatus(BaseModel):
     rst: int | None = None
     stage: int | None = None
     abn: int | None = None
+    # docs/PROTOCOL.md §3.7/§5.1 (v0.4): "the relay stores it and sends
+    # nudges only while the last online `/status` carried it" -- read by
+    # `app/devcfg.py`'s `push_book` to gate the nudge. Only ever `1`
+    # (`app/wire.py`'s `StatusEnvelope._check_bpull` drops any other value
+    # back to `None` before it reaches here).
+    bpull: int | None = None
     updatedAt: datetime | None = None
     # docs/DEVICE_PLAN.md §2.6: set once `sigFailures` crosses
     # AUTH_ALARM_THRESHOLD inside AUTH_ALARM_WINDOW_S; cleared on key

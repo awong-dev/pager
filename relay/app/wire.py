@@ -280,6 +280,13 @@ class StatusEnvelope(BaseModel):
     rst: int | None = None
     stage: int | None = None
     abn: int | None = None
+    # docs/PROTOCOL.md §3.7/§5.1 (v0.4): the book-pull capability gate. Only
+    # `1` is a legal value; anything else is not a rejection (§3.4's
+    # "unknown values" rule) -- `_check_bpull` below just drops it back to
+    # `None`, same as if the field had never been sent, so a device that
+    # someday sends `bpull:2` for some future meaning doesn't get its whole
+    # `/status` bounced as malformed.
+    bpull: int | None = None
     # §14.2: present on every signed envelope; absent on the unsigned LWT
     # exception (§14.6) and on an unsigned (`authMode: "password"`) device.
     n: int | None = None
@@ -325,6 +332,11 @@ class StatusEnvelope(BaseModel):
         if value is not None and not (0 <= value <= 65535):
             raise ValueError("abn out of range")
         return value
+
+    @field_validator("bpull")
+    @classmethod
+    def _check_bpull(cls, value: int | None) -> int | None:
+        return value if value == 1 else None
 
     @field_validator("n")
     @classmethod

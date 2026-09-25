@@ -131,6 +131,12 @@ KEYMAP: dict[str, int] = {
     "rst": 53,
     "stage": 54,
     "abn": 55,
+    # docs/PROTOCOL.md §3.8 (v0.4): `/up grp_req`'s requested member aliases.
+    "m": 56,
+    # docs/PROTOCOL.md §3.7 (v0.4): the `/down book` nudge's fetch endpoint.
+    "url": 57,
+    # docs/PROTOCOL.md §3.7/§5.1 (v0.4): `/status`'s book-pull capability gate.
+    "bpull": 58,
 }
 REVERSE_KEYMAP: dict[int, str] = {v: k for k, v in KEYMAP.items()}
 

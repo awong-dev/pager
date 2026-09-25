@@ -100,9 +100,15 @@ from app.wirecbor import to_json_safe
 
 logger = logging.getLogger("relay.devcfg")
 
-# docs/DEVICE_PLAN.md §4.3 / H6: "Book cap 10 approved + 4 requests."
+# docs/DEVICE_PLAN.md §4.3 / H6: "Book cap 10 approved + 4 requests." --
+# still the cap for the legacy full `/down book` envelope (`build_book`,
+# non-bpull devices, docs/PROTOCOL.md §3.7's gate).
 MAX_APPROVED_CONTACTS = 10
 MAX_LISTED_REQUESTS = 4
+# docs/PROTOCOL.md §3.7: the §14.7 fetch response's own `c[]` cap -- "32
+# instead of 10 ... the device's stored capacity", `docs/CHAT_UI_DESIGN.md`
+# §1's `BOOK_MAX_CONTACTS`.
+MAX_PULL_CONTACTS = 32
 
 # docs/PROTOCOL.md §3.1: c[].n / p[].n are display names, same 16-code-point
 # cap contact_req's own `name` field uses (app/ingest.py's
@@ -218,6 +224,11 @@ def _group_contacts(owner_uid: str) -> list[dict[str, Any]]:
 
 
 def _approved_contacts(owner_uid: str) -> list[dict[str, Any]]:
+    """Every contact this owner's device book may list -- allowed users
+    (§3.2's `web`/`sms`/`chat` hint) then the owner's own groups (`t:"grp"`)
+    -- **uncapped and unordered** (§3.7's `c[]` order is `_ordered_contacts`'
+    job below, since `build_book` and `build_book_body` cap and order this
+    same set differently)."""
     contacts: list[dict[str, Any]] = []
     for uid in allow_store.allowed_recipients(owner_uid):
         user = users_store.get_user(uid)
@@ -231,8 +242,36 @@ def _approved_contacts(owner_uid: str) -> list[dict[str, Any]]:
             }
         )
     contacts.extend(_group_contacts(owner_uid))
-    contacts.sort(key=lambda c: c["a"])
-    return contacts[:MAX_APPROVED_CONTACTS]
+    return contacts
+
+
+def _contact_sort_key(contact: dict[str, Any], default_alias: str | None) -> tuple[int, str, str]:
+    """docs/PROTOCOL.md §3.7: "`d`, `c[]` and `p[]` are §3.2's, with `c[]`
+    ... ordered: the entry whose alias equals `d` first, then `t:"grp"`
+    entries, then the rest, each by display name (case-insensitive), ties
+    by alias." `docs/CHAT_UI_DESIGN.md` §1: "Order: `d` first, then groups,
+    then people, both alphabetical by display name" -- read together as one
+    three-way rank (default, then group, then everyone else), each rank
+    internally sorted by `displayName.casefold()` with the alias as the
+    tiebreaker (the default-recipient rank never has a tie: `d` names at
+    most one alias)."""
+    if contact["a"] == default_alias:
+        rank = 0
+    elif contact["t"] == "grp":
+        rank = 1
+    else:
+        rank = 2
+    return (rank, contact["n"].casefold(), contact["a"])
+
+
+def _ordered_contacts(owner_uid: str, default_alias: str | None) -> list[dict[str, Any]]:
+    """`_approved_contacts(owner_uid)`, sorted into §3.7's `c[]` order.
+    Shared, uncapped, by `build_book` (legacy full envelope, cap 10) and
+    `build_book_body` (§14.7 fetch response, cap 32) -- both this task's Do
+    2's "using the same new ordering before its cap"."""
+    contacts = _approved_contacts(owner_uid)
+    contacts.sort(key=lambda c: _contact_sort_key(c, default_alias))
+    return contacts
 
 
 def _listed_requests(device_id: str) -> list[dict[str, Any]]:
@@ -296,9 +335,16 @@ def _assert_within_envelope_limit(obj: dict[str, Any]) -> None:
 
 
 def build_book(device_id: str) -> dict[str, Any]:
-    """docs/DEVICE_TASKS.md S4.2. Raises `ValueError` if `device_id` names
-    no `devices/{d}` document -- a caller-error case (every real caller in
-    this module checks the device exists first; see `push_book`)."""
+    """docs/DEVICE_TASKS.md S4.2, ordering amended by docs/PROTOCOL.md §3.7
+    (this task): the legacy full `/down book` envelope, still capped at
+    `MAX_APPROVED_CONTACTS` (10) and still 640-byte-asserted -- unchanged in
+    shape from before this task, only in `c[]`'s ordering (now the same
+    `_ordered_contacts` rule the §14.7 fetch response uses, capped
+    differently). Sent to a device that is not gated into the nudge
+    (`push_book`'s job to decide which). Raises `ValueError` if `device_id`
+    names no `devices/{d}` document -- a caller-error case (every real
+    caller in this module checks the device exists first; see
+    `push_book`)."""
     device = devices_store.get_device(device_id)
     if device is None:
         raise ValueError(f"no such device: {device_id!r}")
@@ -313,9 +359,72 @@ def build_book(device_id: str) -> dict[str, Any]:
     default_alias = _default_alias(device)
     if default_alias is not None:
         obj["d"] = default_alias
-    obj["c"] = _approved_contacts(device.ownerUid)
+    obj["c"] = _ordered_contacts(device.ownerUid, default_alias)[:MAX_APPROVED_CONTACTS]
     obj["p"] = _listed_requests(device_id)
     obj["ack"] = None
+    _assert_within_envelope_limit(obj)
+    return obj
+
+
+def build_book_body(device_id: str) -> dict[str, Any]:
+    """docs/PROTOCOL.md §3.7's §14.7 fetch response body, *unsigned* and
+    without the two fields that only make sense on a down envelope (`id`,
+    `ack` -- "There is no `id` and no `ack`: the response is not a down
+    message and is never acked itself"). No 640-byte assert: this is an
+    HTTPS body, not an MQTT payload, bounded instead by §3.7's 4096 bytes
+    (the device refuses an oversize body itself; the ordering/32-cap below
+    is what keeps a real book far under that in practice).
+
+    `c[]` is capped at `MAX_PULL_CONTACTS` (32); `more: True` is set iff the
+    real (uncapped) contact count exceeds the cap, never merely present as
+    `False`, matching the wire's "reserved for chunking" optional-bool
+    convention `build_book` already omits when there is nothing to say.
+
+    Raises `ValueError` if `device_id` names no `devices/{d}` document, same
+    as `build_book`."""
+    device = devices_store.get_device(device_id)
+    if device is None:
+        raise ValueError(f"no such device: {device_id!r}")
+
+    default_alias = _default_alias(device)
+    contacts = _ordered_contacts(device.ownerUid, default_alias)
+    truncated = len(contacts) > MAX_PULL_CONTACTS
+
+    obj: dict[str, Any] = {
+        "v": 1,
+        "ts": int(time.time()),
+        "kind": "book",
+        "bv": get_book_version(device_id),
+    }
+    if default_alias is not None:
+        obj["d"] = default_alias
+    obj["c"] = contacts[:MAX_PULL_CONTACTS]
+    obj["p"] = _listed_requests(device_id)
+    if truncated:
+        obj["more"] = True
+    return obj
+
+
+def build_nudge(device_id: str, url: str) -> dict[str, Any]:
+    """docs/PROTOCOL.md §3.7: the `/down book` nudge -- `bv` and `url`, no
+    `d`/`c`/`p`/`more`. `url` is the caller's job to build (`push_book`
+    reads `settings.public_base_url`, this function does not touch
+    `Settings` at all, matching `build_book`/`build_book_body`'s "this
+    module's builders don't read the environment" shape). 640-byte-asserted
+    like every other `/down` envelope this module builds -- the nudge is
+    the one shape docs/PROTOCOL.md §3.3 gives its own worked example for
+    (338 bytes at every field's maximum), so this assert is never expected
+    to fire, but it is cheap insurance against `url` growing past its
+    documented 200-byte cap in some future caller."""
+    obj: dict[str, Any] = {
+        "v": 1,
+        "id": new_message_id(),
+        "ts": int(time.time()),
+        "kind": "book",
+        "bv": get_book_version(device_id),
+        "url": url,
+        "ack": None,
+    }
     _assert_within_envelope_limit(obj)
     return obj
 
@@ -326,20 +435,101 @@ def _set_pending(device_id: str, field: str, obj: dict[str, Any]) -> None:
     )
 
 
-def push_book(device_id: str, broker: BrokerClient) -> bool:
-    """docs/DEVICE_TASKS.md S4.2: build a fresh `book`, remember it as this
-    device's one pending book (superseding -- not appending to -- whatever
-    was pending before, see this module's docstring), and publish it.
+def push_book(
+    device_id: str, broker: BrokerClient, *, settings: Settings | None = None
+) -> bool:
+    """docs/PROTOCOL.md §3.7's gate, docs/DEVICE_TASKS.md S4.2's original
+    "build a fresh book, remember it as this device's one pending book
+    (superseding -- not appending to -- whatever was pending before), and
+    publish it."
+
+    **The gate:** a nudge (`build_nudge`) is sent iff the device's stored
+    `status.bpull == 1` *and* `authMode == "hmac"` *and*
+    `settings.public_base_url` is configured (the nudge's `url` is built
+    from it, `<base>/api/device/book` -- the same `.rstrip('/')` join
+    `app/ca_resolve.py`'s `ca_pointer` uses for the sibling `/ca/...`
+    pointer). If `bpull == 1` but no base URL is configured, this logs one
+    ERROR (not raised -- a misconfigured deployment must not stop paging)
+    and falls back to the legacy full book: **a nudge is never published
+    without a `url`**, since a pull-capable device that received one would
+    have nowhere to fetch from. Every other device (bpull absent, or
+    `authMode != "hmac"`) gets the legacy full book unconditionally, per
+    §3.7's own compatibility rule.
+
+    Either way, the built envelope is stored in the existing `pendingBook`
+    slot (newest only) and published exactly as before -- the ack path
+    (`ack()`) and republish (`republish_pending()`) do not need to know
+    which shape is pending; the device is expected to `shown`-ack a nudge
+    at once if its `bv` is already stale (§3.7 device rule 1) or once the
+    fetch lands (rule 2), and a full book once applied, same as today.
+
     Returns `False` without publishing if `device_id` is not registered
     (mirrors `BrokerClient.publish_down`'s own fail-closed style rather than
     raising, since every caller here is a webhook/admin-API handler that
     must not 500 on a device that has since been deleted)."""
-    if devices_store.get_device(device_id) is None:
+    device = devices_store.get_device(device_id)
+    if device is None:
         logger.warning("push_book: no such device %s", device_id)
         return False
-    obj = build_book(device_id)
+
+    obj: dict[str, Any] | None = None
+    if device.status.bpull == 1 and device.authMode == "hmac":
+        settings = settings if settings is not None else Settings.from_env()
+        base = settings.public_base_url
+        if base:
+            obj = build_nudge(device_id, f"{base.rstrip('/')}/api/device/book")
+        else:
+            logger.error(
+                "push_book: device %s advertises bpull=1 but "
+                "settings.public_base_url is not configured -- falling "
+                "back to the legacy full book (never publishing a nudge "
+                "without a url)",
+                device_id,
+            )
+    if obj is None:
+        obj = build_book(device_id)
+
     _set_pending(device_id, _PENDING_BOOK_FIELD, obj)
     return broker.publish_down(device_id, obj)
+
+
+def renudge_if_behind(
+    device_id: str, reported_bv: int, broker: BrokerClient, *, settings: Settings | None = None
+) -> bool:
+    """docs/PROTOCOL.md §5.3 (v0.4): "if the reported `bv` is lower than
+    `bookVersion`, re-publish the pending nudge when its `bv` equals
+    `bookVersion` (same `id`), otherwise build and publish a new one."
+
+    Called by `app.ingest.Ingest.handle_status` once it already knows
+    `reported_bv < devcfg.get_book_version(device_id)` -- this function does
+    not re-check that itself (`reported_bv` is accepted, not re-derived,
+    purely so the caller's log line and this function's decision are
+    against the same value), only decides *which* republish. The
+    "re-publish the pending nudge" branch fires only when there **is** a
+    pending, unacked `pendingBook` whose own `bv` already equals the
+    current `bookVersion` and whose `obj` carries `url` (a nudge, not a
+    legacy full book, which never needs this same-id shortcut since it *is*
+    the content) -- otherwise (no pending book, an already-acked one, a
+    stale-`bv` one, or a legacy full book, e.g. a device whose gate flipped
+    since the last push) this falls through to an ordinary `push_book`,
+    which builds fresh and supersedes whatever was pending."""
+    current_bv = get_book_version(device_id)
+    snap = _devices().document(device_id).get()
+    data = (snap.to_dict() or {}) if snap.exists else {}
+    pending = data.get(_PENDING_BOOK_FIELD)
+    if isinstance(pending, dict) and not pending.get("acked", False):
+        obj = pending.get("obj")
+        if isinstance(obj, dict) and "url" in obj and obj.get("bv") == current_bv:
+            logger.info(
+                "re-publishing pending unacked book nudge %s to device %s "
+                "(reported bv=%s behind bv=%s, pending nudge already matches)",
+                obj.get("id"),
+                device_id,
+                reported_bv,
+                current_bv,
+            )
+            return broker.publish_down(device_id, obj)
+    return push_book(device_id, broker, settings=settings)
 
 
 def push_cfg(device_id: str, lock: dict[str, Any], broker: BrokerClient) -> bool:

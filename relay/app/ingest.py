@@ -58,6 +58,29 @@ UNKNOWN_RECIPIENT_BODY = "unknown recipient"
 # wording).
 TOO_MANY_PENDING_BODY = "too many pending requests"
 
+def record_bad_sig(device_id: str) -> None:
+    """docs/PROTOCOL.md §14.4's "count as `sigFailures`" + "more than 20
+    failures in 10 minutes ... sets `devices/{d}.status.authAlarm`",
+    factored out of `Ingest._verify_and_decode`'s bad-signature branch so
+    `app/routers/device_book.py`'s §14.7 step 3 (a bad `X-Sig` on the book
+    fetch) can raise exactly the same counters and alarm rather than
+    duplicating this logic -- a bad MQTT envelope signature and a bad HTTPS
+    request tag are the same class of event, just on two different
+    surfaces. Callers still log their own "SECURITY bad-sig ..." line first
+    (with the topic/endpoint and payload that differ between the two
+    surfaces); this function only does the counting and the alarm."""
+    device_secrets_store.bump_sig_failures(device_id)
+    window_count = devices_store.record_sig_failure(device_id)
+    if window_count >= devices_store.AUTH_ALARM_THRESHOLD:
+        logger.error(
+            "SECURITY authAlarm device=%s: %d bad signatures in the last %ds",
+            device_id,
+            window_count,
+            devices_store.AUTH_ALARM_WINDOW_S,
+        )
+        devices_store.set_auth_alarm(device_id, True)
+
+
 # docs/PROTOCOL.md §3.2/§3.1: `name` is 1-16 code points, <=48 UTF-8 bytes.
 _CONTACT_NAME_MAX_CODEPOINTS = 16
 _CONTACT_NAME_MAX_UTF8_BYTES = 48
@@ -261,16 +284,7 @@ class Ingest:
                 "SECURITY bad-sig device=%s topic=%s first64=%r", device_id, topic, payload[:64]
             )
             if secret is not None:
-                device_secrets_store.bump_sig_failures(device_id)
-                window_count = devices_store.record_sig_failure(device_id)
-                if window_count >= devices_store.AUTH_ALARM_THRESHOLD:
-                    logger.error(
-                        "SECURITY authAlarm device=%s: %d bad signatures in the last %ds",
-                        device_id,
-                        window_count,
-                        devices_store.AUTH_ALARM_WINDOW_S,
-                    )
-                    devices_store.set_auth_alarm(device_id, True)
+                record_bad_sig(device_id)
             return None
 
         decoded = wire.decode_envelope_bytes(unsigned)
@@ -629,6 +643,7 @@ class Ingest:
             rst=env.rst,
             stage=env.stage,
             abn=env.abn,
+            bpull=env.bpull,
         )
 
         # docs/V02_DESIGN.md §4.3: "on a transition
@@ -684,21 +699,32 @@ class Ingest:
         if session_changed or offline_to_online:
             self._republish_unacked(device_id)
 
-        # docs/DEVICE_PLAN.md §4.3 / docs/DEVICE_TASKS.md S4.2: "`/status`
-        # gains `bv`; if the relay sees a `bv` lower than `bookVersion` ...
-        # it pushes the book again." `StatusEnvelope` (app/wire.py) does not
-        # declare `bv` -- wire.py is outside this task's `Files` list -- so
-        # it is read from the raw decoded dict directly, the same "dispatch
-        # on the raw dict before/around the pydantic model" style
+        # docs/PROTOCOL.md §5.3/§3.7 (v0.4): "On every online `/status`: if
+        # `bookVersion` is 0, bump it to 1 in a transaction that writes only
+        # while it is still 0, and publish. Else if the reported `bv` is
+        # lower than `bookVersion`, re-publish the pending nudge when its
+        # `bv` equals `bookVersion` (same `id`), otherwise build and publish
+        # a new one." Bootstrap is checked first and unconditionally (a
+        # fresh device's very first status has `reported_bv` absent or 0,
+        # which the plain `<` comparison below would also have caught in
+        # the pre-v0.4 code -- `bv 0 < bookVersion 0` never fired -- so
+        # bootstrap is the only path that has ever delivered a first book).
+        # `StatusEnvelope` (app/wire.py) does not declare `bv` -- wire.py was
+        # outside S4.2's `Files` list when this dispatch style was chosen --
+        # so it is read from the raw decoded dict directly, the same
+        # "dispatch on the raw dict before/around the pydantic model" style
         # `data.get("kind")` already uses above for `contact_req`.
         reported_bv = data.get("bv")
-        if isinstance(reported_bv, int) and reported_bv < devcfg.get_book_version(device_id):
+        if contacts_store.bootstrap_book_version(device_id):
+            logger.info("status bv=%s bootstraps devices/%s.bookVersion to 1", reported_bv, device_id)
+            devcfg.push_book(device_id, self._broker)
+        elif isinstance(reported_bv, int) and reported_bv < devcfg.get_book_version(device_id):
             logger.info(
-                "status bv=%s behind devices/%s.bookVersion -- re-pushing book",
+                "status bv=%s behind devices/%s.bookVersion -- re-nudging/re-pushing book",
                 reported_bv,
                 device_id,
             )
-            devcfg.push_book(device_id, self._broker)
+            devcfg.renudge_if_behind(device_id, reported_bv, self._broker)
 
     def _republish_unacked(self, device_id: str) -> None:
         """PROTOCOL.md §5.3's online-edge re-publish, sourced from

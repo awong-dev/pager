@@ -200,8 +200,11 @@ def list_users() -> list[User]:
 
 
 @router.patch("/users/{uid}", dependencies=[Depends(require_admin_write_rate_limit)])
-def patch_user(uid: str, req: PatchUserRequest) -> User:
-    if users_store.get_user(uid) is None:
+def patch_user(
+    uid: str, req: PatchUserRequest, broker: Annotated[BrokerClient, Depends(get_broker)]
+) -> User:
+    existing = users_store.get_user(uid)
+    if existing is None:
         raise HTTPException(status_code=404, detail="no such user")
     user = users_store.update_user(
         uid,
@@ -213,6 +216,20 @@ def patch_user(uid: str, req: PatchUserRequest) -> User:
     )
     if req.role is not None:
         _set_admin_claim(uid, req.role == "admin")
+    # docs/CHAT_UI_DESIGN.md §1 / docs/PROTOCOL.md §3.7: "a `displayName`
+    # change of anyone the book lists" bumps and re-pushes the book of
+    # "every owner O with `is_message_allowed(O, uid)`" -- every user with
+    # an outgoing `message` edge *to* this uid, since that edge is exactly
+    # what makes `uid` appear in `O`'s book (`app/devcfg.py`'s
+    # `_approved_contacts`). Only fires on an actual change, and only when
+    # this request even carried `displayName` at all (patch semantics: an
+    # absent field never counts as "changed").
+    if req.displayName is not None and req.displayName != existing.displayName:
+        owner_uids = {e.fromUid for e in allow_store.list_edges() if e.toUid == uid and e.message}
+        for owner_uid in owner_uids:
+            for device in devices_store.list_devices(owner_uid=owner_uid):
+                contacts_store.bump_book_version(device.id)
+                devcfg.push_book(device.id, broker)
     return user
 
 
@@ -294,8 +311,25 @@ def _resolve_uid(alias: str) -> str:
     return uid
 
 
+def _message_sets_by_owner(edges: list[AllowEdge]) -> dict[str, frozenset[str]]:
+    """docs/CHAT_UI_DESIGN.md §1 / docs/PROTOCOL.md §3.7: `put_allowlist`'s
+    own book-bump trigger reads "the set of `(toUid)` with `message=True`" --
+    the part of the allow-list that actually determines a book's `c[]`
+    (`app/devcfg.py`'s `_approved_contacts` iterates
+    `allow_store.allowed_recipients`, which is exactly this same filter),
+    grouped by the owning `fromUid` so two snapshots (before/after
+    `replace_all`) can be diffed per owner."""
+    by_owner: dict[str, set[str]] = {}
+    for e in edges:
+        if e.message:
+            by_owner.setdefault(e.fromUid, set()).add(e.toUid)
+    return {uid: frozenset(to_uids) for uid, to_uids in by_owner.items()}
+
+
 @router.put("/allowlist", dependencies=[Depends(require_admin_write_rate_limit)])
-def put_allowlist(req: PutAllowlistRequest) -> list[AllowEdge]:
+def put_allowlist(
+    req: PutAllowlistRequest, broker: Annotated[BrokerClient, Depends(get_broker)]
+) -> list[AllowEdge]:
     edges = [
         EdgeInput(
             from_uid=_resolve_uid(e.fromAlias),
@@ -305,7 +339,26 @@ def put_allowlist(req: PutAllowlistRequest) -> list[AllowEdge]:
         )
         for e in req.entries
     ]
-    return allow_store.replace_all(edges)
+    # docs/PROTOCOL.md §3.7's trigger list: "an allow-list change to the
+    # owner's outgoing edges" bumps and re-pushes that owner's devices'
+    # books -- snapshotted *before* `replace_all` per this task's Do 7, so
+    # the diff is against the pre-request state, not against `edges` (which
+    # may omit an owner's untouched rows entirely under replace-all
+    # semantics).
+    old_message_sets = _message_sets_by_owner(allow_store.list_edges())
+    result = allow_store.replace_all(edges)
+    new_message_sets = _message_sets_by_owner(result)
+    changed_owner_uids = {
+        owner_uid
+        for owner_uid in old_message_sets.keys() | new_message_sets.keys()
+        if old_message_sets.get(owner_uid, frozenset())
+        != new_message_sets.get(owner_uid, frozenset())
+    }
+    for owner_uid in changed_owner_uids:
+        for device in devices_store.list_devices(owner_uid=owner_uid):
+            contacts_store.bump_book_version(device.id)
+            devcfg.push_book(device.id, broker)
+    return result
 
 
 @router.get("/allowlist")
@@ -455,6 +508,17 @@ def create_device(
     # `locatableBy` on devices that exist when an edge changes). See
     # `allow_store.recompute_locatable_by_for_owner`'s docstring.
     allow_store.recompute_locatable_by_for_owner(owner_uid)
+
+    # docs/PROTOCOL.md §3.7's trigger list: "device creation or a
+    # `defaultToUid` change" bumps and pushes the new device's own book.
+    # `bookVersion` starts at 0, so the ordinary bootstrap-on-first-status
+    # path (`app.ingest.Ingest.handle_status`) would also eventually cover
+    # this -- done here anyway, per this task's Do 7, "so the book exists
+    # before first status" rather than waiting for one. Best-effort: a push
+    # failure (`devcfg.push_book` itself never raises) must never fail
+    # device creation.
+    contacts_store.bump_book_version(req.deviceId)
+    devcfg.push_book(req.deviceId, broker)
 
     # docs/DEVICE_PLAN.md §3.2 step 2: push the device's real broker
     # credential + ACL before handing out a setup code that will eventually

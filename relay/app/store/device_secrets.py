@@ -242,6 +242,39 @@ def accept_up_n(device_id: str, n: int) -> bool:
     return run_transaction(_txn)
 
 
+def accept_request_n(device_id: str, n: int) -> bool:
+    """docs/PROTOCOL.md §14.7 step 4: the book-pull HTTPS request's own
+    counter check. Strictly `n > upN` only -- unlike `accept_up_n`, there is
+    no 64-wide fallback window here ("the device draws `n` just before it
+    dials, so a genuine request is always the newest value, and the window
+    exists only for the broker's reordering of MQTT pushes"). On accept,
+    advances `upN`/shifts `upBits` with exactly `accept_up_n`'s `n > up_n`
+    arithmetic -- "this consumes the counter for `/up` too" (§14.7): a
+    `/up`/`/status`/`/loc` envelope drawn with a smaller `n` earlier but
+    ingested later is still accepted through the ordinary 64-wide window.
+    Returns `False` with **no write at all** on `n <= upN` (the caller
+    answers `409`, "nothing written")."""
+    ref = _secrets().document(device_id)
+
+    def _txn(transaction: Transaction) -> bool:
+        snap = ref.get(transaction=transaction)
+        if not snap.exists:
+            raise KeyError(f"no such device secret: {device_id!r}")
+        data = snap.to_dict() or {}
+        up_n = data.get("upN", 0)
+        up_bits = _from_signed64(data.get("upBits", 0))
+
+        if n > up_n:
+            shift = n - up_n
+            new_bits = ((up_bits << shift) | (1 << (shift - 1))) & _WINDOW_MASK
+            transaction.update(ref, {"upN": n, "upBits": _to_signed64(new_bits)})
+            return True
+
+        return False
+
+    return run_transaction(_txn)
+
+
 def next_down_n(device_id: str) -> int:
     """Issues the next `n` for a `/down` envelope to this device -- the
     relay's own mirror of §2.5's counter, one higher each call."""
