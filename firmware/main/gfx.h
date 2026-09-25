@@ -3,10 +3,16 @@
  * framebuffer this module owns via gfx_fb_native_row().
  *
  * Authority: docs/DEVICE_PLAN.md §5.1 (296x128 1-bit landscape panel),
- * §5.2 (fonts are pre-rasterised Noto data in a dedicated `assets`
- * partition, coverage, proportional metrics, UTF-8 buffers), §5.4 (status
- * bar/icon list). docs/DEVICE_PLAN.md §9 decisions (Noto Sans + Noto Sans
- * CJK, default language `sc`) are final and not re-litigated here.
+ * §5.2 (fonts are pre-rasterised data in a dedicated `assets` partition,
+ * coverage, proportional metrics, UTF-8 buffers), §5.4 (status bar/icon
+ * list). docs/DEVICE_PLAN.md's font decision (default language `sc`) is
+ * final and not re-litigated here; the FACE is not — the sans/Latin face
+ * changed from Noto Sans to DejaVu Sans (TASK_ui_finish.md Do #2, owner
+ * decision on real glass, 2026-09-24; tools/mkassets.py's own module
+ * comment has the exact rebuild command and the baseline/descender
+ * consequences of that swap). Format-wise this is invisible to this file:
+ * the PGFA block below is per-glyph-metric, not per-face, so nothing here
+ * changed — only the bytes gfx_init()/gfx_init_from_file() mmap did.
  *
  * Geometry (unchanged from the pre-split ui.c, PROTOCOL.md §9.5): native
  * SSD1680 addressing is X = 128px / 8 = 16 bytes (0..15), Y = 296 rows

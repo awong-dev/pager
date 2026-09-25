@@ -41,11 +41,28 @@ Costs one full refresh per wake that draws. `disp_power_off()` was removed as de
 (`PAGER_PIN_3V3_EN`, active-low) is not excluded from ESP-IDF's sleep GPIO isolation, so it floats
 and the board pull-up turns the rail off for the whole sleep. Unnoticed while the pager was awake
 57% of the time; after the 0xFF fix (awake ~1%) the keyboard is unpowered almost always, so keys
-pressed while asleep are never registered ("pager wedged"). **Owner decision 24 Sep: hold the rail
-through sleep for now** (`gpio_sleep_sel_dis(PAGER_PIN_3V3_EN)`, same as the display pins) and take
-option 1 as the real design: a CardKB firmware that sleeps its MCU until a keypress and raises a
-wake line (one extra wire into `ext1`), instead of scanning the matrix continuously. Power numbers
-for the keyboard's idle draw are still needed; the rail hold is the only thing built.
+pressed while asleep are never registered ("pager wedged"). That evening's stopgap held the rail
+through every sleep (`gpio_sleep_sel_dis(PAGER_PIN_3V3_EN)`, same as the display pins) so nothing
+lost power at all — the option 1 design (a CardKB firmware that sleeps its own MCU and raises a
+wake line into `ext1`) was left as the intended real fix.
+
+**Owner decision 24 Sep 10:30 pm PDT: option 2, gate the rail off outside the attentive window.**
+"keyboard is not powering down during sleep. the 3v3en rail should be disabled." This reverses the
+evening stopgap above, now that the IO1 wake button (`ext0`) is the always-on way to wake the
+pager — the keyboard no longer needs to stay powered while asleep. Built in `rail.c`/`rail.h`
+(single owner of `PAGER_PIN_3V3_EN`, still `gpio_sleep_sel_dis()`-held so the level it does have
+holds through sleep): `rail_off()` right before `net_sleep()` (modes.c) whenever the pager is
+outside the `PAGER_ATTENTIVE_S` (120 s) window a recent key/button/wake-button/motion input arms;
+`rail_on()` right after every `net_sleep()` returns, before anything touches the display or
+keyboard, regardless of why the wake happened. Kept ON through the whole attentive window's 1 s
+sleeps instead (switching it every second would reboot the CardKB every second and lose keys).
+Wake side: `disp_note_power_loss()` (disp.h) forces the next refresh full when the rail had been
+off (the panel lost its RAM; the existing pre-refresh register re-init handles the rest, no second
+`disp_init()`); `ui_poll_keyboard()` (ui.c) withholds CardKB reads for 300 ms after the rail
+restores (the CardKB MCU's own boot time) and re-initializes the I2C driver once per restore edge
+if a read still fails after that. Option 1 (a power-saving CardKB firmware) is no longer the only
+path to an unpowered-while-asleep keyboard and is shelved unless the 300 ms guard proves too slow
+on the bench.
 
 ## Decisions waiting on the owner
 

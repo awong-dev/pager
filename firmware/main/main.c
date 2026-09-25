@@ -1,5 +1,6 @@
 #include <stdlib.h>
 #include <string.h>
+#include <time.h> /* setenv("TZ", ...)/tzset(), app_main()'s own Do #7 (TASK_ui_round2.md) */
 
 #include "esp_console.h"
 #include "esp_log.h"
@@ -29,6 +30,7 @@
 #include "modes.h"
 #include "net.h"
 #include "pins.h"
+#include "rail.h"
 #include "setup.h"
 #include "sms.h"
 #include "ui.h"
@@ -48,36 +50,6 @@
 #endif
 
 static const char *TAG = "school_pager";
-
-// Board 3V3 peripheral rail is off by default on power-up; see pins.h's
-// PAGER_PIN_3V3_EN comment. Must run before any peripheral (display, CardKB,
-// LIS3DH) is touched. GPIO0 is a boot strapping pin but is safe to
-// reconfigure as a plain output here -- strapping is sampled only during
-// the reset/boot sequence, which has already completed by app_main().
-static void board_power_init(void)
-{
-    gpio_config_t cfg = {
-        .pin_bit_mask = 1ULL << PAGER_PIN_3V3_EN,
-        .mode = GPIO_MODE_OUTPUT,
-        .pull_up_en = GPIO_PULLUP_DISABLE,
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .intr_type = GPIO_INTR_DISABLE,
-    };
-    gpio_config(&cfg);
-    gpio_set_level(PAGER_PIN_3V3_EN, 0); // active-low: enable the rail
-    // docs/ROADMAP.md "24 Sep evening finding": this pad is not otherwise
-    // excluded from ESP-IDF's sleep GPIO isolation
-    // (CONFIG_ESP_SLEEP_GPIO_RESET_WORKAROUND), so it floats for the whole
-    // of every light sleep and the board pull-up switches the rail off,
-    // taking the keyboard down with it -- keys pressed while asleep were
-    // never registered. Owner decision, 24 Sep: hold the rail through sleep
-    // (same fix disp.c's disp_gpio_init() already applies to the display
-    // pins). Power effect: none beyond what board_power_init() already
-    // costs -- the pad was already configured as a plain output driven low;
-    // this only keeps that level asserted through light sleep instead of
-    // letting it float.
-    gpio_sleep_sel_dis((gpio_num_t) PAGER_PIN_3V3_EN);
-}
 
 /* docs/DEVICE_TASKS.md F3.5: `setup <code>` over the USB serial console.
  * argtable3-free by design — the setup code itself contains a space
@@ -1505,6 +1477,21 @@ static void start_normal_console(void)
 void app_main(void)
 {
     ESP_LOGI(TAG, "school_pager boot");
+
+    // TASK_ui_round2.md Do #7: local time for every on-glass HH:MM (status
+    // clock, Home/Chat rows) — hardcoded per owner 25 Sep 2026; a cfg field
+    // later. Set once, here, before anything below can call localtime_r()
+    // (ui.c's ui_format_hhmm()/compute_status_clock_text()): tzset() only
+    // needs to have run once by the time any localtime_r() call happens, not
+    // specifically "after the network seeds the clock" — the network clock
+    // itself (net.cpp's configure_session()) is just an epoch value with no
+    // TZ concept of its own, so setting this once, early, at boot already
+    // covers every render both before and after that seed arrives, without
+    // a second call site inside net.cpp. No modem or sleep-state effect: an
+    // env var + a libc timezone-table load.
+    setenv("TZ", "PST8PDT,M3.2.0,M11.1.0", 1);
+    tzset();
+
     watchdog_boot(); // logs why we reset and where the loop was; arms the RTC watchdog
 
     // docs/SLEEP_PAGE_LOSS_BRIEF.md §6 item A: installs the library's UART
@@ -1527,7 +1514,7 @@ void app_main(void)
         ui_set_crash_indicator(true);
     }
 
-    board_power_init(); // 3V3 peripheral rail on -- must precede any display/I2C use
+    rail_init(); // 3V3 peripheral rail on -- must precede any display/I2C use; rail.h
 
     // NVS init only; no modem/radio access, no power effect beyond the
     // flash read/erase-and-retry below (DEVICE_PLAN.md §3.4/§2.7).

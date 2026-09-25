@@ -41,6 +41,19 @@ extern "C" {
  * init. */
 bool disp_init(void);
 
+/* Rail gate (docs/ROADMAP.md "24 Sep evening finding", owner decision 24
+ * Sep 10:30 pm PDT): call this on the wake after rail.c's rail_off()/
+ * rail_on() cycle took the panel's VCC gate down and back up — the panel
+ * lost its RAM, so the next refresh must be a full one, same as
+ * disp_init()'s own priming. Does NOT call disp_init() again: the
+ * SSD1680's registers are re-armed by the existing pre-refresh reset every
+ * full_refresh_locked() already does (disp_pre_refresh_reset()), and
+ * disp_gpio_init()/disp_spi_init() need no repeating — only the RAM
+ * content and the shadow-plane diff are stale. Power effect: none of its
+ * own — sets a flag consumed by the next disp_partial_refresh()/
+ * disp_refresh_cadence() call, same mechanism disp_init()'s priming uses. */
+void disp_note_power_loss(void);
+
 /* True once a BUSY timeout has persisted through a reset+re-init retry;
  * every refresh call below becomes a no-op once this is true, and the
  * device runs headless for the rest of this boot (network/replies/acks

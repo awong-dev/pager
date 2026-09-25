@@ -17,9 +17,10 @@
 #include "net.h"
 #include "watchdog.h"
 #include "ui.h"
-#include "disp.h" // S12: disp_busy_timeout_count() for the sleeptest report
+#include "disp.h" // S12: disp_busy_timeout_count() for the sleeptest report; rail gate: disp_note_power_loss()
 #include "flightrec.h" // docs/SLEEP_PAGE_LOSS_BRIEF.md §6 item A; no-op outside a debug build's sleeptest window
 #include "pins.h" // PAGER_PIN_WAKE0, the sleeptest wake0_ms experiment (§6 item F)
+#include "rail.h" // docs/ROADMAP.md rail gate (owner, 24 Sep 10:30 pm PDT): rail_on()/rail_off()
 
 // F6.2 (docs/DEVICE_PLAN.md §5.3): CardKB decode + button FSM (+BTN_STUCK)
 // + the UI-awake window + one input event queue, moved out of this file
@@ -360,9 +361,20 @@ static bool s_ui_awake_prev = false; // F6.3: edge-detects input_awake() for ui_
 // of the most recent key event, button short/long event, or ext0/ext1 wake.
 // RAM-only, modes_run()'s task only (same reasoning s_ui_awake_prev above
 // uses) -- the attentive window is a UX nicety, not state that needs to
-// survive a reset, so it is deliberately not in g_rtc/RTC_DATA_ATTR. 0 means
-// "no input seen yet this boot".
-static int64_t s_last_input_us = 0;
+// survive a reset, so it is deliberately not in g_rtc/RTC_DATA_ATTR.
+//
+// TASK_ui_round2.md Do #6: starts at -(PAGER_ATTENTIVE_S+1)*1e6, not 0 —
+// esp_timer_get_time() itself starts near 0 at boot, so a literal 0 here
+// made `now - s_last_input_us` (modes_in_use()/modes_run()'s own `attentive`
+// local, both below) read as a small, in-window value for the whole first
+// PAGER_ATTENTIVE_S (120s) of every boot, spuriously treating "no input
+// seen yet" as "attentive" (rail held on, 1s wake cadence) until the first
+// real key/button/ext0/ext1 event. This sentinel is far enough in the past
+// that `now - s_last_input_us` already exceeds PAGER_ATTENTIVE_S*1e6 on the
+// very first modes_run() iteration, so the window reads closed at boot and
+// s_attentive_prev's own edge-detect (below) never fires a spurious
+// attentive-true edge before the first real input.
+static int64_t s_last_input_us = -(int64_t) (PAGER_ATTENTIVE_S + 1) * 1000000;
 // Edge-detects the attentive/normal cadence transition so the ESP_LOGI below
 // fires once per transition, not once per attentive wake.
 static bool s_attentive_prev = false;
@@ -704,6 +716,22 @@ static void ui_wake_status_refresh(void)
 {
     refresh_batt_mv();
     refresh_rssi_dbm();
+}
+
+// TASK_clock.md Do #2: "in use" for the status bar's live clock is the
+// attentive window (PAGER_ATTENTIVE_S = 120s from the last key/button/ext0/
+// ext1 event, s_last_input_us above), NOT input.c's shorter 30s
+// input_awake() UI-awake window ui_awake_now/render_now gate off of below --
+// the rail hold task keeps the display/CardKB rail on for the whole of the
+// attentive window (see the `if (attentive) rail_on()` comment further down
+// this file), so a status-bar partial refresh is safe for the full 120s,
+// not just the first 30. Same expression modes_run()'s own `attentive`
+// local uses each iteration (kept in sync by hand, not shared, so this one
+// call is not deep inside the loop's own hot path) - plain RAM read, no
+// modem/sleep-state effect of its own.
+bool modes_in_use(void)
+{
+    return (esp_timer_get_time() - s_last_input_us) < (int64_t) PAGER_ATTENTIVE_S * 1000000;
 }
 
 // F6.3: status-bar/Device-screen getters (modes.h) - plain cache reads, no
@@ -1137,6 +1165,19 @@ static uint32_t s_st_sleeps = 0, s_st_wake_timer = 0, s_st_wake_other = 0;
 // cadence rather than the normal SLEEP/ACTIVE/UNREGISTERED one -- lets a
 // bench window prove the cadence actually engaged.
 static uint32_t s_st_wake_attentive = 0;
+// Rail gate (docs/ROADMAP.md, owner 24 Sep 10:30 pm PDT): how many of this
+// window's sleeps went in with the 3V3 rail off vs. kept on (the attentive
+// window) -- counted at the same rail-decision call site that drives
+// rail_off()/rail_on(), so off_sleeps + kept_on_sleeps == s_st_sleeps.
+static uint32_t s_st_rail_off_sleeps = 0, s_st_rail_kept_on_sleeps = 0;
+// TASK_ui_round2.md Do #4 (lazy rail): how many wakes brought the rail up
+// via rule (b) — an EXT0/EXT1 wake cause — counted at that wake-path call
+// site (modes_run()). The complementary "lazy_on" count (rule (c), a render
+// that needed the rail up on its own, e.g. a page arriving on a timer wake)
+// is ui.c's own free-running ui_rail_lazy_on_count(), not window-scoped like
+// this one (ui.c has no sleeptest-window-reset hook) — both are printed
+// together in the "rail:" report line below.
+static uint32_t s_st_rail_on_wakes = 0;
 // Where the awake time goes, per wake: cumulative microseconds per loop segment.
 // S0 (docs/SLEEP_URC_DESIGN.md §1 item 4): bucket 0 used to be charged both
 // the post-wake yield of iterations that actually called net_sleep() AND the
@@ -1236,6 +1277,8 @@ void modes_debug_sleeptest_start(uint32_t minutes, uint32_t yield_ms_override,
     s_st_n_events = 0;
     s_st_sleeps = s_st_wake_timer = s_st_wake_other = 0;
     s_st_wake_attentive = 0;
+    s_st_rail_off_sleeps = s_st_rail_kept_on_sleeps = 0;
+    s_st_rail_on_wakes = 0;
     s_st_asleep_us = 0;
     s_st_ncyc = 0;
     s_st_mark_us = esp_timer_get_time();
@@ -1281,7 +1324,9 @@ void modes_debug_sleeptest_start(uint32_t minutes, uint32_t yield_ms_override,
 // disp refresh-count instrumentation: raised from 3050 to 3350 for the new
 // "disp refreshes:" line, whose ring can add up to 8 * "F@4294967295/255 "
 // (~19 chars each).
-static char s_st_text[3350];
+// Rail gate instrumentation: raised from 3350 to 3450 for the new "rail:"
+// line.
+static char s_st_text[3450];
 
 static void st_appendf(size_t *n, const char *fmt, ...)
 {
@@ -1506,6 +1551,26 @@ void modes_debug_sleeptest_report(void)
         st_appendf(&n, "disp refreshes: full=%u partial=%u upgraded=%u; last: %s\n", (unsigned) disp_full,
                    (unsigned) disp_partial, (unsigned) disp_upgraded, ring_str);
     }
+    // Rail gate (docs/ROADMAP.md, owner 24 Sep 10:30 pm PDT): off_sleeps +
+    // kept_on_sleeps should equal the `light sleeps` count in the summary
+    // line above; kb_skipped_reads is ui.c's own post-restore CardKB-boot-
+    // guard counter (ui_kb_skipped_read_count(), ui.h) — TASK_ui_round2.md
+    // Do #4 also folds ui_poll_keyboard()'s own new "rail is off, skip the
+    // read outright" early return into this same counter (see that
+    // function's own comment). kb_bus_releases (owner, 24 Sep 11:15 pm PDT
+    // fix) is ui_kb_bus_release_count() — should track off_sleeps 1:1 (one
+    // release per rail_off() edge, ui.c/rail.c). on_wakes/lazy_on
+    // (TASK_ui_round2.md Do #4, the lazy-rail rewrite): on_wakes is this
+    // window's count of EXT0/EXT1 wakes that brought the rail up (rule (b),
+    // this file's own wake-path comment); lazy_on is ui.c's free-running
+    // ui_rail_lazy_on_count() (rule (c), a render that needed the rail up on
+    // its own — not window-scoped, so it only reads zero here if none have
+    // happened since boot, not since this window opened).
+    st_appendf(&n, "rail: off_sleeps=%u kept_on_sleeps=%u kb_skipped_reads=%u kb_bus_releases=%u "
+                    "on_wakes=%u lazy_on=%u\n",
+               (unsigned) s_st_rail_off_sleeps, (unsigned) s_st_rail_kept_on_sleeps,
+               (unsigned) ui_kb_skipped_read_count(), (unsigned) ui_kb_bus_release_count(),
+               (unsigned) s_st_rail_on_wakes, (unsigned) ui_rail_lazy_on_count());
     net_publish_ring_entry_t ring[NET_PUBLISH_RING_MAX];
     uint32_t nring = net_get_publish_ring(ring, NET_PUBLISH_RING_MAX);
     if (nring == 0) {
@@ -2024,6 +2089,16 @@ static void lock_screen_sync(void)
 }
 
 // ---------------------------------------------------------------------------
+// TASK_ui_finish.md Do #3 (owner list, 24 Sep 22:30 PDT), superseded by
+// greeting_sync() (formerly here): replaced scr_greeting.c's "booting"
+// splash with Lock/Home on the first modes_run() iteration. Removed 25 Sep
+// 2026 — modes_boot() (below) no longer pushes scr_greeting.c on a normal
+// boot at all (it pushes the real Lock/Home frame directly), so there is
+// nothing left for a per-iteration sync to replace. See modes_boot()'s own
+// comment for why, and lock_screen_sync() (below) for the steady-state
+// Lock/Home logic this function used to duplicate for the boot-only case.
+
+// ---------------------------------------------------------------------------
 // Public entry points
 // ---------------------------------------------------------------------------
 
@@ -2128,19 +2203,34 @@ void modes_boot(void)
     if (!ui_init()) {
         ESP_LOGI(TAG, "display init failed; continuing headless (network/replies/acks unaffected)");
     } else {
-        // Boot splash (scr_greeting.c) — pushed under a possible Locked
-        // screen below, so a locked device still always shows Locked first
-        // (revealed once unlocked) rather than this ever bypassing it.
-        scr_greeting_set_mode(GREETING_HELLO);
-        ui_push(&g_scr_greeting);
+        // Owner report, 25 Sep 2026: the old "booting" splash (scr_greeting.c,
+        // pushed here, replaced later by greeting_sync() once modes_run()'s
+        // loop started) held the glass on "booting" for the whole synchronous
+        // net_init()/net_session_up() bring-up below — observed ~100s on a
+        // slow attach — because that swap could only happen once modes_run()
+        // took its first iteration, and nothing before that point runs the
+        // loop. The device is usable (Lock or Home, browsable message
+        // history already restored by lock_init()/msg_init() above) the
+        // instant the glass is drawn regardless of network state, so the
+        // FIRST frame this boot ever paints is now the real one: ui_init()
+        // already left Home on the stack floor (ui_go_home(), ui.c), so only
+        // a locked device needs anything pushed on top of it, mirroring
+        // lock_screen_sync()'s own steady-state logic (below in this file).
+        // No greeting/"booting" screen is pushed on a normal boot at all —
+        // scr_greeting.c is unused here now and stays in place only for
+        // main.c's own pre-provisioning (IDENT-missing) Setup mode splash.
+        //
+        // Keys/button presses that arrive during the net_init()/
+        // net_session_up() stretch below are still queued by input.c as
+        // today (its GPIO ISR/CardKB poll do not depend on modes_run()) but
+        // are not drained until modes_run()'s loop actually starts after
+        // this function returns — this change does not make input work
+        // during bring-up, it only fixes what is drawn before that loop
+        // starts.
         if (lock_is_locked()) {
-            // §5.8: "Reached by ... any restart while a passcode is set."
-            // Pushed here, before ui_render_boot()'s own forced full
-            // refresh, so that refresh already paints Locked rather than
-            // Home (ui_init() itself always establishes [Home] first).
             ui_push(&g_scr_lock);
         }
-        ui_render_boot(); // initial Home/Locked screen; disp_init() primes the cadence counter to force a full refresh
+        ui_render_boot(); // first real frame: Lock or Home; disp_init() primes the cadence counter to force a full refresh
     }
 
     net_set_msg_cb(on_incoming_message);
@@ -2245,6 +2335,51 @@ void modes_run(void)
             ESP_LOGI(TAG, "wake cadence: %s",
                      attentive ? "attentive (1 s, recent input)" : "normal (input idle)");
             s_attentive_prev = attentive;
+            if (!attentive) {
+                // TASK_clock.md Do #4: the attentive window (modes_in_use())
+                // just lapsed -- render once now so the status bar's clock
+                // becomes "--:--" before the pager returns to
+                // PAGER_WAKE_INTERVAL_SLEEP_MS (20s) sleeps, rather than
+                // leaving a stale HH:MM on screen until the next
+                // key/button-driven render (which may be a long time, or
+                // never, if the pager just goes back to sleep). Safe to
+                // paint right here, before this iteration's own rail
+                // on/off decision further down: the rail is still whatever
+                // the PREVIOUS iteration left it as, which was on for the
+                // whole attentive window that just ended (the `if
+                // (attentive) rail_on()` block below, this same file).
+                // modes_in_use() called from inside this ui_render() ->
+                // draw_status_bar() already sees s_attentive_prev == false
+                // (just set above) and draws "--:--" on its own -- this is
+                // the ordinary render path, not a clock-only one. A page
+                // arrival while genuinely asleep (ui_incoming(), below in
+                // this file) goes through this same draw_status_bar() ->
+                // modes_in_use() check on its own render and also draws
+                // "--:--" (TASK_clock.md Do #4's "not in use" case) -- it
+                // needs no extra handling here.
+                //
+                // TASK_ui_round2.md Do #3: auto-lock at this same edge. cfg
+                // `lock.auto` minutes (lock_check_autolock(), called on every
+                // input event/UI wake below, lock.c) is already the EARLIER
+                // trigger whenever it is shorter than PAGER_ATTENTIVE_S
+                // (120s) — see lock.c's own module comment for the two-
+                // trigger contract this documents. This is only the upper
+                // bound: `auto_min == 0` ("never") or an auto_min longer than
+                // 120s would otherwise leave an unattended, passcode-
+                // protected pager unlocked indefinitely past the point it
+                // already stopped being "in use". lock_now() is a no-op if
+                // no passcode is configured or it is already locked (lock.c).
+                // lock_screen_sync() (this file, above set_mode()) must run
+                // BEFORE the render below so this frame actually paints Lock
+                // — the ordinary per-iteration lock_screen_sync() call
+                // further down this same loop runs AFTER this render, too
+                // late for this one frame to show it.
+                if (lock_is_set()) {
+                    lock_now();
+                    lock_screen_sync();
+                }
+                ui_render();
+            }
         }
 #ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
         // Task 3: sleeptest <minutes> <yield_ms> <interval_ms> overrides the
@@ -2434,19 +2569,73 @@ void modes_run(void)
             int64_t st_t0 = esp_timer_get_time();
             int64_t st_rtc0 = (int64_t) esp_clk_rtc_time();
 #endif
+            // Rail gate (docs/ROADMAP.md "Design needed: input and display
+            // power gating" option 2; owner decision 24 Sep 10:30 pm PDT,
+            // reversing the 24-Sep-earlier "hold the rail through sleep"
+            // stopgap): outside the attentive window, the display/CardKB/
+            // LIS3DH rail need not stay powered through this sleep -- the
+            // IO1 wake button (ext0) is the always-on way to wake the
+            // pager, not the keyboard. Inside the attentive window the rail
+            // stays ON through every 1 s sleep instead (rail_on() is a
+            // no-op if it is already on): switching it off/on every second
+            // would reboot the CardKB every second and lose keys, defeating
+            // the whole point of the attentive cadence. Never races a
+            // display refresh: every disp_*_refresh() call in this build
+            // runs synchronously, on this same task (ui.c's own comment on
+            // modes_on_run_task() -- today only modes_run()'s task ever
+            // calls one), and this iteration's own render
+            // (ui_render()/ui_on_awake_lapse(), below, later in this same
+            // iteration) always completes before the loop reaches back here
+            // -- there is no separate "refresh in progress" state to poll.
+            // Power effect: rail_off() drops the display/CardKB/LIS3DH
+            // current draw for the sleep about to be entered; see rail.h.
+            if (attentive) {
+                rail_on();
+#ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
+                s_st_rail_kept_on_sleeps++;
+#endif
+            } else {
+                rail_off();
+#ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
+                s_st_rail_off_sleeps++;
+#endif
+            }
             watchdog_kick(WD_SLEEP_ENTER);
             net_sleep(interval_ms);
-            // Rail hold task (docs/ROADMAP.md "24 Sep evening finding"): a
-            // wake caused by the wake button (ext0) or the accel int1
-            // (ext1) is real input, same as a decoded key/button event
-            // below -- arm the attentive cadence from it too, so the wake
+            // Wake path (TASK_ui_round2.md Do #4, the lazy-rail rewrite —
+            // supersedes the old unconditional rail_on() this comment used
+            // to describe): the rail is NO LONGER brought up unconditionally
+            // on every wake. Rule (b) — a wake button (ext0) or accel int1
+            // (ext1) wake is real input, same as a decoded key/button event
+            // below — brings it up right here, exactly like the old
+            // unconditional call used to for every wake, and (same as
+            // before) arms the attentive cadence from it too, so the wake
             // that woke the pager isn't itself lost to whatever (longer)
-            // interval was in force when it fired. Power effect: none of
-            // its own -- one RAM read, and rarely a write.
+            // interval was in force when it fired. A plain timer wake with
+            // nothing queued to draw is rule (c)'s job instead:
+            // ui_ensure_powered() (ui.h), called from the top of every
+            // render path (ui_render()/ui_incoming()'s own steal branch),
+            // brings the rail up ONLY once (and exactly when) this iteration
+            // actually has something to paint — see that function's own doc
+            // comment for the disp_note_power_loss() edge, which moved there
+            // too (a timer wake that stays lazy never lost the panel's RAM in
+            // the first place: the rail was never off if it was already on
+            // from the attentive window, and if it truly was off, nothing
+            // reads/writes the panel until a render happens anyway). Rules
+            // (a) (boot, rail_init()) and (d) (the attentive window, the
+            // `if (attentive) rail_on()` block above) are unchanged. Power
+            // effect: rule (b) below powers the display/CardKB/LIS3DH back up
+            // on an EXT0/EXT1 wake even with nothing (yet) to draw; a timer
+            // wake with nothing to draw now leaves the rail OFF instead of
+            // paying that cost every single wake.
             {
                 esp_sleep_wakeup_cause_t wake_cause = esp_sleep_get_wakeup_cause();
                 if (wake_cause == ESP_SLEEP_WAKEUP_EXT0 || wake_cause == ESP_SLEEP_WAKEUP_EXT1) {
                     s_last_input_us = esp_timer_get_time();
+                    ui_ensure_powered(); // rule (b): this wake IS real input, bring the rail up now
+#ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
+                    s_st_rail_on_wakes++;
+#endif
                 }
             }
 #ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
@@ -2697,8 +2886,9 @@ void modes_run(void)
         // locked case (Locked always wins over whatever was open);
         // ui_on_awake_lapse() below is still called at this same edge and
         // is still where the cadence-driven full refresh lands (ui.c's own
-        // comment). scr_greeting.c itself is untouched and still used for
-        // the boot-time HELLO splash (modes_boot()).
+        // comment). scr_greeting.c itself (25 Sep 2026: no longer pushed on
+        // a normal boot at all — modes_boot()'s own comment) is never
+        // touched by this edge either way.
 
         // Coalesce key-triggered renders (bug fix, see s_key_render_pending's
         // own comment): a button event this iteration always renders
@@ -2718,6 +2908,19 @@ void modes_run(void)
             } else {
                 render_now = key_render_due(esp_timer_get_time());
             }
+        }
+        // TASK_clock.md Do #3: checked every loop pass, not just while
+        // ui_awake_now (the 30s window above) — modes_in_use() (ui_clock_due()'s
+        // own gate) is the wider 120s attentive window, and the rail hold
+        // task keeps the display rail on for the whole of it (see
+        // modes_in_use()'s own doc comment, modes.h), so a status-bar-only
+        // partial refresh is safe here even after the 30s UI-awake window
+        // has already lapsed. ui_clock_due() itself is cheap when nothing
+        // changed (a string compare, no AT call) and returns false outright
+        // whenever not in use, so this costs one extra partial per minute
+        // of use and nothing otherwise.
+        if (!render_now && ui_clock_due()) {
+            render_now = true;
         }
         if (render_now) {
             // The screen stack's own render, reflecting whatever

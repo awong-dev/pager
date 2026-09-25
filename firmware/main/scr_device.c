@@ -366,7 +366,12 @@ static void device_render_pw(void)
 // (docs/DEVICE_PLAN.md §5.5: "Read-mostly, one screen, scrolls").
 #define DEVICE_MAX_LINES 16
 #define DEVICE_LINE_LEN 72
-#define DEVICE_VISIBLE_LINES 8 /* 12px pitch between UI_BODY_TOP and the footer */
+// TASK_ui_round2.md Do #2: shared UI_ROW_H pitch (ui.h), not a flat 12px —
+// (UI_FOOTER_Y - (UI_BODY_TOP+2)) / UI_ROW_H == 93/16 == 5.8, floored to 5,
+// same budget/derivation scr_home.c's HOME_VISIBLE_ROWS gives (was 8, sized
+// against the old flat 12px-pitch assumption this screen's info+menu lines
+// shared with the other list screens before this move).
+#define DEVICE_VISIBLE_LINES 5
 
 static void device_render_normal(void)
 {
@@ -437,7 +442,10 @@ static void device_render_normal(void)
             gfx_text(0, y, GFX_FONT_NORMAL, ">");
         }
         gfx_text(10, y, GFX_FONT_NORMAL, lines[i]);
-        y += 12;
+        // TASK_ui_round2.md Do #2: shared row pitch (ui.h) — was a flat
+        // `y += 12`, undercounting DejaVu's own descenders the same way
+        // scr_home.c's pre-Do-#1 HOME_ROW_H bug did.
+        y = ui_row_advance(y, false);
     }
 
     gfx_text(0, UI_FOOTER_Y, GFX_FONT_NORMAL, "up/down move  enter select  esc back");

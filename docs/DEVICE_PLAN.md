@@ -925,16 +925,34 @@ counters  memfull 0  drops 0  resets 0
 **Setup.** Shown when `ident` is missing or fails validation, and by *Set up again*: the typed-code
 entry and the four-step progress line of §3.2.
 
-**Locked (requirement 8).** Reached by auto-lock, *Lock now*, or any restart while a passcode is
-set. Status bar as usual; nothing else is reachable.
+**Greeting / boot status (TASK_ui_finish.md Do #3, 24 Sep 2026).** Pushed at boot, before the
+network is known to be usable; a single centered 16px status line, nothing else. Replaced by Locked
+(if a passcode is set) or Home (if not) once the network is attached and MQTT is usable — never left
+revealed underneath either.
+
+```
+[|||.] ok                              new 0  [###.]
+
+                booting
+```
+
+**Locked (requirement 8; two states, TASK_ui_finish.md Do #4, 24 Sep 2026).** Reached by auto-lock,
+*Lock now*, a restart while a passcode is set, or the boot Greeting screen above once the network is
+usable and a passcode is set. Status bar as usual; nothing else is reachable. (a) idle: the single
+centered word, nothing else — no instructions, no field, no unread info. (b) entering, reached ONLY
+by an IO1 short press (never by typing): the same line becomes `password:` plus the masked field;
+Enter verifies, Esc or 30s idle returns to (a), a wrong code returns to (a).
 
 ```
 [|||.] ok                              new 2  [###.]
 
-              screen locked
+                locked
+```
 
-        passcode  ****
-enter unlock                          btn hold = nothing
+```
+[|||.] ok                              new 2  [###.]
+
+            password: ***_
 ```
 
 ### 5.6 Message store changes (`msg.c`)

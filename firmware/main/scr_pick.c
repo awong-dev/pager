@@ -33,7 +33,12 @@
 #include <stdio.h>
 #include <string.h>
 
-#define PICK_VISIBLE_ROWS 8 /* same 12px-pitch budget as scr_device.c's menu */
+// TASK_ui_round2.md Do #2: recomputed against the shared UI_ROW_H (16, not
+// a flat 12) — (UI_FOOTER_Y - (UI_BODY_TOP+2)) / UI_ROW_H == 93/16 == 5.8,
+// floored to 5, same budget/derivation ui.h's own UI_ROW_H comment and
+// scr_home.c's HOME_VISIBLE_ROWS give (was 8, sized against the old flat
+// 12px-pitch assumption scr_device.c's menu used to share too).
+#define PICK_VISIBLE_ROWS 5
 
 static int s_sel = 0; /* index into (book contacts ++ sms contacts), 0-based */
 
@@ -199,7 +204,10 @@ static void pick_render(void)
             int tw = gfx_text_width(GFX_FONT_NORMAL, status);
             gfx_text(GFX_SCREEN_W - tw, y, GFX_FONT_NORMAL, status);
         }
-        y += 12;
+        // TASK_ui_round2.md Do #2: shared row pitch (ui.h) — was a flat
+        // `y += 12`, undercounting DejaVu's own descenders the same way
+        // scr_home.c's pre-Do-#1 HOME_ROW_H bug did.
+        y = ui_row_advance(y, false);
     }
 
     gfx_text(0, UI_FOOTER_Y, GFX_FONT_NORMAL, "enter choose   esc back");

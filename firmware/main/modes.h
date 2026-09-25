@@ -52,6 +52,16 @@ void modes_note_activity(void);
 int modes_get_rssi_dbm(void);
 int modes_get_batt_mv(void);
 
+/* TASK_clock.md: true while the attentive window is open (a key, button, or
+ * ext0/ext1 wake within PAGER_ATTENTIVE_S = 120s of "now") - the status
+ * bar's "in use" test for its live HH:MM clock (ui.c's draw_status_bar()/
+ * ui_clock_due()). Deliberately the wider 120s window, not input.c's 30s
+ * input_awake() UI-awake window the render cadence itself gates off of -
+ * see this function's own definition (modes.c) for why that is safe (the
+ * rail hold task keeps the display powered for the whole 120s). Plain RAM
+ * read: no modem or sleep-state effect. */
+bool modes_in_use(void);
+
 /* True once at least one good AT+SQNVMON reading has been taken this boot.
  * modes_get_batt_mv() returns a hardcoded 3300 mV placeholder before that
  * (or if every reading since boot has been out of range) purely so the UI

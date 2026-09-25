@@ -20,11 +20,14 @@
 #include "gfx.h"
 #include "lock.h" /* F6.5: gates ui_on_button_short()/ui_on_button_long() below, docs/DEVICE_PLAN.md §5.8 */
 #include "catrust.h" /* v0.2 §4.3: TLS trust-state padlock in draw_status_bar() below */
+#include "rail.h" /* rail gate: rail_restored_us() gates ui_poll_keyboard() below, docs/ROADMAP.md */
+#include "clockfmt.h" /* TASK_clock.md: pure status-bar clock formatter/minute-change detector */
 
 #include <string.h>
 #include <stdio.h>
 #include <time.h>
 
+#include "driver/gpio.h" /* ui_kb_bus_release()/ui_kb_bus_restore() below */
 #include "driver/i2c.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -151,8 +154,88 @@ void ui_format_hhmm(int64_t epoch_s, char *out, size_t out_size)
     }
     time_t t = (time_t) epoch_s;
     struct tm tmv;
-    gmtime_r(&t, &tmv); // UTC — this codebase has no timezone concept anywhere
+    // TASK_ui_round2.md Do #7: local time, not UTC — main.c's app_main()
+    // sets TZ="PST8PDT,M3.2.0,M11.1.0"/tzset() once at boot (hardcoded per
+    // owner 25 Sep 2026; a cfg field later), so localtime_r() here already
+    // reflects it regardless of when during boot this first runs.
+    localtime_r(&t, &tmv);
     snprintf(out, out_size, "%02d:%02d", tmv.tm_hour, tmv.tm_min);
+}
+
+// ---------------------------------------------------------------------------
+// TASK_clock.md: live status-bar clock. The pure formatter/minute-change-
+// detector logic lives in clockfmt.c/clockfmt.h (host-testable,
+// firmware/host/Makefile's test_clock rule — ui.c itself pulls in
+// driver/i2c.h/esp_log.h/FreeRTOS and is not host-buildable, same reason
+// modes.c's rssi/batt gathering is split from the pure bucket math in
+// bars_from_rssi_dbm()/segs_from_batt_mv() below). This section is just the
+// ESP-IDF-side glue: gathering in_use (modes_in_use())/seeded+hh/mm
+// (net_get_clock()) and the small bit of state that lets modes_run() know,
+// once per loop pass, whether the minute (or the in-use/seeded state) has
+// actually changed since the last time draw_status_bar() drew it - see
+// ui_clock_due()'s own comment below for why that split matters (modes_run()
+// must not force a partial refresh every single loop pass just to ask).
+// ---------------------------------------------------------------------------
+
+void ui_status_clock_text(bool in_use, bool seeded, int hh, int mm, char *out, size_t out_size)
+{
+    clockfmt_status_text(in_use, seeded, hh, mm, out, out_size);
+}
+
+// Last HH:MM (or "--:--") draw_status_bar() actually drew - the "last drawn"
+// half of clockfmt_due()'s "compare with the last drawn one" (TASK_clock.md
+// Do #3). Updated only inside draw_status_bar() itself, so it tracks
+// whatever got drawn regardless of which caller triggered the render (a
+// key/button event, the cadence's full refresh, or the clock tick itself
+// all go through the same paint_frame()->draw_status_bar() path).
+static char s_status_clock_last[6] = "";
+
+// TASK_clock.md Do #1/#3: epoch -> local hh/mm, reused by both
+// draw_status_bar() (below) and ui_clock_due() so the two never disagree
+// about what "now" formats to. TASK_ui_round2.md Do #7: local time, not
+// UTC, like ui_format_hhmm() above — same TZ/tzset() set once at boot
+// (main.c's app_main()).
+static void compute_status_clock_text(bool in_use, char *out, size_t out_size)
+{
+    int64_t epoch_s = 0;
+    bool seeded = net_get_clock(&epoch_s);
+    int hh = 0, mm = 0;
+    if (seeded) {
+        time_t t = (time_t) epoch_s;
+        struct tm tmv;
+        localtime_r(&t, &tmv);
+        hh = tmv.tm_hour;
+        mm = tmv.tm_min;
+    }
+    clockfmt_status_text(in_use, seeded, hh, mm, out, out_size);
+}
+
+// TASK_clock.md Do #3: called from modes_run() on every loop pass (not just
+// when a key/button event already forced a render) so the minute rolls over
+// even through an idle stretch inside the attentive window. Only a string
+// compare against the cache above plus (while in use) one net_get_clock()
+// call - a RAM read (net.cpp's own doc comment: no AT round trip, just
+// esp_timer_get_time() extrapolation from the last NITZ read) - never an AT
+// command, never a modem/sleep-state effect of its own. Returns false
+// without even formatting anything while not in use: the one-shot "--:--"
+// render on the attentive window lapsing is modes_run()'s own job (the
+// `attentive != s_attentive_prev` edge, modes.c), not this function's -
+// otherwise this would fire a render every single idle loop pass forever
+// while asleep, defeating the "one partial per minute" budget below.
+// clockfmt_due() both compares AND records `cur` into the cache; that
+// second half is harmless here even though draw_status_bar() below
+// unconditionally re-records it too a few lines later — modes.c always
+// renders (calling draw_status_bar()) in the very same iteration a true
+// return here is acted on (its `if (!render_now && ui_clock_due()) ...` ->
+// `if (render_now) ui_render();`), so the two writes never disagree.
+bool ui_clock_due(void)
+{
+    if (!modes_in_use()) {
+        return false;
+    }
+    char cur[6];
+    compute_status_clock_text(true, cur, sizeof(cur));
+    return clockfmt_due(cur, s_status_clock_last, sizeof(s_status_clock_last));
 }
 
 // ---------------------------------------------------------------------------
@@ -245,11 +328,28 @@ static void draw_status_bar(void)
     snprintf(buf, sizeof(buf), "new: %d  unsent: %d", unread, unsent);
     gfx_text(0, UI_STATUS_TEXT_Y, GFX_FONT_NORMAL, buf);
 
-    // Right, at the user's request: TLS padlock, MQTT link, signal bars,
-    // battery, battery flush against the right edge. (The padlock moved
-    // here from the left on 23 Sep 2026, owner's request: it belongs with
-    // the other link indicators.)
-    int batt_x = GFX_SCREEN_W - GFX_ICON_W;
+    // Rightmost of all, at the right screen edge (TASK_clock.md, owner
+    // request 24 Sep ~11pm PDT): the live HH:MM clock, "--:--" whenever the
+    // pager is not "in use" (modes_in_use(): the 120s attentive window) or
+    // the clock has never been seeded from the network. Drawn before the
+    // icon group below so batt_x can be shifted left by its width - see
+    // draw_status_bar()'s own layout comment further down for the ordering.
+    char clk[6];
+    compute_status_clock_text(modes_in_use(), clk, sizeof(clk));
+    int clk_w = gfx_text_width(GFX_FONT_NORMAL, clk);
+    int clk_x = GFX_SCREEN_W - clk_w;
+    gfx_text(clk_x, UI_STATUS_TEXT_Y, GFX_FONT_NORMAL, clk);
+    strncpy(s_status_clock_last, clk, sizeof(s_status_clock_last) - 1);
+    s_status_clock_last[sizeof(s_status_clock_last) - 1] = '\0';
+
+    // Right (excluding the clock above): TLS padlock, MQTT link, signal
+    // bars, battery - battery now flush against the clock text (was flush
+    // against the right screen edge before the clock existed), shifted left
+    // by the clock's own width + UI_STATUS_ICON_GAP (TASK_clock.md Do #1:
+    // "shifting the icon group left by the text width + 4 px"). (The
+    // padlock moved here from the left on 23 Sep 2026, owner's request: it
+    // belongs with the other link indicators.)
+    int batt_x = clk_x - UI_STATUS_ICON_GAP - GFX_ICON_W;
     gfx_icon(batt_x, 0, (gfx_icon_t) (GFX_ICON_BATTERY_0 + segs_from_batt_mv(modes_get_batt_mv())));
 
     int bars_x = batt_x - GFX_ICON_W - UI_STATUS_ICON_GAP;
@@ -300,6 +400,42 @@ static void draw_status_bar(void)
 }
 
 // ---------------------------------------------------------------------------
+// Shared list-row geometry (TASK_ui_round2.md Do #2) — see ui.h's own
+// module comment on UI_ROW_H/ui_row_advance() (there, `static inline`, for
+// host-testability) for the full rationale; this is only the actual drawing
+// half, which needs gfx_hline() and so stays here.
+// ---------------------------------------------------------------------------
+
+void ui_draw_row_separator(int y)
+{
+    gfx_hline(0, GFX_SCREEN_W - 1, y + 3);
+    gfx_hline(0, GFX_SCREEN_W - 1, y + 5);
+}
+
+// ---------------------------------------------------------------------------
+// Lazy rail gate (TASK_ui_round2.md Do #4) — see ui.h's own ui_ensure_powered()
+// doc comment for the full contract.
+// ---------------------------------------------------------------------------
+
+// Sleeptest report counter (modes.c's "rail: ... lazy_on=") — counts only
+// the off->on edges THIS function drives (a render that needed the rail up
+// on its own, not the wake-path's own EXT0/EXT1 rule, modes.c's separate
+// "on_wakes" counter).
+static uint32_t s_rail_lazy_on = 0;
+
+uint32_t ui_rail_lazy_on_count(void) { return s_rail_lazy_on; }
+
+void ui_ensure_powered(void)
+{
+    bool was_off = !rail_is_on();
+    rail_on(); // power effect: see rail_on()'s own comment; a no-op if already on
+    if (was_off) {
+        disp_note_power_loss(); // the panel's own RAM was lost while the rail was down; force a full refresh
+        s_rail_lazy_on++;
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Rendering
 // ---------------------------------------------------------------------------
 
@@ -318,6 +454,7 @@ static void paint_frame(void)
 
 void ui_render(void)
 {
+    ui_ensure_powered(); // lazy rail gate (Do #4): a render is about to happen
     paint_frame();
     // docs/DEVICE_PLAN.md §5.4: "the full refresh is never taken on the
     // inbound-message path (README R9): it is deferred to the moment the
@@ -377,11 +514,27 @@ void ui_dispatch_key(input_key_t key)
 
 void ui_on_button_short(void)
 {
-    // F6.5 (docs/DEVICE_PLAN.md §5.8's Locked mockup: "btn hold = nothing" —
-    // applies to short press too, "the button ... do[es] nothing" while
-    // locked): without this guard, a short press while Locked is on top
-    // would open Chat right over the lock screen, bypassing the passcode.
+    // TASK_ui_finish.md Do #4/#6 (owner list, 24 Sep 22:30 PDT): "Unlocking
+    // is only started by the IO1 button (the wake button), not by typing."
+    // A short press while the Locked screen is on top starts passcode entry
+    // (scr_lock_start_entry() — no-op if already entering) instead of
+    // opening Chat right over it. If, for whatever reason, the device is
+    // locked but Locked is NOT on top (should not happen —
+    // lock_screen_sync(), modes.c, keeps the two in sync every iteration),
+    // this still does nothing further, matching the old "btn hold = nothing
+    // [and short = nothing either]" fail-safe default.
     if (lock_is_locked()) {
+        if (ui_top() == &g_scr_lock) {
+            scr_lock_start_entry();
+            // TASK_ui_round2.md Do #1: paint "password:" right now,
+            // synchronously, instead of waiting on modes_run()'s own
+            // render_now gate (which was found on the glass to sometimes
+            // miss this edge). ui_render() itself calls ui_ensure_powered()
+            // first (Do #4), so the rail is guaranteed up for this render
+            // regardless of whether the EXT0 wake that got us here already
+            // brought it up.
+            ui_render();
+        }
         return;
     }
     // docs/DEVICE_PLAN.md §5.5 (Home's Keys bullet, applies from anywhere):
@@ -428,6 +581,17 @@ bool ui_incoming(const char *from, bool was_asleep)
         ui_show_toast(toast);
         return false;
     }
+
+    // TASK_ui_round2.md Do #4: this steal branch always paints
+    // (paint_frame()+disp_*_refresh() below, synchronously) regardless of
+    // whether the wake that delivered this message already brought the rail
+    // up (a timer wake with a page waiting is exactly the "nothing to draw
+    // at wake time" case Do #4 describes turning into "something to draw a
+    // moment later" once msg_pump() ingests it) — same rule ui_render()'s
+    // own top now applies, called here directly since this path bypasses
+    // ui_render() (it needs disp_full_refresh() on the was_greeting edge
+    // below, not ui_render()'s own always-partial contract).
+    ui_ensure_powered();
 
     // §5.5: "the chat for that sender is pushed with the new message at the
     // bottom, the partial refresh completes, shown is published." No
@@ -518,6 +682,34 @@ void ui_show_toast(const char *text)
 
 static int s_i2c_fail_count = 0;
 
+// Rail gate (docs/ROADMAP.md, owner 24 Sep 10:30 pm PDT): the CardKB's own
+// MCU loses power whenever rail.c's rail_off() runs and reboots on the next
+// rail_on() -- it needs time to come back up before it can answer an I2C
+// read. PAGER_KB_BOOT_GUARD_MS is that budget; ui_poll_keyboard() below
+// withholds reads until it has passed, tracked per rail-restore edge
+// (rail_restored_us()) rather than a one-shot timer so it re-arms correctly
+// every time modes.c's rail gate takes the rail down and back up again
+// (every non-attentive sleep). Not blocking: a skipped read just returns
+// with no key, same as a NACK would, at zero I2C cost.
+#define PAGER_KB_BOOT_GUARD_MS 300
+
+// The rail_restored_us() value this module last decided the boot-guard/
+// re-init state for. -1 (never equal to any real timestamp, which is >= 0
+// once rail_init() has run) so the very first call always re-evaluates.
+static int64_t s_kb_guard_restored_us = -1;
+// Whether an I2C-driver re-init has already been attempted for the current
+// rail-restore edge -- caps the re-init (and its log line) at once per
+// edge instead of once per failed read, in case the keyboard is genuinely
+// absent or still dead (docs task brief: "log once per wake at most").
+static bool s_kb_reinit_done_this_restore = false;
+// Sleeptest report counter (modes.c's "rail: ... kb_skipped_reads=").
+static uint32_t s_kb_skipped_reads = 0;
+
+// Whether the I2C driver is currently installed on I2C_NUM_0 -- tracked so
+// ui_kb_bus_release() (below) only calls i2c_driver_delete() when there is
+// actually something to delete (task brief: "if installed").
+static bool s_i2c_installed = false;
+
 static void i2c_kb_init(void)
 {
     i2c_config_t conf = {
@@ -530,10 +722,83 @@ static void i2c_kb_init(void)
     };
     i2c_param_config(I2C_NUM_0, &conf);
     i2c_driver_install(I2C_NUM_0, conf.mode, 0, 0, 0);
+    s_i2c_installed = true;
 }
+
+uint32_t ui_kb_skipped_read_count(void) { return s_kb_skipped_reads; }
+
+// Sleeptest report counter (modes.c's "rail: ... kb_bus_releases=").
+static uint32_t s_kb_bus_releases = 0;
+
+// See ui.h's own doc comment (ui_kb_bus_release()) for the full rationale.
+// Power effect: removes the CardKB's/LIS3DH's phantom-power path through
+// the I2C pull-ups while the rail is off (rail.c's rail_off() calls this
+// before dropping the rail); no effect on the rail itself.
+void ui_kb_bus_release(void)
+{
+    if (s_i2c_installed) {
+        i2c_driver_delete(I2C_NUM_0);
+        s_i2c_installed = false;
+    }
+    gpio_config_t cfg = {
+        .pin_bit_mask = (1ULL << PAGER_PIN_KB_SDA) | (1ULL << PAGER_PIN_KB_SCL),
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    gpio_config(&cfg);
+    // Low, not floating: floating still lets the external pull-up (tied to
+    // the always-on 3V3, not this gated rail) feed the CardKB MCU through
+    // its I/O protection diodes -- the phantom-power path this fix closes.
+    gpio_set_level((gpio_num_t) PAGER_PIN_KB_SDA, 0);
+    gpio_set_level((gpio_num_t) PAGER_PIN_KB_SCL, 0);
+    // Same pattern net.cpp's net_sleep() uses for the modem RTS line: holds
+    // this LOW level through every light sleep instead of floating (IDF's
+    // default sleep GPIO isolation) and being re-pulled high.
+    gpio_sleep_sel_dis((gpio_num_t) PAGER_PIN_KB_SDA);
+    gpio_sleep_sel_dis((gpio_num_t) PAGER_PIN_KB_SCL);
+    s_kb_bus_releases++;
+}
+
+// See ui.h's own doc comment. Power effect: none by itself -- rail.c's
+// rail_on() already drove the rail edge that powers the CardKB back up
+// before calling this; this only restores the bus's I2C mode.
+void ui_kb_bus_restore(void)
+{
+    i2c_kb_init(); // re-installs the I2C driver; sets s_i2c_installed = true
+}
+
+uint32_t ui_kb_bus_release_count(void) { return s_kb_bus_releases; }
 
 void ui_poll_keyboard(void)
 {
+    // TASK_ui_round2.md Do #4: the lazy rail gate leaves the rail OFF on a
+    // timer wake with nothing to draw — the CardKB is unpowered then, so an
+    // I2C read here would just NACK (or worse, wedge waiting on a bus with
+    // no pull-ups driven) for zero benefit. Same "skipped read" accounting
+    // as the post-restore boot-guard branch below (s_kb_skipped_reads),
+    // since from the caller's point of view both are "no key this call, try
+    // again later" outcomes.
+    if (!rail_is_on()) {
+        s_kb_skipped_reads++;
+        return;
+    }
+    int64_t restored_us = rail_restored_us();
+    if (restored_us != s_kb_guard_restored_us) {
+        // A new rail-restore edge (or the very first call): this module's
+        // own per-edge state starts over. rail_on() itself is a no-op (no
+        // new edge) while the rail was already on, so this stays untouched
+        // for every wake inside the attentive window.
+        s_kb_guard_restored_us = restored_us;
+        s_kb_reinit_done_this_restore = false;
+    }
+    if (restored_us != 0 &&
+        esp_timer_get_time() - restored_us < (int64_t) PAGER_KB_BOOT_GUARD_MS * 1000) {
+        s_kb_skipped_reads++;
+        return; // CardKB MCU has not had PAGER_KB_BOOT_GUARD_MS to boot yet
+    }
+
     uint8_t byte = 0;
     esp_err_t err =
         i2c_master_read_from_device(I2C_NUM_0, PAGER_I2C_ADDR_CARDKB, &byte, 1, pdMS_TO_TICKS(50));
@@ -541,6 +806,18 @@ void ui_poll_keyboard(void)
         s_i2c_fail_count++;
         if (s_i2c_fail_count == 3) { // log once, then keep trying silently (matches pre-F6.3 tolerance)
             ESP_LOGI(TAG, "CardKB: 3 consecutive I2C failures");
+        }
+        // Rail gate: a read failing once the boot guard above has already
+        // elapsed for this restore edge is worth one I2C-driver re-init --
+        // the bus could have been left mid-transaction when the rail
+        // dropped. At most once per edge (see
+        // s_kb_reinit_done_this_restore's own comment); a genuinely absent
+        // keyboard just keeps failing afterwards without spamming this.
+        if (!s_kb_reinit_done_this_restore) {
+            s_kb_reinit_done_this_restore = true;
+            ESP_LOGI(TAG, "CardKB: I2C read failed post-restore; re-initializing the driver");
+            i2c_driver_delete(I2C_NUM_0);
+            i2c_kb_init();
         }
         return;
     }

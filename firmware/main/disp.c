@@ -876,6 +876,20 @@ bool disp_init(void)
 
 bool disp_is_dead(void) { return s_display_dead; }
 
+// Rail gate: see disp.h's own doc comment. Mirrors disp_init()'s own
+// priming (both s_partial_count, for a disp_refresh_cadence() caller, and
+// s_force_full, for a disp_partial_refresh() caller — see s_force_full's
+// own comment on why callers split across the two) so the next refresh is
+// full regardless of which path the caller (ui.c) takes next. Taken under
+// the same lock every other public entry point here uses.
+void disp_note_power_loss(void)
+{
+    disp_lock();
+    s_partial_count = PAGER_UI_PARTIAL_FULL_EVERY;
+    s_force_full = true;
+    disp_unlock();
+}
+
 void disp_full_refresh(void)
 {
     disp_lock();

@@ -154,6 +154,22 @@ int home_body_clip(const uint8_t *adv, int n, int avail_px, int marker_px, bool 
     return count;
 }
 
+// ---------------------------------------------------------------------------
+// Row geometry: moved to ui.h/ui.c as UI_ROW_H/ui_row_advance()/
+// ui_draw_row_separator() (TASK_ui_round2.md Do #2) — see ui.h's own module
+// comment on those for the full derivation (Do #1, owner photo evidence 24
+// Sep 22:35 PDT: the HH:MM/`*` column drawn one row below its own chat row,
+// and the double-underline separator drawn across the LAST chat row's own
+// text; DejaVu Sans's measured baseline=13 + 3px descent for g/y/j/p/q at
+// the 12px size). home_render() below (the ESP-only section) now calls
+// ui_row_advance()/ui_draw_row_separator() directly via ui.h, shared with
+// scr_pick.c/scr_book.c/scr_device.c's own list rows — this file no longer
+// has a private copy of this math. The host test (firmware/host/
+// test_home_list.c) gets the same UI_ROW_H/ui_row_advance() by including
+// ui.h directly (it is `static inline` there specifically so no
+// ESP-IDF-dependent object file needs linking for that).
+// ---------------------------------------------------------------------------
+
 #ifdef ESP_PLATFORM
 
 #include "ui.h"
@@ -378,14 +394,17 @@ typedef struct {
     int sel_index;    /* valid iff selectable — matches s_sel's own numbering */
 } home_line_t;
 
-// (UI_FOOTER_Y - (UI_BODY_TOP+2)) / 12 == 95/12 == 7.9, floored to 7 —
-// conservative even when the double-underline separator (a real 6px, not
-// 12) is inside the visible window: HOME_VISIBLE_ROWS * 12 == 84 <= the
-// real 95px budget, so charging the separator a full 12px "slot" in this
-// row-granular scroll (same entry-count windowing scr_device.c's own
-// device_render_normal() uses) only ever under-fills by a few px, never
-// overflows past the footer.
-#define HOME_VISIBLE_ROWS 7
+// Do #1 fix: was 7, sized against a 12px row (no descender allowance) —
+// see ui.h's UI_ROW_H comment for why that undercounted a real row's own
+// ink span and let it run into the next row/the separator.
+// Recomputed against the real UI_ROW_H (16, not 12): (UI_FOOTER_Y -
+// (UI_BODY_TOP+2)) / UI_ROW_H == (110-17)/16 == 93/16 == 5.8, floored to
+// 5 — the worst case (peer_count >= HOME_VISIBLE_ROWS, so the visible
+// window is all HLINE_PEER rows, no separator's own cheaper UI_SEP_H
+// slot in view at all) is HOME_VISIBLE_ROWS * UI_ROW_H == 80 <= the real
+// 93px budget, same "row-granular scroll, never overflows past the
+// footer" conservatism scr_device.c's own device_render_normal() uses.
+#define HOME_VISIBLE_ROWS 5
 
 static void home_render(void)
 {
@@ -443,9 +462,13 @@ static void home_render(void)
     for (int i = scroll_top; i < nlines && i < scroll_top + HOME_VISIBLE_ROWS; i++) {
         const home_line_t *ln = &lines[i];
         bool sel = ln->selectable && ln->sel_index == s_sel;
-        int line_h = 12;
         switch (ln->kind) {
         case HLINE_PEER: {
+            // Do #1: alias/body and the HH:MM/`*` column below are both
+            // drawn at this SAME `y` — one row's single pen position, never
+            // a `y` recomputed partway through — so they can never land on
+            // different rows relative to each other; only the row-box
+            // HEIGHT (UI_ROW_H, ui.h) needed fixing.
             const home_peer_t *p = &s_peers[ln->idx];
             if (sel) {
                 gfx_text(0, y, sz, ">");
@@ -501,9 +524,14 @@ static void home_render(void)
             break;
         }
         case HLINE_SEP:
-            gfx_hline(0, GFX_SCREEN_W - 1, y);
-            gfx_hline(0, GFX_SCREEN_W - 1, y + 2);
-            line_h = 6;
+            // Do #1: drawn at y_last_row_bottom + 3 / + 5 — `y` here IS
+            // already y_last_row_bottom, since the peer row directly above
+            // advanced by UI_ROW_H (ui_row_advance(), below) before this
+            // iteration started, so the double underline can never land on
+            // that row's own descenders (UI_ROW_H already reaches them;
+            // ui_draw_row_separator() is 3px clear of that). Shared helper,
+            // TASK_ui_round2.md Do #2 — see ui.h's own doc comment.
+            ui_draw_row_separator(y);
             break;
         case HLINE_PLACEHOLDER:
             gfx_text(10, y, sz, "(no chats yet)");
@@ -517,7 +545,7 @@ static void home_render(void)
         default:
             break;
         }
-        y += line_h;
+        y = ui_row_advance(y, ln->kind == HLINE_SEP);
     }
 
     gfx_text(0, UI_FOOTER_Y, sz, "up/down move  enter open  hold=home");

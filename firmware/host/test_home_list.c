@@ -26,6 +26,11 @@
 #include <string.h>
 
 #include "msg.h"
+#include "ui.h" /* TASK_ui_round2.md Do #2: UI_ROW_H/UI_SEP_H/ui_row_advance() are now the
+                  * shared source of truth (ui.h's own `static inline` — no ESP-IDF-dependent
+                  * object file needed to link this test), replacing this file's own former
+                  * home_row_advance() re-declaration and TEST_HOME_ROW_H/TEST_HOME_SEP_H
+                  * hand-kept-in-sync constants. */
 
 #define HOME_PEER_ALIAS_MAX 17 /* MSG_FROM_MAX — must match scr_home.c's own #define */
 #define HOME_PEER_BODY_MAX 48  /* must match scr_home.c's own #define */
@@ -40,6 +45,8 @@ typedef struct {
 int home_peers_build(const msg_t *msgs, size_t n, bool have_default, const char *default_alias,
                       home_peer_t *out, int max_peers);
 int home_body_clip(const uint8_t *adv, int n, int avail_px, int marker_px, bool *out_marker);
+
+#define TEST_HOME_FIRST_ROW_Y (UI_BODY_TOP + 2) /* ui.h; == 17 */
 
 static int g_failures = 0;
 
@@ -209,6 +216,74 @@ static void test_body_clip_never_overflows(void)
     CHECK(narrow_marker, "marker-does-not-fit case should still report marker true");
 }
 
+/* Do #1's own regression test — the exact photo-evidence scenario ("the
+ * first row's '04:26 *' sits beside the second row, and the fourth row's
+ * time sits on the separator"): replays home_render()'s own row-advance
+ * loop for 4 peer rows + the separator + 4 menu rows via the SAME shared
+ * ui_row_advance() (ui.h, TASK_ui_round2.md Do #2) home_render() itself
+ * calls — never a re-derived formula — then asserts the two things Do #1
+ * requires:
+ *   1. every row's own geometry matches the exact pixel values Do #1's
+ *      text specifies (17, 33, 49, ... — a plain regression lock: since
+ *      ui_row_advance()/UI_ROW_H/UI_SEP_H are the one shared symbol both
+ *      this test and scr_home.c's own home_render() call, they cannot
+ *      drift apart from each other any more; this still catches
+ *      scr_home.c's own loop ever retuning TEST_HOME_FIRST_ROW_Y's own
+ *      UI_BODY_TOP or no longer calling ui_row_advance() for every line, as
+ *      a numeric mismatch, not just an inequality that happens to still
+ *      hold);
+ *   2. the last visible peer row's own bottom (its top + UI_ROW_H — the
+ *      12px font height + descender allowance, ui.h's own comment) is
+ *      strictly above (a smaller y than) the separator's own first
+ *      underline (drawn at the separator line's `y + 3`) — the actual
+ *      "the double underline is drawn across the LAST chat row's text"
+ *      photo symptom, expressed as an inequality so it stays true even if
+ *      the exact pixel constants above are ever retuned again.
+ */
+static void test_row_geometry_matches_photo_fix(void)
+{
+    int y = TEST_HOME_FIRST_ROW_Y;
+    int peer_top[4];
+    for (int i = 0; i < 4; i++) {
+        peer_top[i] = y;
+        y = ui_row_advance(y, false);
+    }
+    int sep_top = y;
+    y = ui_row_advance(y, true);
+    int menu_top[4];
+    for (int i = 0; i < 4; i++) {
+        menu_top[i] = y;
+        y = ui_row_advance(y, false);
+    }
+
+    // (1) exact pixel regression lock, per Do #1's own "12 px font height +
+    // 2 px descender[-equivalent] row box, separator at bottom+3/+5, y +=
+    // 8" text, evaluated against ui.h's actual measured UI_ROW_H/UI_SEP_H
+    // (16/8 — DejaVu, not the task text's literal Noto-era 14/... numbers;
+    // see ui.h's own doc comment for the derivation).
+    static const int want_peer_top[4] = { 17, 33, 49, 65 };
+    for (int i = 0; i < 4; i++) {
+        CHECK(peer_top[i] == want_peer_top[i], "peer row %d top should be %d, got %d", i,
+              want_peer_top[i], peer_top[i]);
+    }
+    CHECK(sep_top == 81, "separator row top should be 81 (65 + UI_ROW_H), got %d", sep_top);
+    static const int want_menu_top[4] = { 89, 105, 121, 137 };
+    for (int i = 0; i < 4; i++) {
+        CHECK(menu_top[i] == want_menu_top[i], "menu row %d top should be %d, got %d", i,
+              want_menu_top[i], menu_top[i]);
+    }
+
+    // (2) the actual photo-evidence assertion: the last visible row's own
+    // bottom (baseline + descender, i.e. its top + UI_ROW_H) must be
+    // strictly above the separator's own first underline (sep_top + 3).
+    int last_row_bottom = peer_top[3] + UI_ROW_H;
+    int sep_first_line_y = sep_top + 3;
+    CHECK(last_row_bottom < sep_first_line_y,
+          "last row's own bottom (%d) must be above the separator's first line (%d) — "
+          "this is the exact 'underline drawn across the last row's text' photo bug",
+          last_row_bottom, sep_first_line_y);
+}
+
 int main(void)
 {
     test_three_peers_newest_first_unread();
@@ -217,6 +292,7 @@ int main(void)
     test_max_peers_cap();
     test_group_uses_from_not_sndr();
     test_body_clip_never_overflows();
+    test_row_geometry_matches_photo_fix();
 
     if (g_failures == 0) {
         printf("PASS: all test_home_list checks passed\n");

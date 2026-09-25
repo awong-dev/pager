@@ -461,6 +461,24 @@ bool lock_try_passcode(const char *passcode, size_t len)
     return match;
 }
 
+// TASK_ui_round2.md Do #3 (owner feedback, 25 Sep 2:30 am PDT): this is the
+// EARLIER of two independent auto-lock triggers whenever `auto_min` (cfg
+// `lock.auto`) is shorter than PAGER_ATTENTIVE_S (120s, modes.c). The
+// second, later-added trigger is NOT in this file: modes.c's own
+// attentive:true->false edge (modes_run(), the same edge that blanks the
+// status-bar clock to "--:--", TASK_clock.md Do #4) also calls lock_now()
+// directly when `lock_is_set()`, as an upper bound — `auto_min == 0`
+// ("never") or an auto_min longer than 120s would otherwise leave an
+// unattended, passcode-protected pager unlocked past the point it already
+// stopped being "in use". The two never conflict (both call this same
+// lock_now(), which is a no-op once already locked) and neither is ever
+// later than the other: whichever elapses first wins, matching Do #3's own
+// "an additional, earlier trigger if it is shorter; never later" rule. This
+// function's own `now_us` argument is unrelated to modes.c's separate
+// attentive-window clock (s_last_input_us above is this module's own
+// private last-activity timestamp, reset by lock_check_autolock()'s own
+// call site contract — "call on every input event and every UI wake" —
+// not modes.c's wider 120s window).
 void lock_check_autolock(int64_t now_us)
 {
     s_lock();

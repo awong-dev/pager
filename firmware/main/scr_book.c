@@ -367,7 +367,11 @@ static void nick_render(void)
 /* ---------------------------------------------------------------------
  * BOOK_MODE_LIST state.
  * --------------------------------------------------------------------- */
-#define BOOK_VISIBLE_ROWS 8
+// TASK_ui_round2.md Do #2: recomputed against the shared UI_ROW_H (16, not
+// a flat 12) — same 93px/16 == 5.8, floored to 5 derivation ui.h's own
+// UI_ROW_H comment and scr_home.c's HOME_VISIBLE_ROWS give (was 8, sized
+// against the old flat 12px-pitch assumption).
+#define BOOK_VISIBLE_ROWS 5
 
 static int selectable_count(void)
 {
@@ -484,7 +488,10 @@ static void list_render(void)
             }
             gfx_text(10, y, GFX_FONT_NORMAL, "Add");
         }
-        y += 12;
+        // TASK_ui_round2.md Do #2: shared row pitch (ui.h) — was a flat
+        // `y += 12`, undercounting DejaVu's own descenders the same way
+        // scr_home.c's pre-Do-#1 HOME_ROW_H bug did.
+        y = ui_row_advance(y, false);
     }
 
     gfx_text(0, UI_FOOTER_Y, GFX_FONT_NORMAL, "up/down move   enter select   esc back");

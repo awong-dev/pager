@@ -75,7 +75,7 @@ endif
 MAIN_SRC := ../main
 BUILD := build
 
-TESTS := test_cbor test_auth test_setup test_input test_msg test_lock test_loc test_cafetch test_catrust test_cfg test_sms test_carrier test_chat_layout test_home_list test_coverage test_net_connect_guard test_net_probe_guard test_resub_verdict test_publish_quiet test_accel_rate test_wifi_policy test_wificred test_bookpull
+TESTS := test_cbor test_auth test_setup test_input test_msg test_lock test_loc test_cafetch test_catrust test_cfg test_sms test_carrier test_chat_layout test_home_list test_coverage test_net_connect_guard test_net_probe_guard test_resub_verdict test_publish_quiet test_accel_rate test_wifi_policy test_wificred test_bookpull test_clock
 TEST_BINS := $(TESTS:%=$(BUILD)/%)
 
 # ASSETS: tools/mkassets.py's default output location (docs/DEVICE_TASKS.md
@@ -429,3 +429,16 @@ $(BUILD)/test_bookpull: $(BUILD)/book.o $(BUILD)/bookpull.o $(BUILD)/auth.o $(BU
                        $(BUILD)/cafetch.o $(BUILD)/test_bookpull.o
 	$(CC) $(CFLAGS) -o $@ $(BUILD)/book.o $(BUILD)/bookpull.o $(BUILD)/auth.o $(BUILD)/cbor.o \
 	    $(BUILD)/cafetch.o $(BUILD)/test_bookpull.o $(MBEDTLS_LIBS)
+
+# test_clock: clockfmt.c (whole file -- no ESP-IDF dependency at all, see
+# clockfmt.h's own module comment) + test_clock.c. TASK_clock.md: the
+# status bar's live-clock pure formatter/minute-change detector, split out
+# of ui.c (not itself host-buildable: driver/i2c.h/esp_log.h/FreeRTOS).
+$(BUILD)/clockfmt.o: $(MAIN_SRC)/clockfmt.c $(MAIN_SRC)/clockfmt.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $(MAIN_SRC)/clockfmt.c
+
+$(BUILD)/test_clock.o: test_clock.c $(MAIN_SRC)/clockfmt.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ test_clock.c
+
+$(BUILD)/test_clock: $(BUILD)/clockfmt.o $(BUILD)/test_clock.o
+	$(CC) $(CFLAGS) -o $@ $^

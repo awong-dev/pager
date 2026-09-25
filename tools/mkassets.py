@@ -19,6 +19,32 @@ font data itself. See the docstring in the repo's F6.1 task notes for which
 files were used to exercise this script in an offline sandbox (a real Noto
 Sans + Noto Sans CJK pair, found already installed on the build host).
 
+Default sans/Latin face changed 2026-09-24 (TASK_ui_finish.md Do #2, owner
+decision on real glass): **DejaVu Sans is now the shipped default**,
+--sans-font tools/fonts/dejavu/DejaVuSans.ttf (licence: tools/fonts/
+dejavu/LICENSE, Bitstream Vera — free/redistributable), superseding the
+"Noto Sans stays" call the 2026-09-20 Literata rejection note below
+recorded — that note's own reasoning (variable-font axes, the baseline pin)
+is unaffected and still applies; DejaVu is a static font like Noto, so
+--sans-axes has no effect on it either. The CJK face is UNCHANGED (still
+Noto Sans CJK — this script has no CJK alternative to rasterise): the
+`assets` image mixes DejaVu Latin/Greek/Cyrillic glyphs with Noto Sans CJK
+CJK glyphs, both pinned to the SAME per-size baseline (--baseline
+"12=13,16=18", Noto's own ascender values — DejaVu's own descenders reach
+3px below that baseline at both sizes, deeper than Noto's 1px; ui.h's
+UI_FOOTER_Y was re-measured and widened for this, see that file's own
+comment) so the two faces still line up on one row. Exact command used to
+build the default `assets` partition image now:
+  python3 tools/mkassets.py --lang sc \
+      --sans-font tools/fonts/dejavu/DejaVuSans.ttf \
+      --cjk-font <a local Noto Sans CJK .ttc, e.g. ~/Library/Fonts/NotoSansCJK.ttc> \
+      --baseline "12=13,16=18" \
+      -o build/assets.bin
+(the CJK font itself is still not checked into this repo — same "found
+already installed on the build host" caveat as before; only the Latin/
+Greek/Cyrillic face changed, and that one now IS checked in, so this build
+is reproducible modulo having any Noto Sans CJK file locally.)
+
 Variable fonts and the baseline (added 2026-09-20 while trying Literata as
 the text face; it was flashed to a real panel and **rejected — Noto Sans stays**,
 so do not repeat the experiment without a new reason):

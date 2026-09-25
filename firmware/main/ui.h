@@ -43,6 +43,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h> /* uint32_t, ui_kb_skipped_read_count() */
 
 #include "gfx.h"   /* gfx_font_t, used by ui_text_size() */
 #include "input.h" /* input_key_t */
@@ -98,6 +99,14 @@ extern const ui_screen_t g_scr_setup;
  * own module comment above says are not built yet (that note is now stale
  * for this one screen only; scr_pick.c/scr_book.c still need book.c, F7.1). */
 extern const ui_screen_t g_scr_lock;
+/* TASK_ui_finish.md Do #4/#6 (owner list, 24 Sep 22:30 PDT): the Locked
+ * screen's own idle->entering transition (its "locked" -> "password:" +
+ * masked field). Called ONLY from ui_on_button_short() (ui.c) below, on an
+ * IO1 short press while g_scr_lock is on top and idle — Do #6: "Unlocking
+ * is only started by the IO1 button ... not by typing." No-op if already
+ * entering (scr_lock.c's own doc comment). No modem or sleep-state effect:
+ * a screen-local UI state flip only. */
+void scr_lock_start_entry(void);
 /* F7.2 (docs/DEVICE_PLAN.md §5.5 "New message → pick recipient", "Address
  * book", "Nicknames"): book.c (F7.1) now exists too. T3
  * (docs/CHAT_UI_DESIGN.md §3/§5) wires both of these in from Home's
@@ -216,18 +225,95 @@ const ui_screen_t *ui_top(void);
 #define UI_STATUS_H 14
 #define UI_BODY_TOP (UI_STATUS_H + 1)
 
+/* ---------------------------------------------------------------------
+ * Shared list-row geometry (TASK_ui_round2.md Do #2). Moved here verbatim
+ * from scr_home.c's now-removed HOME_ROW_H/HOME_SEP_H/home_row_advance()
+ * (Do #1, 24 Sep photo-evidence fix: DejaVu Sans's own measured
+ * baseline=13 + 3px descent for g/y/j/p/q at the 12px size — see that
+ * commit's own derivation, unchanged here) so every fixed-pitch 12px-font
+ * list screen (Home, Pick, Book, Device) shares one row box height and one
+ * "double underline below the last row" drawing, instead of each screen
+ * re-deriving (or under-deriving) its own and re-introducing the same
+ * descender-overlap bug in a new place. scr_chat.c is NOT switched to this
+ * fixed pitch — its own row pitch is font-size-dependent (GFX_FONT_NORMAL/
+ * GFX_FONT_LARGE body text, `pitch` in scr_chat.c) and its existing
+ * message-list/composer hline already has clearance built into that
+ * variable pitch; see this task's own report for why forcing the fixed
+ * UI_ROW_H there was left alone rather than guessed at.
+ *
+ * ui_row_advance() is `static inline` here (not a real function body in
+ * ui.c) specifically so it stays host-testable without linking any
+ * ESP-IDF-dependent object file: firmware/host/test_home_list.c gets it by
+ * just `#include "ui.h"`, the same "one shared source of truth for both the
+ * real renderer and its own host test" discipline home_row_advance() itself
+ * established before this move. gfx.h/input.h (this header's own two
+ * includes) are both already host-safe (no ESP-IDF headers of their own),
+ * so this adds no new host-build dependency.
+ * --------------------------------------------------------------------- */
+#define UI_ROW_H 16 /* 12px-font row box: baseline(13) + descent(3) */
+#define UI_SEP_H 8  /* row-to-separator/next-row clearance: +3/+5 offsets below, then y += 8 */
+
+static inline int ui_row_advance(int row_top, bool is_separator)
+{
+    return row_top + (is_separator ? UI_SEP_H : UI_ROW_H);
+}
+
+/* Draws the double-underline separator immediately below the last list row,
+ * at `y` == that row's own top (already advanced past it by the caller's
+ * own ui_row_advance() loop) — two hlines at y+3/y+5, 3px clear of the
+ * row's own deepest descender, same offsets HOME_SEP_H's own doc comment
+ * (pre-move) measured. A real function in ui.c (not inline): it draws
+ * (gfx_hline()) rather than just computing a position, and no host test
+ * needs the actual pixels, only ui_row_advance()'s geometry above. */
+void ui_draw_row_separator(int y);
+
 /* Footer key-hints row shared by every scr_*.c (§5.4/§5.5: "a footer of key
  * hints"), always GFX_FONT_NORMAL. The old convention drawn everywhere was
  * `GFX_SCREEN_H - 9`, which confirmed-broke on real hardware
  * (scr_greeting.c's status footer, "shutting down", visibly cut off at the
  * bottom) -- the 12px font's real baseline is 13 (see UI_STATUS_H's own
- * comment above) and its descenders (g/y/p/q/j) reach row 14 below
- * line_top_y, so `-9` put more than half of every footer's own descenders,
- * and often the whole baseline-and-below body of the line, past row 127
- * where gfx_set_pixel() silently clips it. -16 keeps the deepest real
- * descender (row 14 relative to line_top_y) at row 126, one row of margin
- * before the panel's own bottom edge. */
-#define UI_FOOTER_Y (GFX_SCREEN_H - 16)
+ * comment above), so `-9` put more than half of every footer's own
+ * descenders, and often the whole baseline-and-below body of the line,
+ * past row 127 where gfx_set_pixel() silently clips it.
+ *
+ * -18, not the earlier fix's -16: re-measured against DejaVu Sans, now the
+ * shipped default face (TASK_ui_finish.md Do #2, owner decision 24 Sep —
+ * Noto is no longer the default asset), not Noto. Decoding
+ * build/images/assets-dejavu.bin's own 12px block (tools/mkassets.py's PGFA
+ * format, gfx.h) gives g/y/j/p/q all bottoming out `rows - bearing_y` == 3px
+ * below the pinned baseline=13, i.e. row 16 relative to line_top_y — 2px
+ * deeper than Noto's own row 14 the -16 value was measured against (Noto's
+ * shallow 1px descent at this size). -18 keeps the same "one row of margin
+ * before the panel's bottom edge" convention: the deepest real descender
+ * (row 16 relative to line_top_y) sits at row 126 when line_top_y ==
+ * GFX_SCREEN_H-18 == 110. If the shipped default face changes again, re-run
+ * the same decode (see scr_home.c's HOME_ROW_H comment for the exact
+ * python snippet used) rather than guessing. */
+#define UI_FOOTER_Y (GFX_SCREEN_H - 18)
+
+/* Lazy rail gate (TASK_ui_round2.md Do #4, docs/ROADMAP.md): the one place
+ * every render path brings the 3V3 peripheral rail up on demand instead of
+ * relying on the wake path to have already done it unconditionally. Calls
+ * rail_on() (rail.h) and, iff the rail was OFF just before that call,
+ * disp_note_power_loss() (disp.h) — the same "panel RAM was lost, force a
+ * full refresh" note the old unconditional wake-path rail_on() used to give
+ * on every rail-was-off wake, now given only at the point a render is
+ * actually about to happen. Called from the top of ui_render() (below) and
+ * ui_incoming()'s own synchronous render path — see rail.h's
+ * own module comment for the other three rules (boot, an EXT0/EXT1 wake,
+ * and the attentive window) that also bring the rail on, independently of
+ * this function. A no-op call (no rail edge, no disp_note_power_loss()) if
+ * the rail is already on, which is the common case inside the attentive
+ * window or right after an EXT0/EXT1 wake. Power effect: powers the
+ * display/CardKB/LIS3DH on iff they were off — see rail_on()'s own comment
+ * for the rail edge itself. */
+void ui_ensure_powered(void);
+
+/* Count of off->on rail edges ui_ensure_powered() itself drove (a render
+ * that needed the rail up on its own — NOT modes.c's separate wake-path
+ * EXT0/EXT1 rule) since boot. Free-running, never reset — bench diagnostic
+ * (modes.c's sleeptest report: "rail: on_wakes=... lazy_on="). */
+uint32_t ui_rail_lazy_on_count(void);
 
 /* Clears the framebuffer, draws the status bar, calls the top screen's
  * render(), then disp_partial_refresh() — ALWAYS a partial, never the
@@ -342,10 +428,55 @@ void ui_show_toast(const char *text);
  * queues an INPUT_EVT_KEY event for modes.c's existing event-drain loop to
  * hand to ui_dispatch_key(). On 3 consecutive I2C failures, logs once and
  * backs off until the next call (same "keyboard not found" tolerance the
- * pre-F6.3 composer had) — never blocks the wake-and-drain loop. Power
+ * pre-F6.3 composer had) — never blocks the wake-and-drain loop. Rail gate
+ * (docs/ROADMAP.md, owner 24 Sep 10:30 pm PDT): withholds the read (no I2C
+ * transaction at all, counted in ui_kb_skipped_read_count()) for
+ * PAGER_KB_BOOT_GUARD_MS (ui.c, 300 ms) after the most recent rail.c
+ * rail_restored_us() edge — the CardKB MCU needs that long to boot after
+ * its power (the 3V3 rail) returns; a read failing after that guard has
+ * elapsed re-initializes the I2C driver once per restore edge. Power
  * effect: one I2C read per call (~0.1 ms, negligible next to the 100ms
- * poll cadence input_awake() already implies). */
+ * poll cadence input_awake() already implies), or none while the guard is
+ * withholding it. */
 void ui_poll_keyboard(void);
+
+/* Count of ui_poll_keyboard() calls withheld by the post-rail-restore
+ * CardKB boot guard above, since boot. Free-running, never reset — bench
+ * diagnostic (modes.c's sleeptest report: "kb_skipped_reads="). */
+uint32_t ui_kb_skipped_read_count(void);
+
+/* rail.c's own back-powering fix (owner, 24 Sep 11:15 pm PDT): the CardKB's
+ * SDA/SCL pull-ups are tied to the always-on 3V3, not the gated peripheral
+ * rail, so leaving the I2C driver's idle-high bus level up while rail_off()
+ * drops the rail phantom-powers the CardKB MCU through its I/O protection
+ * diodes (the "red LED stays on asleep" symptom). rail_off() calls this
+ * BEFORE driving PAGER_PIN_3V3_EN high: deletes the I2C driver (if
+ * installed) and reconfigures PAGER_PIN_KB_SDA/PAGER_PIN_KB_SCL (pins.h) as
+ * plain GPIO outputs driven LOW — low, not floating, since floating still
+ * lets the external pull-up feed the keyboard — and excludes both from
+ * sleep GPIO isolation (gpio_sleep_sel_dis(), the same pattern net.cpp's
+ * net_sleep() uses for the modem RTS line) so they hold LOW through every
+ * light sleep instead of being re-pulled high. The LIS3DH (accel.c) shares
+ * this same I2C bus and rail, so it is already unpowered whenever this
+ * runs; driving its SDA/SCL low is still correct. Power effect: removes the
+ * CardKB's phantom-power path through the I2C pull-ups while the rail is
+ * off; no effect on the rail itself. */
+void ui_kb_bus_release(void);
+
+/* rail.c's rail_on() calls this AFTER driving PAGER_PIN_3V3_EN low: returns
+ * PAGER_PIN_KB_SDA/PAGER_PIN_KB_SCL to the I2C driver (re-runs
+ * i2c_kb_init()). The existing PAGER_KB_BOOT_GUARD_MS post-restore guard
+ * (ui_poll_keyboard(), keyed off rail.c's rail_restored_us()) already
+ * withholds the first read until the CardKB MCU has had time to boot, so no
+ * additional guard is needed here. Power effect: none by itself — the rail
+ * edge that powers the CardKB back up already happened in rail_on(); this
+ * only restores the bus's I2C mode. */
+void ui_kb_bus_restore(void);
+
+/* Count of ui_kb_bus_release() calls since boot — one per rail_off() edge.
+ * Free-running, never reset — bench diagnostic (modes.c's sleeptest
+ * report: "kb_bus_releases="). */
+uint32_t ui_kb_bus_release_count(void);
 
 /* ---------------------------------------------------------------------
  * Text size setting (docs/DEVICE_PLAN.md §5.2: "a Setting (normal/large)
@@ -359,12 +490,42 @@ void ui_toggle_text_size(void); /* power effect: one NVS (flash) write */
 /* ---------------------------------------------------------------------
  * Small formatting helper shared by scr_home.c/scr_chat.c (message
  * timestamps, §5.5's mockups: "14:02" style, never a date — the ring only
- * ever holds a few hours of history). UTC (this codebase has no timezone
- * concept anywhere — PROTOCOL.md's `ts` is always epoch seconds). Writes
+ * ever holds a few hours of history). Local time (TASK_ui_round2.md Do #7,
+ * hardcoded "PST8PDT,M3.2.0,M11.1.0" per owner 25 Sep 2026 — a cfg field
+ * later; main.c's app_main() sets TZ/tzset() once at boot, before any
+ * caller here or in ui.c's compute_status_clock_text() runs) — was UTC
+ * before this task (PROTOCOL.md's own `ts` wire field is still always epoch
+ * seconds; only the on-glass HH:MM rendering changed). Writes
  * "--:--" for epoch_s == 0 (no network clock ever obtained this boot,
  * PROTOCOL.md §3.5 — never guess a wall time). `out` must be >= 6 bytes.
  * --------------------------------------------------------------------- */
 void ui_format_hhmm(int64_t epoch_s, char *out, size_t out_size);
+
+/* ---------------------------------------------------------------------
+ * TASK_clock.md: the status bar's own live clock, at the right screen edge.
+ * "--:--" whenever `in_use` is false (modes_in_use(): the pager is not in
+ * the 120s attentive window) or `seeded` is false (net_get_clock() has never
+ * returned a network time this boot, PROTOCOL.md §3.5), else "HH:MM" from
+ * `hh`/`mm` (caller's job to have already converted an epoch to local
+ * hour/minute — see draw_status_bar()'s own compute_status_clock_text(),
+ * ui.c, for the only production caller). Pure formatter, no modem/RTC
+ * access of its own — the identical logic is host-tested directly against
+ * clockfmt.c/clockfmt.h (firmware/host/test_clock.c), which this function
+ * just delegates to (ui.c).
+ * `out` must be >= 6 bytes, same as ui_format_hhmm() above.
+ * --------------------------------------------------------------------- */
+void ui_status_clock_text(bool in_use, bool seeded, int hh, int mm, char *out, size_t out_size);
+
+/* True iff the status bar's HH:MM has changed (a minute rolled over, or the
+ * in-use/seeded state flipped) since draw_status_bar() last actually drew
+ * it. Call once per modes_run() loop pass while modes_in_use() might be
+ * true; a true return means the caller should render (ui_render()) to push
+ * the new text out — see ui_clock_due()'s own doc comment (ui.c) for why
+ * this is safe outside input.c's shorter 30s UI-awake window and cheap
+ * (never an AT command) even every loop pass. Always false while not in
+ * use — the one-shot "--:--" render on the attentive window lapsing is
+ * modes_run()'s own job, not this function's. */
+bool ui_clock_due(void);
 
 #ifdef __cplusplus
 }

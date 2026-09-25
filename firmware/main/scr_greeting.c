@@ -1,48 +1,43 @@
-// scr_greeting.c — boot splash ("Hi <name>! Hi <name>! Hi <name>!", order
-// randomized each time it's PUSHED, not each time it's repainted -- see
-// on_event()/s_line below; a real hardware bug (duplicated/garbled names,
-// stray overlapping strokes) came from an earlier version that reshuffled
-// inside render() itself, so a screen pushed once but partial-refreshed
-// several times in a row (main.c's booting -> sim missing -> shutting down
-// status sequence) painted a DIFFERENT name order each time, and the
-// e-paper panel -- which only partial-refreshes the diffed region, not a
-// full clear -- showed overlapping remnants of two or three shuffles at
-// once).
+// scr_greeting.c — TASK_ui_finish.md Do #3 (owner list, 24 Sep 22:30 PDT):
+// the per-name "Hi May! Hi Hannah! Hi Colin!" boot splash is gone. This
+// screen is a plain, single-line centered STATUS screen: one string at
+// 16px in the middle of the body ("booting"/"sim missing"/
+// "type: setup <code>"/"shutting down"). The name shuffle, the Fisher-Yates
+// helper, and the "reshuffle only on push, never on repaint" e-paper
+// ghosting fix this file used to need for THAT bug are all gone with it —
+// a single fixed status string repainted several times in a row cannot
+// show overlapping remnants of different shuffles, there is nothing to
+// reshuffle any more.
 //
-// Not part of docs/DEVICE_PLAN.md §5.5's screen set — added directly at the
-// user's request as a real, separate screen (Home's own conversation-row
-// rendering is left untouched, noise-pattern bug and all, for a later
-// pass). One call site owns its lifecycle now: modes_boot() pushes it once,
-// in GREETING_HELLO mode, right after ui_init() (and before the Locked-screen
-// push, so a locked device still always ends up showing Locked on top — see
-// modes_boot()'s own comment on that ordering requirement).
+// Lifecycle, revised 25 Sep 2026 (owner report: the device sat on "booting"
+// for ~100s after a reboot because modes_boot() used to push this
+// unconditionally, ahead of the synchronous net_init()/net_session_up()
+// bring-up, and nothing replaced it until modes_run()'s loop took its first
+// iteration): modes_boot() (modes.c) no longer pushes this screen on a
+// normal boot at all — it pushes the real Lock/Home frame directly, since
+// nothing about Lock-vs-Home depends on the network being up. This screen
+// now survives only for main.c's own pre-provisioning (IDENT-missing) Setup
+// mode splash (main.c's own call site, before modes_boot() is ever reached),
+// where it walks "booting" -> "sim missing"/"type: setup <code>" ->
+// "shutting down" as before. There is no longer a modes.c-side sync
+// function that pops or replaces it — a Setup-mode boot without a valid
+// identity never reaches modes_boot()/modes_run() at all (main.c loops in
+// the Setup console instead), so this screen has no boot-time successor to
+// hand off to any more.
 //
-// This screen used to also have a GREETING_SLEEPING mode, pushed a second
-// time by modes_run()'s UI-awake-window edge detection on the awake->asleep
-// edge (popped again on the asleep->awake edge), mirroring
-// lock_screen_sync()'s push/pop discipline. Owner decision, 22 Sep evening
-// ("stay on chat unless it's explicitly locked"): that second call site and
-// the GREETING_SLEEPING mode itself are both gone — the UI-awake window
-// lapsing no longer changes which screen is on top, only whether it repaints
-// and whether a due full refresh lands (ui.c's ui_on_awake_lapse()).
-// GREETING_HELLO is the only mode left; on_key still pops unconditionally
-// (see below), which is now just the ordinary "esc/any key leaves the
-// greeting" behaviour, not a double-pop guard.
+// GREETING_HELLO is kept as the one surviving mode value (ui.h's
+// scr_greeting_mode_t) purely so main.c's existing
+// scr_greeting_set_mode(GREETING_HELLO) call site did not need touching —
+// there is only ever one mode now, so on_event() no longer branches on it.
 
 #include "ui.h"
 
 #include <stdio.h>
 #include <string.h>
 
-#ifdef ESP_PLATFORM
-#include "esp_random.h"
-#endif
-
-static scr_greeting_mode_t s_mode = GREETING_HELLO;
 static char s_status[32] = "";
-static char s_line[64] = ""; /* the shuffled "Hi ...!" banner, fixed for this push -- see on_event() */
 
-void scr_greeting_set_mode(scr_greeting_mode_t mode) { s_mode = mode; }
+void scr_greeting_set_mode(scr_greeting_mode_t mode) { (void) mode; /* only GREETING_HELLO exists */ }
 
 void scr_greeting_set_status(const char *status)
 {
@@ -53,67 +48,24 @@ void scr_greeting_set_status(const char *status)
     snprintf(s_status, sizeof(s_status), "%s", status);
 }
 
-static uint32_t next_rand(void)
-{
-#ifdef ESP_PLATFORM
-    return esp_random();
-#else
-    // Host build has no hardware RNG and this screen isn't part of the
-    // host PNG fixture set (unlike scr_home.c etc.) -- a fixed sequence is
-    // fine, this branch exists only so firmware/host's other tests still
-    // link cleanly against this file if something ever pulls it in.
-    static uint32_t s_state = 0x9e3779b9u;
-    s_state = s_state * 1103515245u + 12345u;
-    return s_state;
-#endif
-}
-
-// Fisher-Yates over 3 elements, run once per push (on_event(), below) so
-// every repaint of the same push draws the identical banner -- see this
-// file's module comment on why re-shuffling per-repaint corrupted the
-// e-paper display for real.
-static void shuffle_line(void)
-{
-    static const char *const names[3] = { "Colin", "May", "Hannah" };
-    int order[3] = { 0, 1, 2 };
-    for (int i = 2; i > 0; i--) {
-        int j = (int) (next_rand() % (uint32_t) (i + 1));
-        int t = order[i];
-        order[i] = order[j];
-        order[j] = t;
-    }
-    snprintf(s_line, sizeof(s_line), "Hi %s! Hi %s! Hi %s!", names[order[0]], names[order[1]],
-             names[order[2]]);
-}
-
-static void on_event(ui_evt_t evt)
-{
-    if (evt == UI_EVT_ENTER && s_mode == GREETING_HELLO) {
-        shuffle_line();
-    }
-}
-
 static void render(void)
 {
+    // Do #3: "a single centered string at 16px in the middle of the body."
+    // Falls back to "booting" if a caller ever pushes this screen without
+    // first calling scr_greeting_set_status() (should not happen via either
+    // call site today — defensive only, mirrors the old render()'s own
+    // "shuffle_line() called before any on_event(ENTER)" defensive branch).
+    const char *text = s_status[0] != '\0' ? s_status : "booting";
+
     const int sz = GFX_FONT_LARGE;
-
-    if (s_line[0] == '\0') {
-        shuffle_line(); // defensive: render() called before any on_event(ENTER), shouldn't happen via ui_push()
-    }
-    char wrapped[2][64];
-    int n = gfx_text_wrap(sz, s_line, GFX_SCREEN_W - 16, wrapped, 2);
-    int total_h = n * 20;
-    int wy = UI_BODY_TOP + (GFX_SCREEN_H - UI_BODY_TOP - total_h) / 2;
-    for (int i = 0; i < n && i < 2; i++) {
-        int w = gfx_text_width(sz, wrapped[i]);
-        gfx_text((GFX_SCREEN_W - w) / 2, wy, sz, wrapped[i]);
-        wy += 20;
-    }
-
-    if (s_status[0] != '\0') {
-        int fw = gfx_text_width(GFX_FONT_NORMAL, s_status);
-        gfx_text((GFX_SCREEN_W - fw) / 2, UI_FOOTER_Y, GFX_FONT_NORMAL, s_status);
-    }
+    int w = gfx_text_width(sz, text);
+    int x = (GFX_SCREEN_W - w) / 2;
+    // Owner, 24 Sep 2026: centered text at 16px sat visibly a little low —
+    // shift up half a character height (8px). scr_lock.c's centered
+    // "locked"/"password:" line uses the identical formula and gets the
+    // same shift, so the two screens' vertical centering still agree.
+    int y = UI_BODY_TOP + (GFX_SCREEN_H - UI_BODY_TOP - 16) / 2 - 8;
+    gfx_text(x, y, sz, text);
 }
 
 static void on_key(input_key_t key)
@@ -126,5 +78,5 @@ const ui_screen_t g_scr_greeting = {
     .name = "greeting",
     .render = render,
     .on_key = on_key,
-    .on_event = on_event,
+    .on_event = NULL, // Do #3: nothing left to reset per-push (no shuffle) — see this file's module comment
 };
