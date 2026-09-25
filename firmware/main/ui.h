@@ -99,12 +99,10 @@ extern const ui_screen_t g_scr_setup;
  * for this one screen only; scr_pick.c/scr_book.c still need book.c, F7.1). */
 extern const ui_screen_t g_scr_lock;
 /* F7.2 (docs/DEVICE_PLAN.md §5.5 "New message → pick recipient", "Address
- * book", "Nicknames"): book.c (F7.1) now exists too, so these are the last
- * two book.c-dependent screens this header's module comment above still
- * names as not-yet-built — that note is now fully stale. Not yet reachable
- * from Home (scr_home.c's HROW_NEWMSG/HROW_BOOK rows still show their
- * pre-F7.1 stub) — see scr_pick.c's/scr_book.c's own module comments for
- * why wiring that is flagged rather than done here. */
+ * book", "Nicknames"): book.c (F7.1) now exists too. T3
+ * (docs/CHAT_UI_DESIGN.md §3/§5) wires both of these in from Home's
+ * "New message"/"Address book" rows — see scr_home.c/scr_pick.c's own
+ * module comments. */
 extern const ui_screen_t g_scr_pick;
 extern const ui_screen_t g_scr_book;
 
@@ -134,6 +132,22 @@ extern const ui_screen_t g_scr_greeting;
  * and §5.5 is explicit that *that* path acks `shown` only, never `read` —
  * see ui_incoming()'s own comment. */
 void scr_chat_mark_visible_read(void);
+
+/* T3 (docs/CHAT_UI_DESIGN.md §3 "Chat"/"Pick"): pushes Chat (same
+ * user-initiated-open + mark-visible-read contract as the plain open above),
+ * then, when `alias` is non-NULL/non-empty, seeds the composer with
+ * "@<alias> " so the very next Enter replies to that peer without the
+ * student having to type the `@word` themselves (scr_chat.c's existing
+ * `@alias`-prefix resolution, resolve_at_word(), picks it up unchanged —
+ * this is just a different way of getting that text into the composer
+ * buffer). `alias` NULL/"" behaves exactly like scr_chat_mark_visible_read()
+ * after a plain ui_push(&g_scr_chat) — no prefill, `to` stays the default
+ * recipient — which is what a peer row whose alias IS the book's own
+ * default resolves to (scr_home.c), so that case never types "@d " for
+ * nothing. Composer is reset first (matches Chat's own
+ * on_event(UI_EVT_ENTER), which ui_push() just fired) so this is the only
+ * content in it. */
+void scr_chat_open_with_prefix(const char *alias);
 
 /* Bring up the panel (disp_init()) and the CardKB I2C bus, establish the
  * screen stack as [Home]. Power effect: see disp_init()'s own comment —
@@ -295,11 +309,12 @@ void ui_on_button_long(void);
 bool ui_incoming(const char *from, bool was_asleep);
 
 /* Transient overlay message (e.g. "not available yet", "reply too long").
- * Implemented as a partial refresh of the bottom text row; the next
- * ui_render() call overwrites it. Kept for setup.c's pre-modes_boot() calls
- * (see this header's own compatibility note) and used internally by
- * ui.c/scr_*.c. Power effect: ~0.3-0.8s (disp_partial_refresh()),
- * PENDING_HW; a no-op/log-only if disp_is_dead(). */
+ * Implemented as a partial refresh of one text row at y=98 (docs/
+ * CHAT_UI_DESIGN.md §4: clears rows 96..110, above UI_FOOTER_Y so it never
+ * overlaps the footer hint); the next ui_render() call overwrites it. Kept
+ * for setup.c's pre-modes_boot() calls (see this header's own compatibility
+ * note) and used internally by ui.c/scr_*.c. Power effect: ~0.3-0.8s
+ * (disp_partial_refresh()), PENDING_HW; a no-op/log-only if disp_is_dead(). */
 void ui_show_toast(const char *text);
 
 /* Non-blocking CardKB I2C poll + decode, called once per modes_run()

@@ -27,6 +27,12 @@ records the decisions and the split into tasks. Where it differs from `docs/DEVI
    `BOOK_MAX_CONTACTS` = 32. This removes the 640-byte envelope from the book entirely and closes
    `ROADMAP.md:83-86`. A missed nudge is harmless: every `/status` still carries `bv`, and the relay
    re-nudges when it is behind. Cost: one TLS connection per book change.
+   **Refined by server-architect, 24 Sep (PROTOCOL.md §3.7, §14.7):** the nudge also carries the
+   relay `url` (key 57) and is sent only to devices whose `/status` advertises `bpull:1` (key 58),
+   because today's firmware would store a contact-less book as empty; the HTTPS fetch does not
+   validate the server certificate, so the response is a signed CBOR map echoing the request
+   counter; the fetch consumes the device's `/up` counter `n`; the device buffer caps the book at
+   32 contacts (relay sets `more:true` when truncating).
 5. **Home is a single scrollable list**: one row per peer (newest activity first), then the menu
    rows. Chat is per peer. This is `DEVICE_PLAN.md` §5.5 as written; the current single merged row
    was the F7 stopgap.
@@ -111,7 +117,7 @@ that page's peer.
 | T1 | backend-dev | §1 book triggers, bootstrap, nudge + `GET /api/device/book` with device-signed auth | pytest: fresh device gets bv 1 on first status; allowlist PUT nudges; the endpoint serves 20 contacts; a bad signature or replayed `n` is 401 |
 | T1f | firmware-dev | device side of decision 4: on a `book` nudge (or any `bv` ahead of the stored one) fetch the book through `cafetch.c`'s socket path, apply, ack `shown`; `BOOK_MAX_CONTACTS` 32 | bench: a nudge produces one TLS fetch and the book on the Book screen |
 | T2 | server-architect then backend-dev | §2 PROTOCOL.md text; relay `grp_req` handler sharing the admin creation path | pytest: grp_req creates the conversation, edges, and pushes books to every member's device; non-allowed alias rejected |
-| T3 | firmware-dev | §3 Home list + §4 fixes; `BOOK_MAX_CONTACTS` 16; wire Book and Pick from Home | host tests + `disptest`-style bench screenshot on glass |
+| T3 | firmware-dev | §3 Home list + §4 fixes; wire Book and Pick from Home (done 24 Sep, host-tested; `BOOK_MAX_CONTACTS` moves to 32 in T1f) | host tests + on-glass check |
 | T4 | firmware-dev | §3 per-peer Chat, picker single-select, `to` set from the peer | bench: page from two aliases, two rows on Home, reply lands on the right peer (relay log) |
 | T5 | firmware-dev | §3 multi-select picker, name entry, `grp_req` publish | bench: create a group from the pager, book arrives, group row appears, message to it fans out |
 | T6 | bench-tester | end-to-end on the release build; the `sleeptest 6` window must still pass 3/3 | logs under `build/bench-logs/phaseC*` |

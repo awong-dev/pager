@@ -6,9 +6,11 @@
 //   - "Re-sync address book" [REAL]: §5.5 says this bullet IS just
 //     "publishes a /status now (it carries bv), which is the sync trigger"
 //     — that doesn't need book.c at all, so it is wired for real via
-//     modes_publish_status_now(). `bv` itself is hardcoded to 0 in
-//     modes.c's build_status_cbor() until F7.1 tracks a real book version
-//     (already true before this task; unchanged here).
+//     modes_publish_status_now(). `bv` itself now reads book.c's own
+//     book_get_bv() (T3, docs/CHAT_UI_DESIGN.md §5's stale-comment fix); the
+//     line 385-ish "session ... book v..." info row below was stuck at a
+//     hardcoded "book v- (not synced, needs book.c)" from before book.c
+//     existed.
 //   - "Text size: normal/large" [REAL]: ui_text_size()/ui_toggle_text_size()
 //     (ui.c), NVS-backed.
 //   - "Passcode / Auto-lock" [REAL, F6.5]:
@@ -58,6 +60,7 @@
 #include "carrier.h"
 #include "lock.h" /* F6.5: passcode/auto-lock/senders rows, docs/DEVICE_PLAN.md §5.8 */
 #include "msg.h"  /* owner task 2026-09-20: msg_history_erase() on factory reset */
+#include "book.h" /* T3: book_get_bv() for the "session ... book v<n>" info line */
 
 #include <stdio.h>
 #include <string.h>
@@ -382,8 +385,8 @@ static void device_render_normal(void)
     snprintf(lines[n], DEVICE_LINE_LEN, "signal %d dBm  batt %d mV", modes_get_rssi_dbm(),
              modes_get_batt_mv());
     selectable[n++] = false;
-    snprintf(lines[n], DEVICE_LINE_LEN, "session %s  book v- (not synced, needs book.c)",
-             modes_get_session_id());
+    snprintf(lines[n], DEVICE_LINE_LEN, "session %s  book v%u", modes_get_session_id(),
+             (unsigned) book_get_bv());
     selectable[n++] = false;
     snprintf(lines[n], DEVICE_LINE_LEN, "counters memfull %u  drops %u  resets %u",
              (unsigned) modes_get_memfull_count(), (unsigned) modes_get_oversize_drop_count(),

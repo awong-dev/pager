@@ -65,6 +65,18 @@ static void board_power_init(void)
     };
     gpio_config(&cfg);
     gpio_set_level(PAGER_PIN_3V3_EN, 0); // active-low: enable the rail
+    // docs/ROADMAP.md "24 Sep evening finding": this pad is not otherwise
+    // excluded from ESP-IDF's sleep GPIO isolation
+    // (CONFIG_ESP_SLEEP_GPIO_RESET_WORKAROUND), so it floats for the whole
+    // of every light sleep and the board pull-up switches the rail off,
+    // taking the keyboard down with it -- keys pressed while asleep were
+    // never registered. Owner decision, 24 Sep: hold the rail through sleep
+    // (same fix disp.c's disp_gpio_init() already applies to the display
+    // pins). Power effect: none beyond what board_power_init() already
+    // costs -- the pad was already configured as a plain output driven low;
+    // this only keeps that level asserted through light sleep instead of
+    // letting it float.
+    gpio_sleep_sel_dis((gpio_num_t) PAGER_PIN_3V3_EN);
 }
 
 /* docs/DEVICE_TASKS.md F3.5: `setup <code>` over the USB serial console.

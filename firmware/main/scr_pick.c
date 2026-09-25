@@ -1,34 +1,19 @@
 // scr_pick.c — "New message -> pick recipient" screen (docs/DEVICE_TASKS.md
 // F7.2, docs/DEVICE_PLAN.md §5.5 "New message → pick recipient").
 //
-// Reachability note (flagged, not guessed): this task's own Files list
-// (docs/DEVICE_TASKS.md F7.2) is "new scr_pick.c, scr_book.c" only —
-// scr_home.c is NOT listed, unlike F6.5's Files list which explicitly named
-// scr_home.c/scr_device.c for wiring "Lock now"/the passcode rows. Home's
-// "New message"/"Address book" rows (scr_home.c's HROW_NEWMSG/HROW_BOOK)
-// therefore still show their pre-F7.1 "needs address book" stub text and a
-// toast, even though book.c (F7.1) and this screen now exist — wiring those
-// two rows to ui_push(&g_scr_pick)/ui_push(&g_scr_book) is a two-line
-// follow-up outside this task's stated Files list. See this task's own
-// report for the same note. g_scr_pick itself IS declared in ui.h (not a
-// new scr_pick.h) and registered in firmware/main/CMakeLists.txt's SRCS —
-// both edits are required for this file to compile/link at all (idf.py
-// build's own Verify command), matching the exact precedent F6.5 set for
-// g_scr_lock (ui.h/ui.c gained g_scr_lock without being named in F6.5's own
-// Files list either).
+// T3 (docs/CHAT_UI_DESIGN.md §3 "Pick"): reachable from Home's "New
+// message" row (scr_home.c). g_scr_pick is declared in ui.h (not a new
+// scr_pick.h) and registered in firmware/main/CMakeLists.txt's SRCS, same
+// precedent F6.5 set for g_scr_lock.
 //
-// Scope note: choosing a recipient here does not yet set `to` on the
-// composer (docs/DEVICE_PLAN.md §5.5: "Sending from a chat sets `to` to the
-// peer alias") — that wiring is F7.3's own Files list (scr_chat.c, msg.c).
-// `enter` on an approved contact therefore opens the single existing merged
-// chat (scr_chat.c, still one thread until F6.4's `to`-aware per-peer view
-// is exposed through a picker) with its composer already open, exactly as
-// today's only other way to reach it (Home's conversation row) — "picking"
-// a peer here is real navigation, just not yet a *targeted* send. The same
-// applies to v0.2's SMS contacts (below): `enter` opens the same merged
-// chat, and an actual targeted send still goes through the composer's own
-// `@name` word (scr_chat.c) — this screen's job is discovery/visibility,
-// not yet a one-tap "compose to this contact" shortcut.
+// Scope note: `enter` on a contact opens the per-peer chat via
+// scr_chat_open_with_prefix() (ui.h), which seeds the composer's own
+// `@alias`/`@name` word — the SAME resolution path (scr_chat.c's
+// resolve_at_word()) an approved contact's alias or an SMS contact's name
+// already goes through when typed by hand, just typed here on the
+// student's behalf. The Chat screen itself still renders the one merged
+// thread (per-peer Chat is T4) — this is real, targeted navigation for
+// *sending*, not yet a filtered *view* of just that peer's messages.
 //
 // v0.2 §6 (docs/V02_DESIGN.md, docs/DEVICE_PLAN.md §4.4): SMS contacts
 // (sms.c's own parent-managed allow-list, entirely separate from the
@@ -84,18 +69,36 @@ static void pick_on_key(input_key_t key)
             s_sel++;
         }
         break;
-    case INPUT_KEY_ENTER:
+    case INPUT_KEY_ENTER: {
         // pending/rejected rows (book_request_at()) are not part of s_sel's
         // range at all (§5.5: "greyed and are not selectable") — nothing
         // else to check here.
         if (n == 0) {
             break; // nothing to choose — esc is the only way out
         }
-        // User-initiated open: same "opening a chat" rule as scr_home.c's
-        // conversation row and scr_book.c's contact row use.
-        ui_push(&g_scr_chat);
-        scr_chat_mark_visible_read();
+        // T3 (docs/CHAT_UI_DESIGN.md §3 "Pick"): opens the per-peer chat
+        // with the picked contact's `@word` prefilled (scr_chat_open_with_prefix(),
+        // ui.h) — replaces the old "just open the merged chat" stopgap this
+        // screen's own module comment above documented (now stale for this
+        // path; the module comment itself is left as historical context for
+        // the `@name` composer resolution it describes, which is unchanged).
+        // A book contact's alias and an SMS contact's name are exactly the
+        // two things resolve_at_word() (scr_chat.c) already knows how to
+        // resolve, same as if the student had typed the `@word` by hand.
+        size_t n_book = book_contact_count();
+        if ((size_t) s_sel < n_book) {
+            book_contact_t c;
+            if (book_contact_at((size_t) s_sel, &c)) {
+                scr_chat_open_with_prefix(c.alias);
+            }
+        } else {
+            sms_contact_t sc;
+            if (sms_contact_at((size_t) s_sel - n_book, &sc)) {
+                scr_chat_open_with_prefix(sc.name);
+            }
+        }
         break;
+    }
     case INPUT_KEY_ESC:
         ui_pop();
         break;

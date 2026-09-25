@@ -75,7 +75,7 @@ endif
 MAIN_SRC := ../main
 BUILD := build
 
-TESTS := test_cbor test_auth test_setup test_input test_msg test_lock test_loc test_cafetch test_catrust test_cfg test_sms test_carrier test_chat_layout test_coverage test_net_connect_guard test_net_probe_guard test_resub_verdict test_publish_quiet test_accel_rate test_wifi_policy test_wificred
+TESTS := test_cbor test_auth test_setup test_input test_msg test_lock test_loc test_cafetch test_catrust test_cfg test_sms test_carrier test_chat_layout test_home_list test_coverage test_net_connect_guard test_net_probe_guard test_resub_verdict test_publish_quiet test_accel_rate test_wifi_policy test_wificred
 TEST_BINS := $(TESTS:%=$(BUILD)/%)
 
 # ASSETS: tools/mkassets.py's default output location (docs/DEVICE_TASKS.md
@@ -276,6 +276,22 @@ $(BUILD)/test_chat_layout.o: test_chat_layout.c | $(BUILD)
 
 $(BUILD)/test_chat_layout: $(BUILD)/scr_chat.o $(BUILD)/test_chat_layout.o
 	$(CC) $(CFLAGS) -o $@ $(BUILD)/scr_chat.o $(BUILD)/test_chat_layout.o
+
+# test_home_list: scr_home.c's pure peer-list-builder + body-clip section
+# only (its own `#ifdef ESP_PLATFORM` split, T3, docs/CHAT_UI_DESIGN.md §3
+# "Home") + test_home_list.c. Same "no shared header, re-declare verbatim,
+# a signature mismatch is a link error" pattern test_chat_layout.c uses —
+# msg.h IS a shared header here (msg_t/MSG_DIR_*/MSG_ACK_* — struct/consts
+# only, no ESP-IDF dependency, see msg.h's own doc comment), so this needs
+# no msg.o: nothing in scr_home.c's pure section calls a msg.c function.
+$(BUILD)/scr_home.o: $(MAIN_SRC)/scr_home.c $(MAIN_SRC)/msg.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $(MAIN_SRC)/scr_home.c
+
+$(BUILD)/test_home_list.o: test_home_list.c $(MAIN_SRC)/msg.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ test_home_list.c
+
+$(BUILD)/test_home_list: $(BUILD)/scr_home.o $(BUILD)/test_home_list.o
+	$(CC) $(CFLAGS) -o $@ $(BUILD)/scr_home.o $(BUILD)/test_home_list.o
 
 # test_carrier: carrier.c's pure half (APN validation, SIM-based detection).
 $(BUILD)/carrier.o: $(MAIN_SRC)/carrier.c $(MAIN_SRC)/carrier.h | $(BUILD)

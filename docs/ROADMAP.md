@@ -37,6 +37,16 @@ priming already forces it; the glass keeps its last image unpowered) and re-prob
 Costs one full refresh per wake that draws. `disp_power_off()` was removed as dead code on
 23 Sep (`3a3c969`); revive it from that commit when this is built.
 
+**24 Sep evening finding:** the rail is *already* off during every light sleep, by accident: GPIO0
+(`PAGER_PIN_3V3_EN`, active-low) is not excluded from ESP-IDF's sleep GPIO isolation, so it floats
+and the board pull-up turns the rail off for the whole sleep. Unnoticed while the pager was awake
+57% of the time; after the 0xFF fix (awake ~1%) the keyboard is unpowered almost always, so keys
+pressed while asleep are never registered ("pager wedged"). **Owner decision 24 Sep: hold the rail
+through sleep for now** (`gpio_sleep_sel_dis(PAGER_PIN_3V3_EN)`, same as the display pins) and take
+option 1 as the real design: a CardKB firmware that sleeps its MCU until a keypress and raises a
+wake line (one extra wire into `ext1`), instead of scanning the matrix continuously. Power numbers
+for the keyboard's idle draw are still needed; the rail hold is the only thing built.
+
 ## Decisions waiting on the owner
 
 - **Soracom** (`SORACOM_EVAL.md`). If adopted, the pager's TLS and CA handling become unnecessary

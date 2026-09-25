@@ -142,6 +142,24 @@ static const char *TAG = "modes";
 // unchanged. UNVERIFIED exact current saving (see coverage.h's own estimate
 // block); 30s is a conservative middle ground, not a measured optimum.
 #define PAGER_WAKE_INTERVAL_UNREGISTERED_MS 30000u
+// docs/ROADMAP.md "24 Sep evening finding" / rail hold task: the 20 s wake
+// cadence above is tuned for URC delivery, not for a person typing right
+// now. Once the rail hold (main.c board_power_init()) keeps the keyboard
+// powered through sleep, a key/button event or an ext0/ext1 wake starts a
+// PAGER_ATTENTIVE_S window in which the wake interval is shortened to this
+// instead, so the next keypress is picked up promptly rather than after up
+// to 20 s. 1000 ms is well below PAGER_PROBE_WAIT_MIN_INTERVAL_MS (10000 ms),
+// so it does NOT arm wait_for_probe_answer()'s wait -- the probe stays
+// fire-and-forget, only the fixed PAGER_POST_WAKE_YIELD_MS awake per
+// attentive wake, which is the point (§10's wait is for amortising a long
+// cadence; a short one has nothing to amortise). Power effect: up to
+// PAGER_ATTENTIVE_S / (PAGER_WAKE_INTERVAL_ATTENTIVE_MS / 1000) wakes per
+// window at the normal per-wake awake cost, instead of one -- a real but
+// bounded and input-gated increase, same shape as the UI-awake busy-poll
+// cadence already costs.
+#define PAGER_WAKE_INTERVAL_ATTENTIVE_MS 1000u
+// How long the attentive cadence stays armed after the last input.
+#define PAGER_ATTENTIVE_S 120
 // How long the pager stays awake, with RTS asserted, after each timer wake.
 // Measured on hardware 2026-09-21 (`sleeptest`, GM02SP LR8.2.1.0): while RTS is
 // deasserted the modem HOLDS its URCs (nothing is lost), but with 50 ms awake
@@ -336,6 +354,17 @@ static void rtc_unlock(void) { xSemaphoreGive(s_rtc_mutex); }
 
 static bool s_was_mqtt_connected = false;
 static bool s_ui_awake_prev = false; // F6.3: edge-detects input_awake() for ui_wake_status_refresh()
+
+// Rail hold task (docs/ROADMAP.md "24 Sep evening finding"): esp_timer_get_time()
+// of the most recent key event, button short/long event, or ext0/ext1 wake.
+// RAM-only, modes_run()'s task only (same reasoning s_ui_awake_prev above
+// uses) -- the attentive window is a UX nicety, not state that needs to
+// survive a reset, so it is deliberately not in g_rtc/RTC_DATA_ATTR. 0 means
+// "no input seen yet this boot".
+static int64_t s_last_input_us = 0;
+// Edge-detects the attentive/normal cadence transition so the ESP_LOGI below
+// fires once per transition, not once per attentive wake.
+static bool s_attentive_prev = false;
 
 // Bench bug fix (typing on the CardKB dropped ~every other character):
 // modes_run()'s render call below (ui_render()) used to fire on every loop
@@ -1071,6 +1100,10 @@ static int64_t s_st_hold_last_print_us = 0;
 #define ST_HOLD_S (15 * 60)
 #define ST_HOLD_PRINT_INTERVAL_S 60
 static uint32_t s_st_sleeps = 0, s_st_wake_timer = 0, s_st_wake_other = 0;
+// Rail hold task: wakes whose net_sleep() interval was the attentive 1 s
+// cadence rather than the normal SLEEP/ACTIVE/UNREGISTERED one -- lets a
+// bench window prove the cadence actually engaged.
+static uint32_t s_st_wake_attentive = 0;
 // Where the awake time goes, per wake: cumulative microseconds per loop segment.
 // S0 (docs/SLEEP_URC_DESIGN.md §1 item 4): bucket 0 used to be charged both
 // the post-wake yield of iterations that actually called net_sleep() AND the
@@ -1169,6 +1202,7 @@ void modes_debug_sleeptest_start(uint32_t minutes, uint32_t yield_ms_override,
     flightrec_set_recording(true);
     s_st_n_events = 0;
     s_st_sleeps = s_st_wake_timer = s_st_wake_other = 0;
+    s_st_wake_attentive = 0;
     s_st_asleep_us = 0;
     s_st_ncyc = 0;
     s_st_mark_us = esp_timer_get_time();
@@ -1263,12 +1297,12 @@ void modes_debug_sleeptest_report(void)
     int64_t end = (now < s_st_until_us) ? now : s_st_until_us;
     int64_t span_us = end - s_st_start_us;
     st_appendf(&n, "window %lld s%s, yield=%u ms interval=%u ms (0=build default), %u light sleeps, "
-                    "asleep %lld s (%d%%), wakes: %u timer / %u other\n",
+                    "asleep %lld s (%d%%), wakes: %u timer / %u other, attentive wakes: %u\n",
                (long long) (span_us / 1000000), (now < s_st_until_us) ? " (still open)" : "",
                (unsigned) s_st_yield_ms, (unsigned) s_st_interval_ms, (unsigned) s_st_sleeps,
                (long long) (s_st_asleep_us / 1000000),
                span_us > 0 ? (int) (s_st_asleep_us * 100 / span_us) : 0, (unsigned) s_st_wake_timer,
-               (unsigned) s_st_wake_other);
+               (unsigned) s_st_wake_other, (unsigned) s_st_wake_attentive);
     // S0: avg now divides by the count that actually contributed to that
     // bucket (s_st_seg_n[i]), not s_st_sleeps -- buckets 2-7 run on every
     // iteration (sleep or not), while bucket 0 (post-wake yield) only runs
@@ -2124,6 +2158,24 @@ void modes_run(void)
         if (g_rtc.mode != (uint8_t) PAGER_MODE_ACTIVE && net_unregistered_for_s() > 0) {
             interval_ms = PAGER_WAKE_INTERVAL_UNREGISTERED_MS;
         }
+        // Rail hold task (docs/ROADMAP.md "24 Sep evening finding"): a
+        // person typing/pressing buttons, or the wake button itself, wants
+        // a snappy pager for a while -- shorten the wake interval in either
+        // mode, overriding PAGER_WAKE_INTERVAL_UNREGISTERED_MS above too
+        // (someone touching the device matters more than the coverage
+        // state). sleeptest's own interval override (below) still wins
+        // inside a window -- a bench measurement asked for a specific
+        // cadence and should get it regardless.
+        bool attentive =
+            (esp_timer_get_time() - s_last_input_us) < (int64_t) PAGER_ATTENTIVE_S * 1000000;
+        if (attentive) {
+            interval_ms = PAGER_WAKE_INTERVAL_ATTENTIVE_MS;
+        }
+        if (attentive != s_attentive_prev) {
+            ESP_LOGI(TAG, "wake cadence: %s",
+                     attentive ? "attentive (1 s, recent input)" : "normal (input idle)");
+            s_attentive_prev = attentive;
+        }
 #ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
         // Task 3: sleeptest <minutes> <yield_ms> <interval_ms> overrides the
         // wake interval for the window's duration only.
@@ -2298,6 +2350,19 @@ void modes_run(void)
 #endif
             watchdog_kick(WD_SLEEP_ENTER);
             net_sleep(interval_ms);
+            // Rail hold task (docs/ROADMAP.md "24 Sep evening finding"): a
+            // wake caused by the wake button (ext0) or the accel int1
+            // (ext1) is real input, same as a decoded key/button event
+            // below -- arm the attentive cadence from it too, so the wake
+            // that woke the pager isn't itself lost to whatever (longer)
+            // interval was in force when it fired. Power effect: none of
+            // its own -- one RAM read, and rarely a write.
+            {
+                esp_sleep_wakeup_cause_t wake_cause = esp_sleep_get_wakeup_cause();
+                if (wake_cause == ESP_SLEEP_WAKEUP_EXT0 || wake_cause == ESP_SLEEP_WAKEUP_EXT1) {
+                    s_last_input_us = esp_timer_get_time();
+                }
+            }
 #ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
             // flightrec.h: tag every record this wake produces (net_sleep()'s
             // own 'S'/'W'/'F' plus net_urc_probe()'s 'K'/'T'/'P'/'A' just
@@ -2347,6 +2412,9 @@ void modes_run(void)
             s_st_asleep_us += esp_timer_get_time() - st_t0;
             ST_MARK_BEGIN();
             s_st_sleeps++;
+            if (interval_ms == PAGER_WAKE_INTERVAL_ATTENTIVE_MS) {
+                s_st_wake_attentive++;
+            }
             if (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_TIMER) {
                 s_st_wake_timer++;
             } else {
@@ -2477,10 +2545,12 @@ void modes_run(void)
             case INPUT_EVT_BTN_SHORT:
                 ui_on_button_short(); // docs/DEVICE_PLAN.md §5.5 (ui.c)
                 btn_event_this_iter = true;
+                s_last_input_us = esp_timer_get_time(); // rail hold task: arm the attentive cadence
                 break;
             case INPUT_EVT_BTN_LONG:
                 ui_on_button_long();
                 btn_event_this_iter = true;
+                s_last_input_us = esp_timer_get_time(); // rail hold task: arm the attentive cadence
                 break;
             case INPUT_EVT_KEY:
                 ui_dispatch_key(ievt.key); // routed to the top screen's on_key() (ui.c)
@@ -2488,6 +2558,7 @@ void modes_run(void)
                 // unconditional call below fire this same iteration - see
                 // key_render_note()'s own comment.
                 key_render_note(esp_timer_get_time());
+                s_last_input_us = esp_timer_get_time(); // rail hold task: arm the attentive cadence
                 break;
             }
         }

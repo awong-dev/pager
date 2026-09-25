@@ -463,18 +463,26 @@ void ui_show_toast(const char *text)
         ESP_LOGI(TAG, "toast (display dead, log only): %s", text);
         return;
     }
-    // Overlay just the bottom text row; the next ui_render() overwrites it —
-    // same contract the pre-F6.3 ui.c's ui_show_toast() documented.
-    // The row is the font's full height: GFX_FONT_NORMAL is 12 px, and the
-    // 8 px row this used to clear drew the toast with its lower third cut
-    // off (seen on hardware).
-    const int toast_h = 12;
+    // Overlay one row well above the footer; the next ui_render() overwrites
+    // it — same contract the pre-F6.3 ui.c's ui_show_toast() documented.
+    // docs/CHAT_UI_DESIGN.md §4 ("Home visual fixes (exact)"): the old
+    // GFX_SCREEN_H - 12 (= 116) placement overlapped UI_FOOTER_Y (112)'s own
+    // footer text (which reaches row 124, ui.h's UI_FOOTER_Y comment) —
+    // confirmed on real hardware as the toast stomping the footer hint mid-
+    // word. y=98, clearing rows 96..110 (15 rows: the font's 12 px ink band
+    // plus a 1-2px margin on each side, same "a bit more than the glyph
+    // height" margin UI_STATUS_H's own comment gives for the status bar)
+    // stays clear of both the footer (112) and any chat/pick/book content
+    // above it.
+    const int toast_top = 96;
+    const int toast_bottom = 110; // inclusive
+    const int toast_text_y = 98;
     for (int x = 0; x < GFX_SCREEN_W; x++) {
-        for (int row = 0; row < toast_h; row++) {
-            gfx_set_pixel(x, GFX_SCREEN_H - toast_h + row, false);
+        for (int row = toast_top; row <= toast_bottom; row++) {
+            gfx_set_pixel(x, row, false);
         }
     }
-    gfx_text(0, GFX_SCREEN_H - toast_h, GFX_FONT_NORMAL, text);
+    gfx_text(0, toast_text_y, GFX_FONT_NORMAL, text);
     disp_partial_refresh(); // power effect: ~0.3-0.8s, PENDING_HW
 }
 

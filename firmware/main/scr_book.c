@@ -2,12 +2,9 @@
 // the Add-contact form, and the per-contact Nickname form (docs/DEVICE_TASKS.md
 // F7.2, docs/DEVICE_PLAN.md §5.5 "Address book", "Nicknames").
 //
-// Reachability note: same as scr_pick.c's own module comment — Home's
-// "Address book" row (scr_home.c's HROW_BOOK) is not wired to
-// ui_push(&g_scr_book) by this task (scr_home.c is not in F7.2's Files
-// list); g_scr_book is declared in ui.h and registered in
-// firmware/main/CMakeLists.txt's SRCS, both required for this file to
-// build/link at all. Flagged in this task's own report rather than guessed.
+// T3 (docs/CHAT_UI_DESIGN.md §3 "Book"): reachable from Home's "Address
+// book" row (scr_home.c). g_scr_book is declared in ui.h and registered in
+// firmware/main/CMakeLists.txt's SRCS.
 //
 // Three internal modes, one screen (mirrors scr_device.c's own
 // confirm/passcode-modal pattern for a single ui_screen_t with more than one

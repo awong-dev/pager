@@ -485,6 +485,33 @@ static void mark_visible_read(void)
 
 void scr_chat_mark_visible_read(void) { mark_visible_read(); }
 
+// T3 (docs/CHAT_UI_DESIGN.md §3 "Chat"/"Pick" — see ui.h's own doc comment
+// for the full contract): ui_push() below fires Chat's own
+// on_event(UI_EVT_ENTER) synchronously (ui.c's fire_enter()), which already
+// calls msg_composer_reset() — so the prefill below MUST happen AFTER
+// ui_push() returns, not before, or the reset would wipe it straight back
+// out. Pushed one byte at a time through msg_composer_push_char() (never a
+// raw strcpy into msg.c's buffer) so the same cap-refusal discipline
+// msg.h's own doc comment documents for every other composer writer stays
+// true here, though an alias's own BOOK_ALIAS_MAX bound makes an actual
+// refusal unreachable in practice.
+void scr_chat_open_with_prefix(const char *alias)
+{
+    ui_push(&g_scr_chat);
+    scr_chat_mark_visible_read();
+    if (alias && alias[0] != '\0') {
+        char buf[BOOK_ALIAS_MAX + 2]; // "@" + alias + " " + NUL
+        int len = snprintf(buf, sizeof(buf), "@%s ", alias);
+        if (len > 0) {
+            for (int i = 0; i < len && buf[i] != '\0'; i++) {
+                if (!msg_composer_push_char(buf[i])) {
+                    break; // unreachable in practice, see this function's own comment
+                }
+            }
+        }
+    }
+}
+
 static void chat_on_event(ui_evt_t evt)
 {
     if (evt == UI_EVT_ENTER) {

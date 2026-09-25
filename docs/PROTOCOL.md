@@ -128,13 +128,13 @@ Base envelope:
 | `from` | string | yes on content messages, **absent** on acks | `^[a-z0-9][a-z0-9_-]{0,15}$` **or** the literal `system`, ≤16 chars | Author's **alias**. *(a deployment has named users rather than one parent and one student, so `from` carries the sender's alias rather than a two-value enum. `parent` and `student` are ordinary aliases, so an older two-value payload is still valid. **Firmware impact: none** — `msg.c` accepts any 1–16 byte string and renders it verbatim.)* |
 | `body` | string | yes on content messages, **absent** on acks | ≤ **160 Unicode code points** (fixed) **and** ≤ **320 UTF-8 bytes** *(the code-point cap alone allows 640 bytes; the byte cap lets firmware size static buffers, and §9.4 turns it into the 161-byte RTC mirror by way of the ASCII-only CardKB)* | Message text. |
 | `ack` | string \| null | yes; `null` on content messages | `shown` \| `read` | Ack state being reported. |
-| `kind` | string | no (default `msg`) | `msg` \| `loc_req` \| `contact_req` \| `book` \| `cfg` \| `sms_log`; `/down`: `msg`/`loc_req`/`book`/`cfg`; `/up`: `msg`/`contact_req`/`sms_log` | What the message *is* (§3.2). Absent MUST be read as `msg`. |
+| `kind` | string | no (default `msg`) | `msg` \| `loc_req` \| `contact_req` \| `book` \| `cfg` \| `sms_log`; `/down`: `msg`/`loc_req`/`book`/`cfg`; `/up`: `msg`/`contact_req`/`sms_log` | What the message *is* (§3.2). Absent MUST be read as `msg`. *(v0.4: `/up` also `grp_req`, §3.8 — the device may now ask for a group.)* |
 | `to` | string | no; `/up` content messages only | same regex as `from` | Recipient alias chosen by the device. Absent → the relay uses the device's configured default recipient, or broadcasts to every user the owner may message. *(the device can address one of several users; optional, so a device that never sets it works unchanged.)* |
 | `sndr` | string | no; `/down` `msg` in a **group** conversation only | same regex as `from`, ≤16 chars | Author's alias when `from` names a **conversation** rather than a person: in a group chat the relay sets `from` = the group's alias (the thread the device replies to with `to`) and `sndr` = the alias of the member who wrote the message. **Absent on every one-to-one page, so existing pages are byte-identical**, and absent MUST be read as "`from` is the author" (today's rule). A receiver that does not know this field ignores it under §3.1's unknown-field rule and still threads and replies correctly — it only loses the author's name. *(v0.3, owner decision 2026-09-22: a group needs both a thread identity and an author identity, and the alternative — prefixing the author into `body` — spends up to 18 of `body`'s 160 code points on every group page and makes the author unrecoverable by a parser. Costs 26 bytes at §3.3's ceiling, which that section carries. Never sent on `/up`: a device replies to a conversation, and the relay knows which member's device it is.)* |
 | `n` | uint | no; signed envelopes only | 0…2⁵³-1 *(v0.2: widened from a 32-bit counter; see rationale)* | Per-device, per-direction replay counter (§2.4, §2.5, §14.2). Strictly increasing per publisher. |
 | `sig` | bstr(8) in CBOR / base64url(8) in JSON | no; signed envelopes only | — | HMAC-SHA256 tag, truncated to 64 bits, MUST be the last pair (§2.4). |
-| `bv` | int | `/status` only | 0…2³²-1 | Book version (§4.3, §5.1). |
-| `name` | string | `contact_req` only | ≤16 code points, ≤48 UTF-8 bytes | Contact display name (§4.2). |
+| `bv` | int | `/status` only | 0…2³²-1 | Book version (§4.3, §5.1). *(v0.4: also carried by the `/down` `book` nudge and the fetch response, §3.7 — it is the whole content of the nudge.)* |
+| `name` | string | `contact_req` only | ≤16 code points, ≤48 UTF-8 bytes | Contact display name (§4.2). *(v0.4: also the group's display name on `/up` `grp_req`, §3.8, same bounds — one name rule for both requests.)* |
 | `ph` | string | `contact_req` only | E.164 or absent | Phone number `+…` or alias reference (§4.2). |
 | `d` | string | `book` only | same regex as `from` | Default recipient alias (§4.3). |
 | `c` | array of objects | `book` only | ≤10 contacts | Approved contacts; each has `a` (alias), `n` (name ≤16 cp), `t` (type: `web`/`sms`/`chat`/`grp`, the last for a group conversation) (§4.3). |
@@ -145,6 +145,8 @@ Base envelope:
 | `dir` | string | `sms_log` only | `out` \| `in` | Direction of the SMS this entry audits (§3.6). |
 | `st` | string | `sms_log` only | `sent` \| `failed` \| `recv` \| `blocked` | Outcome of the SMS this entry audits (§3.6). |
 | `sms_ts` | int | `sms_log` only | ≥ 0, epoch s | When the SMS itself was sent/received, which may differ from the envelope's own `ts` if the pager was offline and queued the audit entry (§3.6). |
+| `m` | array of strings | `grp_req` only | 1…8 distinct aliases, each the alias regex above | Requested group members, not including the requesting device's owner (§3.8). *(v0.4: the group request names people by the aliases the device already holds in its book.)* |
+| `url` | string | `/down` `book` nudge only | `https://host[:port]/path`, ≤200 bytes | Where the device fetches the full book (§3.7). *(v0.4: the device holds no relay URL today — its bootstrap bundle names only the broker — and a signed nudge is the one place it can learn one without re-provisioning.)* |
 
 Additional rules:
 - `body` MUST NOT contain Unicode control characters `U+0000`–`U+001F` or `U+007F`. Relay strips
@@ -180,6 +182,8 @@ Additional rules:
 | Location request | `/down` | `{"v":1,"id":"m_7f3a","ts":…,"kind":"loc_req","from":"mom","ack":null}` — **78 bytes**; no `body` | Not a thread entry; device answers on `/loc` (§13.2). |
 | Contact request (device → relay) | `/up` | `{"v":1,"id":"u_2b7c…","ts":…,"kind":"contact_req","name":"Grandma","ph":"+15551234567","ack":null,"n":…,"sig":"…"}` — ≈140 bytes; no `from`, no `body` | Requests admin approval (§4.2); rate-limited and deduped on `id`. |
 | Book (relay → device) | `/down` | `{"v":1,"id":"m_…","ts":…,"kind":"book","bv":7,"d":"mom","c":[{"a":"mom","n":"Mom","t":"web"},…],"p":[{"n":"Uncle Bob","s":"pend"},…],"ack":null,"n":…,"sig":"…"}` — ≈590 bytes max | Not a thread entry; acked `shown` on apply (§4.3); only newest re-published. |
+| Book nudge (relay → device, v0.4) | `/down` | `{"v":1,"id":"m_…","ts":…,"kind":"book","bv":7,"url":"https://…/api/device/book","ack":null,"n":…,"sig":"…"}` — ≤338 bytes signed JSON; no `d`/`c`/`p`/`more` | A `book` with no `c` and no `p`. Sent only to a device whose `/status` carries `bpull:1`; the device fetches the book over HTTPS and acks `shown` once it is applied (§3.7); only newest re-published. *(the book no longer fits 640 bytes once it lists every allowed user and group.)* |
+| Group request (device → relay, v0.4) | `/up` | `{"v":1,"id":"u_…","ts":…,"kind":"grp_req","name":"Cousins","m":["mom","ben"],"ack":null,"n":…,"sig":"…"}` — ≤380 bytes signed JSON, ≤250 signed CBOR; no `from`/`to`/`body` | Asks the relay to create a group with the owner as creator (§3.8); deduped on `id`, 1 per minute per device; no reply on the wire. *(owner decision 1 of `docs/CHAT_UI_DESIGN.md`.)* |
 | Config (relay → device) | `/down` | `{"v":1,"id":"m_…","ts":…,"kind":"cfg","cfg":{"lock":{"clear":true,"auto":5}},"ack":null,"n":…,"sig":"…"}` | Not a thread entry; carries device settings; acked `shown` on apply (§5.8); only newest re-published. |
 | Ack (device → relay) | `/up` | `{"v":1,"id":"m_7f3a","ts":…,"ack":"shown"}` — **51 bytes**; no `from`, no `body` | — |
 | Up message (device reply) | `/up` | `{"v":1,"id":"u_91c0","ts":…,"from":"student","body":"ok coming","ack":null}` — **84 bytes** | Thread entry, routed to default recipient. |
@@ -319,6 +323,15 @@ signed JSON (≈479 + 26 for `sndr`), leaving **≥ 135 bytes** of headroom. *(t
 move, and no other payload grows; recorded so the worst case stays a number in this table rather
 than an addition someone has to redo.)*
 
+*(v0.4, stated so the worst case stays a number in this section.)* The two v0.4 envelopes sit
+well inside the limit: a maximal `/down` book nudge (§3.7, `url` at 200 bytes, `bv` and `n` at
+their maxima) is **338 bytes** signed JSON; a maximal `/up` `grp_req` (§3.8, `id` 16, `name` 48
+bytes with every byte JSON-escaped, 8 aliases of 16) is **380 bytes** signed JSON and ≈250 bytes
+signed CBOR. Neither exceeds the ≈505-byte group page above, so the ≥ 135-byte headroom figure
+stands. `/status`'s `bpull` (§5.1) adds 10 bytes to a payload that is under 250. The §3.7 fetch
+response is an HTTPS body, not an MQTT payload, and is **not** subject to this limit; its own
+bound is §3.7's 4096 bytes.
+
 *(the one escaping assumption the limit depends on, stated because it was previously
 implicit.)* Publishers MUST serialise non-ASCII `body` characters as **raw UTF-8, not `\uXXXX`
 escapes**. §3's "minified UTF-8 JSON" already implies this, but the consequence is load-bearing:
@@ -417,6 +430,114 @@ the web app, can.
 - **Compatibility.** All of §3.6 is new in v0.2; a v0.1 device sends no `sms_log` and applies no
   `cfg.sms`, and is unaffected — every field here is on a kind (`sms_log`) and a sub-map (`cfg.sms`)
   such a device never emits or parses.
+
+### 3.7 Book pull (v0.4, owner decision 2026-09-24)
+
+*(the book is every user the owner may message plus the owner's groups, which outgrows both the
+640-byte envelope and `c[]`'s 10 entries; `/down` keeps only a version nudge and the book itself
+moves to an authenticated HTTPS fetch. `docs/CHAT_UI_DESIGN.md` decision 4.)*
+
+**Capability gate.** A device that implements this section sends `bpull: 1` in every online
+`/status` (§5.1). The relay sends the nudge below only to a device whose last online `/status`
+carried `bpull: 1` **and** whose `authMode` is `hmac`; every other device keeps receiving the full
+§3.2 `kind:"book"` envelope, unchanged (640-byte cap, `c[]` ≤ 10). *(firmware that predates this
+section parses a `book` without `c` as an empty book, writes it to NVS and acks it, so an ungated
+nudge would wipe its address book and nothing would ever repair it.)*
+
+**The nudge (`/down`, relay → device).** A `kind:"book"` down message with `bv` (key 14) and `url`
+(key 57), and **no** `d`, `c`, `p` or `more`:
+
+```
+{"v":1,"id":"m_…","ts":…,"kind":"book","bv":7,"url":"https://relay.example/api/device/book","ack":null,"n":…,"sig":"…"}
+```
+
+- `bv` is `devices/{d}.bookVersion` when the nudge was built. `url` is the absolute fetch
+  endpoint, `https://host[:port]/path`, ≤ 200 bytes, no query; the device MUST NOT fetch a book
+  from any URL but the one in the newest verified nudge.
+- A `book` carrying neither `c` nor `p` is a nudge; a `book` carrying `c` is §3.2's full book, which
+  a pull-capable device still applies if one arrives.
+- Newest only, as §3.2: a new nudge supersedes the pending one, and §5.3 re-publishes the newest
+  unacked nudge on an online edge. Signed like every `/down` (§14.5).
+
+**Device rule.**
+1. Nudge `bv` ≤ the stored book's `bv` → ack `shown` at once, no fetch.
+2. Nudge `bv` > stored → fetch (below). Ack the nudge's `id` `shown` only after a response whose
+   `bv` ≥ the nudge's `bv` has been verified and written to NVS. On any failure do not ack; the
+   nudge stays pending and returns on the next online edge or re-nudge (§5.3).
+3. A nudge is decided by rules 1–2 every time it arrives. The device MUST NOT short-circuit it
+   through §4.1 rule 7's dedup ring *(a dedup hit re-acks, and re-acking a nudge whose fetch
+   failed would tell the relay a book landed that never did)*.
+4. One fetch in flight. A nudge that arrives during a fetch is remembered by its `id` and `bv`
+   and re-evaluated by rules 1–2 when the fetch ends.
+5. The applied `bv` is reported in `/status` exactly as before (§5.1).
+
+**The fetch.** `GET <url>?bv=<nudge bv>` over TLS, HTTP/1.1, authenticated per §14.7. A `200`
+carries `Content-Type: application/cbor` and `Cache-Control: no-store` *(the response varies by
+request header, and a shared cache in front of the relay would otherwise serve one device's book
+to another)*. The body is one CBOR map with integer keys (§10), signed per §14.7:
+
+```
+{v:1, ts, kind:"book", bv, d?, c:[…], p:[…], more?, n, sig}
+```
+
+- `bv` is `bookVersion` when the response was built; it may be higher than the requested `bv`
+  (a later bump), which the device applies normally.
+- `d`, `c[]` and `p[]` are §3.2's, with `c[]` capped at **32** instead of 10 and ordered: the entry
+  whose alias equals `d` first, then `t:"grp"` entries, then the rest, each by display name
+  (case-insensitive), ties by alias. `more: true` means the relay truncated `c[]` at 32. *(32 is
+  the device's stored capacity and keeps the worst case near 2.8 kB, inside the device's 4096-byte
+  HTTP body buffer, so an oversized book arrives truncated rather than failing on every retry.)*
+- `n` echoes the request's `X-N`. There is no `id` and no `ack`: the response is not a down
+  message and is never acked itself; the nudge is.
+- CBOR only; the endpoint offers no JSON form. A body over 4096 bytes is refused by the device.
+
+**Relay-side triggers (not visible on the wire, recorded so the two ends agree on when a nudge
+comes).** `bookVersion` is bumped and a nudge (or, per the gate, a full book) is published on every
+change that alters the device's book: contact approval/rejection, group create/join/leave, an
+allow-list change to the owner's outgoing edges, device creation or a `defaultToUid` change, and a
+`displayName` change of anyone the book lists. An online `/status` from a device whose
+`bookVersion` is still 0 bumps it to 1 and publishes (§5.3).
+
+### 3.8 `kind:"grp_req"` (device → relay, v0.4, owner decision 2026-09-24)
+
+*(the owner reopened group creation from the device, `docs/CHAT_UI_DESIGN.md` decision 1;
+members are limited to people the owner may already message.)*
+
+```
+{"v":1,"id":"u_…","ts":…,"kind":"grp_req","name":"Cousins","m":["mom","ben"],"ack":null,"n":…,"sig":"…"}
+```
+
+- `name` (key 15): the group's display name, same bounds as `contact_req`'s: 1–16 code points,
+  ≤ 48 UTF-8 bytes, no control characters. `m` (key 56): 1–8 distinct aliases, alias regex (§3.1),
+  never the owner's own. No `from`, `to` or `body`. Signed, `n` from the `/up` counter, QoS 1.
+- **Device (UI rule, not re-checked by the relay):** every alias in `m` is an entry of the current
+  book with `t` of `web` or `chat`.
+
+**Relay.**
+1. Verify and window-check as any `/up` (§14.4). Unregistered or revoked device → drop, log.
+2. **Dedup and rate limit, one transaction:** create `grpReqs/{deviceId}_{id}` if absent. If it
+   exists, the earlier outcome stands: a `done` or `rejected` record is a no-op; a `pending` one
+   resumes at step 5. If this is the device's second non-duplicate `grp_req` within 60 s, record
+   `rejected: rate` and stop. Every well-formed, non-duplicate request consumes the slot.
+3. **Resolve, all or nothing:** the creator is the device's owner. Each alias in `m` MUST name a
+   user (not a group, not the owner) to whom the owner has an allow edge with `message: true` — the
+   book's own definition (§3.2, decision 2). One failure rejects the whole request; no partial
+   group is created.
+4. **Alias:** generated from `name` by the one function the admin create route also uses when it
+   is given no alias: lowercase; each run of characters outside `[a-z0-9]` becomes `-`; strip
+   leading and trailing `-`; cut to 12 characters; empty → `grp`. Take the first of `<slug>`,
+   `<slug>-2` … `<slug>-9` that is free and not reserved; else `g-` + 8 random lowercase hex.
+5. **Create:** conversation with members = owner + resolved users, `createdBy` = owner, `convKey`
+   derived from `(deviceId, id)` so a resumed request cannot create a second group; add every
+   missing allow edge, both directions, between every pair of members, exactly as the admin route
+   does; bump `bookVersion` and publish a nudge (or full book, per §3.7's gate) to every device of
+   every member; mark the record `done`.
+6. **No reply on the wire.** Success is the group appearing in the next book. Failure (rate,
+   unresolved or not-allowed alias, alias exhaustion) is logged relay-side only and the device
+   shows nothing new. *(no failure message on the wire yet — accepted by the owner for now,
+   `docs/CHAT_UI_DESIGN.md` §6; a later revision may add a `system` down message like §4.2 case 3.)*
+
+A relay that predates this section drops `grp_req` as an unknown `kind` (§3.4); nothing is stored.
 
 ---
 
@@ -540,6 +661,7 @@ broker-generated LWT.
 | `xport` | string | no | `lte` \| `wifi` | *(WiFi transport, `docs/WIFI_DESIGN.md` §6)* Which physical transport carried this MQTT session: the Sequans LTE-M modem or the ESP32-S3's own WiFi station (§4 of that design). Absent means firmware that predates the WiFi transport, or a device with WiFi never enabled. **Display and diagnosis only** — the relay stores whatever the device reports and never writes it back; a transport switch already bumps `link` (§9.5), which the relay already treats as a re-publish edge (§5.3), so `xport` itself carries no additional relay logic. |
 | `rst` | int | no | 0…255 | *(crash diagnostics, added 24 Sep 2026, pending server-architect review)* ESP-IDF `esp_reset_reason_t` of the device's last reset: `1` poweron, `2` ext, `3` sw, `4` panic, `5` int_wdt, `6` task_wdt, `7` wdt, `8` deepsleep, `9` brownout. Absent means firmware that predates this field. **Display and diagnosis only.** |
 | `stage` | int | no | 0…255 | *(crash diagnostics, added 24 Sep 2026, pending server-architect review)* Index into the firmware's main-loop stage table, naming where execution was when this status was sent (or, after a crash, roughly where it last got to): `0` "?", `1` boot, `2` network init, `3` loop top, `4` entering light sleep, `5` just woke from light sleep, `6` input/ui, `7` render, `8` mqtt status/retry, `9` message pump, `10` modem health check, `11` location, `12` sms, `13` ca trust, `14` saving state, `15` deliberate restart. An index outside this table (future firmware) is logged as the raw int. Absent means firmware that predates this field. **Display and diagnosis only.** |
+| `bpull` | int | no | `1` | *(v0.4, §3.7: the gate that keeps a book nudge away from firmware that would read it as an empty book.)* Present with value `1` when the firmware fetches its book over HTTPS; absent means it takes the full `/down` `book`. The relay stores it and sends nudges only while the last online `/status` carried it. |
 | `abn` | int | no | 0…65535 | *(crash diagnostics, added 24 Sep 2026, pending server-architect review)* Count of abnormal resets (i.e. `rst` not `poweron`/`deepsleep`) since power-on. Absent means firmware that predates this field. **Display and diagnosis only.** |
 
 *(`loc_period_s`, `loc_min_s`, `tls`, `ca_fp`, `loc_backoff_s`, `sms_lost`, `xport`, `rst`, `stage`
@@ -597,6 +719,12 @@ keeps the TLS+MQTT session up on eDRX while the ESP32 is in deep sleep; that dev
   - *(same rule, new trigger.)* The edge is detected from the `/status` message however it reaches
     the relay: today that is the broker's `/status` push (§2), not a subscriber callback. Selection,
     order, cap and the re-used `id` are unchanged.
+- *(v0.4, §3.7: the pull model's only recovery path for a lost nudge, and the only way a new
+  device gets its first book.)* On every online `/status`: if `bookVersion` is 0, bump it to 1 in a
+  transaction that writes only while it is still 0, and publish. Else if the reported `bv` is
+  lower than `bookVersion`, re-publish the pending nudge when its `bv` equals `bookVersion` (same
+  `id`), otherwise build and publish a new one. Runs after the online-edge re-publish above, as
+  the full-book re-push does today.
 - The relay MUST NOT publish anything to `/down` on a timer for liveness. There is no application
   ping. MQTT keepalive is the only liveness mechanism (§6).
 
@@ -1258,7 +1386,7 @@ Devices emit CBOR (§3) with this integer keymap. The relay accepts both JSON (t
 | 3 | `from` | tstr | `/down` msg, ack, location answer |
 | 4 | `body` | tstr | `/down` msg, `/up` msg, bootstrap ok (if present) |
 | 5 | `ack` | tstr | all envelopes (`shown`, `read`, or `null`) |
-| 6 | `kind` | tstr | `/down` (msg/loc_req/book/cfg), `/up` (msg/contact_req), bootstrap ok |
+| 6 | `kind` | tstr | `/down` (msg/loc_req/book/cfg), `/up` (msg/contact_req), bootstrap ok; v0.4: `/up` `grp_req`, and the §3.7 fetch response |
 | 7 | `to` | tstr | `/up` content messages |
 | 8 | `loc` | map | `/loc` envelope (§13.2) |
 | 9 | `req` | tstr | `/loc` envelope (§13.2) |
@@ -1266,13 +1394,13 @@ Devices emit CBOR (§3) with this integer keymap. The relay accepts both JSON (t
 | 11 | `err` | tstr | `/loc` envelope when `loc` is null |
 | 12 | `n` | uint | signed envelopes (replay counter) |
 | 13 | `sig` | bstr(8) | signed envelopes (HMAC tag); **MUST be last** |
-| 14 | `bv` | int | `/status` and `/down` `book` |
-| 15 | `name` | tstr | `/up` `contact_req`, `/down` `book` contacts |
+| 14 | `bv` | int | `/status` and `/down` `book` (including the v0.4 nudge), §3.7 fetch response |
+| 15 | `name` | tstr | `/up` `contact_req`, `/down` `book` contacts; v0.4: `/up` `grp_req` (group name, §3.8) — same key, same bounds |
 | 16 | `ph` | tstr | `/up` `contact_req` |
 | 17 | `d` | tstr | `/down` `book` (default recipient) |
 | 18 | `c` | array | `/down` `book` (contacts) |
 | 19 | `p` | array | `/down` `book` (pending requests) |
-| 20 | `more` | bool | `/down` `book` (reserved for chunking) |
+| 20 | `more` | bool | `/down` `book` (reserved for chunking); v0.4: §3.7 fetch response, `true` when `c[]` was truncated at 32 |
 | 21 | `state` | tstr | `/status` (online/offline) |
 | 22 | `mode` | tstr | `/status` (sleep/active) |
 | 23 | `batt_mv` | int | `/status` (battery millivolts) |
@@ -1308,6 +1436,9 @@ Devices emit CBOR (§3) with this integer keymap. The relay accepts both JSON (t
 | 53 | `rst` | uint, 0…255 | `/status` (crash diagnostics, §5.1 — `esp_reset_reason_t`, optional; added 24 Sep 2026, pending server-architect review) |
 | 54 | `stage` | uint, 0…255 | `/status` (crash diagnostics, §5.1 — main-loop stage index, optional; added 24 Sep 2026, pending server-architect review) |
 | 55 | `abn` | uint, 0…65535 | `/status` (crash diagnostics, §5.1 — abnormal-reset count since power-on, optional; added 24 Sep 2026, pending server-architect review) |
+| 56 | `m` | array of tstr, 1…8 | `/up` `grp_req` (v0.4, §3.8 — requested member aliases) |
+| 57 | `url` | tstr, ≤200 B | `/down` `book` nudge (v0.4, §3.7 — the fetch endpoint) |
+| 58 | `bpull` | uint, `1` | `/status` (v0.4, §3.7/§5.1 — book-pull capability, optional) |
 
 *(A relay-side task that added `rst`/`stage`/`abn` was briefed with key 52 for `rst`; by the time
 it landed, 52 was already `xport`, both here and in the shipped relay code. Kept `xport=52` as the
@@ -1324,6 +1455,8 @@ instead — flagged here rather than silently resolved so firmware agrees on 53/
 forward-compatibility rule.
 
 `c[]` contact object (inside `/down` `book`): `a=0` (alias), `n=1` (name), `t=2` (type web/sms/chat/grp).
+*(v0.4: the §3.7 fetch response uses the same `c[]` and `p[]` sub-maps, so the device keeps one
+book parser.)*
 
 `p[]` pending request object (inside `/down` `book`): `n=0` (name), `s=1` (status pend/no).
 
@@ -1848,3 +1981,52 @@ The broker-generated LWT `{"v":1,"state":"offline",…}` cannot carry a signatur
 an unsigned `/status` **only** when it is exactly `state:"offline"` with no live fields (no `mode`,
 `batt_mv`, `rssi`, `session`, etc.). The worst a forger can do with it is mark a device offline in
 the parent UI until the next signed `online` message arrives — accepted as tolerable.
+
+### 14.7 Authenticating an HTTPS request (book pull, §3.7, v0.4)
+
+*(the fetch reuses `K_dev` and the `/up` counter, so no new key material, provisioning step or
+server-side secret exists for it.)*
+
+**Request.**
+
+```
+GET /api/device/book?bv=7 HTTP/1.1
+Host: relay.example
+X-Device-Id: pgr-0001
+X-N: 123456789
+X-Sig: <11 base64url characters, no padding>
+Connection: close
+```
+
+- `X-N` is the next value of the device's single `/up`/`/status`/`/loc` counter (§14.2), drawn
+  immediately before dialling, decimal, no leading zeros. Drawing it spends it: no envelope ever
+  carries the same value.
+- `X-Sig` = base64url(`HMAC-SHA256(K_dev, "GET /api/device/book" ‖ 0x00 ‖ M)[0:8]`) with
+  `M` = ASCII `<device_id>|<n>|<bv>`, `n` and `bv` exactly as sent in `X-N` and the query. The
+  first operand stands where §14.3 puts the topic *(no MQTT topic contains a space, so a request
+  tag can never verify as an envelope tag or the reverse)*.
+
+**Relay, in order.**
+1. A missing or ill-formed header, or `bv` not a decimal in 0…2³²-1 → `400`.
+2. `devices/{X-Device-Id}` missing or revoked, or `authMode` ≠ `hmac` → `404`.
+3. Tag verified in constant time; failure → `401`, counted in `sigFailures` and the §14.4 alarm
+   window exactly like a bad envelope signature.
+4. One Firestore transaction on `deviceSecrets/{d}`: require `n > upN`, then set `upN = n` and
+   shift `upBits` exactly as §14.2's `n > upN` branch; otherwise `409`, nothing written. *(strictly
+   greater rather than the 64-wide window: the device draws `n` just before it dials, so a genuine
+   request is always the newest value, and the window exists only for the broker's reordering of
+   MQTT pushes.)* **This consumes the counter for `/up` too:** an envelope drawn earlier but
+   ingested later is still accepted through §14.2's window; nothing else changes.
+5. `200` with §3.7's body. A store failure after step 4 → `503`; that `n` is spent.
+
+**Response signature.** The body is a CBOR map whose last pair is `sig` (key 13), signed by
+§14.3's CBOR rule with the string `/api/device/book` in place of the topic, and whose `n` equals the
+request's `X-N`. The device verifies the tag and the `n` echo **before** parsing and applies nothing
+on failure. *(the fetch runs on the modem's validation-off TLS profile, `firmware/main/cafetch.c`,
+so this MAC, not the transport, is what stops an on-path party substituting a book or replaying an
+old one; the book's names are not kept confidential from an active on-path party, the same
+accepted gap as §4.4's validation-off fallback.)*
+
+**Device on failure.** `409` → retry once, immediately, with a fresh `n`. `400`/`401`/`404` → log
+and count, no retry until the next nudge. `5xx`, a timeout, an oversize body or a verification
+failure → no ack; retry on the next nudge or online edge, at most once per 60 s.
