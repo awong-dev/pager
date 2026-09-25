@@ -433,7 +433,7 @@ bool ui_incoming(const char *from, bool was_asleep)
     // bottom, the partial refresh completes, shown is published." No
     // scr_chat_mark_visible_read() here — see this file's/ui.h's own
     // comment on why that ack stays `shown`, not `read`, on this path.
-    bool screen_changed = (top != &g_scr_chat);
+    bool was_greeting = (top == &g_scr_greeting);
     if (top == &g_scr_greeting) {
         // Replace, not push: the greeting is a sleep splash, not somewhere
         // to come back to. Popping Chat should land on Home.
@@ -460,7 +460,7 @@ bool ui_incoming(const char *from, bool was_asleep)
     if (g_scr_chat.render) {
         g_scr_chat.render();
     }
-    if (screen_changed) {
+    if (was_greeting) {
         // Owner decision 2026-09-20, from real hardware: going from the
         // greeting (large "Hi <name>!" type) to Chat with only a partial
         // refresh left the greeting visibly ghosted under the message. A
@@ -469,6 +469,11 @@ bool ui_incoming(const char *from, bool was_asleep)
         // inbound-message path", but only for the first message that wakes
         // the screen; further messages into an open Chat stay partial.
         // Power effect: ~2-4 s full refresh instead of ~0.3-0.8 s, PENDING_HW.
+        //
+        // Owner, 24 Sep 2026: accept ghosting on Home for a page arrival in
+        // exchange for one ~455 ms partial instead of a ~3.4 s full;
+        // supersedes the 20 Sep full-on-steal choice except for the
+        // greeting.
         disp_full_refresh();
     } else {
         disp_partial_refresh();

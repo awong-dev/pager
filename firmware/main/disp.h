@@ -25,6 +25,7 @@
 #define DISP_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -126,6 +127,28 @@ uint32_t disp_partial_count(void);
  * fallback path. Free-running, never reset; printed in the sleeptest report
  * so "the panel wedged" is a number, not an inference from a bucket max. */
 uint32_t disp_busy_timeout_count(void);
+
+/* Bench instrumentation: counts of completed full refreshes, completed
+ * partial refreshes, and (a subset of the full count) full refreshes that
+ * were originally requested as a partial and upgraded, either by
+ * s_force_full or by disp_refresh_cadence()'s own cadence threshold --
+ * so a bench window can attribute unexplained full refreshes (the 3.4s
+ * panel event) instead of just counting them. Free-running; reset by
+ * disp_reset_refresh_stats(). Any output pointer may be NULL. */
+void disp_get_refresh_stats(uint32_t *full, uint32_t *partial, uint32_t *upgraded);
+
+/* Formats the last up-to-8 refresh completions, oldest first, as e.g.
+ * "F@12345/1 P@12800/2 U@13100/3" (ms since boot, kind F/P/U, caller tag --
+ * 1=disp_full_refresh, 2=disp_partial_refresh, 3=disp_refresh_cadence,
+ * 4=this refresh only completed via its own BUSY-timeout reset+re-init
+ * retry, 0=other). Returns the number of characters written (excluding the
+ * NUL), same convention as snprintf(); buf is always NUL-terminated if
+ * cap > 0. */
+int disp_refresh_ring_format(char *buf, size_t cap);
+
+/* Clears the counters above and the ring they draw from. Power effect:
+ * none -- bookkeeping only, touches no panel state. */
+void disp_reset_refresh_stats(void);
 
 /* Fault injector for the bench (`disptest swreset`): sends the SSD1680's SW
  * reset (0x12) alone, waits BUSY, and does nothing else, so the controller

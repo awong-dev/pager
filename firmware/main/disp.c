@@ -6,6 +6,7 @@
 #include "gfx.h"
 #include "pins.h"
 
+#include <stdio.h>
 #include <string.h>
 
 #include "driver/gpio.h"
@@ -88,6 +89,53 @@ static bool s_spi_ready = false;
 static bool s_display_dead = false; // logged once, then the device runs headless
 static bool s_display_dead_logged = false;
 static uint32_t s_partial_count = 0;
+
+// Bench instrumentation: so a bench window can attribute unexplained full
+// refreshes (the 3.4s panel event) to a cause instead of just counting them.
+// s_cnt_full counts every completed full refresh, however it was reached;
+// s_cnt_forced_full is a subset of s_cnt_full, counting only the ones that
+// were originally requested as a partial and upgraded (s_force_full, or the
+// PAGER_UI_PARTIAL_FULL_EVERY cadence in disp_refresh_cadence());
+// s_cnt_partial counts only partials that actually reached the panel (never
+// a no-op diff, never one that aborted into a BUSY-timeout recovery).
+// Free-running; reset (with the ring below) by disp_reset_refresh_stats(),
+// which modes.c's modes_debug_sleeptest_start() calls so each sleeptest
+// window's report reflects only that window. Power effect: none of this is
+// new panel traffic -- pure bookkeeping alongside refreshes that already
+// happen.
+static uint32_t s_cnt_full = 0;
+static uint32_t s_cnt_partial = 0;
+static uint32_t s_cnt_forced_full = 0;
+
+// Ring of the last DISP_REFRESH_RING_LEN refresh completions, oldest first
+// once full. kind: 'F' full (as directly requested), 'P' partial, 'U' a
+// partial request upgraded to a full. tag: which public entry point started
+// the call chain (1=disp_full_refresh, 2=disp_partial_refresh,
+// 3=disp_refresh_cadence, 0=other), OR 4 if this particular full refresh
+// only completed via its own BUSY-timeout reset+re-init retry (see
+// full_refresh_locked()'s "recovered" local) -- that overrides the caller's
+// own tag, since "needed a mid-refresh recovery" is the more useful
+// attribution for an unexplained full refresh than which function called it.
+#define DISP_REFRESH_RING_LEN 8
+typedef struct {
+    uint32_t ms;
+    char kind;
+    uint8_t tag;
+} disp_refresh_event_t;
+static disp_refresh_event_t s_refresh_ring[DISP_REFRESH_RING_LEN];
+static uint8_t s_refresh_ring_head = 0;  // next slot to write
+static uint8_t s_refresh_ring_count = 0; // valid entries, saturates at DISP_REFRESH_RING_LEN
+
+static void disp_refresh_ring_push(char kind, uint8_t tag)
+{
+    s_refresh_ring[s_refresh_ring_head].ms = (uint32_t) (esp_timer_get_time() / 1000);
+    s_refresh_ring[s_refresh_ring_head].kind = kind;
+    s_refresh_ring[s_refresh_ring_head].tag = tag;
+    s_refresh_ring_head = (uint8_t) ((s_refresh_ring_head + 1) % DISP_REFRESH_RING_LEN);
+    if (s_refresh_ring_count < DISP_REFRESH_RING_LEN) {
+        s_refresh_ring_count++;
+    }
+}
 
 // S12 (docs/SLEEP_URC_DESIGN.md §8.3, docs/SLEEP_URC_TASKS.md S12): a real
 // BUSY-genuinely-asserted timeout (disp_wait_busy_fb()'s polling loop, never
@@ -441,7 +489,13 @@ static bool disp_pre_refresh_reset(const char *who)
 //      correct, plus clean real typing in the composer.
 // ---------------------------------------------------------------------------
 
-static void full_refresh_locked(void)
+// tag: caller attribution for the refresh-stats ring (see s_refresh_ring's
+// own comment) — 1=disp_full_refresh, 2=disp_partial_refresh,
+// 3=disp_refresh_cadence, 0=other. upgraded: true if this full refresh was
+// originally requested as a partial and upgraded (s_force_full or the
+// cadence threshold) — counted in s_cnt_forced_full in addition to
+// s_cnt_full, and ring-logged as kind 'U' instead of 'F'.
+static void full_refresh_locked(uint8_t tag, bool upgraded)
 {
     if (s_display_dead) {
         return;
@@ -486,6 +540,7 @@ static void full_refresh_locked(void)
     disp_send_cmd(0x20);
     // Real update in flight (0x20, full) — use the fixed-wait fallback if
     // BUSY doesn't assert.
+    bool recovered = false;
     if (!disp_wait_busy_fb(PAGER_UI_BUSY_FALLBACK_FULL_MS)) {
         ESP_LOGI(TAG, "full refresh BUSY timeout; attempting one reset+re-init");
         disp_hw_reset();
@@ -493,6 +548,7 @@ static void full_refresh_locked(void)
             mark_display_dead();
             return;
         }
+        recovered = true;
     }
 
     // No post-update RAM re-sync here — see rule 2 above: a full (mode-1)
@@ -511,6 +567,24 @@ static void full_refresh_locked(void)
         memcpy(s_fb_old[r], s_fb_snap[r], GFX_FB_ROW_BYTES);
     }
     s_partial_count = 0;
+    // Any completed full refresh satisfies a pending forced full, whether it
+    // was set by disp_init() (first-render priming, above) or by the
+    // BUSY-timeout recovery in partial_refresh_locked() (shadow-plane
+    // re-init) — without this, the next partial after boot or after a
+    // timeout recovery was upgraded to a second full for no reason.
+    s_force_full = false;
+
+    // Bench instrumentation (see s_cnt_full/s_refresh_ring's own comments):
+    // effective_tag overrides the caller's tag to 4 when this exact
+    // completion needed the reset+re-init retry above, since that is the
+    // more useful attribution for an unexplained full refresh.
+    uint8_t effective_tag = recovered ? 4 : tag;
+    s_cnt_full++;
+    if (upgraded) {
+        s_cnt_forced_full++;
+    }
+    disp_refresh_ring_push(upgraded ? 'U' : 'F', effective_tag);
+    ESP_LOGI(TAG, "disp: full refresh (tag=%u)", (unsigned) effective_tag);
 }
 
 // Bug found on the bench: while typing, consecutive partials touching
@@ -534,7 +608,10 @@ static void full_refresh_locked(void)
 // framebuffer read — for the 0x26 write and the s_fb_old commit after it.
 // Window/pointer (disp_set_ram_window(), shared with full_refresh_locked())
 // are reset immediately before each of the two RAM writes.
-static void partial_refresh_locked(void)
+// tag: caller attribution for the refresh-stats ring, forwarded unchanged to
+// disp_refresh_ring_push() when (and only when) this call actually issues a
+// partial — see s_refresh_ring's own comment for the tag values.
+static void partial_refresh_locked(uint8_t tag)
 {
     if (s_display_dead) {
         return;
@@ -678,6 +755,12 @@ static void partial_refresh_locked(void)
     }
 
     s_partial_count++;
+
+    // Bench instrumentation (see s_cnt_partial/s_refresh_ring's own
+    // comments): only reached once a partial has actually been issued to the
+    // panel, never on a no-op diff or a BUSY-timeout abort above.
+    s_cnt_partial++;
+    disp_refresh_ring_push('P', tag);
 }
 
 // ---------------------------------------------------------------------------
@@ -796,7 +879,7 @@ bool disp_is_dead(void) { return s_display_dead; }
 void disp_full_refresh(void)
 {
     disp_lock();
-    full_refresh_locked();
+    full_refresh_locked(1, false); // tag 1: refresh-stats attribution (disp_get_refresh_stats())
     disp_unlock();
 }
 
@@ -810,9 +893,9 @@ void disp_partial_refresh(void)
         // place a caller that bypasses disp_refresh_cadence() can be made to
         // see it.
         s_force_full = false;
-        full_refresh_locked();
+        full_refresh_locked(2, true); // tag 2, upgraded: refresh-stats attribution
     } else {
-        partial_refresh_locked();
+        partial_refresh_locked(2); // tag 2: refresh-stats attribution
     }
     disp_unlock();
 }
@@ -821,9 +904,9 @@ void disp_refresh_cadence(void)
 {
     disp_lock();
     if (s_partial_count >= PAGER_UI_PARTIAL_FULL_EVERY) {
-        full_refresh_locked();
+        full_refresh_locked(3, true); // tag 3, upgraded: refresh-stats attribution
     } else {
-        partial_refresh_locked();
+        partial_refresh_locked(3); // tag 3: refresh-stats attribution
     }
     disp_unlock();
 }
@@ -874,3 +957,60 @@ uint32_t disp_partial_count(void) { return s_partial_count; }
 
 // S12: see the doc comment on s_busy_timeout_count above.
 uint32_t disp_busy_timeout_count(void) { return s_busy_timeout_count; }
+
+// Bench instrumentation: see s_cnt_full/s_cnt_partial/s_cnt_forced_full's own
+// comment. Any of the three output pointers may be NULL.
+void disp_get_refresh_stats(uint32_t *full, uint32_t *partial, uint32_t *upgraded)
+{
+    if (full != NULL) {
+        *full = s_cnt_full;
+    }
+    if (partial != NULL) {
+        *partial = s_cnt_partial;
+    }
+    if (upgraded != NULL) {
+        *upgraded = s_cnt_forced_full;
+    }
+}
+
+// Bench instrumentation: formats the refresh ring oldest-first, e.g.
+// "F@12345/1 P@12800/2 U@13100/3". Returns the number of characters written
+// (excluding the NUL), same convention as snprintf(); buf is always
+// NUL-terminated if cap > 0. Empty ring writes an empty string.
+int disp_refresh_ring_format(char *buf, size_t cap)
+{
+    if (buf == NULL || cap == 0) {
+        return 0;
+    }
+    buf[0] = '\0';
+    size_t n = 0;
+    uint8_t start = (s_refresh_ring_count < DISP_REFRESH_RING_LEN) ? 0 : s_refresh_ring_head;
+    for (uint8_t i = 0; i < s_refresh_ring_count; i++) {
+        uint8_t idx = (uint8_t) ((start + i) % DISP_REFRESH_RING_LEN);
+        int w = snprintf(buf + n, cap - n, "%s%c@%u/%u", (i == 0) ? "" : " ", s_refresh_ring[idx].kind,
+                          (unsigned) s_refresh_ring[idx].ms, (unsigned) s_refresh_ring[idx].tag);
+        if (w < 0) {
+            break;
+        }
+        if ((size_t) w >= cap - n) {
+            n = cap - 1; // snprintf already truncated and NUL-terminated at cap
+            break;
+        }
+        n += (size_t) w;
+    }
+    return (int) n;
+}
+
+// Bench instrumentation reset: modes.c's modes_debug_sleeptest_start() calls
+// this so each sleeptest window's report reflects only refreshes from that
+// window, not everything accumulated since boot. Power effect: none — clears
+// counters and the ring only, touches no panel state.
+void disp_reset_refresh_stats(void)
+{
+    s_cnt_full = 0;
+    s_cnt_partial = 0;
+    s_cnt_forced_full = 0;
+    memset(s_refresh_ring, 0, sizeof(s_refresh_ring));
+    s_refresh_ring_head = 0;
+    s_refresh_ring_count = 0;
+}

@@ -1251,6 +1251,7 @@ void modes_debug_sleeptest_start(uint32_t minutes, uint32_t yield_ms_override,
     s_st_yield_ms = yield_ms_override;
     s_st_interval_ms = interval_ms_override;
     s_probe_wait_ms_override = probe_wait_ms_override;
+    disp_reset_refresh_stats(); // so this window's report is only this window's refreshes
     s_probe_wait_n = s_probe_wait_giveups = 0;
     s_probe_wait_total_us = s_probe_wait_max_us = 0;
     s_st_report_due = true;
@@ -1277,7 +1278,10 @@ void modes_debug_sleeptest_start(uint32_t minutes, uint32_t yield_ms_override,
 // S18: raised from 2800 to 2950 for the new "probe answer:" line.
 // phaseBG-report.log fix: raised from 2950 to 3050 for the new "resub
 // holds:" line.
-static char s_st_text[3050];
+// disp refresh-count instrumentation: raised from 3050 to 3350 for the new
+// "disp refreshes:" line, whose ring can add up to 8 * "F@4294967295/255 "
+// (~19 chars each).
+static char s_st_text[3350];
 
 static void st_appendf(size_t *n, const char *fmt, ...)
 {
@@ -1491,6 +1495,17 @@ void modes_debug_sleeptest_report(void)
     // "the panel wedged" is this number, not an inference from a bucket max
     // (phaseAF's `input+ui+render max 31551 ms` used to be the only clue).
     st_appendf(&n, "disp_busy_timeout_count=%u\n", (unsigned) disp_busy_timeout_count());
+    // Bench instrumentation: attributes unexplained full refreshes (see
+    // disp.h's own comment on disp_get_refresh_stats()/
+    // disp_refresh_ring_format()) instead of just counting the 3.4s events.
+    {
+        uint32_t disp_full = 0, disp_partial = 0, disp_upgraded = 0;
+        disp_get_refresh_stats(&disp_full, &disp_partial, &disp_upgraded);
+        char ring_str[160];
+        disp_refresh_ring_format(ring_str, sizeof(ring_str));
+        st_appendf(&n, "disp refreshes: full=%u partial=%u upgraded=%u; last: %s\n", (unsigned) disp_full,
+                   (unsigned) disp_partial, (unsigned) disp_upgraded, ring_str);
+    }
     net_publish_ring_entry_t ring[NET_PUBLISH_RING_MAX];
     uint32_t nring = net_get_publish_ring(ring, NET_PUBLISH_RING_MAX);
     if (nring == 0) {
