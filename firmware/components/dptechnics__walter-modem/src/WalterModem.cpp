@@ -113,6 +113,12 @@ static uint32_t s_pagerStallTxRingBytes = 0;
 static uint32_t s_pagerCntRspNoCmd = 0;
 static uint32_t s_pagerPayloadStuckMs = 0;
 
+// PAGER PATCH: 1.19 (see PATCHES.md 1.19). Same "plain uint32_t, no atomics"
+// reasoning as the counters above -- only ever written from
+// _cmdProcessingTask, right where a response is about to be re-paired with
+// an already-finished _curCmd instead of being handed to it a second time.
+static uint32_t s_pagerCntRspStaleCmd = 0;
+
 // PAGER PATCH: 1.17 (docs/SLEEP_PAGE_LOSS_BRIEF.md §6 item A) -- the trace
 // hook installed by WalterModem::setPagerTraceHook(), NULL until a caller
 // installs one (firmware/main/flightrec.c, debug build only). Same "plain
@@ -149,6 +155,7 @@ extern "C" walter_modem_pager_counters_t walter_modem_pager_counters(void)
   c.rsp_no_cmd = s_pagerCntRspNoCmd;
   c.payload_stuck_ms = s_pagerPayloadStuckMs;
   c.glitch_dropped = s_pagerCntGlitchDropped;
+  c.rsp_stale_cmd = s_pagerCntRspStaleCmd;
   return c;
 }
 
@@ -1741,7 +1748,34 @@ void WalterModem::_cmdProcessingTask(void* args)
           }
         }
       } else if(qItem.rsp != NULL) {
-        _processModemRSP(_curCmd, qItem.rsp);
+        // PAGER PATCH: 1.19 (see PATCHES.md 1.19 for the full mechanism and
+        // phaseBE evidence). A response must only be paired with _curCmd
+        // while it is actually "sent, waiting for its reply"
+        // (WALTER_MODEM_CMD_STATE_PENDING). Once a command has already
+        // finished -- _finishModemCMD() moved it to
+        // WALTER_MODEM_CMD_STATE_SYNC_LOCK_NOTIFIED (WalterModem.cpp above)
+        // or WALTER_MODEM_CMD_STATE_COMPLETE (WalterDefines.h
+        // _returnAfterReply()) -- it is still _curCmd until this task's own
+        // switch below clears it, and a stray response arriving in that
+        // window (e.g. the wake-byte "\r\n" drawing a "+CME ERROR: 4" from
+        // the modem) would otherwise reach an error handler that calls
+        // _finishModemCMD() on it a SECOND time. That resets the state back
+        // to SYNC_LOCK_NOTIFIED and notifies a condition variable nobody is
+        // waiting on any more (the original caller already consumed the
+        // first notification and returned) -- this task's own
+        // SYNC_LOCK_NOTIFIED case then waits forever for a caller that will
+        // never come, wedging _curCmd, and every later command queued
+        // behind it, permanently. Pass NULL instead: patch 1.1 already
+        // drops an error line with no command safely, and a stray OK with
+        // no command is freed unused (patch 1.15's rsp_no_cmd counts it).
+        if(_curCmd != NULL && _curCmd->state == WALTER_MODEM_CMD_STATE_PENDING) {
+          _processModemRSP(_curCmd, qItem.rsp);
+        } else {
+          if(_curCmd != NULL) {
+            s_pagerCntRspStaleCmd++;
+          }
+          _processModemRSP(NULL, qItem.rsp);
+        }
       }
     }
 
@@ -5143,10 +5177,16 @@ void WalterModem::tickleWatchdog(void)
   }
 }
 
+// PAGER PATCH: 1.20 (see PATCHES.md 1.20). maxAttempts/cmdTimeoutTicks
+// default to the library's own 3 x 30 s -- every pre-existing caller is
+// bit-for-bit unchanged; only xport_lte.cpp's liveness re-SUBSCRIBE passes a
+// shorter budget.
 bool WalterModem::sendCmd(const char* at_cmd, const char* at_cmd_rsp, WalterModemRsp* rsp,
-                          walterModemCb cb, void* args)
+                          walterModemCb cb, void* args, uint8_t maxAttempts,
+                          TickType_t cmdTimeoutTicks)
 {
-  _runCmd({ at_cmd }, at_cmd_rsp, rsp, cb, args);
+  _runCmd({ at_cmd }, at_cmd_rsp, rsp, cb, args, NULL, NULL, WALTER_MODEM_CMD_TYPE_TX_WAIT, NULL, 0,
+          NULL, maxAttempts, cmdTimeoutTicks);
   _returnAfterReply();
 }
 
@@ -5358,9 +5398,15 @@ bool WalterModem::configCEREGReports(WalterModemCEREGReportsType type, WalterMod
   _returnAfterReply();
 }
 
-bool WalterModem::getRSSI(WalterModemRsp* rsp, walterModemCb cb, void* args)
+// PAGER PATCH: 1.20 (see PATCHES.md 1.20). maxAttempts/cmdTimeoutTicks
+// default to the library's own 3 x 30 s -- every pre-existing caller is
+// bit-for-bit unchanged; only net.cpp's net_get_rssi() passes a shorter
+// budget.
+bool WalterModem::getRSSI(WalterModemRsp* rsp, walterModemCb cb, void* args, uint8_t maxAttempts,
+                          TickType_t cmdTimeoutTicks)
 {
-  _runCmd(arr("AT+CSQ"), "OK", rsp, cb, args);
+  _runCmd(arr("AT+CSQ"), "OK", rsp, cb, args, NULL, NULL, WALTER_MODEM_CMD_TYPE_TX_WAIT, NULL, 0,
+          NULL, maxAttempts, cmdTimeoutTicks);
   _returnAfterReply();
 }
 
@@ -5879,9 +5925,15 @@ bool WalterModem::configVoltageMonitor(WalterModemVoltageMonitorMode mode, uint1
   _returnAfterReply();
 }
 
-bool WalterModem::getVoltage(WalterModemRsp* rsp, walterModemCb cb, void* args)
+// PAGER PATCH: 1.20 (see PATCHES.md 1.20). maxAttempts/cmdTimeoutTicks
+// default to the library's own 3 x 30 s -- every pre-existing caller is
+// bit-for-bit unchanged; only net.cpp's net_get_battery_mv() passes a
+// shorter budget.
+bool WalterModem::getVoltage(WalterModemRsp* rsp, walterModemCb cb, void* args, uint8_t maxAttempts,
+                             TickType_t cmdTimeoutTicks)
 {
-  _runCmd(arr("AT+SQNVMON?"), "OK", rsp, cb, args);
+  _runCmd(arr("AT+SQNVMON?"), "OK", rsp, cb, args, NULL, NULL, WALTER_MODEM_CMD_TYPE_TX_WAIT, NULL,
+          0, NULL, maxAttempts, cmdTimeoutTicks);
   _returnAfterReply();
 }
 

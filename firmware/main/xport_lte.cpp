@@ -56,6 +56,33 @@ static constexpr uint16_t PAGER_MQTT_KEEPALIVE_S = 480;
 // broker's 720 s timeout -- one whole missed ping is survivable (§9.2).
 static constexpr uint32_t PAGER_MQTT_PING_S = 300;
 
+// wdt-stage8 (task's own arithmetic, PATCHES.md 1.20): the liveness
+// re-SUBSCRIBE (WalterModem::sendCmd(), both call sites below) can queue
+// behind an event-task mqttReceive() fetch (WALTER_MODEM_MQTT_EVENT_MESSAGE
+// case, below) -- at the library's unbounded 30 s x 3 default each, two such
+// commands stack to 180 s, more than the 95 s watchdog block-tick budget
+// (watchdog.c). A page fetch answers in ~20 ms on the bench, so 15 s is
+// ample; the sendCmd side has no retry value either (a second re-SUBSCRIBE
+// attempt is exactly what resub_verdict_check()'s own RETRY path already
+// does at a higher level, so a library-level retry here would just double
+// up). New worst case, ping behind a stuck receive: 10 (sendCmd) + 15
+// (mqttReceive) = 25 s.
+static constexpr uint8_t PAGER_LIVENESS_SENDCMD_ATTEMPTS = 1;
+static constexpr uint32_t PAGER_LIVENESS_SENDCMD_TIMEOUT_MS = 10000u;
+static constexpr uint8_t PAGER_MQTT_RECEIVE_ATTEMPTS = 1;
+static constexpr uint32_t PAGER_MQTT_RECEIVE_TIMEOUT_MS = 15000u;
+
+// phaseBG-report.log 160-215/486-546: a liveness re-SUBSCRIBE's own SUBACK
+// URC routinely lands ~130ms after the command answers "OK" (dump lines
+// 262-276, taken while the pager was already awake for other reasons) -- but
+// modes_run() was entering light sleep ~2ms after the "OK", deasserting RTS
+// before that URC could ever arrive, so the S2 retry above also went
+// unanswered and every liveness cycle paid for a full disconnect+TLS
+// reconnect. 3s (net_resub_hold(), below) is >>130ms of margin over the
+// worst bench sample without holding the loop awake anywhere near
+// RESUB_VERDICT_TIMEOUT_US's own 30s bound.
+static constexpr uint32_t PAGER_RESUB_HOLD_MS = 3000u;
+
 // PROTOCOL.md §3.3: hard envelope limit, both directions, for the
 // pager/{device_id}/... namespace.
 static constexpr uint16_t PAGER_MAX_PAYLOAD = 640;
@@ -197,6 +224,96 @@ uint32_t lte_get_resub_swallowed_count(void)
     return s_resub_first_swallowed;
 }
 
+// phaseBG-report.log fix (see PAGER_RESUB_HOLD_MS's own comment above): a
+// liveness re-SUBSCRIBE's SUBACK URC needs the pager awake (RTS asserted) to
+// ever arrive. s_resub_hold_sent_us mirrors s_resub_sent_us's "when was the
+// outstanding re-SUBSCRIBE issued" but is cleared only at the SUBSCRIBED
+// handler below (never by the ALIVE/DEAD verdicts or a DISCONNECTED event),
+// so lte_resub_hold() keeps reporting "held" for the fixed 3s window
+// regardless of what lte_service_session() itself decides about the
+// outstanding attempt in the meantime -- the hold's only job is "stay awake
+// long enough for the URC a wire-level fact (phaseBG) says is coming", not to
+// track the liveness state machine. s_resub_hold_gaveup latches once per
+// outstanding attempt so a stall past the 3s window is counted into
+// s_resub_hold_max_ms exactly once, not on every skip_sleep poll.
+static volatile int64_t s_resub_hold_sent_us = 0;
+static volatile bool s_resub_hold_gaveup = false;
+static volatile uint32_t s_resub_hold_engaged_count = 0;  // N: times the hold engaged
+static volatile uint32_t s_resub_hold_max_ms = 0;         // M: longest send->URC (or 3s give-up) span
+static volatile uint32_t s_resub_hold_suback_in_hold = 0; // K: SUBACKs that arrived while held
+
+// Called from both liveness re-SUBSCRIBE send sites (lte_service_session()),
+// right alongside their existing `s_resub_sent_us = now;`. Power effect: none
+// -- plain stores.
+static void lte_resub_hold_note_sent(int64_t now)
+{
+    s_resub_hold_sent_us = now;
+    s_resub_hold_gaveup = false;
+    s_resub_hold_engaged_count = s_resub_hold_engaged_count + 1; // volatile: avoid deprecated ++ (C++20)
+}
+
+// Called from the SUBSCRIBED handler below, exactly where s_resub_wait is
+// cleared -- the +SQNSMQTTONSUBSCRIBE URC this hold exists to wait for.
+// Power effect: none -- plain reads/stores.
+static void lte_resub_hold_note_suback(int64_t now)
+{
+    if (s_resub_hold_sent_us == 0) {
+        return;
+    }
+    uint32_t held_ms = (uint32_t) ((now - s_resub_hold_sent_us) / 1000);
+    if (held_ms > s_resub_hold_max_ms) {
+        s_resub_hold_max_ms = held_ms;
+    }
+    if (held_ms < PAGER_RESUB_HOLD_MS) {
+        s_resub_hold_suback_in_hold = s_resub_hold_suback_in_hold + 1; // volatile: avoid deprecated ++ (C++20)
+    }
+    s_resub_hold_sent_us = 0;
+}
+
+// net.h's net_resub_hold(): true while a liveness re-SUBSCRIBE sent by
+// lte_service_session() is still within PAGER_RESUB_HOLD_MS of its own send
+// time and has not yet had its SUBACK handled (lte_resub_hold_note_suback()
+// above). False once the SUBACK lands, once the hold window itself elapses
+// (the loop gives up and reverts to its ordinary sleep policy), or when
+// nothing is outstanding -- s_resub_hold_sent_us is 0 on the WiFi transport
+// (this file's send sites never run), so this is false there too, matching
+// net_resub_hold()'s own doc comment. Power effect: none of its own -- it
+// only decides whether the *caller* (modes.c) is allowed to light-sleep this
+// iteration.
+bool lte_resub_hold(void)
+{
+    if (s_resub_hold_sent_us == 0) {
+        return false;
+    }
+    int64_t elapsed_us = esp_timer_get_time() - s_resub_hold_sent_us;
+    if (elapsed_us >= (int64_t) PAGER_RESUB_HOLD_MS * 1000) {
+        if (!s_resub_hold_gaveup) {
+            s_resub_hold_gaveup = true;
+            if (PAGER_RESUB_HOLD_MS > s_resub_hold_max_ms) {
+                s_resub_hold_max_ms = PAGER_RESUB_HOLD_MS;
+            }
+        }
+        return false;
+    }
+    return true;
+}
+
+// net_internal.h declares this for net.cpp's net_get_resub_hold_stats() to
+// call, for the sleeptest report (Task step 4). Power effect: none -- three
+// plain reads.
+void lte_get_resub_hold_stats(uint32_t *holds, uint32_t *max_hold_ms, uint32_t *suback_in_hold)
+{
+    if (holds) {
+        *holds = s_resub_hold_engaged_count;
+    }
+    if (max_hold_ms) {
+        *max_hold_ms = s_resub_hold_max_ms;
+    }
+    if (suback_in_hold) {
+        *suback_in_hold = s_resub_hold_suback_in_hold;
+    }
+}
+
 static volatile bool s_handler_busy = false; // true while the MQTT event
                                              // handler is inside an AT
                                              // transaction or the app
@@ -313,6 +430,7 @@ void pager_mqtt_event_handler(WMMQTTEventType event, const WMMQTTEventData *data
         s_last_uplink_us = esp_timer_get_time();
         if (s_resub_wait) {
             s_resub_wait = false;
+            lte_resub_hold_note_suback(s_last_uplink_us); // phaseBG: the URC net_resub_hold() was waiting for
             s_resub_second_try = false; // S2: this liveness cycle is resolved, whichever attempt it was
             if (s_resub_is_resume) {
                 s_resub_is_resume = false;
@@ -405,15 +523,26 @@ void pager_mqtt_event_handler(WMMQTTEventType event, const WMMQTTEventData *data
                 uint16_t drain_len = (data->msg_length < sizeof(s_mqtt_rx_buf))
                                          ? data->msg_length
                                          : (uint16_t) sizeof(s_mqtt_rx_buf);
-                WalterModem::mqttReceive(data->topic, data->mid, s_mqtt_rx_buf, drain_len);
+                // wdt-stage8 (PATCHES.md 1.20): bounded to 1 attempt / 15 s --
+                // see PAGER_MQTT_RECEIVE_ATTEMPTS's own comment above.
+                WalterModem::mqttReceive(data->topic, data->mid, s_mqtt_rx_buf, drain_len, NULL,
+                                         NULL, NULL, PAGER_MQTT_RECEIVE_ATTEMPTS,
+                                         pdMS_TO_TICKS(PAGER_MQTT_RECEIVE_TIMEOUT_MS));
                 s_handler_busy = false;
                 break;
             }
         }
 
         // L1/L2: never mqttDidRing(). Fetch by the real mid from this event.
-        if (!WalterModem::mqttReceive(data->topic, data->mid, s_mqtt_rx_buf, data->msg_length)) {
-            ESP_LOGI(TAG, "mqttReceive() failed for mid=%d", data->mid);
+        // wdt-stage8 (PATCHES.md 1.20): bounded to 1 attempt / 15 s -- a page
+        // fetch answers in ~20 ms on the bench, so a stuck one is now bounded
+        // instead of costing the library's 90 s default; the page is then
+        // re-fetchable only via a fresh URC (WARN, not INFO: this is a lost
+        // fetch, not routine chatter).
+        if (!WalterModem::mqttReceive(data->topic, data->mid, s_mqtt_rx_buf, data->msg_length, NULL,
+                                      NULL, NULL, PAGER_MQTT_RECEIVE_ATTEMPTS,
+                                      pdMS_TO_TICKS(PAGER_MQTT_RECEIVE_TIMEOUT_MS))) {
+            ESP_LOGW(TAG, "mqttReceive() failed for mid=%d", data->mid);
             s_handler_busy = false;
             break;
         }
@@ -660,11 +789,15 @@ static void lte_service_session(void)
         s_resub_first_swallowed = s_resub_first_swallowed + 1; // volatile: avoid deprecated ++ (C++20)
         char cmd[32 + sizeof(s_down_topic)];
         snprintf(cmd, sizeof(cmd), "AT+SQNSMQTTSUBSCRIBE=0,\"%s\",1", s_down_topic);
-        if (WalterModem::sendCmd(cmd)) {
+        // wdt-stage8 (PATCHES.md 1.20): bounded to 1 attempt / 10 s -- see
+        // PAGER_LIVENESS_SENDCMD_ATTEMPTS's own comment above.
+        if (WalterModem::sendCmd(cmd, "OK", NULL, NULL, NULL, PAGER_LIVENESS_SENDCMD_ATTEMPTS,
+                                 pdMS_TO_TICKS(PAGER_LIVENESS_SENDCMD_TIMEOUT_MS))) {
             ESP_LOGI(TAG, "liveness ping got no SUBACK in 30s: re-sending once (idle %llds) "
                           "before declaring the session dead",
                      (long long) ((now - s_last_uplink_us) / 1000000));
             s_resub_sent_us = now;
+            lte_resub_hold_note_sent(now); // phaseBG: hold the loop awake for this retry's SUBACK too
             s_resub_second_try = true;
             return;
         }
@@ -714,12 +847,16 @@ static void lte_service_session(void)
     // for both the resume-repair case and the routine liveness ping.
     char cmd[32 + sizeof(s_down_topic)];
     snprintf(cmd, sizeof(cmd), "AT+SQNSMQTTSUBSCRIBE=0,\"%s\",1", s_down_topic);
-    if (!WalterModem::sendCmd(cmd)) {
+    // wdt-stage8 (PATCHES.md 1.20): bounded to 1 attempt / 10 s -- see
+    // PAGER_LIVENESS_SENDCMD_ATTEMPTS's own comment above.
+    if (!WalterModem::sendCmd(cmd, "OK", NULL, NULL, NULL, PAGER_LIVENESS_SENDCMD_ATTEMPTS,
+                              pdMS_TO_TICKS(PAGER_LIVENESS_SENDCMD_TIMEOUT_MS))) {
         ESP_LOGI(TAG, "liveness ping: re-SUBSCRIBE could not be sent (idle %llds)%s",
                  (long long) idle_s, resume_repair ? " (resume repair)" : "");
         return;
     }
     s_resub_sent_us = now;
+    lte_resub_hold_note_sent(now); // phaseBG: hold the loop awake for this send's SUBACK
     s_resub_wait = true;
     s_resub_second_try = false; // S2: a brand new liveness cycle, not a retry of an old one
     s_resub_pending = false;

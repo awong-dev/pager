@@ -4471,11 +4471,18 @@ public:
    * @param[out] rsp Pointer to the response structure to save the result in.
    * @param[in] cb Callback function, if not NULL this function will not block.
    * @param[in] args Arguments to pass to the callback.
+   * @param maxAttempts PAGER PATCH: 1.20. Attempts for this command; defaults to the library's own
+   * WALTER_MODEM_DEFAULT_CMD_ATTEMPTS (3), i.e. unchanged for every existing caller.
+   * @param cmdTimeoutTicks PAGER PATCH: 1.20. Per-attempt timeout in ticks; 0 (every existing
+   * caller) means the library's CONFIG_WALTER_MODEM_CMD_TIMEOUT_MS default (30 s).
+   * xport_lte.cpp's liveness re-SUBSCRIBE passes a short budget -- see that call site.
    *
    * @return True when the expected response is received, false otherwise.
    */
   static bool sendCmd(const char* at_cmd, const char* at_cmd_rsp = "OK", WalterModemRsp* rsp = NULL,
-                      walterModemCb cb = NULL, void* args = NULL);
+                      walterModemCb cb = NULL, void* args = NULL,
+                      uint8_t maxAttempts = WALTER_MODEM_DEFAULT_CMD_ATTEMPTS,
+                      TickType_t cmdTimeoutTicks = 0);
 
   /**
    * @brief Software reset the modem and wait for it to reset, this is required when switching
@@ -4599,10 +4606,17 @@ public:
    * @param[out] rsp Pointer to the response structure to save the result in.
    * @param[in] cb Callback function, if not NULL this function will not block.
    * @param[in] args Arguments to pass to the callback.
+   * @param maxAttempts PAGER PATCH: 1.20. Attempts for this "AT+CSQ"; defaults to the library's own
+   * WALTER_MODEM_DEFAULT_CMD_ATTEMPTS (3), i.e. unchanged for every existing caller.
+   * @param cmdTimeoutTicks PAGER PATCH: 1.20. Per-attempt timeout in ticks; 0 (every existing
+   * caller) means the library's CONFIG_WALTER_MODEM_CMD_TIMEOUT_MS default (30 s). net.cpp's
+   * net_get_rssi() passes a short budget -- see that call site.
    *
    * @return True on "OK" response, false otherwise.
    */
-  static bool getRSSI(WalterModemRsp* rsp = NULL, walterModemCb cb = NULL, void* args = NULL);
+  static bool getRSSI(WalterModemRsp* rsp = NULL, walterModemCb cb = NULL, void* args = NULL,
+                      uint8_t maxAttempts = WALTER_MODEM_DEFAULT_CMD_ATTEMPTS,
+                      TickType_t cmdTimeoutTicks = 0);
 
   /**
    * @brief Get extended RSRQ and RSRP signal quality.
@@ -4815,11 +4829,19 @@ public:
    * @param[out] rsp Pointer to the response structure to save the result in.
    * @param[in] cb Callback function, if not NULL this function will not block.
    * @param[in] args Arguments to pass to the callback.
+   * @param maxAttempts PAGER PATCH: 1.20. Attempts for this "AT+SQNSMQTTRCVMESSAGE"; defaults to
+   * the library's own WALTER_MODEM_DEFAULT_CMD_ATTEMPTS (3), i.e. unchanged for every existing
+   * caller.
+   * @param cmdTimeoutTicks PAGER PATCH: 1.20. Per-attempt timeout in ticks; 0 (every existing
+   * caller) means the library's CONFIG_WALTER_MODEM_CMD_TIMEOUT_MS default (30 s).
+   * xport_lte.cpp's event-task fetch passes a short budget -- see that call site.
    *
    * @return True on "OK" response, false otherwise.
    */
   static bool mqttReceive(const char* topic, int message_id, uint8_t* buf, size_t buf_size,
-                          WalterModemRsp* rsp = NULL, walterModemCb cb = NULL, void* args = NULL);
+                          WalterModemRsp* rsp = NULL, walterModemCb cb = NULL, void* args = NULL,
+                          uint8_t maxAttempts = WALTER_MODEM_DEFAULT_CMD_ATTEMPTS,
+                          TickType_t cmdTimeoutTicks = 0);
 
 #endif
 #pragma endregion
@@ -6175,10 +6197,17 @@ public:
    * @param[out] rsp Pointer to the response structure to save the result in.
    * @param[in] cb Callback function, if not NULL this function will not block.
    * @param[in] args Arguments to pass to the callback.
+   * @param maxAttempts PAGER PATCH: 1.20. Attempts for this "AT+SQNVMON?"; defaults to the
+   * library's own WALTER_MODEM_DEFAULT_CMD_ATTEMPTS (3), i.e. unchanged for every existing caller.
+   * @param cmdTimeoutTicks PAGER PATCH: 1.20. Per-attempt timeout in ticks; 0 (every existing
+   * caller) means the library's CONFIG_WALTER_MODEM_CMD_TIMEOUT_MS default (30 s). net.cpp's
+   * net_get_battery_mv() passes a short budget -- see that call site.
    *
    * @return True on "OK" response, false otherwise.
    */
-  static bool getVoltage(WalterModemRsp* rsp = NULL, walterModemCb cb = NULL, void* args = NULL);
+  static bool getVoltage(WalterModemRsp* rsp = NULL, walterModemCb cb = NULL, void* args = NULL,
+                         uint8_t maxAttempts = WALTER_MODEM_DEFAULT_CMD_ATTEMPTS,
+                         TickType_t cmdTimeoutTicks = 0);
 
 #pragma endregion // CLASS PUBLIC METHODS VOLTAGE_MONITOR
 #pragma region CLASS PUBLIC METHODS SMS

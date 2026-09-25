@@ -630,3 +630,86 @@ and one counter incremented. What it *enables*: the probe's `OK` is credited on 
 actually arrives, instead of falling through to the 15 s wait `docs/SLEEP_PAGE_LOSS_BRIEF.md`
 attributes to this bug -- that is where the time (and the page) was actually being lost. No
 change to the wake bytes, the probe, the wait, or any cadence constant.
+
+## 1.19 A finished command left in `_curCmd` gets re-finished by a stray post-wake response and wedges the command slot forever (`src/WalterModem.cpp`, `src/WalterDefines.h`)
+
+24/25 Sep task-watchdog resets, `stage=mqtt status/retry` (relay status log, `rst=6`), pager
+untouched on the bench, 5-6 min after boot. `docs/SLEEP_PAGE_LOSS_BRIEF.md`'s own flight-recorder
+evidence (patch 1.17, `build/bench-logs/phaseBE-report.log`) already showed the mechanism next
+door: wakes c06/c15/c17 drew a `+CME ERROR: 4` from the modem right after the wake bytes'
+`"\r\n"`; wakes c07/c16 did not. Since patch 1.18 fixed the leading-0xFF glue bug, that
+`"+CME ERROR: 4"` line now parses cleanly on its own -- which turned an already-latent race into
+a real one.
+
+**Mechanism.** `_finishModemCMD()` (`WalterModem.cpp`) moves a command to
+`WALTER_MODEM_CMD_STATE_SYNC_LOCK_NOTIFIED` ("done, waiting for the caller") and notifies the
+caller's condition variable; the blocking caller (`WalterDefines.h`'s `_returnAfterReply()`) wakes,
+reads the result, and only THEN sets the command's state to `WALTER_MODEM_CMD_STATE_COMPLETE` and
+unlocks. Between those two moments -- and, worse, between a command actually finishing and
+`_cmdProcessingTask`'s own next loop iteration clearing `_curCmd` at all (`WalterModem.cpp`,
+the `SYNC_LOCK_NOTIFIED`/`COMPLETE` cases) -- the finished command is still `_curCmd`. FreeRTOS
+ticks stop during light sleep, so this window can span an entire sleep-and-wake cycle: the command
+processing task is simply not scheduled to advance past it. On wake, the "\r\n" wake bytes
+(`net.cpp`) sometimes draw a `+CME ERROR: 4` from the modem (phaseBE c06/c15/c17); before this
+patch, `_cmdProcessingTask`'s response-pairing site (`else if(qItem.rsp != NULL) {
+_processModemRSP(_curCmd, qItem.rsp); }`) handed that stray line to whatever `_curCmd` happened to
+be -- the already-finished command sitting in the slot. The error handler
+(`_processModemRSP()`'s error-line region) calls `_finishModemCMD()` on it a SECOND time, which
+sets its state back to `SYNC_LOCK_NOTIFIED` and calls `notify_one()` on a condition variable
+nobody is waiting on any more (the original caller already consumed the first notification,
+already returned, and its `std::unique_lock` is gone). `_cmdProcessingTask`'s own switch statement
+then hits the `SYNC_LOCK_NOTIFIED` case forever ("We need to wait until the other thread is
+ready") -- the other thread never comes back. `_curCmd` is wedged permanently: `_curCmd = qItem.cmd`
+only runs `if(_curCmd == NULL)`, so every later command queues behind a slot that will never
+empty. The first blocking command downstream (the liveness `sendCmd` re-SUBSCRIBE,
+`xport_lte.cpp`) waits forever, and the task watchdog fires roughly 155 s later in whichever stage
+happens to be running (`watchdog.c`'s 95 s block-tick budget plus the task watchdog's own timeout
+from the last real feed) -- `stage=mqtt status/retry` in the observed resets.
+
+**Fix.** At the exact response-pairing site (`_cmdProcessingTask`, the `qItem.rsp != NULL`
+branch): pair a response with `_curCmd` only when `_curCmd != NULL && _curCmd->state ==
+WALTER_MODEM_CMD_STATE_PENDING` -- the one state that means "sent, waiting for its reply". Any
+other state (already finished and waiting for its caller, mid-retry, or a stale
+`FREE`/`POOLED`/`NEW` leftover) means this response cannot legitimately belong to it, so it is
+paired with `NULL` instead. This is already a safe, exercised path: patch 1.1 drops an error line
+with no command pending without crashing, and a stray `OK` with no command is freed unused (patch
+1.15's `rsp_no_cmd` counts exactly this case).
+
+**Instrumentation.** A new free-running counter, `s_pagerCntRspStaleCmd`
+(`walter_modem_pager_counters_t.rsp_stale_cmd`, next to patch 1.15's `rsp_no_cmd`), incremented at
+the same site whenever `_curCmd` is non-NULL but not `PENDING` -- i.e. every time this fix actually
+prevented a re-finish. `firmware/main/modes.c`'s `stall discriminator:` sleeptest report line
+prints it right after `rsp_no_cmd`, so a non-zero count on a bench run is direct confirmation the
+race fired (and, before this patch existed to prevent it, would have wedged the command slot).
+
+**Power effect**: a large saving on the (previously silent) wedge case -- what used to end in a
+~155 s task-watchdog stall and a full reset now costs nothing beyond the one comparison and
+(rarely) one counter increment this fix adds to a code path that already ran on every response.
+No extra AT traffic, no change to the wake bytes, the probe, or any retry/timeout constant.
+
+## 1.20 Optional per-call attempt/timeout budget on `getVoltage()`, `getRSSI()`, `sendCmd()` and `mqttReceive()` (`src/WalterModem.cpp`, `src/WalterModem.h`, `src/proto/WalterMQTT.cpp`)
+
+Companion to 1.19 above (same task, same evidence): patch 1.19 closes the mechanism that let one
+wedged command block every later one; this patch bounds how long any single one of these four
+commands can legitimately block in the first place, the same `maxAttempts`/`cmdTimeoutTicks`
+pattern patches 1.13/1.14 already established for the MQTT publish/subscribe/disconnect/config
+commands and `checkComm()`. Without it, a genuinely slow (not wedged) reply to any of these four
+still costs the library's global default, `CONFIG_WALTER_MODEM_CMD_TIMEOUT_MS` x
+`WALTER_MODEM_DEFAULT_CMD_ATTEMPTS` = 30 s x 3 = 90 s, and the task brief's own arithmetic shows
+two such 90 s waits inside one 95 s watchdog stage-tick budget still stalls it (`watchdog.c`'s
+`WD_MODEM_BLOCK_BUDGET_MS`) even with 1.19 applied.
+
+**Fix.** `getVoltage()` and `getRSSI()` (`src/WalterModem.cpp`) and `sendCmd()` (`src/WalterModem.cpp`)
+each gain the same two optional trailing parameters 1.13/1.14 added to `checkComm()`/`mqttPublish()`
+etc: `uint8_t maxAttempts = WALTER_MODEM_DEFAULT_CMD_ATTEMPTS, TickType_t cmdTimeoutTicks = 0`,
+passed straight through to `_runCmd`/`_queueModemCMD` exactly as those patches did. `mqttReceive()`
+(`src/proto/WalterMQTT.cpp`) gains the same two parameters on both of its branches (qos-0 and
+qos>0). Every existing caller that does not pass the new parameters keeps the library's exact
+30 s x 3 default -- bit-for-bit unchanged, same guarantee 1.13/1.14 gave. `firmware/main`'s call
+sites (net.cpp's `net_get_battery_mv()`/`net_get_rssi()`, xport_lte.cpp's liveness `sendCmd()` and
+`mqttReceive()`) are the only callers that pass a shorter budget -- see this task's own arithmetic
+at each site for the numbers.
+
+**Power effect**: none of its own -- purely additional optional parameters with defaults that
+reproduce every existing caller's behaviour exactly. The power effect belongs to whichever caller
+actually passes a shorter budget (documented at each of those call sites in `firmware/main`).

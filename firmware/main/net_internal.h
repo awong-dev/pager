@@ -67,6 +67,19 @@ uint32_t lte_get_publish_ring(net_publish_ring_entry_t *out, uint32_t cap);
  * net_get_resub_swallowed_count() (net.h) forwards to this directly. */
 uint32_t lte_get_resub_swallowed_count(void);
 
+/* phaseBG-report.log fix: true while a liveness re-SUBSCRIBE's SUBACK is
+ * still awaited within xport_lte.cpp's own PAGER_RESUB_HOLD_MS window.
+ * net.cpp's net_resub_hold() (net.h) forwards to this directly -- always
+ * safe to call regardless of the active transport, same as
+ * lte_get_resub_swallowed_count() above (false/0 on WiFi, where these
+ * statics are never touched). */
+bool lte_resub_hold(void);
+
+/* Same fix's sleeptest-report counters (Task step 4). net.cpp's
+ * net_get_resub_hold_stats() (net.h) forwards to this directly. Any of the
+ * three out-pointers may be NULL. */
+void lte_get_resub_hold_stats(uint32_t *holds, uint32_t *max_hold_ms, uint32_t *suback_in_hold);
+
 /* The MQTT event handler itself (moved to xport_lte.cpp), registered from
  * net.cpp's net_bringup() and net_bootstrap_attach() via
  * WalterModem::setMQTTEventHandler(). */

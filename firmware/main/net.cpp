@@ -1547,13 +1547,32 @@ extern "C" bool net_get_clock(int64_t *epoch_s)
     return true;
 }
 
+// wdt-stage8 (task's own arithmetic): the reconnect re-announce path
+// (publish_status_online() -> build_status_cbor() -> these two getters,
+// then a publish and a loc flush) can, at the library's unbounded 30 s x 3
+// default, sit in modem waits long enough by itself to blow the 95 s
+// watchdog block-tick budget (watchdog.c) twice over in one stage. Neither
+// reading needs a retry -- refresh_batt_mv()/refresh_rssi_dbm() (modes.c)
+// already fall back to the last known-good value (or a fixed placeholder)
+// on any failure, so a bounded single attempt costs nothing a caller
+// depends on. New worst case for the whole re-announce pass:
+// 5 (getVoltage) + 5 (getRSSI) + 20 (publish) + 20 (loc_flush_pending_answer)
+// = 50 s, comfortably under the 95 s budget even if every step stalls.
+#define PAGER_VMON_ATTEMPTS 1
+#define PAGER_VMON_TIMEOUT_MS 5000u
+#define PAGER_CSQ_ATTEMPTS 1
+#define PAGER_CSQ_TIMEOUT_MS 5000u
+
 extern "C" bool net_get_battery_mv(int *batt_mv)
 {
     // Power effect: one AT round trip ("AT+SQNVMON?" / "+SQNVMON: ..."), no
     // RRC of its own - same class as net_check(). Requires
     // configVoltageMonitor() to have been called once already (net_init()).
+    // wdt-stage8 (PATCHES.md 1.20): bounded to 1 attempt / 5 s -- see the
+    // comment above PAGER_VMON_ATTEMPTS.
     WalterModemRsp rsp = {};
-    if (!WalterModem::getVoltage(&rsp)) {
+    if (!WalterModem::getVoltage(&rsp, NULL, NULL, PAGER_VMON_ATTEMPTS,
+                                 pdMS_TO_TICKS(PAGER_VMON_TIMEOUT_MS))) {
         return false;
     }
     if (rsp.type != WALTER_MODEM_RSP_DATA_TYPE_VOLTAGE) {
@@ -1582,8 +1601,11 @@ extern "C" bool net_get_rssi(int *dbm)
     // AT+CSQ's rawRSSI==99 ("not known/not detectable") converts to +85,
     // outside the documented range; treated here as "no reading" rather
     // than fed into the bars table as if it were a 4-bar signal.
+    // wdt-stage8 (PATCHES.md 1.20): bounded to 1 attempt / 5 s -- see the
+    // comment above PAGER_VMON_ATTEMPTS (net_get_battery_mv(), above).
     WalterModemRsp rsp = {};
-    if (!WalterModem::getRSSI(&rsp)) {
+    if (!WalterModem::getRSSI(&rsp, NULL, NULL, PAGER_CSQ_ATTEMPTS,
+                              pdMS_TO_TICKS(PAGER_CSQ_TIMEOUT_MS))) {
         return false;
     }
     if (rsp.type != WALTER_MODEM_RSP_DATA_TYPE_RSSI) {
@@ -1697,6 +1719,9 @@ extern "C" net_pager_counters_t net_get_pager_counters(void)
     // Patch 1.18: see WalterDefines.h's own comment on
     // walter_modem_pager_counters_t.
     out.glitch_dropped = c.glitch_dropped;
+    // Patch 1.19: see WalterDefines.h's own comment on
+    // walter_modem_pager_counters_t.
+    out.rsp_stale_cmd = c.rsp_stale_cmd;
     return out;
 }
 
@@ -1713,6 +1738,19 @@ extern "C" uint32_t net_get_resub_swallowed_count(void)
     // S2: same reasoning as net_get_publish_ring() above -- the counter
     // lives in xport_lte.cpp (the only transport this fix applies to).
     return lte_get_resub_swallowed_count();
+}
+
+extern "C" bool net_resub_hold(void)
+{
+    // phaseBG: same reasoning as net_get_resub_swallowed_count() above -- the
+    // hold state lives in xport_lte.cpp (the only transport a liveness
+    // re-SUBSCRIBE is ever sent on).
+    return lte_resub_hold();
+}
+
+extern "C" void net_get_resub_hold_stats(uint32_t *holds, uint32_t *max_hold_ms, uint32_t *suback_in_hold)
+{
+    lte_get_resub_hold_stats(holds, max_hold_ms, suback_in_hold);
 }
 
 extern "C" bool net_check_sim(void)

@@ -5,8 +5,12 @@
 
 #include "book.h"
 
+#include <assert.h>
 #include <string.h>
 
+#include "cafetch.h" /* cafetch_parse_url() — v0.4 §3.7's own "must pass cafetch_parse_url"
+                      * requirement for a nudge's `url`; cafetch.h's pure section has no
+                      * ESP-IDF dependency either, so this stays host-testable. */
 #include "cbor.h"
 
 // ---------------------------------------------------------------------------
@@ -63,6 +67,8 @@ bool book_name_valid(const char *name, size_t len)
 #define BK_D 17
 #define BK_C 18
 #define BK_P 19
+#define BK_MORE 20 /* v0.4 §3.7/§10: fetch-response-only, "c[] truncated at 32 server-side" */
+#define BK_URL 57  /* v0.4 §3.7/§10: nudge-only, the fetch endpoint */
 
 #define CONTACT_KEY_A 0
 #define CONTACT_KEY_N 1
@@ -173,19 +179,9 @@ static bool parse_request(cbor_r_t *r, book_request_t *out)
     return out->name[0] != '\0'; // `n` is required, §3.1
 }
 
-/* Parsed shape of one `kind:"book"` `/down` envelope — mirrors lock.h's
- * `lock_parse_cfg()` contract exactly: `buf` MUST already have passed
- * auth_verify() when signed (trailing `sig` bytes trimmed, map header's
- * declared pair count left untouched), `sig_pair_present` stands in for
- * `ident_get_flags() & IDENT_FLAG_REQ_SIG` so this stays host-testable.
- * Returns false if `buf` does not decode as a well-formed `kind:"book"`
- * envelope — covers both "not book" and "book but malformed", deliberately
- * conflated the same way lock_parse_cfg() documents (the caller,
- * book_ingest_cbor(), falls through to msg.c's own ingest either way).
- * `out->id` is truncated-away silently if it doesn't fit (only used for
- * acking, never rendered); contacts/requests beyond the cap are parsed (so
- * the buffer position stays correct) but not copied into `out`. */
-static bool book_parse(const uint8_t *buf, uint16_t len, bool sig_pair_present, book_parsed_t *out)
+// See book.h's own doc comment for book_parse() (why it is public, not
+// file-private like the rest of this section) and book_carry_nicknames().
+bool book_parse(const uint8_t *buf, uint16_t len, bool sig_pair_present, book_parsed_t *out)
 {
     memset(out, 0, sizeof(*out));
 
@@ -202,6 +198,8 @@ static bool book_parse(const uint8_t *buf, uint16_t len, bool sig_pair_present, 
     }
 
     bool is_book = false;
+    bool have_c = false; // v0.4 §3.7: the KEY's presence, not the array length — an empty
+    bool have_p = false; // `c:[]`/`p:[]` with the key present is still a full book, not a nudge.
 
     for (uint32_t i = 0; i < count; i++) {
         uint32_t key;
@@ -250,6 +248,7 @@ static bool book_parse(const uint8_t *buf, uint16_t len, bool sig_pair_present, 
             break;
         }
         case BK_C: {
+            have_c = true;
             uint32_t n;
             if (!cbor_r_array(&r, &n)) {
                 return false;
@@ -261,11 +260,14 @@ static bool book_parse(const uint8_t *buf, uint16_t len, bool sig_pair_present, 
                 }
                 if (out->n_contacts < BOOK_MAX_CONTACTS) {
                     out->contacts[out->n_contacts++] = c;
-                } // else: over cap — parsed (buffer position correct) but dropped
+                } // else: over cap — parsed (buffer position correct) but dropped ("keep the
+                  // first 32", §3.7 — devcfg.py's own `c[]` ordering already puts `d` then
+                  // groups first, so "first 32" is never an arbitrary truncation).
             }
             break;
         }
         case BK_P: {
+            have_p = true;
             uint32_t n;
             if (!cbor_r_array(&r, &n)) {
                 return false;
@@ -281,6 +283,34 @@ static bool book_parse(const uint8_t *buf, uint16_t len, bool sig_pair_present, 
             }
             break;
         }
+        case BK_N: { // §14.7 fetch response only — book_apply_fetched() compares this against
+                     // the request's own `X-N`; harmless to capture on the legacy `/down` path
+                     // too (already signed-envelope `n`, simply unused there).
+            uint64_t v;
+            if (!cbor_r_uint(&r, &v)) {
+                return false;
+            }
+            out->n = v;
+            break;
+        }
+        case BK_MORE: { // §14.7 fetch response only — log-only, never a rejection reason.
+            bool v;
+            if (!cbor_r_bool(&r, &v)) {
+                return false;
+            }
+            out->more = v;
+            break;
+        }
+        case BK_URL: { // v0.4 §3.7 nudge only.
+            const char *s;
+            size_t slen;
+            if (!cbor_r_tstr(&r, &s, &slen) || slen == 0 || slen >= sizeof(out->nudge_url)) {
+                return false;
+            }
+            memcpy(out->nudge_url, s, slen);
+            out->nudge_url[slen] = '\0';
+            break;
+        }
         default:
             if (!cbor_r_skip(&r)) {
                 return false;
@@ -289,12 +319,52 @@ static bool book_parse(const uint8_t *buf, uint16_t len, bool sig_pair_present, 
         }
     }
 
+    if (is_book) {
+        // v0.4 §3.7: "A `book` carrying neither `c` nor `p` is a nudge; a
+        // `book` carrying `c` is §3.2's full book." — is_nudge only when
+        // BOTH keys are absent from the wire (have_c/have_p track key
+        // presence, not array length, per this function's own doc comment).
+        out->is_nudge = !have_c && !have_p;
+        if (out->is_nudge) {
+            if (out->nudge_url[0] == '\0') {
+                return false; // missing `url` — malformed nudge, §3.7
+            }
+            // "must pass cafetch_parse_url" (§3.7) — validated here (fail
+            // fast, no ack on a bad nudge); bookpull.c re-parses the URL
+            // itself right before dialling (host+path are not carried in
+            // book_parsed_t, only the raw string, so a pending nudge
+            // surviving a light-sleep cycle costs no extra RAM for them).
+            char scratch_host[CAFETCH_HOST_MAX];
+            uint16_t scratch_port;
+            char scratch_path[CAFETCH_PATH_MAX];
+            if (!cafetch_parse_url(out->nudge_url, scratch_host, sizeof(scratch_host), &scratch_port,
+                                   scratch_path, sizeof(scratch_path))) {
+                return false; // malformed nudge — bad url, §3.7
+            }
+        }
+    }
+
     return is_book;
+}
+
+void book_carry_nicknames(book_contact_t *new_contacts, uint8_t new_n, const book_contact_t *old_contacts,
+                          uint8_t old_n)
+{
+    for (uint8_t i = 0; i < new_n; i++) {
+        for (uint8_t j = 0; j < old_n; j++) {
+            if (strncmp(old_contacts[j].alias, new_contacts[i].alias, BOOK_ALIAS_MAX) == 0) {
+                strncpy(new_contacts[i].nickname, old_contacts[j].nickname, sizeof(new_contacts[i].nickname) - 1);
+                new_contacts[i].nickname[sizeof(new_contacts[i].nickname) - 1] = '\0';
+                break;
+            }
+        }
+    }
 }
 
 #ifdef ESP_PLATFORM
 
 #include "auth.h"
+#include "bookpull.h" // v0.4 §3.7: bookpull_on_nudge() — see book_ingest_cbor()'s own comment
 #include "esp_log.h"
 #include "esp_random.h"
 #include "ident.h"
@@ -357,6 +427,20 @@ static uint64_t next_up_n_locked(bool *wrapped)
     return n;
 }
 
+uint64_t book_next_up_n(bool *wrapped)
+{
+    bool wrapped_local = false;
+    uint64_t n = next_up_n_locked(&wrapped_local);
+    if (wrapped_local && s_on_wrap) {
+        s_on_wrap(); // same "caller must bump n_epoch before the next draw" contract
+                     // book_request()'s own signed-publish path already follows below.
+    }
+    if (wrapped) {
+        *wrapped = wrapped_local;
+    }
+    return n;
+}
+
 // ---------------------------------------------------------------------------
 // NVS namespace "book" (docs/DEVICE_PLAN.md §4.3): one blob, no per-field
 // keys (contrast lock.c/msg.c's own namespaces, which use several small
@@ -369,7 +453,17 @@ static uint64_t next_up_n_locked(bool *wrapped)
 // ---------------------------------------------------------------------------
 
 #define BOOK_NS "book"
-#define BOOK_BLOB_VERSION 1u
+// v0.4 §3.7: 1 -> 2. BOOK_MAX_CONTACTS grew 10 -> 32, so the old (smaller)
+// blob layout no longer matches sizeof(book_blob_t); load_from_nvs()'s own
+// `len == sizeof(tmp) && tmp.layout == BOOK_BLOB_VERSION` check already
+// discards anything that does not match BOTH, so bumping this is what makes
+// an old v1 blob (any size, any content) read back as "never applied a
+// book yet" instead of a partial/misaligned re-interpretation of the new,
+// larger struct. That is exactly `book_get_bv() == 0`, which §5.3 already
+// treats as "device rebuilt/factory-reset its book" and re-nudges
+// (`bookVersion` still 0 -> bumped to 1 -> published) on the next online
+// `/status` — no separate migration path is needed.
+#define BOOK_BLOB_VERSION 2u
 
 typedef struct {
     uint32_t layout;
@@ -381,6 +475,17 @@ typedef struct {
     book_contact_t contacts[BOOK_MAX_CONTACTS];
     book_request_t requests[BOOK_MAX_REQUESTS];
 } book_blob_t;
+
+// v0.4 §3.7: no pre-existing assert on this blob's size predates this task
+// (grep found none — book.h's own module comment explains why: "No RTC
+// storage", so nothing here was ever RTC-budget-constrained the way
+// pager_rtc_t is, modes.c:339). Added here as a safety net now that
+// BOOK_MAX_CONTACTS's 10->32 growth roughly triples sizeof(book_blob_t):
+// bounds the one NVS blob persist_snapshot() writes to something well
+// inside a single NVS page/the §3.7 fetch response's own 4096-byte body cap,
+// so a further constant bump cannot silently blow past either without a
+// build-time failure.
+_Static_assert(sizeof(book_blob_t) <= 4096, "book NVS blob exceeds the 4 KB budget");
 
 // RAM cache, guarded by s_lock/s_unlock (the same shared cross-task mutex
 // book_bind() hands over) — see book.h's module comment for why reusing it
@@ -530,53 +635,108 @@ bool book_set_nickname(const char *alias, const char *nickname, size_t nickname_
     return persist_snapshot();
 }
 
-bool book_ingest_cbor(const uint8_t *buf, uint16_t len)
-{
-    bool sig_present = (ident_get_flags() & IDENT_FLAG_REQ_SIG) != 0;
-    book_parsed_t parsed;
-    if (!book_parse(buf, len, sig_present, &parsed)) {
-        return false; // not book, or malformed book — caller falls through to msg.c
-    }
+// Shared by book_ingest_cbor()'s full-book path and book_apply_fetched()
+// (§14.7) — "same nickname carry-over", book.h's own book_apply_fetched()
+// doc comment. `s_apply_scratch` is a file-scope static (not a function
+// local) purely for the RAM reason book.h documents at book_parse()/
+// book_carry_nicknames() (~3.7 kB, not on either caller's task stack — see
+// book_ingest_cbor()'s/book_apply_fetched()'s own `static book_parsed_t`
+// locals for the matching reason on the DECODE side); it is safe shared
+// state between the two callers (different tasks: the MQTT event task via
+// book_ingest_cbor(), modes_run()'s task via book_apply_fetched()) because
+// EVERY touch of it — construction through the s_book swap — happens while
+// s_lock()/s_unlock() (the one shared cross-task mutex, book.h's own module
+// comment) is held continuously; nothing outside this function ever reads
+// or writes it.
+static book_blob_t s_apply_scratch;
 
+static void apply_parsed_book(const book_parsed_t *parsed)
+{
     s_lock();
-    book_blob_t newb;
-    book_defaults(&newb);
-    newb.bv = parsed.bv;
-    newb.have_default = parsed.have_default;
-    strncpy(newb.default_alias, parsed.default_alias, sizeof(newb.default_alias) - 1);
-    newb.n_contacts = parsed.n_contacts;
-    for (uint8_t i = 0; i < parsed.n_contacts; i++) {
-        book_contact_t c = parsed.contacts[i]; // wire copy — .nickname is "" here
-        // §5.5: carry the nickname forward by alias match against the
-        // book being replaced; a contact whose alias is no longer present
-        // simply does not match anything and its nickname is dropped with
-        // it, exactly as documented.
-        for (uint8_t j = 0; j < s_book.n_contacts; j++) {
-            if (strncmp(s_book.contacts[j].alias, c.alias, BOOK_ALIAS_MAX) == 0) {
-                strncpy(c.nickname, s_book.contacts[j].nickname, sizeof(c.nickname) - 1);
-                break;
-            }
-        }
-        newb.contacts[i] = c;
+    book_defaults(&s_apply_scratch);
+    s_apply_scratch.bv = parsed->bv;
+    s_apply_scratch.have_default = parsed->have_default;
+    strncpy(s_apply_scratch.default_alias, parsed->default_alias, sizeof(s_apply_scratch.default_alias) - 1);
+    s_apply_scratch.n_contacts = parsed->n_contacts;
+    memcpy(s_apply_scratch.contacts, parsed->contacts, sizeof(parsed->contacts[0]) * parsed->n_contacts);
+    // §5.5: carry nicknames forward from the book being replaced (s_book,
+    // still the OLD content at this point) — a contact whose alias is no
+    // longer present simply does not match anything and its nickname is
+    // dropped with it, exactly as documented.
+    book_carry_nicknames(s_apply_scratch.contacts, s_apply_scratch.n_contacts, s_book.contacts,
+                         s_book.n_contacts);
+    s_apply_scratch.n_requests = parsed->n_requests;
+    for (uint8_t i = 0; i < parsed->n_requests; i++) {
+        s_apply_scratch.requests[i] = parsed->requests[i];
     }
-    newb.n_requests = parsed.n_requests;
-    for (uint8_t i = 0; i < parsed.n_requests; i++) {
-        newb.requests[i] = parsed.requests[i];
-    }
-    s_book = newb;
+    s_book = s_apply_scratch;
     s_unlock();
 
     persist_snapshot(); // unlocked flash write, §4.3 "applied atomically into NVS"
 
-    ESP_LOGI(TAG, "book applied: bv=%u contacts=%u requests=%u", (unsigned) newb.bv,
-             (unsigned) newb.n_contacts, (unsigned) newb.n_requests);
+    ESP_LOGI(TAG, "book applied: bv=%u contacts=%u requests=%u", (unsigned) parsed->bv,
+             (unsigned) parsed->n_contacts, (unsigned) parsed->n_requests);
+}
 
-    if (parsed.id[0] != '\0') {
+bool book_ingest_cbor(const uint8_t *buf, uint16_t len)
+{
+    bool sig_present = (ident_get_flags() & IDENT_FLAG_REQ_SIG) != 0;
+    static book_parsed_t s_ingest_parsed; // MQTT event task only — ~3.7 kB, not on its stack
+    if (!book_parse(buf, len, sig_present, &s_ingest_parsed)) {
+        return false; // not book, or malformed (incl. a v0.4 nudge with a bad/missing url) —
+                       // caller falls through to msg.c
+    }
+
+    if (s_ingest_parsed.is_nudge) {
+        // v0.4 §3.7: MUST NOT touch s_book/NVS for a nudge — hand off to
+        // bookpull.c's own device-rule state machine (rule 1: ack now if
+        // bv<=stored; rule 2: record pending for bookpull_service() to
+        // fetch). book.c depends on bookpull.h for this one call, matching
+        // the direction msg.h's own header note documents for cross-module
+        // handoffs in this codebase (the higher-level policy module is
+        // handed the lower-level wire facts, not the reverse).
+        bookpull_on_nudge(s_ingest_parsed.id, s_ingest_parsed.bv, s_ingest_parsed.nudge_url);
+        return true;
+    }
+
+    apply_parsed_book(&s_ingest_parsed);
+
+    if (s_ingest_parsed.id[0] != '\0') {
         // §4.3: acked `shown` once applied, not a thread entry, regardless
         // of lock.c's lock state (same rule lock_ingest_cfg_cbor() documents
         // for `cfg` — "the lock is about the screen").
-        msg_mark_shown(parsed.id);
+        msg_mark_shown(s_ingest_parsed.id);
     }
+    return true;
+}
+
+bool book_apply_fetched(const uint8_t *body, size_t len, uint64_t expect_n, uint32_t min_bv)
+{
+    static book_parsed_t s_fetch_parsed; // modes_run() task only (bookpull_service()) — not its stack
+    // §14.7: the response is always signed (book pull only runs for an
+    // `authMode: "hmac"` device, §3.7's gate), so sig_pair_present is
+    // unconditionally true here — unlike book_ingest_cbor()'s
+    // ident-flag-conditional caller.
+    if (!book_parse(body, (uint16_t) len, true, &s_fetch_parsed)) {
+        ESP_LOGI(TAG, "book fetch response: malformed CBOR (or not kind:\"book\") - rejected");
+        return false;
+    }
+    if (s_fetch_parsed.n != expect_n) {
+        ESP_LOGI(TAG, "book fetch response: n=%llu != request X-N=%llu - rejected",
+                 (unsigned long long) s_fetch_parsed.n, (unsigned long long) expect_n);
+        return false;
+    }
+    if (s_fetch_parsed.bv < min_bv) {
+        ESP_LOGI(TAG, "book fetch response: bv=%u < nudge bv=%u - rejected", (unsigned) s_fetch_parsed.bv,
+                 (unsigned) min_bv);
+        return false;
+    }
+    if (s_fetch_parsed.more) {
+        ESP_LOGI(TAG, "book fetch response: more=true - c[] truncated at %u contacts server-side",
+                 (unsigned) BOOK_MAX_CONTACTS);
+    }
+
+    apply_parsed_book(&s_fetch_parsed);
     return true;
 }
 

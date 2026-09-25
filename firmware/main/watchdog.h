@@ -80,6 +80,16 @@ int watchdog_last_reset_stage(void);
  * RTC_NOINIT value set at boot. Valid only after watchdog_boot() has run. */
 unsigned watchdog_abnormal_reset_count(void);
 
+/* wdt-stage8: the AT command name (first bytes of net_pager_counters_t's
+ * stall_cmd) walter_modem_block_tick() last saw a stage stalled on, in the
+ * *previous* boot -- across a reset, unlike net_get_pager_counters()'s own
+ * stall_cmd, which is plain RAM and does not survive one. "" if there was
+ * none (first boot, no valid RTC breadcrumb, or the previous boot's reset
+ * was not abnormal) -- for /status's STK_STALLCMD. No modem or sleep-state
+ * effect: reads an ordinary static set at boot. Valid only after
+ * watchdog_boot() has run. */
+const char *watchdog_last_stall_cmd(void);
+
 /* Call from the main loop's task before its loop: subscribes it to the task watchdog. */
 void watchdog_loop_begin(void);
 /* Feed both watchdogs and leave a breadcrumb. */

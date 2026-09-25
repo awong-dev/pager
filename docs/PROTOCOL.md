@@ -663,9 +663,10 @@ broker-generated LWT.
 | `stage` | int | no | 0…255 | *(crash diagnostics, added 24 Sep 2026, pending server-architect review)* Index into the firmware's main-loop stage table, naming where execution was when this status was sent (or, after a crash, roughly where it last got to): `0` "?", `1` boot, `2` network init, `3` loop top, `4` entering light sleep, `5` just woke from light sleep, `6` input/ui, `7` render, `8` mqtt status/retry, `9` message pump, `10` modem health check, `11` location, `12` sms, `13` ca trust, `14` saving state, `15` deliberate restart. An index outside this table (future firmware) is logged as the raw int. Absent means firmware that predates this field. **Display and diagnosis only.** |
 | `bpull` | int | no | `1` | *(v0.4, §3.7: the gate that keeps a book nudge away from firmware that would read it as an empty book.)* Present with value `1` when the firmware fetches its book over HTTPS; absent means it takes the full `/down` `book`. The relay stores it and sends nudges only while the last online `/status` carried it. |
 | `abn` | int | no | 0…65535 | *(crash diagnostics, added 24 Sep 2026, pending server-architect review)* Count of abnormal resets (i.e. `rst` not `poweron`/`deepsleep`) since power-on. Absent means firmware that predates this field. **Display and diagnosis only.** |
+| `stallcmd` | string | no | ≤24 chars | *(crash diagnostics, added 25 Sep 2026, pending server-architect review)* The AT command name the previous boot's main-loop stage was blocked on for >= 5s when it last sampled, if that boot ended in an abnormal reset (`rst` above) — e.g. a task-watchdog reset caused by a wedged modem command. Absent when there is no such breadcrumb (no stall recorded, or the previous boot's reset was not abnormal). Absent means firmware that predates this field. **Display and diagnosis only.** |
 
-*(`loc_period_s`, `loc_min_s`, `tls`, `ca_fp`, `loc_backoff_s`, `sms_lost`, `xport`, `rst`, `stage`
-and `abn` — ten fields — are **display and diagnosis only**; the relay stores the reported
+*(`loc_period_s`, `loc_min_s`, `tls`, `ca_fp`, `loc_backoff_s`, `sms_lost`, `xport`, `rst`, `stage`,
+`abn` and `stallcmd` — eleven fields — are **display and diagnosis only**; the relay stores the reported
 values and never writes them back. The device owns its location duty cycle because the cost being
 traded is GNSS power on its battery (§12 item 8), which the server cannot see. Making these
 server-settable would need a `/cfg` topic, which §11 still only reserves. `link` is the one
@@ -1439,6 +1440,7 @@ Devices emit CBOR (§3) with this integer keymap. The relay accepts both JSON (t
 | 56 | `m` | array of tstr, 1…8 | `/up` `grp_req` (v0.4, §3.8 — requested member aliases) |
 | 57 | `url` | tstr, ≤200 B | `/down` `book` nudge (v0.4, §3.7 — the fetch endpoint) |
 | 58 | `bpull` | uint, `1` | `/status` (v0.4, §3.7/§5.1 — book-pull capability, optional) |
+| 59 | `stallcmd` | tstr, ≤24 B | `/status` (crash diagnostics, §5.1 — previous boot's stalled-command breadcrumb, optional; added 25 Sep 2026, pending server-architect review) |
 
 *(A relay-side task that added `rst`/`stage`/`abn` was briefed with key 52 for `rst`; by the time
 it landed, 52 was already `xport`, both here and in the shipped relay code. Kept `xport=52` as the

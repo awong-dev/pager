@@ -36,6 +36,38 @@ bytes is unexplained and harmless. (3) Flight recorder's PSRAM dump does not sur
 post-window hard reset; the debug build now holds 15 min after a window (printing a reminder every
 60 s) so a USB replug can retrieve it with the `flightrec` console command.
 
+### Second root cause: the wedged command slot (25 Sep)
+
+**Mechanism.** In the vendored library a finished blocking command stays in `_curCmd` ("done,
+waiting for the caller") until the next queued item clears it. FreeRTOS ticks stop in light sleep,
+so after e.g. the boot `/status` publish the pager sleeps with a finished command still in the slot.
+On the next wake the "\r\n" wake bytes draw `+CME ERROR: 4` from the modem (about half of wakes);
+before patch 1.18 that line arrived glued behind the stray 0xFF and was unrecognised. After 1.18 it
+parsed cleanly, was handed to the stale command, the error handler re-finished it into a state the
+command task skips forever, wedging every later command queued behind it. The first blocking one,
+the liveness re-SUBSCRIBE 300 s after the last uplink, waited forever and the task watchdog fired
+~155 s later in stage 8 (`mqtt status/retry`).
+
+**Fix.** Vendor patch 1.19 (WalterModem.cpp: a response is paired with `_curCmd` only while it is
+PENDING; counter `rsp_stale_cmd` on the report's `stall discriminator:` line); plus patch 1.20
+(optional attempts/timeout on getVoltage/getRSSI/sendCmd/mqttReceive; call sites bounded: VMON and
+CSQ 1 × 5 s, liveness sendCmd 1 × 10 s, mqttReceive 1 × 15 s, so the reconnect re-announce pass
+worst case drops from 220 s to 50 s); plus stall attribution: watchdog.c saves the stalled AT
+command name in RTC_NOINIT and the next boot's /status carries it as key 59 `stallcmd` (relay
+stores and logs it; deployed 25 Sep 00:5x UTC).
+
+**Verified.** `build/bench-logs/phaseBG-report.log` / phaseBG-summary.txt, 16-minute locked window
+on the debug build: `rsp_stale_cmd=12` (the trigger fired 12 times and was absorbed),
+probe_issued=48 probe_answered=48 probe_timedout=0, modem_resets=0, glitch_dropped=48, no reboot,
+100% asleep.
+
+**Remaining defect.** The liveness re-SUBSCRIBE gets OK in 11 ms, the loop light-sleeps 2 ms
+later, and the `+SQNSMQTTONSUBSCRIBE` URC never arrives (phaseBG dump lines 160–215, 486–546).
+After the retry also fails, the S2 rule disconnects and reconnects (two `MQTT session LOST` per
+16 min, one TLS handshake each). When awake the URC arrives in 130 ms. Fix being implemented:
+hold the loop awake up to 3 s after the re-SUBSCRIBE until the URC (`net_resub_hold()` in
+skip_sleep). Unverified at time of writing.
+
 ## 1. The problem
 
 A page (MQTT QoS 1 message on `pager/<id>/down`) sent while the pager is in its light-sleep cycle

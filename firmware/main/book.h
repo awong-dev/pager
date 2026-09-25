@@ -68,8 +68,13 @@ extern "C" {
 #define BOOK_STATUS_MAX 5    /* "pend" | "no" + NUL */
 #define BOOK_REQ_PH_MAX 17   /* E.164 phone or alias reference, §4.2 */
 
-#define BOOK_MAX_CONTACTS 10 /* §4.3 cap */
+#define BOOK_MAX_CONTACTS 32 /* v0.4 §3.7: 10 -> 32, the §14.7 fetch response's own cap ("the
+                              * device's stored capacity") — the legacy `/down book` envelope
+                              * (§3.2) still caps ITS OWN `c[]` at 10 server-side (devcfg.py's
+                              * MAX_APPROVED_CONTACTS), so a full-book device never actually sees
+                              * more than 10 here either; this constant is sized for the pull path. */
 #define BOOK_MAX_REQUESTS 4  /* §4.3 cap */
+#define BOOK_URL_MAX 201     /* 200 UTF-8 bytes + NUL, §3.7/§10 key 57 (`url`, v0.4) */
 
 /* ---------------------------------------------------------------------
  * Applied-book shapes (RAM cache / NVS blob). `book_contact_t.nickname` is
@@ -98,8 +103,12 @@ typedef struct {
  * shape rule §3.1/§4.2 give `contact_req.name` and `book.c[].n`/`p[].n`. */
 bool book_name_valid(const char *name, size_t len);
 
-/* Parsed shape of one `kind:"book"` `/down` envelope, produced by book.c's
- * own file-private book_parse(). */
+/* Parsed shape of one `kind:"book"` envelope — either the `/down` down
+ * message (§3.2/§3.7, `id`/`ack` present on the wire, `is_nudge`/`nudge_url`
+ * meaningful) or the §14.7 fetch response body (no `id`/`ack`, always
+ * `is_nudge == false` since a response always carries `c`/`p`, even if
+ * empty arrays — see book_parse()'s own doc comment for the `have_c`/
+ * `have_p` distinction that makes this exact). */
 typedef struct {
     char id[BOOK_ID_MAX];
     uint32_t bv;
@@ -109,7 +118,62 @@ typedef struct {
     book_contact_t contacts[BOOK_MAX_CONTACTS]; /* .nickname always "" here — wire has no nickname */
     uint8_t n_requests;
     book_request_t requests[BOOK_MAX_REQUESTS];
+    uint64_t n;   /* key 12 `n`, when present — only meaningful for the §14.7 fetch response,
+                   * which book_apply_fetched() compares against the request's own `X-N`. Absent
+                   * (0) on the legacy `/down book`/nudge path, which never reads this field. */
+    bool more;    /* key 20 `more`, §14.7 fetch response only — "c[] was truncated at 32
+                   * server-side"; log-only, never a rejection reason (book.c/book_apply_fetched()). */
+    bool is_nudge; /* v0.4 §3.7: kind:"book" with NEITHER key 18 (`c`) NOR key 19 (`p`) present
+                    * (an empty `c:[]`/`p:[]` with the KEY present is still a full book, not a
+                    * nudge — see `have_c`/`have_p` below). Always false for a well-formed §14.7
+                    * fetch response body, which always carries both keys. */
+    char nudge_url[BOOK_URL_MAX]; /* key 57 `url`, only when is_nudge — already validated against
+                                   * cafetch_parse_url() by book_parse() itself (§3.7: "must pass
+                                   * cafetch_parse_url"); a nudge whose url fails that check makes
+                                   * book_parse() return false (malformed), not is_nudge=true with
+                                   * an empty/bad url. */
 } book_parsed_t;
+
+/* Pure, no ESP-IDF dependency (book.c's own `#ifdef ESP_PLATFORM` split) —
+ * declared here (rather than kept file-private, the one place this module
+ * used to differ from lock.c's lock_parse_cfg()/loc.c's loc_parse_req_cbor(),
+ * both of which are public for exactly this reason) so
+ * firmware/host/test_bookpull.c can exercise the nudge-vs-full-book
+ * detection and the §14.7 response decode directly, without ESP-IDF/NVS.
+ *
+ * `buf` MUST already have passed auth_verify()/auth_verify_label() when
+ * signed (trailing `sig` bytes trimmed, map header's declared pair count
+ * left untouched per §14.3's "no re-serialisation" rule — `sig_pair_present`
+ * stands in for that, same convention lock_parse_cfg() uses). Returns false
+ * for anything that does not decode as a well-formed `kind:"book"` map —
+ * covers "not book", "book but malformed", AND "a nudge whose `url` is
+ * missing or fails cafetch_parse_url()" (§3.7: malformed, counted, no ack) —
+ * deliberately conflated the same way lock_parse_cfg() documents; the
+ * caller (book_ingest_cbor()/book_apply_fetched()) falls through to the
+ * ordinary malformed-`/down` handling either way. `out->id` is
+ * truncated-away silently if it doesn't fit (only used for acking, never
+ * rendered); contacts/requests beyond BOOK_MAX_CONTACTS/BOOK_MAX_REQUESTS
+ * are parsed (so the buffer position stays correct) but not copied into
+ * `out` — "keep the first N", §3.7's own truncation rule for `more`. */
+bool book_parse(const uint8_t *buf, uint16_t len, bool sig_pair_present, book_parsed_t *out);
+
+/* §5.5 nickname carry-over, factored out of book_ingest_cbor()'s old
+ * inline loop so book_apply_fetched() (§14.7) can reuse the EXACT same
+ * logic ("same nickname carry-over as book_ingest_cbor", this header's own
+ * book_apply_fetched() doc comment below) — and so it is host-testable
+ * (test_bookpull.c) without NVS: pure array operation over caller-owned
+ * memory, book_contact_t has no ESP-IDF dependency of its own. For each of
+ * `new_contacts[0..new_n)`, if its `alias` matches one of
+ * `old_contacts[0..old_n)`, copies that old entry's `nickname` into the new
+ * one in place; a new contact whose alias was not in the old book keeps
+ * whatever `nickname` it already had (always "" for a freshly wire-decoded
+ * contact, since the wire never carries one). `new_contacts`/`old_contacts`
+ * may be the same array only if `new_n <= old_n` and indices are not
+ * reordered between calls — callers here never do that (always a fresh
+ * `book_parsed_t.contacts` against the previously-applied `s_book.contacts`
+ * snapshot). */
+void book_carry_nicknames(book_contact_t *new_contacts, uint8_t new_n, const book_contact_t *old_contacts,
+                          uint8_t old_n);
 
 #ifdef ESP_PLATFORM
 /* ---------------------------------------------------------------------
@@ -165,27 +229,82 @@ bool book_request_at(size_t index, book_request_t *out);
  * Nickname screen is the first real caller. Power effect: one NVS write. */
 bool book_set_nickname(const char *alias, const char *nickname, size_t nickname_len);
 
-/* `kind:"book"` `/down` ingest (docs/PROTOCOL.md §3.2/§4.3): called from
- * modes.c's on_incoming_message() the same way lock_ingest_cfg_cbor() is —
- * BEFORE msg_ingest_down_cbor(), since a book is not a thread entry and
- * carries neither `from` nor `body`. Returns true iff `buf` decoded as a
- * `kind:"book"` envelope and was handled here (caller MUST NOT also pass it
- * to msg_ingest_down_cbor()); false means "not book (or malformed) — fall
- * through" (see book_parse()'s own doc comment for why those two cases
- * share one return value).
+/* `kind:"book"` `/down` ingest (docs/PROTOCOL.md §3.2/§3.7/§4.3): called
+ * from modes.c's on_incoming_message() the same way lock_ingest_cfg_cbor()
+ * is — BEFORE msg_ingest_down_cbor(), since neither shape below is a thread
+ * entry, and neither carries `from` or `body`. Returns true iff `buf`
+ * decoded as a `kind:"book"` envelope and was handled here (caller MUST NOT
+ * also pass it to msg_ingest_down_cbor()); false means "not book (or
+ * malformed) — fall through" (see book_parse()'s own doc comment for why
+ * those two cases share one return value, and for the third case that also
+ * returns false: a v0.4 nudge whose `url` is missing/invalid).
  *
- * On success: full replacement (docs/DEVICE_PLAN.md §4.3 "applied
- * atomically into NVS as a full replacement") of contacts/requests/`bv`/
- * default alias, EXCEPT each surviving contact's `nickname` is carried
- * forward from the previous book by matching alias (§5.5: nicknames are
- * "never overwritten by a `book` push"; a contact whose alias is no longer
- * present drops its nickname along with it). Then acks `shown`
- * (msg_mark_shown()) once applied, regardless of lock.c's lock state
- * (docs/DEVICE_PLAN.md §5.8: the lock is about the screen, not `book`/`cfg`
- * apply-and-ack; same rule lock_ingest_cfg_cbor() already documents for
- * `cfg`). Power effect: one NVS write (the whole blob) plus the ack queued
- * for msg_pump()'s next publish; no modem/sleep-state effect beyond that. */
+ * Two wire shapes, distinguished by book_parse()'s own `is_nudge` (§3.7):
+ *
+ * - **A v0.4 nudge** (`is_nudge == true`): this function does NOT touch
+ *   s_book/NVS at all — it hands `{id, bv, nudge_url}` straight to
+ *   bookpull_on_nudge() (bookpull.h), which implements §3.7's device rule
+ *   1-2 (ack now if `bv` <= the stored book's, else record a pending fetch
+ *   for bookpull_service() to act on), and returns true. No NVS write, no
+ *   ack from THIS function either way — bookpull.c acks (or not) once the
+ *   rule has been applied. Power effect: none beyond bookpull_on_nudge()'s
+ *   own (a RAM write, or an ack enqueue — no modem/sleep-state effect).
+ *
+ * - **A full book** (`is_nudge == false`, `c`/`p` present — §3.2, still
+ *   applied by a pull-capable device if one arrives): full replacement
+ *   (docs/DEVICE_PLAN.md §4.3 "applied atomically into NVS as a full
+ *   replacement") of contacts/requests/`bv`/default alias, EXCEPT each
+ *   surviving contact's `nickname` is carried forward from the previous
+ *   book by matching alias (book_carry_nicknames(), §5.5: nicknames are
+ *   "never overwritten by a `book` push"; a contact whose alias is no
+ *   longer present drops its nickname along with it). Then acks `shown`
+ *   (msg_mark_shown()) once applied, regardless of lock.c's lock state
+ *   (docs/DEVICE_PLAN.md §5.8: the lock is about the screen, not `book`/
+ *   `cfg` apply-and-ack; same rule lock_ingest_cfg_cbor() already documents
+ *   for `cfg`). Power effect: one NVS write (the whole blob) plus the ack
+ *   queued for msg_pump()'s next publish; no modem/sleep-state effect
+ *   beyond that. */
 bool book_ingest_cbor(const uint8_t *buf, uint16_t len);
+
+/* §3.7/§14.7 fetch response: applies `body[0..len)` — a CBOR map whose
+ * trailing `sig` MUST already have been trimmed by the caller
+ * (auth_verify_label("/api/device/book", ...), bookpull.c's job, mirroring
+ * on_incoming_message()'s existing auth_verify()-then-book_ingest_cbor()
+ * split for the `/down` path — this function never touches signature
+ * bytes). Decodes via book_parse() (sig_pair_present is always true here:
+ * the §14.7 response is always signed, unconditionally, unlike
+ * book_ingest_cbor()'s ident-flag-conditional caller — book pull only ever
+ * runs for an `authMode: "hmac"` device, §3.7's capability gate), then
+ * checks, in order: well-formed `kind:"book"` (book_parse()'s own return
+ * value), `n` (key 12) == `expect_n` (the request's own `X-N` — §14.7 "the
+ * device verifies the tag and the `n` echo"), `bv` (key 14) >= `min_bv`
+ * (the nudge's own `bv` — §3.7 rule 2). Any failure: returns false, touches
+ * NEITHER s_book NOR NVS — the caller (bookpull.c) keeps the nudge pending
+ * and does not ack (§3.7 rule 2 / §14.7's failure table).
+ *
+ * On success: same full-replacement + nickname carry-over as
+ * book_ingest_cbor()'s full-book path (book_carry_nicknames()), `c[]`
+ * already capped at BOOK_MAX_CONTACTS (32) by book_parse() itself ("keep
+ * the first 32", §3.7's own truncation rule — `more` (key 20) is logged
+ * only, never a rejection reason), NVS write included. Does NOT call
+ * msg_mark_shown() itself — the response carries no `id` at all ("There is
+ * no `id` and no `ack`: the response is not a down message and is never
+ * acked itself; the nudge is", §3.7) — the caller acks the ORIGINAL
+ * nudge's `id` (which this function never sees) once this returns true.
+ * Power effect: one NVS write on success, none on failure. */
+bool book_apply_fetched(const uint8_t *body, size_t len, uint64_t expect_n, uint32_t min_bv);
+
+/* Draws the NEXT value of the one shared /up,/status,/loc counter (§14.2) —
+ * "the SAME counter... it is spent" (§3.7 Do step 3) — for bookpull.c's
+ * §14.7 request `X-N`, the same RTC-resident auth_rtc_t (g_rtc.auth) and
+ * cross-task lock/save trio book_bind() already wired up for
+ * `contact_req`'s own signed publish. `wrapped` has the same "caller MUST
+ * bump/persist a new n_epoch" contract as auth_next_up_n() itself. Returns
+ * 0 if book_bind() has never run (no auth_rtc_t bound yet) — bookpull.c
+ * treats that as "cannot fetch right now", same as a bad URL. Power effect:
+ * none beyond the RTC write auth_next_up_n()/the save callback already
+ * cost. */
+uint64_t book_next_up_n(bool *wrapped);
 
 /* Builds, signs (when ident's IDENT_FLAG_REQ_SIG is set) and publishes a
  * `kind:"contact_req"` `/up` envelope (docs/DEVICE_PLAN.md §4.2,

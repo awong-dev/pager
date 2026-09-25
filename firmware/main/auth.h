@@ -146,6 +146,33 @@ bool auth_sign(const char *topic, uint8_t *buf, size_t *len, size_t cap);
 bool auth_verify(const char *topic, uint8_t *buf, size_t *len);
 
 /* ---------------------------------------------------------------------
+ * v0.4 §14.7: authenticating the book-pull HTTPS request/response. Same
+ * HMAC-SHA256(K_dev, label || 0x00 || p) construction §14.3 already uses
+ * for every MQTT envelope — `label` just stands where `topic` does ("no
+ * MQTT topic contains a space, so a request tag can never verify as an
+ * envelope tag or the reverse", §14.7's own domain-separation note).
+ * --------------------------------------------------------------------- */
+
+/* `out` = HMAC-SHA256(K_dev, label || 0x00 || m)[0:8] — the raw 8-byte tag
+ * (not base64url-encoded; the caller, bookpull.c, encodes it for the
+ * `X-Sig` header the same way it would for any other wire use). `label` is
+ * `"GET /api/device/book"` for the request (§14.7); `m` is the ASCII
+ * `"<device_id>|<n>|<bv>"` string. Returns false (out untouched) if
+ * auth_init() has never been called — same guard auth_sign()/auth_verify()
+ * use. No modem or sleep-state effect: pure computation over caller-owned
+ * memory. */
+bool auth_request_tag(const char *label, const uint8_t *m, size_t m_len, uint8_t out[AUTH_TAG_LEN]);
+
+/* auth_verify() with `label` in the topic position — the §14.7 fetch
+ * response is signed by §14.3's CBOR rule with the string
+ * `"/api/device/book"` "in place of the topic" (§14.7), so this is a pure
+ * naming alias: same signature, same trim-in-place/constant-time-compare
+ * behaviour, same "malformed" outcome on failure. Kept as a distinct name
+ * (rather than asking bookpull.c to call auth_verify() directly) so a
+ * reader sees at the call site that the verifier is not an MQTT topic. */
+bool auth_verify_label(const char *label, uint8_t *buf, size_t *len);
+
+/* ---------------------------------------------------------------------
  * Replay counters (docs/DEVICE_PLAN.md §2.5).
  * --------------------------------------------------------------------- */
 

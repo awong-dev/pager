@@ -75,7 +75,7 @@ endif
 MAIN_SRC := ../main
 BUILD := build
 
-TESTS := test_cbor test_auth test_setup test_input test_msg test_lock test_loc test_cafetch test_catrust test_cfg test_sms test_carrier test_chat_layout test_home_list test_coverage test_net_connect_guard test_net_probe_guard test_resub_verdict test_publish_quiet test_accel_rate test_wifi_policy test_wificred
+TESTS := test_cbor test_auth test_setup test_input test_msg test_lock test_loc test_cafetch test_catrust test_cfg test_sms test_carrier test_chat_layout test_home_list test_coverage test_net_connect_guard test_net_probe_guard test_resub_verdict test_publish_quiet test_accel_rate test_wifi_policy test_wificred test_bookpull
 TEST_BINS := $(TESTS:%=$(BUILD)/%)
 
 # ASSETS: tools/mkassets.py's default output location (docs/DEVICE_TASKS.md
@@ -400,3 +400,29 @@ $(BUILD)/test_wificred.o: test_wificred.c $(MAIN_SRC)/wificred.h $(MAIN_SRC)/cbo
 
 $(BUILD)/test_wificred: $(BUILD)/wificred.o $(BUILD)/cbor.o $(BUILD)/test_wificred.o
 	$(CC) $(CFLAGS) -o $@ $^
+
+# test_bookpull: v0.4 book pull (docs/PROTOCOL.md §3.7/§14.7, task T1f).
+# book.c's pure section (book_parse()/book_carry_nicknames(), now public --
+# see book.h's own doc comment) needs cafetch.c's pure section (cafetch_parse_url())
+# for the nudge url check, which in turn needs the real mbedtls
+# (cafetch_validate_body() -> mbedtls_sha256(), same as test_cafetch above) even
+# though this test never calls that function itself -- it is compiled into
+# cafetch.o unconditionally. auth.c's pure section (auth_request_tag()/
+# auth_verify_label()) needs no extra library (its host build uses the
+# self-contained SHA-256/HMAC fallback, auth.c's own `#ifdef ESP_PLATFORM`
+# split). bookpull.c itself has no ESP-IDF dependency in its pure section
+# either.
+$(BUILD)/book.o: $(MAIN_SRC)/book.c $(MAIN_SRC)/book.h $(MAIN_SRC)/cafetch.h $(MAIN_SRC)/cbor.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $(MAIN_SRC)/book.c
+
+$(BUILD)/bookpull.o: $(MAIN_SRC)/bookpull.c $(MAIN_SRC)/bookpull.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $(MAIN_SRC)/bookpull.c
+
+$(BUILD)/test_bookpull.o: test_bookpull.c $(MAIN_SRC)/book.h $(MAIN_SRC)/bookpull.h $(MAIN_SRC)/auth.h \
+                         $(MAIN_SRC)/cafetch.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) $(MBEDTLS_CFLAGS) -c -o $@ test_bookpull.c
+
+$(BUILD)/test_bookpull: $(BUILD)/book.o $(BUILD)/bookpull.o $(BUILD)/auth.o $(BUILD)/cbor.o \
+                       $(BUILD)/cafetch.o $(BUILD)/test_bookpull.o
+	$(CC) $(CFLAGS) -o $@ $(BUILD)/book.o $(BUILD)/bookpull.o $(BUILD)/auth.o $(BUILD)/cbor.o \
+	    $(BUILD)/cafetch.o $(BUILD)/test_bookpull.o $(MBEDTLS_LIBS)

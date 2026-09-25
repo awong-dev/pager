@@ -294,6 +294,12 @@ typedef struct {
      * walter_modem_pager_counters_t. */
     uint32_t glitch_dropped; /* the stray leading 0xFF dropped at the start of a wake's first
                                * message, non-payload path, empty parser buffer only */
+    /* wdt-stage8 (PATCHES.md 1.19) -- see WalterDefines.h's own comment on
+     * walter_modem_pager_counters_t. */
+    uint32_t rsp_stale_cmd; /* a response arrived while _curCmd was set but already finished
+                              * (not PENDING) and was paired with NULL instead of re-finishing
+                              * it a second time -- the discriminator for the wedged-command-slot
+                              * fix actually firing */
 } net_pager_counters_t;
 net_pager_counters_t net_get_pager_counters(void);
 
@@ -333,6 +339,33 @@ uint32_t net_get_publish_ring(net_publish_ring_entry_t *out, uint32_t cap);
  * a non-zero count with zero `MQTT session LOST` lines is this fix working
  * as intended. Power effect: none -- one plain read. */
 uint32_t net_get_resub_swallowed_count(void);
+
+/* phaseBG-report.log (build/bench-logs, lines 160-215/486-546): the S2
+ * liveness re-SUBSCRIBE's SUBACK URC needs the pager awake (RTS asserted) to
+ * arrive at all -- observed 130ms after the "OK" while awake for other
+ * reasons, but modes_run() was entering light sleep ~2ms after the "OK" on
+ * every liveness cycle, so the URC was never seen, the S2 retry above also
+ * went unanswered, and RESUB_VERDICT_DEAD tore the session down for a full
+ * reconnect twice per 16-minute window. True from the moment
+ * net_service_session() sends a liveness re-SUBSCRIBE (first send or the S2
+ * retry) until its SUBACK is handled or 3s (PAGER_RESUB_HOLD_MS,
+ * xport_lte.cpp) elapses, whichever comes first -- modes.c's skip_sleep ORs
+ * this in so the loop stays awake long enough for the URC without waiting
+ * anywhere near resub_verdict.h's own 30s dead-session bound. False on the
+ * WiFi transport (net_get_resub_swallowed_count()'s own "always safe to
+ * call" reasoning applies here too -- the underlying counters are simply
+ * never touched when LTE is not the active transport).
+ * Power effect: none of its own -- it only decides whether the caller is
+ * allowed to light-sleep this iteration. */
+bool net_resub_hold(void);
+
+/* Same fix's sleeptest-report counters: holds = how many times
+ * net_resub_hold() engaged (one per liveness re-SUBSCRIBE sent, first send or
+ * retry); max_hold_ms = the longest observed span from send to SUBACK, or to
+ * the 3s give-up if none arrived in time; suback_in_hold = how many SUBACKs
+ * arrived while the hold was still engaged (the fix actually working). Any
+ * out-pointer may be NULL. Power effect: none -- three plain reads. */
+void net_get_resub_hold_stats(uint32_t *holds, uint32_t *max_hold_ms, uint32_t *suback_in_hold);
 
 /* Register the callback invoked once per inbound MQTT message, after net.c
  * has already bounds-checked it (§3.4/F6) and fetched it via mqttReceive().

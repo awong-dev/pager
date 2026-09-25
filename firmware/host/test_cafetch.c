@@ -67,6 +67,51 @@ static void test_url_parse(void)
           "unexpected request text: %s", req);
 }
 
+/* v0.4 §14.7: cafetch_build_request_hdrs()/cafetch_build_request() — the CA
+ * fetch path's own request bytes must stay byte-identical (cafetch_build_request()
+ * is now a thin wrapper calling cafetch_build_request_hdrs(..., NULL, ...)),
+ * and bookpull.c's extra X-Device-Id/X-N/X-Sig headers must land BEFORE the
+ * blank line that ends the request (i.e. before `Connection: close`, since
+ * this parser always emits that last). */
+static void test_build_request_hdrs(void)
+{
+    char req[256];
+    size_t req_len = 0;
+
+    /* No extra headers (NULL) must be byte-identical to cafetch_build_request()'s
+     * own plain call — the CA fetch path's existing bytes, unchanged. */
+    CHECK(cafetch_build_request_hdrs("example.com", "/ca/abc.pem", NULL, req, sizeof(req), &req_len),
+          "hdrs(NULL) build must succeed");
+    CHECK(strcmp(req, "GET /ca/abc.pem HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n") ==
+              0,
+          "hdrs(NULL) must match cafetch_build_request()'s own bytes exactly: %s", req);
+
+    char req_plain[256];
+    size_t req_plain_len = 0;
+    CHECK(cafetch_build_request("example.com", "/ca/abc.pem", req_plain, sizeof(req_plain), &req_plain_len),
+          "plain build must succeed");
+    CHECK(strcmp(req, req_plain) == 0, "cafetch_build_request() must be byte-identical to hdrs(NULL)");
+
+    /* Extra headers — v0.4 §14.7's own three request headers, as
+     * bookpull_build_headers() would produce them. */
+    const char *extra = "X-Device-Id: pgr-0001\r\nX-N: 123456789\r\nX-Sig: AAAAAAAAAAA\r\n";
+    CHECK(cafetch_build_request_hdrs("example.com", "/api/device/book?bv=7", extra, req, sizeof(req),
+                                     &req_len),
+          "hdrs(extra) build must succeed");
+    CHECK(strcmp(req,
+                 "GET /api/device/book?bv=7 HTTP/1.1\r\nHost: example.com\r\n"
+                 "X-Device-Id: pgr-0001\r\nX-N: 123456789\r\nX-Sig: AAAAAAAAAAA\r\n"
+                 "Connection: close\r\n\r\n") == 0,
+          "extra headers must land between Host and Connection: close, verbatim: %s", req);
+
+    /* The extra headers must appear strictly before the blank line
+     * (the final "\r\n\r\n") — i.e. before "Connection: close". */
+    const char *extra_pos = strstr(req, "X-Device-Id:");
+    const char *conn_pos = strstr(req, "Connection: close");
+    CHECK(extra_pos != NULL && conn_pos != NULL && extra_pos < conn_pos,
+          "extra headers must be emitted before Connection: close / the blank line");
+}
+
 /* ---------------------------------------------------------------------
  * Helpers to feed the parser in arbitrary-sized pieces.
  * --------------------------------------------------------------------- */
@@ -329,6 +374,7 @@ int main(void)
 {
     test_overlong_header_line_is_skipped();
     test_url_parse();
+    test_build_request_hdrs();
     test_content_length_split_headers();
     test_header_line_split_byte_by_byte();
     test_connection_close_body();

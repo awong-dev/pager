@@ -61,6 +61,7 @@
 // book.h's module comment) — it only needs the EXISTING g_rtc.auth binding,
 // wired via book_bind() in modes_boot().
 #include "book.h"
+#include "bookpull.h" // v0.4 §3.7: bookpull_bind()/bookpull_service() below, alongside catrust's own
 
 // v0.2 §5 (docs/V02_DESIGN.md, docs/PROTOCOL.md §3.2/§13): loc.c's
 // `kind:"loc_req"` dispatch ahead of msg_ingest_down_cbor() (same
@@ -630,6 +631,12 @@ static void on_auth_epoch_wrap(void)
 #define STK_RST 53             // esp_reset_reason_t of this boot (watchdog_last_reset_reason())
 #define STK_STAGE 54           // previous boot's stage breadcrumb, 0 if none (watchdog_last_reset_stage())
 #define STK_ABN 55             // abnormal resets since power-on (watchdog_abnormal_reset_count())
+#define STK_BPULL 58           // v0.4 §3.7/§5.1: book-pull capability gate — present (1) once Do
+                               // steps 1-5 are all in, per this task's own instruction; absent
+                               // means the relay keeps sending the legacy full `/down book`.
+// wdt-stage8, added 25 Sep 2026, pending server-architect review (docs/PROTOCOL.md §5.1/§10):
+// previous boot's stalled-command breadcrumb (watchdog_last_stall_cmd()), omitted when empty.
+#define STK_STALLCMD 59
 
 // PROTOCOL.md §5.1: batt_mv must be in [2000, 4500] when state:"online".
 #define PAGER_BATT_MV_MIN 2000
@@ -750,6 +757,13 @@ static bool build_status_cbor(uint8_t *out, size_t cap, size_t *out_len, const c
     char ca_fp[17];
     bool have_ca_fp = catrust_get_ca_fp(ca_fp);
 
+    // wdt-stage8 (docs/PROTOCOL.md §5.1/§10 key 59, pending server-architect
+    // review): previous boot's stalled-command breadcrumb, "" when there was
+    // none -- plain read of watchdog.c's this-boot-only static, no AT round
+    // trip or NVS I/O of its own.
+    const char *stall_cmd = watchdog_last_stall_cmd();
+    bool have_stall_cmd = stall_cmd[0] != '\0';
+
     // v0.2 §5/§7: +3 for loc_period_s/loc_min_s/loc_backoff_s (loc.c's own
     // getters — plain reads of already-resident policy state, no AT round
     // trip of their own beyond what batt_mv/rssi above already cost).
@@ -760,7 +774,11 @@ static bool build_status_cbor(uint8_t *out, size_t cap, size_t *out_len, const c
     if (have_ca_fp) {
         nfields += 1;
     }
+    if (have_stall_cmd) {
+        nfields += 1; // wdt-stage8: STK_STALLCMD key 59, omitted when empty
+    }
     if (signed_env) {
+        nfields += 1; // v0.4 §3.7/§5.1: `bpull` — see its own cbor_w_uint() call below for the gate
         nfields += 2; // n (written below) + sig (appended by auth_sign())
     }
 
@@ -798,12 +816,27 @@ static bool build_status_cbor(uint8_t *out, size_t cap, size_t *out_len, const c
     cbor_w_uint(&w, STK_RST, (uint64_t) (unsigned) watchdog_last_reset_reason());
     cbor_w_uint(&w, STK_STAGE, (uint64_t) (unsigned) watchdog_last_reset_stage());
     cbor_w_uint(&w, STK_ABN, (uint64_t) watchdog_abnormal_reset_count());
+    if (have_stall_cmd) {
+        cbor_w_tstr(&w, STK_STALLCMD, stall_cmd, strlen(stall_cmd)); // wdt-stage8, key 59
+    }
 
     // docs/WIFI_DESIGN.md §5.1/§6, docs/WIFI_TASKS.md W4 item 1: which
     // physical transport carried this session — display/diagnosis only
     // (PROTOCOL.md §5.1), no modem or sleep-state effect of its own.
     const char *xport_str = (net_xport_active() == NET_XPORT_WIFI) ? "wifi" : "lte";
     cbor_w_tstr(&w, STK_XPORT, xport_str, strlen(xport_str));
+
+    // v0.4 §3.7/§5.1: "sends `bpull: 1` in every online `/status`" — gated on
+    // `signed_env` (IDENT_FLAG_REQ_SIG) the same way book pull itself is
+    // gated: the relay only ever nudges a device whose `authMode` is `hmac`
+    // (§3.7's capability gate), and every §14.7 request/response this
+    // firmware sends depends on K_dev signing being live. Present with
+    // value 1 only, never present-but-0 (matches every other "optional,
+    // display/diagnosis" §5.1 field's own convention of omitting rather
+    // than sending a false-ish value).
+    if (signed_env) {
+        cbor_w_uint(&w, STK_BPULL, 1);
+    }
 
     if (!signed_env) {
         *out_len = w.len;
@@ -1242,7 +1275,9 @@ void modes_debug_sleeptest_start(uint32_t minutes, uint32_t yield_ms_override,
 // line, the "(n=%u)" suffix added to all eight bucket lines, and the new
 // "awake total ... longest single iteration ..." summary line.
 // S18: raised from 2800 to 2950 for the new "probe answer:" line.
-static char s_st_text[2950];
+// phaseBG-report.log fix: raised from 2950 to 3050 for the new "resub
+// holds:" line.
+static char s_st_text[3050];
 
 static void st_appendf(size_t *n, const char *fmt, ...)
 {
@@ -1414,8 +1449,13 @@ void modes_debug_sleeptest_report(void)
     // from the vendored library (WalterDefines.h); probe_first_attempt_ms
     // from the probe's own issue-to-answer timing (net.cpp). See each field's
     // doc comment in net.h for what each hypothesis predicts.
-    st_appendf(&n, "stall discriminator: rsp_no_cmd=%u payload_stuck_ms=%u probe_first_attempt_ms=%u\n",
-               (unsigned) pc.rsp_no_cmd, (unsigned) pc.payload_stuck_ms,
+    // wdt-stage8 (PATCHES.md 1.19): rsp_stale_cmd printed right after
+    // rsp_no_cmd -- a non-zero count is direct confirmation the 1.19 fix
+    // actually fired (a response that would otherwise have re-finished an
+    // already-finished command and wedged the slot).
+    st_appendf(&n, "stall discriminator: rsp_no_cmd=%u rsp_stale_cmd=%u payload_stuck_ms=%u "
+                    "probe_first_attempt_ms=%u\n",
+               (unsigned) pc.rsp_no_cmd, (unsigned) pc.rsp_stale_cmd, (unsigned) pc.payload_stuck_ms,
                (unsigned) probec.first_attempt_ms);
     // S18 (docs/SLEEP_URC_DESIGN.md §10). probe_answer_ms is the number the
     // wake-window length is chosen from and it has never been measured:
@@ -1438,6 +1478,15 @@ void modes_debug_sleeptest_report(void)
     // re-SUBSCRIBE, never by a teardown) -- zero MQTT session LOST lines
     // alongside a non-zero count here is this fix working.
     st_appendf(&n, "resub_first_swallowed=%u\n", (unsigned) net_get_resub_swallowed_count());
+    // phaseBG-report.log fix (net_resub_hold(), net.h): holds/max_hold_ms/
+    // suback_in_hold let a bench run confirm the hold actually caught the
+    // SUBACK instead of just burning 3s every liveness cycle -- suback_in_hold
+    // approaching holds, alongside zero new `MQTT session LOST` lines, is this
+    // fix working.
+    uint32_t resub_holds = 0, resub_hold_max_ms = 0, resub_suback_in_hold = 0;
+    net_get_resub_hold_stats(&resub_holds, &resub_hold_max_ms, &resub_suback_in_hold);
+    st_appendf(&n, "resub holds: %u, max hold ms: %u, suback in hold: %u\n", (unsigned) resub_holds,
+               (unsigned) resub_hold_max_ms, (unsigned) resub_suback_in_hold);
     // S12 (docs/SLEEP_URC_DESIGN.md §8.3, docs/SLEEP_URC_TASKS.md S12): so
     // "the panel wedged" is this number, not an inference from a bucket max
     // (phaseAF's `input+ui+render max 31551 ms` used to be the only clue).
@@ -2053,6 +2102,12 @@ void modes_boot(void)
     book_bind(&g_rtc.auth, rtc_lock, rtc_unlock, rtc_save, on_auth_epoch_wrap);
     book_init();
 
+    // v0.4 §3.7: no RTC sub-struct of its own (bookpull.h's own module
+    // comment) — bookpull_bind() only hands over the same cross-task mutex
+    // catrust_bind() above already uses. Must run before net_set_msg_cb()
+    // below: a nudge could in principle arrive the instant MQTT subscribes.
+    bookpull_bind(rtc_lock, rtc_unlock);
+
     input_init(); // power effect: GPIO config + static queue alloc only
 
     if (!ui_init()) {
@@ -2257,8 +2312,24 @@ void modes_run(void)
         bool btn_busy = input_button_busy();
         bool btn_stuck = input_button_stuck();
         bool ui_awake = input_awake();
+        // v0.4 §3.7 Do step 6: "a pending fetch holds the loop out of light
+        // sleep only while cafetch_in_progress() (<=30s); a failed attempt
+        // must not keep the device awake until the retry." bookpull_fetch_in_progress()
+        // is a thin passthrough to cafetch_in_progress() (bookpull.h's own
+        // doc comment covers the pre-existing catrust.c side effect of
+        // sharing that one guard) — true only for the bounded span between
+        // cafetch_begin_ex() and cafetch_end(), never during the >=60s
+        // cooldown between attempts, which is exactly "not until the retry".
+        // phaseBG-report.log (build/bench-logs 160-215/486-546): a liveness
+        // re-SUBSCRIBE's own SUBACK URC needs the pager awake to arrive at
+        // all (net_resub_hold()'s own doc comment, net.h) -- without this
+        // term the loop light-slept 2ms after the re-SUBSCRIBE's "OK" and the
+        // SUBACK was never seen, costing a full disconnect+TLS reconnect
+        // twice per 16-minute window. Bounded to 3s (PAGER_RESUB_HOLD_MS,
+        // xport_lte.cpp), so a lost SUBACK cannot pin the device awake --
+        // same shape as net_connect_in_flight()/net_publish_in_flight() above.
         bool skip_sleep = btn_busy || btn_stuck || ui_awake || net_modem_busy() || net_connect_in_flight() ||
-                           net_publish_in_flight();
+                           net_publish_in_flight() || bookpull_fetch_in_progress() || net_resub_hold();
         // pump_blocked keys ONLY on net_modem_busy() (the UART/RTS interlock
         // against the MQTT event handler, see the comment above on
         // net_modem_busy()) -- NOT on btn_busy/btn_stuck/ui_awake, and NOT on
@@ -2975,6 +3046,13 @@ void modes_run(void)
 #endif
         watchdog_kick(WD_CATRUST);
         catrust_service(&st);
+
+        // v0.4 §3.7: one step of the pending-nudge / book-fetch state
+        // machine (a no-op read if nothing is pending or in flight) — same
+        // "never the whole thing in one call" discipline catrust_service()
+        // documents just above (and shares its single-flight cafetch.c
+        // guard with).
+        bookpull_service();
 
         maybe_publish_heartbeat();
 

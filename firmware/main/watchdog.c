@@ -2,6 +2,7 @@
 #include "watchdog.h"
 
 #include <stdbool.h>
+#include <string.h>
 
 #include "esp_attr.h"
 #include "esp_log.h"
@@ -38,6 +39,19 @@ static RTC_NOINIT_ATTR uint32_t s_magic;
 static RTC_NOINIT_ATTR uint32_t s_stage;
 static RTC_NOINIT_ATTR uint32_t s_resets;
 
+// wdt-stage8: stall-command attribution across a reboot. A separate magic
+// from s_magic above -- this is written only on the rarer occasion a stage
+// actually stalls >= 5s (walter_modem_block_tick(), below), not on every
+// watchdog_kick() the way s_stage is, so its own validity cannot be inferred
+// from s_magic alone: reusing s_magic would let a stall_cmd from many boots
+// ago survive untouched (never overwritten since) and be misattributed to a
+// later, unrelated abnormal reset. watchdog_boot() clears this magic every
+// time it is valid, whether or not the stall was actually consumed, so a
+// stale value can never outlive the boot after the one that wrote it.
+#define WD_STALL_MAGIC 0x53544143u /* "STAC" (stall attribution cmd) */
+static RTC_NOINIT_ATTR uint32_t s_stall_magic;
+static RTC_NOINIT_ATTR char s_stall_cmd[24];
+
 // Ordinary (non-RTC) statics: the boot crash classification, computed once
 // by watchdog_boot() and read back by main.c to decide whether to raise the
 // status-bar crash indicator (ui.c). This-boot-only, like every other
@@ -51,6 +65,10 @@ static const char *s_last_reason_str = "unknown";
 // watchdog_boot(), same as s_last_abnormal/s_last_reason_str above.
 static int s_last_reset_reason = 0;      // esp_reset_reason_t of THIS boot
 static uint32_t s_last_reset_stage = 0;  // previous boot's breadcrumb; 0 if none (no valid RTC breadcrumb)
+// wdt-stage8: previous boot's stalled-command breadcrumb, "" if none. Same
+// this-boot-only, computed-once-by-watchdog_boot() reasoning as the two
+// statics above.
+static char s_last_stall_cmd[sizeof(s_stall_cmd)] = "";
 
 static const char *watchdog_stage_name(uint32_t stage)
 {
@@ -111,6 +129,21 @@ void watchdog_boot(void)
     s_last_reset_stage = valid ? s_stage : 0;
     s_stage = WD_BOOT;
 
+    // wdt-stage8: consume the stall-command breadcrumb (walter_modem_block_tick(),
+    // below), if any -- only meaningful when THIS boot's own reset was
+    // abnormal (otherwise it belongs to some earlier, already-reported
+    // incident and main.c's boot-crash indicator would not even show it).
+    // The magic is cleared unconditionally once read as valid, whether or
+    // not this boot was abnormal, so a stall_cmd can never be attributed to
+    // a later, unrelated reset.
+    if (s_stall_magic == WD_STALL_MAGIC) {
+        if (abnormal) {
+            memcpy(s_last_stall_cmd, s_stall_cmd, sizeof(s_last_stall_cmd));
+            s_last_stall_cmd[sizeof(s_last_stall_cmd) - 1] = '\0';
+        }
+        s_stall_magic = 0;
+    }
+
     // Arm the RTC watchdog through the HAL (the rtc_wdt.h convenience API is
     // not built for this target): one stage, whole-chip reset, RTC included,
     // so a wedged peripheral is reset too. The timeout is in RTC slow-clock
@@ -144,6 +177,11 @@ int watchdog_last_reset_stage(void) { return (int) s_last_reset_stage; }
 // modem or sleep-state effect: reads an RTC_NOINIT value set at boot. Valid
 // only after watchdog_boot().
 unsigned watchdog_abnormal_reset_count(void) { return (unsigned) s_resets; }
+
+// wdt-stage8: previous boot's stalled-command breadcrumb, "" if none. No
+// modem or sleep-state effect: reads an ordinary static set at boot. Valid
+// only after watchdog_boot().
+const char *watchdog_last_stall_cmd(void) { return s_last_stall_cmd; }
 
 void watchdog_loop_begin(void)
 {
@@ -210,7 +248,18 @@ void walter_modem_block_tick(void)
     if (!s_block_5s_logged && blocked_us >= 5 * 1000000LL) {
         s_block_5s_logged = true;
         net_pager_counters_t pc = net_get_pager_counters();
+        // wdt-stage8: this is the point pc.stall_cmd is known -- copy it into
+        // the RTC breadcrumb so a task-watchdog reset that follows can still
+        // report which command the stage was stalled on (net_get_pager_counters()'s
+        // own copy is plain RAM and does not survive the reset). Overwritten
+        // on every stage's first 5s stall, same "most recently observed, not
+        // necessarily the one that actually stalled" caveat pc.stall_cmd
+        // itself carries (WalterDefines.h).
         if (pc.stall_cmd[0] != '\0') {
+            size_t len = strnlen(pc.stall_cmd, sizeof(s_stall_cmd) - 1);
+            memcpy(s_stall_cmd, pc.stall_cmd, len);
+            s_stall_cmd[len] = '\0';
+            s_stall_magic = WD_STALL_MAGIC;
             ESP_LOGI(TAG, "stage '%s' blocked >= 5s on a modem command, last seen: \"%s\" (%u ms so far)",
                      watchdog_stage_name(s_stage), pc.stall_cmd, (unsigned) pc.stall_elapsed_ms);
         } else {

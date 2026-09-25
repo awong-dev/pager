@@ -67,11 +67,11 @@ bool cafetch_parse_url(const char *url, char *host_out, size_t host_cap, uint16_
     return true;
 }
 
-bool cafetch_build_request(const char *host, const char *path, char *out, size_t cap,
-                           size_t *out_len)
+bool cafetch_build_request_hdrs(const char *host, const char *path, const char *extra_hdrs, char *out,
+                                size_t cap, size_t *out_len)
 {
-    int n = snprintf(out, cap, "GET %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n", path,
-                     host);
+    int n = snprintf(out, cap, "GET %s HTTP/1.1\r\nHost: %s\r\n%sConnection: close\r\n\r\n", path,
+                     host, extra_hdrs ? extra_hdrs : "");
     if (n < 0 || (size_t) n >= cap) {
         return false;
     }
@@ -79,6 +79,12 @@ bool cafetch_build_request(const char *host, const char *path, char *out, size_t
         *out_len = (size_t) n;
     }
     return true;
+}
+
+bool cafetch_build_request(const char *host, const char *path, char *out, size_t cap,
+                           size_t *out_len)
+{
+    return cafetch_build_request_hdrs(host, path, NULL, out, cap, out_len);
 }
 
 /* ---------------------------------------------------------------------
@@ -502,7 +508,7 @@ bool cafetch_in_progress(void)
     return s_in_progress;
 }
 
-bool cafetch_begin(const char *url)
+bool cafetch_begin_ex(const char *url, const char *extra_hdrs)
 {
     if (s_in_progress) {
         ESP_LOGI(TAG, "cafetch_begin() called while a fetch is already in progress");
@@ -519,10 +525,10 @@ bool cafetch_begin(const char *url)
         ESP_LOGI(TAG, "cafetch: net_ca_fetch_open(%s:%u) failed", s_host, (unsigned) port);
         return false;
     }
-    char req[CAFETCH_PATH_MAX + CAFETCH_HOST_MAX + 64];
+    char req[CAFETCH_PATH_MAX + CAFETCH_HOST_MAX + 256];
     size_t req_len;
-    if (!cafetch_build_request(s_host, s_path, req, sizeof(req), &req_len)) {
-        ESP_LOGI(TAG, "cafetch: request line too long for host/path");
+    if (!cafetch_build_request_hdrs(s_host, s_path, extra_hdrs, req, sizeof(req), &req_len)) {
+        ESP_LOGI(TAG, "cafetch: request line/headers too long for host/path/extra_hdrs");
         net_ca_fetch_close();
         return false;
     }
@@ -536,6 +542,11 @@ bool cafetch_begin(const char *url)
     s_in_progress = true;
     ESP_LOGI(TAG, "cafetch: GET %s HTTP/1.1 to %s:%u", s_path, s_host, (unsigned) port);
     return true;
+}
+
+bool cafetch_begin(const char *url)
+{
+    return cafetch_begin_ex(url, NULL);
 }
 
 cafetch_status_t cafetch_poll(int64_t now_us)
@@ -599,6 +610,20 @@ bool cafetch_result(const uint8_t expected_sha[CAFETCH_SHA_LEN], char *pem_out, 
     }
     return cafetch_validate_body(s_parser.body, s_parser.body_len, expected_sha, pem_out, pem_cap,
                                  pem_len);
+}
+
+bool cafetch_body(const uint8_t **body, size_t *len, int *status)
+{
+    if (status) {
+        *status = s_parser.status_code;
+    }
+    if (len) {
+        *len = s_parser.body_len;
+    }
+    if (body) {
+        *body = s_parser.body;
+    }
+    return s_parser.phase == CAFETCH_PHASE_DONE;
 }
 
 void cafetch_end(void)

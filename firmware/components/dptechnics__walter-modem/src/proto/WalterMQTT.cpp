@@ -175,8 +175,13 @@ bool WalterModem::mqttSubscribe(const char* topic, uint8_t qos, WalterModemRsp* 
   _returnAfterReply();
 }
 
+// PAGER PATCH: 1.20 (see PATCHES.md 1.20). maxAttempts/cmdTimeoutTicks
+// default to the library's own 3 x 30 s -- every pre-existing caller is
+// bit-for-bit unchanged; only xport_lte.cpp's event-task fetch passes a
+// shorter budget.
 bool WalterModem::mqttReceive(const char* topic, int message_id, uint8_t* buf, size_t buf_size,
-                              WalterModemRsp* rsp, walterModemCb cb, void* args)
+                              WalterModemRsp* rsp, walterModemCb cb, void* args,
+                              uint8_t maxAttempts, TickType_t cmdTimeoutTicks)
 {
 
   size_t readable_size = (buf_size > 4096) ? 4096 : buf_size;
@@ -184,12 +189,13 @@ bool WalterModem::mqttReceive(const char* topic, int message_id, uint8_t* buf, s
   if(message_id == 0) {
     /* no msg id means qos 0 message */
     _runCmd(arr("AT+SQNSMQTTRCVMESSAGE=0,", _atStr(topic)), "OK", rsp, cb, args, NULL, NULL,
-            WALTER_MODEM_CMD_TYPE_TX_WAIT, buf, readable_size);
+            WALTER_MODEM_CMD_TYPE_TX_WAIT, buf, readable_size, NULL, maxAttempts, cmdTimeoutTicks);
     _returnAfterReply();
   } else {
     _runCmd(arr("AT+SQNSMQTTRCVMESSAGE=0,", _atStr(topic), ",", _atNum(message_id), ",",
                 _atNum(readable_size)),
-            "OK", rsp, cb, args, NULL, NULL, WALTER_MODEM_CMD_TYPE_TX_WAIT, buf, readable_size);
+            "OK", rsp, cb, args, NULL, NULL, WALTER_MODEM_CMD_TYPE_TX_WAIT, buf, readable_size,
+            NULL, maxAttempts, cmdTimeoutTicks);
     _returnAfterReply();
   }
 }

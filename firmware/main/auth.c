@@ -288,6 +288,24 @@ bool auth_verify(const char *topic, uint8_t *buf, size_t *len)
 }
 
 /* ---------------------------------------------------------------------
+ * v0.4 §14.7: book-pull request tag / response verify.
+ * --------------------------------------------------------------------- */
+
+bool auth_request_tag(const char *label, const uint8_t *m, size_t m_len, uint8_t out[AUTH_TAG_LEN])
+{
+    if (!s_kdev_set) {
+        return false;
+    }
+    compute_tag(label, m, m_len, out);
+    return true;
+}
+
+bool auth_verify_label(const char *label, uint8_t *buf, size_t *len)
+{
+    return auth_verify(label, buf, len);
+}
+
+/* ---------------------------------------------------------------------
  * Replay counters.
  * --------------------------------------------------------------------- */
 

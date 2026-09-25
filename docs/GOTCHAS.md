@@ -100,6 +100,39 @@ blocked every other task's next command behind it and tripped the 60 s task watc
 larger than about 1.5 kB cannot be received**, which is why the CA travels as a URL and a hash
 and not inside the setup bundle (a Let's Encrypt root is 1.9 kB).
 
+## A finished command left in the modem library's slot wedges every later command after light sleep
+
+**Symptom:** task-watchdog reset in stage "mqtt status/retry" (`/status` key 59 `stallcmd` names the
+stalled AT command, e.g. `AT+SQNSMQTTSUBSCRIBE`).
+
+**Cause (25 Sep, patch 1.19):** the vendored library's `_curCmd` stays occupied after a finished
+command (`_returnAfterReply()`) until the next command clears it. FreeRTOS ticks stop in light
+sleep, so after the boot `/status` publish the pager sleeps with a finished command in the slot.
+On the next wake the modem's response to the "\r\n" wake bytes (an unsolicited `+CME ERROR: 4`,
+about 50% of wakes) is handed to that stale command. The error handler re-finishes it into a state
+the command task skips forever, wedging every later command. The first blocking one (liveness
+re-SUBSCRIBE 300 s after uplink) times out and the task watchdog fires ~155 s later.
+
+**Fix:** vendor patch 1.19 pairs a response with `_curCmd` only while PENDING; counter `rsp_stale_cmd`
+on the report's `stall discriminator:` line. Patch 1.20 bounds optional-attempt calls (VMON/CSQ 1
+× 5 s, liveness 1 × 10 s, receive 1 × 15 s) to avoid the reconnect pass timing out beyond 50 s.
+
+**How to see it:** `rsp_stale_cmd > 0` in `build/bench-logs/phaseBG-report.log` (16-minute locked
+window, debug build, 12 stale-command triggers absorbed, 100% asleep, zero reboots).
+
+## Liveness re-SUBSCRIBE's ack is lost if the pager sleeps right after the OK
+
+**Symptom:** after 16 minutes two `MQTT session LOST` events in a row, one TLS handshake each;
+relay never sees the re-SUBSCRIBE.
+
+**Cause (25 Sep, unverified fix in progress):** the re-SUBSCRIBE command gets OK in 11 ms, the
+loop light-sleeps 2 ms later, and the `+SQNSMQTTONSUBSCRIBE` URC never arrives (the modem holds
+it, waiting for the interface to be ready). When awake the URC arrives in 130 ms. After the retry
+also fails, the S2 rule disconnects and reconnects.
+
+**Fix being implemented:** `net_resub_hold()` in skip_sleep holds the loop awake up to 3 s after
+re-SUBSCRIBE to fetch the URC before sleeping.
+
 ## Secrets and the broker rule
 
 - **Never store a secret with a trailing newline.** `echo value | gcloud secrets versions add`
@@ -148,7 +181,7 @@ and not inside the setup bundle (a Let's Encrypt root is 1.9 kB).
 
 ## USB and light sleep
 
-**USB dies in light sleep** and often does not come back afterwards, even across `esp_restart()`; on the bench it stayed dead for hours and needed a physical reset. The debug build's `sleeptest` now ends with a reset through the RTC watchdog, which resets the USB block too (UNVERIFIED that this brings the port back). A single serial capture spanning a restart shows nothing; open the port again afterwards. The port's name changes (`/dev/cu.usbmodem101`, `...1101`): always glob.
+**USB dies in light sleep** and often does not come back afterwards, even across `esp_restart()`; on the bench it stayed dead for hours and needed a physical reset. The debug build's `sleeptest` now ends with a reset through the RTC watchdog, which resets the USB block too (UNVERIFIED that this brings the port back). A single serial capture spanning a restart shows nothing; open the port again afterwards. The port's name changes (`/dev/cu.usbmodem101`, `...1101`): always glob. **A watchdog or panic reset does NOT bring the USB port back, only a power cycle does; that is why the reset reason, stage, and stalled command name now travel in `/status` (key 58 `rst`, 59 `stallcmd`) so the relay stores them.**
 
 **15-minute hold on exit:** the debug build holds the CPU running for 15 minutes after a `sleeptest` window ends (printing a "still running" reminder every 60 s), so a USB replug can retrieve the flight recorder PSRAM dump with the `flightrec` console command before the next hard reset.
 

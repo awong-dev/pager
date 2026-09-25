@@ -145,6 +145,19 @@ extern "C" void walter_modem_block_tick(void);
 //                     that leading 0xFF is dropped (non-payload path, empty
 //                     parser buffer only -- see the patch comment at the
 //                     drop site). Free-running, never reset.
+// PAGER PATCH: 1.19 (see PATCHES.md 1.19 -- the wedged command slot fix).
+//   rsp_stale_cmd  - WalterModem.cpp's _cmdProcessingTask(): incremented
+//                     each time a response arrives with _curCmd set but NOT
+//                     in WALTER_MODEM_CMD_STATE_PENDING (i.e. _curCmd has
+//                     already finished and is only still the "current"
+//                     command because this task has not yet had a chance to
+//                     clear it) -- the response is then paired with NULL
+//                     instead of the stale command. A non-zero count here
+//                     is direct evidence of the race the fix closes: a
+//                     stray line (observed as "+CME ERROR: 4" right after a
+//                     light-sleep wake's "\r\n") that would otherwise have
+//                     re-finished an already-finished command and wedged
+//                     _curCmd forever. Free-running, never reset.
 typedef struct {
   uint32_t datatx_retx;
   uint32_t prompt_orphan;
@@ -160,6 +173,7 @@ typedef struct {
   uint32_t rsp_no_cmd;
   uint32_t payload_stuck_ms;
   uint32_t glitch_dropped;
+  uint32_t rsp_stale_cmd;
 } walter_modem_pager_counters_t;
 
 extern "C" walter_modem_pager_counters_t walter_modem_pager_counters(void);

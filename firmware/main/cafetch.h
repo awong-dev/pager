@@ -64,9 +64,18 @@ extern "C" {
 bool cafetch_parse_url(const char *url, char *host_out, size_t host_cap, uint16_t *port_out,
                        char *path_out, size_t path_cap);
 
-/* Builds "GET <path> HTTP/1.1\r\nHost: <host>\r\nConnection: close\r\n\r\n"
- * into `out` (NUL-terminated). Returns false (out untouched) if it would not
- * fit `cap`. */
+/* Builds "GET <path> HTTP/1.1\r\nHost: <host>\r\n<extra_hdrs>Connection:
+ * close\r\n\r\n" into `out` (NUL-terminated) — `extra_hdrs` (NULL or "" for
+ * none) is inserted verbatim between the `Host:` line and `Connection:
+ * close`, so it MUST already end in "\r\n" per header if non-empty (v0.4
+ * §14.7: bookpull.c's `X-Device-Id`/`X-N`/`X-Sig` lines). Returns false (out
+ * untouched) if it would not fit `cap`. */
+bool cafetch_build_request_hdrs(const char *host, const char *path, const char *extra_hdrs, char *out,
+                                size_t cap, size_t *out_len);
+
+/* `cafetch_build_request_hdrs(host, path, NULL, out, cap, out_len)` — the CA
+ * fetch path (V02_DESIGN.md §4.4) has never needed extra headers, so this
+ * keeps its call sites byte-identical to before v0.4. */
 bool cafetch_build_request(const char *host, const char *path, char *out, size_t cap,
                            size_t *out_len);
 
@@ -160,10 +169,22 @@ bool cafetch_validate_body(const uint8_t *body, size_t body_len, const uint8_t e
  * named, socket id distinct from nettest's).
  * --------------------------------------------------------------------- */
 
-/* Parses `url`, opens the cafetch socket (net_ca_fetch_open()) and sends the
- * GET request (net_ca_fetch_send()). False means it could not even start
- * (bad URL, or the socket/TLS layer refused) — already logged. Fails
- * immediately (false) if a fetch is already in progress (cafetch_in_progress()). */
+/* Parses `url` (which may include a query string — cafetch_parse_url()
+ * copies everything after the host into `path_out` verbatim, so
+ * "https://host/path?bv=7" yields path "/path?bv=7", the exact HTTP request
+ * path v0.4 §3.7's fetch needs), opens the cafetch socket
+ * (net_ca_fetch_open()) and sends the GET request built via
+ * cafetch_build_request_hdrs() with `extra_hdrs` (NULL/"" for none — see
+ * that function's own doc comment for the "already ends in \r\n per header"
+ * requirement). False means it could not even start (bad URL, or the
+ * socket/TLS layer refused) — already logged. Fails immediately (false) if
+ * a fetch is already in progress (cafetch_in_progress()) — the single-flight
+ * guard is shared by every caller (catrust.c's CA fetch, bookpull.c's book
+ * fetch): only one of either kind runs at a time. */
+bool cafetch_begin_ex(const char *url, const char *extra_hdrs);
+
+/* `cafetch_begin_ex(url, NULL)` — the CA fetch path's existing call shape,
+ * unchanged. */
 bool cafetch_begin(const char *url);
 
 typedef enum {
@@ -187,6 +208,26 @@ cafetch_status_t cafetch_poll(int64_t now_us);
  * not here — this function has no log dependency so it stays reusable). */
 bool cafetch_result(const uint8_t expected_sha[CAFETCH_SHA_LEN], char *pem_out, size_t pem_cap,
                     size_t *pem_len, int *out_http_status, size_t *out_bytes);
+
+/* Exposes the raw body bytes accumulated so far, for a caller that wants
+ * them directly rather than a PEM/hash-validated certificate (v0.4 §3.7/
+ * §14.7: bookpull.c's own CBOR response). Same "always fill the out-params,
+ * even on failure" convention cafetch_result() already uses for
+ * `out_http_status`/`out_bytes` — `*status`/`*len`/`*body` are filled
+ * whenever CAFETCH_POLL last returned CAFETCH_OK **or** CAFETCH_FAILED
+ * (`*status` in particular is meaningful on a FAILED non-200 response: the
+ * status line parses fine before `end_of_headers()` rejects anything but
+ * 200, so `s_parser.status_code` already holds the real code — exactly what
+ * §14.7's device-side failure table needs to classify 400/401/404/409/5xx).
+ * `*body` points into this module's own internal buffer (valid until the
+ * next cafetch_begin()/cafetch_begin_ex() or cafetch_end() call — a caller
+ * that needs the bytes past cafetch_end() must copy them out first).
+ * Returns true iff the body is complete and trustworthy (phase ==
+ * CAFETCH_PHASE_DONE, i.e. what CAFETCH_OK reported); false otherwise, with
+ * `*status`/`*len`/`*body` still filled from whatever was accumulated
+ * before the failure (`*len` 0 / `*body` an empty buffer if nothing had
+ * arrived yet). */
+bool cafetch_body(const uint8_t **body, size_t *len, int *status);
 
 /* Tears down the cafetch socket and resets state. MUST be called after
  * CAFETCH_OK or CAFETCH_FAILED (or to abort a CAFETCH_PENDING fetch early)
