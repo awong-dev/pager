@@ -39,6 +39,7 @@ typedef enum {
     WD_CATRUST,
     WD_SAVE,
     WD_DELIBERATE_RESTART,
+    WD_NET_REGWAIT, // TASK_net_interleave.md: boot_reg_service()'s poll, modes_run(); appended last to keep old indices stable
 } wd_stage_t;
 
 /* Call once, early in app_main(): logs why the chip last reset and where the

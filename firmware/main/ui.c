@@ -238,6 +238,15 @@ bool ui_clock_due(void)
     return clockfmt_due(cur, s_status_clock_last, sizeof(s_status_clock_last));
 }
 
+// TASK_net_interleave.md: last bars/link drawn by draw_status_bar() (below)
+// — the "last drawn" half of ui_net_icons_due()'s own comparison, same
+// pattern s_status_clock_last/ui_clock_due() use above. -1 (not a valid bars
+// count or a valid bool) so the very first draw always "differs" and gets
+// recorded rather than accidentally matching a 0 the icons happen to start
+// at.
+static int s_bar_last = -1;
+static int s_link_last = -1;
+
 // ---------------------------------------------------------------------------
 // Status bar (docs/DEVICE_PLAN.md §5.4). Bucket values are read fresh every
 // call (cheap: msg.c ring scan, net_get_mqtt_status(), ident getters, and
@@ -264,6 +273,26 @@ static int segs_from_batt_mv(int mv)
     if (mv >= 3200) return 2;
     if (mv >= 3100) return 1;
     return 0;
+}
+
+// TASK_net_interleave.md: see ui.h's own doc comment. Recomputes the same
+// bars/link buckets draw_status_bar() below will draw and compares against
+// what it drew last time (s_bar_last/s_link_last, updated only inside
+// draw_status_bar() itself — same "recorded only by the actual drawer"
+// pattern s_status_clock_last/ui_clock_due() use). Cheap: two RAM reads
+// (modes_get_rssi_dbm()/net_registered()) plus one net_get_mqtt_status()
+// call, same cost class as draw_status_bar()'s own per-call reads — no AT
+// command of its own.
+bool ui_net_icons_due(void)
+{
+    if (disp_is_dead()) {
+        return false; // headless: nothing was ever drawn to compare against
+    }
+    int bars = net_registered() ? bars_from_rssi_dbm(modes_get_rssi_dbm()) : 0;
+    net_mqtt_status_t st;
+    net_get_mqtt_status(&st);
+    int link = st.mqtt_connected ? 1 : 0;
+    return bars != s_bar_last || link != s_link_last;
 }
 
 // README R6 (open, not fixed by this task — msg_thread_at()/
@@ -353,18 +382,21 @@ static void draw_status_bar(void)
     gfx_icon(batt_x, 0, (gfx_icon_t) (GFX_ICON_BATTERY_0 + segs_from_batt_mv(modes_get_batt_mv())));
 
     int bars_x = batt_x - GFX_ICON_W - UI_STATUS_ICON_GAP;
-    int bars = bars_from_rssi_dbm(modes_get_rssi_dbm());
-    // Note: §5.4 also specifies a distinct "not registered -> x" bucket
-    // separate from "0 bars"; net_get_rssi() (net.h) exposes only a dBm
-    // reading or failure-with-fallback, no registration-state bit, so that
-    // distinction collapses into "0 bars" here. Fixing it needs a new
-    // net.h entry point, out of this task's Files list.
+    // TASK_net_interleave.md: 0 bars whenever unregistered, regardless of
+    // modes_get_rssi_dbm()'s cached reading -- a reading taken before
+    // coverage was lost (or before this boot ever registered at all) is
+    // stale, not "no signal", and net_registered() (net.h: plain RAM read,
+    // no AT round trip) is exactly the bit §5.4's "not registered -> x"
+    // bucket needed and net_get_rssi() alone could not provide.
+    int bars = net_registered() ? bars_from_rssi_dbm(modes_get_rssi_dbm()) : 0;
     gfx_icon(bars_x, 0, (gfx_icon_t) (GFX_ICON_SIGNAL_0 + bars));
+    s_bar_last = bars;
 
     net_mqtt_status_t st;
     net_get_mqtt_status(&st);
     int mqtt_x = bars_x - GFX_ICON_W - UI_STATUS_ICON_GAP;
     gfx_icon(mqtt_x, 0, st.mqtt_connected ? GFX_ICON_LINK_OK : GFX_ICON_LINK_X);
+    s_link_last = st.mqtt_connected ? 1 : 0;
 
     // v0.2 §4.3: TLS trust-state padlock, leftmost of the right cluster —
     // closed while pinned, broken while broken, nothing at all while

@@ -215,6 +215,16 @@ static int64_t s_probe_wait_total_us = 0, s_probe_wait_max_us = 0;
 #define PAGER_MODEM_RESET_MIN_INTERVAL_US ((int64_t) 10 * 60 * 1000000) // F4 rate limit
 #define PAGER_FW_VERSION "0.1.0"
 
+// TASK_net_interleave.md: boot_reg_service()'s own window. 300u is the same
+// cap net_bringup()'s old synchronous F1 wait loop used (net.cpp); past this
+// with no registration, boot_reg_service() hands detection back to
+// coverage_step()'s normal dark-time policy. 5000u is the loop-interval cap
+// (modes_run()'s interval block below) so a sleeping, unregistered pager
+// still wakes often enough to notice registration promptly while the window
+// is open, without forcing the 100 ms UI-awake busy-poll cadence.
+#define PAGER_BOOT_REG_WINDOW_S 300u
+#define PAGER_BOOT_REG_WAKE_MS 5000u
+
 // F6.2: the button FSM itself (short/long/BTN_STUCK, debounce, long-press
 // threshold) moved to input.c; this is only the outer loop's own polling
 // granularity while input_button_busy() is true (needs to be frequent
@@ -503,6 +513,19 @@ static volatile bool s_coverage_owns_radio = false;
 bool modes_coverage_owns_radio(void) { return s_coverage_owns_radio; }
 
 void modes_note_motion_reset(void) { coverage_on_motion(&s_coverage); }
+
+// TASK_net_interleave.md: boot_reg_service()'s own window state. RAM-only,
+// same reasoning as s_loc_suppress/s_ca_apply_suppress above -- a reboot
+// mid-window just reopens a fresh PAGER_BOOT_REG_WINDOW_S window from
+// modes_boot(), which is fine (the old synchronous wait restarted from zero
+// on every boot too). 0 means "closed" for both: s_boot_reg_until_us == 0 is
+// the window-closed sentinel (boot_reg_window_open() below), so it is also
+// used as the "never scheduled" value for s_boot_reg_next_poll_us -- the
+// first service() call after the window opens always polls immediately.
+static int64_t s_boot_reg_until_us = 0;
+static int64_t s_boot_reg_next_poll_us = 0;
+
+static bool boot_reg_window_open(void) { return s_boot_reg_until_us != 0; }
 
 void modes_coverage_debug_print(void)
 {
@@ -2220,13 +2243,18 @@ void modes_boot(void)
         // scr_greeting.c is unused here now and stays in place only for
         // main.c's own pre-provisioning (IDENT-missing) Setup mode splash.
         //
-        // Keys/button presses that arrive during the net_init()/
-        // net_session_up() stretch below are still queued by input.c as
-        // today (its GPIO ISR/CardKB poll do not depend on modes_run()) but
-        // are not drained until modes_run()'s loop actually starts after
-        // this function returns — this change does not make input work
-        // during bring-up, it only fixes what is drawn before that loop
-        // starts.
+        // Keys/button presses that arrive during net_init()'s bring-up below
+        // are still queued by input.c as today (its GPIO ISR/CardKB poll do
+        // not depend on modes_run()) — but TASK_net_interleave.md shrank
+        // that bring-up to the radio-on/PDP/eDRX/PSM AT sequence only (no
+        // registration wait: net_init() now calls net_bringup(0), which
+        // returns as soon as the radio is FULL and searching), so
+        // modes_run()'s loop starts right after this function returns and
+        // drains that queue within its first pass — this change DOES make
+        // input work during bring-up now, not just what is drawn before the
+        // loop starts. Registration itself continues as a polled state
+        // (boot_reg_service(), called from modes_run() below) instead of a
+        // blocking wait.
         if (lock_is_locked()) {
             ui_push(&g_scr_lock);
         }
@@ -2245,11 +2273,14 @@ void modes_boot(void)
         rtc_lock();
         g_rtc.attach_fail_cycles = 0;
         rtc_unlock();
-        bool up_ok = net_session_up();
-        note_session_up_attempt(up_ok); // §2.3: arms the connect watchdog
-        if (!up_ok) {
-            ESP_LOGI(TAG, "net_session_up() failed at boot; will retry per F3 backoff");
-        }
+        // TASK_net_interleave.md: net_session_up() no longer runs here --
+        // it needs a registered modem (net_session_up()'s own doc comment),
+        // which net_bringup(0) above no longer waits for. boot_reg_service()
+        // (modes_run()) calls it once registration lands, via the same
+        // registered-edge block every later reconnect already goes through.
+        // Open the boot registration window: the same 300s cap net_bringup()'s
+        // old synchronous F1 wait used.
+        s_boot_reg_until_us = esp_timer_get_time() + (int64_t) PAGER_BOOT_REG_WINDOW_S * 1000000LL;
     }
 
     // v0.2 §5 (docs/V02_DESIGN.md): loc.c's RTC route-hint binding + GNSS/
@@ -2299,6 +2330,63 @@ bool modes_on_run_task(void)
     return s_modes_run_task != NULL && xTaskGetCurrentTaskHandle() == s_modes_run_task;
 }
 
+// TASK_net_interleave.md: the boot registration wait, as a state serviced
+// from modes_run()'s loop instead of a blocking loop inside net_bringup().
+// Called once per modes_run() iteration (right after net_get_mqtt_status());
+// a no-op whenever the window is not open, so it costs nothing once boot
+// registration has resolved one way or the other. At most one AT+CEREG? per
+// call, and only once per second (s_boot_reg_next_poll_us), regardless of
+// how often modes_run() itself wakes (the 100 ms UI-awake busy-poll cadence
+// included -- see the 1 s floor below).
+static void boot_reg_service(void)
+{
+    if (!boot_reg_window_open()) {
+        return;
+    }
+    int64_t now = esp_timer_get_time();
+    if (net_registered()) {
+        // remaining_us can be <= 0 if registration lands the same instant the
+        // window times out (net_registered() is a plain RAM read, checked
+        // before the timeout branch below) -- clamp so the log can't wrap a
+        // negative duration into a huge unsigned one.
+        int64_t remaining_us = s_boot_reg_until_us - now;
+        uint32_t elapsed_s = (remaining_us > 0)
+                                  ? (PAGER_BOOT_REG_WINDOW_S - (uint32_t) (remaining_us / 1000000))
+                                  : PAGER_BOOT_REG_WINDOW_S;
+        ESP_LOGI(TAG, "boot registration: registered after %u s", (unsigned) elapsed_s);
+        s_boot_reg_until_us = 0;
+        return;
+    }
+    if (now >= s_boot_reg_until_us) {
+        ESP_LOGI(TAG, "boot registration: none after %u s; coverage policy takes over",
+                 (unsigned) PAGER_BOOT_REG_WINDOW_S);
+        s_boot_reg_until_us = 0;
+        return;
+    }
+    // Cannot actually be set this early in boot (nothing has had a chance to
+    // suppress reconnect/CA-apply yet, and coverage_step() has not run once
+    // this boot before this function's first call), but the rule is kept
+    // anyway: this function shares the "does not touch the session while
+    // suppressed" contract every other net-service caller in this file
+    // follows for these three flags.
+    if (s_loc_suppress || s_ca_apply_suppress || s_coverage_owns_radio) {
+        return;
+    }
+    if (now < s_boot_reg_next_poll_us) {
+        return; // 1 s floor, so the 100 ms UI-awake busy-poll cadence can't turn into an AT+CEREG? storm
+    }
+    s_boot_reg_next_poll_us = now + 1000000;
+    if (net_poll_registration()) {
+        // The poll raised the existing registered edge (net_poll_registration()
+        // -> note_registration()); the registered-edge block later this same
+        // iteration consumes it (backoff reset -> the retry branch connects in
+        // the same pass). Close the window here too, or step 9's
+        // !boot_reg_window_open() gate would block that same iteration's
+        // connect attempt.
+        s_boot_reg_until_us = 0;
+    }
+}
+
 void modes_run(void)
 {
     s_modes_run_task = xTaskGetCurrentTaskHandle();
@@ -2317,6 +2405,13 @@ void modes_run(void)
         // interacting with the pager right then, regardless of coverage.
         if (g_rtc.mode != (uint8_t) PAGER_MODE_ACTIVE && net_unregistered_for_s() > 0) {
             interval_ms = PAGER_WAKE_INTERVAL_UNREGISTERED_MS;
+        }
+        // TASK_net_interleave.md: while the boot registration window is open,
+        // cap the wake interval so boot_reg_service() (below) polls
+        // AT+CEREG? at least every PAGER_BOOT_REG_WAKE_MS instead of waiting
+        // out the (possibly much longer) unregistered cadence above.
+        if (boot_reg_window_open() && interval_ms > PAGER_BOOT_REG_WAKE_MS) {
+            interval_ms = PAGER_BOOT_REG_WAKE_MS;
         }
         // Rail hold task (docs/ROADMAP.md "24 Sep evening finding"): a
         // person typing/pressing buttons, or the wake button itself, wants
@@ -2919,7 +3014,12 @@ void modes_run(void)
         // changed (a string compare, no AT call) and returns false outright
         // whenever not in use, so this costs one extra partial per minute
         // of use and nothing otherwise.
-        if (!render_now && ui_clock_due()) {
+        // TASK_net_interleave.md: ui_net_icons_due() catches the link/signal
+        // icons changing with no keypress (e.g. the registered edge below,
+        // or MQTT connecting) -- same "checked every loop pass" reasoning as
+        // ui_clock_due() just above; both are cheap RAM reads/comparisons,
+        // no AT call, false outright while headless (disp_is_dead()).
+        if (!render_now && (ui_clock_due() || ui_net_icons_due())) {
             render_now = true;
         }
         if (render_now) {
@@ -2948,6 +3048,10 @@ void modes_run(void)
         net_mqtt_status_t st;
         net_get_mqtt_status(&st);
 
+        watchdog_kick(WD_NET_REGWAIT);
+        boot_reg_service();
+        watchdog_kick(WD_MQTT);
+
         // Owner request, 2026-09-20: coverage.c's duty-cycle policy, one step
         // per iteration (same "never more than one small step per call"
         // discipline loc_service()/catrust_service() use). Deliberately
@@ -2955,8 +3059,16 @@ void modes_run(void)
         // observes the same "just registered" transition and can latch how
         // long the pager was dark (coverage_last_dark_s()) before its own
         // internal bookkeeping resets.
+        // TASK_net_interleave.md: `|| boot_reg_window_open()` keeps coverage
+        // treating the pager as "registered" (i.e. not dark) for coverage's
+        // own purposes for as long as the boot registration window is open
+        // -- coverage's dark-time policy only takes over once that window
+        // closes (boot_reg_service() above clears it on success or timeout),
+        // same as the old synchronous wait's effect on coverage (it never
+        // saw "unregistered" during that wait either).
         coverage_action_t cov_action =
-            coverage_step(&s_coverage, esp_timer_get_time(), net_unregistered_for_s() == 0,
+            coverage_step(&s_coverage, esp_timer_get_time(),
+                          net_unregistered_for_s() == 0 || boot_reg_window_open(),
                           loc_attempt_in_progress());
         switch (cov_action) {
         case COVERAGE_ACTION_ENTER_OFF:
@@ -2992,12 +3104,26 @@ void modes_run(void)
             break;
         }
 
-        // The registered edge also fires once at boot, ~300 ms after
-        // modes_boot()'s own net_session_up(): with a connect in flight there
+        // TASK_net_interleave.md: this edge now fires when boot registration
+        // completes -- boot_reg_service() above calls net_poll_registration()
+        // and clears s_boot_reg_until_us the same iteration it observes
+        // registered, raising this same edge -- and it is what triggers the
+        // very first connect: boot no longer calls net_session_up() itself
+        // (modes_boot()), so the retry branch below (gated on
+        // !boot_reg_window_open()) does not run until this edge fires or the
+        // window times out. Once registered, coverage regained (this same
+        // edge, later in the boot) and modem-recover re-registration all take
+        // the same path. The !net_connect_in_flight() guard stays for the
+        // same reason it always did: with a connect already in flight there
         // is nothing to regain, and resetting the backoff here used to let
         // the retry branch below issue a second CONNECT (phase1-boot.log).
         if (net_take_registered_edge() && !s_loc_suppress && !s_ca_apply_suppress &&
             !net_connect_in_flight()) {
+            // TASK_net_interleave.md: one AT+CSQ so the status bar's signal
+            // bars reflect the real reading as soon as registration lands,
+            // not the -113 dBm placeholder refresh_rssi_dbm() falls back to
+            // until the first successful read.
+            refresh_rssi_dbm();
             // Coverage is back. Retry at once instead of waiting out a backoff
             // that grew while there was no network. And a session that was
             // "connected" across the gap cannot be trusted: on this modem the
@@ -3138,8 +3264,17 @@ void modes_run(void)
             // true until CONNECTED/SUBSCRIBED arrives or M1's 30s timeout
             // fires, so this branch simply does not run again until one of
             // those happens.
+            //
+            // TASK_net_interleave.md: `&& !boot_reg_window_open()` -- while
+            // the boot registration window is open, boot_reg_service() above
+            // owns detection (one AT+CEREG? per its own cadence); this branch
+            // would otherwise see "not connected" every iteration and spam
+            // "retrying MQTT session" / grow the backoff / attempt a connect
+            // before the modem is even registered. The window closes (edge
+            // above, or the 300s timeout) before this branch is allowed to
+            // run at all.
             if (!s_loc_suppress && !s_ca_apply_suppress && esp_timer_get_time() >= next_session_retry_us &&
-                !net_connect_in_flight()) {
+                !net_connect_in_flight() && !boot_reg_window_open()) {
                 // v0.2 §4.2: no-op unless currently `broken` — decides
                 // validated vs. unvalidated for this attempt (the
                 // cold-boot/24h revalidation window) and reconfigures

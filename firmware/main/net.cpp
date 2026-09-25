@@ -677,12 +677,28 @@ static bool net_bringup(int attach_wait_s)
         return false;
     }
 
+    // TASK_net_interleave.md: attach_wait_s == 0 is the boot path (net_init()
+    // below). Registration used to block modes_boot() here for up to 300s
+    // (F1's wait loop just below); now the radio is left FULL/searching and
+    // modes_run()'s boot_reg_service() polls net_poll_registration() from the
+    // main loop instead, so the UI is usable within one loop pass of
+    // returning here. Power effect: none beyond what setOpState(FULL) above
+    // already did -- no AT command is sent by this branch itself.
+    if (attach_wait_s == 0) {
+        WalterModemNetworkRegState st = WalterModem::getNetworkRegState();
+        note_registration(st == WALTER_MODEM_NETWORK_REG_REGISTERED_HOME ||
+                          st == WALTER_MODEM_NETWORK_REG_REGISTERED_ROAMING);
+        ESP_LOGI(TAG, "radio on; registration continues in the background");
+        return true;
+    }
+
     // F1: single-attempt wait, capped at 300s. modes.c is responsible for
     // the 5/15/60/300s backoff across repeated net_init() calls; this loop
     // is not itself a retry loop, so it never busy-spins setOpState(FULL).
     // The wait is a convenience (it lets boot go straight to a connected
     // session), not a condition: on a timeout the radio stays up and
     // searching, and the session is configured later, from net_session_up().
+    // Only reached with attach_wait_s > 0 -- net_recover_modem()'s 20s path.
     bool attached = false;
     for (int waited_s = 0; waited_s < attach_wait_s; waited_s++) {
         watchdog_feed(); // up to 300 s of legitimate waiting at boot
@@ -715,7 +731,11 @@ extern "C" bool net_init(void)
     net_connect_guard_init(&s_connect_guard); // v0.2 M1/M3: fresh boot, nothing outstanding
     publish_quiet_gate_init(&s_publish_quiet); // 23 Sep fix: fresh boot, nothing in flight
     net_probe_guard_init(&s_probe_guard); // S1: fresh boot, nothing outstanding
-    return net_bringup(PAGER_ATTACH_POLL_CAP_S);
+    // TASK_net_interleave.md: attach_wait_s == 0 -- registration is now
+    // polled from modes_run()'s boot_reg_service(), not waited on here.
+    // PAGER_ATTACH_POLL_CAP_S still caps the bootstrap-mode attach wait
+    // (net_bootstrap_attach() below), which is unrelated to this call.
+    return net_bringup(0);
 }
 
 // Clock, CA, TLS profile and MQTT client configuration: everything a modem
@@ -1486,6 +1506,20 @@ extern "C" uint32_t net_unregistered_for_s(void)
         return 0;
     }
     return (uint32_t) ((esp_timer_get_time() - s_unregistered_since_us) / 1000000);
+}
+
+// TASK_net_interleave.md: plain RAM read, no AT command -- false until the
+// first +CEREG 1/5 URC or the first net_poll_registration() poll this boot.
+extern "C" bool net_registered(void) { return s_registered; }
+
+// TASK_net_interleave.md: modes_run()'s boot_reg_service() polling helper.
+// Power effect: one AT+CEREG? (net_is_attached()'s own doc comment), no RRC
+// of its own.
+extern "C" bool net_poll_registration(void)
+{
+    bool r = net_is_attached();
+    note_registration(r);
+    return r;
 }
 
 extern "C" bool net_recover_modem(void)

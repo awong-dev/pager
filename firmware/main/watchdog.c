@@ -75,7 +75,7 @@ static const char *watchdog_stage_name(uint32_t stage)
     static const char *const k_names[] = {
         "?", "boot", "network init", "loop top", "entering light sleep", "just woke from light sleep",
         "input/ui", "render", "mqtt status/retry", "message pump", "modem health check", "location",
-        "sms", "ca trust", "saving state", "deliberate restart",
+        "sms", "ca trust", "saving state", "deliberate restart", "boot registration wait",
     };
     return (stage < sizeof(k_names) / sizeof(k_names[0])) ? k_names[stage] : "?";
 }

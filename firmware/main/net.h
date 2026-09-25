@@ -771,6 +771,16 @@ bool net_debug_at(const char *cmd);
 bool net_take_registered_edge(void);
 uint32_t net_unregistered_for_s(void);
 
+/* TASK_net_interleave.md: net_bringup(0) (boot) no longer blocks on
+ * registration -- modes_run()'s boot_reg_service() polls it instead.
+ * net_registered(): RAM read of s_registered, no AT command; false until
+ * the first +CEREG 1/5 URC or the first net_poll_registration() this boot.
+ * net_poll_registration(): one AT+CEREG? (net_is_attached(), ~10 ms per
+ * 05-boot-full.log), updates s_registered/the registered edge via
+ * note_registration(), and returns the same bool. */
+bool net_registered(void);
+bool net_poll_registration(void);
+
 #ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
 /* TEMPORARY diagnostic (main.c's `mqtttest` console command), debug build
  * only (PAGER_DEBUG_NO_LIGHT_SLEEP) -- same as net_check_tcp() above.

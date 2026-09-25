@@ -527,6 +527,16 @@ void ui_status_clock_text(bool in_use, bool seeded, int hh, int mm, char *out, s
  * modes_run()'s own job, not this function's. */
 bool ui_clock_due(void);
 
+/* TASK_net_interleave.md: True iff the status bar's link icon (net_registered()
+ * ? MQTT link OK/X : --) or signal bars (net_registered() ? real reading : 0
+ * bars) differ from what draw_status_bar() last actually drew — same "call
+ * once per modes_run() loop pass, cheap RAM reads only, never an AT command"
+ * contract as ui_clock_due() above, and NOT gated on modes_in_use() (unlike
+ * ui_clock_due(): these icons matter while asleep/not-in-use too, e.g. the
+ * boot registration edge landing with no keypress). Always false while
+ * headless (disp_is_dead()) — nothing was ever drawn to compare against. */
+bool ui_net_icons_due(void);
+
 #ifdef __cplusplus
 }
 #endif
