@@ -334,6 +334,55 @@ def test_status_rst_stage_abn_round_trip_cbor():
     assert (env.rst, env.stage, env.abn) == (4, 6, 2)
 
 
+# ---------------------------------------------------------------------------
+# Crash diagnostics (this task, docs/PROTOCOL.md §5.1) -- `/status`'s
+# optional `stallcmd` field.
+# ---------------------------------------------------------------------------
+
+
+def test_status_accepts_stallcmd():
+    env = StatusEnvelope.model_validate(_online_status(stallcmd="AT+CEREG?"))
+    assert env.stallcmd == "AT+CEREG?"
+
+
+def test_status_stallcmd_is_optional():
+    """Absent-field compatibility: older firmware that predates this field,
+    or a device with no stall before its previous abnormal reset, must
+    still validate, reported as unknown (`None`)."""
+    env = StatusEnvelope.model_validate(_online_status())
+    assert env.stallcmd is None
+
+
+def test_status_accepts_stallcmd_boundary_length():
+    assert StatusEnvelope.model_validate(_online_status(stallcmd="")).stallcmd == ""
+    twenty_four = "A" * 24
+    assert StatusEnvelope.model_validate(_online_status(stallcmd=twenty_four)).stallcmd == twenty_four
+
+
+def test_status_rejects_stallcmd_over_length():
+    with pytest.raises(ValidationError):
+        StatusEnvelope.model_validate(_online_status(stallcmd="A" * 25))
+
+
+def test_status_rejects_stallcmd_non_printable():
+    with pytest.raises(ValidationError):
+        StatusEnvelope.model_validate(_online_status(stallcmd="AT+CEREG\x00"))
+    with pytest.raises(ValidationError):
+        StatusEnvelope.model_validate(_online_status(stallcmd="AT+é"))
+
+
+def test_status_stallcmd_round_trip_cbor():
+    """docs/PROTOCOL.md §10: key 59 -- next free integer after the
+    already-shipped `bpull=58`."""
+    obj = _online_status(stallcmd="AT+CEREG?")
+    assert wirecbor.KEYMAP["stallcmd"] == 59
+    cbor_bytes = wirecbor.encode(obj)
+    decoded = wirecbor.decode(cbor_bytes)
+    assert decoded["stallcmd"] == "AT+CEREG?"
+    env = StatusEnvelope.model_validate(decoded)
+    assert env.stallcmd == "AT+CEREG?"
+
+
 def test_status_still_ignores_a_genuinely_unknown_field():
     """The pre-existing `extra='ignore'` forward-compat guarantee, still
     true for a field this relay has no opinion on at all (as opposed to the

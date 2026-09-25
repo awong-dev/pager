@@ -115,6 +115,10 @@ class DeviceStatus(BaseModel):
     rst: int | None = None
     stage: int | None = None
     abn: int | None = None
+    # Crash diagnostics (docs/PROTOCOL.md §5.1, this task): display/
+    # diagnosis only, same as `rst`/`stage`/`abn` above -- the AT command
+    # name the main loop was stuck on before the previous abnormal reset.
+    stallcmd: str | None = None
     # docs/PROTOCOL.md §3.7/§5.1 (v0.4): "the relay stores it and sends
     # nudges only while the last online `/status` carried it" -- read by
     # `app/devcfg.py`'s `push_book` to gate the nudge. Only ever `1`

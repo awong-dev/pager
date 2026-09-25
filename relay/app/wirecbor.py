@@ -137,6 +137,11 @@ KEYMAP: dict[str, int] = {
     "url": 57,
     # docs/PROTOCOL.md §3.7/§5.1 (v0.4): `/status`'s book-pull capability gate.
     "bpull": 58,
+    # Crash diagnostics (this task, optional, absent = older firmware or no
+    # stall before the previous abnormal reset): the AT command name the
+    # main loop was stuck on. Next free integer after `bpull=58`, same
+    # "next free integer" convention as every other addition on this list.
+    "stallcmd": 59,
 }
 REVERSE_KEYMAP: dict[int, str] = {v: k for k, v in KEYMAP.items()}
 

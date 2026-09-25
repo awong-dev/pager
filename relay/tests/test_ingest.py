@@ -784,6 +784,72 @@ def test_status_rejects_out_of_range_rst_stage_abn_as_malformed():
     assert devices_store.get_device("pgr-crash-4").status.state is None
 
 
+# ---- Crash diagnostics (this task, docs/PROTOCOL.md §5.1): `stallcmd` ----
+
+
+def test_status_persists_stallcmd_and_logs_accepted_status(caplog):
+    _make_user("crashuser5", "crashuser5")
+    _make_pager_device("pgr-crash-5", "crashuser5")
+    ingest, _broker = _ingest()
+
+    with caplog.at_level("INFO", logger="relay.ingest"):
+        ingest.handle_status(
+            status_topic("pgr-crash-5"),
+            online_status_payload("s_00000001", stallcmd="AT+CEREG?"),
+        )
+
+    status = devices_store.get_device("pgr-crash-5").status
+    assert status.stallcmd == "AT+CEREG?"
+    assert any(
+        "status pgr-crash-5: state=online link=None rst=None stage=None abn=None "
+        "stallcmd=AT+CEREG?" in rec.message
+        for rec in caplog.records
+    )
+
+
+def test_status_without_stallcmd_stores_nothing_for_it_and_logs_dash(caplog):
+    """Absent-field compatibility (docs/PROTOCOL.md §0): firmware that
+    predates this field, or a device with no stall before its previous
+    abnormal reset, must still validate and store, with `stallcmd` reported
+    as unknown (`None`), and the accepted-status log line printing `-`."""
+    _make_user("crashuser6", "crashuser6")
+    _make_pager_device("pgr-crash-6", "crashuser6")
+    ingest, _broker = _ingest()
+
+    with caplog.at_level("INFO", logger="relay.ingest"):
+        ingest.handle_status(
+            status_topic("pgr-crash-6"), online_status_payload("s_00000001")
+        )
+
+    status = devices_store.get_device("pgr-crash-6").status
+    assert status.stallcmd is None
+    assert status.state == "online"
+    assert any(
+        "status pgr-crash-6: state=online link=None rst=None stage=None abn=None "
+        "stallcmd=-" in rec.message
+        for rec in caplog.records
+    )
+
+
+def test_status_rejects_bad_stallcmd_as_malformed():
+    _make_user("crashuser7", "crashuser7")
+    _make_pager_device("pgr-crash-7", "crashuser7")
+    ingest, _broker = _ingest()
+
+    ingest.handle_status(
+        status_topic("pgr-crash-7"),
+        online_status_payload("s_00000001", stallcmd="A" * 25),
+    )
+    ingest.handle_status(
+        status_topic("pgr-crash-7"),
+        online_status_payload("s_00000002", stallcmd="AT+\x00BAD"),
+    )
+
+    # Neither malformed status was accepted -- no status ever got stored
+    # for this device.
+    assert devices_store.get_device("pgr-crash-7").status.state is None
+
+
 def test_status_logs_security_event_on_transition_into_broken(caplog):
     _make_user("catrustuser2", "catrustuser2")
     _make_pager_device("pgr-catrust-2", "catrustuser2")

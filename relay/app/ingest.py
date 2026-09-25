@@ -612,13 +612,14 @@ class Ingest:
         # abnormal-reset count -- all `None` and printed as such on
         # firmware that predates these fields.
         logger.info(
-            "status %s: state=%s link=%s rst=%s stage=%s abn=%s",
+            "status %s: state=%s link=%s rst=%s stage=%s abn=%s stallcmd=%s",
             device_id,
             env.state,
             env.link,
             env.rst,
             stage_name(env.stage),
             env.abn,
+            env.stallcmd if env.stallcmd is not None else "-",
         )
 
         previous_status = device.status
@@ -644,6 +645,7 @@ class Ingest:
             stage=env.stage,
             abn=env.abn,
             bpull=env.bpull,
+            stallcmd=env.stallcmd,
         )
 
         # docs/V02_DESIGN.md §4.3: "on a transition

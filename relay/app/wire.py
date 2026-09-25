@@ -280,6 +280,11 @@ class StatusEnvelope(BaseModel):
     rst: int | None = None
     stage: int | None = None
     abn: int | None = None
+    # Crash diagnostics (this task, docs/PROTOCOL.md §5.1, optional, absent =
+    # firmware that predates it or no stall before the previous abnormal
+    # reset): the AT command name the main loop was stuck on. Display/
+    # diagnosis only, same as `rst`/`stage`/`abn` above.
+    stallcmd: str | None = None
     # docs/PROTOCOL.md §3.7/§5.1 (v0.4): the book-pull capability gate. Only
     # `1` is a legal value; anything else is not a rejection (§3.4's
     # "unknown values" rule) -- `_check_bpull` below just drops it back to
@@ -337,6 +342,13 @@ class StatusEnvelope(BaseModel):
     @classmethod
     def _check_bpull(cls, value: int | None) -> int | None:
         return value if value == 1 else None
+
+    @field_validator("stallcmd")
+    @classmethod
+    def _check_stallcmd(cls, value: str | None) -> str | None:
+        if value is not None and (len(value) > 24 or not value.isprintable() or not value.isascii()):
+            raise ValueError("stallcmd must be <= 24 printable ASCII chars")
+        return value
 
     @field_validator("n")
     @classmethod
