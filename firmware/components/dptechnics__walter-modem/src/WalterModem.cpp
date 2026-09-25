@@ -396,6 +396,40 @@ const char* _pdpTypeStr(WalterModemPDPType type)
   return "";
 }
 
+/* PAGER PATCH: (1.21, PATCHES.md) `mktime()` converts a struct tm using the
+ * CALLING PROCESS's current `TZ` (see <time.h>), not UTC -- both strTotime()
+ * below and the AT+CCLK? handler further down this file build a struct tm
+ * from a value that is already known to be UTC (or, for CCLK, is explicitly
+ * re-based to UTC by the caller's own tz_offset arithmetic right after this
+ * call) and relied on mktime() behaving like the POSIX `timegm()` -- which
+ * this toolchain's newlib does not provide (not declared in <time.h>) --
+ * true only as long as the application never called `setenv("TZ", ...)`.
+ * firmware/main/main.c's app_main() now does exactly that (TASK_ui_round2.md
+ * Do #7, a Pacific-time on-glass clock), which silently coupled this
+ * library's own UTC-epoch math to whatever TZ the application happens to
+ * have set -- see PATCHES.md 1.21 for a live capture proving this (a CCLK-
+ * seeded epoch that decoded 8h into the future of the true time). This
+ * small TZ-independent UTC calendar conversion (Howard Hinnant's public-
+ * domain "days from civil" algorithm) replaces mktime() at both call sites
+ * instead of touching process TZ state: tzset() is documented non-thread-
+ * safe, and this file's own RX/queue-processing tasks (xTaskCreateStatic...
+ * in begin(), above) are not necessarily the application's TZ-owning task
+ * anyway, so a push/pop of `TZ` around mktime() would not be safe either.
+ */
+static time_t _pagerTimegm(const struct tm* tm)
+{
+  int64_t y = tm->tm_year + 1900;
+  int m = tm->tm_mon + 1; // 1-12
+  int d = tm->tm_mday;
+  y -= (m <= 2);
+  int64_t era = (y >= 0 ? y : y - 399) / 400;
+  int64_t yoe = y - era * 400;                                   // [0, 399]
+  int64_t doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;   // [0, 365]
+  int64_t doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;            // [0, 146096]
+  int64_t days = era * 146097 + doe - 719468;                    // days since 1970-01-01 UTC
+  return (time_t) (days * 86400 + tm->tm_hour * 3600 + tm->tm_min * 60 + tm->tm_sec);
+}
+
 /**
  * @brief Convert a time string to a unix timestamp.
  *
@@ -414,8 +448,9 @@ int64_t strTotime(const char* timeStr, const char* format = "%Y-%m-%dT%H:%M:%S")
     return -1;
   }
 
-  /* Without setting time zone, mktime will assume UTC+00 on arduino, thus behaving like timegm */
-  time_t utcTime = std::mktime(&tm);
+  /* PAGER PATCH: (1.21) was `std::mktime(&tm)` -- see _pagerTimegm()'s own
+   * doc comment just above for why that is TZ-dependent and wrong here. */
+  time_t utcTime = _pagerTimegm(&tm);
   return (int64_t) utcTime;
 }
 
@@ -3167,17 +3202,21 @@ void WalterModem::_processModemRSP(WalterModemCmd* cmd, WalterModemBuffer* buff)
     tm.tm_year += 2000 - 1900; // years since 1900
     tm.tm_mon -= 1;            // months since January
 
-    // mktime assumes system local time — use as-is then offset to UTC
-    time_t local_time = mktime(&tm);
+    // PAGER PATCH: (1.21) was `mktime(&tm)` -- see _pagerTimegm()'s own doc
+    // comment (this file, near strTotime()) for why mktime() is TZ-
+    // dependent and wrong here: `tm` holds the modem's CCLK wall-clock
+    // fields, which are local time AT THE CCLK-REPORTED tz_offset (handled
+    // by the +/- branch just below), not the calling process's local time.
+    time_t utc_time = _pagerTimegm(&tm);
 
     // Convert quarter-hour offset (e.g. +08 = 8 * 900)
     int offset_seconds = tz_offset * 15 * 60;
     if(tz_sign == '+') {
-      cmd->rsp->data.clock.epochTime = local_time - offset_seconds;
+      cmd->rsp->data.clock.epochTime = utc_time - offset_seconds;
       cmd->rsp->data.clock.timeZoneOffset = tz_offset;
 
     } else {
-      cmd->rsp->data.clock.epochTime = local_time + offset_seconds;
+      cmd->rsp->data.clock.epochTime = utc_time + offset_seconds;
       cmd->rsp->data.clock.timeZoneOffset = -tz_offset;
     }
 

@@ -713,3 +713,46 @@ at each site for the numbers.
 **Power effect**: none of its own -- purely additional optional parameters with defaults that
 reproduce every existing caller's behaviour exactly. The power effect belongs to whichever caller
 actually passes a shorter budget (documented at each of those call sites in `firmware/main`).
+
+## 1.21 — `mktime()` is TZ-dependent; this library's own UTC-epoch math assumed it never would be (`src/WalterModem.cpp`)
+
+Round 4 bug report (25 Sep 2026 ~3am PDT): the on-glass clock read UTC+1 instead of PDT (09:58 UTC
+showed as 10:58, not 02:58). Root cause traced to this file, not `firmware/main`.
+
+`strTotime()` (the GNSS-fix/`+LPGNSSUTCTIME` timestamp parser) and the `AT+CCLK?` response handler
+both built a `struct tm` from a value that is already known to be UTC (or, for CCLK, is explicitly
+re-based to UTC by the handler's own `tz_offset` arithmetic immediately afterward) and then called
+`mktime()` on it, with the comment "Without setting time zone, mktime will assume UTC+00 on
+arduino, thus behaving like timegm". That is true only as long as the calling *application* never
+calls `setenv("TZ", ...)` -- `mktime()` converts a `struct tm` using the **process's** current `TZ`
+(a global, shared with every task in the process), not UTC, and this vendored library has no TZ of
+its own to fall back on.
+
+`firmware/main/main.c`'s `app_main()` (TASK_ui_round2.md Do #7, same round) added exactly that:
+`setenv("TZ", "PST8PDT,M3.2.0,M11.1.0", 1); tzset();`, once, at boot, for the on-glass status-bar
+clock (`ui.c`'s `localtime_r()` calls, which are correct and unaffected by this patch). That single
+process-wide change silently broke this file's own, unrelated UTC-epoch math too: `mktime()`
+started interpreting the CCLK/GNSS wall-clock fields as Pacific local time instead of UTC.
+
+**Live evidence** (`build/bench-logs/round2-boot.log`, captured 25 Sep 02:55 PDT = 09:55 UTC, after
+Do #7 landed): `clock seeded from network: epoch=1790358921`, which decodes to `2026-09-25
+17:55:21 UTC` -- 8 hours after the true time (~09:55 UTC), the Pacific `PST8PDT` offset magnitude.
+`net.cpp` seeds its clock once per boot and never re-reads it, so every later render that session
+computed `local = (true_utc + 8h) - 7h (ui.c's own, correct, PDT localtime_r()) = true_utc + 1h` --
+exactly the "10:58 for 09:58 UTC" symptom on the glass. (An earlier capture,
+`build/bench-logs/full-boot.log`, predates Do #7 in the flashed binary and shows a correct
+`epoch=1790328096` = 09:21:36 UTC, confirming this file's math was only ever "accidentally" TZ-safe
+before that commit.)
+
+**Fix.** A small TZ-independent UTC calendar-to-epoch conversion, `_pagerTimegm()` (Howard
+Hinnant's public-domain "days from civil" algorithm), added once near `strTotime()` and used at
+both call sites instead of `mktime()`. `timegm()` itself is not used because it is not declared by
+this toolchain's newlib `<time.h>` (checked: `xtensa-esp32s3-elf/.../include/time.h` declares
+`mktime()` but not `timegm()`). Process `TZ` push/pop around `mktime()` was considered and rejected:
+`tzset()` is documented non-thread-safe, and this file's own RX/queue-processing tasks
+(`xTaskCreateStatic...` in `begin()`) are not necessarily the application's TZ-owning task, so a
+push/pop here could race a concurrent `tzset()`/`localtime_r()` call on another task for no benefit
+`_pagerTimegm()` doesn't already provide for free.
+
+**Power effect**: none -- replaces one libc call with an equivalent, branch-free integer
+computation; no AT traffic, no modem/sleep-state change.

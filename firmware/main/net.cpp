@@ -30,6 +30,7 @@
 
 #include <string.h>
 #include <stdio.h>
+#include <time.h> // round 4: gmtime_r()/localtime_r() for the clock-seed diagnostic log below
 
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -752,6 +753,23 @@ bool configure_session(void)
     }
     if (s_clock_epoch != 0) {
         ESP_LOGI(TAG, "clock seeded from network: epoch=%lld", (long long) s_clock_epoch);
+        // Round 4 (PATCHES.md 1.21 post-mortem): prove the UTC->local
+        // conversion on every boot's log, not just when someone happens to
+        // eyeball the glass against a clock. time_t/localtime_r() honour
+        // main.c's app_main() setenv("TZ", ...)/tzset() (called before
+        // net_init() can ever reach here); gmtime_r() is TZ-independent by
+        // definition, so any divergence between `utc` here and the actual
+        // wall-clock epoch above is this file's own bug, not a TZ one. No
+        // modem/sleep-state effect: two calendar conversions and one log line.
+        {
+            time_t t = (time_t) s_clock_epoch;
+            struct tm utc_tm, local_tm;
+            gmtime_r(&t, &utc_tm);
+            localtime_r(&t, &local_tm);
+            ESP_LOGI(TAG, "clock: epoch=%lld utc=%02d:%02d local=%02d:%02d tz=%s",
+                     (long long) s_clock_epoch, utc_tm.tm_hour, utc_tm.tm_min, local_tm.tm_hour,
+                     local_tm.tm_min, getenv("TZ") ? getenv("TZ") : "(unset)");
+        }
     } else {
         ESP_LOGI(TAG, "no network clock available; ts will read 0 (PROTOCOL.md §3.5)");
     }

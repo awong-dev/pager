@@ -718,6 +718,17 @@ static void ui_wake_status_refresh(void)
     refresh_rssi_dbm();
 }
 
+// Round 4 (bug report 25 Sep ~3am PDT, the attentive-edge fix): the single
+// source of truth for "is the pager inside its PAGER_ATTENTIVE_S (120s)
+// attentive window" - previously duplicated (modes_in_use() below, and a
+// separate `attentive` local in modes_run()'s loop, "kept in sync by hand,
+// not shared" per that comment's own words) - now both call this one
+// function instead. Plain RAM read, no modem/sleep-state effect of its own.
+static bool attentive_now(void)
+{
+    return (esp_timer_get_time() - s_last_input_us) < (int64_t) PAGER_ATTENTIVE_S * 1000000;
+}
+
 // TASK_clock.md Do #2: "in use" for the status bar's live clock is the
 // attentive window (PAGER_ATTENTIVE_S = 120s from the last key/button/ext0/
 // ext1 event, s_last_input_us above), NOT input.c's shorter 30s
@@ -725,13 +736,22 @@ static void ui_wake_status_refresh(void)
 // the rail hold task keeps the display/CardKB rail on for the whole of the
 // attentive window (see the `if (attentive) rail_on()` comment further down
 // this file), so a status-bar partial refresh is safe for the full 120s,
-// not just the first 30. Same expression modes_run()'s own `attentive`
-// local uses each iteration (kept in sync by hand, not shared, so this one
-// call is not deep inside the loop's own hot path) - plain RAM read, no
-// modem/sleep-state effect of its own.
+// not just the first 30. Same predicate modes_run()'s own attentive_service()
+// call uses each iteration (attentive_now() above, round 4: no longer
+// duplicated by hand) - plain RAM read, no modem/sleep-state effect of its own.
 bool modes_in_use(void)
 {
-    return (esp_timer_get_time() - s_last_input_us) < (int64_t) PAGER_ATTENTIVE_S * 1000000;
+    return attentive_now();
+}
+
+// Bench diagnostic (round 4, `attn` debug console command, main.c): raw
+// microsecond age of the last recorded key/button/ext0/ext1 event, so a
+// bench session can watch s_last_input_us tick up (or, if it never does,
+// see exactly what is re-arming it) without guessing from the "wake
+// cadence:" log's coarse edge-only transitions. Plain RAM read.
+int64_t modes_debug_last_input_age_us(void)
+{
+    return esp_timer_get_time() - s_last_input_us;
 }
 
 // F6.3: status-bar/Device-screen getters (modes.h) - plain cache reads, no
@@ -2299,6 +2319,77 @@ bool modes_on_run_task(void)
     return s_modes_run_task != NULL && xTaskGetCurrentTaskHandle() == s_modes_run_task;
 }
 
+// Round 4 (bug report 25 Sep ~3am PDT): the attentive/normal cadence edge,
+// pulled out of modes_run()'s loop body into its own function so it is
+// unmistakably independent of everything below it in that loop -- in
+// particular the skip_sleep/net_sleep() branch (this call happens before
+// skip_sleep is even computed) and every one of skip_sleep's own terms
+// (btn_busy/btn_stuck/ui_awake/net_modem_busy()/... -- see that variable's
+// own comment, further down modes_run()). Called exactly once per loop
+// iteration, unconditionally, from the top of the loop: attentive_now()
+// (above) is a plain RAM-clock comparison, never blocks, so this always
+// finishes and returns the same iteration it was called.
+//
+// Ported byte-for-byte from the inline block this replaces (previously
+// directly in modes_run(), see git history) -- no behaviour change, only
+// the "is this reachable regardless of skip_sleep" question made
+// structurally obvious rather than something a reader has to trace.
+static bool attentive_service(void)
+{
+    bool attentive = attentive_now();
+    if (attentive != s_attentive_prev) {
+        ESP_LOGI(TAG, "wake cadence: %s",
+                 attentive ? "attentive (1 s, recent input)" : "normal (input idle)");
+        s_attentive_prev = attentive;
+        if (!attentive) {
+            // TASK_clock.md Do #4: the attentive window (modes_in_use())
+            // just lapsed -- render once now so the status bar's clock
+            // becomes "--:--" before the pager returns to
+            // PAGER_WAKE_INTERVAL_SLEEP_MS (20s) sleeps, rather than
+            // leaving a stale HH:MM on screen until the next
+            // key/button-driven render (which may be a long time, or
+            // never, if the pager just goes back to sleep). Safe to
+            // paint right here, before this iteration's own rail
+            // on/off decision further down: the rail is still whatever
+            // the PREVIOUS iteration left it as, which was on for the
+            // whole attentive window that just ended (the `if
+            // (attentive) rail_on()` block below, this same file).
+            // modes_in_use() called from inside this ui_render() ->
+            // draw_status_bar() already sees s_attentive_prev == false
+            // (just set above) and draws "--:--" on its own -- this is
+            // the ordinary render path, not a clock-only one. A page
+            // arrival while genuinely asleep (ui_incoming(), below in
+            // this file) goes through this same draw_status_bar() ->
+            // modes_in_use() check on its own render and also draws
+            // "--:--" (TASK_clock.md Do #4's "not in use" case) -- it
+            // needs no extra handling here.
+            //
+            // TASK_ui_round2.md Do #3: auto-lock at this same edge. cfg
+            // `lock.auto` minutes (lock_check_autolock(), called on every
+            // input event/UI wake below, lock.c) is already the EARLIER
+            // trigger whenever it is shorter than PAGER_ATTENTIVE_S
+            // (120s) — see lock.c's own module comment for the two-
+            // trigger contract this documents. This is only the upper
+            // bound: `auto_min == 0` ("never") or an auto_min longer than
+            // 120s would otherwise leave an unattended, passcode-
+            // protected pager unlocked indefinitely past the point it
+            // already stopped being "in use". lock_now() is a no-op if
+            // no passcode is configured or it is already locked (lock.c).
+            // lock_screen_sync() (this file, above set_mode()) must run
+            // BEFORE the render below so this frame actually paints Lock
+            // — the ordinary per-iteration lock_screen_sync() call
+            // further down this same loop runs AFTER this render, too
+            // late for this one frame to show it.
+            if (lock_is_set()) {
+                lock_now();
+                lock_screen_sync();
+            }
+            ui_render(); // ui_render() itself calls ui_ensure_powered() first (ui.c)
+        }
+    }
+    return attentive;
+}
+
 void modes_run(void)
 {
     s_modes_run_task = xTaskGetCurrentTaskHandle();
@@ -2326,60 +2417,14 @@ void modes_run(void)
         // state). sleeptest's own interval override (below) still wins
         // inside a window -- a bench measurement asked for a specific
         // cadence and should get it regardless.
-        bool attentive =
-            (esp_timer_get_time() - s_last_input_us) < (int64_t) PAGER_ATTENTIVE_S * 1000000;
+        // Round 4: evaluated unconditionally, once per loop iteration, by
+        // attentive_service() above -- see that function's own comment for
+        // why this call site (before skip_sleep is even computed, several
+        // lines below) already makes the edge action independent of
+        // skip_sleep/net_sleep() and every one of skip_sleep's own terms.
+        bool attentive = attentive_service();
         if (attentive) {
             interval_ms = PAGER_WAKE_INTERVAL_ATTENTIVE_MS;
-        }
-        if (attentive != s_attentive_prev) {
-            ESP_LOGI(TAG, "wake cadence: %s",
-                     attentive ? "attentive (1 s, recent input)" : "normal (input idle)");
-            s_attentive_prev = attentive;
-            if (!attentive) {
-                // TASK_clock.md Do #4: the attentive window (modes_in_use())
-                // just lapsed -- render once now so the status bar's clock
-                // becomes "--:--" before the pager returns to
-                // PAGER_WAKE_INTERVAL_SLEEP_MS (20s) sleeps, rather than
-                // leaving a stale HH:MM on screen until the next
-                // key/button-driven render (which may be a long time, or
-                // never, if the pager just goes back to sleep). Safe to
-                // paint right here, before this iteration's own rail
-                // on/off decision further down: the rail is still whatever
-                // the PREVIOUS iteration left it as, which was on for the
-                // whole attentive window that just ended (the `if
-                // (attentive) rail_on()` block below, this same file).
-                // modes_in_use() called from inside this ui_render() ->
-                // draw_status_bar() already sees s_attentive_prev == false
-                // (just set above) and draws "--:--" on its own -- this is
-                // the ordinary render path, not a clock-only one. A page
-                // arrival while genuinely asleep (ui_incoming(), below in
-                // this file) goes through this same draw_status_bar() ->
-                // modes_in_use() check on its own render and also draws
-                // "--:--" (TASK_clock.md Do #4's "not in use" case) -- it
-                // needs no extra handling here.
-                //
-                // TASK_ui_round2.md Do #3: auto-lock at this same edge. cfg
-                // `lock.auto` minutes (lock_check_autolock(), called on every
-                // input event/UI wake below, lock.c) is already the EARLIER
-                // trigger whenever it is shorter than PAGER_ATTENTIVE_S
-                // (120s) — see lock.c's own module comment for the two-
-                // trigger contract this documents. This is only the upper
-                // bound: `auto_min == 0` ("never") or an auto_min longer than
-                // 120s would otherwise leave an unattended, passcode-
-                // protected pager unlocked indefinitely past the point it
-                // already stopped being "in use". lock_now() is a no-op if
-                // no passcode is configured or it is already locked (lock.c).
-                // lock_screen_sync() (this file, above set_mode()) must run
-                // BEFORE the render below so this frame actually paints Lock
-                // — the ordinary per-iteration lock_screen_sync() call
-                // further down this same loop runs AFTER this render, too
-                // late for this one frame to show it.
-                if (lock_is_set()) {
-                    lock_now();
-                    lock_screen_sync();
-                }
-                ui_render();
-            }
         }
 #ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
         // Task 3: sleeptest <minutes> <yield_ms> <interval_ms> overrides the

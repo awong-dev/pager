@@ -204,6 +204,23 @@ static void test_tz_rule_fixed_epoch_pdt(void)
     // ui_format_hhmm()'s own explicit `epoch_s == 0` guard (ui.c), never by
     // localtime_r() at all — nothing to check about the TZ rule for that
     // case here.
+
+    // Round 4 regression vector (PATCHES.md 1.21 post-mortem): the exact
+    // epoch a live boot log seeded (build/bench-logs/full-boot.log, "clock
+    // seeded from network: epoch=1790328096"), independently confirmed as
+    // 2026-09-25 09:21:36 UTC. This is *this file's own* TZ mechanism
+    // (setenv+tzset+localtime_r) that ui.c's on-glass formatters rely on —
+    // it was never the actual bug (net.cpp's WalterModem::getClock() call
+    // was, fixed in the vendored component, PATCHES.md 1.21) — kept here as
+    // a regression guard against ever breaking this half again.
+    {
+        time_t t = (time_t) 1790328096;
+        struct tm tmv;
+        localtime_r(&t, &tmv);
+        CHECK(tmv.tm_hour == 2 && tmv.tm_min == 21,
+              "round-4 epoch %lld (09:21:36 UTC) must localtime_r() to 02:21 PDT, got %02d:%02d",
+              (long long) t, tmv.tm_hour, tmv.tm_min);
+    }
 }
 
 int main(void)

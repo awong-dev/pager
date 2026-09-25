@@ -62,6 +62,12 @@ int modes_get_batt_mv(void);
  * read: no modem or sleep-state effect. */
 bool modes_in_use(void);
 
+/* Round 4 bench diagnostic (`attn` debug console command, main.c): raw
+ * microsecond age of the last recorded key/button/ext0/ext1 event
+ * (esp_timer_get_time() - s_last_input_us). Plain RAM read: no modem or
+ * sleep-state effect. */
+int64_t modes_debug_last_input_age_us(void);
+
 /* True once at least one good AT+SQNVMON reading has been taken this boot.
  * modes_get_batt_mv() returns a hardcoded 3300 mV placeholder before that
  * (or if every reading since boot has been out of range) purely so the UI

@@ -27,6 +27,7 @@
 #include "gfx.h"
 #include "input.h"
 #include "loc.h"
+#include "lock.h" // round 4: `attn` debug console command reads lock_is_set()/lock_is_locked()
 #include "modes.h"
 #include "net.h"
 #include "pins.h"
@@ -352,6 +353,27 @@ static int cmd_cts(int argc, char **argv)
     (void) argc;
     (void) argv;
     printf("cts: %d\n", flightrec_cts_level());
+    return 0;
+}
+
+// Round 4 (bug report 25 Sep ~3am PDT, the attentive-edge fix): `attn` --
+// bench visibility into modes.c's attentive window without waiting for the
+// coarse, edge-only "wake cadence:" log line. `attentive` and `in_use` are
+// printed as two separate fields per the task brief, but both read
+// modes_in_use() -- modes.c's attentive_now() is the single source of truth
+// both modes_run()'s attentive_service() and modes_in_use() call (round 4:
+// no longer two hand-kept-in-sync copies), so they are the same value by
+// construction; printed twice anyway so a bench log line matches what was
+// asked for without the reader having to know that. Debug build only.
+static int cmd_attn(int argc, char **argv)
+{
+    (void) argc;
+    (void) argv;
+    int64_t age_us = modes_debug_last_input_age_us();
+    bool in_use = modes_in_use();
+    printf("attn: last_input_age=%lld.%03llds attentive=%d in_use=%d locked=%d (lock_set=%d)\n",
+           (long long) (age_us / 1000000), (long long) ((age_us / 1000) % 1000), (int) in_use,
+           (int) in_use, (int) lock_is_locked(), (int) lock_is_set());
     return 0;
 }
 
@@ -1382,6 +1404,15 @@ static void start_normal_console(void)
         .func = &cmd_cts,
     };
     ESP_ERROR_CHECK(esp_console_cmd_register(&cts_cmd));
+
+    const esp_console_cmd_t attn_cmd = {
+        .command = "attn",
+        .help = "attn -- print the attentive window's raw state (last_input_age, attentive, "
+                 "in_use, locked/lock_set), for bench diagnosis of the attentive edge",
+        .hint = NULL,
+        .func = &cmd_attn,
+    };
+    ESP_ERROR_CHECK(esp_console_cmd_register(&attn_cmd));
 
     register_carrier_cmd();
     register_input_cmds();
