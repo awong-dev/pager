@@ -6,14 +6,14 @@
 // scr_pick.h) and registered in firmware/main/CMakeLists.txt's SRCS, same
 // precedent F6.5 set for g_scr_lock.
 //
-// Scope note: `enter` on a contact opens the per-peer chat via
-// scr_chat_open_with_prefix() (ui.h), which seeds the composer's own
-// `@alias`/`@name` word — the SAME resolution path (scr_chat.c's
-// resolve_at_word()) an approved contact's alias or an SMS contact's name
-// already goes through when typed by hand, just typed here on the
-// student's behalf. The Chat screen itself still renders the one merged
-// thread (per-peer Chat is T4) — this is real, targeted navigation for
-// *sending*, not yet a filtered *view* of just that peer's messages.
+// T4 (docs/CHAT_UI_DESIGN.md §3 "Chat"): `enter` on a contact opens that
+// peer's own filtered chat via scr_chat_open_peer() (ui.h) — an alias/name
+// picked here becomes the chat's `s_peer` directly, not a composer `@word`
+// prefill (scr_chat_open_with_prefix(), removed by T4): a plain Enter in
+// that chat now addresses this peer without the composer needing to spell
+// out `@alias`/`@name` at all. resolve_at_word()'s own `@word` resolution
+// (scr_chat.c) is unchanged and still available for retargeting a single
+// message from any chat.
 //
 // v0.2 §6 (docs/V02_DESIGN.md, docs/DEVICE_PLAN.md §4.4): SMS contacts
 // (sms.c's own parent-managed allow-list, entirely separate from the
@@ -76,25 +76,21 @@ static void pick_on_key(input_key_t key)
         if (n == 0) {
             break; // nothing to choose — esc is the only way out
         }
-        // T3 (docs/CHAT_UI_DESIGN.md §3 "Pick"): opens the per-peer chat
-        // with the picked contact's `@word` prefilled (scr_chat_open_with_prefix(),
-        // ui.h) — replaces the old "just open the merged chat" stopgap this
-        // screen's own module comment above documented (now stale for this
-        // path; the module comment itself is left as historical context for
-        // the `@name` composer resolution it describes, which is unchanged).
-        // A book contact's alias and an SMS contact's name are exactly the
-        // two things resolve_at_word() (scr_chat.c) already knows how to
-        // resolve, same as if the student had typed the `@word` by hand.
+        // T4 (docs/CHAT_UI_DESIGN.md §3 "Pick"): opens the picked contact's
+        // own per-peer chat (scr_chat_open_peer(), ui.h) — a book contact's
+        // alias or an SMS contact's name is exactly the peer identity
+        // msg_iter_peer()/home_peers_build() already use for that contact's
+        // messages (msg.c's msg_peer_of()).
         size_t n_book = book_contact_count();
         if ((size_t) s_sel < n_book) {
             book_contact_t c;
             if (book_contact_at((size_t) s_sel, &c)) {
-                scr_chat_open_with_prefix(c.alias);
+                scr_chat_open_peer(c.alias);
             }
         } else {
             sms_contact_t sc;
             if (sms_contact_at((size_t) s_sel - n_book, &sc)) {
-                scr_chat_open_with_prefix(sc.name);
+                scr_chat_open_peer(sc.name);
             }
         }
         break;

@@ -282,16 +282,19 @@ $(BUILD)/test_chat_layout: $(BUILD)/scr_chat.o $(BUILD)/test_chat_layout.o
 # "Home") + test_home_list.c. Same "no shared header, re-declare verbatim,
 # a signature mismatch is a link error" pattern test_chat_layout.c uses —
 # msg.h IS a shared header here (msg_t/MSG_DIR_*/MSG_ACK_* — struct/consts
-# only, no ESP-IDF dependency, see msg.h's own doc comment), so this needs
-# no msg.o: nothing in scr_home.c's pure section calls a msg.c function.
+# only, no ESP-IDF dependency, see msg.h's own doc comment). T4
+# (docs/CHAT_UI_DESIGN.md §3): home_peers_build() now calls msg.c's
+# msg_peer_of() (the peer rule shared with Chat's own msg_iter_peer()), so
+# this DOES need msg.o now — reuses the same object test_msg's own rule
+# below builds (msg.c's pure section has no ESP-IDF dependency either).
 $(BUILD)/scr_home.o: $(MAIN_SRC)/scr_home.c $(MAIN_SRC)/msg.h | $(BUILD)
 	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $(MAIN_SRC)/scr_home.c
 
 $(BUILD)/test_home_list.o: test_home_list.c $(MAIN_SRC)/msg.h | $(BUILD)
 	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ test_home_list.c
 
-$(BUILD)/test_home_list: $(BUILD)/scr_home.o $(BUILD)/test_home_list.o
-	$(CC) $(CFLAGS) -o $@ $(BUILD)/scr_home.o $(BUILD)/test_home_list.o
+$(BUILD)/test_home_list: $(BUILD)/scr_home.o $(BUILD)/test_home_list.o $(BUILD)/msg.o
+	$(CC) $(CFLAGS) -o $@ $(BUILD)/scr_home.o $(BUILD)/test_home_list.o $(BUILD)/msg.o
 
 # test_carrier: carrier.c's pure half (APN validation, SIM-based detection).
 $(BUILD)/carrier.o: $(MAIN_SRC)/carrier.c $(MAIN_SRC)/carrier.h | $(BUILD)

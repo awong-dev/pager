@@ -119,7 +119,7 @@ that page's peer.
 | T2 | server-architect then backend-dev | §2 PROTOCOL.md text; relay `grp_req` handler sharing the admin creation path | pytest: grp_req creates the conversation, edges, and pushes books to every member's device; non-allowed alias rejected |
 | T3 | firmware-dev | §3 Home list + §4 fixes; wire Book and Pick from Home (done 24 Sep, host-tested; `BOOK_MAX_CONTACTS` moves to 32 in T1f) | host tests + on-glass check |
 | T4 | firmware-dev | §3 per-peer Chat, picker single-select, `to` set from the peer | bench: page from two aliases, two rows on Home, reply lands on the right peer (relay log) |
-| T5 | firmware-dev | §3 multi-select picker, name entry, `grp_req` publish | bench: create a group from the pager, book arrives, group row appears, message to it fans out |
+| T5 (DEFERRED by owner 24 Sep 7:20 pm PDT: not in the beta; the grp_req allow-edge question in §6 stays open until then) | firmware-dev | §3 multi-select picker, name entry, `grp_req` publish | bench: create a group from the pager, book arrives, group row appears, message to it fans out |
 | T6 | bench-tester | end-to-end on the release build; the `sleeptest 6` window must still pass 3/3 | logs under `build/bench-logs/phaseC*` |
 
 Dependencies: T3 and T4 can start now; T5 needs T2's wire shape (fixed above, so it can start in
@@ -127,7 +127,7 @@ parallel and be tested once T2 lands); T1 is independent.
 
 ## 6. Flagged for the owner
 
-- Decision 2's edge direction; decision 1 reverses a "do not re-open".
+- Decision 2's edge direction; decision 1 reverses a "do not re-open". Owner, 24 Sep 7:20 pm PDT: group creation from the device is deferred past the beta; the beta scope is Home list + Address book (pull) + per-peer chat + New message.
 - `grp_req` failures are silent on the pager (no error path on the wire yet).
 - The pending-ack queue holds 8 (`msg.h:77`); more than 8 unshown messages are acked only when the
   next page arrives. Independent of this design; noted during the 24 Sep hang review.

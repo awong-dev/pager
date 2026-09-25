@@ -385,7 +385,11 @@ void ui_on_button_short(void)
         return;
     }
     // docs/DEVICE_PLAN.md §5.5 (Home's Keys bullet, applies from anywhere):
-    // "if any unread, open the newest unread chat, else stay."
+    // "if any unread, open the newest unread chat, else stay." T4
+    // (docs/CHAT_UI_DESIGN.md §3 Do #5): that chat is the newest unread
+    // message's own peer — `from` directly, a down message's peer per
+    // msg.c's msg_peer_of() rule (never needs the default-alias/`(default)`
+    // fallback that rule also has, since a down message always has `from`).
     const msg_t *u = msg_newest_unread();
     if (!u) {
         return;
@@ -393,6 +397,7 @@ void ui_on_button_short(void)
     if (ui_top() != &g_scr_chat) {
         ui_push(&g_scr_chat);
     }
+    scr_chat_set_peer(u->from);
     scr_chat_mark_visible_read(); // user-initiated open: §5.5's general "opening a chat" rule
 }
 
@@ -436,6 +441,20 @@ bool ui_incoming(const char *from, bool was_asleep)
     } else if (top != &g_scr_chat) {
         ui_push(&g_scr_chat);
     }
+    // T4 (docs/CHAT_UI_DESIGN.md §3: "incoming page ... opens that page's
+    // peer"): switches Chat to `from`'s own filtered view. Covers the
+    // `top == &g_scr_chat` steal case too (Chat already open, on ANY peer) —
+    // CHAT_UI_DESIGN.md does not spell out that case, but leaving Chat
+    // showing a different peer than the one that just arrived would mean
+    // the incoming message is never actually rendered, which would make the
+    // msg_mark_shown() the caller (modes.c) does right after this call
+    // returns true a false "shown" ack (README R7: never claim `shown` for
+    // a message that was not actually displayed) — so this always switches,
+    // at the cost of interrupting an in-progress reply to a DIFFERENT peer
+    // than the one that just paged in (scr_chat_set_peer()'s own
+    // only-reset-on-an-actual-change guard means the SAME peer's
+    // in-progress reply is never disturbed).
+    scr_chat_set_peer(from);
     gfx_clear();
     draw_status_bar();
     if (g_scr_chat.render) {

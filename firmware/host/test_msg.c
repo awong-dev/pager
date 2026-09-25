@@ -541,6 +541,94 @@ static void test_msghist_restore_order(void)
     CHECK(n2 == 2, "clamped n == %d, want 2", n2);
 }
 
+/* ---------------------------------------------------------------------
+ * T4 (docs/CHAT_UI_DESIGN.md §3 "Chat"): msg_peer_of() — the ONE
+ * peer-attribution rule shared by scr_home.c's home_peers_build() and this
+ * file's own (ESP-only) msg_iter_peer(), so the two screens can never
+ * disagree. Pure logic, no NVS/ESP-IDF, same split as the msghist section
+ * above.
+ * --------------------------------------------------------------------- */
+
+/* Reproduces msg_iter_peer()'s own newest-first filter over a plain array
+ * (msg_iter_peer() itself walks msg.c's ESP-only s_thread ring under a
+ * lock, not host-testable directly) using the real, shared msg_peer_of() —
+ * so the FILTERING behaviour a per-peer Chat view relies on, not just one
+ * message's peer in isolation, is exercised here too. `msgs` must already
+ * be newest-first (msg_thread_at()'s own convention, index 0 == newest). */
+static size_t filter_peer(const msg_t *msgs, size_t n, const char *alias, bool have_default,
+                          const char *default_alias, const msg_t **out, size_t out_cap)
+{
+    size_t count = 0;
+    for (size_t i = 0; i < n; i++) {
+        char peer[MSG_FROM_MAX];
+        msg_peer_of(&msgs[i], have_default, default_alias, peer, sizeof(peer));
+        if (strcmp(peer, alias) == 0 && count < out_cap) {
+            out[count++] = &msgs[i];
+        }
+    }
+    return count;
+}
+
+/* The five cases docs/CHAT_UI_DESIGN.md §3's own Verify list names
+ * explicitly. */
+static void test_msg_peer_of(void)
+{
+    char peer[MSG_FROM_MAX];
+
+    msg_t down = make_msg("m_1", "mom", "", "hi", MSG_DIR_DOWN, MSG_ACK_SHOWN, 0, 100);
+    msg_peer_of(&down, true, "mom", peer, sizeof(peer));
+    CHECK(strcmp(peer, "mom") == 0, "down message peer == '%s', want 'mom'", peer);
+
+    msg_t group_down = make_msg("m_2", "fam", "", "party", MSG_DIR_DOWN, MSG_ACK_SHOWN, 0, 101);
+    strncpy(group_down.sndr, "ben", sizeof(group_down.sndr) - 1);
+    msg_peer_of(&group_down, true, "mom", peer, sizeof(peer));
+    CHECK(strcmp(peer, "fam") == 0, "group down message peer == '%s', want 'fam' (never sndr)", peer);
+
+    msg_t up_explicit = make_msg("u_1", "student", "ben", "ok", MSG_DIR_UP, MSG_ACK_UP_PENDING, 0, 102);
+    msg_peer_of(&up_explicit, true, "mom", peer, sizeof(peer));
+    CHECK(strcmp(peer, "ben") == 0, "up message with to=='ben' peer == '%s', want 'ben'", peer);
+
+    msg_t up_default = make_msg("u_2", "student", "", "ok", MSG_DIR_UP, MSG_ACK_UP_PENDING, 0, 103);
+    msg_peer_of(&up_default, true, "mom", peer, sizeof(peer));
+    CHECK(strcmp(peer, "mom") == 0,
+          "up message with empty to, default 'mom', peer == '%s', want 'mom'", peer);
+
+    msg_peer_of(&up_default, false, "", peer, sizeof(peer));
+    CHECK(strcmp(peer, "(default)") == 0,
+          "up message with empty to, no book, peer == '%s', want '(default)'", peer);
+}
+
+/* A thread with messages to/from two peers ("mom", "ben") yields the right
+ * per-peer subsets, each still in the thread's own newest-first order —
+ * docs/CHAT_UI_DESIGN.md §3's own Verify list, second bullet. */
+static void test_msg_peer_subsets_newest_first(void)
+{
+    msg_t msgs[5] = {
+        make_msg("m_5", "ben", "", "b5", MSG_DIR_DOWN, MSG_ACK_SHOWN, 0, 500),
+        make_msg("u_4", "student", "mom", "m4", MSG_DIR_UP, MSG_ACK_UP_SENT, 0, 400),
+        make_msg("m_3", "mom", "", "m3", MSG_DIR_DOWN, MSG_ACK_SHOWN, 0, 300),
+        make_msg("u_2", "student", "ben", "b2", MSG_DIR_UP, MSG_ACK_UP_SENT, 0, 200),
+        make_msg("m_1", "mom", "", "m1", MSG_DIR_DOWN, MSG_ACK_READ, 0, 100),
+    };
+
+    const msg_t *mom_out[8];
+    size_t mom_n = filter_peer(msgs, 5, "mom", true, "mom", mom_out, 8);
+    CHECK(mom_n == 3, "mom subset size == %zu, want 3", mom_n);
+    if (mom_n == 3) {
+        CHECK(strcmp(mom_out[0]->id, "u_4") == 0, "mom_out[0] == '%s', want 'u_4'", mom_out[0]->id);
+        CHECK(strcmp(mom_out[1]->id, "m_3") == 0, "mom_out[1] == '%s', want 'm_3'", mom_out[1]->id);
+        CHECK(strcmp(mom_out[2]->id, "m_1") == 0, "mom_out[2] == '%s', want 'm_1'", mom_out[2]->id);
+    }
+
+    const msg_t *ben_out[8];
+    size_t ben_n = filter_peer(msgs, 5, "ben", true, "mom", ben_out, 8);
+    CHECK(ben_n == 2, "ben subset size == %zu, want 2", ben_n);
+    if (ben_n == 2) {
+        CHECK(strcmp(ben_out[0]->id, "m_5") == 0, "ben_out[0] == '%s', want 'm_5'", ben_out[0]->id);
+        CHECK(strcmp(ben_out[1]->id, "u_2") == 0, "ben_out[1] == '%s', want 'u_2'", ben_out[1]->id);
+    }
+}
+
 int main(void)
 {
     test_ascii_byte_cap();
@@ -559,9 +647,13 @@ int main(void)
     test_msghist_terminal_ack();
     test_msghist_restore_order();
 
+    test_msg_peer_of();
+    test_msg_peer_subsets_newest_first();
+
     if (g_failures == 0) {
-        printf("PASS: msg.c composer (320-byte/160-codepoint caps, 3-byte code point atomicity) "
-               "and msghist record codec/terminal-ack/restore-order (v1+v2, G7 sndr), 0 failures\n");
+        printf("PASS: msg.c composer (320-byte/160-codepoint caps, 3-byte code point atomicity), "
+               "msghist record codec/terminal-ack/restore-order (v1+v2, G7 sndr), and msg_peer_of() "
+               "(T4 shared peer rule), 0 failures\n");
         return 0;
     }
     printf("FAIL: %d failure(s)\n", g_failures);

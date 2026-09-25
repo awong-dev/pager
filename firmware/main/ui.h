@@ -133,21 +133,28 @@ extern const ui_screen_t g_scr_greeting;
  * see ui_incoming()'s own comment. */
 void scr_chat_mark_visible_read(void);
 
-/* T3 (docs/CHAT_UI_DESIGN.md §3 "Chat"/"Pick"): pushes Chat (same
- * user-initiated-open + mark-visible-read contract as the plain open above),
- * then, when `alias` is non-NULL/non-empty, seeds the composer with
- * "@<alias> " so the very next Enter replies to that peer without the
- * student having to type the `@word` themselves (scr_chat.c's existing
- * `@alias`-prefix resolution, resolve_at_word(), picks it up unchanged —
- * this is just a different way of getting that text into the composer
- * buffer). `alias` NULL/"" behaves exactly like scr_chat_mark_visible_read()
- * after a plain ui_push(&g_scr_chat) — no prefill, `to` stays the default
- * recipient — which is what a peer row whose alias IS the book's own
- * default resolves to (scr_home.c), so that case never types "@d " for
- * nothing. Composer is reset first (matches Chat's own
- * on_event(UI_EVT_ENTER), which ui_push() just fired) so this is the only
- * content in it. */
-void scr_chat_open_with_prefix(const char *alias);
+/* T4 (docs/CHAT_UI_DESIGN.md §3 "Chat"/"Pick"): the user-initiated "open
+ * this peer's chat" entry point — pushes Chat (firing its own
+ * on_event(UI_EVT_ENTER), which resets the composer/scroll), sets the
+ * current peer (scr_chat_set_peer(), below) to `alias` (NULL/"" selects the
+ * book's default peer), then marks every now-visible row read
+ * (scr_chat_mark_visible_read()). Replaces T3's scr_chat_open_with_prefix()
+ * (removed): the screen itself now filters to one peer, so there is no more
+ * composer `@alias` prefill to seed — a plain Enter already addresses the
+ * right peer (scr_chat.c's try_send()). */
+void scr_chat_open_peer(const char *alias);
+
+/* T4: sets the current peer WITHOUT pushing/replacing the screen stack or
+ * marking anything read — for ui_incoming()'s own steal-the-screen path
+ * (below), which may need to switch an ALREADY-open Chat to a newly
+ * arrived page's peer (docs/CHAT_UI_DESIGN.md §3: "incoming page ... opens
+ * that page's peer") without re-firing on_event(UI_EVT_ENTER) (that would
+ * wipe an in-progress reply to whatever peer was open before, every single
+ * time, even when the incoming page is for the SAME peer already on
+ * screen). Only resets the composer/scroll when `alias` actually differs
+ * from the peer already showing — same NULL/""-means-default convention as
+ * scr_chat_open_peer() above. */
+void scr_chat_set_peer(const char *alias);
 
 /* Bring up the panel (disp_init()) and the CardKB I2C bus, establish the
  * screen stack as [Home]. Power effect: see disp_init()'s own comment —
@@ -276,28 +283,38 @@ void ui_set_crash_indicator(bool show);
 
 /* Global button semantics, docs/DEVICE_PLAN.md §5.5 (Home's Keys bullet,
  * stated as applying "from anywhere", not just on Home): short press opens
- * the newest unread chat and marks every message it renders `read` (via
- * scr_chat_mark_visible_read()), or does nothing if there is no unread
+ * the newest unread message's own peer chat (T4, docs/CHAT_UI_DESIGN.md §3
+ * Do #5; scr_chat_set_peer()) and marks every message it renders `read`
+ * (via scr_chat_mark_visible_read()), or does nothing if there is no unread
  * message; long press always goes Home. Neither renders — same contract as
  * ui_dispatch_key(). */
 void ui_on_button_short(void);
 void ui_on_button_long(void);
 
-/* Incoming-message steal-the-screen policy (docs/DEVICE_PLAN.md §5.5):
- * `from` is the sender alias (already copied by the caller — modes.c's
- * render_pending handoff). `was_asleep` is whether PAGER_MODE was SLEEP
- * immediately before this message (modes.c captures that before its own
- * set_mode(ACTIVE, ...) call, since this function no longer has any other
- * way to tell "asleep" apart from "awake and on Home").
+/* Incoming-message steal-the-screen policy (docs/DEVICE_PLAN.md §5.5;
+ * docs/CHAT_UI_DESIGN.md §3 T4: "incoming page ... opens that page's
+ * peer"). `from` is the sender alias — the message's own peer, msg.c's
+ * msg_peer_of() rule (the group alias for a group message, never `sndr`),
+ * already copied by the caller (modes.c's render_pending handoff).
+ * `was_asleep` is whether PAGER_MODE was SLEEP immediately before this
+ * message (modes.c captures that before its own set_mode(ACTIVE, ...) call,
+ * since this function no longer has any other way to tell "asleep" apart
+ * from "awake and on Home").
  *
- * If the device was asleep, or Home is on top: pushes Chat (WITHOUT calling
+ * If the device was asleep, Home is on top, or Chat is ALREADY on top (on
+ * any peer): pushes/keeps Chat and switches it to `from`'s own filtered
+ * view (scr_chat_set_peer(), ui.h) — WITHOUT calling
  * scr_chat_mark_visible_read() — §5.5 is explicit that this path acks
  * `shown` only, not `read`), renders synchronously (disp_partial_refresh(),
  * bypassing the refresh cadence per §5.4's "never taken on the inbound-
  * message path"), and returns true. The caller MUST call msg_mark_shown()
  * immediately afterward, and ONLY in that case (§4: "after the e-paper
  * refresh completes, never before"; README R7: never claim `shown` for a
- * message that was not actually displayed).
+ * message that was not actually displayed) — which is also why the
+ * already-in-Chat case always switches peer rather than leaving a different
+ * peer's chat on screen: see ui.c's own comment on this call site for the
+ * trade-off (an in-progress reply to a DIFFERENT peer than the one that
+ * just paged in is interrupted; the SAME peer's is not).
  *
  * Otherwise (composing, or any screen other than Home is on top): shows a
  * one-line toast ("new: <from>") without touching the screen stack, and

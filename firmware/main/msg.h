@@ -511,19 +511,33 @@ size_t msg_thread_count(void);
 const msg_t *msg_thread_at(size_t index); /* 0 = newest; NULL if index >= msg_thread_count() */
 const msg_t *msg_newest_unread(void);     /* NULL if none */
 
-/* Chat/thread queries (docs/DEVICE_PLAN.md §5.6): invokes `cb` once per
- * s_thread entry belonging to peer `alias` — a down message belongs to the
- * peer that sent it (`from == alias`); an up message belongs to the peer it
- * was addressed to (`to == alias`; since no caller sets `to` yet, F6.4's
- * only caller of this would be one that already knows aliases equal "").
- * `from_newest` selects direction (newest-first / oldest-first); `cb`
- * receives a stack COPY (same discipline as msg_thread_at(), README R6),
- * taken under the lock, which is held for the whole iteration — `cb` MUST
- * NOT block, allocate, or call back into msg.c. The peers list itself is
- * not tracked separately; a caller derives it on demand from
- * msg_thread_at()'s from/to fields (docs/DEVICE_PLAN.md §5.6). */
+/* T4 (docs/CHAT_UI_DESIGN.md §3 "Chat"): the one peer-attribution rule,
+ * shared by scr_home.c's home_peers_build() (Home's one-row-per-peer list)
+ * and msg_iter_peer() below (Chat's per-peer row source) so the two screens
+ * can never disagree — see msg.c's own doc comment on this function (pure,
+ * host-tested by firmware/host/test_msg.c) for the exact rule. Writes the
+ * peer alias for message `m` into `out` (truncated to `out_cap`, always
+ * NUL-terminated; a `out_cap == 0` call is a silent no-op). */
+void msg_peer_of(const msg_t *m, bool have_default, const char *default_alias, char *out,
+                 size_t out_cap);
+
+/* Chat/thread queries (docs/DEVICE_PLAN.md §5.6, T4 docs/CHAT_UI_DESIGN.md
+ * §3): invokes `cb` once per s_thread entry whose msg_peer_of() (above)
+ * equals `alias` — `have_default`/`default_alias` are the caller's own
+ * book_get_default_alias() result, forwarded unchanged into msg_peer_of()
+ * for every entry so an up message with an empty `to` is correctly
+ * attributed to the default peer (or "(default)" with no book) instead of
+ * never matching anything, F6.4's original limitation. `from_newest`
+ * selects direction (newest-first / oldest-first); `cb` receives a stack
+ * COPY (same discipline as msg_thread_at(), README R6), taken under the
+ * lock, which is held for the whole iteration — `cb` MUST NOT block,
+ * allocate, or call back into msg.c. The peers list itself is not tracked
+ * separately; a caller derives it on demand from msg_thread_at()'s from/to
+ * fields via msg_peer_of() (docs/DEVICE_PLAN.md §5.6, scr_home.c's
+ * home_peers_build()). */
 typedef void (*msg_iter_peer_cb)(const msg_t *m, void *ctx);
-void msg_iter_peer(const char *alias, bool from_newest, msg_iter_peer_cb cb, void *ctx);
+void msg_iter_peer(const char *alias, bool have_default, const char *default_alias, bool from_newest,
+                   msg_iter_peer_cb cb, void *ctx);
 
 /* Owner task 2026-09-20 (factory reset must erase the persisted history
  * too — it is the child's private messages): erases every key in the

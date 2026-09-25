@@ -1,13 +1,19 @@
 // scr_chat.c — Chat screen: message history + inline composer
 // (docs/DEVICE_TASKS.md F6.3, docs/DEVICE_PLAN.md §5.5 "Chat").
 //
-// Scope note (msg.c unchanged by this task — F6.4 is the very next task and
-// adds `to`/per-peer iteration): this renders the one merged thread msg.c
-// currently holds (same data the pre-F6.3 ui.c's thread view rendered), not
-// a per-peer filtered view — see scr_home.c's own scope note for the same
-// limitation. The composer reuses msg.c's existing 160-byte/ASCII-oriented
-// msg_composer_*() API unchanged (F6.4 is what moves it to the 320-byte/
-// 160-codepoint UTF-8 caps docs/DEVICE_PLAN.md §5.2 specifies).
+// T4 (docs/CHAT_UI_DESIGN.md §3 "Chat"): this screen now renders ONE peer's
+// messages, not the whole merged thread — `s_peer` (below, near the ESP-only
+// section's other file-statics) is that peer's alias ("" = the book's
+// default peer, resolve_effective_peer()'s own doc comment has the exact
+// rule), set by scr_chat_open_peer()/scr_chat_set_peer() (ui.h) from Home,
+// Pick, the button-short/typing-a-letter shortcuts (scr_home.c/ui.c) and an
+// incoming page's own sender. Row source is msg_iter_peer() (msg.h), using
+// the SAME peer-attribution rule (msg.c's msg_peer_of()) scr_home.c's
+// home_peers_build() applies, so the two screens can never disagree about
+// which peer a message belongs to. The composer reuses msg.c's existing
+// 160-byte/ASCII-oriented msg_composer_*() API unchanged (F6.4 is what moves
+// it to the 320-byte/160-codepoint UTF-8 caps docs/DEVICE_PLAN.md §5.2
+// specifies).
 //
 // IME hook (docs/DEVICE_PLAN.md §5.3, ime.h): wired here per F6.3's brief —
 // this is "where a chat composer would wire it up". The only IME built so
@@ -16,18 +22,20 @@
 // rather than pushing raw bytes directly, so a real IME drops in later
 // without touching this file's key-dispatch structure.
 //
-// F7.3 (docs/DEVICE_TASKS.md, docs/DEVICE_PLAN.md §5.5 "Sending from a
-// chat"/"Nicknames"): this screen still renders the one merged thread (the
-// scope note above is unchanged by this task — there is still no per-peer
-// Chat view for scr_pick.c/scr_home.c to open "into"), so the only way a
-// message sent from here can target a specific peer is the composer's own
-// leading `@nick`/`@alias` word, exactly as the Nicknames paragraph
-// describes: "the composer also accepts `@nick` or `@alias` as the first
-// word to pick the recipient from the keyboard without the picker". Without
-// a leading `@word`, `to` is empty (the default recipient, wire unchanged).
-// Resolution here reuses book.h's existing public accessors
-// (book_contact_count()/book_contact_at()/book_get_default_alias()) — no new
-// book.h entry point was needed, so book.c/h stays untouched by this task.
+// F7.3/T4 (docs/DEVICE_TASKS.md, docs/DEVICE_PLAN.md §5.5 "Sending from a
+// chat"/"Nicknames"; docs/CHAT_UI_DESIGN.md §3 "Chat"): a plain Enter (no
+// leading `@word`) now sends to the currently open peer (`s_peer`, or the
+// book's default when it is empty/equal to the default alias) — see
+// try_send()'s own comment for the exact rule and the SMS-peer special
+// case it also handles. A leading `@nick`/`@alias` word still overrides
+// that for one message, exactly as the Nicknames paragraph describes: "the
+// composer also accepts `@nick` or `@alias` as the first word to pick the
+// recipient from the keyboard without the picker" — and the sent message
+// then belongs to THAT alias's chat (msg.c's msg_peer_of(), since its `to`
+// is the resolved alias, not `s_peer`). Resolution reuses book.h's existing
+// public accessors (book_contact_count()/book_contact_at()/
+// book_get_default_alias()) — no new book.h entry point was needed, so
+// book.c/h stays untouched by this task.
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -254,26 +262,62 @@ int chat_composer_viewport(const uint8_t *adv, int n, int avail_px, int marker_p
 
 static int s_scroll = 0; // 0 = pinned to the newest messages (auto-follow), docs/DEVICE_PLAN.md §5.5
 
+// T4 (docs/CHAT_UI_DESIGN.md §3 "Chat"): the peer this Chat instance is
+// currently showing/sending to. "" means the book's default peer — the SAME
+// sentinel home_peers_build()/msg_peer_of() use for an up message with an
+// empty `to` and no book, so resolve_effective_peer() below stays a single
+// small function instead of two separate "is this the default" checks
+// scattered across this file. Set only by scr_chat_open_peer()/
+// scr_chat_set_peer() (ui.h) — see those functions' own doc comments for who
+// calls each one and why (a user-initiated open vs. an incoming page landing
+// on an already-open Chat).
+static char s_peer[BOOK_ALIAS_MAX] = "";
+
+// The peer this screen is ACTUALLY showing right now: `s_peer` verbatim when
+// it names one, else the book's own default alias, else the literal
+// "(default)" fallback — the exact same three-way rule msg_peer_of() (msg.c)
+// applies to an up message with an empty `to`, so a chat opened on "the
+// default peer" (s_peer == "") filters/sends exactly like one opened on that
+// alias by name would. Recomputed on every call (book.c's own RAM cache can
+// change under a `book` push at any time) rather than cached.
+static void resolve_effective_peer(char *out, size_t cap)
+{
+    if (s_peer[0] != '\0') {
+        strncpy(out, s_peer, cap - 1);
+        out[cap - 1] = '\0';
+        return;
+    }
+    char default_alias[BOOK_ALIAS_MAX] = "";
+    if (book_get_default_alias(default_alias, sizeof(default_alias))) {
+        strncpy(out, default_alias, cap - 1);
+    } else {
+        strncpy(out, "(default)", cap - 1);
+    }
+    out[cap - 1] = '\0';
+}
+
 static int visible_rows(void)
 {
     // §5.2: "at 2x the body shows 4 rows of 24 columns" for the *whole*
-    // body; this screen also reserves one row for the composer, so message
-    // rows are one fewer than the body's own row budget at each size.
-    return (ui_text_size() == GFX_FONT_LARGE) ? 4 : 6;
+    // body; this screen also reserves one row for the composer AND (T4) one
+    // row for the "[peer]" header, so message rows are TWO fewer than the
+    // body's own row budget at each size (one fewer, pre-T4).
+    return (ui_text_size() == GFX_FONT_LARGE) ? 3 : 5;
 }
 
 // ---------------------------------------------------------------------------
-// Row source + wrapping (owner request 2026-09-20). One entry per thread
-// message (msg_thread_at() index order, 0 = newest): the strings
+// Row source + wrapping (owner request 2026-09-20). One entry per message
+// belonging to the current peer (msg_iter_peer(), newest-first — T4
+// replaces the pre-T4 whole-thread msg_thread_at() walk here): the strings
 // chat_render()'s row 0 needs (who/ts/tag) plus the full, untruncated body
 // (up to MSG_RAM_BODY_MAX-1 bytes — the pre-wrap implementation's `char
 // body[80]` truncation is gone: a message that wraps needs its whole body,
 // not just what used to fit clipped on one row) and, in the parallel
 // s_rows[] array, how many rows gfx_text_wrap() says that body needs.
 //
-// Both arrays are file-static and re-filled by chat_build_rows() on every
-// call (from clamp_scroll(), mark_visible_read() and chat_render() alike)
-// rather than cached across calls: at most MSG_THREAD_DEPTH (32)
+// All three arrays are file-static and re-filled by chat_build_rows() on
+// every call (from clamp_scroll(), mark_visible_read() and chat_render()
+// alike) rather than cached across calls: at most MSG_THREAD_DEPTH (32)
 // gfx_text_wrap() calls, done only in response to a keypress or a screen
 // render, never in a sleep/wake power path, and keeping this data
 // file-static rather than on the stack matches this project's existing
@@ -291,6 +335,14 @@ typedef struct {
 
 static chat_row_src_t s_src[MSG_THREAD_DEPTH];
 static int s_rows[MSG_THREAD_DEPTH];
+// T4: the msg_t copies chat_build_rows() collected via msg_iter_peer() for
+// the CURRENT peer, parallel to s_src[]/s_rows[] above — mark_visible_read()
+// needs each row's real dir/ack_state/id (chat_row_src_t only keeps a
+// render-shaped `tag` string, not the raw ack_state), and, unlike the pre-T4
+// msg_thread_at(i) walk, row index `i` here no longer indexes msg.c's own
+// s_thread ring directly (msg_iter_peer() skips every OTHER peer's entries),
+// so mark_visible_read() cannot just re-fetch by index the way it used to.
+static msg_t s_entries[MSG_THREAD_DEPTH];
 
 // One reusable scratch buffer for wrap CONTENT — sized for the worst-case
 // row count (CHAT_MAX_ROWS_PER_MSG) but only ever holding ONE message's
@@ -389,16 +441,39 @@ static int compute_row_count(gfx_font_t sz, const chat_row_src_t *src)
     return (n < 1) ? 1 : n; // gfx_text_wrap() always returns >=1 for a real call; defensive floor
 }
 
-// Fills s_src[]/s_rows[] for every message currently in the thread (capped
-// at MSG_THREAD_DEPTH, msg.h's own ring depth) and returns how many. Shared
-// by clamp_scroll(), mark_visible_read() and chat_render() so all three
-// agree on exactly the same row counts every time.
+// msg_iter_peer() callback: appends into the caller's peer_collect_t, capped
+// at MSG_THREAD_DEPTH (should never actually bind — that is msg.c's own
+// s_thread ring depth, and a per-peer subset can only ever be smaller — but
+// msg_iter_peer()'s lock is held for the whole iteration, so silently
+// dropping any excess here rather than growing is the only safe option).
+typedef struct {
+    msg_t entries[MSG_THREAD_DEPTH];
+    size_t count;
+} peer_collect_t;
+
+static void collect_peer_entry(const msg_t *m, void *ctx)
+{
+    peer_collect_t *pc = (peer_collect_t *) ctx;
+    if (pc->count < MSG_THREAD_DEPTH) {
+        pc->entries[pc->count++] = *m;
+    }
+}
+
+// Fills s_entries[]/s_src[]/s_rows[] for every message belonging to the
+// CURRENT peer (resolve_effective_peer(), newest-first) and returns how
+// many. Shared by clamp_scroll(), mark_visible_read() and chat_render() so
+// all three agree on exactly the same row counts every time.
 static size_t chat_build_rows(gfx_font_t sz)
 {
-    size_t count = msg_thread_count();
-    if (count > MSG_THREAD_DEPTH) {
-        count = MSG_THREAD_DEPTH; // defensive; msg_thread_count() never actually exceeds this
-    }
+    char peer[BOOK_ALIAS_MAX];
+    resolve_effective_peer(peer, sizeof(peer));
+    char default_alias[BOOK_ALIAS_MAX] = "";
+    bool have_default = book_get_default_alias(default_alias, sizeof(default_alias));
+
+    peer_collect_t pc = { .count = 0 };
+    msg_iter_peer(peer, have_default, default_alias, /*from_newest=*/true, collect_peer_entry, &pc);
+    size_t count = pc.count;
+    memcpy(s_entries, pc.entries, count * sizeof(msg_t));
 
     const msg_t *nu = msg_newest_unread();
     char newest_unread_id[MSG_ID_MAX] = "";
@@ -408,17 +483,7 @@ static size_t chat_build_rows(gfx_font_t sz)
     }
 
     for (size_t i = 0; i < count; i++) {
-        const msg_t *m = msg_thread_at(i);
-        if (!m) {
-            // Should not happen for i < count (msg_thread_at()/
-            // msg_thread_count() are both under the same lock, msg.h's own
-            // README R6 doc comment) — fail closed to a harmless 1-row
-            // blank entry rather than an uninitialised s_src[i]/s_rows[i].
-            memset(&s_src[i], 0, sizeof(s_src[i]));
-            s_rows[i] = 1;
-            continue;
-        }
-        load_row_src(m, newest_unread_id, &s_src[i]);
+        load_row_src(&s_entries[i], newest_unread_id, &s_src[i]);
         s_rows[i] = compute_row_count(sz, &s_src[i]);
     }
     return count;
@@ -446,9 +511,13 @@ static const char *get_wrapped_line(gfx_font_t sz, int msg_index, int row_in_msg
 // Owner request: "a message counts as seen only if at least its last row is
 // on screen" — now checked precisely via chat_layout_is_last_row_visible()
 // instead of the pre-wrap implementation's blind sweep of the ENTIRE
-// thread (up to all 32 messages, on- or off-screen) on every keypress.
-// README R6 (open, not in F6.3's Files list): copies fields out promptly
-// per index rather than holding a raw msg_t* across any work.
+// thread (up to all 32 messages, on- or off-screen) on every keypress. T4:
+// only ever sweeps the CURRENT PEER's rows (chat_build_rows()'s own
+// msg_iter_peer() filter) — docs/CHAT_UI_DESIGN.md §3's "mark_visible_read()
+// marks only the rows of the current peer". README R6 (open, not in F6.3's
+// Files list): copies fields out promptly per index rather than holding a
+// raw msg_t* across any work — s_entries[i] (chat_build_rows()'s own copy,
+// not a live msg.c pointer) already satisfies that.
 static void mark_visible_read(void)
 {
     gfx_font_t sz = ui_text_size();
@@ -464,10 +533,7 @@ static void mark_visible_read(void)
     }
 
     for (size_t i = 0; i < count; i++) {
-        const msg_t *m = msg_thread_at(i);
-        if (!m) {
-            continue;
-        }
+        const msg_t *m = &s_entries[i];
         if (m->dir == (uint8_t) MSG_DIR_DOWN && m->ack_state != MSG_ACK_READ &&
             chat_layout_is_last_row_visible(s_rows, (int) count, rows, scroll, (int) i)) {
             char id[MSG_ID_MAX];
@@ -485,31 +551,47 @@ static void mark_visible_read(void)
 
 void scr_chat_mark_visible_read(void) { mark_visible_read(); }
 
-// T3 (docs/CHAT_UI_DESIGN.md §3 "Chat"/"Pick" — see ui.h's own doc comment
-// for the full contract): ui_push() below fires Chat's own
-// on_event(UI_EVT_ENTER) synchronously (ui.c's fire_enter()), which already
-// calls msg_composer_reset() — so the prefill below MUST happen AFTER
-// ui_push() returns, not before, or the reset would wipe it straight back
-// out. Pushed one byte at a time through msg_composer_push_char() (never a
-// raw strcpy into msg.c's buffer) so the same cap-refusal discipline
-// msg.h's own doc comment documents for every other composer writer stays
-// true here, though an alias's own BOOK_ALIAS_MAX bound makes an actual
-// refusal unreachable in practice.
-void scr_chat_open_with_prefix(const char *alias)
+// T4 (docs/CHAT_UI_DESIGN.md §3 "Chat"): sets `s_peer` — "" (or NULL)
+// selects the book's default peer, see resolve_effective_peer()'s own doc
+// comment — resetting the composer/scroll ONLY when the peer actually
+// changes, so re-opening (or an incoming page landing on) the SAME peer
+// already on screen does not wipe an in-progress reply. Exposed (ui.h) for
+// ui_incoming()'s own steal-the-screen path (below/ui.c), which must switch
+// Chat to an incoming page's peer WITHOUT the push/mark-read side effects
+// scr_chat_open_peer() below has (it may be called while Chat is already on
+// top, mid-composition) — see ui.h's own doc comment on the two functions'
+// differing contracts.
+void scr_chat_set_peer(const char *alias)
+{
+    char resolved[BOOK_ALIAS_MAX];
+    if (alias && alias[0] != '\0') {
+        strncpy(resolved, alias, sizeof(resolved) - 1);
+        resolved[sizeof(resolved) - 1] = '\0';
+    } else {
+        resolved[0] = '\0';
+    }
+    if (strcmp(resolved, s_peer) != 0) {
+        strncpy(s_peer, resolved, sizeof(s_peer) - 1);
+        s_peer[sizeof(s_peer) - 1] = '\0';
+        s_scroll = 0;
+        msg_composer_reset();
+    }
+}
+
+// T4 (docs/CHAT_UI_DESIGN.md §3 "Chat"/"Pick"): the user-initiated "open
+// this peer's chat" entry point — replaces T3's scr_chat_open_with_prefix()
+// (removed: the per-peer view itself, not a composer `@alias` prefill, is
+// what now makes a plain Enter address the right peer). Push fires Chat's
+// own on_event(UI_EVT_ENTER) synchronously (ui.c's fire_enter()), which
+// already resets the composer/scroll; scr_chat_set_peer() is called after,
+// matching T3's own "prefill AFTER ui_push()" ordering note (now moot for
+// the composer, since there is no prefill, but still the correct order for
+// mark_visible_read() below to see the right `s_peer`).
+void scr_chat_open_peer(const char *alias)
 {
     ui_push(&g_scr_chat);
+    scr_chat_set_peer(alias);
     scr_chat_mark_visible_read();
-    if (alias && alias[0] != '\0') {
-        char buf[BOOK_ALIAS_MAX + 2]; // "@" + alias + " " + NUL
-        int len = snprintf(buf, sizeof(buf), "@%s ", alias);
-        if (len > 0) {
-            for (int i = 0; i < len && buf[i] != '\0'; i++) {
-                if (!msg_composer_push_char(buf[i])) {
-                    break; // unreachable in practice, see this function's own comment
-                }
-            }
-        }
-    }
 }
 
 static void chat_on_event(ui_evt_t evt)
@@ -707,6 +789,50 @@ static void try_send(void)
         if (!(have_default && strcmp(default_alias, resolved_alias) == 0)) {
             strncpy(to, resolved_alias, sizeof(to) - 1);
         }
+    } else {
+        // T4 (docs/CHAT_UI_DESIGN.md §3 Do #4): no leading `@word` — send to
+        // the currently OPEN peer instead of always the default recipient.
+        //
+        // Gap not covered by Do #4's text (flagged in this task's own
+        // report): a chat opened on an SMS-originated peer (scr_pick.c's
+        // "sms" rows, or an inbound SMS thread) must still send via
+        // sms.c's direct path, never `/up` — an explicit `@name` already
+        // routes there via the AT_SMS branch above; a plain Enter in that
+        // SAME chat needs identical routing, or "just hit Enter" would
+        // silently try to relay the reply to a peer alias that does not
+        // exist in the book instead of sending the SMS the student meant.
+        sms_contact_t peer_sms;
+        if (s_peer[0] != '\0' && sms_find_by_name(s_peer, strlen(s_peer), &peer_sms) >= 0) {
+            sms_measure_t m;
+            sms_measure(body, body_len, sms_get_charset_mode(), &m);
+            if (sms_decide_encoding(&m) == SMS_ENC_TOO_LONG) {
+                ui_show_toast("message too long for SMS");
+                return;
+            }
+            if (sms_queue_send(&peer_sms, body, body_len)) {
+                msg_composer_reset();
+                s_scroll = 0;
+            } else {
+                ui_show_toast("SMS unavailable or send queue full");
+            }
+            return;
+        }
+
+        // Do #4: "`to = s_peer` unless s_peer equals the book's default
+        // alias or is empty, then `to` empty" — generalises AT_BOOK's own
+        // "omit `to` for the default recipient" rule (above) from a typed
+        // `@word` to the currently open peer. `s_peer == "(default)"` (the
+        // no-book placeholder home_peers_build()/msg_peer_of() themselves
+        // use) is folded into the same "already the default" case, since
+        // there is no book default alias to compare against in that state.
+        char default_alias[BOOK_ALIAS_MAX] = "";
+        bool have_default = book_get_default_alias(default_alias, sizeof(default_alias));
+        bool is_default_peer = (s_peer[0] == '\0') ||
+                                (have_default && strcmp(default_alias, s_peer) == 0) ||
+                                (!have_default && strcmp(s_peer, "(default)") == 0);
+        if (!is_default_peer) {
+            strncpy(to, s_peer, sizeof(to) - 1);
+        }
     }
 
     if (msg_queue_reply(to, body, body_len)) {
@@ -818,9 +944,47 @@ static void chat_render(void)
     // Glyph height plus 2 px of leading (owner decision 2026-09-20, from real
     // hardware: rows set solid at the glyph height read as cramped). Budget
     // at 128 px: body starts at y=17; normal 6 x 14 = 84, large 4 x 18 = 72;
-    // then the rule (2 px) and the 12 px composer row end at 115 / 103.
+    // then the rule (2 px) and the 12 px composer row end at 115 / 103 (T4:
+    // one of those 6/4 lines is now the "[peer]" header, below, not a
+    // message row — visible_rows() already accounts for that, so the total
+    // pixel budget/composer position are unchanged from the numbers above).
     int pitch = ((sz == GFX_FONT_LARGE) ? 16 : 12) + 2;
     int rows = visible_rows();
+
+    // T4 (docs/CHAT_UI_DESIGN.md §3 "Chat"): "[alias]" (nickname when set,
+    // scr_home.c's own nickname_for_alias() has the same lookup but is
+    // scr_home.c-private, hence the small re-lookup here), or "[alias] ·
+    // group" when the book entry's `type` is "grp" (§0 decision 6: no
+    // pager-side member list, just this label — GROUP_CHAT_DESIGN.md §4).
+    // An SMS-originated peer (not a book contact at all) falls back to
+    // showing its own name with no group suffix — reasonable default;
+    // CHAT_UI_DESIGN.md §3 does not mention SMS peers (flagged in this
+    // task's own report).
+    {
+        char peer[BOOK_ALIAS_MAX];
+        resolve_effective_peer(peer, sizeof(peer));
+        char nick[BOOK_NICK_MAX] = "";
+        bool is_group = false;
+        size_t nbook = book_contact_count();
+        for (size_t i = 0; i < nbook; i++) {
+            book_contact_t c;
+            if (!book_contact_at(i, &c)) {
+                continue;
+            }
+            if (strcmp(c.alias, peer) == 0) {
+                if (c.nickname[0] != '\0') {
+                    strncpy(nick, c.nickname, sizeof(nick) - 1);
+                    nick[sizeof(nick) - 1] = '\0';
+                }
+                is_group = (strcmp(c.type, "grp") == 0);
+                break;
+            }
+        }
+        const char *disp = (nick[0] != '\0') ? nick : peer;
+        char header[BOOK_NICK_MAX + BOOK_ALIAS_MAX + 12];
+        snprintf(header, sizeof(header), is_group ? "[%s] \xC2\xB7 group" : "[%s]", disp);
+        gfx_text(0, UI_BODY_TOP + 2, sz, header);
+    }
 
     // Owner request 2026-09-20 ("wrap long messages in the chat screen"):
     // build every visible-candidate message's row count, then hand scroll
@@ -838,7 +1002,7 @@ static void chat_render(void)
     chat_layout(s_rows, (int) count, rows, s_scroll, cells);
     s_wrap_cached_msg = -1; // fresh wrap cache for this render's draw pass
 
-    int y = UI_BODY_TOP + 2;
+    int y = UI_BODY_TOP + 2 + pitch; // one pitch below the "[peer]" header drawn above
     // Screen row r (0 = top) draws cells[r] — chat_layout() already placed
     // the newest message's rows at the bottom (docs/DEVICE_PLAN.md §5.5's
     // "newest at the bottom" mockup) and, for a message spanning several

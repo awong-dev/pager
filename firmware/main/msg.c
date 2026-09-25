@@ -410,6 +410,39 @@ int msghist_restore_order(const uint32_t *seqs, int n, int *order_out, int max_o
     return n;
 }
 
+/* T4 (docs/CHAT_UI_DESIGN.md §3 "Chat"): the ONE peer rule, shared by
+ * scr_home.c's home_peers_build() (Home's one-row-per-peer list) and this
+ * file's own msg_iter_peer() below (Chat's per-peer row source) so the two
+ * screens can never disagree about which peer a message belongs to — a
+ * down message belongs to `from` (the group alias for a group message;
+ * `sndr` is a per-message AUTHOR label, never the thread identity, msg.h's
+ * own doc comment on the field); an up message belongs to `to`, or, when
+ * `to` is empty, `default_alias` when `have_default` is true, else the
+ * literal fallback "(default)" (no book applied yet — same fallback
+ * home_peers_build() itself used before this task). Pure string arithmetic,
+ * no ESP-IDF dependency, host-tested by firmware/host/test_msg.c the same
+ * way this file's msghist_*() functions above are. `out_cap` <= 0 is a
+ * silent no-op (defensive; every real caller passes a real buffer). */
+void msg_peer_of(const msg_t *m, bool have_default, const char *default_alias, char *out,
+                 size_t out_cap)
+{
+    if (out_cap == 0) {
+        return;
+    }
+    const char *alias;
+    if (m->dir == (uint8_t) MSG_DIR_DOWN) {
+        alias = m->from;
+    } else if (m->to[0] != '\0') {
+        alias = m->to;
+    } else if (have_default && default_alias) {
+        alias = default_alias;
+    } else {
+        alias = "(default)";
+    }
+    strncpy(out, alias, out_cap - 1);
+    out[out_cap - 1] = '\0';
+}
+
 #ifdef ESP_PLATFORM
 
 #include <ctype.h>
@@ -2233,15 +2266,23 @@ const msg_t *msg_newest_unread(void)
     return found ? &s_unread_snapshot : NULL;
 }
 
-static bool entry_belongs_to_peer_locked(const msg_t *m, const char *alias)
+// T4: uses the SAME msg_peer_of() rule scr_home.c's home_peers_build()
+// applies, so an up message with an empty `to` is correctly attributed to
+// `default_alias`/"(default)" here too — the pre-T4 version of this
+// function compared `m->to` to `alias` directly, which never matched an
+// empty-`to` up message against the default peer's own alias (msg.h's own
+// doc comment flagged this: "since no caller sets `to` yet"; scr_chat.c is
+// now that caller).
+static bool entry_belongs_to_peer_locked(const msg_t *m, const char *alias, bool have_default,
+                                         const char *default_alias)
 {
-    if (m->dir == (uint8_t) MSG_DIR_DOWN) {
-        return strncmp(m->from, alias, MSG_FROM_MAX) == 0;
-    }
-    return strncmp(m->to, alias, MSG_TO_MAX) == 0;
+    char peer[MSG_FROM_MAX > MSG_TO_MAX ? MSG_FROM_MAX : MSG_TO_MAX];
+    msg_peer_of(m, have_default, default_alias, peer, sizeof(peer));
+    return strcmp(peer, alias) == 0;
 }
 
-void msg_iter_peer(const char *alias, bool from_newest, msg_iter_peer_cb cb, void *ctx)
+void msg_iter_peer(const char *alias, bool have_default, const char *default_alias, bool from_newest,
+                   msg_iter_peer_cb cb, void *ctx)
 {
     if (!alias || !cb) {
         return;
@@ -2252,7 +2293,7 @@ void msg_iter_peer(const char *alias, bool from_newest, msg_iter_peer_cb cb, voi
             if (!s_thread[i].in_use) {
                 break;
             }
-            if (entry_belongs_to_peer_locked(&s_thread[i], alias)) {
+            if (entry_belongs_to_peer_locked(&s_thread[i], alias, have_default, default_alias)) {
                 msg_t copy = s_thread[i];
                 cb(&copy, ctx);
             }
@@ -2266,7 +2307,7 @@ void msg_iter_peer(const char *alias, bool from_newest, msg_iter_peer_cb cb, voi
             last = i;
         }
         for (int i = last; i >= 0; i--) {
-            if (entry_belongs_to_peer_locked(&s_thread[i], alias)) {
+            if (entry_belongs_to_peer_locked(&s_thread[i], alias, have_default, default_alias)) {
                 msg_t copy = s_thread[i];
                 cb(&copy, ctx);
             }

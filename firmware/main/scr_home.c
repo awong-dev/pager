@@ -21,6 +21,14 @@
 // below) is what actually calls msg_thread_at() in a loop to fill the array
 // this takes, and book.h's accessors to resolve a nickname/the default
 // alias — this section only ever sees plain strings and msg_t fields.
+//
+// T4 (docs/CHAT_UI_DESIGN.md §3 "Chat"): the actual peer-attribution rule
+// (which alias a given message belongs to) moved to msg.c's msg_peer_of()
+// so Chat's own per-peer row source (msg_iter_peer()) uses the exact same
+// rule and the two screens can never disagree — msg.h has no ESP-IDF
+// dependency of its own (msg_t is a plain struct), so calling it here does
+// not pull anything new into this file's host-test build beyond msg.o
+// (firmware/host/Makefile's test_home_list rule).
 // ---------------------------------------------------------------------------
 
 #define HOME_MAX_PEERS 16       /* Do #1: "Cap 16 peers" */
@@ -60,16 +68,12 @@ int home_peers_build(const msg_t *msgs, size_t n, bool have_default, const char 
     int count = 0;
     for (size_t i = 0; i < n; i++) {
         const msg_t *m = &msgs[i];
-        const char *alias;
-        if (m->dir == (uint8_t) MSG_DIR_DOWN) {
-            alias = m->from;
-        } else if (m->to[0] != '\0') {
-            alias = m->to;
-        } else if (have_default) {
-            alias = default_alias;
-        } else {
-            alias = "(default)";
-        }
+        char alias[HOME_PEER_ALIAS_MAX];
+        // T4 (docs/CHAT_UI_DESIGN.md §3): this rule now lives in msg.c's
+        // msg_peer_of(), shared with msg_iter_peer() (Chat's own per-peer
+        // row source), so the two screens can never disagree — see that
+        // function's own doc comment for the exact rule.
+        msg_peer_of(m, have_default, default_alias, alias, sizeof(alias));
 
         int idx = -1;
         for (int j = 0; j < count; j++) {
@@ -224,17 +228,6 @@ static const char *fixed_label(home_fixed_row_t k)
     }
 }
 
-// True iff `alias` is the book's own default recipient (or, with no book
-// applied yet, the literal "(default)" fallback home_peers_build() itself
-// used) — the one case Enter on a peer row must NOT prefill "@<alias> "
-// for (docs/CHAT_UI_DESIGN.md §3: "if the peer is not the default alias,
-// prefill ..."), since that peer is already where an un-prefixed reply goes.
-static bool alias_is_default(const char *alias)
-{
-    return s_have_default ? (strcmp(alias, s_default_alias) == 0)
-                           : (strcmp(alias, "(default)") == 0);
-}
-
 static void home_on_event(ui_evt_t evt)
 {
     if (evt != UI_EVT_ENTER) {
@@ -263,10 +256,12 @@ static void home_on_key(input_key_t key)
     case INPUT_KEY_ENTER:
         if (s_sel < s_peer_count) {
             const home_peer_t *p = &s_peers[s_sel];
-            // T3: same "opening a chat" rule as before, plus the `@alias`
-            // prefill (scr_chat_open_with_prefix(), ui.h) unless this peer
-            // IS the default recipient already.
-            scr_chat_open_with_prefix(alias_is_default(p->alias) ? NULL : p->alias);
+            // T4 (docs/CHAT_UI_DESIGN.md §3 "Chat"): opens THIS peer's own
+            // filtered chat (scr_chat_open_peer(), ui.h) — no more `@alias`
+            // composer prefill trick (scr_chat_open_with_prefix(), removed):
+            // the per-peer view itself is what makes a plain Enter in Chat
+            // now address the right peer.
+            scr_chat_open_peer(p->alias);
         } else {
             switch ((home_fixed_row_t) (s_sel - s_peer_count)) {
             case HROW_NEWMSG:
@@ -297,9 +292,11 @@ static void home_on_key(input_key_t key)
     case INPUT_KEY_CHAR:
         // Bench finding (22 Sep): people start typing on Home, where letters
         // did nothing, and the text was lost. Typing here opens the chat and
-        // hands the key on, so the first character is not dropped.
-        ui_push(&g_scr_chat);
-        scr_chat_mark_visible_read();
+        // hands the key on, so the first character is not dropped. T4
+        // (docs/CHAT_UI_DESIGN.md §3 Do #5): the newest chat's peer (Home's
+        // own row 0, already newest-activity-first), or the default peer
+        // when there are no chats yet.
+        scr_chat_open_peer(s_peer_count > 0 ? s_peers[0].alias : NULL);
         if (g_scr_chat.on_key) {
             g_scr_chat.on_key(key);
         }
