@@ -26,6 +26,13 @@
 #include <stdio.h>
 #include <string.h>
 
+#ifdef ESP_PLATFORM
+/* idf_stub/ test-only hooks (idf_stub_set_button_level()/
+ * idf_stub_advance_us()) - see their own doc comments. */
+#include "driver/gpio.h"
+#include "esp_timer.h"
+#endif
+
 static int g_failures = 0;
 
 #define CHECK(cond, ...)                                               \
@@ -158,6 +165,111 @@ static void test_n_keys_fed_at_once_are_all_delivered(void)
     input_event_t extra;
     CHECK(!input_get_event(&extra), "queue had a leftover event after draining exactly %d", n);
 }
+
+/* Bug fix (25 Sep, "lock screen never switches to password: on a quick IO1
+ * press", firmware/README.md/docs/DEVICE_PLAN.md §5.5): ext0 is a LEVEL
+ * wake on PAGER_PIN_BUTTON, so the wake edge IS the press, but modes.c's
+ * wake path (rail restore/probe/post-wake yield) runs before this
+ * iteration's input_poll() ever samples the pin. input_note_ext0_wake()
+ * seeds the FSM with that press so input_poll() resolves short/long from
+ * it exactly as for a polled press (input.h's own doc comment). These
+ * three cases are the fix's contract:
+ *  (a) ext0 wake, then the pin already reads released at the first poll:
+ *      BTN_DOWN + BTN_SHORT, same as a real quick press/release.
+ *  (b) ext0 wake, then the pin is still held past the long-press
+ *      threshold: BTN_DOWN + BTN_LONG, no BTN_SHORT.
+ *  (c) ext0 wake while the FSM has already resolved BTN_DOWN for this same
+ *      press (a held button spanning more than one ext0 wake, the
+ *      BTN_STUCK hazard input.h documents): merges into it instead of
+ *      seeding a second BTN_DOWN - exactly one event total.
+ * idf_stub_set_button_level()/idf_stub_advance_us() (idf_stub/) are
+ * host-test-only hooks; input.c itself never calls either. */
+static void expect_event(input_evt_type_t want, const char *case_name)
+{
+    input_event_t evt;
+    bool got = input_get_event(&evt);
+    CHECK(got, "%s: expected an event (type %d), queue was empty", case_name, (int) want);
+    if (got) {
+        CHECK(evt.type == want, "%s: got event type %d, want %d", case_name, (int) evt.type,
+              (int) want);
+    }
+}
+
+static void expect_no_event(const char *case_name)
+{
+    input_event_t evt;
+    CHECK(!input_get_event(&evt), "%s: unexpected extra event, type %d", case_name, (int) evt.type);
+}
+
+static void test_ext0_wake_then_released_is_short(void)
+{
+    input_init();
+    idf_stub_set_button_level(1); /* released */
+
+    int64_t t0 = esp_timer_get_time();
+    input_note_ext0_wake(t0);
+    expect_event(INPUT_EVT_BTN_DOWN, "ext0/released: seed");
+
+    /* modes.c's next input_poll() this same iteration - pin already back
+     * to released, exactly like a real quick press/release. */
+    idf_stub_set_button_level(1);
+    input_poll();
+    expect_event(INPUT_EVT_BTN_SHORT, "ext0/released: resolve");
+    expect_no_event("ext0/released: drained");
+}
+
+static void test_ext0_wake_then_held_past_long_threshold_is_long(void)
+{
+    input_init();
+    idf_stub_set_button_level(0); /* still held at the wake */
+
+    int64_t t0 = esp_timer_get_time();
+    input_note_ext0_wake(t0);
+    expect_event(INPUT_EVT_BTN_DOWN, "ext0/held: seed");
+
+    /* Jump the fake clock past PAGER_BTN_LONG_PRESS_MS (600ms) while the
+     * pin stays low (still held) - the long-press threshold must fire off
+     * the seeded press start (t0), not a fresh one. */
+    idf_stub_advance_us(700000);
+    idf_stub_set_button_level(0);
+    input_poll();
+    expect_event(INPUT_EVT_BTN_LONG, "ext0/held: resolve");
+    expect_no_event("ext0/held: no SHORT queued alongside LONG");
+
+    /* Release: BTN_HELD -> BTN_IDLE pushes no event of its own (matches a
+     * real long-press release) - confirms SHORT never sneaks in here
+     * either. */
+    idf_stub_set_button_level(1);
+    input_poll();
+    expect_no_event("ext0/held: no event on release after LONG");
+}
+
+static void test_ext0_wake_merges_into_press_fsm_already_saw(void)
+{
+    input_init();
+
+    /* A press input_poll() itself already debounced into BTN_DOWN, before
+     * any ext0 wake call this test injects - models a held button
+     * spanning more than one ext0 wake (input.h's BTN_STUCK doc comment). */
+    idf_stub_set_button_level(0);
+    input_poll(); /* starts debounce, no event yet */
+    idf_stub_advance_us(40000); /* > PAGER_BTN_DEBOUNCE_MS (30ms) */
+    idf_stub_set_button_level(0);
+    input_poll(); /* debounce resolved -> BTN_DOWN */
+    expect_event(INPUT_EVT_BTN_DOWN, "ext0/merge: press already seen");
+
+    /* A second ext0 wake fires (still held) - must be a no-op, not a
+     * second BTN_DOWN. */
+    int64_t t1 = esp_timer_get_time();
+    input_note_ext0_wake(t1);
+    expect_no_event("ext0/merge: no second BTN_DOWN");
+
+    /* Release so this test (and whichever runs next) starts from BTN_IDLE. */
+    idf_stub_set_button_level(1);
+    input_poll();
+    expect_event(INPUT_EVT_BTN_SHORT, "ext0/merge: release resolves the one press tracked");
+    expect_no_event("ext0/merge: drained");
+}
 #endif
 
 int main(void)
@@ -170,6 +282,9 @@ int main(void)
     test_no_side_effects();
 #ifdef ESP_PLATFORM
     test_n_keys_fed_at_once_are_all_delivered();
+    test_ext0_wake_then_released_is_short();
+    test_ext0_wake_then_held_past_long_threshold_is_long();
+    test_ext0_wake_merges_into_press_fsm_already_saw();
 #endif
 
     if (g_failures == 0) {

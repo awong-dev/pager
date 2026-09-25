@@ -524,6 +524,12 @@ void ui_on_button_short(void)
     // this still does nothing further, matching the old "btn hold = nothing
     // [and short = nothing either]" fail-safe default.
     if (lock_is_locked()) {
+        // Diagnostic (25 Sep bug: "lock screen never switches to
+        // password:" — coordinator's round-2 request, kept in release
+        // builds too): proves on the next capture whether this path is
+        // even reached, and with the stack in the state it should be.
+        ESP_LOGI(TAG, "ui_on_button_short: locked=1 top=%s",
+                 ui_top() ? (ui_top()->name ? ui_top()->name : "?") : "(empty)");
         if (ui_top() == &g_scr_lock) {
             scr_lock_start_entry();
             // TASK_ui_round2.md Do #1: paint "password:" right now,

@@ -16,10 +16,17 @@ void gpio_config(const gpio_config_t *cfg)
     (void) cfg; /* no real GPIO on the host; input.c only configures the button pin */
 }
 
+static int s_button_level = 1; /* idle (active-low, released) by default */
+
 int gpio_get_level(gpio_num_t pin)
 {
     (void) pin;
-    return 1; /* idle (active-low, released) -- this suite does not exercise the button FSM */
+    return s_button_level;
+}
+
+void idf_stub_set_button_level(int level)
+{
+    s_button_level = level;
 }
 
 static int64_t s_fake_time_us = 0;
@@ -29,6 +36,11 @@ int64_t esp_timer_get_time(void)
     /* Every call advances a tick so two calls in the same test are never
      * bit-for-bit identical, without needing a real clock. */
     return s_fake_time_us++;
+}
+
+void idf_stub_advance_us(int64_t delta_us)
+{
+    s_fake_time_us += delta_us;
 }
 
 QueueHandle_t xQueueCreateStatic(UBaseType_t uxQueueLength, UBaseType_t uxItemSize,

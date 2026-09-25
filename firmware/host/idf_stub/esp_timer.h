@@ -12,4 +12,11 @@
 
 int64_t esp_timer_get_time(void);
 
+/* Test-only: jumps the fake clock forward by `delta_us` (on top of the
+ * per-call +1 tick esp_timer_get_time() already does), so a host test can
+ * model real elapsed time (e.g. the button FSM's long-press threshold)
+ * without needing thousands of individual calls. input.c itself never
+ * calls this -- device code has no notion of it. */
+void idf_stub_advance_us(int64_t delta_us);
+
 #endif

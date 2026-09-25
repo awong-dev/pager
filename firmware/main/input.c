@@ -184,6 +184,23 @@ void input_poll(void)
     button_fsm_step(gpio_get_level((gpio_num_t) PAGER_PIN_BUTTON), now_us);
 }
 
+void input_note_ext0_wake(int64_t now_us)
+{
+    /* Merge into a press the FSM is already tracking (a held button across
+     * consecutive ext0 wakes, or a press input_poll() already debounced
+     * this same iteration before this got called) instead of seeding a
+     * second BTN_DOWN for it — see this function's doc comment in
+     * input.h. */
+    if (s_btn_state != BTN_IDLE) {
+        return;
+    }
+    s_btn_state = BTN_DOWN;
+    s_btn_t0_us = now_us;
+    s_btn_debounce_start_us = 0;
+    arm_awake_window(now_us);
+    push_event((input_event_t) { .type = INPUT_EVT_BTN_DOWN });
+}
+
 void input_feed_key(uint8_t byte)
 {
     input_key_t key = input_decode_key(byte);

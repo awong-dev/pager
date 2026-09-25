@@ -2676,8 +2676,24 @@ void modes_run(void)
             {
                 esp_sleep_wakeup_cause_t wake_cause = esp_sleep_get_wakeup_cause();
                 if (wake_cause == ESP_SLEEP_WAKEUP_EXT0 || wake_cause == ESP_SLEEP_WAKEUP_EXT1) {
-                    s_last_input_us = esp_timer_get_time();
+                    int64_t wake_now_us = esp_timer_get_time();
+                    s_last_input_us = wake_now_us;
                     ui_ensure_powered(); // rule (b): this wake IS real input, bring the rail up now
+                    if (wake_cause == ESP_SLEEP_WAKEUP_EXT0) {
+                        // Bug fix (25 Sep, "lock screen never switches to
+                        // password: on a quick IO1 press"): ext0 is a LEVEL
+                        // wake on the button, so this wake edge IS the
+                        // press, but input_poll() (below, later this same
+                        // iteration) is the first thing that ever samples
+                        // the pin — by then a quick press can already be
+                        // released and BTN_IDLE's poll-driven debounce never
+                        // starts, silently dropping the press. Seed the FSM
+                        // with the press here, at the wake, so input_poll()
+                        // resolves short-vs-long from it exactly as for a
+                        // polled press (input_note_ext0_wake()'s own doc
+                        // comment, input.h). Power effect: none of its own.
+                        input_note_ext0_wake(wake_now_us);
+                    }
 #ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
                     s_st_rail_on_wakes++;
 #endif

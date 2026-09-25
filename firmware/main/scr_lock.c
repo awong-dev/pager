@@ -30,10 +30,13 @@
 #include "lock.h"
 #include "msg.h"
 
+#include "esp_log.h"
 #include "esp_timer.h"
 
 #include <stdio.h>
 #include <string.h>
+
+static const char *TAG = "scr_lock";
 
 #define LOCK_INPUT_MAX (LOCK_PASSCODE_MAX + 1)
 
@@ -84,6 +87,11 @@ void scr_lock_start_entry(void)
     s_state = LOCK_UI_ENTERING;
     reset_entry();
     s_last_activity_us = esp_timer_get_time();
+    // Diagnostic (25 Sep bug, coordinator's round-2 request, kept in
+    // release builds too): state transition idle -> entering, so the next
+    // capture proves whether lock_render() ever gets a chance to draw
+    // "password:" for this press.
+    ESP_LOGI(TAG, "scr_lock_start_entry: idle -> entering");
 }
 
 // Do #4 (b)'s own 30s-idle half — checked once per render (this screen's
