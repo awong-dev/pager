@@ -127,6 +127,23 @@ bool input_awake(void);
  * bench with no button wired has no other way to start typing. */
 void input_arm_awake(void);
 
+/* Round 7 bench diagnostic, for the console `btn`/`btn long` commands:
+ * pushes exactly the event pair a resolved physical press produces
+ * (BTN_DOWN, then BTN_SHORT or BTN_LONG per `long`), arming the UI-awake
+ * window on each push the same way button_fsm_step() (input.c) does on
+ * resolution — the two console-visible events downstream code (modes.c's
+ * input_get_event() drain, ui_on_button_short()/ui_on_button_long()) can
+ * tell apart from a real press. Bypasses the debounce/long-press timing
+ * (PAGER_BTN_DEBOUNCE_MS/PAGER_BTN_LONG_PRESS_MS, input.c) entirely — there
+ * is no PAGER_PIN_BUTTON level to debounce against on a bench call — but
+ * every event this pushes reaches the exact same queue, in the exact same
+ * order, that a real short/long press would leave behind. Does not touch
+ * s_btn_state, so a real press mid-flight is not disturbed by this call and
+ * vice versa (bench-only: do not call this while a real press is in
+ * progress, same caveat `disptest` gives for `wake`/`key`). */
+void input_feed_button_short(void);
+void input_feed_button_long(void);
+
 /* True while the button FSM is mid-press (BTN_DOWN) or mid-hold (BTN_HELD,
  * i.e. before the BTN_STUCK cutoff) and so needs frequent polling to
  * measure press/hold duration accurately. False for BTN_IDLE and

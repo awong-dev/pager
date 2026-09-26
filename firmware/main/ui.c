@@ -430,7 +430,7 @@ void ui_ensure_powered(void)
     bool was_off = !rail_is_on();
     rail_on(); // power effect: see rail_on()'s own comment; a no-op if already on
     if (was_off) {
-        disp_note_power_loss(); // the panel's own RAM was lost while the rail was down; force a full refresh
+        disp_note_power_loss(); // panel RAM was lost while the rail was down; restores it, next refresh stays a partial (disp.h)
         s_rail_lazy_on++;
     }
 }
@@ -697,7 +697,29 @@ static int s_i2c_fail_count = 0;
 // every time modes.c's rail gate takes the rail down and back up again
 // (every non-attentive sleep). Not blocking: a skipped read just returns
 // with no key, same as a NACK would, at zero I2C cost.
-#define PAGER_KB_BOOT_GUARD_MS 300
+//
+// Round 9 resume: 300 was a guess; the owner asked for a measured value.
+// main.c's `kbtime` command (rail_off(), 2s off, rail_on(), then an I2C
+// probe of 0x5F every ~1ms, going through this same module's own one-shot
+// bus recovery, ui_kb_i2c_reinit()) measured min=1136ms max=1137ms
+// avg=1136ms over 10 off/on cycles (2026-09-26 bench, build/bench-logs/
+// round9r-kbtime4.log) -- far past the ATmega8A's own textbook cold-start
+// budget, so this is dominated by the I2C bus's own recovery cost after a
+// rail cycle on this hardware, not the CardKB MCU's boot time alone; every
+// cycle needed the recovery (see ui_kb_i2c_reinit()'s own comment). Owner's
+// rule: guard = max(measured) + padding, at least 15ms. 1137ms max + ~150ms
+// margin, rounded: 1300ms.
+#define PAGER_KB_BOOT_GUARD_MS 1300
+
+// Round 9: pauses ui_poll_keyboard() (below) entirely, so main.c's `kbtime`
+// bench probe can drive its own rail_off()/rail_on() cycles and its own
+// I2C_NUM_0 transactions without racing this function's concurrent poll for
+// the same driver -- found on the bench (first attempt at this measurement):
+// both sides re-initializing the driver at once made every probe NACK
+// ("CardKB: I2C read failed post-restore"). Debug-only in practice (only
+// `kbtime` flips it), but compiles in a release build too.
+static volatile bool s_kb_poll_paused = false;
+void ui_debug_pause_kb_poll(bool paused) { s_kb_poll_paused = paused; }
 
 // The rail_restored_us() value this module last decided the boot-guard/
 // re-init state for. -1 (never equal to any real timestamp, which is >= 0
@@ -777,8 +799,24 @@ void ui_kb_bus_restore(void)
 
 uint32_t ui_kb_bus_release_count(void) { return s_kb_bus_releases; }
 
+// Round 9 resume: exposes the exact recovery ui_poll_keyboard()'s own
+// "I2C read failed post-restore" branch below already does (delete +
+// reinstall the driver, no GPIO drive-low step -- that is ui_kb_bus_
+// release()'s job, for the rail-off case, not this one), so main.c's
+// `kbtime` probe can reproduce the same one-shot bus recovery a real
+// post-wake keystroke relies on instead of measuring an idealized number
+// that never matches production behaviour.
+void ui_kb_i2c_reinit(void)
+{
+    i2c_driver_delete(I2C_NUM_0);
+    i2c_kb_init();
+}
+
 void ui_poll_keyboard(void)
 {
+    if (s_kb_poll_paused) {
+        return; // round 9: `kbtime` owns the I2C bus right now, see s_kb_poll_paused's own comment
+    }
     // TASK_ui_round2.md Do #4: the lazy rail gate leaves the rail OFF on a
     // timer wake with nothing to draw — the CardKB is unpowered then, so an
     // I2C read here would just NACK (or worse, wedge waiting on a bus with

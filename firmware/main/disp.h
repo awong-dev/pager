@@ -42,16 +42,24 @@ extern "C" {
 bool disp_init(void);
 
 /* Rail gate (docs/ROADMAP.md "24 Sep evening finding", owner decision 24
- * Sep 10:30 pm PDT): call this on the wake after rail.c's rail_off()/
- * rail_on() cycle took the panel's VCC gate down and back up — the panel
- * lost its RAM, so the next refresh must be a full one, same as
- * disp_init()'s own priming. Does NOT call disp_init() again: the
- * SSD1680's registers are re-armed by the existing pre-refresh reset every
- * full_refresh_locked() already does (disp_pre_refresh_reset()), and
- * disp_gpio_init()/disp_spi_init() need no repeating — only the RAM
- * content and the shadow-plane diff are stale. Power effect: none of its
- * own — sets a flag consumed by the next disp_partial_refresh()/
- * disp_refresh_cadence() call, same mechanism disp_init()'s priming uses. */
+ * Sep 10:30 pm PDT; partial-after-power-loss fix, 25 Sep): call this on the
+ * wake after rail.c's rail_off()/rail_on() cycle took the panel's VCC gate
+ * down and back up — the SSD1680's own RAM lost its content, but the glass
+ * itself (e-paper, bistable) did not, and this module's own shadow copy of
+ * the last frame (s_fb_old, disp.c) survives too — it is plain RAM and this
+ * path only ever runs across a light sleep. Silently reloads both SSD1680
+ * RAM planes from that shadow copy (no visible refresh — RAM writes alone
+ * never move the glass) instead of forcing a full refresh, so the very next
+ * disp_partial_refresh()/disp_refresh_cadence() call can do an ordinary,
+ * correct partial of whatever actually changed — see disp.c's
+ * restore_ram_planes_locked() for the full argument. Falls back to the old
+ * force-a-full-refresh behaviour if the restore itself fails BUSY. Does NOT
+ * call disp_init() again: the SSD1680's registers are re-armed by the
+ * existing pre-refresh reset every full_refresh_locked() already does
+ * (disp_pre_refresh_reset()), and disp_gpio_init()/disp_spi_init() need no
+ * repeating. Power effect: one SW-reset BUSY wait (~10ms) plus one
+ * whole-panel RAM write over SPI (no Master Activation) — see disp.c's own
+ * comment for the full accounting. */
 void disp_note_power_loss(void);
 
 /* True once a BUSY timeout has persisted through a reset+re-init retry;
@@ -170,6 +178,28 @@ void disp_reset_refresh_stats(void);
  * story). Power effect: one SW-reset BUSY wait (~10ms, PENDING_HW); does not
  * touch panel VCC. */
 void disp_fault_inject_swreset(void);
+
+/* ---------------------------------------------------------------------------
+ * Round 9 (the "6s from tap to password: on a real sleep wake" defect):
+ * the SSD1680 datasheet power-on sequence (VCI up, wait >=10ms, RST low
+ * >=10ms, wait BUSY low) is now mandatory on every power-loss recovery
+ * (restore_ram_planes_locked(), disp.c) — the ">=10ms after VCI up" leg is
+ * the universal rail.c settle (rail_on(), rail_debug_set_settle_ms()),
+ * which runs before disp_note_power_loss() is even called; the "RST low
+ * >=10ms" leg is an unconditional disp_hw_reset() call disp.c now makes
+ * before the software-reset-based re-init, not just as a BUSY-timeout
+ * fallback. No runtime toggle for either — owner ruling, round 9: mandatory,
+ * not an A/B option. The one knob still exposed is the bench trace below.
+ * ---------------------------------------------------------------------------
+ */
+
+/* Arms a one-shot ~200ms tight poll of the BUSY pin, logged transition by
+ * transition with esp_timer_get_time() timestamps, starting the instant
+ * disp_note_power_loss() is entered (i.e. right after rail_on()) — answers
+ * "how long does BUSY take to reach a stable level after rail-on". Costs
+ * ~200ms of extra latency on the very next power-loss recovery only (then
+ * auto-disarms); never left on in shipped firmware. */
+void disp_debug_arm_busy_trace(void);
 
 #ifdef __cplusplus
 }

@@ -216,6 +216,29 @@ void input_arm_awake(void)
     arm_awake_window(esp_timer_get_time());
 }
 
+/* See input.h's own doc comment. Deliberately mirrors button_fsm_step()'s
+ * own resolution sequence (BTN_DOWN arms+pushes, then the resolving event
+ * arms+pushes again) byte-for-byte, rather than pushing one event and
+ * hoping modes.c's BTN_DOWN-only handling (set_mode(ACTIVE, ...)) does not
+ * matter — a real press always produces both. */
+void input_feed_button_short(void)
+{
+    int64_t now_us = esp_timer_get_time();
+    arm_awake_window(now_us);
+    push_event((input_event_t) { .type = INPUT_EVT_BTN_DOWN });
+    arm_awake_window(now_us);
+    push_event((input_event_t) { .type = INPUT_EVT_BTN_SHORT });
+}
+
+void input_feed_button_long(void)
+{
+    int64_t now_us = esp_timer_get_time();
+    arm_awake_window(now_us);
+    push_event((input_event_t) { .type = INPUT_EVT_BTN_DOWN });
+    arm_awake_window(now_us);
+    push_event((input_event_t) { .type = INPUT_EVT_BTN_LONG });
+}
+
 bool input_get_event(input_event_t *out)
 {
     return xQueueReceive(s_queue, out, 0) == pdTRUE;

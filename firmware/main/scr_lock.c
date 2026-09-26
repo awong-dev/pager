@@ -117,7 +117,7 @@ static void try_unlock(void)
     bool ok = lock_try_passcode(s_buf, s_len);
     // Do #4: "wrong code returns to (a) after the existing failure
     // handling" — and a SUCCESSFUL unlock leaves this screen behind
-    // entirely (ui_replace()/ui_go_home() below), so returning to idle
+    // entirely (ui_pop()/ui_go_home() below), so returning to idle
     // first is harmless either way and keeps this one return path for both
     // outcomes.
     return_to_idle();
@@ -127,22 +127,51 @@ static void try_unlock(void)
         return;
     }
 
+    // Round 8 fix ("relock never shows again" bug, build/bench-logs/
+    // round8-sleeptest-C-wait.log): this screen is always reached as an
+    // OVERLAY pushed on top of whatever was showing before (modes_boot()'s
+    // boot-time `if (lock_is_locked()) ui_push(&g_scr_lock)`, or
+    // lock_screen_sync()'s own `ui_push(&g_scr_lock)` on an auto-lock edge,
+    // modes.c) — never the sole/bottom frame (ui_init() always establishes
+    // Home at depth 1 first). The old code below used ui_replace()/
+    // ui_go_home() to leave this screen, which only ever overwrites or
+    // resets — neither one pops the frame THIS screen's own push added, so
+    // whatever was directly underneath Lock (Home at boot, or the chat an
+    // auto-lock interrupted) stayed buried on the stack, unreachable,
+    // permanently: every relock+unlock cycle leaked one level of
+    // UI_STACK_DEPTH (ui.h, 4). Two cycles were enough on the bench to fill
+    // it; the third relock's own ui_push(&g_scr_lock) (lock_screen_sync())
+    // then silently failed ("screen stack full (depth 4), dropping push of
+    // lock", ui.c) every single loop iteration for the rest of that boot —
+    // this screen could never be shown again, matching the reported defect
+    // exactly ("whatever was on screen... stays"). ui_pop() undoes exactly
+    // the push that got us here, restoring the stack to what it was before
+    // Lock went up (in the auto-lock-while-chatting case, this alone
+    // already reveals the correct chat again, s_peer untouched).
+    //
     // docs/DEVICE_PLAN.md §5.8: "the newest-unread chat opens, the refresh
     // completes, and the deferred shown acks go out through the normal
-    // pending-ack queue." ui_replace()/ui_go_home() here only update the
-    // screen stack — the actual e-paper refresh happens moments later, in
-    // this SAME modes_run() wake-and-drain iteration, when it calls
-    // ui_render() after draining every input event (modes.c). Queuing the
-    // deferred acks here (rather than only after that render, the way
-    // ui_incoming() insists on) is safe specifically because both this call
-    // and that render run on modes_run()'s own task, in program order —
-    // there is no cross-task race to guard against, unlike ui_incoming()'s
-    // MQTT-event-task caller. msg_pump() (the actual network publish of the
-    // now-queued acks) always runs still later in that same iteration, after
-    // ui_render() — see modes.c's modes_run() ordering.
+    // pending-ack queue." This still only updates the screen stack — the
+    // actual e-paper refresh happens moments later, in this SAME
+    // modes_run() wake-and-drain iteration, when it calls ui_render() after
+    // draining every input event (modes.c). Queuing the deferred acks here
+    // (rather than only after that render, the way ui_incoming() insists
+    // on) is safe specifically because both this call and that render run
+    // on modes_run()'s own task, in program order — there is no cross-task
+    // race to guard against, unlike ui_incoming()'s MQTT-event-task caller.
+    // msg_pump() (the actual network publish of the now-queued acks) always
+    // runs still later in that same iteration, after ui_render() — see
+    // modes.c's modes_run() ordering.
+    ui_pop();
     const msg_t *u = msg_newest_unread();
     if (u) {
-        ui_replace(&g_scr_chat);
+        // ui_pop() above may already have revealed g_scr_chat (the
+        // auto-lock-while-chatting case) — same peer-selection behaviour
+        // as before this fix (s_peer, scr_chat.c, untouched either way);
+        // only push if something else (Home, at boot) was revealed instead.
+        if (ui_top() != &g_scr_chat) {
+            ui_push(&g_scr_chat);
+        }
     } else {
         ui_go_home();
     }

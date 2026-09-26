@@ -17,6 +17,10 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 
+#include "flightrec.h" // round 9: 'D' (BUSY timeout)/'L' (power-loss-to-render latency)
+                        // events, so the diagnosis survives a wake where the USB port
+                        // never comes back -- no-op stubs outside a debug build
+
 static const char *TAG = "disp";
 
 #define PAGER_UI_PARTIAL_FULL_EVERY 20 // firmware/README.md, explicit override of "~10"
@@ -126,6 +130,13 @@ static disp_refresh_event_t s_refresh_ring[DISP_REFRESH_RING_LEN];
 static uint8_t s_refresh_ring_head = 0;  // next slot to write
 static uint8_t s_refresh_ring_count = 0; // valid entries, saturates at DISP_REFRESH_RING_LEN
 
+// Round 9: "wake to render done" latency the owner asked to have logged --
+// armed by disp_note_power_loss() (t0 = right after rail_on() returns, as
+// close to "the moment of wake" as disp.c itself ever sees), consumed by
+// the first refresh completion afterwards, below.
+static volatile bool s_power_loss_render_pending = false;
+static int64_t s_power_loss_t0_us = 0;
+
 static void disp_refresh_ring_push(char kind, uint8_t tag)
 {
     s_refresh_ring[s_refresh_ring_head].ms = (uint32_t) (esp_timer_get_time() / 1000);
@@ -134,6 +145,12 @@ static void disp_refresh_ring_push(char kind, uint8_t tag)
     s_refresh_ring_head = (uint8_t) ((s_refresh_ring_head + 1) % DISP_REFRESH_RING_LEN);
     if (s_refresh_ring_count < DISP_REFRESH_RING_LEN) {
         s_refresh_ring_count++;
+    }
+    if (s_power_loss_render_pending) {
+        s_power_loss_render_pending = false;
+        int64_t elapsed_ms = (esp_timer_get_time() - s_power_loss_t0_us) / 1000;
+        ESP_LOGI(TAG, "disp: power-loss-to-render done in %lld ms", elapsed_ms);
+        flightrec_event('L', (int32_t) elapsed_ms, 0);
     }
 }
 
@@ -203,6 +220,31 @@ static void disp_unlock(void)
 
 static bool s_busy_fallback_logged = false;
 
+// Round 9: which call site is waiting on BUSY right now, purely for the
+// timeout log line and the matching flightrec 'D' event -- set immediately
+// before each disp_wait_busy()/disp_wait_busy_fb() call that owner round 9
+// task 1 asked to be distinguishable ("logs which BUSY wait timed out, the
+// call site"). Not a stack (this driver's own module comment: "one mutex in
+// disp.c", every public entry point serialized, so at most one BUSY wait is
+// ever outstanding at a time) -- a single static is enough.
+static const char *s_busy_tag = "?";
+static void disp_set_busy_tag(const char *tag) { s_busy_tag = tag; }
+
+// Round 10: per-call BUSY timeout, PAGER_UI_BUSY_TIMEOUT_US except inside
+// disp_wait_busy_max() (the short post-reset and power-loss-restore waits).
+static int64_t s_busy_timeout_us = PAGER_UI_BUSY_TIMEOUT_US;
+
+// Round 10: CONFIG_FREERTOS_HZ=100, so pdMS_TO_TICKS(10) and (15) are both 1
+// tick, and vTaskDelay(1) blocks anywhere from 0 to 10 ms depending on where
+// in the tick the caller is. After a real light-sleep wake the task resumes
+// at a random tick phase (railcycle always resumes on a tick boundary, which
+// is why it never reproduced), so the "10 ms" RST pulse could be ~0 ms. This
+// rounds up and adds one tick so the delay is never shorter than ms.
+static void disp_delay_at_least_ms(uint32_t ms)
+{
+    vTaskDelay((ms + portTICK_PERIOD_MS - 1) / portTICK_PERIOD_MS + 1);
+}
+
 // Weak default: no-op. disp.h's own comment explains the layering seam —
 // disp.c must not include ui.h, so ui.c/modes.c overrides this with the
 // strong definition that polls the CardKB during a long BUSY wait.
@@ -271,9 +313,17 @@ static bool disp_wait_busy_fb(uint32_t fallback_ms)
     // against this exact panel's datasheet, PENDING_HW.
     while (gpio_get_level(PAGER_PIN_DISP_BUSY) == 1) {
         iters++;
-        if (esp_timer_get_time() - start > PAGER_UI_BUSY_TIMEOUT_US) {
-            ESP_LOGI(TAG, "BUSY: entry=%d timed out after %d iters (~%lld ms)", entry_level,
-                     iters, (esp_timer_get_time() - start) / 1000);
+        if (esp_timer_get_time() - start > s_busy_timeout_us) {
+            int64_t elapsed_ms = (esp_timer_get_time() - start) / 1000;
+            ESP_LOGI(TAG, "BUSY: %s entry=%d timed out after %d iters (~%lld ms)", s_busy_tag,
+                     entry_level, iters, elapsed_ms);
+            // Round 9: survives a wake where the USB port never comes back
+            // (flightrec.h's own module comment) -- 'D' kind, a=entry_level,
+            // b=elapsed_ms; the tag string itself does not fit an int32
+            // field, so the dump's a/b plus the surrounding cycle number is
+            // what identifies which wake this was, same as every other
+            // flightrec event.
+            flightrec_event('D', entry_level, (int32_t) elapsed_ms);
             s_busy_timeout_count++; // S12: see disp_busy_timeout_count()'s doc comment
             return false;
         }
@@ -289,6 +339,23 @@ static bool disp_wait_busy_fb(uint32_t fallback_ms)
 // (SW reset with nothing queued yet, or a post-reinit sanity check) — never
 // apply the fixed-wait fallback here, or every retry path would eat 3.5 s.
 static bool disp_wait_busy(void) { return disp_wait_busy_fb(0); }
+
+// Round 10: same as disp_wait_busy() with a shorter timeout (a timeout still
+// logs, flightrec 'D' with b ~= max_us/1000, and counts in
+// disp_busy_timeout_count()).
+static bool disp_wait_busy_max(int64_t max_us)
+{
+    int64_t saved = s_busy_timeout_us;
+    s_busy_timeout_us = max_us;
+    bool ok = disp_wait_busy_fb(0);
+    s_busy_timeout_us = saved;
+    return ok;
+}
+
+// Round 10: normal SW-reset BUSY is ~10 ms (bench: elapsed=9648 us); 200 ms is
+// ~20x that, and short enough that one failed attempt plus a retry stays
+// under 0.5 s.
+#define PAGER_UI_BUSY_RESET_TIMEOUT_US (200 * 1000)
 
 static void disp_send_cmd(uint8_t cmd)
 {
@@ -320,12 +387,21 @@ static void disp_power_on(void)
     vTaskDelay(pdMS_TO_TICKS(10));
 }
 
+// Round 10: owner sequence -- RST low >= 10 ms (really >= 10 ms now, see
+// disp_delay_at_least_ms()), then wait for BUSY low before any command (the
+// old code sent 0x12 after a nominal, tick-quantized 10 ms without checking
+// BUSY). A BUSY that stays high past 200 ms here is left to the caller's own
+// SW-reset wait and retry, same as before.
 static void disp_hw_reset(void)
 {
     gpio_set_level(PAGER_PIN_DISP_RST, 0);
-    vTaskDelay(pdMS_TO_TICKS(10));
+    disp_delay_at_least_ms(10);
     gpio_set_level(PAGER_PIN_DISP_RST, 1);
-    vTaskDelay(pdMS_TO_TICKS(10));
+    disp_delay_at_least_ms(1);
+    const char *saved_tag = s_busy_tag;
+    disp_set_busy_tag("post-hw-reset");
+    (void) disp_wait_busy_max(PAGER_UI_BUSY_RESET_TIMEOUT_US);
+    disp_set_busy_tag(saved_tag);
 }
 
 static void disp_set_ram_window(uint16_t y_start, uint16_t y_end)
@@ -434,6 +510,7 @@ static void mark_display_dead(void)
 // register-write commands in disp_send_init_registers().
 static bool disp_pre_refresh_reset(const char *who)
 {
+    disp_set_busy_tag(who); // round 9: names any BUSY timeout below with its call site
     if (disp_run_init_sequence()) {
         return true;
     }
@@ -540,6 +617,7 @@ static void full_refresh_locked(uint8_t tag, bool upgraded)
     disp_send_cmd(0x20);
     // Real update in flight (0x20, full) — use the fixed-wait fallback if
     // BUSY doesn't assert.
+    disp_set_busy_tag("full refresh update");
     bool recovered = false;
     if (!disp_wait_busy_fb(PAGER_UI_BUSY_FALLBACK_FULL_MS)) {
         ESP_LOGI(TAG, "full refresh BUSY timeout; attempting one reset+re-init");
@@ -689,6 +767,7 @@ static void partial_refresh_locked(uint8_t tag)
     disp_send_cmd(0x20);
     // Real update in flight (0x20, partial) — use the fixed-wait fallback if
     // BUSY doesn't assert.
+    disp_set_busy_tag("partial refresh update");
     if (!disp_wait_busy_fb(PAGER_UI_BUSY_FALLBACK_PARTIAL_MS)) {
         ESP_LOGI(TAG, "partial refresh BUSY timeout; attempting one reset+re-init");
         disp_hw_reset();
@@ -763,6 +842,132 @@ static void partial_refresh_locked(uint8_t tag)
     disp_refresh_ring_push('P', tag);
 }
 
+// Round 9 bench diagnostic: one-shot ~200ms tight poll of BUSY right after
+// rail-on, logging every transition with esp_timer_get_time() timestamps --
+// answers "how long does BUSY take to reach a stable level after rail-on"
+// (owner's round 9 measurement request). Armed via disp_debug_arm_busy_
+// trace() (main.c's `dispbusytrace` console command), auto-disarms after
+// one run so it never costs anything in normal operation.
+static volatile bool s_busy_trace_armed = false;
+
+void disp_debug_arm_busy_trace(void) { s_busy_trace_armed = true; }
+
+static void disp_log_busy_settle_once(void)
+{
+    s_busy_trace_armed = false;
+    int64_t t0 = esp_timer_get_time();
+    int last = gpio_get_level(PAGER_PIN_DISP_BUSY);
+    ESP_LOGI(TAG, "disp: busytrace: BUSY=%d at +0 us (right after rail-on)", last);
+    while (esp_timer_get_time() - t0 < 200000) {
+        int lvl = gpio_get_level(PAGER_PIN_DISP_BUSY);
+        if (lvl != last) {
+            ESP_LOGI(TAG, "disp: busytrace: BUSY %d->%d at +%lld us", last, lvl,
+                     esp_timer_get_time() - t0);
+            last = lvl;
+        }
+        vTaskDelay(pdMS_TO_TICKS(1)); // NEVER a tight busy-loop; 1ms resolution is plenty here
+    }
+    ESP_LOGI(TAG, "disp: busytrace: BUSY=%d at +200000 us (end of trace)", last);
+}
+
+// UI-first / partial-after-power-loss fix (25 Sep, "10s from tap to
+// password:"): disp_note_power_loss() used to force the next refresh to a
+// full one (~2-4s) purely because the SSD1680's own SRAM does not survive
+// the 3V3 rail's off->on cycle (rail.c) -- the physical glass itself needs
+// no power to hold its image (e-paper is bistable), only the controller's
+// RAM forgot what was in it. s_fb_old (above) is a plain static array, not
+// RTC memory, and this whole power-loss path only ever runs across a LIGHT
+// sleep (this build never deep-sleeps) -- ordinary RAM is retained through
+// light sleep, so s_fb_old is exactly the frame the glass is still showing,
+// untouched by the rail cycle. Silently reloading both SSD1680 RAM planes
+// from it (no 0x20 Master Activation below -- RAM writes alone never move
+// the glass) puts the controller back in the state it was in right before
+// power was cut, so the very next partial_refresh_locked() call diffs the
+// real new frame against a plane that is actually correct and only redraws
+// the rows that changed, instead of every caller being forced full.
+//
+// Both planes, not just the "previous image" one (0x26): partial_refresh_
+// locked()'s own banner comment already explains why the two planes must
+// stay equal outside whatever row band a partial last touched (the auto-
+// toggle-on-update behaviour, GxEPD2/Waveshare-documented) -- after a power
+// loss BOTH planes are equally garbage, and restoring only 0x26 would leave
+// 0x24 out of sync for every row outside the next partial's own diff band,
+// which is exactly the desync this file's dd694a3 fix already had to solve
+// once for a different cause (garbled, never-settling bands). Writing the
+// same content to both closes that off the same way full_refresh_locked()
+// already does for an ordinary full refresh.
+//
+// Returns false (and leaves the caller to fall back to the old force-full
+// behaviour) if the pre-refresh re-init itself fails BUSY -- mark_display_
+// dead() has already run inside disp_pre_refresh_reset() in that case.
+static bool restore_ram_planes_locked(void)
+{
+    // Round 9 root cause ("6s from tap to password: on a real sleep wake",
+    // disp_busy_timeout_count=1 in the round 8 sleeptest report, wrongly
+    // written off as the loose-BUSY-wire bench issue): the comment this
+    // replaces called a proactive disp_hw_reset() here a "latency
+    // optimisation, not a correctness requirement", reasoning that a bare
+    // SW reset (0x12) over SPI would work and disp_pre_refresh_reset()'s own
+    // BUSY-timeout fallback would catch it otherwise. On the bench that
+    // fallback IS what fired -- every real off-sleep wake tested (round 9)
+    // hit the 6s PAGER_UI_BUSY_TIMEOUT_US on the FIRST disp_run_init_
+    // sequence() attempt inside disp_pre_refresh_reset() ("power-loss
+    // restore" tag) and only recovered via that function's own reset+
+    // re-init retry -- i.e. exactly the 6s the owner measured, every time.
+    // SSD1680 datasheet power-on sequence: VCI up, wait >=10ms, RST low
+    // >=10ms, wait BUSY low -- a bare SW reset with the rail freshly
+    // restored skips the mandatory RST pulse entirely, and apparently that
+    // is load-bearing on this hardware after a real light-sleep power
+    // cycle (never reproduced by `railcycle`, which never actually
+    // light-sleeps -- ESP-IDF's own sleep GPIO isolation, main suspect,
+    // never engages there either). Owner ruling, round 9: this hardware
+    // reset is now unconditional here, not a fallback -- the >=10ms-after-
+    // VCI-up leg of the same sequence is rail.c's own universal settle
+    // (rail_on(), already elapsed by the time this function is ever
+    // called, since disp_note_power_loss() only runs after rail_on()
+    // returns).
+    if (s_busy_trace_armed) {
+        disp_log_busy_settle_once(); // round 9 bench diagnostic, see its own comment
+    }
+    // Round 10 fallback: short BUSY waits and up to 3 hw-reset attempts, so
+    // a panel that wedges after rail-on costs ~0.2 s per attempt instead of
+    // the 6 s PAGER_UI_BUSY_TIMEOUT_US. Only if all 3 fail does it fall back
+    // to the old path (6 s wait, then mark_display_dead()).
+    bool ok = false;
+    for (int attempt = 0; attempt < 3 && !ok; attempt++) {
+        disp_hw_reset();
+        disp_set_busy_tag("power-loss restore");
+        disp_send_cmd(0x12); // SW reset
+        ok = disp_wait_busy_max(PAGER_UI_BUSY_RESET_TIMEOUT_US);
+        if (ok) {
+            disp_send_init_registers();
+            ok = disp_wait_busy_max(PAGER_UI_BUSY_RESET_TIMEOUT_US);
+        }
+        if (!ok) {
+            ESP_LOGI(TAG, "power-loss restore: attempt %d BUSY timeout, hw reset + retry",
+                     attempt + 1);
+        }
+    }
+    if (!ok) {
+        disp_hw_reset();
+        if (!disp_pre_refresh_reset("power-loss restore")) {
+            return false;
+        }
+    }
+
+    disp_set_ram_window(0, 295);
+    disp_send_cmd(0x24);
+    for (int r = 0; r < GFX_FB_ROWS; r++) {
+        disp_send_data(s_fb_old[r], GFX_FB_ROW_BYTES);
+    }
+    disp_set_ram_window(0, 295); // rule 1, full_refresh_locked()'s own comment
+    disp_send_cmd(0x26);
+    for (int r = 0; r < GFX_FB_ROWS; r++) {
+        disp_send_data(s_fb_old[r], GFX_FB_ROW_BYTES);
+    }
+    return true;
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -800,6 +1005,19 @@ static void disp_gpio_init(void)
         .intr_type = GPIO_INTR_DISABLE,
     };
     gpio_config(&busy_cfg);
+    // Round 9 root cause, part 2 (the mandatory disp_hw_reset() alone did
+    // NOT eliminate the 6s BUSY timeout on real hardware -- bench-measured
+    // 2 timeouts in 5 real off-sleep wakes even with it): this pin was the
+    // one left out of the four above, so it was NOT excluded from ESP-IDF's
+    // sleep GPIO isolation -- an INPUT pad gets isolated (disconnected from
+    // its normal input path) for the whole of every light sleep same as any
+    // other unexcluded GPIO, per the same CONFIG_ESP_SLEEP_GPIO_RESET_
+    // WORKAROUND mechanism this function's own comment above already
+    // describes for RST/DC/CS/VCC_EN. disp_wait_busy_fb()'s very first read
+    // on wake (entry_level) can then be a stale/isolated level rather than
+    // the panel's real BUSY state, which a hardware reset alone cannot fix
+    // since the reset itself is gated behind that same unreliable read.
+    gpio_sleep_sel_dis((gpio_num_t) PAGER_PIN_DISP_BUSY);
 
     gpio_set_level(PAGER_PIN_DISP_VCC_EN, 1); // start powered off
 }
@@ -859,6 +1077,7 @@ bool disp_init(void)
     disp_hw_reset();
     ESP_LOGD(TAG, "BUSY raw level right after hw_reset (pre-command): %d",
              gpio_get_level(PAGER_PIN_DISP_BUSY));
+    disp_set_busy_tag("boot init");
     if (!disp_run_init_sequence()) {
         ESP_LOGI(TAG, "init sequence BUSY timeout; retrying once");
         disp_hw_reset();
@@ -876,17 +1095,43 @@ bool disp_init(void)
 
 bool disp_is_dead(void) { return s_display_dead; }
 
-// Rail gate: see disp.h's own doc comment. Mirrors disp_init()'s own
-// priming (both s_partial_count, for a disp_refresh_cadence() caller, and
-// s_force_full, for a disp_partial_refresh() caller — see s_force_full's
-// own comment on why callers split across the two) so the next refresh is
-// full regardless of which path the caller (ui.c) takes next. Taken under
-// the same lock every other public entry point here uses.
+// Rail gate: see disp.h's own doc comment, and restore_ram_planes_locked()'s
+// own banner comment just above for the "why a partial is safe here at all"
+// argument. Deliberately does NOT touch s_partial_count -- the every-20th-
+// partial full-refresh cadence (disp_refresh_cadence()) keeps running
+// exactly as it would have if the rail had never dropped; forcing it here
+// would just be a second, unrelated reason to go full, which the owner
+// asked to keep separate. Falls back to the old force-full behaviour only if
+// the restore itself fails (disp_pre_refresh_reset()'s BUSY timeout --
+// mark_display_dead() already logged it in that case, or the panel was
+// already dead before this call), so a failed restore can never leave the
+// shadow plane silently wrong. Taken under the same lock every other public
+// entry point here uses. Power effect: one SW-reset BUSY wait (~10ms,
+// disp_pre_refresh_reset()'s own measurement) plus one whole-panel RAM write
+// over SPI (no Master Activation, so no BUSY wait of its own) -- a fraction
+// of a full refresh's ~2-4s, and no glass movement at all.
 void disp_note_power_loss(void)
 {
     disp_lock();
-    s_partial_count = PAGER_UI_PARTIAL_FULL_EVERY;
-    s_force_full = true;
+    if (s_display_dead) {
+        disp_unlock();
+        return;
+    }
+    // Round 9: t0 for the "wake to render done" latency the owner asked to
+    // be logged/flightrec'd -- this function is called right after
+    // rail_on() returns (ui.c's ui_ensure_powered()), so it is as close to
+    // "the moment of wake" as disp.c itself ever sees; the matching log
+    // line is at disp_refresh_ring_push() below, the one choke point both
+    // full_refresh_locked() and partial_refresh_locked() complete through.
+    s_power_loss_render_pending = true;
+    s_power_loss_t0_us = esp_timer_get_time();
+    if (restore_ram_planes_locked()) {
+        ESP_LOGI(TAG, "disp: RAM planes restored after rail power loss - next refresh is a partial");
+    } else {
+        ESP_LOGI(TAG, "disp: RAM restore failed after rail power loss - forcing a full refresh");
+        s_partial_count = PAGER_UI_PARTIAL_FULL_EVERY;
+        s_force_full = true;
+    }
     disp_unlock();
 }
 

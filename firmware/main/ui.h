@@ -295,10 +295,12 @@ void ui_draw_row_separator(int y);
  * every render path brings the 3V3 peripheral rail up on demand instead of
  * relying on the wake path to have already done it unconditionally. Calls
  * rail_on() (rail.h) and, iff the rail was OFF just before that call,
- * disp_note_power_loss() (disp.h) — the same "panel RAM was lost, force a
- * full refresh" note the old unconditional wake-path rail_on() used to give
- * on every rail-was-off wake, now given only at the point a render is
- * actually about to happen. Called from the top of ui_render() (below) and
+ * disp_note_power_loss() (disp.h) — the same "panel RAM was lost" note the
+ * old unconditional wake-path rail_on() used to give on every rail-was-off
+ * wake, now given only at the point a render is actually about to happen;
+ * disp_note_power_loss() restores the panel's RAM from its own shadow copy
+ * of the last frame rather than forcing a full refresh (disp.h's own
+ * comment). Called from the top of ui_render() (below) and
  * ui_incoming()'s own synchronous render path — see rail.h's
  * own module comment for the other three rules (boot, an EXT0/EXT1 wake,
  * and the attentive window) that also bring the rail on, independently of
@@ -440,6 +442,12 @@ void ui_show_toast(const char *text);
  * withholding it. */
 void ui_poll_keyboard(void);
 
+/* Round 9: pauses (true) or resumes (false) ui_poll_keyboard() above
+ * entirely, for the `kbtime` bench probe's own exclusive use of I2C_NUM_0
+ * (ui.c's s_kb_poll_paused has the full rationale). Never called outside
+ * that one console command. */
+void ui_debug_pause_kb_poll(bool paused);
+
 /* Count of ui_poll_keyboard() calls withheld by the post-rail-restore
  * CardKB boot guard above, since boot. Free-running, never reset — bench
  * diagnostic (modes.c's sleeptest report: "kb_skipped_reads="). */
@@ -477,6 +485,14 @@ void ui_kb_bus_restore(void);
  * Free-running, never reset — bench diagnostic (modes.c's sleeptest
  * report: "kb_bus_releases="). */
 uint32_t ui_kb_bus_release_count(void);
+
+/* Round 9 resume: the one-shot I2C driver delete+reinstall ui_poll_
+ * keyboard() already does internally after a few failed reads post-
+ * restore ("the bus could have been left mid-transaction when the rail
+ * dropped") -- exposed so main.c's `kbtime` bench probe can reproduce the
+ * exact same recovery a real post-wake keystroke goes through, instead of
+ * measuring a number production code never actually gets to rely on. */
+void ui_kb_i2c_reinit(void);
 
 /* ---------------------------------------------------------------------
  * Text size setting (docs/DEVICE_PLAN.md §5.2: "a Setting (normal/large)

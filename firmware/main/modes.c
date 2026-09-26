@@ -174,6 +174,27 @@ static const char *TAG = "modes";
 // UNVERIFIED: the minimum, and whether an AT poke right after the wake would
 // let it be shorter (docs/ROADMAP.md).
 #define PAGER_POST_WAKE_YIELD_MS 200u
+// UI-first fix (25 Sep, "10s from tap to `password:`"): an EXT0/EXT1 wake IS
+// real user input (input_note_ext0_wake() above already seeds the button FSM
+// with it), and input.c's arm_awake_window() (called from the same wake path,
+// modes_run()'s `input_note_ext0_wake()` call above and input_poll()'s own
+// resolution below) arms a PAGER_UI_AWAKE_S (30 s, input.c) window in which
+// every subsequent loop iteration has ui_awake==true, so skip_sleep is true
+// and the loop never calls net_sleep() again for that whole window --
+// RTS/hardware flow control stays asserted (net.cpp's net_sleep() is the only
+// place that forces RTS high) for far longer than PAGER_PROBE_WAIT_MS (15 s)
+// ever would. Whatever this wake's net_urc_probe() (just above) is waiting
+// on gets all the time it needs from that ordinary busy-poll cadence, not
+// from wait_for_probe_answer()'s dedicated wait -- so skipping the wait (and
+// cutting the yield) on an input wake loses no URC-delivery guarantee, it
+// only stops blocking the render behind a wait that was never necessary in
+// the first place. L4/F7's >=30ms floor below is still respected. Power
+// effect: an EXT0/EXT1 wake stays awake ~40 ms here instead of up to
+// PAGER_POST_WAKE_YIELD_MS + PAGER_PROBE_WAIT_MS (~15.2 s) before it does
+// anything else -- more current for those 40 ms (no change, this iteration
+// was already fully awake), far less current summed over the old wait, which
+// is gone entirely on this path.
+#define PAGER_INPUT_WAKE_YIELD_MS 40u
 // S18 (docs/SLEEP_URC_DESIGN.md §10). The yield above is a fixed guess; this
 // is the bound on the *conditional* extra awake time that keeps RTS asserted
 // until the drain probe has actually been answered. The modem only releases a
@@ -2673,9 +2694,15 @@ void modes_run(void)
             // on an EXT0/EXT1 wake even with nothing (yet) to draw; a timer
             // wake with nothing to draw now leaves the rail OFF instead of
             // paying that cost every single wake.
+            // wake_is_input: read by the yield/wait_for_probe_answer() logic
+            // below (PAGER_INPUT_WAKE_YIELD_MS's own comment) -- this is the
+            // same wake_cause test the rail-gate rule (b) below already makes,
+            // hoisted into a variable instead of read twice.
+            bool wake_is_input = false;
             {
                 esp_sleep_wakeup_cause_t wake_cause = esp_sleep_get_wakeup_cause();
                 if (wake_cause == ESP_SLEEP_WAKEUP_EXT0 || wake_cause == ESP_SLEEP_WAKEUP_EXT1) {
+                    wake_is_input = true;
                     int64_t wake_now_us = esp_timer_get_time();
                     s_last_input_us = wake_now_us;
                     ui_ensure_powered(); // rule (b): this wake IS real input, bring the rail up now
@@ -2769,6 +2796,14 @@ void modes_run(void)
                 yield_ms = s_st_yield_ms;
             }
 #endif
+            // PAGER_INPUT_WAKE_YIELD_MS's own comment: only shrinks yield_ms,
+            // never grows it, so an explicit sleeptest override (measuring
+            // URC delivery, above) below PAGER_INPUT_WAKE_YIELD_MS is still
+            // honoured. UI first: this is the wake the owner is staring at
+            // the screen for.
+            if (wake_is_input && yield_ms > PAGER_INPUT_WAKE_YIELD_MS) {
+                yield_ms = PAGER_INPUT_WAKE_YIELD_MS;
+            }
 #ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
             // RCA_SLEEP_URC.md fix 1's discriminator: bytes sitting in the
             // modem UART's RX ring 50 ms after this wake -- near-zero on an
@@ -2801,7 +2836,16 @@ void modes_run(void)
             // s_st_asleep_us) so this time is charged to the report's
             // `post-wake yield` bucket, where it belongs -- not to `asleep`,
             // which is the mis-attribution §9.1 had to unpick by arithmetic.
-            wait_for_probe_answer(interval_ms);
+            // UI first (25 Sep): skipped entirely on an input wake --
+            // PAGER_INPUT_WAKE_YIELD_MS's own comment has the full argument
+            // for why this loses no URC-delivery guarantee (the 30 s
+            // input-awake window this same wake just armed keeps RTS
+            // asserted far longer than this wait's own PAGER_PROBE_WAIT_MS
+            // bound ever would). Power effect: an input wake never pays this
+            // wait's up-to-15s cost.
+            if (!wake_is_input) {
+                wait_for_probe_answer(interval_ms);
+            }
         } else if (btn_busy) {
             vTaskDelay(pdMS_TO_TICKS(PAGER_BTN_POLL_MS)); // button FSM debounce/timing granularity
         } else if (btn_stuck) {

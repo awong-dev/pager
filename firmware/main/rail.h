@@ -80,8 +80,9 @@ void rail_on(void);
  * the whole point of the gate (ends their current draw for the sleep about
  * to be entered). The CardKB MCU loses power and reboots on the next
  * rail_on(); the display's panel RAM is lost (modes.c calls
- * disp_note_power_loss() on the matching wake so the next refresh is a full
- * one, per disp.h).
+ * disp_note_power_loss() on the matching wake, which restores it from disp.c's
+ * own shadow copy of the last frame so the next refresh can still be a
+ * partial, per disp.h).
  */
 void rail_off(void);
 
@@ -94,6 +95,15 @@ bool rail_is_on(void);
  * to boot after its power returns.
  */
 int64_t rail_restored_us(void);
+
+/* Round 9: the universal post-rail-on settle delay rail_on() waits before
+ * touching any downstream peripheral (rail.c's own comment on s_settle_ms
+ * has the full rationale/sourcing). Default 15ms; the setter exists so a
+ * bench sweep (15/20/30/50ms) runs on one flash. Compiles in a release
+ * build too (no #ifdef at the call site needed), even though only debug
+ * console commands call the setter today. */
+void rail_debug_set_settle_ms(uint32_t ms);
+uint32_t rail_debug_get_settle_ms(void);
 
 #ifdef __cplusplus
 }

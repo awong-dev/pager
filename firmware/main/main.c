@@ -8,6 +8,7 @@
 #include "nvs.h"
 #include "esp_system.h"
 #include "esp_sleep.h"
+#include "esp_timer.h" // esp_timer_get_time(), cmd_railcycle()'s elapsed-ms measurement
 #include "esp_rom_sys.h" // esp_rom_delay_us(), `rts fc`'s CTS sampling loop (debug build only)
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -374,6 +375,264 @@ static int cmd_attn(int argc, char **argv)
     printf("attn: last_input_age=%lld.%03llds attentive=%d in_use=%d locked=%d (lock_set=%d)\n",
            (long long) (age_us / 1000000), (long long) ((age_us / 1000) % 1000), (int) in_use,
            (int) in_use, (int) lock_is_locked(), (int) lock_is_set());
+    return 0;
+}
+
+// Bench diagnostic (round 6, defect 1 triage, architect hypothesis 8a):
+// `railcycle` -- drive the display/CardKB/LIS3DH 3V3 rail off exactly the
+// way sleep entry does (modes.c's `if (attentive) rail_on(); else
+// rail_off();` branch, this same file's rail.h include), hold it off 2s
+// (long enough for the SSD1680 to actually lose its RAM/registers if it is
+// going to, well past a "still back-powered through RST/DC/CS" near-miss),
+// then bring it back up exactly the way the EXT0 (button) wake path does
+// (ui_ensure_powered(), modes.c's rule (b)) and call ui_render() (which
+// itself calls ui_ensure_powered() first, a no-op here since already on).
+// Times only the rail_on()+ui_render() leg, i.e. the part a real button
+// wake would pay after 2+ minutes asleep, and prints it alongside whatever
+// the AT-trace-adjacent disp.c BUSY log already showed inline above it, so
+// a bench read does not have to correlate two separate log lines by hand.
+// Debug build only, same gating as `attn` above.
+static int cmd_railcycle(int argc, char **argv)
+{
+    // Round 7 realism pass: `railcycle [seconds]` — seconds defaults to 2,
+    // matching the original bench probe; pass a larger value (e.g. 150, ~2.5
+    // min) to reproduce the "asleep 2+ minutes" scenario defect 1 actually
+    // reported, rather than the acute 2s near-miss the first round tested.
+    // The off-duration itself makes no electrical difference to rail_off()
+    // (rail.c drives PAGER_PIN_3V3_EN low once and is done; nothing times
+    // out or degrades while it sits low) — it only changes how long the
+    // SSD1680 has been unpowered, which is the variable defect 1's own "2+
+    // min" claim is actually about.
+    //
+    // What this command does and does not reproduce, checked against the
+    // real sleep-entry/EXT0-wake path (modes.c modes_run(), rail.c, disp.c):
+    // rail_off() itself is exactly the sleep-entry call (same function, same
+    // ui_kb_bus_release() side effect on the I2C pins); rail_on() via
+    // ui_ensure_powered() is exactly the EXT0-wake call (same function,
+    // same ui_kb_bus_restore() side effect, same disp_note_power_loss()).
+    // The display's RST/DC/CS pins are untouched by either rail_off() or
+    // rail_on() in the real firmware — disp_gpio_init()'s own comment notes
+    // they are deliberately excluded from ESP-IDF's sleep GPIO isolation
+    // (gpio_sleep_sel_dis()) so they hold whatever level they were last
+    // driven to (RST idle-high post-reset, DC whatever the last SPI byte
+    // needed, CS SPI-peripheral-muxed) straight through a light sleep with
+    // no code of this module's own re-driving them — so a bench call with no
+    // real light sleep in between (this build never light-sleeps) leaves
+    // those three pins in exactly the same state a real sleep/wake cycle
+    // would: whatever disp_pre_refresh_reset()/disp_hw_reset() last set,
+    // unchanged. Nothing here calls gpio_hold_en()/gpio_hold_dis() because
+    // nothing in rail.c/disp.c does either — the mechanism this firmware
+    // actually relies on is gpio_sleep_sel_dis() (opt out of isolation), not
+    // an RTC GPIO hold latch. What this command does NOT reproduce: the
+    // actual esp_light_sleep_start() call itself (irrelevant to the four
+    // display/rail pins specifically, since they are excluded from
+    // isolation either way) and the surrounding modes_run() loop context
+    // (attentive-window bookkeeping, wake_is_input's now-shortened yield,
+    // the input-event drain that would normally trigger the render) — this
+    // command calls ui_render() directly instead, which is a reasonable
+    // proxy for whatever render eventually happens post-wake, not a replay
+    // of the whole loop iteration.
+    long secs = 2;
+    if (argc >= 2) {
+        secs = strtol(argv[1], NULL, 10);
+        if (secs < 0) {
+            printf("usage: railcycle [seconds]\n");
+            return 1;
+        }
+    }
+    printf("railcycle: rail_off() for %lds\n", secs);
+    rail_off();
+    vTaskDelay(pdMS_TO_TICKS((uint32_t) secs * 1000));
+    printf("railcycle: rail_on() + ui_render()\n");
+    int64_t t0 = esp_timer_get_time();
+    ui_ensure_powered(); // same call the EXT0 wake path makes (modes.c)
+    ui_render();
+    int64_t elapsed_ms = (esp_timer_get_time() - t0) / 1000;
+    printf("railcycle: elapsed=%lld ms (rail_on + ui_render) busy_timeout_count=%u\n",
+           (long long) elapsed_ms, (unsigned) disp_busy_timeout_count());
+    return 0;
+}
+
+// Round 7, authorized: `btn` / `btn long` -- push a simulated button press
+// through input.c's own queue (input_feed_button_short()/_long(), input.h),
+// the same INPUT_EVT_BTN_DOWN+SHORT/LONG pair a real IO1 press resolves to
+// and the same modes_run() drain path consumes (set_mode(ACTIVE, ...) on
+// BTN_DOWN, ui_on_button_short()/ui_on_button_long() on the resolving
+// event) -- there is no console equivalent of the physical debounce/hold
+// timing, only of its outcome. Needed because scr_lock.c's unlock entry is
+// deliberately reachable ONLY from a button short press ("Keys typed in
+// state (a) are ignored ... unlocking starts ONLY from an IO1 short press",
+// scr_lock.c's own comment) -- `key` alone cannot open the passcode field.
+// Debug build only, same gating as `attn`/`railcycle`.
+static int cmd_btn(int argc, char **argv)
+{
+    bool is_long = (argc >= 2) && (strcmp(argv[1], "long") == 0);
+    if (is_long) {
+        input_feed_button_long();
+        printf("btn: long press simulated (BTN_DOWN, BTN_LONG)\n");
+    } else {
+        input_feed_button_short();
+        printf("btn: short press simulated (BTN_DOWN, BTN_SHORT)\n");
+    }
+    return 0;
+}
+
+// Round 9 resume, bench-only: `lockclear`/`lockset` -- temporarily drop and
+// restore the passcode so a real-sleep display test can use an incoming
+// test page as the render trigger. ui_incoming()'s steal branch (ui.c) only
+// fires for Home/Chat/greeting/was-asleep, and modes_alert_incoming()
+// deliberately skips render_pending_set() entirely while locked (F6.5:
+// "no `shown` published for a body received while locked") -- so a locked
+// device never renders on an incoming page at all, by design, and cannot
+// exercise disp.c's power-loss recovery path that way. Bench-only, not
+// meant to leave the passcode off; restore with `lockset asdf` (never
+// printed/logged) right after the test.
+static int cmd_lockclear(int argc, char **argv)
+{
+    (void) argc;
+    (void) argv;
+    lock_clear_passcode();
+    printf("lockclear: passcode cleared, device unlocked\n");
+    return 0;
+}
+
+static int cmd_lockset(int argc, char **argv)
+{
+    if (argc != 2) {
+        printf("usage: lockset <passcode>\n");
+        return 1;
+    }
+    bool ok = lock_set_passcode(argv[1], strlen(argv[1]));
+    printf("lockset: %s\n", ok ? "passcode set" : "failed (4-16 printable chars required)");
+    return ok ? 0 : 1;
+}
+
+// Round 9 (the "6s from tap to password: on a real sleep wake" defect):
+// `railsettle [ms]` -- read or set rail.c's universal post-rail-on settle
+// (rail_debug_set_settle_ms()), for the bench sweep (15/20/30/50ms) on one
+// flash instead of five separate builds.
+static int cmd_railsettle(int argc, char **argv)
+{
+    if (argc < 2) {
+        printf("railsettle: current = %u ms\n", (unsigned) rail_debug_get_settle_ms());
+        return 0;
+    }
+    long ms = strtol(argv[1], NULL, 10);
+    if (ms < 0) {
+        printf("usage: railsettle <ms>\n");
+        return 1;
+    }
+    rail_debug_set_settle_ms((uint32_t) ms);
+    printf("railsettle: set to %ld ms\n", ms);
+    return 0;
+}
+
+// `dispbusytrace` -- arm the one-shot ~200ms BUSY transition trace
+// (disp_debug_arm_busy_trace(), disp.h) for the next power-loss recovery.
+static int cmd_dispbusytrace(int argc, char **argv)
+{
+    (void) argc;
+    (void) argv;
+    disp_debug_arm_busy_trace();
+    printf("dispbusytrace: armed for the next power-loss recovery\n");
+    return 0;
+}
+
+// `kbtime [cycles]` -- owner's round 9 fallback ("measure it if the fuse
+// setting can't be determined"): rail_off(), settle 2s fully off, then
+// rail_on() with rail.c's own settle FORCED TO ZERO (so this measures the
+// raw, undelayed time) and a tight I2C probe of the CardKB address
+// (PAGER_I2C_ADDR_CARDKB, pins.h) every ~1ms up to 300ms, recording when it
+// first ACKs. Repeats `cycles` times (default 5) and restores whatever
+// rail.c settle was configured before this command ran. Bench aid: tells a
+// genuinely slow CardKB boot from a wiring/address fault the same way
+// i2cscan does, just timed against the rail edge instead of a one-shot scan.
+static int cmd_kbtime(int argc, char **argv)
+{
+    int cycles = 10; // owner, round 9 resume: "about 10 cycles"
+    if (argc >= 2) {
+        cycles = (int) strtol(argv[1], NULL, 10);
+        if (cycles < 1) {
+            cycles = 1;
+        }
+    }
+    int64_t sum_ms = 0;
+    long long min_ms = -1, max_ms = -1;
+    int got = 0;
+    // Round 9 resume: ui_debug_pause_kb_poll(true) stops modes_run()'s own
+    // concurrent ui_poll_keyboard() from touching I2C_NUM_0 for the
+    // duration -- the actual fix for the contention the first attempt at
+    // this measurement hit ("CardKB: I2C read failed post-restore" on
+    // every cycle, both sides reinitializing the driver at once). Settle
+    // forced to 0 so t0 is the raw rail_on() call, not rail_on()-plus-
+    // whatever settle padding is configured -- this measures the CardKB's
+    // own boot time in isolation, which is what sets the guard's floor.
+    uint32_t saved_settle = rail_debug_get_settle_ms();
+    rail_debug_set_settle_ms(0);
+    ui_debug_pause_kb_poll(true);
+    for (int i = 0; i < cycles; i++) {
+        rail_off();
+        vTaskDelay(pdMS_TO_TICKS(2000));
+        int64_t t0 = esp_timer_get_time();
+        rail_on();
+        int64_t ack_us = -1;
+        bool reinit_done = false;
+        while (esp_timer_get_time() - t0 < 8000000) { // 8s: wide enough to find the real ceiling
+            i2c_cmd_handle_t cmd = i2c_cmd_link_create();
+            i2c_master_start(cmd);
+            i2c_master_write_byte(cmd, (uint8_t) ((PAGER_I2C_ADDR_CARDKB << 1) | I2C_MASTER_WRITE),
+                                   true);
+            i2c_master_stop(cmd);
+            esp_err_t err = i2c_master_cmd_begin(I2C_NUM_0, cmd, pdMS_TO_TICKS(2));
+            i2c_cmd_link_delete(cmd);
+            if (err == ESP_OK) {
+                ack_us = esp_timer_get_time() - t0;
+                break;
+            }
+            // Round 9 resume finding: the bus does not reliably answer on
+            // the very first i2c_kb_init() after rail_on() -- every attempt
+            // NACKs (ESP_FAIL) for the whole window without this, yet
+            // ui_poll_keyboard()'s own production recovery (ui.c: delete +
+            // re-init the driver after a few failed reads, "the bus could
+            // have been left mid-transaction when the rail dropped") is
+            // exactly what makes real keystrokes work after a real wake
+            // (round 8 log: "I2C read failed post-restore... re-initializing
+            // the driver" followed by "answering again"). Mirrors that same
+            // one-shot recovery here, at the same ~50ms trigger point, so
+            // this measures the real end-to-end time a keystroke would
+            // need -- not an idealized number a production wake never gets.
+            if (!reinit_done && esp_timer_get_time() - t0 >= 50000) {
+                reinit_done = true;
+                ui_kb_i2c_reinit(); // exactly ui_poll_keyboard()'s own one-shot recovery
+            }
+            vTaskDelay(pdMS_TO_TICKS(1)); // owner: "probe... every 1ms"
+        }
+        if (ack_us < 0) {
+            printf("kbtime: cycle %d: CardKB never acked within 8000ms (reinit_done=%d)\n", i + 1,
+                   (int) reinit_done);
+        } else {
+            if (reinit_done) {
+                printf("kbtime: cycle %d: needed the bus re-init\n", i + 1);
+            }
+            long long ack_ms = ack_us / 1000;
+            printf("kbtime: cycle %d: CardKB first ACK at +%lld ms\n", i + 1, ack_ms);
+            sum_ms += ack_ms;
+            got++;
+            if (min_ms < 0 || ack_ms < min_ms) {
+                min_ms = ack_ms;
+            }
+            if (ack_ms > max_ms) {
+                max_ms = ack_ms;
+            }
+        }
+        vTaskDelay(pdMS_TO_TICKS(500)); // let this cycle settle before the next rail_off()
+    }
+    ui_debug_pause_kb_poll(false);
+    rail_debug_set_settle_ms(saved_settle);
+    if (got > 0) {
+        printf("kbtime: min=%lld ms max=%lld ms avg=%lld ms over %d/%d cycle(s) acked\n", min_ms,
+               max_ms, (long long) (sum_ms / got), got, cycles);
+    }
     return 0;
 }
 
@@ -1413,6 +1672,73 @@ static void start_normal_console(void)
         .func = &cmd_attn,
     };
     ESP_ERROR_CHECK(esp_console_cmd_register(&attn_cmd));
+
+    const esp_console_cmd_t railcycle_cmd = {
+        .command = "railcycle",
+        .help = "railcycle [seconds] -- rail_off() (sleep-entry style), wait <seconds> (default "
+                 "2), rail_on()+ui_render() (EXT0-wake style), print elapsed ms; bench triage "
+                 "for defect 1 (architect hypothesis 8a, back-powered display during rail-off) "
+                 "-- use a larger seconds value (e.g. 150) to reproduce a real 2+ minute sleep",
+        .hint = NULL,
+        .func = &cmd_railcycle,
+    };
+    ESP_ERROR_CHECK(esp_console_cmd_register(&railcycle_cmd));
+
+    const esp_console_cmd_t btn_cmd = {
+        .command = "btn",
+        .help = "btn [long] -- push a simulated IO1 button press (BTN_DOWN + BTN_SHORT, or "
+                 "BTN_LONG with `long`) through input.c's real event queue, same path a "
+                 "physical press takes downstream; needed to reach scr_lock.c's passcode entry "
+                 "from the console",
+        .hint = NULL,
+        .func = &cmd_btn,
+    };
+    ESP_ERROR_CHECK(esp_console_cmd_register(&btn_cmd));
+
+    const esp_console_cmd_t lockclear_cmd = {
+        .command = "lockclear",
+        .help = "lockclear -- bench-only: clear the passcode so a real-sleep render test can "
+                 "use an incoming page as the trigger (ui_incoming() never renders while "
+                 "locked); restore with `lockset <passcode>` after",
+        .hint = NULL,
+        .func = &cmd_lockclear,
+    };
+    ESP_ERROR_CHECK(esp_console_cmd_register(&lockclear_cmd));
+
+    const esp_console_cmd_t lockset_cmd = {
+        .command = "lockset",
+        .help = "lockset <passcode> -- bench-only: set/restore the passcode",
+        .hint = NULL,
+        .func = &cmd_lockset,
+    };
+    ESP_ERROR_CHECK(esp_console_cmd_register(&lockset_cmd));
+
+    const esp_console_cmd_t railsettle_cmd = {
+        .command = "railsettle",
+        .help = "railsettle [ms] -- read or set rail.c's universal post-rail-on settle delay "
+                 "(round 9 bench sweep: 15/20/30/50ms)",
+        .hint = NULL,
+        .func = &cmd_railsettle,
+    };
+    ESP_ERROR_CHECK(esp_console_cmd_register(&railsettle_cmd));
+
+    const esp_console_cmd_t dispbusytrace_cmd = {
+        .command = "dispbusytrace",
+        .help = "dispbusytrace -- arm a one-shot ~200ms BUSY transition trace for the next "
+                 "power-loss recovery (round 9)",
+        .hint = NULL,
+        .func = &cmd_dispbusytrace,
+    };
+    ESP_ERROR_CHECK(esp_console_cmd_register(&dispbusytrace_cmd));
+
+    const esp_console_cmd_t kbtime_cmd = {
+        .command = "kbtime",
+        .help = "kbtime [cycles] -- measure how long after rail-on the CardKB first ACKs on "
+                 "I2C, averaged over `cycles` (default 5) off/on cycles (round 9)",
+        .hint = NULL,
+        .func = &cmd_kbtime,
+    };
+    ESP_ERROR_CHECK(esp_console_cmd_register(&kbtime_cmd));
 
     register_carrier_cmd();
     register_input_cmds();
