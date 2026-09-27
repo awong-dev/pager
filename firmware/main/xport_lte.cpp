@@ -189,6 +189,12 @@ uint32_t lte_get_publish_ring(net_publish_ring_entry_t *out, uint32_t cap)
 // volatile, no mutex" reasoning as the rest of this block's comment above.
 static volatile int64_t s_last_uplink_us = 0;   // last publish send or SUBACK, esp_timer_get_time()
 static volatile bool s_resub_pending = false;   // a modem-initiated resume needs a raw re-SUBSCRIBE
+// LOCATION_TRACKING_DESIGN.md §4 item 4 (task F2): net_liveness_ping_now()
+// sets this; lte_service_session()'s own idle_ping check treats it exactly
+// like the idle-timeout condition (same send path, same "a ping replaced,
+// not added" accounting -- s_last_uplink_us is reset by the send either
+// way) and clears it once consumed.
+static volatile bool s_ping_now_requested = false;
 static volatile bool s_resub_wait = false;      // raw re-SUBSCRIBE sent, waiting on its SUBACK
 static volatile int64_t s_resub_sent_us = 0;    // when the outstanding raw re-SUBSCRIBE was sent
 static volatile bool s_session_restart_edge = false; // set once the resume repair's SUBACK lands
@@ -655,7 +661,18 @@ static bool lte_publish(const char *topic, char *buf, uint16_t len, uint8_t qos)
     // L6: mqttPublish() takes non-const uint8_t*; publish from a mutable buffer.
     bool ok = WalterModem::mqttPublish(topic, (uint8_t *) buf, len, qos, &rsp);
     if (ok) {
-        s_last_uplink_us = esp_timer_get_time(); // §9.4: successful publish resets the idle clock
+        // LOCATION_TRACKING_DESIGN.md §4 item 3: a QoS 0 publish (loc.c's
+        // own unsolicited tracking reports) proves nothing about the
+        // session and must NOT reset the idle clock -- doing so would delay
+        // dead-session detection (V02_DESIGN.md §9.2). Only QoS 1 (`/up`,
+        // `/status`) resets it and fires the uplink-window callback (§4
+        // item 1) -- this call is synchronous (_returnAfterReply()), so `ok`
+        // here already means the PUBACK round trip completed, not merely
+        // queued.
+        if (qos != 0) {
+            s_last_uplink_us = esp_timer_get_time(); // §9.4: successful publish resets the idle clock
+            net_dispatch_uplink_window();
+        }
         // matching publish_quiet_gate_done() call is the PUBLISHED event
         // handler above (the later +SQNSMQTTONPUBLISH URC/OK/ERROR).
     } else {
@@ -693,7 +710,14 @@ static bool lte_publish_raw(const char *topic, uint8_t *buf, uint16_t len, uint8
     WalterModemRsp rsp = {};
     bool ok = WalterModem::mqttPublish(topic, buf, len, qos, &rsp);
     if (ok) {
-        s_last_uplink_us = esp_timer_get_time(); // §9.4: successful publish resets the idle clock
+        // See lte_publish()'s own comment (LOCATION_TRACKING_DESIGN.md §4
+        // items 1/3): QoS 0 (loc.c's unsolicited tracking reports) leaves
+        // the idle clock alone; only QoS 1 resets it and fires the
+        // uplink-window callback.
+        if (qos != 0) {
+            s_last_uplink_us = esp_timer_get_time(); // §9.4: successful publish resets the idle clock
+            net_dispatch_uplink_window();
+        }
         // matching publish_quiet_gate_done() call is the PUBLISHED event
         // handler above.
     } else {
@@ -799,6 +823,7 @@ static void lte_service_session(void)
             s_resub_sent_us = now;
             lte_resub_hold_note_sent(now); // phaseBG: hold the loop awake for this retry's SUBACK too
             s_resub_second_try = true;
+            net_dispatch_uplink_window(); // LOCATION_TRACKING_DESIGN.md §4 item 1: fires on SEND
             return;
         }
         ESP_LOGI(TAG, "liveness ping: second re-SUBSCRIBE could not be sent -- declaring the "
@@ -832,11 +857,22 @@ static void lte_service_session(void)
     // gated on !s_resub_wait so it correctly does nothing while one is.
 
     bool resume_repair = s_resub_pending;
+    // LOCATION_TRACKING_DESIGN.md §4 item 4 (task F2): net_liveness_ping_now()
+    // sets s_ping_now_requested to force this early, through the exact same
+    // path an ordinary idle-timeout ping already uses -- "a ping replaced,
+    // not added" (the routine PAGER_MQTT_PING_S clock is reset by the send
+    // below regardless of which condition triggered it). Gated on
+    // !s_resub_wait same as idle_ping: if a SUBACK is already outstanding,
+    // the caller's own report waits (§4 item 4's own text).
+    bool ping_now = s_ping_now_requested && !s_resub_wait;
     bool idle_ping = s_mqtt_connected && !s_resub_wait &&
                       (now - s_last_uplink_us) >= (int64_t) PAGER_MQTT_PING_S * 1000000LL;
-    if (!resume_repair && !idle_ping) {
+    if (!resume_repair && !idle_ping && !ping_now) {
         return;
     }
+    s_ping_now_requested = false; // about to send (or already being sent for another reason) --
+                                   // consumed; if it was the one blocked by !s_resub_wait above, it
+                                   // was never reached here and stays pending for the next call
 
     int64_t idle_s = (now - s_last_uplink_us) / 1000000;
 
@@ -862,8 +898,12 @@ static void lte_service_session(void)
     s_resub_pending = false;
     s_resub_is_resume = resume_repair;
     s_last_uplink_us = now;
+    net_dispatch_uplink_window(); // LOCATION_TRACKING_DESIGN.md §4 item 1: fires on SEND
     if (resume_repair) {
         ESP_LOGI(TAG, "liveness ping: re-SUBSCRIBE sent (resume repair)");
+    } else if (ping_now) {
+        ESP_LOGI(TAG, "liveness ping: re-SUBSCRIBE sent early (net_liveness_ping_now(), idle %llds)",
+                 (long long) idle_s);
     } else {
         ESP_LOGI(TAG, "liveness ping: re-SUBSCRIBE sent (idle %llds)", (long long) idle_s);
     }
@@ -927,6 +967,17 @@ static uint32_t lte_take_oversize_delta(void)
     return v;
 }
 
+// LOCATION_TRACKING_DESIGN.md §4 item 4 (task F2): see s_ping_now_requested's
+// own comment and net.h's net_liveness_ping_now() doc comment. Just latches
+// the flag -- lte_service_session() (already called every wake-and-drain
+// iteration, modes.c) is what actually sends it, same non-blocking
+// "flag it, service it from the loop" discipline every other cross-task
+// signal in this file uses (s_resub_pending, s_disconnect_edge, ...).
+static void lte_ping_now(void)
+{
+    s_ping_now_requested = true;
+}
+
 static const net_xport_ops_t s_lte_ops = {
     .up = lte_session_up,
     .down = lte_session_down,
@@ -942,6 +993,7 @@ static const net_xport_ops_t s_lte_ops = {
     .connect_fail_streak_maxed = lte_connect_fail_streak_maxed,
     .take_memfull_delta = lte_take_memfull_delta,
     .take_oversize_delta = lte_take_oversize_delta,
+    .ping_now = lte_ping_now,
 };
 
 const net_xport_ops_t *xport_lte_ops(void)

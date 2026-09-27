@@ -200,9 +200,16 @@ static void motion_evict_locked(loc_motion_ring_t *r, int64_t now_us)
     }
 }
 
-bool loc_trigger_motion_event(loc_policy_t *p, int64_t now_us)
+// Shared by loc_trigger_motion_event() (loc_policy_t's own on-demand
+// classifier) and loc_track_on_motion() (loc_track_t's independent copy,
+// LOCATION_TRACKING_DESIGN.md task F1) -- the >=60s-within-3min sustained-
+// motion test itself, with no opinion on what firing it should DO (the two
+// callers reset different state). Returns true iff `now_us`'s edge makes
+// the ring newly sustained, in which case the ring is cleared (see the
+// caller-facing doc comments for why: a continuing stream of interrupts
+// needs a fresh 60s span before firing again).
+static bool motion_ring_sustained(loc_motion_ring_t *r, int64_t now_us)
 {
-    loc_motion_ring_t *r = &p->motion;
     motion_evict_locked(r, now_us);
 
     if (r->n == LOC_MOTION_RING) {
@@ -222,13 +229,375 @@ bool loc_trigger_motion_event(loc_policy_t *p, int64_t now_us)
         return false;
     }
 
-    // Sustained motion confirmed. Clear the ring so a continuing stream of
-    // interrupts needs a fresh 60s span before firing again, rather than
-    // re-triggering (and re-resetting an already-zero backoff) on every
-    // subsequent interrupt for as long as the child keeps moving.
     r->n = 0;
+    return true;
+}
+
+bool loc_trigger_motion_event(loc_policy_t *p, int64_t now_us)
+{
+    if (!motion_ring_sustained(&p->motion, now_us)) {
+        return false;
+    }
+    // Sustained motion confirmed -- reset the on-demand backoff/floor
+    // (apply_trigger_reset_locked()'s own doc comment).
     apply_trigger_reset_locked(p);
     return true;
+}
+
+// ---------------------------------------------------------------------------
+// Location tracking (docs/LOCATION_TRACKING_DESIGN.md, task F1) -- pure,
+// host-tested by firmware/host/test_loc.c. See loc.h's own loc_track_t/
+// loc_track_*() doc comments for what each piece decides; this section is
+// just the implementation.
+// ---------------------------------------------------------------------------
+
+void loc_track_init(loc_track_t *t, bool have_lis3dh)
+{
+    memset(t, 0, sizeof(*t));
+    t->have_lis3dh = have_lis3dh;
+    t->state = LOC_MSTATE_STILL;
+}
+
+loc_mstate_t loc_track_state(const loc_track_t *t) { return t->state; }
+
+// §1's "not in a 4-entry ring of distinct cells seen in the last 60 min"
+// membership test. Ages out slots older than the window first (so a stale
+// slot can never wrongly count as membership), then looks for `key`; a hit
+// touches the slot's timestamp (this cell is still "recently seen", same as
+// if it had just been (re-)inserted) and reports membership. A miss reports
+// non-membership WITHOUT inserting -- the caller (loc_track_on_cell()) only
+// inserts once it has also decided this is worth treating as "new".
+static bool cell_ring_touch(loc_cell_ring_t *ring, int64_t now_us, const char *key)
+{
+    for (int i = 0; i < LOC_CELL_RING_N; i++) {
+        if (ring->slot[i].used &&
+            (now_us - ring->slot[i].last_seen_us) > (int64_t) LOC_CELL_RING_WINDOW_S * 1000000) {
+            ring->slot[i].used = false; // aged out of the 60-min membership window
+        }
+    }
+    for (int i = 0; i < LOC_CELL_RING_N; i++) {
+        if (ring->slot[i].used && strncmp(ring->slot[i].key, key, LOC_CELL_KEY_MAX) == 0) {
+            ring->slot[i].last_seen_us = now_us;
+            return true;
+        }
+    }
+    return false;
+}
+
+// Inserts a key the caller has already decided is "new" (cell_ring_touch()
+// just returned false for it). Prefers an empty slot; once all
+// LOC_CELL_RING_N are in use, evicts the least-recently-seen one -- an
+// indoor modem cycling through more than 4 cells an hour loses the oldest
+// one first, same "biased toward not yet sustained" bias
+// motion_ring_sustained()'s own eviction uses.
+static void cell_ring_insert(loc_cell_ring_t *ring, int64_t now_us, const char *key)
+{
+    int slot_idx = 0;
+    int64_t oldest_us = INT64_MAX;
+    for (int i = 0; i < LOC_CELL_RING_N; i++) {
+        if (!ring->slot[i].used) {
+            slot_idx = i;
+            oldest_us = INT64_MIN; // force this pick even if a later iteration checks oldest_us
+            break;
+        }
+        if (ring->slot[i].last_seen_us < oldest_us) {
+            oldest_us = ring->slot[i].last_seen_us;
+            slot_idx = i;
+        }
+    }
+    strncpy(ring->slot[slot_idx].key, key, LOC_CELL_KEY_MAX - 1);
+    ring->slot[slot_idx].key[LOC_CELL_KEY_MAX - 1] = '\0';
+    ring->slot[slot_idx].last_seen_us = now_us;
+    ring->slot[slot_idx].used = true;
+}
+
+// §1's "2 new cells within 15 min" classifier -- same shape as
+// motion_ring_sustained() (evict outside the window, cap the ring, insert,
+// test), just counting events rather than measuring a span. Unlike the
+// motion ring, this one does NOT clear itself on firing: a third new cell a
+// minute later should still read "2+ in the last 15 min" (it does, since the
+// eviction above only drops entries older than the window), which matters
+// for loc_track_on_cell()'s own "only actually transitions once, from
+// STILL" gate -- this function reports the raw count-based fact every time,
+// the state check happens one level up.
+static bool newcell_ring_count(loc_newcell_ring_t *r, int64_t now_us)
+{
+    int i = 0;
+    while (i < r->n && r->events_us[i] <= now_us - (int64_t) LOC_NEWCELL_WINDOW_S * 1000000) {
+        i++;
+    }
+    if (i > 0) {
+        memmove(&r->events_us[0], &r->events_us[i], (size_t) (r->n - i) * sizeof(int64_t));
+        r->n -= i;
+    }
+    if (r->n >= (int) (sizeof(r->events_us) / sizeof(r->events_us[0]))) {
+        memmove(&r->events_us[0], &r->events_us[1], (r->n - 1) * sizeof(int64_t));
+        r->n--;
+    }
+    r->events_us[r->n++] = now_us;
+    return r->n >= LOC_NEWCELL_COUNT;
+}
+
+// Shared by loc_track_on_motion()/loc_track_on_cell() below: the one place
+// a STILL->MOVING transition is actually applied, so the "transition-only
+// backoff reset" rule (§1, §2.3) can never be duplicated or missed by one
+// of the two triggers. Resets the move-schedule's own backoff/attempt clock
+// (NOT loc_policy_t's on-demand one -- they are independent, loc_track_t's
+// own module comment) and starts a fresh episode (no GNSS fix published
+// yet, no attempts yet).
+static void track_enter_moving_locked(loc_track_t *t, int64_t now_us)
+{
+    t->state = LOC_MSTATE_MOVING;
+    t->moving_since_us = now_us;
+    t->gnss_backoff_s = 0;
+    t->gnss_last_attempt_us = 0;
+    t->gnss_published_this_episode = false;
+}
+
+bool loc_track_on_motion(loc_track_t *t, int64_t now_us)
+{
+    t->last_motion_edge_us = now_us;
+    if (!t->have_lis3dh) {
+        return false; // §1: without the chip, only the cell rule can transition
+    }
+    if (motion_ring_sustained(&t->motion, now_us) && t->state == LOC_MSTATE_STILL) {
+        track_enter_moving_locked(t, now_us);
+        return true;
+    }
+    return false;
+}
+
+bool loc_track_on_cell(loc_track_t *t, int64_t now_us, const char *cell_key)
+{
+    if (!cell_key || cell_key[0] == '\0') {
+        return false;
+    }
+    bool first_ever = !t->have_cur_cell;
+    strncpy(t->cur_cell_key, cell_key, LOC_CELL_KEY_MAX - 1);
+    t->cur_cell_key[LOC_CELL_KEY_MAX - 1] = '\0';
+    t->have_cur_cell = true;
+    t->cur_cell_since_us = now_us; // every call is a genuine change (caller de-duplicates)
+
+    if (first_ever) {
+        // Same carve-out loc_trigger_cell_change() documents for the
+        // on-demand mechanism: the very first cell this power session is a
+        // starting point, not an observed CHANGE -- seed the membership
+        // ring with it (so a return to it later is not "new" either) but
+        // never count it toward "2 new cells within 15 min".
+        cell_ring_insert(&t->cell_ring, now_us, cell_key);
+        return false;
+    }
+
+    if (cell_ring_touch(&t->cell_ring, now_us, cell_key)) {
+        return false; // seen in the last 60 min -- not "new" (flap protection, §1)
+    }
+    cell_ring_insert(&t->cell_ring, now_us, cell_key);
+    t->last_new_cell_us = now_us;
+
+    if (newcell_ring_count(&t->newcell_events, now_us) && t->state == LOC_MSTATE_STILL) {
+        track_enter_moving_locked(t, now_us);
+        return true;
+    }
+    return false;
+}
+
+bool loc_track_gate_ok(const loc_track_t *t, int64_t now_us)
+{
+    return t->last_loc_us == 0 ||
+           (now_us - t->last_loc_us) >= (int64_t) LOC_UNSOLICITED_MIN_GAP_S * 1000000;
+}
+
+// Relative priority used to merge a newly-computed candidate with whatever
+// is already latched in `pending_report` (loc_track_tick()'s own comment):
+// higher wins. LOC_REPORT_GNSS never actually reaches this (loc_track_tick()
+// never returns it -- see loc_report_t's own comment) but is given a
+// sensible mid rank anyway rather than left implicitly 0, in case a future
+// caller merges it in too.
+static int report_priority(loc_report_t r)
+{
+    switch (r) {
+    case LOC_REPORT_STOP: return 4;
+    case LOC_REPORT_CELL: return 3;
+    case LOC_REPORT_MOVE: return 2;
+    case LOC_REPORT_STILL: return 2;
+    case LOC_REPORT_GNSS: return 1;
+    case LOC_REPORT_NONE:
+    default: return 0;
+    }
+}
+
+loc_report_t loc_track_tick(loc_track_t *t, int64_t now_us)
+{
+    loc_report_t wanted = LOC_REPORT_NONE;
+
+    // 1. MOVING -> STILL check (§1). Without a LIS3DH there is no accel
+    // signal at all, so "no motion for 300s" is vacuously true -- only the
+    // "no new cell for 900s" half of the rule actually gates the transition
+    // (§1: "Without a LIS3DH, only the cell rule applies").
+    if (t->state == LOC_MSTATE_MOVING) {
+        // `== 0` ("never happened at all this episode") satisfies each half
+        // exactly like an old-enough timestamp would -- there is nothing to
+        // wait out. Distinct from loc_track_gnss_due()'s own exit-tail
+        // guard below, which fails CLOSED on a `== 0` reading (no signal
+        // yet is not a reason to spend a GNSS attempt); this is the
+        // opposite question ("has motion been ABSENT long enough"), so an
+        // absence of any reading at all trivially answers it.
+        bool no_motion = t->have_lis3dh
+                             ? (t->last_motion_edge_us == 0 ||
+                                (now_us - t->last_motion_edge_us) >=
+                                    (int64_t) LOC_STILL_MOTION_GAP_S * 1000000)
+                             : true;
+        bool no_new_cell = t->last_new_cell_us == 0 ||
+                            (now_us - t->last_new_cell_us) >= (int64_t) LOC_STILL_CELL_GAP_S * 1000000;
+        if (no_motion && no_new_cell) {
+            t->state = LOC_MSTATE_STILL;
+            // §2.1 "End of motion": a report only when it says something new
+            // -- the cell differs from the last one reported, or a GNSS fix
+            // went out this episode. Otherwise the transition is silent.
+            bool cell_differs = t->have_cur_cell &&
+                                 (!t->have_last_reported_cell ||
+                                  strncmp(t->last_reported_cell_key, t->cur_cell_key,
+                                          LOC_CELL_KEY_MAX) != 0);
+            if (cell_differs || t->gnss_published_this_episode) {
+                wanted = LOC_REPORT_STOP;
+            }
+            t->gnss_published_this_episode = false; // next episode starts clean
+        }
+    }
+
+    // 2. Cell-change report (§2.1): independent of STILL/MOVING -- a new
+    // serving cell is worth a report in either state. Gated on having served
+    // for LOC_CELL_REPORT_SERVING_S already (debounces a brief handover
+    // blip) on top of differing from the last *reported* cell (a cell that
+    // flapped back to one already reported is not "new" for this purpose).
+    if (wanted == LOC_REPORT_NONE && t->have_cur_cell &&
+        (!t->have_last_reported_cell ||
+         strncmp(t->last_reported_cell_key, t->cur_cell_key, LOC_CELL_KEY_MAX) != 0) &&
+        (now_us - t->cur_cell_since_us) >= (int64_t) LOC_CELL_REPORT_SERVING_S * 1000000) {
+        wanted = LOC_REPORT_CELL;
+    }
+
+    // 3. Periodic reports -- mutually exclusive by state, so these two
+    // never actually compete with each other.
+    if (wanted == LOC_REPORT_NONE) {
+        if (t->state == LOC_MSTATE_STILL) {
+            if (t->last_loc_us == 0 ||
+                (now_us - t->last_loc_us) >= (int64_t) LOC_HOURLY_CELL_S * 1000000) {
+                wanted = LOC_REPORT_STILL;
+            }
+        } else if (t->last_loc_us == 0 ||
+                   (now_us - t->last_loc_us) >= (int64_t) LOC_MOVE_REFRESH_S * 1000000) {
+            wanted = LOC_REPORT_MOVE;
+        }
+    }
+
+    // P1 (server-architect review, 26 Sep 2026): merge with anything already
+    // latched waiting on the 120s gate -- a report due early is never
+    // dropped, only ever superseded by something MORE urgent that becomes
+    // due while it waits.
+    if (report_priority(wanted) < report_priority(t->pending_report)) {
+        wanted = t->pending_report;
+    }
+    if (wanted == LOC_REPORT_NONE) {
+        return LOC_REPORT_NONE;
+    }
+    if (!loc_track_gate_ok(t, now_us)) {
+        t->pending_report = wanted;
+        return LOC_REPORT_NONE;
+    }
+    t->pending_report = LOC_REPORT_NONE;
+    return wanted;
+}
+
+void loc_track_note_report_sent(loc_track_t *t, int64_t now_us, loc_report_t which, bool gnss_fix)
+{
+    t->last_loc_us = now_us;
+    if (which == LOC_REPORT_GNSS && gnss_fix) {
+        t->gnss_published_this_episode = true;
+    }
+    if (t->have_cur_cell) {
+        strncpy(t->last_reported_cell_key, t->cur_cell_key, LOC_CELL_KEY_MAX - 1);
+        t->last_reported_cell_key[LOC_CELL_KEY_MAX - 1] = '\0';
+        t->have_last_reported_cell = true;
+    }
+}
+
+bool loc_track_gnss_assist_due(const loc_track_t *t, int64_t now_us)
+{
+    return t->gnss_last_assist_refresh_us == 0 ||
+           (now_us - t->gnss_last_assist_refresh_us) >= (int64_t) LOC_GNSS_ASSIST_MAX_AGE_S * 1000000;
+}
+
+void loc_track_gnss_assist_refreshed(loc_track_t *t, int64_t now_us)
+{
+    t->gnss_last_assist_refresh_us = now_us;
+}
+
+bool loc_track_gnss_cap_reached(loc_track_t *t, int64_t now_us)
+{
+    int i = 0;
+    while (i < t->gnss_attempt_ring_n &&
+           t->gnss_attempt_ring_us[i] <= now_us - (int64_t) LOC_GNSS_DAY_S * 1000000) {
+        i++;
+    }
+    if (i > 0) {
+        memmove(&t->gnss_attempt_ring_us[0], &t->gnss_attempt_ring_us[i],
+                (size_t) (t->gnss_attempt_ring_n - i) * sizeof(int64_t));
+        t->gnss_attempt_ring_n -= i;
+    }
+    return t->gnss_attempt_ring_n >= LOC_GNSS_DAILY_CAP;
+}
+
+void loc_track_gnss_attempt_started(loc_track_t *t, int64_t now_us)
+{
+    if (t->gnss_attempt_ring_n < LOC_GNSS_DAILY_CAP) {
+        t->gnss_attempt_ring_us[t->gnss_attempt_ring_n++] = now_us;
+    }
+    t->gnss_last_attempt_us = now_us;
+}
+
+void loc_track_gnss_attempt_done(loc_track_t *t, bool success)
+{
+    t->gnss_backoff_s = success ? 0 : loc_next_backoff_s(t->gnss_backoff_s);
+}
+
+bool loc_track_gnss_due(const loc_track_t *t, int64_t now_us, uint32_t move_gnss_s)
+{
+    if (move_gnss_s == 0 || t->state != LOC_MSTATE_MOVING) {
+        return false;
+    }
+    // §2.2: "the first attempt runs one full interval after MOVING starts" --
+    // `base_us` is moving_since_us until the first scheduled attempt, then
+    // gnss_last_attempt_us for every one after that (§2.3's own
+    // max(last attempt + 600s, backoff) formula).
+    int64_t base_us = t->gnss_last_attempt_us ? t->gnss_last_attempt_us : t->moving_since_us;
+    int64_t interval_due_us = base_us + (int64_t) move_gnss_s * 1000000;
+    int64_t backoff_due_us = t->gnss_last_attempt_us + (int64_t) t->gnss_backoff_s * 1000000;
+    int64_t due_us = interval_due_us > backoff_due_us ? interval_due_us : backoff_due_us;
+    if (now_us < due_us) {
+        return false;
+    }
+    // §2.2's own exit-tail guard: a passing episode's tail must not spend
+    // one more attempt after motion has effectively already stopped.
+    if (t->have_lis3dh) {
+        if (t->last_motion_edge_us == 0 ||
+            (now_us - t->last_motion_edge_us) > (int64_t) LOC_MOVE_GNSS_EDGE_WINDOW_S * 1000000) {
+            return false;
+        }
+    } else if (t->last_new_cell_us == 0 ||
+               (now_us - t->last_new_cell_us) > (int64_t) LOC_MOVE_GNSS_CELL_WINDOW_S * 1000000) {
+        return false;
+    }
+    return true;
+}
+
+uint32_t loc_web_gnss_budget_s(uint32_t base_budget_s, uint32_t assist_elapsed_s)
+{
+    if (assist_elapsed_s >= LOC_WEB_REQUEST_BOUND_S) {
+        return 0;
+    }
+    uint32_t remaining_s = LOC_WEB_REQUEST_BOUND_S - assist_elapsed_s;
+    return base_budget_s < remaining_s ? base_budget_s : remaining_s;
 }
 
 // PROTOCOL.md §10 keymap subset this file writes/reads.
@@ -243,6 +612,8 @@ bool loc_trigger_motion_event(loc_policy_t *p, int64_t now_us)
 #define LK_N 12
 #define LK_CELL 49 // this task, §13.2 -- see loc.h's own note on why this is written out of
                    // ascending-key order (right before `n`, matching §13.2's field table)
+#define LK_WHY 60  // LOCATION_TRACKING_DESIGN.md §5 P3 -- same out-of-order placement as LK_CELL,
+                   // right after it and before `n`, matching that doc's own envelope example
 // `loc` sub-map (docs/PROTOCOL.md §10 "Sub-map keys").
 #define LOCSUB_LAT 0
 #define LOCSUB_LON 1
@@ -279,7 +650,7 @@ static bool cell_shape_ok(const loc_cell_t *cell)
 bool loc_build_cbor(uint8_t *out, size_t cap, size_t *out_len, bool signed_env, uint64_t n,
                      const char *id, int64_t ts, bool have_fix, double lat, double lon,
                      bool have_acc, int32_t acc_m, int64_t fix_ts, bool src_cell, const char *req,
-                     bool cached, const char *err, const loc_cell_t *cell)
+                     bool cached, const char *err, const loc_cell_t *cell, const char *why)
 {
     if (!out || !out_len || !id) {
         return false;
@@ -289,6 +660,7 @@ bool loc_build_cbor(uint8_t *out, size_t cap, size_t *out_len, bool signed_env, 
         return false;
     }
     bool have_cell = cell_shape_ok(cell);
+    bool have_why = (why != NULL && why[0] != '\0');
 
     uint32_t nfields = 3; // v, id, ts
     nfields += 1;         // loc (map or null)
@@ -301,6 +673,9 @@ bool loc_build_cbor(uint8_t *out, size_t cap, size_t *out_len, bool signed_env, 
     }
     if (have_cell) {
         nfields += 1; // cell (this task)
+    }
+    if (have_why) {
+        nfields += 1; // why (LOCATION_TRACKING_DESIGN.md §5 P3)
     }
     if (signed_env) {
         nfields += 2; // n (written below) + sig (appended by the caller's auth_sign())
@@ -356,6 +731,9 @@ bool loc_build_cbor(uint8_t *out, size_t cap, size_t *out_len, bool signed_env, 
         if (cell->have_rsrp) {
             cbor_w_int(&w, CELLSUB_RSRP, cell->rsrp);
         }
+    }
+    if (have_why) {
+        cbor_w_tstr(&w, LK_WHY, why, strlen(why));
     }
     if (signed_env) {
         cbor_w_uint(&w, LK_N, n);
@@ -479,12 +857,68 @@ void loc_bind(loc_rtc_t *rtc, auth_rtc_t *auth_rtc, loc_rtc_lock_fn lock, loc_rt
 // modes_run()'s task.
 static loc_policy_t s_policy;
 
+// LOCATION_TRACKING_DESIGN.md (task F1/F3): the background tracker's state.
+// Guarded by the same s_lock/s_unlock -- loc_on_cell_change() (net.h's
+// net_set_cell_change_cb() callback) can run on WalterModem's
+// _eventProcessingTask, same reasoning s_policy's own comment gives.
+static loc_track_t s_track;
+
+// `loctrack on|off` / `locmove <s>` (main.c console commands, this task's
+// own test plan §9) -- RAM-only runtime flags, not RTC-resident (bench/debug
+// knobs, not something that needs to survive a reset). Guarded by s_lock/
+// s_unlock for the same cross-task reason as s_track above.
+static bool s_track_enabled = LOC_TRACK_DEFAULT_ENABLED;
+static uint32_t s_move_gnss_s = LOC_MOVE_GNSS_DEFAULT_S;
+
 // ---------------------------------------------------------------------------
-// /status fields (docs/PROTOCOL.md §5.1, V02_DESIGN.md §5/§7).
+// /status fields (docs/PROTOCOL.md §5.1, V02_DESIGN.md §5/§7,
+// LOCATION_TRACKING_DESIGN.md §5 P2/P3).
 // ---------------------------------------------------------------------------
 
 uint32_t loc_get_min_s(void) { return LOC_STATUS_MIN_S; }
-uint32_t loc_get_period_s(void) { return LOC_STATUS_PERIOD_S; }
+
+uint32_t loc_get_period_s(void)
+{
+    s_lock();
+    bool on = s_track_enabled;
+    s_unlock();
+    return on ? LOC_STATUS_PERIOD_TRACKING_S : LOC_STATUS_PERIOD_S;
+}
+
+uint32_t loc_get_move_gnss_s(void)
+{
+    s_lock();
+    uint32_t v = s_move_gnss_s;
+    s_unlock();
+    return v;
+}
+
+void loc_set_track_enabled(bool enabled)
+{
+    s_lock();
+    bool changed = (s_track_enabled != enabled);
+    s_track_enabled = enabled;
+    s_unlock();
+    if (changed) {
+        ESP_LOGI(TAG, "loctrack: %s", enabled ? "on" : "off");
+    }
+}
+
+bool loc_get_track_enabled(void)
+{
+    s_lock();
+    bool on = s_track_enabled;
+    s_unlock();
+    return on;
+}
+
+void loc_set_move_gnss_s(uint32_t seconds)
+{
+    s_lock();
+    s_move_gnss_s = seconds;
+    s_unlock();
+    ESP_LOGI(TAG, "locmove: %us%s", (unsigned) seconds, seconds == 0 ? " (off)" : "");
+}
 
 // coverage.c's own radio-ownership rule (this task, coverage.h's module
 // comment): read every modes_run() iteration, so this must stay a cheap
@@ -515,6 +949,10 @@ uint32_t loc_get_backoff_remaining_s(void)
 // machine further down (near s_phase et al), but loc_ingest_req_cbor()
 // above that section needs to call it to actually arm an attempt.
 static void begin_attempt(uint32_t budget_s, bool extendable);
+
+// Forward declaration: defined with loc_init() further down (task F3), but
+// loc_service() above that section calls it every iteration.
+static void loc_track_poll(void);
 
 // ---------------------------------------------------------------------------
 // /loc publish (docs/PROTOCOL.md §13.1/§13.2, §14 signing).
@@ -569,9 +1007,12 @@ static bool cell_fix_is_stale(int64_t fix_ts_epoch_s)
 // finish_attempt() below own that decision; this function never queries
 // net_get_cell_info() itself, so a shared queue-drain fetches the cell at
 // most once per decision instead of once per queued requester).
+// `why` (LOCATION_TRACKING_DESIGN.md §5 P3, this task): NULL for every
+// on-demand answer (loc_req/gnsstest never carry it); the tracking report
+// reason string for an unsolicited (req_id NULL, qos 0) publish.
 static void publish_loc_answer(const char *req_id, bool success, double lat, double lon,
                                 bool have_acc, int32_t acc_m, int64_t fix_ts, uint8_t src,
-                                bool cached, const loc_cell_t *cell)
+                                bool cached, const loc_cell_t *cell, const char *why)
 {
     char id[LOC_ID_MAX];
     snprintf(id, sizeof(id), "l_%08x", (unsigned) esp_random());
@@ -595,7 +1036,8 @@ static void publish_loc_answer(const char *req_id, bool success, double lat, dou
     size_t len;
     bool src_cell = (src == LOC_SRC_CELL);
     if (!loc_build_cbor(buf, sizeof(buf), &len, signed_env, n, id, ts, success, lat, lon, have_acc,
-                        acc_m, fix_ts, src_cell, req_id, cached, success ? NULL : "no_fix", cell)) {
+                        acc_m, fix_ts, src_cell, req_id, cached, success ? NULL : "no_fix", cell,
+                        why)) {
         ESP_LOGI(TAG, "/loc CBOR build failed for req=%s", req_id ? req_id : "(none)");
         return;
     }
@@ -615,11 +1057,12 @@ static void publish_loc_answer(const char *req_id, bool success, double lat, dou
 
     uint8_t qos = (req_id != NULL) ? 1 : 0; // §13.1
     if (net_publish_raw(topic, buf, (uint16_t) len, qos)) {
-        ESP_LOGI(TAG, "/loc %s published: req=%s %s cached=%d cell=%d", id,
-                 req_id ? req_id : "(none)", success ? "fix" : "no_fix", (int) cached,
-                 (int) (cell != NULL));
+        ESP_LOGI(TAG, "/loc %s published: req=%s why=%s %s cached=%d cell=%d", id,
+                 req_id ? req_id : "(none)", why ? why : "(none)", success ? "fix" : "no_fix",
+                 (int) cached, (int) (cell != NULL));
     } else {
-        ESP_LOGI(TAG, "/loc publish failed for req=%s", req_id ? req_id : "(none)");
+        ESP_LOGI(TAG, "/loc publish failed for req=%s why=%s", req_id ? req_id : "(none)",
+                 why ? why : "(none)");
     }
 }
 
@@ -636,127 +1079,11 @@ static void drain_queue_and_publish(bool success, double lat, double lon, bool h
     bool have = loc_take_queued_id(&s_policy, id, sizeof(id));
     s_unlock();
     while (have) {
-        publish_loc_answer(id, success, lat, lon, have_acc, acc_m, fix_ts, src, false, cell);
+        publish_loc_answer(id, success, lat, lon, have_acc, acc_m, fix_ts, src, false, cell, NULL);
         s_lock();
         have = loc_take_queued_id(&s_policy, id, sizeof(id));
         s_unlock();
     }
-}
-
-// ---------------------------------------------------------------------------
-// Pending /loc answer (this task, PROTOCOL.md §13.3 item 2's "the device
-// always answers a loc_req it accepted"): drain_queue_and_publish() above
-// assumes net_publish_raw() will succeed, which found on hardware is not
-// true right when a route-2 (CFUN=4) attempt finishes -- the re-attach only
-// proves the modem is *registered* again (net_is_attached()); the MQTT
-// session itself is still down and modes_run()'s own F1/F3 retry has not
-// had a turn yet (build/bench-logs/07-locreq-cont.log: AT+SQNSMQTTPUBLISH ->
-// ERROR, "/loc publish failed for req=..." -- the requester got NO answer
-// at all). One slot, not a second queue on top of loc_policy_t's own: a
-// newer finished attempt always replaces whatever is still waiting here,
-// same tradeoff PROTOCOL.md §13.3 item 5 already makes server-side ("at
-// most one in-flight loc_req per device"). Flushed from modes.c's own "MQTT
-// session usable" edge (loc_flush_pending_answer(), below), after
-// catrust_on_mqtt_connected()/publish_status_online() -- see modes.c's own
-// comment at that call site for why that ordering.
-// ---------------------------------------------------------------------------
-typedef struct {
-    bool pending;
-    char req_id[LOC_ID_MAX];
-    bool success;
-    double lat, lon;
-    bool have_acc;
-    int32_t acc_m;
-    int64_t fix_ts;
-    uint8_t src;
-    bool have_cell;
-    loc_cell_t cell;
-} loc_pending_answer_t;
-
-// Guarded by s_lock/s_unlock even though, in practice, every writer and
-// reader today runs on modes_run()'s own task (finish_attempt() via
-// loc_service(), and loc_flush_pending_answer() from modes.c's MQTT-usable
-// edge, which is itself inside modes_run()'s loop) -- same defensive
-// consistency s_policy's own fields use throughout this file, and it costs
-// nothing extra since that lock is already held around every neighbouring
-// access in both call sites.
-static loc_pending_answer_t s_pending_answer;
-
-// Takes exactly one queued request id and stashes it (with the shared
-// result/cell this attempt just produced) as the one pending answer,
-// replacing whatever was there before; any *other* ids still queued for
-// this same attempt would get the identical result and are simply dropped
-// (logged) rather than growing a second queue — see this section's own
-// module comment for why one slot is the deliberate design.
-static void queue_pending_answer_and_drop_rest(bool success, double lat, double lon, bool have_acc,
-                                                int32_t acc_m, int64_t fix_ts, uint8_t src,
-                                                const loc_cell_t *cell)
-{
-    char id[LOC_ID_MAX];
-    s_lock();
-    bool have = loc_take_queued_id(&s_policy, id, sizeof(id));
-    s_unlock();
-    if (!have) {
-        return; // nothing was actually queued for this attempt
-    }
-
-    s_lock();
-    s_pending_answer.pending = true;
-    strncpy(s_pending_answer.req_id, id, sizeof(s_pending_answer.req_id) - 1);
-    s_pending_answer.req_id[sizeof(s_pending_answer.req_id) - 1] = '\0';
-    s_pending_answer.success = success;
-    s_pending_answer.lat = lat;
-    s_pending_answer.lon = lon;
-    s_pending_answer.have_acc = have_acc;
-    s_pending_answer.acc_m = acc_m;
-    s_pending_answer.fix_ts = fix_ts;
-    s_pending_answer.src = src;
-    s_pending_answer.have_cell = (cell != NULL);
-    if (cell) {
-        s_pending_answer.cell = *cell;
-    }
-    s_unlock();
-    ESP_LOGI(TAG, "/loc answer for req=%s queued (MQTT session not usable yet); will publish once "
-                  "it is",
-             id);
-
-    int dropped = 0;
-    s_lock();
-    have = loc_take_queued_id(&s_policy, id, sizeof(id));
-    s_unlock();
-    while (have) {
-        dropped++;
-        s_lock();
-        have = loc_take_queued_id(&s_policy, id, sizeof(id));
-        s_unlock();
-    }
-    if (dropped > 0) {
-        ESP_LOGI(TAG,
-                 "%d additional queued loc_req(s) for this attempt dropped (one pending-answer "
-                 "slot; they would have gotten the identical result)",
-                 dropped);
-    }
-}
-
-// modes.c's own "MQTT session usable" edge (after catrust_on_mqtt_connected()/
-// publish_status_online()) calls this once per edge. No-op (cheap lock-guarded
-// flag read) the overwhelming majority of the time, when nothing is pending.
-void loc_flush_pending_answer(void)
-{
-    loc_pending_answer_t a;
-    s_lock();
-    bool have = s_pending_answer.pending;
-    if (have) {
-        a = s_pending_answer;
-        s_pending_answer.pending = false;
-    }
-    s_unlock();
-    if (!have) {
-        return;
-    }
-    ESP_LOGI(TAG, "MQTT session usable again: publishing the queued /loc answer for req=%s", a.req_id);
-    publish_loc_answer(a.req_id, a.success, a.lat, a.lon, a.have_acc, a.acc_m, a.fix_ts, a.src,
-                        /*cached=*/false, a.have_cell ? &a.cell : NULL);
 }
 
 // ---------------------------------------------------------------------------
@@ -789,7 +1116,8 @@ bool loc_ingest_req_cbor(const uint8_t *buf, uint16_t len)
         s_unlock();
         ESP_LOGI(TAG, "loc_req %s answered from %s -- coverage duty cycle owns the radio right now",
                  id, have_cached ? "cache" : "no_fix");
-        publish_loc_answer(id, have_cached, lat, lon, have_acc, acc_m, fix_ts, src, have_cached, NULL);
+        publish_loc_answer(id, have_cached, lat, lon, have_acc, acc_m, fix_ts, src, have_cached, NULL,
+                            NULL);
         return true;
     }
 
@@ -833,7 +1161,7 @@ bool loc_ingest_req_cbor(const uint8_t *buf, uint16_t len)
                      have_cached ? "cache" : "no_fix", batt_mv, cellp ? ", cell attached" : "");
         }
         publish_loc_answer(id, have_cached, lat, lon, have_acc, acc_m, fix_ts, src, have_cached,
-                            cellp);
+                            cellp, NULL);
         break;
     }
     case LOC_ANSWER_START_ATTEMPT:
@@ -866,11 +1194,20 @@ static void loc_on_cell_change(const char *cell_key)
     int64_t now_us = esp_timer_get_time();
     s_lock();
     bool reset = loc_trigger_cell_change(&s_policy, now_us, cell_key);
+    // LOCATION_TRACKING_DESIGN.md task F1/F3: the SAME cell-change event
+    // also feeds the independent background tracker, gated on `loctrack`
+    // (loc_policy_t's own on-demand backoff above is unaffected by this
+    // flag -- it is not part of "location tracking", §2.3's own "the move
+    // schedule is its own rate limit").
+    bool track_transitioned = s_track_enabled && loc_track_on_cell(&s_track, now_us, cell_key);
     s_save();
     s_unlock();
     if (reset) {
         ESP_LOGI(TAG, "cell change (%s): backoff reset, 10min floor since last attempt applies",
                  cell_key ? cell_key : "?");
+    }
+    if (track_transitioned) {
+        ESP_LOGI(TAG, "location tracking: STILL -> MOVING (2 new cells within 15min)");
     }
 }
 
@@ -879,6 +1216,7 @@ void loc_on_motion_event(void)
     int64_t now_us = esp_timer_get_time();
     s_lock();
     bool reset = loc_trigger_motion_event(&s_policy, now_us);
+    bool track_transitioned = s_track_enabled && loc_track_on_motion(&s_track, now_us);
     s_save();
     s_unlock();
     if (reset) {
@@ -886,9 +1224,11 @@ void loc_on_motion_event(void)
         // Owner request, 2026-09-20: the same sustained-motion trigger also
         // resets coverage.c's off-period backoff to its first step (moving
         // is when coverage changes) -- modes.c owns the coverage policy
-        // instance, this is a one-line cross-module hook, same pattern
-        // modes_set_loc_suppress() already establishes the other direction.
+        // instance, this is a one-line cross-module hook.
         modes_note_motion_reset();
+    }
+    if (track_transitioned) {
+        ESP_LOGI(TAG, "location tracking: STILL -> MOVING (sustained motion)");
     }
 }
 
@@ -907,40 +1247,10 @@ typedef enum {
     LOC_PH_IDLE = 0,
     LOC_PH_ASSIST_CHECK,
     LOC_PH_ASSIST_UPDATE,
-    LOC_PH_ROUTE1_START,
-    LOC_PH_ROUTE1_WAIT,
-    LOC_PH_ROUTE2_TEARDOWN,
-    LOC_PH_ROUTE2_START,
-    LOC_PH_ROUTE2_WAIT,
-    LOC_PH_ROUTE2_RADIO_ON,
-    LOC_PH_ROUTE2_REATTACH_WAIT,
+    LOC_PH_GNSS_START,
+    LOC_PH_GNSS_WAIT,
     LOC_PH_DONE,
 } loc_phase_t;
-
-// Re-attach after route 2's NO_RF window should be much cheaper than a
-// cold-boot attach (PDP/APN/SIM already negotiated, only re-registration is
-// needed) — UNVERIFIED, so this cap is deliberately generous rather than
-// tuned; look for "re-attach after CFUN=4" in the log to see the real figure.
-//
-// This task, raised 90 -> 180: found on hardware (build/bench-logs/
-// 07-locreq-cont.log) that re-attach on the bench AT&T SIM had not even
-// finished (still `+CEREG: 2,2`, "searching") 90s after CFUN=1 -- the owner's
-// own bench note says registration there takes "about 2 minutes". 180s is a
-// deliberately generous cap above that measured figure, same margin-over-
-// measurement style LOC_FIRST_ATTEMPT_S/LOC_ATTEMPT_S already use.
-//
-// IMPORTANT: this cap is a cost SEPARATE from LOC_ATTEMPT_S/
-// LOC_FIRST_ATTEMPT_S (the "budget" a loc_req log line reports) — that
-// budget only ever bounds a GNSS-wait phase (LOC_PH_ROUTE1_WAIT/
-// LOC_PH_ROUTE2_WAIT), never this re-attach wait. A route-2 attempt's total
-// wall time is therefore up to `budget_s` (GNSS search) + up to
-// LOC_REATTACH_CAP_S (re-attach) + a handful of ordinary AT round trips, NOT
-// bounded by `budget_s` alone — finish_attempt()'s own "gnss attempt done"
-// log line reports both halves separately for exactly this reason (found
-// confusing on hardware: "elapsed=131s" next to an earlier "budget=40s" log
-// line reads like a budget overrun; it is not one — 40s GNSS wait + 90s
-// reattach + AT round trips one-to-one accounts for the 131s).
-#define LOC_REATTACH_CAP_S 180u
 
 // s_phase is written from three tasks: the MQTT event task and the debug
 // console task each make exactly one write (LOC_PH_IDLE ->
@@ -954,26 +1264,22 @@ typedef enum {
 // loc_on_request()/loc_on_attempt_done()) is the cross-task "is anything in
 // progress" signal loc_debug_run()'s busy-check and completion-wait use --
 // see their own comments for why they do NOT poll s_phase directly.
+//
+// LOCATION_TRACKING_DESIGN.md §7 (task F5): the route-2 (CFUN=4) fallback
+// phases (LOC_PH_ROUTE2_TEARDOWN/START/WAIT/RADIO_ON/REATTACH_WAIT) and
+// LOC_REATTACH_CAP_S are gone -- the owner's rule is now simply "any GNSS
+// failure sends a cell report and stops" (§7's own text), for scheduled and
+// on-demand attempts alike (§2.2). What used to be the route-1 phases are
+// renamed LOC_PH_GNSS_START/WAIT (there is only one route left, so "route 1"
+// is no longer a meaningful qualifier); the route-to-the-radio RTC hint
+// (loc_rtc_t's own `_reserved` byte) and rtc_get_route()/rtc_set_route() are
+// gone with it.
 static loc_phase_t s_phase = LOC_PH_IDLE;
 static uint32_t s_budget_s = LOC_ATTEMPT_S;
 static bool s_budget_extendable = true; // false only for loc_debug_run()'s explicit `seconds`
 static int64_t s_phase_deadline_us = 0;
 static int64_t s_attempt_start_us = 0;
 static net_gnss_event_t s_last_event;
-static bool s_route1_tried = false;
-static loc_route_t s_route_used = LOC_ROUTE_UNKNOWN;
-
-// This task: the serving cell as it was known right before route 2 dropped
-// the radio (LOC_PH_ROUTE2_TEARDOWN, below) — captured while still attached
-// because a query made AFTER the CFUN=4 window can fail outright if the
-// modem has not finished re-attaching yet (found on hardware,
-// build/bench-logs/07-locreq-cont.log: "AT+SQNMONI=0" -> "ERROR" while still
-// `+CEREG: 2,2`). finish_attempt() falls back to this snapshot only when a
-// fresh query at the end of the attempt fails; reset at the start of every
-// attempt (begin_attempt()) so a stale value from an earlier attempt is
-// never reused for this one.
-static loc_cell_t s_route2_cell;
-static bool s_have_route2_cell = false;
 
 // gnsstest's own bookkeeping. s_debug_mode is read by finish_attempt() on
 // modes_run()'s task; set true before begin_attempt() (whose own s_lock/
@@ -986,6 +1292,40 @@ static bool s_have_route2_cell = false;
 static bool s_debug_mode = false;
 static bool s_debug_done = false;
 
+// LOCATION_TRACKING_DESIGN.md §2.2/§2.3 (task F3): true while the attempt
+// currently in flight was kicked off by the move schedule (loc_service()'s
+// own LOC_PH_IDLE case below), never a real loc_req/gnsstest. Same handoff
+// discipline as s_debug_mode: set before begin_attempt(), read by
+// finish_attempt() to decide loc_track_gnss_attempt_done()/the `why:gnss`
+// report vs. the on-demand queue-drain path -- both this file's own task
+// (loc_service()), so no cross-task visibility concern (unlike s_debug_mode,
+// which the debug console task also writes).
+static bool s_move_gnss_mode = false;
+
+// The one `why:gnss` report a finished move-triggered attempt owes,
+// stashed here because it must wait for the P1 120s unsolicited-report gate
+// (loc_track_gate_ok()) -- possibly past the loc_service() call that
+// produced it. net_liveness_ping_now() (called from finish_attempt() below)
+// forces an early liveness SUBSCRIBE so the gate very rarely waits long in
+// practice; loc_on_uplink_window() (this file's own net_set_uplink_window_cb()
+// registration) is what actually publishes it and clears `pending`. Guarded
+// by s_lock/s_unlock even though every writer/reader today runs on
+// modes_run()'s task (finish_attempt()/loc_on_uplink_window(), both reached
+// via loc_service()/the publish callback chain, themselves both invoked from
+// modes_run()'s loop) -- same defensive consistency s_track's own comment
+// documents.
+typedef struct {
+    bool pending;
+    bool success;
+    double lat, lon;
+    bool have_acc;
+    int32_t acc_m;
+    int64_t fix_ts;
+    bool have_cell;
+    loc_cell_t cell;
+} loc_track_gnss_result_t;
+static loc_track_gnss_result_t s_track_gnss_result;
+
 static loc_phase_t get_phase(void)
 {
     s_lock();
@@ -994,39 +1334,22 @@ static loc_phase_t get_phase(void)
     return ph;
 }
 
-static loc_route_t rtc_get_route(void)
-{
-    s_lock();
-    loc_route_t r = s_rtc ? (loc_route_t) s_rtc->route : LOC_ROUTE_UNKNOWN;
-    s_unlock();
-    return r;
-}
-
-static void rtc_set_route(loc_route_t r)
-{
-    s_lock();
-    if (s_rtc && s_rtc->route != (uint8_t) r) {
-        s_rtc->route = (uint8_t) r;
-        s_save();
-    }
-    s_unlock();
-}
-
 // Called from either the MQTT event task (a real loc_req, via
-// loc_ingest_req_cbor()) or the debug console task (loc_debug_run()) --
-// never from modes_run()'s task. Sets s_policy.attempt_in_progress under the
-// same lock as the phase kickoff so the two flags can never disagree about
-// whether an attempt is running (loc_debug_run()'s busy-check and a real
-// loc_req's loc_on_request() both consult attempt_in_progress, so a gnsstest
-// run and a real request-driven attempt can never overlap either).
+// loc_ingest_req_cbor()), the debug console task (loc_debug_run()), or (this
+// task, F3) modes_run()'s own task (loc_service()'s LOC_PH_IDLE case,
+// starting a scheduled move-triggered attempt). Sets
+// s_policy.attempt_in_progress under the same lock as the phase kickoff so
+// the two flags can never disagree about whether an attempt is running
+// (loc_debug_run()'s busy-check and a real loc_req's loc_on_request() both
+// consult attempt_in_progress, so a gnsstest run, a real request-driven
+// attempt and a scheduled one can never overlap any other one of the three
+// either -- LOCATION_TRACKING_DESIGN.md §2.3 "one in flight" holds across
+// all three sources, not just loc_req/gnsstest).
 static void begin_attempt(uint32_t budget_s, bool extendable)
 {
     s_attempt_start_us = esp_timer_get_time();
     s_budget_s = budget_s;
     s_budget_extendable = extendable;
-    s_route1_tried = false;
-    s_route_used = LOC_ROUTE_UNKNOWN;
-    s_have_route2_cell = false; // this task: discard any earlier attempt's snapshot
     memset(&s_last_event, 0, sizeof(s_last_event));
     s_lock();
     s_policy.attempt_in_progress = true;
@@ -1041,24 +1364,10 @@ static void finish_attempt(bool success)
     int32_t acc_m = success ? (int32_t) (s_last_event.confidence + 0.5) : 0;
     int64_t fix_ts = s_last_event.fix_ts;
 
-    // This task: `elapsed` here is the WHOLE attempt (GNSS assistance +
-    // whichever route(s) were tried), never bounded by `budget_s` alone --
-    // route 2 adds up to LOC_REATTACH_CAP_S of re-attach time on top of it
-    // (LOC_REATTACH_CAP_S's own comment explains why that is a separate
-    // cost). Logging both numbers here avoids the misreading found on
-    // hardware, where a much smaller "budget=Ns" from the loc_req log line
-    // looked like a violated cap next to a much larger `elapsed`.
-    ESP_LOGI(TAG,
-             "gnss attempt done: %s route=%d sats=%u confidence=%.1f elapsed=%llds (gnss "
-             "budget=%us; route-2 re-attach, if used, adds up to %us separately)",
-             success ? "FIX" : "no_fix", (int) s_route_used, (unsigned) s_last_event.sat_count,
-             s_last_event.confidence,
+    ESP_LOGI(TAG, "gnss attempt done: %s sats=%u confidence=%.1f elapsed=%llds (budget=%us)%s",
+             success ? "FIX" : "no_fix", (unsigned) s_last_event.sat_count, s_last_event.confidence,
              (long long) ((esp_timer_get_time() - s_attempt_start_us) / 1000000),
-             (unsigned) s_budget_s, (unsigned) LOC_REATTACH_CAP_S);
-
-    if (s_route_used != LOC_ROUTE_UNKNOWN) {
-        rtc_set_route(s_route_used);
-    }
+             (unsigned) s_budget_s, s_move_gnss_mode ? " [scheduled, moving]" : "");
 
     // Both branches update the cache/backoff (a real fix is a real fix even
     // when gnsstest found it) -- only whether there is a queue to drain
@@ -1069,198 +1378,214 @@ static void finish_attempt(bool success)
     // being able to observe s_debug_done's final value.
     s_lock();
     loc_on_attempt_done(&s_policy, success, lat, lon, have_acc, acc_m, fix_ts, LOC_SRC_GNSS);
+    if (s_move_gnss_mode) {
+        // §2.3: the move schedule's own backoff, entirely independent of
+        // loc_policy_t's on-demand one just advanced/reset above.
+        loc_track_gnss_attempt_done(&s_track, success);
+    }
     if (s_debug_mode) {
         s_debug_done = true;
     }
     s_save();
     s_unlock();
 
-    if (!s_debug_mode) {
-        // §13.2/this task: a GNSS attempt that ended in no_fix attaches the
-        // serving cell (fetched at most once here, shared by every drained
-        // requester); a real fix needs none (only a *cached*, stale fix
-        // does, handled in loc_ingest_req_cbor()'s own branch above). Fall
-        // back to the pre-route-2 snapshot (s_route2_cell's own comment)
-        // when the live query above fails -- typically right after a
-        // CFUN=4 window, before re-attach has fully settled.
-        loc_cell_t cellbuf;
-        const loc_cell_t *cellp = NULL;
-        if (!success) {
-            if (get_cell_snapshot(&cellbuf)) {
-                cellp = &cellbuf;
-            } else if (s_have_route2_cell) {
-                cellbuf = s_route2_cell;
-                cellp = &cellbuf;
-            }
-        }
-
-        // This task (PROTOCOL.md §13.3 item 2): publishing only works if the
-        // MQTT session is actually usable right now -- route 2 can finish
-        // this attempt well before modes_run()'s own F1/F3 retry has
-        // reconnected it (found on hardware: net_publish_raw() -> ERROR).
-        // Queue the one pending answer instead of losing it outright.
-        net_mqtt_status_t mst;
-        net_get_mqtt_status(&mst);
-        if (mst.mqtt_connected) {
-            drain_queue_and_publish(success, lat, lon, have_acc, acc_m, fix_ts, LOC_SRC_GNSS, cellp);
-        } else {
-            queue_pending_answer_and_drop_rest(success, lat, lon, have_acc, acc_m, fix_ts,
-                                                LOC_SRC_GNSS, cellp);
+    // §13.2: a GNSS attempt that ended in no_fix attaches the serving cell
+    // (fetched at most once here, shared by every drained requester); a
+    // real on-demand fix needs none (only a *cached*, stale fix does,
+    // handled in loc_ingest_req_cbor()'s own branch above). §2.1's own
+    // report table: a move-triggered `gnss` report attaches `cell` on
+    // EITHER outcome ("A fix gives lat/lon plus cell; any failure gives
+    // cell only") -- the one row this rule differs from the on-demand one.
+    loc_cell_t cellbuf;
+    const loc_cell_t *cellp = NULL;
+    if (!success || s_move_gnss_mode) {
+        if (get_cell_snapshot(&cellbuf)) {
+            cellp = &cellbuf;
         }
     }
+
+    if (!s_debug_mode) {
+        drain_queue_and_publish(success, lat, lon, have_acc, acc_m, fix_ts, LOC_SRC_GNSS, cellp);
+    }
+
+    if (s_move_gnss_mode) {
+        // Stash the tracking report itself -- published from
+        // loc_on_uplink_window() once the P1 120s gate opens (this file's
+        // own module comment on s_track_gnss_result explains why it cannot
+        // just publish here). §4 item 4: this is an "urgent" report (cell/
+        // stop/gnss), so force the early liveness SUBSCRIBE that opens that
+        // window right now rather than waiting for a routine one.
+        s_lock();
+        s_track_gnss_result.pending = true;
+        s_track_gnss_result.success = success;
+        s_track_gnss_result.lat = lat;
+        s_track_gnss_result.lon = lon;
+        s_track_gnss_result.have_acc = have_acc;
+        s_track_gnss_result.acc_m = acc_m;
+        s_track_gnss_result.fix_ts = fix_ts;
+        s_track_gnss_result.have_cell = (cellp != NULL);
+        if (cellp) {
+            s_track_gnss_result.cell = *cellp;
+        }
+        s_unlock();
+        net_liveness_ping_now();
+    }
+    s_move_gnss_mode = false;
     s_phase = LOC_PH_IDLE; // same-task write; the only cross-task readers use attempt_in_progress
 }
 
 void loc_service(void)
 {
+    // LOCATION_TRACKING_DESIGN.md task F3: the background tracker's own
+    // scheduling is entirely independent of the GNSS attempt phase machine
+    // below (it never blocks on it, and vice versa -- an attempt in
+    // progress just means loc_track_gnss_due() itself will not fire again
+    // until this one finishes, via the shared attempt_in_progress flag).
+    loc_track_poll();
+
     switch (get_phase()) {
-    case LOC_PH_IDLE:
-        return; // nothing to do — the common case, every wake cycle
+    case LOC_PH_IDLE: {
+        // LOCATION_TRACKING_DESIGN.md §2.2/§2.3 (task F3): a scheduled
+        // GNSS-while-moving attempt shares the SAME "one in flight" slot as
+        // loc_req/gnsstest (§2.3's own "a scheduled attempt holds the slot
+        // with an empty queue") -- only ever kicked off from here, when
+        // nothing else already owns the phase machine.
+        int64_t now_us = esp_timer_get_time();
+        s_lock();
+        bool track_on = s_track_enabled;
+        uint32_t move_s = s_move_gnss_s;
+        bool busy = s_policy.attempt_in_progress;
+        bool due = track_on && !busy && loc_track_gnss_due(&s_track, now_us, move_s);
+        bool cap_reached = due && loc_track_gnss_cap_reached(&s_track, now_us);
+        s_unlock();
+        if (!due || cap_reached) {
+            if (due && cap_reached) {
+                ESP_LOGI(TAG, "location tracking: GNSS due but the daily cap (%u) is reached",
+                         (unsigned) LOC_GNSS_DAILY_CAP);
+            }
+            return; // nothing to do — the common case, every wake cycle
+        }
+        // §2.3 "Battery floor (3.3V). It blocks all GNSS; cell reports
+        // continue." -- same modes_batt_mv_known()/LOC_BATTERY_UNKNOWN_MV
+        // fail-open convention loc_ingest_req_cbor() uses.
+        int batt_mv = modes_batt_mv_known() ? modes_get_batt_mv() : LOC_BATTERY_UNKNOWN_MV;
+        if (!loc_battery_ok(batt_mv)) {
+            ESP_LOGI(TAG, "location tracking: GNSS due but the battery floor blocks it (batt=%dmV)",
+                     batt_mv);
+            return;
+        }
+        s_lock();
+        loc_track_gnss_attempt_started(&s_track, now_us);
+        s_unlock();
+        s_move_gnss_mode = true;
+        ESP_LOGI(TAG, "location tracking: scheduled GNSS attempt starting (moving)");
+        begin_attempt(LOC_ATTEMPT_S, /*extendable=*/true);
+        return;
+    }
 
     case LOC_PH_ASSIST_CHECK: {
+        // Mandatory refresh (LOCATION_TRACKING_DESIGN.md §1/§2.2, this
+        // task): due if EITHER the modem's own gnssGetAssistanceStatus()
+        // (net_gnss_assistance_due()) says so, OR loc_track_t's own
+        // independent >=2h-since-last-refresh floor says so -- "Before any
+        // attempt, scheduled or requested" (§2.2), so this check runs for
+        // every attempt source, not just tracking ones.
         int32_t stale_s = 0;
-        bool ok = net_gnss_assistance_due(&stale_s);
-        if (ok && stale_s > 0) {
+        bool net_ok = net_gnss_assistance_due(&stale_s);
+        bool net_fresh = net_ok && stale_s > 0;
+        bool track_due = loc_track_gnss_assist_due(&s_track, esp_timer_get_time());
+        if (net_fresh && !track_due) {
             ESP_LOGI(TAG, "gnss assistance fresh for another %lds, skipping refresh", (long) stale_s);
-            s_phase = LOC_PH_ROUTE1_START;
+            s_phase = LOC_PH_GNSS_START;
         } else {
-            ESP_LOGI(TAG, "gnss assistance %s due", ok ? "is" : "status unknown, assuming");
+            ESP_LOGI(TAG, "gnss assistance due (%s)",
+                     track_due ? ">=2h since last refresh" : (net_ok ? "modem says so" : "status unknown, assuming"));
             s_phase = LOC_PH_ASSIST_UPDATE;
         }
         break;
     }
 
     case LOC_PH_ASSIST_UPDATE: {
-        // Needs LTE — must happen before any detach (route 2). Bounded but
-        // UNVERIFIED duration (net_gnss_update_assistance()'s own comment);
-        // one loc_service() call may therefore take a few seconds here,
-        // same tolerated class as F4's checkComm() retries elsewhere in
-        // modes_run()'s loop.
-        if (net_gnss_update_assistance() && s_budget_extendable) {
+        // Bounded but UNVERIFIED duration (net_gnss_update_assistance()'s
+        // own comment); one loc_service() call may therefore take a few
+        // seconds here, same tolerated class as F4's checkComm() retries
+        // elsewhere in modes_run()'s loop.
+        int64_t t0 = esp_timer_get_time();
+        bool refreshed = net_gnss_update_assistance();
+        int64_t elapsed_us = esp_timer_get_time() - t0;
+        if (!refreshed) {
+            // §2.2: "A failed refresh means no attempt, and counts as a
+            // failure." -- a behaviour change from this file's own
+            // pre-this-task code, which used to ignore a refresh failure
+            // and attempt the fix anyway; the owner's design text is
+            // explicit that a failed refresh must abort, not merely warn.
+            ESP_LOGI(TAG, "gnss assistance refresh failed; sending a cell report and stopping "
+                          "(no GNSS wait attempted)");
+            finish_attempt(false);
+            break;
+        }
+        s_lock();
+        loc_track_gnss_assist_refreshed(&s_track, esp_timer_get_time());
+        s_unlock();
+        if (s_budget_extendable) {
             s_budget_s = LOC_FIRST_ATTEMPT_S; // "no ephemeris in the receiver yet"
         }
-        s_phase = LOC_PH_ROUTE1_START;
+        // Server-architect review (26 Sep 2026), PROTOCOL.md §13.3 item 2:
+        // time spent on the refresh counts inside the 60s web-request
+        // bound, for scheduled and on-demand attempts alike (P1's own text:
+        // "A scheduled GNSS attempt obeys items 1-3 like a requested one").
+        // Rounds elapsed time UP so this can only be conservative (never
+        // let a slightly-under-counted refresh push the total over 60s).
+        uint32_t assist_elapsed_s = (uint32_t) ((elapsed_us + 999999) / 1000000);
+        uint32_t capped_budget_s = loc_web_gnss_budget_s(s_budget_s, assist_elapsed_s);
+        if (capped_budget_s != s_budget_s) {
+            ESP_LOGI(TAG, "assistance refresh took %us; GNSS-wait budget capped %us -> %us to hold "
+                          "the 60s bound",
+                     (unsigned) assist_elapsed_s, (unsigned) s_budget_s, (unsigned) capped_budget_s);
+        }
+        s_budget_s = capped_budget_s;
+        if (s_budget_s == 0) {
+            ESP_LOGI(TAG, "assistance refresh alone reached the 60s bound; sending a cell report "
+                          "and stopping (no GNSS wait attempted)");
+            finish_attempt(false);
+            break;
+        }
+        s_phase = LOC_PH_GNSS_START;
         break;
     }
 
-    case LOC_PH_ROUTE1_START: {
+    case LOC_PH_GNSS_START: {
         net_gnss_config(); // idempotent, persists across reboots per the vendor doc
-        loc_route_t remembered = rtc_get_route();
-        if (remembered == LOC_ROUTE_CFUN4) {
-            // Already learned route 1 does not work on this modem/carrier —
-            // don't spend attempt budget re-proving it every time.
-            ESP_LOGI(TAG, "route 1 (in place) previously refused; going straight to route 2");
-            s_phase = LOC_PH_ROUTE2_TEARDOWN;
-            break;
-        }
-        s_route1_tried = true;
         if (!net_gnss_start_fix()) {
-            s_phase = LOC_PH_ROUTE2_TEARDOWN; // modem refused synchronously
+            // §7/owner decision: any GNSS failure (including a synchronous
+            // refusal) sends a cell report and stops -- no CFUN=4 fallback.
+            ESP_LOGI(TAG, "gnss start refused synchronously; sending a cell report and stopping");
+            finish_attempt(false);
             break;
         }
         s_phase_deadline_us = esp_timer_get_time() + (int64_t) s_budget_s * 1000000;
-        s_phase = LOC_PH_ROUTE1_WAIT;
+        s_phase = LOC_PH_GNSS_WAIT;
         break;
     }
 
-    case LOC_PH_ROUTE1_WAIT: {
+    case LOC_PH_GNSS_WAIT: {
         net_gnss_event_t ev;
         if (net_gnss_poll_event(&ev)) {
             if (ev.kind == NET_GNSS_EVT_REFUSED) {
-                ESP_LOGI(TAG, "route 1 (in place) refused mid-wait; falling back to route 2");
-                s_phase = LOC_PH_ROUTE2_TEARDOWN;
+                ESP_LOGI(TAG, "gnss refused mid-wait (LTE_CONCURRENCY); sending a cell report and "
+                              "stopping");
+                finish_attempt(false);
                 break;
             }
             s_last_event = ev;
-            s_route_used = LOC_ROUTE_INPLACE;
             finish_attempt(ev.kind == NET_GNSS_EVT_FIX && loc_fix_confidence_ok(ev.confidence));
             break;
         }
         if (esp_timer_get_time() >= s_phase_deadline_us) {
             net_gnss_cancel();
-            s_route_used = LOC_ROUTE_INPLACE; // it was allowed to run — just no sky
-            finish_attempt(false);
+            finish_attempt(false); // it was allowed to run — just no sky (or over-confidence)
         }
         break; // still waiting; try again next loc_service() call
-    }
-
-    case LOC_PH_ROUTE2_TEARDOWN: {
-        // This task: refresh the cell snapshot NOW, while still attached --
-        // see s_route2_cell's own comment for why a query made after the
-        // CFUN=4 window can fail outright. One AT round trip, same cost
-        // class as every other call in this phase; get_cell_snapshot() is a
-        // no-op AT-wise when the cache is already fresh (net_get_cell_info()'s
-        // own doc comment).
-        s_have_route2_cell = get_cell_snapshot(&s_route2_cell);
-
-        // Deliberate session loss (V02_DESIGN.md §5) — must not trip
-        // handle_mqtt_loss()'s backoff, the connect watchdog, or the F4
-        // health check while this window is open.
-        modes_set_loc_suppress(true);
-        net_session_down();
-        if (!net_radio_off()) {
-            ESP_LOGI(TAG, "route 2: setOpState(NO_RF) failed; abandoning this attempt");
-            modes_set_loc_suppress(false);
-            s_route_used = LOC_ROUTE_UNKNOWN;
-            finish_attempt(false);
-            break;
-        }
-        s_phase = LOC_PH_ROUTE2_START;
-        break;
-    }
-
-    case LOC_PH_ROUTE2_START: {
-        if (!net_gnss_start_fix()) {
-            ESP_LOGI(TAG, "route 2: gnss refused a fix even with the radio off (unexpected)");
-            s_phase = LOC_PH_ROUTE2_RADIO_ON; // still have to restore the radio
-            break;
-        }
-        s_phase_deadline_us = esp_timer_get_time() + (int64_t) s_budget_s * 1000000;
-        s_phase = LOC_PH_ROUTE2_WAIT;
-        break;
-    }
-
-    case LOC_PH_ROUTE2_WAIT: {
-        net_gnss_event_t ev;
-        if (net_gnss_poll_event(&ev)) {
-            if (ev.kind != NET_GNSS_EVT_REFUSED) {
-                s_last_event = ev;
-            }
-            s_phase = LOC_PH_ROUTE2_RADIO_ON;
-            break;
-        }
-        if (esp_timer_get_time() >= s_phase_deadline_us) {
-            net_gnss_cancel();
-            s_phase = LOC_PH_ROUTE2_RADIO_ON;
-        }
-        break;
-    }
-
-    case LOC_PH_ROUTE2_RADIO_ON: {
-        if (!net_radio_on()) {
-            ESP_LOGI(TAG, "route 2: setOpState(FULL) failed; will keep trying next cycle");
-            break; // stay in this phase — must not leave the radio off forever
-        }
-        s_phase_deadline_us = esp_timer_get_time() + (int64_t) LOC_REATTACH_CAP_S * 1000000;
-        s_phase = LOC_PH_ROUTE2_REATTACH_WAIT;
-        break;
-    }
-
-    case LOC_PH_ROUTE2_REATTACH_WAIT: {
-        bool attached = net_is_attached();
-        bool timed_out = esp_timer_get_time() >= s_phase_deadline_us;
-        if (attached || timed_out) {
-            ESP_LOGI(TAG, "route 2: re-attach %s after CFUN=4 window (%llds)",
-                     attached ? "succeeded" : "timed out",
-                     (long long) ((esp_timer_get_time() - (s_phase_deadline_us -
-                                                            (int64_t) LOC_REATTACH_CAP_S * 1000000)) /
-                                   1000000));
-            modes_set_loc_suppress(false); // modes_run()'s own F1/F3 retry reconnects MQTT from here
-            s_route_used = attached ? LOC_ROUTE_CFUN4 : LOC_ROUTE_UNKNOWN;
-            finish_attempt(s_last_event.kind == NET_GNSS_EVT_FIX &&
-                          loc_fix_confidence_ok(s_last_event.confidence));
-        }
-        break;
     }
 
     case LOC_PH_DONE:
@@ -1268,6 +1593,117 @@ void loc_service(void)
         s_phase = LOC_PH_IDLE;
         break;
     }
+}
+
+// ---------------------------------------------------------------------------
+// Location tracking: the report scheduler's two call sites (task F3).
+// ---------------------------------------------------------------------------
+
+static const char *report_why_str(loc_report_t r)
+{
+    switch (r) {
+    case LOC_REPORT_STILL: return "still";
+    case LOC_REPORT_CELL: return "cell";
+    case LOC_REPORT_MOVE: return "move";
+    case LOC_REPORT_STOP: return "stop";
+    case LOC_REPORT_GNSS: return "gnss";
+    case LOC_REPORT_NONE:
+    default: return NULL;
+    }
+}
+
+// Called once per loc_service() iteration (every wake-and-drain cycle),
+// regardless of phase -- cheap (a few RAM reads, see loc_track_tick()'s own
+// doc comment). §4 item 4: a newly-due "urgent" report (cell/stop -- gnss
+// is handled separately, from finish_attempt()) forces an early liveness
+// SUBSCRIBE rather than waiting out the routine idle-ping interval, so it
+// reaches loc_on_uplink_window() (below) promptly; `still`/`move` simply
+// wait for whichever window opens next on its own. Never publishes
+// anything itself -- see loc_on_uplink_window()'s own doc comment for why
+// calling loc_track_tick() twice per report is safe.
+static void loc_track_poll(void)
+{
+    s_lock();
+    bool on = s_track_enabled;
+    s_unlock();
+    if (!on) {
+        return;
+    }
+    int64_t now_us = esp_timer_get_time();
+    s_lock();
+    loc_report_t due = loc_track_tick(&s_track, now_us);
+    s_unlock();
+    if (due == LOC_REPORT_CELL || due == LOC_REPORT_STOP) {
+        net_liveness_ping_now();
+    }
+}
+
+// net_set_uplink_window_cb() registration (LOCATION_TRACKING_DESIGN.md §4,
+// task F3): fires on modes_run()'s own task right after a liveness
+// SUBSCRIBE was sent or a QoS 1 publish succeeded -- an RRC window this
+// file's own reports can ride for free (§4's own "rides the same RRC
+// connection, never delays it" rule). Publishes AT MOST one report per
+// call: a stashed `why:gnss` result from a just-finished move-triggered
+// attempt takes priority (it already paid for its own radio time and
+// forced this very window via finish_attempt()'s own net_liveness_ping_now()
+// call); otherwise whatever loc_track_tick() decides is due right now.
+// Calling loc_track_tick() again here (loc_track_poll() above already
+// called it once this cycle) is safe: it is a pure function of wall-clock
+// state, not a one-shot event queue, and nothing but
+// loc_track_note_report_sent() (called only once an actual publish
+// succeeds) ever consumes anything permanently.
+static void loc_on_uplink_window(void)
+{
+    s_lock();
+    bool on = s_track_enabled;
+    s_unlock();
+    if (!on) {
+        return;
+    }
+    int64_t now_us = esp_timer_get_time();
+
+    s_lock();
+    bool gnss_pending = s_track_gnss_result.pending;
+    loc_track_gnss_result_t gr = s_track_gnss_result;
+    bool gate_ok = loc_track_gate_ok(&s_track, now_us);
+    s_unlock();
+
+    if (gnss_pending) {
+        if (!gate_ok) {
+            return; // still inside the P1 120s floor; try again next window
+        }
+        const loc_cell_t *cellp = gr.have_cell ? &gr.cell : NULL;
+        publish_loc_answer(NULL, gr.success, gr.lat, gr.lon, gr.have_acc, gr.acc_m, gr.fix_ts,
+                            LOC_SRC_GNSS, /*cached=*/false, cellp, "gnss");
+        s_lock();
+        s_track_gnss_result.pending = false;
+        loc_track_note_report_sent(&s_track, now_us, LOC_REPORT_GNSS, gr.success);
+        s_save();
+        s_unlock();
+        return;
+    }
+
+    s_lock();
+    loc_report_t due = loc_track_tick(&s_track, now_us);
+    s_unlock();
+    const char *why = report_why_str(due);
+    if (!why) {
+        return;
+    }
+
+    // Every tracking report other than `gnss` is a cell-only envelope
+    // (loc:null, err:"no_fix") -- §2.1's report table, "cell only (with
+    // why)". Force a fresh AT+SQNMONI first (§4 item 2: catches a `+CEREG`
+    // change lost in light sleep) -- free, this RRC window is already open.
+    net_force_cell_refresh();
+    loc_cell_t cellbuf;
+    const loc_cell_t *cellp = get_cell_snapshot(&cellbuf) ? &cellbuf : NULL;
+    publish_loc_answer(NULL, /*success=*/false, 0, 0, false, 0, 0, LOC_SRC_CELL, /*cached=*/false,
+                        cellp, why);
+    s_lock();
+    loc_track_note_report_sent(&s_track, now_us, due, false);
+    s_save();
+    s_unlock();
 }
 
 // ---------------------------------------------------------------------------
@@ -1285,14 +1721,23 @@ void loc_init(void)
                       "(this task's own fail-open rule)");
     }
     net_set_cell_change_cb(loc_on_cell_change);
+    net_set_uplink_window_cb(loc_on_uplink_window); // LOCATION_TRACKING_DESIGN.md §4, task F2/F3
 
     // accel.c fails open on its own (absent chip -> logs once, returns
-    // false) — loc.c does not need to branch on the result, motion just
-    // never triggers if it is missing.
-    accel_init();
+    // false); loc_track_init() below needs that same fact ("no LIS3DH ->
+    // cell-only motion signal", §1) -- so this must run before it.
+    bool have_lis3dh = accel_init();
 
-    ESP_LOGI(TAG, "location ready: loc_min_s=%u loc_period_s=%u battery_floor=%dmV",
-             (unsigned) loc_get_min_s(), (unsigned) loc_get_period_s(), LOC_BATTERY_FLOOR_MV);
+    s_lock();
+    loc_track_init(&s_track, have_lis3dh);
+    s_track_enabled = LOC_TRACK_DEFAULT_ENABLED;
+    s_move_gnss_s = LOC_MOVE_GNSS_DEFAULT_S;
+    s_unlock();
+
+    ESP_LOGI(TAG, "location ready: loc_min_s=%u loc_period_s=%u battery_floor=%dmV loctrack=%s "
+                  "locmove=%us",
+             (unsigned) loc_get_min_s(), (unsigned) loc_get_period_s(), LOC_BATTERY_FLOOR_MV,
+             LOC_TRACK_DEFAULT_ENABLED ? "on" : "off", (unsigned) LOC_MOVE_GNSS_DEFAULT_S);
 }
 
 bool loc_debug_run(uint32_t seconds)
@@ -1356,9 +1801,8 @@ bool loc_debug_run(uint32_t seconds)
 
     net_mqtt_status_t after;
     net_get_mqtt_status(&after);
-    ESP_LOGI(TAG, "gnsstest: done. route=%d sats=%u confidence=%.1f mqtt_connected(after)=%d",
-             (int) s_route_used, (unsigned) s_last_event.sat_count, s_last_event.confidence,
-             (int) after.mqtt_connected);
+    ESP_LOGI(TAG, "gnsstest: done. sats=%u confidence=%.1f mqtt_connected(after)=%d",
+             (unsigned) s_last_event.sat_count, s_last_event.confidence, (int) after.mqtt_connected);
     return s_debug_done;
 }
 

@@ -483,23 +483,8 @@ static uint32_t s_connect_watchdog_count = 0;
 // s_connect_attempt_us above.
 static int64_t s_next_pump_us = 0;
 
-// v0.2 §5: see modes.h's own modes_set_loc_suppress() doc comment. RAM-only,
-// same reasoning as s_connect_attempt_us above (never survives, or needs to
-// survive, a reset).
-static volatile bool s_loc_suppress = false;
-
-void modes_set_loc_suppress(bool suppress)
-{
-    if (suppress != s_loc_suppress) {
-        ESP_LOGI(TAG, "location %s the ordinary MQTT reconnect/F4 health-check machinery",
-                 suppress ? "suppressing" : "releasing");
-    }
-    s_loc_suppress = suppress;
-}
-
-// v0.2 §4.4: catrust.c's own independent suppression window, same reasoning
-// and same two call sites as s_loc_suppress above — see modes.h's own doc
-// comment.
+// v0.2 §4.4: catrust.c's own independent suppression window — see modes.h's
+// own doc comment (modes_set_ca_apply_suppress()).
 static volatile bool s_ca_apply_suppress = false;
 
 void modes_set_ca_apply_suppress(bool suppress)
@@ -514,7 +499,7 @@ void modes_set_ca_apply_suppress(bool suppress)
 // Owner request, 2026-09-20: coverage.c's duty-cycle policy state + the one
 // RAM flag that mirrors "the radio is deliberately off right now" for every
 // other module to check (modes_coverage_owns_radio(), modes.h). RAM-only,
-// same reasoning as s_loc_suppress/s_ca_apply_suppress above: this design
+// same reasoning as s_ca_apply_suppress above: this design
 // never deep sleeps, so nothing here needs to survive a reset — a reboot
 // mid-cycle just restarts the policy from GRACE_S, the same conservative
 // default coverage_policy_init() gives a cold boot anyway.
@@ -648,6 +633,8 @@ static void on_auth_epoch_wrap(void)
 #define STK_LOC_PERIOD_S 27
 #define STK_LOC_MIN_S 28
 #define STK_LOC_BACKOFF_S 43 // v0.2 §7
+#define STK_LOC_MOVE_S 61 // LOCATION_TRACKING_DESIGN.md §5 P3, this task: the `locmove` runtime
+                          // tunable (0 = GNSS-while-moving off)
 #define STK_TLS 39           // v0.2 §4.3/§7: "unpinned"/"pinned"/"broken"
 #define STK_CA_FP 42         // v0.2 §4.3/§7: absent when unpinned
 #define STK_SMS_LOST 48      // v0.2 §6/§7: sms_log audit entries dropped for lack of NVS space
@@ -836,10 +823,13 @@ static bool build_status_cbor(uint8_t *out, size_t cap, size_t *out_len, const c
     // v0.2 §5/§7: +3 for loc_period_s/loc_min_s/loc_backoff_s (loc.c's own
     // getters — plain reads of already-resident policy state, no AT round
     // trip of their own beyond what batt_mv/rssi above already cost).
-    uint32_t nfields = 9 + 3 + 1 + 1 + 1 + 1 + 3; // + tls, + sms_lost, + link, + xport, + rst/stage/abn;
+    // LOCATION_TRACKING_DESIGN.md §5 P3: +1 for loc_move_s (key 61), same
+    // "plain read" cost class.
+    uint32_t nfields = 9 + 3 + 1 + 1 + 1 + 1 + 1 + 3; // + tls, + sms_lost, + link, + xport,
+                                          // + loc_move_s, + rst/stage/abn;
                                           // v,state,mode,batt_mv,rssi,
                                           // session,ts,fw,bv,loc_period_s,loc_min_s,loc_backoff_s,
-                                          // tls,sms_lost,link,xport,rst,stage,abn
+                                          // tls,sms_lost,link,xport,loc_move_s,rst,stage,abn
     if (have_ca_fp) {
         nfields += 1;
     }
@@ -866,6 +856,7 @@ static bool build_status_cbor(uint8_t *out, size_t cap, size_t *out_len, const c
     cbor_w_uint(&w, STK_LOC_PERIOD_S, loc_get_period_s()); // v0.2 §5: always 0, periodic fixes parked
     cbor_w_uint(&w, STK_LOC_MIN_S, loc_get_min_s());        // v0.2 §5: the 10-minute trigger floor
     cbor_w_uint(&w, STK_LOC_BACKOFF_S, loc_get_backoff_remaining_s()); // v0.2 §7 key 43
+    cbor_w_uint(&w, STK_LOC_MOVE_S, loc_get_move_gnss_s()); // LOCATION_TRACKING_DESIGN.md §5 P3 key 61
     cbor_w_tstr(&w, STK_TLS, tls_str, strlen(tls_str));                // v0.2 §4.3
     if (have_ca_fp) {
         cbor_w_tstr(&w, STK_CA_FP, ca_fp, strlen(ca_fp));              // v0.2 §4.3
@@ -1955,7 +1946,7 @@ static void run_modem_health_check(void)
     for (int attempt = 0; attempt < 3; attempt++) {
         if (net_check()) {
             uint32_t dark_s = net_unregistered_for_s();
-            if (dark_s >= PAGER_NO_NETWORK_RESET_S && !s_loc_suppress && !s_ca_apply_suppress &&
+            if (dark_s >= PAGER_NO_NETWORK_RESET_S && !s_ca_apply_suppress &&
                 rate_limited_modem_recover("no network for 30 min")) {
                 note_session_up_attempt(net_session_up());
             }
@@ -3106,7 +3097,7 @@ void modes_run(void)
         // modes_boot()'s own net_session_up(): with a connect in flight there
         // is nothing to regain, and resetting the backoff here used to let
         // the retry branch below issue a second CONNECT (phase1-boot.log).
-        if (net_take_registered_edge() && !s_loc_suppress && !s_ca_apply_suppress &&
+        if (net_take_registered_edge() && !s_ca_apply_suppress &&
             !net_connect_in_flight()) {
             // Coverage is back. Retry at once instead of waiting out a backoff
             // that grew while there was no network. And a session that was
@@ -3155,16 +3146,12 @@ void modes_run(void)
             // heartbeat an hour later.
             catrust_on_mqtt_connected();
             publish_status_online();
-            // This task (V02_DESIGN.md §5 / PROTOCOL.md §13.3 item 2, "the
-            // device always answers a loc_req it accepted"): a GNSS attempt
-            // that finished while the session was down (route 2's CFUN=4
-            // window losing the race with re-attach, found on hardware --
-            // build/bench-logs/07-locreq-cont.log's "/loc publish failed")
-            // leaves loc.c holding one queued answer instead of dropping it.
-            // Flush it now that the session is usable again -- after the two
-            // calls above, same ordering reason catrust_on_mqtt_connected()'s
-            // own comment gives (publish the state that is actually current).
-            loc_flush_pending_answer();
+            // LOCATION_TRACKING_DESIGN.md §7 (task F5): this used to also
+            // call loc_flush_pending_answer() here -- route 2's CFUN=4
+            // window could finish a GNSS attempt before the session was
+            // back up, leaving one queued /loc answer to flush once it was.
+            // Route 2 is gone (GNSS is in-place only now), and with it the
+            // one scenario that pending-answer slot existed for.
 #ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
             sleeptest_note('C', 0, "");
 #endif
@@ -3226,15 +3213,13 @@ void modes_run(void)
                 schedule_backoff(&backoff_index, &next_session_retry_us);
             }
         } else if (!st.mqtt_connected) {
-            // v0.2 §5/§4.4: skip entirely while location's route 2 (CFUN=4
-            // window) or a CA two-phase apply's own scratch-slot reconnect
-            // trial owns the session on purpose — see
-            // modes_set_loc_suppress()'s/modes_set_ca_apply_suppress()'s own
-            // doc comments. Once either releases its flag,
-            // next_session_retry_us is normally already in the past (the
-            // session was healthy, backoff_index==0, right up until it was
-            // torn down), so this reconnects on the very next iteration with
-            // no special-casing needed here.
+            // v0.2 §4.4: skip entirely while a CA two-phase apply's own
+            // scratch-slot reconnect trial owns the session on purpose —
+            // see modes_set_ca_apply_suppress()'s own doc comment. Once it
+            // releases its flag, next_session_retry_us is normally already
+            // in the past (the session was healthy, backoff_index==0,
+            // right up until it was torn down), so this reconnects on the
+            // very next iteration with no special-casing needed here.
             //
             // v0.2 bug fix, 22 Sep evening (phaseO-recover2.log lines 36-49):
             // net_session_up() returning true only means mqttConnect() was
@@ -3248,7 +3233,7 @@ void modes_run(void)
             // true until CONNECTED/SUBSCRIBED arrives or M1's 30s timeout
             // fires, so this branch simply does not run again until one of
             // those happens.
-            if (!s_loc_suppress && !s_ca_apply_suppress && esp_timer_get_time() >= next_session_retry_us &&
+            if (!s_ca_apply_suppress && esp_timer_get_time() >= next_session_retry_us &&
                 !net_connect_in_flight()) {
                 // v0.2 §4.2: no-op unless currently `broken` — decides
                 // validated vs. unvalidated for this attempt (the
@@ -3296,17 +3281,17 @@ void modes_run(void)
         ST_MARK(3);
 #endif
         // v0.2 §9.4: idle-uplink liveness ping / silent-resume repair, once
-        // per wake-and-drain iteration. Same three suppressions the
-        // reconnect path above already honours (modes_set_loc_suppress()'s/
-        // modes_set_ca_apply_suppress()'s own doc comments, and the coverage
-        // duty-cycle reasoning at s_coverage_owns_radio above): none of them
-        // want an extra AT transaction landing while they deliberately own
-        // the radio/session. docs/WIFI_TASKS.md W4: these three are about
-        // the *modem*, so they now gate the LTE transport internally
-        // (net_set_lte_suppressed(), net.h) instead of this call site --
-        // net_service_session() itself is called unconditionally, every wake
-        // cycle, so a future WiFi transport's tick is never silenced by them.
-        net_set_lte_suppressed(s_coverage_owns_radio || s_loc_suppress || s_ca_apply_suppress);
+        // per wake-and-drain iteration. Same two suppressions the reconnect
+        // path above already honours (modes_set_ca_apply_suppress()'s own
+        // doc comment, and the coverage duty-cycle reasoning at
+        // s_coverage_owns_radio above): neither wants an extra AT
+        // transaction landing while it deliberately owns the radio/session.
+        // docs/WIFI_TASKS.md W4: these are about the *modem*, so they now
+        // gate the LTE transport internally (net_set_lte_suppressed(),
+        // net.h) instead of this call site -- net_service_session() itself
+        // is called unconditionally, every wake cycle, so a future WiFi
+        // transport's tick is never silenced by them.
+        net_set_lte_suppressed(s_coverage_owns_radio || s_ca_apply_suppress);
         net_service_session();
 
         watchdog_kick(WD_PUMP);
@@ -3319,17 +3304,16 @@ void modes_run(void)
             s_next_pump_us = esp_timer_get_time() + PAGER_PUMP_MIN_INTERVAL_US;
         }
 
-        // F4: checkComm() every 60 wake cycles in sleep mode. v0.2 §5/§4.4:
-        // skipped during location's route-2 window or a CA apply's own
-        // reconnect trial (see modes_set_loc_suppress()'s/
-        // modes_set_ca_apply_suppress()'s own doc comments) — net_check()
-        // would read NO_RF, or a mid-trial disconnected state, as "modem
-        // unresponsive" and force a real, unwanted modem reset. Same
-        // reasoning for s_coverage_owns_radio (owner request, 2026-09-20):
-        // NO_RF is deliberate here too, and the 30-minute "no network" reset
-        // this health check owns must not fire while the duty cycle is the
-        // one keeping it dark on purpose.
-        if (!s_loc_suppress && !s_ca_apply_suppress && !s_coverage_owns_radio &&
+        // F4: checkComm() every 60 wake cycles in sleep mode. v0.2 §4.4:
+        // skipped during a CA apply's own reconnect trial (see
+        // modes_set_ca_apply_suppress()'s own doc comment) — net_check()
+        // would read a mid-trial disconnected state as "modem unresponsive"
+        // and force a real, unwanted modem reset. Same reasoning for
+        // s_coverage_owns_radio (owner request, 2026-09-20): NO_RF is
+        // deliberate here too, and the 30-minute "no network" reset this
+        // health check owns must not fire while the duty cycle is the one
+        // keeping it dark on purpose.
+        if (!s_ca_apply_suppress && !s_coverage_owns_radio &&
             g_rtc.mode == (uint8_t) PAGER_MODE_SLEEP &&
             (wake_cycle_count % PAGER_CHECKCOMM_EVERY_N_WAKES) == 0) {
             run_modem_health_check();

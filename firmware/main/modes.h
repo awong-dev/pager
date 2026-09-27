@@ -116,30 +116,21 @@ void modes_debug_sleeptest_start(uint32_t minutes, uint32_t yield_ms_override,
                                  uint32_t wake0_ms);
 void modes_debug_sleeptest_report(void);
 
-/* v0.2 §5 (location, loc.c): route 2's deliberate CFUN=4 window tears the
- * MQTT session down and takes the radio off on purpose. While `suppress` is
- * true, modes_run()'s own reconnect-retry loop and the F4 modem-health
- * check are both skipped entirely (neither would make sense mid-window: the
- * reconnect loop would race loc.c's own re-attach, and net_check() reading
- * NO_RF as "modem unresponsive" would trigger a real, unwanted modem reset).
- * loc.c is the only caller: set true right before net_session_down()+
- * net_radio_off(), false right after net_is_attached() confirms (or times
- * out on) the re-attach — modes_run()'s ordinary F1/F3 logic then reconnects
- * MQTT itself on its very next iteration, with no special-casing needed
- * there. No modem/sleep-state effect of its own: a single RAM flag. */
-void modes_set_loc_suppress(bool suppress);
-
 /* v0.2 §4.4 (CA trust, catrust.c): the two-phase apply's own deliberate
- * session teardown/scratch-slot reconnect trial — same reasoning and same
- * two call sites' worth of gating as modes_set_loc_suppress() above (the
- * ordinary reconnect-retry loop and the F4 modem-health check), just a
- * second, independent flag rather than reusing loc.c's (each module owns
- * its own suppression window; both can be OR'd together where modes_run()
- * checks them, since only one is ever expected active at a time in
- * practice but neither needs to know about the other). catrust.c is the
- * only caller: true right before net_session_down() (the scratch-slot
- * trial connect), false once catrust_service() has committed or rolled the
- * trial back. No modem/sleep-state effect of its own: a single RAM flag. */
+ * session teardown/scratch-slot reconnect trial. While `suppress` is true,
+ * modes_run()'s own reconnect-retry loop and the F4 modem-health check are
+ * both skipped entirely (neither would make sense mid-trial: the reconnect
+ * loop would race catrust.c's own scratch-slot connect, and net_check()
+ * reading a mid-trial disconnected state as "modem unresponsive" would
+ * trigger a real, unwanted modem reset). catrust.c is the only caller: true
+ * right before net_session_down() (the scratch-slot trial connect), false
+ * once catrust_service() has committed or rolled the trial back. No modem/
+ * sleep-state effect of its own: a single RAM flag.
+ *
+ * LOCATION_TRACKING_DESIGN.md §7 (task F5): this used to be OR'd with
+ * loc.c's own modes_set_loc_suppress() (route 2's CFUN=4 window, now
+ * deleted -- GNSS is in-place only) at every gate below; that flag and its
+ * setter are gone along with route 2, this one is unchanged. */
 void modes_set_ca_apply_suppress(bool suppress);
 
 /* Owner request, 2026-09-20 (coverage.c's duty-cycle policy): true whenever

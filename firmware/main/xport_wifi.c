@@ -97,6 +97,11 @@ static void wifi_mqtt_event_handler(void *handler_args, esp_event_base_t base, i
         s_mqtt_connected = true;
         s_connect_fail_streak = 0; // the session is usable: §2's streak is broken
         s_last_uplink_us = esp_timer_get_time();
+        // LOCATION_TRACKING_DESIGN.md §4 item 1 (task F2): the WiFi xport's
+        // own closest analogue to an LTE liveness SUBSCRIBE -- esp-mqtt owns
+        // its PINGREQ cadence itself, so this SUBACK is the nearest "proof
+        // of an open RRC-equivalent window" this transport has.
+        net_dispatch_uplink_window();
         ESP_LOGI(TAG, "MQTT session usable (subscribed to '%s')", s_down_topic);
         break;
 
@@ -104,8 +109,11 @@ static void wifi_mqtt_event_handler(void *handler_args, esp_event_base_t base, i
         // Only ever fires for QoS 1/2 (PUBACK/PUBCOMP) -- mqtt_client.c's own
         // deliver_puback()/PUBCOMP handling. QoS 0 publishes close their own
         // publish_quiet_gate_done() synchronously in wifi_publish_common()
-        // below (see that function's own comment for why).
+        // below (see that function's own comment for why). So, unlike the
+        // LTE xport, this event never needs its own QoS check -- it is
+        // QoS 1/2 by construction (LOCATION_TRACKING_DESIGN.md §4 items 1/3).
         s_last_uplink_us = esp_timer_get_time();
+        net_dispatch_uplink_window();
         publish_quiet_gate_done(&s_publish_quiet, esp_timer_get_time());
         break;
 
@@ -375,7 +383,14 @@ static bool wifi_publish_common(const char *topic, const void *buf, uint16_t len
         ESP_LOGI(TAG, "WiFi MQTT publish failed (msg_id=%d)", msg_id);
         return false;
     }
-    s_last_uplink_us = now;
+    // LOCATION_TRACKING_DESIGN.md §4 item 3 (task F2): a QoS 0 publish
+    // (loc.c's own unsolicited tracking reports) proves nothing about the
+    // session and must NOT reset the idle clock -- doing so would delay
+    // dead-session detection. msg_id >= 0 here only means esp-mqtt QUEUED
+    // the publish (its own doc comment: "immediately in the user task's
+    // context" is about when it is SENT, not confirmed); for QoS 1/2 the
+    // idle clock is instead reset from the MQTT_EVENT_PUBLISHED case above,
+    // once the PUBACK/PUBCOMP actually proves it landed.
     if (qos == 0) {
         // esp-mqtt's own doc comment (mqtt_client.h, esp_mqtt_client_publish()):
         // "sends the publish message immediately in the user task's
@@ -525,6 +540,8 @@ static const net_xport_ops_t s_wifi_ops = {
     .connect_fail_streak_maxed = wifi_connect_fail_streak_maxed,
     .take_memfull_delta = wifi_take_memfull_delta,
     .take_oversize_delta = wifi_take_oversize_delta,
+    .ping_now = NULL, // LOCATION_TRACKING_DESIGN.md §4 item 4: no-op on WiFi, net.cpp's
+                      // net_liveness_ping_now() already null-checks before calling
 };
 
 const net_xport_ops_t *xport_wifi_ops(void)

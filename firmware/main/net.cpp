@@ -149,6 +149,10 @@ static constexpr uint16_t PAGER_BOOT_MQTT_KEEPALIVE_S = 60;
 // directly, exactly as it did when both lived in this file.
 void (*s_msg_cb)(const char *, const char *, uint16_t) = nullptr;
 
+// LOCATION_TRACKING_DESIGN.md §4 (task F2): the uplink-window callback, same
+// "one registration, both transports call it" pattern as s_msg_cb above.
+static net_uplink_window_cb_t s_uplink_window_cb = nullptr;
+
 // ---------------------------------------------------------------------------
 // The transport seam (docs/WIFI_DESIGN.md §1, docs/WIFI_TASKS.md W4).
 // s_xport_ops is the only thing every dispatcher (below, past net_tls_configure())
@@ -1132,6 +1136,29 @@ extern "C" void net_dispatch_msg(const char *topic, const char *body, uint16_t l
     }
 }
 
+// LOCATION_TRACKING_DESIGN.md §4 (task F2): see net.h's own doc comment on
+// net_set_uplink_window_cb() for exactly when this fires.
+extern "C" void net_set_uplink_window_cb(net_uplink_window_cb_t cb)
+{
+    s_uplink_window_cb = cb;
+}
+
+// xport_wifi.c's own trampoline to s_uplink_window_cb, same reason
+// net_dispatch_msg() exists (net_internal.h is off-limits to that file).
+extern "C" void net_dispatch_uplink_window(void)
+{
+    if (s_uplink_window_cb) {
+        s_uplink_window_cb();
+    }
+}
+
+extern "C" void net_liveness_ping_now(void)
+{
+    if (s_xport_ops->ping_now) {
+        s_xport_ops->ping_now();
+    }
+}
+
 extern "C" void net_sleep(uint32_t ms)
 {
     // docs/WIFI_DESIGN.md §3/§9, docs/WIFI_TASKS.md W5: transport-aware.
@@ -1567,15 +1594,16 @@ extern "C" bool net_get_clock(int64_t *epoch_s)
 
 // wdt-stage8 (task's own arithmetic): the reconnect re-announce path
 // (publish_status_online() -> build_status_cbor() -> these two getters,
-// then a publish and a loc flush) can, at the library's unbounded 30 s x 3
-// default, sit in modem waits long enough by itself to blow the 95 s
-// watchdog block-tick budget (watchdog.c) twice over in one stage. Neither
-// reading needs a retry -- refresh_batt_mv()/refresh_rssi_dbm() (modes.c)
-// already fall back to the last known-good value (or a fixed placeholder)
-// on any failure, so a bounded single attempt costs nothing a caller
-// depends on. New worst case for the whole re-announce pass:
-// 5 (getVoltage) + 5 (getRSSI) + 20 (publish) + 20 (loc_flush_pending_answer)
-// = 50 s, comfortably under the 95 s budget even if every step stalls.
+// then a publish) can, at the library's unbounded 30 s x 3 default, sit in
+// modem waits long enough by itself to blow the 95 s watchdog block-tick
+// budget (watchdog.c) twice over in one stage. Neither reading needs a
+// retry -- refresh_batt_mv()/refresh_rssi_dbm() (modes.c) already fall back
+// to the last known-good value (or a fixed placeholder) on any failure, so
+// a bounded single attempt costs nothing a caller depends on. New worst
+// case for the whole re-announce pass: 5 (getVoltage) + 5 (getRSSI) + 20
+// (publish) = 30 s, comfortably under the 95 s budget even if every step
+// stalls. (LOCATION_TRACKING_DESIGN.md §7, task F5: this pass used to also
+// call loc_flush_pending_answer(), +20s worst case -- gone with route 2.)
 #define PAGER_VMON_ATTEMPTS 1
 #define PAGER_VMON_TIMEOUT_MS 5000u
 #define PAGER_CSQ_ATTEMPTS 1
@@ -2226,6 +2254,11 @@ extern "C" bool net_get_cell_info(net_cell_info_t *out)
         *out = s_cell_cache;
     }
     return s_cell_cache.valid;
+}
+
+extern "C" void net_force_cell_refresh(void)
+{
+    s_cell_info_stale = true;
 }
 
 extern "C" void net_set_accel_wake(bool on)

@@ -244,6 +244,40 @@ bool net_publish(const char *topic, char *buf, uint16_t len, uint8_t qos);
  * extra if it was already in an active RRC state (PENDING_HW). */
 bool net_publish_raw(const char *topic, uint8_t *buf, uint16_t len, uint8_t qos);
 
+/* LOCATION_TRACKING_DESIGN.md §4 (task F2): fires on modes_run()'s own task
+ * right after a liveness SUBSCRIBE is SENT (both xport_lte.cpp send sites —
+ * the routine idle-ping/resume-repair one and the RESUB_VERDICT_RETRY one —
+ * fire it right after the send succeeds, not after the SUBACK) and after any
+ * successful QoS 1 publish (`/status`, `/up`; §4 item 3: a QoS 0 publish
+ * proves nothing about the session and must NOT fire this). The WiFi xport
+ * fires it the same way: right after MQTT_EVENT_SUBSCRIBED (its own
+ * closest analogue to a liveness proof — esp-mqtt owns its PINGREQ cadence
+ * itself, so there is no separate "SUBSCRIBE sent" moment there) and after
+ * any QoS 1 PUBLISHED event. One callback for both transports, same
+ * "registers one callback that both transports call" pattern
+ * net_set_msg_cb() already uses. loc.c's device section (F3) is the one
+ * caller: it uses this window to check whether a tracking report is due
+ * and, if so, publish inside the RRC inactivity tail this call proves is
+ * open, at zero extra radio-wake cost (§4's own "rides the same RRC
+ * connection" rule). No modem/sleep-state effect of its own — purely a
+ * software notification hook. */
+typedef void (*net_uplink_window_cb_t)(void);
+void net_set_uplink_window_cb(net_uplink_window_cb_t cb);
+
+/* LOCATION_TRACKING_DESIGN.md §4 item 4 (task F2): forces an early liveness
+ * SUBSCRIBE through the ordinary verdict path (xport_lte.cpp's
+ * lte_service_session(), same code a routine idle-timeout ping already
+ * runs) instead of waiting out PAGER_MQTT_PING_S of uplink silence — "a
+ * ping replaced, not added": the next routine ping is timed from this one.
+ * If a SUBACK is already outstanding (`s_resub_wait`), this call is a
+ * no-op — the report that wanted it waits for that one to resolve, same as
+ * §4 item 4's own text ("If a SUBACK is outstanding, the report waits").
+ * No-op on the WiFi xport (esp-mqtt owns its own PINGREQ cadence; there is
+ * no raw re-SUBSCRIBE to send early). Power effect: same as an ordinary
+ * liveness ping (net_service_session()'s own doc comment) — one AT round
+ * trip, RRC time for one subscribe if the modem was idle. */
+void net_liveness_ping_now(void);
+
 /* 23 Sep display-corruption fix (publish_quiet.h's own module comment):
  * blocks (vTaskDelay, never a tight loop) while a pager-originated publish
  * issued via net_publish()/net_publish_raw() is outstanding or has
@@ -560,7 +594,7 @@ void net_ack_disconnect_edge(void);
 /* v0.2 §9.4: the idle-uplink liveness ping / silent-resume repair. Call once
  * per wake-and-drain loop iteration from modes.c's own task (never from an
  * event callback), guarded by the same three suppressions the reconnect path
- * already honours (coverage duty cycle, location route 2, a CA-apply trial).
+ * already honours (coverage duty cycle, a CA-apply trial -- route 2, the third one this comment used to name, is gone: LOCATION_TRACKING_DESIGN.md §7).
  * Sends a raw AT+SQNSMQTTSUBSCRIBE to the down-topic (via WalterModem::sendCmd(),
  * the same path net_debug_at() uses) every PAGER_MQTT_PING_S seconds of
  * uplink silence, or immediately after a modem-initiated resume (§9.1 item 2)
@@ -586,8 +620,9 @@ void net_ack_disconnect_edge(void);
  * either dead-detection edge) one AT+SQNSMQTTDISCONNECT.
  *
  * docs/WIFI_TASKS.md W4: modes.c now calls this unconditionally, every wake
- * cycle; the three suppressions (coverage duty cycle, location route 2, a
- * CA-apply trial) that used to gate the call site instead gate the LTE
+ * cycle; the two suppressions (coverage duty cycle, a
+ * CA-apply trial -- a third, location route 2, is gone: LOCATION_TRACKING_DESIGN.md §7)
+ * that used to gate the call site instead gate the LTE
  * transport internally via net_set_lte_suppressed() below -- they are about
  * the *modem*, so they must not also silence a future WiFi transport's
  * service tick. */
@@ -606,9 +641,10 @@ net_xport_t net_xport_active(void);
  * §3: "nothing turns it on by itself"). */
 void net_xport_switch(net_xport_t to);
 
-/* docs/WIFI_TASKS.md W4: the three suppressions that used to gate
- * modes.c's net_service_session() call site (coverage duty cycle, location
- * route 2, a CA-apply trial -- all about the *modem*) now gate the LTE
+/* docs/WIFI_TASKS.md W4: the suppressions that used to gate
+ * modes.c's net_service_session() call site (coverage duty cycle, a
+ * CA-apply trial -- all about the *modem*; a third, location route 2, is
+ * gone, LOCATION_TRACKING_DESIGN.md §7) now gate the LTE
  * transport's service tick from inside net_service_session() instead, so a
  * future WiFi transport's tick is never silenced by them. modes.c calls this
  * with the same boolean expression it used to guard the call site with,
@@ -822,8 +858,8 @@ bool net_gnss_config(void);
 bool net_gnss_assistance_due(int32_t *out_seconds_to_update);
 
 /* gnssUpdateAssistance(REALTIME_EPHEMERIS): downloads over the still-attached
- * LTE session (must run before any detach — route 2). Blocking, bounded by
- * the modem's own command timeout; logs elapsed time as a stand-in for the
+ * LTE session. Blocking, bounded by the modem's own command timeout; logs
+ * elapsed time as a stand-in for the
  * byte cost V02_DESIGN.md §5 asks to be measured (the vendor API reports
  * neither bytes nor a progress callback). Power effect: one LTE-attached
  * data transaction, a few kB (PENDING_HW, UNVERIFIED size — look for
@@ -852,12 +888,14 @@ void net_gnss_cancel(void);
  * loc_service(), from modes_run()). */
 bool net_gnss_poll_event(net_gnss_event_t *out);
 
-/* CFUN=4-equivalent (WALTER_MODEM_OPSTATE_NO_RF) — route 2's deliberate
- * radio-off window. Caller must already have called net_session_down()
- * (MQTT) first; modes.c's ordinary F1/F3/F4 recovery machinery must be
- * suppressed around this call and net_radio_on()/net_is_attached() below
- * (see modes_set_loc_suppress()). Power effect: LTE radio off; GNSS free of
- * LTE contention. */
+/* CFUN=4-equivalent (WALTER_MODEM_OPSTATE_NO_RF). LOCATION_TRACKING_
+ * DESIGN.md §7 (task F5): loc.c no longer calls this (route 2, the
+ * deliberate CFUN=4 GNSS fallback, is deleted — GNSS is in-place only now).
+ * Kept for coverage.c's own duty-cycle radio-off window: caller must
+ * already have called net_session_down() (MQTT) first, and modes.c's
+ * ordinary F1/F3/F4 recovery machinery must be suppressed around this call
+ * and net_radio_on()/net_is_attached() below while the duty cycle owns the
+ * radio (modes_coverage_owns_radio()). Power effect: LTE radio off. */
 bool net_radio_off(void);
 
 /* Leaves the window: WALTER_MODEM_OPSTATE_FULL. Does not wait for
@@ -926,6 +964,18 @@ typedef struct {
  * rule). Power effect: 0 or 1 AT round trip, no RRC of its own -- same class
  * as net_check()/net_get_rssi(). */
 bool net_get_cell_info(net_cell_info_t *out);
+
+/* LOCATION_TRACKING_DESIGN.md §4 item 2 (this task): marks the cell cache
+ * stale so the NEXT net_get_cell_info() call forces a fresh AT+SQNMONI
+ * round trip, catching a `+CEREG` change URC lost in light sleep (§0's own
+ * "a URC lost in light sleep is a missed change" gap). Call right before
+ * building an unsolicited tracking report so its `cell` sub-map reflects
+ * the modem's CURRENT serving cell rather than a stale one — the piggyback
+ * happens inside an RRC window already open for the liveness SUBSCRIBE
+ * (§4 item 2), so this costs no new radio wake. No effect of its own
+ * (no AT command sent) — the refresh happens on the next
+ * net_get_cell_info() call, same as it would on a genuine cell change. */
+void net_force_cell_refresh(void);
 
 /* Enables or disables LIS3DH INT1 (pins.h PAGER_PIN_LIS3DH_INT1) as a
  * second light-sleep wake source alongside the button's ext0

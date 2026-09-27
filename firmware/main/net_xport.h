@@ -57,6 +57,11 @@ typedef struct {
     /* net_take_memfull_delta() / net_take_oversize_delta() */
     uint32_t (*take_memfull_delta)(void);
     uint32_t (*take_oversize_delta)(void);
+
+    /* net_liveness_ping_now() (LOCATION_TRACKING_DESIGN.md §4 item 4, task
+     * F2). xport_wifi.c's own is a no-op: esp-mqtt owns its PINGREQ cadence
+     * itself, there is no raw re-SUBSCRIBE to send early. */
+    void (*ping_now)(void);
 } net_xport_ops_t;
 
 /* Implemented in xport_lte.cpp: returns the ops table wired to the moved,
@@ -84,6 +89,13 @@ const net_xport_ops_t *xport_wifi_ops(void);
  * not part of this vtable's own contract. No-op if no callback is
  * registered yet. */
 void net_dispatch_msg(const char *topic, const char *body, uint16_t len);
+
+/* net.cpp's own trampoline to the single callback registered via
+ * net_set_uplink_window_cb() (net.h) -- same "xport_wifi.c calls the
+ * trampoline, never net_internal.h's statics directly" pattern
+ * net_dispatch_msg() above documents. No-op if no callback is registered
+ * yet. LOCATION_TRACKING_DESIGN.md task F2. */
+void net_dispatch_uplink_window(void);
 
 #ifdef __cplusplus
 }

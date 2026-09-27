@@ -500,9 +500,8 @@ static void service_fetching(void)
 
     // Two-phase apply, step 1: point profile 2 at the scratch slot,
     // validated, and reconnect. Hidden from modes.c's own reconnect/
-    // watchdog/health-check machinery, same pattern loc.c's route-2 CFUN=4
-    // window already established (modes_set_loc_suppress()'s own doc
-    // comment).
+    // watchdog/health-check machinery via modes_set_ca_apply_suppress()
+    // (its own doc comment).
     s_apply_rollback_validated = (catrust_get_state() == CATRUST_PINNED);
     modes_set_ca_apply_suppress(true);
     net_session_down();
