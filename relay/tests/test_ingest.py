@@ -663,6 +663,22 @@ def test_status_persists_tls_ca_fp_loc_backoff_s_sms_lost():
     assert status.smsLost == 1
 
 
+# ---- docs/LOCATION_TRACKING_DESIGN.md §5 P2/P3 (this task): loc_move_s ----
+
+
+def test_status_with_loc_move_s_stores_loc_move_s():
+    _make_user("loctrackuser", "loctrackuser")
+    _make_pager_device("pgr-locmove-1", "loctrackuser")
+    ingest, _broker = _ingest()
+
+    ingest.handle_status(
+        status_topic("pgr-locmove-1"),
+        online_status_payload("s_00000001", loc_move_s=3600),
+    )
+
+    assert devices_store.get_device("pgr-locmove-1").status.locMoveS == 3600
+
+
 # ---- docs/WIFI_DESIGN.md §6/§7, docs/WIFI_TASKS.md W7: `xport` ----
 
 

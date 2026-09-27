@@ -59,10 +59,14 @@ def _loc_env(
     lon: float = -122.4194,
     err: str | None = None,
     cell: CellInfo | None = None,
+    why: str | None = None,
+    ts: int | None = None,
 ) -> LocEnvelope:
-    ts = int(time.time())
+    ts = ts if ts is not None else int(time.time())
     loc = None if err else LocFix(lat=lat, lon=lon, fix_ts=ts, src="gnss")
-    return LocEnvelope(id=new_id("l_"), ts=ts, loc=loc, req=req, cached=False, err=err, cell=cell)
+    return LocEnvelope(
+        id=new_id("l_"), ts=ts, loc=loc, req=req, cached=False, err=err, cell=cell, why=why
+    )
 
 
 def _cell_info(**overrides) -> CellInfo:
@@ -83,6 +87,28 @@ def _backdate_loc_req(device_id: str, seconds_ago: int) -> None:
     from app.db.firestore import get_db
 
     ref = get_db().collection("locReqs").document(device_id)
+    data = ref.get().to_dict()
+    data["createdAt"] = datetime.now(UTC) - timedelta(seconds=seconds_ago)
+    ref.set(data)
+
+
+def _backdate_latest_location(device_id: str, seconds_ago: int) -> None:
+    """Directly overwrites the newest `devices/{device_id}/locations` doc's
+    `createdAt` to simulate the passage of real time, without sleeping in a
+    test -- same idiom as `_backdate_loc_req` above. Needed because R6/R3
+    (docs/LOCATION_TRACKING_DESIGN.md §5, this task) age a doc off its real
+    Firestore `createdAt`, which a synthetic `_loc_env(ts=...)` cannot move."""
+    from app.db.firestore import get_db
+
+    fixes = locations_store.list_locations(device_id, limit=1)
+    assert fixes, "no location doc to backdate"
+    ref = (
+        get_db()
+        .collection("devices")
+        .document(device_id)
+        .collection("locations")
+        .document(fixes[0].id)
+    )
     data = ref.get().to_dict()
     data["createdAt"] = datetime.now(UTC) - timedelta(seconds=seconds_ago)
     ref.set(data)
@@ -880,3 +906,285 @@ def test_cell_periodic_unsolicited_answer_resolves_and_stores(monkeypatch: pytes
     assert len(fixes) == 1
     assert fixes[0].src == "cell"
     assert fixes[0].reqId is None
+
+
+# ---------------------------------------------------------------------------
+# S1: R1, R2, R8 (docs/LOCATION_TRACKING_DESIGN.md §5, this task)
+# ---------------------------------------------------------------------------
+
+
+def test_unsolicited_cell_loc_stores_one_doc_without_reading_loc_reqs(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+):
+    """R1: an unsolicited `/loc` no longer builds `req_ref`, so it never
+    does a transactional `locReqs` read and never logs "late /loc ... no
+    live loc_req, dropped" for a report that was never answering anything."""
+    monkeypatch.setattr(
+        cellgeo, "resolve", lambda cell: cellgeo.CellFix(lat=1.0, lon=2.0, acc_m=500, provider="google")
+    )
+    _make_user("student", "student")
+    _make_pager_device("pgr-loc-r1-1", "student")
+
+    calls = {"n": 0}
+    original_loc_reqs = location._loc_reqs
+
+    def _counting_loc_reqs():
+        calls["n"] += 1
+        return original_loc_reqs()
+
+    monkeypatch.setattr(location, "_loc_reqs", _counting_loc_reqs)
+
+    with caplog.at_level("INFO", logger="relay.location"):
+        location.ingest_loc("pgr-loc-r1-1", _loc_env(err="no_fix", cell=_cell_info()))
+
+    fixes = locations_store.list_locations("pgr-loc-r1-1")
+    assert len(fixes) == 1
+    assert fixes[0].src == "cell"
+    assert fixes[0].reqId is None
+    assert calls["n"] == 0
+    assert not any("no live loc_req" in rec.message for rec in caplog.records)
+
+
+def test_locate_after_unsolicited_cell_report_still_dispatches(monkeypatch: pytest.MonkeyPatch):
+    """R2: the newest doc being an unsolicited (`reqId:None`) `src:"cell"`
+    fix must NOT be treated as a cached answer -- `/locate` still claims a
+    fresh `loc_req` and delivers it."""
+    monkeypatch.setattr(
+        cellgeo, "resolve", lambda cell: cellgeo.CellFix(lat=1.0, lon=2.0, acc_m=500, provider="google")
+    )
+    _make_user("mom", "mom")
+    _make_user("student", "student")
+    allow_store.set_edge("mom", "student", message=True, locate=True)
+    _make_pager_device("pgr-loc-r2-1", "student")
+    device = devices_store.get_device("pgr-loc-r2-1")
+
+    location.ingest_loc("pgr-loc-r2-1", _loc_env(err="no_fix", cell=_cell_info()))
+
+    _routing, broker, loc = _setup()
+    outcome = loc.locate(requester_uid="mom", device=device)
+
+    assert outcome.cached is False
+    assert outcome.request_id is not None
+    assert len(broker.published) == 1
+
+
+def test_locate_after_cell_resolved_answer_is_still_cached(monkeypatch: pytest.MonkeyPatch):
+    """R2's guard against being "fixed" to gnss-only: a cell-resolved fix
+    that *answered* a `loc_req` (`reqId` set) must still satisfy rule 6, or
+    a second requester within 60s triggers a second `/down` (PROTOCOL.md
+    §13.3 item 7)."""
+    monkeypatch.setattr(
+        cellgeo, "resolve", lambda cell: cellgeo.CellFix(lat=1.0, lon=2.0, acc_m=500, provider="google")
+    )
+    _make_user("mom", "mom")
+    _make_user("dad", "dad")
+    _make_user("student", "student")
+    allow_store.set_edge("mom", "student", message=True, locate=True)
+    allow_store.set_edge("dad", "student", message=True, locate=True)
+    _make_pager_device("pgr-loc-r2-2", "student")
+    device = devices_store.get_device("pgr-loc-r2-2")
+
+    _routing, broker, loc = _setup()
+    outcome = loc.locate(requester_uid="mom", device=device)
+    location.ingest_loc(
+        "pgr-loc-r2-2", _loc_env(req=outcome.request_id, err="no_fix", cell=_cell_info())
+    )
+
+    second = loc.locate(requester_uid="dad", device=device)
+    assert second.cached is True
+    assert len(broker.published) == 1  # only the first claim published anything
+
+
+def test_same_loc_id_from_two_devices_is_not_deduped():
+    """R8: the dedup key is `{deviceId}_{id}`, not the bare `id` -- two
+    devices reporting the same (32-random-bit) `id` must not collide."""
+    _make_user("student", "student")
+    _make_pager_device("pgr-loc-r8-a", "student")
+    _make_pager_device("pgr-loc-r8-b", "student")
+
+    shared_id = new_id("l_")
+    ts = int(time.time())
+    env = LocEnvelope(
+        id=shared_id,
+        ts=ts,
+        loc=LocFix(lat=1.0, lon=2.0, fix_ts=ts, src="gnss"),
+        req=None,
+        cached=False,
+    )
+
+    location.ingest_loc("pgr-loc-r8-a", env)
+    location.ingest_loc("pgr-loc-r8-b", env)
+
+    assert len(locations_store.list_locations("pgr-loc-r8-a")) == 1
+    assert len(locations_store.list_locations("pgr-loc-r8-b")) == 1
+
+    # The existing single-device dedup (test_duplicate_loc_id_is_deduped_
+    # not_stored_twice, above) must still pass -- confirmed by re-running it
+    # here against the same shared id on one of these two devices.
+    location.ingest_loc("pgr-loc-r8-a", env)
+    assert len(locations_store.list_locations("pgr-loc-r8-a")) == 1
+
+
+# ---------------------------------------------------------------------------
+# S3: R3 dwell, `why` storage, R6, R7 (docs/LOCATION_TRACKING_DESIGN.md §5,
+# this task)
+# ---------------------------------------------------------------------------
+
+
+def test_hourly_same_cell_reports_extend_one_dwell_doc(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(
+        cellgeo, "resolve", lambda cell: cellgeo.CellFix(lat=1.0, lon=2.0, acc_m=500, provider="google")
+    )
+    _make_user("student", "student")
+    _make_pager_device("pgr-loc-dwell-1", "student")
+    cell = _cell_info()
+
+    location.ingest_loc(
+        "pgr-loc-dwell-1", _loc_env(err="no_fix", cell=cell, why="cell", ts=1_700_000_000)
+    )
+    _backdate_latest_location("pgr-loc-dwell-1", seconds_ago=65)
+
+    location.ingest_loc(
+        "pgr-loc-dwell-1", _loc_env(err="no_fix", cell=cell, why="still", ts=1_700_000_100)
+    )
+    location.ingest_loc(
+        "pgr-loc-dwell-1", _loc_env(err="no_fix", cell=cell, why="still", ts=1_700_000_200)
+    )
+
+    fixes = locations_store.list_locations("pgr-loc-dwell-1")
+    assert len(fixes) == 1
+    assert fixes[0].lastTs == 1_700_000_200
+    assert fixes[0].why == "still"
+
+
+def test_new_cell_or_gnss_breaks_the_dwell(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(
+        cellgeo, "resolve", lambda cell: cellgeo.CellFix(lat=1.0, lon=2.0, acc_m=500, provider="google")
+    )
+    _make_user("student", "student")
+    _make_pager_device("pgr-loc-dwell-2", "student")
+    cell_a = _cell_info(tac=100, ci=1)
+    cell_b = _cell_info(tac=200, ci=2)
+
+    location.ingest_loc("pgr-loc-dwell-2", _loc_env(err="no_fix", cell=cell_a, ts=1_700_000_000))
+    _backdate_latest_location("pgr-loc-dwell-2", seconds_ago=65)
+    location.ingest_loc("pgr-loc-dwell-2", _loc_env(err="no_fix", cell=cell_b, ts=1_700_000_100))
+    _backdate_latest_location("pgr-loc-dwell-2", seconds_ago=65)
+    location.ingest_loc("pgr-loc-dwell-2", _loc_env(err="no_fix", cell=cell_a, ts=1_700_000_200))
+
+    assert len(locations_store.list_locations("pgr-loc-dwell-2")) == 3
+
+
+def test_gnss_fix_breaks_the_dwell(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(
+        cellgeo, "resolve", lambda cell: cellgeo.CellFix(lat=1.0, lon=2.0, acc_m=500, provider="google")
+    )
+    _make_user("student", "student")
+    _make_pager_device("pgr-loc-dwell-3", "student")
+    cell = _cell_info()
+
+    location.ingest_loc("pgr-loc-dwell-3", _loc_env(err="no_fix", cell=cell, ts=1_700_000_000))
+    _backdate_latest_location("pgr-loc-dwell-3", seconds_ago=65)
+    # A real GNSS fix -- no `cell`, no dwell-eligible src:"cell".
+    location.ingest_loc("pgr-loc-dwell-3", _loc_env(ts=1_700_000_100))
+    _backdate_latest_location("pgr-loc-dwell-3", seconds_ago=65)
+    location.ingest_loc("pgr-loc-dwell-3", _loc_env(err="no_fix", cell=cell, ts=1_700_000_200))
+
+    assert len(locations_store.list_locations("pgr-loc-dwell-3")) == 3
+
+
+def test_dwell_doc_older_than_24h_is_not_extended(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(
+        cellgeo, "resolve", lambda cell: cellgeo.CellFix(lat=1.0, lon=2.0, acc_m=500, provider="google")
+    )
+    _make_user("student", "student")
+    _make_pager_device("pgr-loc-dwell-4", "student")
+    cell = _cell_info()
+
+    location.ingest_loc("pgr-loc-dwell-4", _loc_env(err="no_fix", cell=cell, ts=1_700_000_000))
+    _backdate_latest_location("pgr-loc-dwell-4", seconds_ago=25 * 60 * 60)
+
+    location.ingest_loc("pgr-loc-dwell-4", _loc_env(err="no_fix", cell=cell, ts=1_700_100_000))
+
+    assert len(locations_store.list_locations("pgr-loc-dwell-4")) == 2
+
+
+def test_answer_with_req_never_extends_a_dwell(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(
+        cellgeo, "resolve", lambda cell: cellgeo.CellFix(lat=1.0, lon=2.0, acc_m=500, provider="google")
+    )
+    _make_user("student", "student")
+    _make_pager_device("pgr-loc-dwell-5", "student")
+    cell = _cell_info()
+
+    location.ingest_loc("pgr-loc-dwell-5", _loc_env(err="no_fix", cell=cell, ts=1_700_000_000))
+    _backdate_latest_location("pgr-loc-dwell-5", seconds_ago=65)
+
+    # `req` need not resolve to a live loc_req for this assertion -- R3 only
+    # cares that `env.req is not None`; the (irrelevant here) fulfilment
+    # logic separately logs-and-drops it as "no live loc_req".
+    location.ingest_loc(
+        "pgr-loc-dwell-5",
+        _loc_env(req="m_doesnotexist", err="no_fix", cell=cell, ts=1_700_000_200),
+    )
+
+    assert len(locations_store.list_locations("pgr-loc-dwell-5")) == 2
+
+
+def test_why_stored_on_doc():
+    _make_user("student", "student")
+    _make_pager_device("pgr-loc-why-1", "student")
+
+    location.ingest_loc("pgr-loc-why-1", _loc_env(why="move"))
+
+    fixes = locations_store.list_locations("pgr-loc-why-1")
+    assert len(fixes) == 1
+    assert fixes[0].why == "move"
+
+
+def test_unsolicited_within_60s_skips_provider(monkeypatch: pytest.MonkeyPatch):
+    calls = {"n": 0}
+
+    def _resolve(cell):
+        calls["n"] += 1
+        return cellgeo.CellFix(lat=1.0, lon=2.0, acc_m=500, provider="google")
+
+    monkeypatch.setattr(cellgeo, "resolve", _resolve)
+    _make_user("student", "student")
+    _make_pager_device("pgr-loc-r6-1", "student")
+    cell_first = _cell_info(rsrp=-90)
+    cell_second = _cell_info(rsrp=-80)
+
+    ts1 = int(time.time())
+    location.ingest_loc("pgr-loc-r6-1", _loc_env(err="no_fix", cell=cell_first, ts=ts1))
+    ts2 = ts1 + 10
+    location.ingest_loc("pgr-loc-r6-1", _loc_env(err="no_fix", cell=cell_second, ts=ts2))
+
+    assert calls["n"] == 1
+    assert len(locations_store.list_locations("pgr-loc-r6-1")) == 1
+
+    device_after = devices_store.get_device("pgr-loc-r6-1")
+    assert device_after.status.lastCell is not None
+    assert device_after.status.lastCell.ts == ts2
+    assert device_after.status.lastCell.rsrp == -80
+
+
+def test_older_report_does_not_regress_last_cell(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(
+        cellgeo, "resolve", lambda cell: cellgeo.CellFix(lat=1.0, lon=2.0, acc_m=500, provider="google")
+    )
+    _make_user("student", "student")
+    _make_pager_device("pgr-loc-r7-1", "student")
+
+    t2 = int(time.time())
+    t1 = t2 - 500
+    cell_a = _cell_info(tac=1)
+    cell_b = _cell_info(tac=2)
+
+    location.ingest_loc("pgr-loc-r7-1", _loc_env(err="no_fix", cell=cell_b, ts=t2))
+    location.ingest_loc("pgr-loc-r7-1", _loc_env(err="no_fix", cell=cell_a, ts=t1))
+
+    device_after = devices_store.get_device("pgr-loc-r7-1")
+    assert device_after.status.lastCell is not None
+    assert device_after.status.lastCell.tac == 2
+    assert device_after.status.lastCell.ts == t2

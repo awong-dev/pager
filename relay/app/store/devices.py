@@ -14,7 +14,7 @@ import time
 from datetime import datetime
 from typing import Literal
 
-from google.cloud.firestore import FieldFilter
+from google.cloud.firestore import FieldFilter, Transaction
 from pydantic import BaseModel, ConfigDict, field_validator
 
 from app.db.firestore import get_db
@@ -95,6 +95,11 @@ class DeviceStatus(BaseModel):
     caFp: str | None = None
     # docs/V02_DESIGN.md §5 (location): the device's own reported backoff.
     locBackoffS: int | None = None
+    # docs/LOCATION_TRACKING_DESIGN.md §5 P2/P3, docs/PROTOCOL.md §13.3 item
+    # 9 (this task): the GNSS-while-moving interval the device reports while
+    # tracking is on, seconds, 0/absent = off. Display/diagnosis only, same
+    # as `locBackoffS` above.
+    locMoveS: int | None = None
     # docs/V02_DESIGN.md §6/§7 (device SMS): audit-queue drop counter.
     smsLost: int | None = None
     # docs/V02_DESIGN.md §9.5/§7 (this task): MQTT-session generation within
@@ -383,14 +388,48 @@ def clear_auth_alarm(device_id: str) -> None:
     )
 
 
-def set_last_cell(device_id: str, cell: CellInfo, ts: int) -> None:
-    """docs/PROTOCOL.md §13.2 (this task): called by `app/location.py`'s
-    `ingest_loc` whenever a `/loc` envelope carries a `cell` field, whether
-    or not `app/cellgeo.py` resolves it to a position and whether or not the
-    pager also sent a real GNSS fix -- "the cell is only recorded" in that
-    second case. A merge write (like `set_auth_alarm`/`update_status`
-    above), so this never disturbs the rest of `status`."""
-    _devices().document(device_id).set(
+def read_last_cell_ts(device_id: str, transaction: Transaction) -> int | None:
+    """docs/LOCATION_TRACKING_DESIGN.md §5 R7 (this task): the read half of
+    `set_last_cell`'s monotonic check, split into its own function because
+    Firestore transactions require every read to happen before any write
+    (`app/db/firestore.py`'s `run_transaction` docstring) -- `ingest_loc`
+    calls this during its own transaction's read phase, then passes the
+    result to `set_last_cell` (a write-only function below) once every read
+    it needs is done. `None` when the device doc doesn't exist yet or has
+    never recorded a `lastCell`."""
+    snap = _devices().document(device_id).get(transaction=transaction)
+    if not snap.exists:
+        return None
+    last_cell = ((snap.to_dict() or {}).get("status") or {}).get("lastCell") or {}
+    return last_cell.get("ts")
+
+
+def set_last_cell(
+    device_id: str, cell: CellInfo, ts: int, transaction: Transaction, *, existing_ts: int | None
+) -> None:
+    """docs/PROTOCOL.md §13.2: called by `app/location.py`'s `ingest_loc`
+    whenever a `/loc` envelope carries a `cell` field, whether or not
+    `app/cellgeo.py` resolves it to a position and whether or not the pager
+    also sent a real GNSS fix -- "the cell is only recorded" in that second
+    case. A merge write (like `set_auth_alarm`/`update_status` above), so
+    this never disturbs the rest of `status`.
+
+    docs/LOCATION_TRACKING_DESIGN.md §5 R7 (this task): **monotonic** --
+    writes only when `existing_ts` (read by the caller during the
+    transaction's own read phase, via `read_last_cell_ts` above -- this
+    function stages a write only, never a read, for the same read-before-
+    write reason that function's docstring gives) is missing or `<= ts`, so
+    an older QoS 0 `/loc` report that lands after a newer one (concurrent
+    webhooks racing, no ordering guarantee at QoS 0) cannot regress "last
+    known cell". Always called from inside `ingest_loc`'s own dedup/
+    fulfilment transaction (the preferred of this task's two options over a
+    second small transaction on this doc alone), so a deduped duplicate --
+    caught by that transaction's own `locWireIds` `AlreadyExists` guard --
+    never gets a chance to run this at all."""
+    if existing_ts is not None and existing_ts > ts:
+        return
+    transaction.set(
+        _devices().document(device_id),
         {
             "status": {
                 "lastCell": {

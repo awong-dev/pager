@@ -142,6 +142,13 @@ KEYMAP: dict[str, int] = {
     # main loop was stuck on. Next free integer after `bpull=58`, same
     # "next free integer" convention as every other addition on this list.
     "stallcmd": 59,
+    # docs/LOCATION_TRACKING_DESIGN.md §5 P3, docs/PROTOCOL.md §10/§13.2:
+    # `why` = the reason an unsolicited `/loc` was sent (tstr,
+    # still|cell|move|gnss|stop), `loc_move_s` = `/status`'s GNSS-while-moving
+    # interval (int, 0 = off). Both optional; next free integers after
+    # `stallcmd=59`.
+    "why": 60,
+    "loc_move_s": 61,
 }
 REVERSE_KEYMAP: dict[int, str] = {v: k for k, v in KEYMAP.items()}
 

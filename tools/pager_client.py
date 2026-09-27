@@ -44,7 +44,8 @@ docs/PROTOCOL.md §3.2's `contact_req`/`book`/`cfg` kinds):
   Device: connect, disconnect, crash, inbox, msg, ack, autoack, status, bytes,
           loc <lat> <lon> [acc] | loc auto <period_s> [--walk] |
           loc min <s> | loc fail on|off | loc backoff <s> |
-          loc cell <mcc,mnc,tac,ci[,rsrp]>|off,
+          loc cell <mcc,mnc,tac,ci[,rsrp]>|off |
+          loc report <still|cell|move|gnss|stop> | loc track <period_s>,
           contactreq <name> [phone-or-alias],
           sms out <phone> <text...> | sms in <phone> <text...>
   Server: login, contacts, chat, say, watch, tick, sweep, locate <alias>,
@@ -270,6 +271,13 @@ class DeviceClient:
         self._client: mqtt.Client | None = None
         self._loc_period_s = 0
         self._loc_min_s = 120
+        # docs/LOCATION_TRACKING_DESIGN.md §5 R5 (this task): `loc track
+        # <period_s>` sets both -- `_tracking` gates `/status`'s `loc_move_s`
+        # (§5 P2: "the current mode travels on each /loc as why, not in
+        # /status" -- `loc_move_s` alone is what a real device reports there),
+        # `_loc_move_s` is the value reported while it's on.
+        self._tracking = False
+        self._loc_move_s = 0
         # §14.2 device-side `/up`, `/status`, `/loc` counter: `n = (epoch <<
         # 20) | lo`. This process plays one cold boot per `DeviceClient`
         # instance (epoch/lo start at 0) and one more per `crash()` (a real
@@ -596,6 +604,11 @@ class DeviceClient:
         }
         if self.ca_fp is not None:
             obj["ca_fp"] = self.ca_fp
+        # docs/LOCATION_TRACKING_DESIGN.md §5 P2/P3 (this task): reported
+        # only while `loc track` is on -- absent otherwise, same "absent
+        # means off/unset" treatment as `ca_fp` above.
+        if self._tracking:
+            obj["loc_move_s"] = self._loc_move_s
         self._publish(self.status_topic, obj, qos=1, retain=True)
 
     def publish_ack(self, msg_id: str, ack: str) -> None:
@@ -784,7 +797,13 @@ class DeviceClient:
         return fix
 
     def publish_loc(
-        self, *, req: str | None, loc: dict[str, Any] | None, cached: bool, err: str | None = None
+        self,
+        *,
+        req: str | None,
+        loc: dict[str, Any] | None,
+        cached: bool,
+        err: str | None = None,
+        why: str | None = None,
     ) -> str:
         loc_id = new_id("l_")
         obj: dict[str, Any] = {"v": 1, "id": loc_id, "ts": now_ts(), "loc": loc, "req": req}
@@ -802,11 +821,20 @@ class DeviceClient:
         # fallback path.)
         if loc is None and self._cell is not None:
             obj["cell"] = self._cell
+        # docs/LOCATION_TRACKING_DESIGN.md §5 R5, docs/PROTOCOL.md §13.2/§10
+        # key 60 (this task): why an unsolicited report was sent -- added to
+        # `obj` only when the caller passes one, same "absent unless set"
+        # treatment as `cached`/`err` above.
+        if why is not None:
+            obj["why"] = why
         # PROTOCOL.md §2: QoS 1 when `req` is non-null (an answer someone is
         # waiting on), QoS 0 otherwise (an unsolicited periodic fix).
         qos = 1 if req is not None else 0
         self._publish(self.loc_topic, obj, qos=qos)
-        print(f"-> loc {loc_id} req={req} cached={cached} err={err} loc={loc} cell={obj.get('cell')}")
+        print(
+            f"-> loc {loc_id} req={req} cached={cached} err={err} loc={loc} "
+            f"cell={obj.get('cell')} why={why}"
+        )
         return loc_id
 
     def loc_now(self, lat: float, lon: float, acc: int | None = None) -> None:
@@ -821,6 +849,42 @@ class DeviceClient:
             self.publish_loc(req=None, loc=None, cached=False, err="no_fix")
         else:
             self.publish_loc(req=None, loc=fix, cached=False)
+
+    def loc_report(self, why: str) -> None:
+        """`loc report <why>` (docs/LOCATION_TRACKING_DESIGN.md §5 R5, this
+        task): publishes one unsolicited `/loc` tagged `why` -- `req:None`,
+        `loc:None`, `err:"no_fix"`, plus this device's configured `--cell`/
+        `loc cell`, exactly the cell-only report shape §3 of that design
+        measures. Does not touch `_last_attempt_ts`/`_last_fix` (unlike
+        `loc_now`) -- a `why`-tagged report is not a fix *attempt* in
+        PROTOCOL.md §13.3 rule 1's sense, it is a cell-only side channel."""
+        self.publish_loc(req=None, loc=None, cached=False, err="no_fix", why=why)
+
+    def loc_track(self, period_s: int) -> None:
+        """`loc track <period_s>` (docs/LOCATION_TRACKING_DESIGN.md §5 R5,
+        this task): reuses `loc_auto`'s stop-event/thread machinery
+        (`loc_stop_auto` below stops either one) to publish an unsolicited
+        `why:"still"` report every `period_s` seconds instead of a real
+        fix -- this simulator's stand-in for the firmware's hourly
+        cell-fix-while-still cadence (`docs/LOCATION_TRACKING_DESIGN.md`
+        §2.1). Also turns `_tracking` on so `publish_status` reports
+        `loc_move_s` (§5 P2) for as long as tracking runs."""
+        self.loc_stop_auto()
+        self._loc_period_s = period_s
+        self._tracking = True
+        self._loc_move_s = period_s
+        if period_s <= 0:
+            self._tracking = False
+            return
+        self._auto_stop = threading.Event()
+        stop_event = self._auto_stop
+
+        def _loop() -> None:
+            while not stop_event.wait(period_s):
+                self.loc_report("still")
+
+        self._auto_thread = threading.Thread(target=_loop, daemon=True)
+        self._auto_thread.start()
 
     def loc_auto(self, period_s: int, walk: bool = False) -> None:
         """`loc auto <period_s> [--walk]`: periodic fixes (`req:null`) every
@@ -853,6 +917,8 @@ class DeviceClient:
 
     def loc_stop_auto(self) -> None:
         self._loc_period_s = 0
+        self._tracking = False
+        self._loc_move_s = 0
         if self._auto_stop is not None:
             self._auto_stop.set()
         if self._auto_thread is not None:
@@ -1707,8 +1773,29 @@ class PagerShell(cmd.Cmd):
             print(
                 "usage: loc <lat> <lon> [acc] | loc auto <period_s> [--walk] | "
                 "loc min <s> | loc fail on|off | loc backoff <s> | "
-                "loc cell <mcc,mnc,tac,ci[,rsrp]>|off"
+                "loc cell <mcc,mnc,tac,ci[,rsrp]>|off | "
+                "loc report <still|cell|move|gnss|stop> | loc track <period_s>"
             )
+            return
+        if parts[0] == "report":
+            # docs/LOCATION_TRACKING_DESIGN.md §5 R5 (this task).
+            if len(parts) != 2 or parts[1] not in ("still", "cell", "move", "gnss", "stop"):
+                print("usage: loc report <still|cell|move|gnss|stop>")
+                return
+            self.device.loc_report(parts[1])
+            return
+        if parts[0] == "track":
+            # docs/LOCATION_TRACKING_DESIGN.md §5 R5 (this task).
+            if len(parts) != 2:
+                print("usage: loc track <period_s>")
+                return
+            try:
+                period_s = int(parts[1])
+            except ValueError:
+                print("usage: loc track <period_s>")
+                return
+            self.device.loc_track(period_s)
+            print(f"loc track: period={period_s}s")
             return
         if parts[0] == "cell":
             # docs/PROTOCOL.md §13.2 (this task): same shorthand as --cell.

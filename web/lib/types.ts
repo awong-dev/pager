@@ -94,6 +94,14 @@ export interface LocationFixDoc {
   cached: boolean;
   reqId: string | null;
   createdAt: Timestamp | null;
+  // docs/LOCATION_TRACKING_DESIGN.md §5 R3/P3 -- relay/app/store/locations.py's
+  // LocationFix. `why` is the reason this report was sent; `cellKey`
+  // identifies the serving cell; `lastTs` is set only when this doc is a
+  // dwell doc extended by a later report (null on a doc that has never been
+  // extended).
+  why?: string | null;
+  cellKey?: string | null;
+  lastTs?: number | null;
 }
 
 // ---- messages/{id} -- app/store/messages.py ----

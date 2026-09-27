@@ -30,13 +30,21 @@ Two independent things live here:
 
 **Schema footnote**: §3's table
 does not list a dedup collection for `/loc` envelopes the way it lists
-`wireIds/{wireId}_{recipientUid}` for up messages. `locWireIds/{id}` below
-is the same *pattern* (a `transaction.create()`-or-`AlreadyExists` dedup
+`wireIds/{wireId}_{recipientUid}` for up messages. `locWireIds/{deviceId}_{id}`
+below is the same *pattern* (a `transaction.create()`-or-`AlreadyExists` dedup
 marker, one field: `deviceId`) applied to `/loc`'s own id space (`l_` + 8
 hex, §1) instead of reusing `wireIds`, kept as a separate collection because
 the two dedup keys are shaped differently (`wireIds` docs are keyed
 `{wireId}_{recipientUid}`; a `/loc` fix has no recipient to key against).
 This is additive to §3, not a change to it.
+
+**Dedup key, revised (docs/LOCATION_TRACKING_DESIGN.md §5 R8):** keyed
+`{deviceId}_{id}`, not bare `id` -- `id` is only 32 random bits
+(firmware `loc.c`'s id generator) and this collection is shared by every
+device, so two devices' reports can collide on the same `id` and silently
+drop one of them. `app/jobs.py`'s sweep goes by `createdAt`, so it needs no
+change for this. A duplicate that straddles the deploy of this change may
+be stored twice, once under each key shape -- acceptable, no migration.
 
 **`loc_req` is device-targeted, not user-targeted** -- which is why
 `Location.locate` does not go through
@@ -100,6 +108,25 @@ DEFAULT_LOC_REQ_TTL_S = 15 * 60
 # that (more precise, implementation-facing) wording.
 CACHED_ANSWER_WINDOW_S = 60
 
+# docs/LOCATION_TRACKING_DESIGN.md §5 R6 (this task): the relay's own mirror
+# of PROTOCOL.md §13.3 item 9's 120s device-side floor on unsolicited `/loc`
+# reports -- bounds how often a buggy or flooding device can make this relay
+# call the cell-geo provider and write a new `locations` doc. A distinct
+# concept from `CACHED_ANSWER_WINDOW_S` above (that one bounds how fresh a
+# fix must be to answer a `/locate` with no wire trip; this one bounds
+# ingest's own provider-call/write rate) that happens to share the same
+# numeric value, so kept as its own name rather than reusing that constant.
+UNSOLICITED_REPORT_FLOOR_S = 60
+
+# docs/LOCATION_TRACKING_DESIGN.md §5 R3 (this task): a dwell doc (an
+# unsolicited, `src:"cell"` fix extended in place by later reports from the
+# same cell, rather than a fresh doc per report) stops extending once its
+# `createdAt` is this old -- `app/jobs.py`'s sweep deletes `locations` by
+# `createdAt`, so an unbounded dwell doc would otherwise be swept out from
+# under a device that never changes cell, while it is still the newest point
+# on the map.
+DWELL_MAX_AGE_S = 24 * 60 * 60
+
 # PROTOCOL.md §13.3 rule 5: under heavy write contention on a single
 # device's `locReqs/{deviceId}` doc (this module's own concurrency test
 # reproduces it with N threads racing one un-claimed device), the
@@ -157,6 +184,17 @@ def _loc_wire_ids():
 # ---------------------------------------------------------------------------
 
 
+def _cell_key(cell: CellInfo | None) -> str | None:
+    """docs/LOCATION_TRACKING_DESIGN.md §5 R3 (this task): identifies the
+    serving cell a stored fix came from, so a dwell extension (`_txn` below)
+    can tell "same cell, still there" from "moved to a new cell" without
+    re-resolving anything. `None` when the envelope carried no `cell` at
+    all (a real GNSS fix, most commonly)."""
+    if cell is None:
+        return None
+    return f"{cell.mcc}-{cell.mnc}-{cell.tac}-{cell.ci}"
+
+
 def _fix_doc(env: LocEnvelope, loc: LocFix) -> dict:
     return {
         "ts": env.ts,
@@ -168,6 +206,13 @@ def _fix_doc(env: LocEnvelope, loc: LocFix) -> dict:
         "cached": env.cached,
         "reqId": env.req,
         "createdAt": SERVER_TIMESTAMP,
+        # docs/LOCATION_TRACKING_DESIGN.md §5 R3/P3 (this task): see
+        # `store/locations.py`'s `LocationFix` docstring for what each of
+        # these means. `lastTs` is `None` on insert -- only a dwell
+        # extension (`_txn` below) ever sets it.
+        "why": env.why,
+        "cellKey": _cell_key(env.cell),
+        "lastTs": None,
     }
 
 
@@ -206,6 +251,37 @@ def _resolve_cell_fallback(cell: CellInfo, fix_ts: int) -> LocFix | None:
         return None
 
 
+def _unsolicited_report_too_recent(device_id: str) -> bool:
+    """docs/LOCATION_TRACKING_DESIGN.md §5 R6 (this task): a
+    **non-transactional** read (like the device lookup in `ingest_loc`
+    below -- not part of any invariant the ingest transaction needs
+    atomicity for) of the newest `locations` doc, consulted only when
+    `ingest_loc` is about to resolve an *unsolicited* (`req: None`)
+    cell-only report. `True` when that doc is itself an unsolicited
+    (`reqId: None`) report less than `UNSOLICITED_REPORT_FLOOR_S` old --
+    ages off `max(createdAt, lastTs)` (a dwell doc's `lastTs` moves forward
+    without touching `createdAt`, so the *most recent activity* is what
+    must be compared against the floor, not the doc's original insert
+    time). A request answer (`reqId` set) never counts here -- it is a
+    different event, not part of this relay-side unsolicited-report rate
+    limit."""
+    fix_query = (
+        locations_store.locations_collection(device_id)
+        .order_by("createdAt", direction="DESCENDING")
+        .limit(1)
+    )
+    fix_snaps = fix_query.get()
+    if not fix_snaps:
+        return False
+    data = fix_snaps[0].to_dict() or {}
+    if data.get("reqId") is not None:
+        return False
+    created_age = _age_seconds(data.get("createdAt"))
+    last_ts = data.get("lastTs")
+    last_ts_age = (time.time() - last_ts) if isinstance(last_ts, (int, float)) else float("inf")
+    return min(created_age, last_ts_age) < UNSOLICITED_REPORT_FLOOR_S
+
+
 def ingest_loc(device_id: str, env: LocEnvelope) -> None:
     """§13.2: dedup on `id`, storing the fix (if any -- `env.loc` is `None`
     when the device answers `err:"no_fix"`/`"disabled"`, in which case there
@@ -226,7 +302,7 @@ def ingest_loc(device_id: str, env: LocEnvelope) -> None:
     periodic fix (`req: None`) that dedups clean simply updates
     `locations`; nothing else happens.
 
-    **Cell-tower fallback (this task, §13.2):** when the device has no GNSS
+    **Cell-tower fallback (§13.2):** when the device has no GNSS
     fix but sent a `cell`, `_resolve_cell_fallback` (an HTTP call, so it must
     run *before* the transaction below, same reasoning as the device lookup)
     either produces a `LocFix` with `src:"cell"` -- treated exactly like a
@@ -234,8 +310,30 @@ def ingest_loc(device_id: str, env: LocEnvelope) -> None:
     to fulfil `req` if set -- or `None`, in which case behaviour is
     identical to today's `no_fix` handling. "The GNSS fix wins" when both
     are present: the cell fallback is only ever attempted when `env.loc is
-    None`."""
-    dedup_ref = _loc_wire_ids().document(env.id)
+    None`.
+
+    **R1 (this task):** `req_ref`/`loc_field` below are only built when
+    `env.req is not None` -- an unsolicited periodic/cell report has no
+    `loc_req` to resolve, so building them anyway cost every such report an
+    extra transactional read of `locReqs/{device_id}` and logged a
+    misleading "late /loc ... no live loc_req, dropped" for every single one
+    (docs/LOCATION_TRACKING_DESIGN.md §5 R1).
+
+    **R6 (this task):** an unsolicited cell-only report skips
+    `_resolve_cell_fallback` entirely -- no provider call, no new
+    `locations` doc -- when the newest doc is itself an unsolicited report
+    less than `UNSOLICITED_REPORT_FLOOR_S` old (`_unsolicited_report_too_recent`
+    above), mirroring PROTOCOL.md §13.3 item 9's 120s device-side floor so a
+    buggy or flooding device cannot drive unbounded provider calls/writes.
+    `lastCell` is still updated either way.
+
+    **R3 dwell (this task):** an unsolicited (`req: None`), cell-resolved
+    fix does not always insert a new `locations` doc -- if the newest doc is
+    itself an unsolicited `src:"cell"` fix from the *same* cell and less
+    than `DWELL_MAX_AGE_S` old, this extends that doc's `lastTs`/`why`
+    instead, so a device sitting in one place all day leaves one dwell doc,
+    not one every report."""
+    dedup_ref = _loc_wire_ids().document(f"{device_id}_{env.id}")
 
     # The device lookup (unlike everything `_fulfil_loc_req_in_txn` reads)
     # is not folded into the transaction: it is not part of any invariant
@@ -255,20 +353,33 @@ def ingest_loc(device_id: str, env: LocEnvelope) -> None:
             owner_uid = device.ownerUid
 
     effective_loc = env.loc
+    cell_fix_ts: int | None = None
     if env.cell is not None and owner_uid is not None:
-        # §13.2: "the cell is only recorded" even when a GNSS fix is also
-        # present -- this write happens regardless of whether resolution
-        # below is even attempted.
         cell_fix_ts = resolve_ts(env.ts)
-        devices_store.set_last_cell(device_id, env.cell, cell_fix_ts)
         if effective_loc is None:
-            effective_loc = _resolve_cell_fallback(env.cell, cell_fix_ts)
+            if env.req is None and _unsolicited_report_too_recent(device_id):
+                logger.info(
+                    "unsolicited /loc id=%s for device=%s within %ss of the last unsolicited "
+                    "report: skipping cellgeo resolution",
+                    env.id,
+                    device_id,
+                    UNSOLICITED_REPORT_FLOOR_S,
+                )
+            else:
+                effective_loc = _resolve_cell_fallback(env.cell, cell_fix_ts)
 
     fix_ref = locations_store.new_location_ref(device_id) if effective_loc is not None else None
     fix_data = _fix_doc(env, effective_loc) if effective_loc is not None else None
+    dwell_eligible = (
+        fix_data is not None and env.req is None and effective_loc is not None and effective_loc.src == "cell"
+    )
 
-    req_ref = _loc_reqs().document(device_id) if owner_uid is not None else None
-    loc_field = _loc_message_field(env, effective_loc) if owner_uid is not None else None
+    # R1 (docs/LOCATION_TRACKING_DESIGN.md §5): built only when there is a
+    # `loc_req` to resolve.
+    req_ref = _loc_reqs().document(device_id) if owner_uid is not None and env.req is not None else None
+    loc_field = (
+        _loc_message_field(env, effective_loc) if owner_uid is not None and env.req is not None else None
+    )
     ttl = loc_req_ttl_s()
 
     def _txn(transaction: Transaction) -> None:
@@ -278,6 +389,43 @@ def ingest_loc(device_id: str, env: LocEnvelope) -> None:
         fulfil: _FulfilPlan | None = None
         drop_reason: str | None = None
         delete_stale_req = False
+
+        # R3 dwell (docs/LOCATION_TRACKING_DESIGN.md §5, this task): same
+        # query shape as `Location.locate`'s <60s cached-fix check, but
+        # transactional -- reads the newest `locations` doc to decide
+        # whether this report extends it (same cell, same source, still
+        # unsolicited, still within the 24h dwell cap) instead of inserting
+        # a fresh one.
+        dwell_ref: DocumentReference | None = None
+        dwell_update: dict | None = None
+        if dwell_eligible:
+            assert fix_data is not None
+            newest_query = (
+                locations_store.locations_collection(device_id)
+                .order_by("createdAt", direction="DESCENDING")
+                .limit(1)
+            )
+            newest_snaps = newest_query.get(transaction=transaction)
+            if newest_snaps:
+                newest_snap = newest_snaps[0]
+                newest_data = newest_snap.to_dict() or {}
+                if (
+                    newest_data.get("src") == "cell"
+                    and newest_data.get("reqId") is None
+                    and newest_data.get("cellKey") == fix_data["cellKey"]
+                    and _age_seconds(newest_data.get("createdAt")) < DWELL_MAX_AGE_S
+                ):
+                    dwell_ref = newest_snap.reference
+                    dwell_update = {"lastTs": resolve_ts(env.ts), "why": env.why}
+
+        # R7 (docs/LOCATION_TRACKING_DESIGN.md §5, this task): the read half
+        # of the monotonic `lastCell` check -- must happen here, in the read
+        # phase, alongside everything else this transaction reads; the
+        # write half (`devices_store.set_last_cell`) is staged below with
+        # every other write, using this value.
+        last_cell_existing_ts: int | None = None
+        if env.cell is not None and owner_uid is not None:
+            last_cell_existing_ts = devices_store.read_last_cell_ts(device_id, transaction)
 
         if req_ref is not None:
             req_snap = req_ref.get(transaction=transaction)
@@ -330,7 +478,17 @@ def ingest_loc(device_id: str, env: LocEnvelope) -> None:
         # idiom `app/store/messages.py`'s `create_message` uses for its
         # `wireIds` dedup.
         transaction.create(dedup_ref, {"deviceId": device_id, "createdAt": SERVER_TIMESTAMP})
-        if fix_ref is not None:
+
+        if env.cell is not None and owner_uid is not None:
+            assert cell_fix_ts is not None
+            devices_store.set_last_cell(
+                device_id, env.cell, cell_fix_ts, transaction, existing_ts=last_cell_existing_ts
+            )
+
+        if dwell_ref is not None:
+            assert dwell_update is not None
+            transaction.update(dwell_ref, dwell_update)
+        elif fix_ref is not None:
             transaction.set(fix_ref, fix_data)
 
         if req_ref is None:
@@ -669,7 +827,21 @@ class Location:
             if fix_snaps:
                 fix_snap = fix_snaps[0]
                 fix_data = fix_snap.to_dict() or {}
-                if _age_seconds(fix_data.get("createdAt")) < CACHED_ANSWER_WINDOW_S:
+                # docs/LOCATION_TRACKING_DESIGN.md §5 R2 (this task):
+                # PROTOCOL.md §13.3 item 9's "the relay's item 6 never
+                # answers from an unsolicited src:"cell" fix (req:null)" --
+                # an unresolved-request cell report is a coarse periodic
+                # point, not an answer to anyone's question, so it must not
+                # suppress a fresh `loc_req` (which may get a real GNSS fix)
+                # the way a *request-answering* fix (including one with
+                # `src:"cell"` -- §13.3 rule 7 still requires that one to
+                # satisfy rule 6, or a second requester within 60s of it
+                # triggers a second `/down`) correctly does. Deliberately
+                # does not look further back than this newest doc even when
+                # it is disqualified this way (limit(1) above) -- an older
+                # doc is, by definition, more stale, not less.
+                unsolicited_cell = fix_data.get("src") == "cell" and fix_data.get("reqId") is None
+                if not unsolicited_cell and _age_seconds(fix_data.get("createdAt")) < CACHED_ANSWER_WINDOW_S:
                     if req_snap.exists:
                         # Stale locReqs row superseded by this cached answer
                         # -- clean it up now rather than waiting for tick.

@@ -55,6 +55,10 @@ indoor modem flapping between cells A and B from looking like motion.
 | GNSS in motion | `gnss` | §2.2. A fix gives lat/lon plus cell; any failure gives cell only (`loc:null, err:"no_fix"`) | Attempt + early keep-alive |
 | End of motion | `stop` | MOVING → STILL, only if the cell differs from the last reported one or a GNSS fix was published this episode | Sends the keep-alive early |
 
+**Every unsolicited report, whatever its `why`, is ≥120 s after the previous one** (`PROTOCOL.md`
+§13.3 item 9). A report that falls due sooner waits for the 120 s mark; a newer due report
+replaces a waiting one. Answers to a `loc_req` (QoS 1) are outside this floor.
+
 Reports send only while the session is usable, the coverage duty cycle does not own the radio,
 and `loctrack` is on (§9). Cell reports ignore the battery floor.
 
@@ -70,7 +74,9 @@ STILL is declared 5 min after motion ends, when the child is most likely indoors
 - **Assistance (mandatory).** Before any attempt, scheduled or requested: if the last refresh is
   ≥2 h old, or `gnssGetAssistanceStatus()` says it is due, call `gnssUpdateAssistance()` while
   connected. The attempt that follows gets the existing 40 s budget. A failed refresh means no
-  attempt, and counts as a failure. Days without GNSS never refresh.
+  attempt, and counts as a failure. For a web request the refresh counts inside §13.3 item 2's
+  60 s: the budget is min(40 s, 60 s − refresh time), and a refresh still running at 60 s is a
+  failure (cell answer). Days without GNSS never refresh.
 - **Failure handling.** One `gnssPerformAction(GET_SINGLE_FIX)`. Any failure publishes the cell
   and advances the backoff. Daily cap: 48 scheduled attempts (a stuck-INT1 backstop).
 - **If in-place is refused on this carrier,** each attempt returns `LTE_CONCURRENCY` at once and
@@ -114,6 +120,13 @@ Sizes, **measured** with `relay/app/wirecbor.encode()` plus the 10 B `sig`:
   extra transactional read and logs a misleading `late /loc … dropped`.
 - **Conflict** (`:672`): rule 6 answers a web request from any fix under 60 s old, so a cell
   report just before a web request would suppress the GNSS attempt the owner requires.
+- **Review (26 Sep):** the signature is over raw bytes (`devauth.py:106`) and the replay window is
+  64 wide, so key 60 and QoS 0 reordering are safe on today's relay. Three existing weaknesses
+  that tracking's ~24–100× `/loc` volume makes matter: `locWireIds` is keyed by the bare 32-bit
+  random `id` across all devices (`location.py:238`), so a collision silently drops a report;
+  `status.lastCell` is overwritten by whichever webhook lands last (`location.py:263`), so an
+  out-of-order QoS 0 report regresses it; and with the default `cellgeo` provider `none`, a
+  cell-only report stores no fix at all, so the map shows nothing new.
 
 ## 4. Piggybacking on the keep-alive
 
@@ -139,8 +152,9 @@ Costs (estimates): a report on an existing wake, **C_ride ≈ 0.02 mAh** (≤0.5
 
 ## 5. Protocol and relay changes — **[SERVER-ARCHITECT REVIEW]**
 
-- **P1** `PROTOCOL.md` §13.3, new normative item 9: "A device MAY publish unsolicited `/loc`
-  (`req:null`, QoS 0) at most once per 120 s, and MUST send one at least every `loc_period_s` while
+- **P1** `PROTOCOL.md` §13.3, new normative item 9 (as landed: SHOULD, not MUST, because QoS 0
+  reports are not retried, and the relay infers nothing from a missing one): "A device MAY publish unsolicited `/loc`
+  (`req:null`, QoS 0) at most once per 120 s, and SHOULD send one at least every `loc_period_s` while
   its session is usable. A scheduled GNSS attempt obeys items 1–3 like a requested one and shares
   its result with any `loc_req` arriving during it. A web `loc_req` is never answered from an
   unsolicited `src:"cell"` fix." Amend §13.5 to match. §13.2 `no_fix` becomes "this envelope carries
@@ -153,10 +167,23 @@ Costs (estimates): a report on an existing wake, **C_ride ≈ 0.02 mAh** (≤0.5
   `why` = 60 (tstr on `/loc`: `still|cell|move|gnss|stop`), `loc_move_s` = 61 (int on `/status`).
   Unknown keys are ignored (§3.1), so either side can ship first.
 - **R1** `ingest_loc`: build `req_ref` only when `env.req is not None`.
-- **R2** `locate()` rule 6: only a `src:"gnss"` fix satisfies the 60 s cached window.
+- **R2** `locate()` rule 6: an unsolicited `src:"cell"` fix (`reqId` null) never satisfies the
+  60 s cached window. *(Not "gnss only": a cell fix that answered a request must still satisfy it,
+  or a second requester 30 s later triggers a second `/down` inside 60 s, breaking §13.3 item 7.)*
 - **R3 storage:** ~24 docs/day stationary, ~100 on a heavy day, ≤700 per device at 1-week
   retention. Proposal: when the newest doc is `src:"cell"` with the same cell, update its `lastTs`
   instead of inserting (the trail shows dwell, not 24 pins). Store `why` on each doc.
+  Review additions: the doc must store the cell identity (`cellKey`) to compare; a dwell doc
+  stops extending once its `createdAt` is 24 h old (the sweep deletes by `createdAt`, so an
+  unbounded dwell would be swept while it is still the newest point); the web card ages a dwell
+  doc by `lastTs`, not `fixTs`.
+- **R6** relay mirror of the 120 s floor: an unsolicited report <60 s after the previous
+  unsolicited doc for the device skips the provider call and the new doc (it still updates
+  `lastCell`). **R7** `lastCell` written only if its `ts` is not older than the stored one.
+  **R8** `/loc` dedup key becomes `{deviceId}_{id}`.
+- **Owner note (privacy):** today `locatableBy` users see points only when someone asks; with
+  tracking on they see an hourly trail. The rules are unchanged and still relay-write-only, but
+  the meaning of "may locate" widens. `loctrack` default off until the owner confirms.
 - **R4 provider cost.** A provider is called only on a cache miss (a cell's first sighting), about
   30 on a heavy day. The per-call price is unverified.
 - **R5** `tools/pager_client.py` emits `still` and `cell` reports for the e2e suite.
@@ -235,7 +262,8 @@ A/B on one flash with runtime flags `loctrack on|off` (default off until T2 pass
   backoff reset; schedule vs backoff; daily cap; every failure kind → cell report; queue sharing;
   `why` encoding cross-checked with `relay/.venv/bin/python`.
 - **T1 relay:** an unsolicited cell `/loc` creates 1 doc with no `locReqs` read; `locate()` 10 s
-  after a cell report still dispatches `loc_req`.
+  after a cell report still dispatches `loc_req`; `locate()` 10 s after a cell-resolved *answer*
+  is still served cached.
 - **T2 stationary soak, 1 h each A and B:** B shows exactly one `why=still` ≤1 s after a liveness
   SUBSCRIBE, the broker ping cadence matches A, and the relay stores one `src:"cell"` doc. With a
   current trace this measures C_ride.
@@ -259,9 +287,9 @@ A/B on one flash with runtime flags `loctrack on|off` (default off until T2 pass
 | F3 | M | `loc.c` device layer: unsolicited publish (QoS 0, `why`), scheduled attempts, failure → cell report, `loctrack`/`locmove` |
 | F4 | S | `/status` `loc_period_s` 3600 when on, `loc_move_s`; `why` in `loc_build_cbor()` |
 | F5 | S–M | Remove route 2, the pending slot and `modes_set_loc_suppress` (§7); RTC byte → `_reserved` |
-| S1 | S | Relay R1 + R2 + T1 |
+| S1 | S | Relay R1 + R2 + R8 + T1 |
 | S2 | S | `PROTOCOL.md` P1–P3, `V02_DESIGN.md` §5/§7 (route text, key rows); relay keymap 60/61 |
-| S3 | S–M | Relay R3 dwell and `why` storage (after review); R5 |
+| S3 | S–M | Relay R3 dwell and `why` storage, R6, R7, `loc_move_s` on `/status`; R5 |
 | H1 | M | T5 first (it decides whether GNSS scheduling is worth building), then T2–T4 after F1–F5 and S1 |
 
 Order: T5 and F5 can run now. Then S2 (relay keymap acceptance first, per the older-relay rule),

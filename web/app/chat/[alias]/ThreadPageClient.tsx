@@ -610,7 +610,7 @@ function ThreadInner({ alias }: { alias: string }) {
           lat={latestFix.lat}
           lon={latestFix.lon}
           accM={latestFix.accM}
-          fixTsMs={latestFix.fixTs * 1000}
+          fixTsMs={(latestFix.lastTs ?? latestFix.fixTs) * 1000}
           src={latestFix.src}
           cached={latestFix.cached}
           trail={fixTrail}

@@ -292,15 +292,21 @@ class StatusEnvelope(BaseModel):
     # someday sends `bpull:2` for some future meaning doesn't get its whole
     # `/status` bounced as malformed.
     bpull: int | None = None
+    # docs/LOCATION_TRACKING_DESIGN.md §5 P2/P3, docs/PROTOCOL.md §13.3 item
+    # 9 (this task): the GNSS-while-moving interval, seconds, 0 = off.
+    # Display/diagnosis only, same treatment as `loc_period_s`/`loc_min_s`/
+    # `loc_backoff_s` above -- the relay stores whatever the device reports
+    # and never writes it back (the device owns its own duty cycle).
+    loc_move_s: int | None = None
     # §14.2: present on every signed envelope; absent on the unsigned LWT
     # exception (§14.6) and on an unsigned (`authMode: "password"`) device.
     n: int | None = None
 
-    @field_validator("loc_period_s", "loc_min_s", "loc_backoff_s")
+    @field_validator("loc_period_s", "loc_min_s", "loc_backoff_s", "loc_move_s")
     @classmethod
     def _check_loc_timing(cls, value: int | None) -> int | None:
         if value is not None and not (0 <= value <= 86400):
-            raise ValueError("loc_period_s/loc_min_s/loc_backoff_s out of range")
+            raise ValueError("loc_period_s/loc_min_s/loc_backoff_s/loc_move_s out of range")
         return value
 
     @field_validator("ca_fp")
@@ -621,6 +627,12 @@ class LocFix(BaseModel):
 # protocol table calls them out as strings.
 _MCC_RE = re.compile(r"^\d{3}$")
 _MNC_RE = re.compile(r"^\d{2,3}$")
+
+# docs/PROTOCOL.md §13.2 (location tracking, this task): the known `why`
+# values for an unsolicited `/loc`. Anything else -- including a value from a
+# newer firmware this relay predates -- is stored as absent (`LocEnvelope`'s
+# `_check_why`), never a reason to reject the envelope.
+_WHY_VALUES = {"still", "cell", "move", "gnss", "stop"}
 CELL_TAC_MAX = 65535
 CELL_CI_MAX = 268_435_455  # 2**28 - 1: E-UTRAN cell identity is 28 bits.
 CELL_RSRP_MIN = -156
@@ -687,8 +699,23 @@ class LocEnvelope(BaseModel):
     # `_drop_malformed_cell` below for why a bad `cell` does not reject the
     # whole envelope.
     cell: CellInfo | None = None
+    # docs/LOCATION_TRACKING_DESIGN.md §5 P3, docs/PROTOCOL.md §13.2/§13.3
+    # item 9 (this task): why an unsolicited (`req:null`) `/loc` was sent.
+    # `_check_why` below maps anything outside the known set -- including a
+    # non-str value -- to `None` rather than rejecting the envelope: §13.2
+    # is explicit that "an unknown value is stored as absent, never a reason
+    # to drop the envelope" (the pager's actual fix/no_fix answer is still
+    # good either way).
+    why: str | None = None
     # §14.2: present on every signed envelope.
     n: int | None = None
+
+    @field_validator("why", mode="before")
+    @classmethod
+    def _check_why(cls, value: Any) -> str | None:
+        if isinstance(value, str) and value in _WHY_VALUES:
+            return value
+        return None
 
     @model_validator(mode="before")
     @classmethod

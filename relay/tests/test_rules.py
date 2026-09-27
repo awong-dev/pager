@@ -282,6 +282,25 @@ def test_locatable_by_uid_can_read_device_and_its_locations(two_pairs):
     assert resp3.status_code == 403
 
 
+def test_locations_are_client_read_only(two_pairs):
+    """docs/LOCATION_TRACKING_DESIGN.md §5's owner note (this task): "the
+    rules are unchanged and still relay-write-only" even with tracking on --
+    a create/update of `devices/{d}/locations/{id}` by the device's own
+    owner (who can *read* it, per the test above) is still denied.
+    `firestore.rules` has no write rule for this collection, so this should
+    already pass; added because the task spec calls it out explicitly."""
+    devices_store.create_device(
+        device_id="pgr-rules-3b",
+        owner_uid="u1",
+        label="d",
+        mqtt_username="pgr-rules-3b",
+        mqtt_password_hash="x",
+    )
+    token = mint_id_token("u1")
+    resp = _write("devices/pgr-rules-3b/locations/fake1", token, {"lat": 1.0, "lon": 2.0})
+    assert resp.status_code == 403
+
+
 def test_locatable_by_uid_can_list_query_devices_and_their_locations(two_pairs):
     """A Firestore *list* (collection query)
     request evaluates `allow read` abstractly, against the query's own

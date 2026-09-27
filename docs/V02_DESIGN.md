@@ -191,19 +191,22 @@ failed or wrong fix is an acceptable answer; battery matters more.
   A reset puts the backoff at zero but leaves a **floor of 10 min since the last attempt**, so a
   child walking between classrooms all day cannot turn every request into an attempt.
 - **Battery floor**: below 3.3 V (LiFePO4, `batt_mv`), never power GNSS; answer cached/`no_fix`.
-- **Route to the radio** (`UNVERIFIED`, Sequans forum thread 209: GNSS is non-concurrent with LTE
-  but may run in LTE "off" periods, PSM or `CFUN=4`): try in this order and remember the first
-  that works in RTC memory.
-  1. *In place*: ask for a fix while attached, in the eDRX idle gap. If the modem refuses, →
-  2. *`CFUN=4` window*: `mqttDisconnect()` cleanly, NO_RF, fix, FULL, re-attach, reconnect, publish.
-     This session loss is deliberate: it must not count towards `handle_mqtt_loss()`'s backoff,
-     the connect watchdog or the F4 health check.
-  A PSM window is the better long-term answer and is left for a hardware session.
-- **Assistance**: before an attempt, if `gnssGetAssistanceStatus()` says real-time ephemeris is
-  due, `gnssUpdateAssistance()` first (needs LTE, so before step 2). Log the bytes it costs.
+- **Route to the radio: in place only** (owner decision, 26 Sep 2026,
+  `LOCATION_TRACKING_DESIGN.md`): ask for a fix while attached, in the eDRX idle gap, through the
+  library `gnss*` API. **Any failure** — `LTE_CONCURRENCY` refusal, timeout, no fix, confidence
+  > 100, failed assistance refresh — ends the attempt and produces a cell answer
+  (`loc:null, err:"no_fix", cell`); there is no second route and no retry. The `CFUN=4` window
+  (route 2) is removed: it left the pager unreachable ~2.5 min per fix. A PSM window stays rejected
+  (`LOCATION_TRACKING_DESIGN.md` §8).
+- **Assistance (mandatory)**: before any attempt, if the last refresh is ≥ 2 h old or
+  `gnssGetAssistanceStatus()` says it is due, `gnssUpdateAssistance()` first, while connected. A
+  failed refresh is a failed attempt. The refresh counts inside `PROTOCOL.md` §13.3 item 2's 60 s.
+  Log the bytes it costs.
 - **Accept only a good fix**: confidence ≤ 100 (the vendor demo's threshold); map it to `acc`.
 - **`/status`**: `loc_min_s` = 600 (the floor), `loc_period_s` = 0 (no unsolicited fixes), and new
-  `loc_backoff_s` = seconds until the next attempt is allowed (0 = now).
+  `loc_backoff_s` = seconds until the next attempt is allowed (0 = now). With location tracking on
+  (`LOCATION_TRACKING_DESIGN.md`), `loc_period_s` = 3600 (the maximum gap between unsolicited cell
+  reports) and `loc_move_s` = the GNSS-while-moving interval (600, 0 = off).
 - **Relay/protocol**: §13.3 item 1 is amended: the device's window is the growing backoff above,
   reported in `/status`; the relay's own mirrored 60 s rule is unchanged. `tools/pager_client.py`
   answers `loc_req` the same way (a `--loc lat,lon` option, else `no_fix`) so the e2e suite covers
@@ -263,6 +266,8 @@ Envelope keys:
 | 47 | `sms_ts` | int | `/up` `sms_log` |
 | 48 | `sms_lost` | int | `/status` (audit entries dropped, normally 0) |
 | 50 | `link` | int | `/status` (MQTT-session generation within a boot — §9.5; key 49 is `cell`) |
+| 60 | `why` | tstr | `/loc`, unsolicited only: `still`/`cell`/`move`/`gnss`/`stop` (`LOCATION_TRACKING_DESIGN.md` §3; keys 51–59 are allocated in `PROTOCOL.md` §10) |
+| 61 | `loc_move_s` | int | `/status` (GNSS-while-moving interval, 0 = off) |
 
 `kind` gains `sms_log` (`/up`). `cfg` sub-map: `lock=0` (existing), **`ca=1`** `{url=0 tstr,
 sha=1 bstr(32)}`, **`sms=2`** array of `{n=0 tstr name, p=1 tstr phone}`. In JSON the same names
@@ -366,12 +371,12 @@ measurement allows (420–540 s) rather than accepting 70+ mAh/day.
 3. `net_service_session()`, called once per wake-and-drain iteration from `modes.c` (the ESP32 is
    already awake every 5 s in sleep mode, §8 — the timer check is free), sends the raw
    `AT+SQNSMQTTSUBSCRIBE=0,"pager/{id}/down",1` when `s_resub_pending`, or when
-   `now - s_last_uplink_us >= N`. Skipped while the coverage duty cycle owns the radio, during
-   location route 2, and during a CA-apply trial — the same three suppressions the reconnect path
-   already honours.
+   `now - s_last_uplink_us >= N`. Skipped while the coverage duty cycle owns the radio and during
+   a CA-apply trial (location route 2, the third suppression, was removed 26 Sep 2026 with the
+   `CFUN=4` route, §5) — the suppressions the reconnect path already honours.
 4. The `SUBSCRIBED` event clears the pending flag and, if it closed a resume, raises a
    **session-restart edge** so `modes.c` runs the existing `catrust_on_mqtt_connected()` +
-   `publish_status_online()` + `loc_flush_pending_answer()` block.
+   `publish_status_online()` block (`loc_flush_pending_answer()` goes with route 2, §5).
 5. No SUBACK within 30 s (two wake cycles plus RRC setup) = the session is dead: mark
    disconnected and raise the ordinary disconnect edge, so F1/F3 backoff and `net_session_up()`
    run. `mqttConnect()` frees the topic table, so the subscribe after a real reconnect is a

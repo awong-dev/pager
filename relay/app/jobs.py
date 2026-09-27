@@ -57,10 +57,12 @@ already fired.
   in the same call is already gone.
 - `locations` (a `COLLECTION_GROUP` query across every `devices/{d}/
   locations` subcollection).
-- `locWireIds` (the `/loc` dedup marker, keyed by the wire envelope's own
-  `id`, not the `locations` doc's autoid -- see `app/location.py`'s module
-  docstring for why it can't be joined to a `locations` doc by a shared key,
-  so it is swept independently by its own `createdAt`).
+- `locWireIds` (the `/loc` dedup marker, keyed by `{deviceId}_{id}`
+  (docs/LOCATION_TRACKING_DESIGN.md §5 R8 -- the wire envelope's own `id` is
+  only 32 random bits shared across every device, so the bare `id` alone
+  could collide), not the `locations` doc's autoid -- see `app/location.py`'s
+  module docstring for why it can't be joined to a `locations` doc by a
+  shared key, so it is swept independently by its own `createdAt`).
 - `locReqs` (a longer-lived safety net alongside `clear_stale_loc_reqs`'s
   15-minute TTL).
 - `conversations`, by `lastMessageAt`. Without this, a

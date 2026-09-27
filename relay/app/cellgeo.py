@@ -13,8 +13,9 @@ pager's own identity, never anything about the person carrying it, and never
 more than the four/five numbers a `cell` sub-map carries. `CELL_GEO_PROVIDER
 = "none"` (the default) is a real, supported choice: no lookup is ever made,
 no third-party call happens, and nothing beyond `devices/{d}.status.lastCell`
-(`app/store/devices.py`'s `set_last_cell`, called unconditionally by
-`ingest_loc` whenever a `cell` arrives) is stored.
+(`app/store/devices.py`'s `set_last_cell`, called by `ingest_loc` whenever a
+`cell` arrives, monotonically -- docs/LOCATION_TRACKING_DESIGN.md §5 R7)
+is stored.
 
 **Never raises into the ingest path.** `POST /webhooks/mqtt` must still
 return 2xx even when a lookup fails, times out, or the provider is

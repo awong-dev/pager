@@ -217,6 +217,30 @@ def test_status_rejects_negative_sms_lost():
 
 
 # ---------------------------------------------------------------------------
+# docs/LOCATION_TRACKING_DESIGN.md §5 P2/P3 (this task) -- `/status`'s
+# optional `loc_move_s` field: the GNSS-while-moving interval.
+# ---------------------------------------------------------------------------
+
+
+def test_status_accepts_loc_move_s():
+    env = StatusEnvelope.model_validate(_online_status(loc_move_s=3600))
+    assert env.loc_move_s == 3600
+
+
+def test_status_loc_move_s_is_optional():
+    assert StatusEnvelope.model_validate(_online_status()).loc_move_s is None
+
+
+def test_status_loc_move_s_bounds():
+    assert StatusEnvelope.model_validate(_online_status(loc_move_s=0)).loc_move_s == 0
+    assert StatusEnvelope.model_validate(_online_status(loc_move_s=86400)).loc_move_s == 86400
+    with pytest.raises(ValidationError):
+        StatusEnvelope.model_validate(_online_status(loc_move_s=-1))
+    with pytest.raises(ValidationError):
+        StatusEnvelope.model_validate(_online_status(loc_move_s=86401))
+
+
+# ---------------------------------------------------------------------------
 # docs/V02_DESIGN.md §9.5/§7 (this task) -- `/status`'s optional `link`
 # field: MQTT-session generation within a boot.
 # ---------------------------------------------------------------------------
@@ -828,6 +852,74 @@ def _base_loc(**overrides):
     }
     obj.update(overrides)
     return obj
+
+
+def test_loc_why_and_loc_move_s_keys_match_firmware():
+    """docs/PROTOCOL.md §10: `why` = 60 (`/loc`), `loc_move_s` = 61
+    (`/status`) -- must equal firmware's loc_build_cbor()/status keys."""
+    assert wirecbor.KEYMAP["why"] == 60
+    assert wirecbor.KEYMAP["loc_move_s"] == 61
+    assert len(set(wirecbor.KEYMAP.values())) == len(wirecbor.KEYMAP)
+
+
+def test_signed_cell_only_loc_with_why_verifies_and_parses():
+    """An unsolicited cell-only report (LOCATION_TRACKING_DESIGN.md §3) with
+    key 60 verifies, decodes and validates; `why` never breaks `/loc`."""
+    key = b"k" * 32
+    topic = "pager/pgr-1/loc"
+    obj = _base_loc(
+        loc=None,
+        err="no_fix",
+        cell={"mcc": "310", "mnc": "410", "tac": 1234, "ci": 56789, "rsrp": -95},
+        why="still",
+        n=(7 << 20) | 3,
+    )
+    payload = devauth.sign_cbor(key, topic, obj)
+    assert len(payload) < 640
+    ok, unsigned = devauth.verify(key, topic, payload)
+    assert ok
+    decoded = wirecbor.decode(unsigned)
+    assert decoded["why"] == "still"
+    env = LocEnvelope.model_validate(decoded)
+    assert env.loc is None and env.err == "no_fix" and env.req is None
+    assert env.why == "still"
+
+
+# ---------------------------------------------------------------------------
+# docs/LOCATION_TRACKING_DESIGN.md §5 P3, docs/PROTOCOL.md §13.2 (this task)
+# -- LocEnvelope.why: known values accepted, anything else stored as absent.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("why", ["still", "cell", "move", "gnss", "stop"])
+def test_loc_envelope_accepts_each_why_value(why: str) -> None:
+    env = LocEnvelope.model_validate(_base_loc(why=why))
+    assert env.why == why
+
+
+@pytest.mark.parametrize("why", ["unknown", "GNSS", "", 7, 3.5, True, ["still"], {"why": "still"}])
+def test_loc_envelope_unknown_or_non_str_why_is_stored_as_absent(why: object) -> None:
+    """§13.2: "an unknown value is stored as absent, never a reason to drop
+    the envelope" -- this applies to a non-str value too (a device or relay
+    predating this field could plausibly encode `why` some other way)."""
+    env = LocEnvelope.model_validate(_base_loc(why=why))
+    assert env.why is None
+
+
+def test_loc_envelope_why_absent_by_default():
+    assert LocEnvelope.model_validate(_base_loc()).why is None
+
+
+def test_loc_with_unknown_int_key_still_parses():
+    """Old-relay compatibility: a `/loc` carrying a key this relay does not
+    know (as key 60 was before this change) is decoded with it dropped."""
+    raw = wirecbor.translate_to_int(_base_loc())
+    raw[99] = "future"
+    import cbor2
+
+    decoded = wirecbor.decode(cbor2.dumps(raw))
+    assert "future" not in decoded.values()
+    assert LocEnvelope.model_validate(decoded).id == "l_3c9a11f0"
 
 
 def test_loc_envelope_valid_periodic_fix():

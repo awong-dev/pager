@@ -27,6 +27,17 @@ class LocationFix(BaseModel):
     cached: bool = False
     reqId: str | None = None
     createdAt: datetime | None = None
+    # docs/LOCATION_TRACKING_DESIGN.md §5 R3/P3 (this task): `why` is the
+    # reason this report was sent (see `app/wire.py`'s `LocEnvelope.why`),
+    # `cellKey` (`f"{mcc}-{mnc}-{tac}-{ci}"`, `None` when `env.cell` is
+    # absent) identifies the serving cell so a dwell extension (same cell,
+    # same source) can be told apart from a real move, and `lastTs` is the
+    # timestamp of the most recent report folded into this doc -- `None` on
+    # insert, set only when `app/location.py`'s `ingest_loc` extends an
+    # existing dwell doc instead of inserting a new one.
+    why: str | None = None
+    cellKey: str | None = None
+    lastTs: int | None = None
 
 
 def _locations(device_id: str):
