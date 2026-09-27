@@ -8,11 +8,13 @@
  * instruction; accel.c only ever calls loc_on_motion_event() once per
  * drained INT1 edge).
  *
- * Bus ownership: this module does NOT install the I2C driver. ui.c's
- * i2c_kb_init() (called from ui_init(), which modes_boot() always calls
- * before accel_init()) already installs I2C_NUM_0 for the CardKB at
- * PAGER_PIN_KB_SDA/SCL, 100 kHz — the LIS3DH shares that same bus (separate
- * 7-bit address, 0x18, no conflict). accel_init() MUST run after ui_init().
+ * Bus ownership: owner decision, 26 Sep 2026 -- the LIS3DH has its own I2C
+ * bus, I2C_NUM_1 on PAGER_PIN_ACCEL_SDA/SCL (pins.h), separate from the
+ * CardKB's I2C_NUM_0, and is powered directly from the battery via the
+ * breakout's own regulator, not the gated 3V3 rail (rail.h). This module
+ * installs and owns that I2C_NUM_1 driver itself (accel_init(), once at
+ * boot) -- it does not depend on ui.c's i2c_kb_init() or on ui_init() having
+ * run first, and nothing in rail.c/ui.c ever touches this bus or its pins.
  *
  * UNVERIFIED, very likely absent on the owner's bench unit (V02_DESIGN.md
  * §5: "Probe the chip at boot; if it is absent (it may not be wired yet) log
@@ -67,8 +69,10 @@ bool accel_edge_wanted(int64_t now_us, int64_t last_reported_us, int64_t refract
  * failure (no/wrong response — the expected case if the chip is not wired),
  * logs once at INFO and returns false; every other accel.c/loc.c function
  * then simply never has anything to report, which is this task's own
- * required fail-open behaviour. Call once, from modes_boot(), after
- * ui_init() (see the module comment above for why). Power effect: a
+ * required fail-open behaviour. Call once, from modes_boot(); installs the
+ * I2C_NUM_1 driver on its own bus first (see the module comment above --
+ * independent of ui_init()/i2c_kb_init(), no ordering requirement either
+ * way). Power effect: a
  * handful of I2C transactions at init, then ~a few uA continuous per the
  * LIS3DH's own low-power-mode datasheet figure (PENDING_HW, not measured on
  * this board). */

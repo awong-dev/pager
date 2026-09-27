@@ -307,7 +307,8 @@ void ui_draw_row_separator(int y);
  * this function. A no-op call (no rail edge, no disp_note_power_loss()) if
  * the rail is already on, which is the common case inside the attentive
  * window or right after an EXT0/EXT1 wake. Power effect: powers the
- * display/CardKB/LIS3DH on iff they were off — see rail_on()'s own comment
+ * display/CardKB on iff they were off (not the LIS3DH — it is not on this
+ * rail, owner 26 Sep 2026, see rail.h) — see rail_on()'s own comment
  * for the rail edge itself. */
 void ui_ensure_powered(void);
 
@@ -464,11 +465,11 @@ uint32_t ui_kb_skipped_read_count(void);
  * lets the external pull-up feed the keyboard — and excludes both from
  * sleep GPIO isolation (gpio_sleep_sel_dis(), the same pattern net.cpp's
  * net_sleep() uses for the modem RTS line) so they hold LOW through every
- * light sleep instead of being re-pulled high. The LIS3DH (accel.c) shares
- * this same I2C bus and rail, so it is already unpowered whenever this
- * runs; driving its SDA/SCL low is still correct. Power effect: removes the
- * CardKB's phantom-power path through the I2C pull-ups while the rail is
- * off; no effect on the rail itself. */
+ * light sleep instead of being re-pulled high. The LIS3DH (accel.c) is NOT
+ * on this bus or this rail (owner, 26 Sep 2026: its own I2C_NUM_1 bus,
+ * powered from the battery) — this function never touches its pins.
+ * Power effect: removes the CardKB's phantom-power path through the I2C
+ * pull-ups while the rail is off; no effect on the rail itself. */
 void ui_kb_bus_release(void);
 
 /* rail.c's rail_on() calls this AFTER driving PAGER_PIN_3V3_EN low: returns

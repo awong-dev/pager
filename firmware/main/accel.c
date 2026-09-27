@@ -103,16 +103,56 @@ static uint32_t s_edges_reported = 0;
 static bool s_wake_disarmed = false;
 static int64_t s_wake_rearm_at_us = 0;
 
+// This module's own bus: I2C_NUM_1 on PAGER_PIN_ACCEL_SDA/SCL, separate from
+// ui.c's I2C_NUM_0 (CardKB). Installed once, here, at accel_init() -- never
+// torn down or re-initialized, since (unlike the CardKB bus) neither the
+// LIS3DH nor this bus's pins are on the gated 3V3 rail: the breakout is
+// powered straight from the battery via its own regulator, so there is no
+// power edge that would ever require a re-init.
+//
+// Internal pull-ups left ON, not because this bus needs them -- the
+// breakout has its own pull-ups to its own regulated rail -- but as a
+// harmless backup: the ESP32's internal ~45k pull-up in parallel with the
+// breakout's external one only slightly strengthens an already-valid bus
+// (same rail voltage), it does not fight it, and it costs nothing since the
+// bus is not sleep-gated. Kept consistent with ui.c's i2c_kb_init(), which
+// makes the same choice for the same reason on the CardKB bus.
+static void accel_bus_init(void)
+{
+    i2c_config_t conf = {
+        .mode = I2C_MODE_MASTER,
+        .sda_io_num = PAGER_PIN_ACCEL_SDA,
+        .scl_io_num = PAGER_PIN_ACCEL_SCL,
+        .sda_pullup_en = GPIO_PULLUP_ENABLE,
+        .scl_pullup_en = GPIO_PULLUP_ENABLE,
+        .master.clk_speed = 100000,
+    };
+    i2c_param_config(I2C_NUM_1, &conf);
+    i2c_driver_install(I2C_NUM_1, conf.mode, 0, 0, 0);
+    // Excluded from ESP-IDF's sleep GPIO isolation, the same call rail.c
+    // uses for the display bus/RTS/3V3_EN pads: without this, IDF's default
+    // light-sleep isolation (CONFIG_ESP_SLEEP_GPIO_RESET_WORKAROUND) forces
+    // the pad to input/no-pull for the sleep's duration, which would drop
+    // this driver's own internal pull-up backup for that whole window (the
+    // breakout's external pull-up would still hold the bus, so this is
+    // belt-and-suspenders, not a correctness fix -- unlike the CardKB bus,
+    // nothing here is ever unpowered, so there is no phantom-power path to
+    // close). Power effect: none -- this bus is never depowered by rail.c
+    // and has no rail edge of its own to hold state across.
+    gpio_sleep_sel_dis((gpio_num_t) PAGER_PIN_ACCEL_SDA);
+    gpio_sleep_sel_dis((gpio_num_t) PAGER_PIN_ACCEL_SCL);
+}
+
 static bool reg_write(uint8_t reg, uint8_t val)
 {
     uint8_t buf[2] = { reg, val };
-    return i2c_master_write_to_device(I2C_NUM_0, PAGER_I2C_ADDR_LIS3DH, buf, sizeof(buf),
+    return i2c_master_write_to_device(I2C_NUM_1, PAGER_I2C_ADDR_LIS3DH, buf, sizeof(buf),
                                       pdMS_TO_TICKS(50)) == ESP_OK;
 }
 
 static bool reg_read(uint8_t reg, uint8_t *out)
 {
-    return i2c_master_write_read_device(I2C_NUM_0, PAGER_I2C_ADDR_LIS3DH, &reg, 1, out, 1,
+    return i2c_master_write_read_device(I2C_NUM_1, PAGER_I2C_ADDR_LIS3DH, &reg, 1, out, 1,
                                         pdMS_TO_TICKS(50)) == ESP_OK;
 }
 
@@ -121,7 +161,7 @@ static bool reg_read(uint8_t reg, uint8_t *out)
 static bool reg_read_multi(uint8_t reg, uint8_t *out, size_t n)
 {
     uint8_t addr = reg | 0x80;
-    return i2c_master_write_read_device(I2C_NUM_0, PAGER_I2C_ADDR_LIS3DH, &addr, 1, out, n,
+    return i2c_master_write_read_device(I2C_NUM_1, PAGER_I2C_ADDR_LIS3DH, &addr, 1, out, n,
                                         pdMS_TO_TICKS(50)) == ESP_OK;
 }
 
@@ -158,6 +198,7 @@ static bool configure_and_arm(uint8_t who)
 
 bool accel_init(void)
 {
+    accel_bus_init(); // installs I2C_NUM_1 once; see accel_bus_init()'s own comment
     uint8_t who = 0;
     if (!reg_read(LIS3DH_REG_WHO_AM_I, &who) || who != LIS3DH_WHO_AM_I_VALUE) {
         // Expected outcome on the owner's bench unit (V02_DESIGN.md §5: "it

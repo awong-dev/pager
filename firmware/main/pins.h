@@ -27,9 +27,16 @@
 #define PAGER_PIN_KB_SCL 8
 #define PAGER_I2C_ADDR_CARDKB 0x5F
 
-// Motion (LIS3DH, I2C addr 0x18)
+// Motion (LIS3DH, I2C addr 0x18). Owner decision, 26 Sep 2026: its own I2C
+// bus (I2C_NUM_1), separate from the CardKB's I2C_NUM_0, and powered
+// directly from the battery via the breakout's own regulator -- NOT on the
+// gated 3V3 rail (rail.h). INT1/IO2 and the bus pins therefore all stay
+// live through every rail_off() and every light sleep. IO4/IO5 are
+// provisional -- the owner will rearrange GPIOs soon.
 #define PAGER_PIN_LIS3DH_INT1 2
 #define PAGER_I2C_ADDR_LIS3DH 0x18
+#define PAGER_PIN_ACCEL_SDA 4  // provisional; own I2C_NUM_1 bus, not the CardKB's
+#define PAGER_PIN_ACCEL_SCL 5  // provisional; own I2C_NUM_1 bus, not the CardKB's
 
 // Button
 #define PAGER_PIN_BUTTON 1  // active-low, RTC GPIO

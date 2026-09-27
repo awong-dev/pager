@@ -2294,12 +2294,13 @@ void modes_boot(void)
     }
 
     // v0.2 §5 (docs/V02_DESIGN.md): loc.c's RTC route-hint binding + GNSS/
-    // accelerometer bring-up. Runs after ui_init() (accel.c shares the I2C
-    // bus ui_init()'s i2c_kb_init() already installed — see accel.h's own
-    // module comment) and after net_init() (net_gnss_config() needs the
-    // modem to exist; harmless, already-logged failure either way if
+    // accelerometer bring-up. accel_init() owns and installs its own I2C_NUM_1
+    // bus (own pins, own power rail from the battery — see accel.h's own
+    // module comment); no ordering requirement against ui_init(). Placed
+    // after net_init() only because net_gnss_config() needs the modem to
+    // exist; harmless, already-logged failure either way if
     // net_init() itself failed above — location then simply always answers
-    // from cache/no_fix, this task's own fail-open rule). No paging-path
+    // from cache/no_fix, this task's own fail-open rule. No paging-path
     // effect either way.
     loc_bind(&g_rtc.loc, &g_rtc.auth, rtc_lock, rtc_unlock, rtc_save, on_auth_epoch_wrap);
     loc_init();
@@ -2638,8 +2639,9 @@ void modes_run(void)
             // Rail gate (docs/ROADMAP.md "Design needed: input and display
             // power gating" option 2; owner decision 24 Sep 10:30 pm PDT,
             // reversing the 24-Sep-earlier "hold the rail through sleep"
-            // stopgap): outside the attentive window, the display/CardKB/
-            // LIS3DH rail need not stay powered through this sleep -- the
+            // stopgap): outside the attentive window, the display/CardKB
+            // rail (the LIS3DH is not on it, owner 26 Sep 2026) need not
+            // stay powered through this sleep -- the
             // IO1 wake button (ext0) is the always-on way to wake the
             // pager, not the keyboard. Inside the attentive window the rail
             // stays ON through every 1 s sleep instead (rail_on() is a
@@ -2653,8 +2655,9 @@ void modes_run(void)
             // (ui_render()/ui_on_awake_lapse(), below, later in this same
             // iteration) always completes before the loop reaches back here
             // -- there is no separate "refresh in progress" state to poll.
-            // Power effect: rail_off() drops the display/CardKB/LIS3DH
-            // current draw for the sleep about to be entered; see rail.h.
+            // Power effect: rail_off() drops the display/CardKB
+            // current draw for the sleep about to be entered (not the
+            // LIS3DH -- it is not on this rail); see rail.h.
             if (attentive) {
                 rail_on();
 #ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
@@ -2690,7 +2693,9 @@ void modes_run(void)
             // reads/writes the panel until a render happens anyway). Rules
             // (a) (boot, rail_init()) and (d) (the attentive window, the
             // `if (attentive) rail_on()` block above) are unchanged. Power
-            // effect: rule (b) below powers the display/CardKB/LIS3DH back up
+            // effect: rule (b) below powers the display/CardKB back up
+            // (not the LIS3DH -- it is not on this rail, and its own INT1
+            // wake stays armed through this sleep regardless of rail state)
             // on an EXT0/EXT1 wake even with nothing (yet) to draw; a timer
             // wake with nothing to draw now leaves the rail OFF instead of
             // paying that cost every single wake.

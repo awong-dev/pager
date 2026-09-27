@@ -1,5 +1,8 @@
-/* rail.h — the board's 3V3 peripheral rail (display, CardKB, LIS3DH),
- * PAGER_PIN_3V3_EN (pins.h), active-low.
+/* rail.h — the board's 3V3 peripheral rail (display, CardKB),
+ * PAGER_PIN_3V3_EN (pins.h), active-low. The LIS3DH is NOT on this rail
+ * (owner decision, 26 Sep 2026): it has its own I2C bus and is powered
+ * directly from the battery via its breakout's own regulator, so it stays
+ * live through every rail_off() -- see pins.h/accel.h.
  *
  * docs/ROADMAP.md "Design needed: input and display power gating", option 2
  * (owner decision, 24 Sep 10:30 pm PDT: gate the rail off outside the
@@ -48,7 +51,7 @@ extern "C" {
 
 /* One-time setup: configures PAGER_PIN_3V3_EN as a plain GPIO output and
  * turns the rail ON. Must run before any peripheral downstream of it
- * (display, CardKB, LIS3DH) is touched — same ordering board_power_init()
+ * (display, CardKB) is touched — same ordering board_power_init()
  * (main.c) used to require. Also excludes the pad from ESP-IDF's sleep GPIO
  * isolation (gpio_sleep_sel_dis()) so it holds whichever level rail_on()/
  * rail_off() last drove through every light sleep, instead of floating and
@@ -66,8 +69,8 @@ void rail_init(void);
  * wake during the attentive window (modes.c) does not re-arm ui.c's
  * post-restore keyboard guard on every 1 s cycle. Also returns the CardKB
  * I2C bus (IO8/IO9) from rail_off()'s bus-release hold back to I2C mode
- * (ui_kb_bus_restore(), ui.h). Power effect: powers the display, CardKB,
- * and LIS3DH.
+ * (ui_kb_bus_restore(), ui.h). Power effect: powers the display and CardKB
+ * (not the LIS3DH — it is not on this rail).
  */
 void rail_on(void);
 
@@ -76,9 +79,10 @@ void rail_on(void);
  * ui.h) so the SDA/SCL pull-ups — tied to the always-on 3V3, not this
  * gated rail — do not phantom-power the CardKB MCU through its I/O
  * protection diodes while it is meant to be off (owner, 24 Sep 11:15 pm
- * PDT). Power effect: powers down the display, CardKB, and LIS3DH — this is
- * the whole point of the gate (ends their current draw for the sleep about
- * to be entered). The CardKB MCU loses power and reboots on the next
+ * PDT). Power effect: powers down the display and CardKB (not the LIS3DH —
+ * it is not on this rail) — this is the whole point of the gate (ends their
+ * current draw for the sleep about to be entered). The CardKB MCU loses
+ * power and reboots on the next
  * rail_on(); the display's panel RAM is lost (modes.c calls
  * disp_note_power_loss() on the matching wake, which restores it from disp.c's
  * own shadow copy of the last frame so the next refresh can still be a

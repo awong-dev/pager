@@ -16,12 +16,18 @@ before flashing a real device. `docs/PROTOCOL.md` §12 has two still-open protoc
 | Walter module (DPTechnics) | ESP32-S3 + Sequans GM02SP LTE-M modem + GNSS | — |
 | GDEY029T94-FT01 (SSD1680, 296×128) | E-paper display | SPI: SCK IO12, MOSI IO11, CS IO10, DC IO16, RST IO17, BUSY IO18; VCC gated by P-MOSFET on IO15 (active low) |
 | M5Stack CardKB | Keyboard | I2C 0x5F on IO9 (SDA) / IO8 (SCL), polled |
-| LIS3DH breakout | Motion wake (not implemented) | I2C 0x18, INT1 on IO2 |
+| LIS3DH breakout | Motion wake (implemented, untested on hardware) | I2C 0x18, INT1 on IO2, own I2C bus IO4 (SDA)/IO5 (SCL) (provisional), powered from the battery via the breakout's own regulator |
 | Push button | Wake / open reply | IO1, active low, RTC GPIO |
 | LiFePO4 18650 + LFP charger | Power | VIN 3.0–5.5 V |
 
-GPIO numbers for IO1/IO2/IO11/IO12/IO15 are provisional. All of them live in `main/pins.h` so they
-can change without touching logic.
+GPIO numbers for IO1/IO2/IO4/IO5/IO11/IO12/IO15 are provisional. All of them live in `main/pins.h`
+so they can change without touching logic.
+
+The LIS3DH operates at 1.71–3.6 V; a bare chip wired straight to a Li-ion/LiFePO4 cell (up to
+4.2 V) is out of its supply range. This is why it is specified as a breakout with its own onboard
+regulator, not a bare chip, and why it is powered directly from the battery rather than the gated
+3V3 rail (which only ever supplies 3V3 anyway) — the regulator is what makes battery-direct power
+safe here.
 
 ## Device behaviour contract
 

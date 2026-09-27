@@ -9,16 +9,20 @@
 
 #include "pins.h"
 #include "ui.h" /* ui_kb_bus_release()/ui_kb_bus_restore(): stop back-powering the
-                  * CardKB (and LIS3DH) through the I2C pull-ups while the rail is
-                  * off, owner 24 Sep 11:15 pm PDT finding, see ui.h's own comment */
+                  * CardKB through the I2C pull-ups while the rail is off, owner
+                  * 24 Sep 11:15 pm PDT finding, see ui.h's own comment. The
+                  * LIS3DH (accel.c) is NOT on this rail or this bus (owner, 26
+                  * Sep 2026: its own I2C bus, powered from the battery) -- this
+                  * module never touches it. */
 
 static bool s_rail_on = false;
 static int64_t s_restored_us = 0;
 
 // Round 9 (the "6s from tap to password: on a real sleep wake" defect):
 // universal settle delay between the 3V3 rail actually coming up and this
-// module touching ANY downstream peripheral (display, CardKB/I2C, LIS3DH --
-// pins.h has the full list on this rail). Owner ruling, 26 Sep: mandatory,
+// module touching ANY downstream peripheral (display, CardKB/I2C -- pins.h
+// has the full list on this rail; the LIS3DH is NOT on this rail, owner 26
+// Sep 2026, see pins.h/accel.h). Owner ruling, 26 Sep: mandatory,
 // applied once here rather than as a per-peripheral fix, since every
 // peripheral on this rail needs its own supply to have actually risen
 // before its first command/read, not just the display. Datasheet minimums
@@ -26,9 +30,6 @@ static int64_t s_restored_us = 0;
 // datasheet fetch from this bench, see the round 9 report for the full
 // sourcing/caveat):
 //   - SSD1680 (display): "wait >=10ms after VCI up" before RST.
-//   - LIS3DH (accel): datasheet-cited boot time ~5ms after power-up
-//     (from training-data recollection of the electrical characteristics
-//     table, NOT re-verified against a fetched PDF on this bench).
 //   - CardKB (M5Stack unit, ATmega8A): the binding constraint -- factory
 //     default AVR fuses (internal RC, long startup) are commonly cited at
 //     14 CK + 65ms from a cold power-up; the bench's own I2C-ACK-timing
@@ -123,7 +124,7 @@ void rail_on(void)
     // once the rail is actually live, and ui_kb_bus_restore() just returns
     // the bus to I2C mode (the PAGER_KB_BOOT_GUARD_MS guard, ui.c, still
     // withholds the first read on top of this). Power effect: none of its
-    // own -- the rail edge above is what powers the CardKB/LIS3DH back up.
+    // own -- the rail edge above is what powers the CardKB back up.
     ui_kb_bus_restore();
     rail_disp_bus_restore();
     s_rail_on = true;
@@ -136,10 +137,11 @@ void rail_off(void)
         return;
     }
     // Before dropping the rail: stop driving the I2C pull-ups' idle-high
-    // level so the CardKB (and LIS3DH, which shares this bus and rail) are
-    // not phantom-powered through their I/O protection diodes for the
-    // sleep about to be entered (owner, 24 Sep 11:15 pm PDT). Power effect:
-    // see ui_kb_bus_release()'s own comment.
+    // level so the CardKB is not phantom-powered through its I/O protection
+    // diodes for the sleep about to be entered (owner, 24 Sep 11:15 pm PDT).
+    // The LIS3DH is not on this rail or this bus (owner, 26 Sep 2026) and is
+    // untouched by this call. Power effect: see ui_kb_bus_release()'s own
+    // comment.
     ui_kb_bus_release();
     rail_disp_bus_release();
     gpio_set_level(PAGER_PIN_3V3_EN, 1); // active-low: disable the rail

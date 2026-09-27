@@ -759,7 +759,8 @@ uint32_t ui_kb_skipped_read_count(void) { return s_kb_skipped_reads; }
 static uint32_t s_kb_bus_releases = 0;
 
 // See ui.h's own doc comment (ui_kb_bus_release()) for the full rationale.
-// Power effect: removes the CardKB's/LIS3DH's phantom-power path through
+// The LIS3DH is not on this bus (own I2C_NUM_1, accel.c) and is untouched
+// here. Power effect: removes the CardKB's phantom-power path through
 // the I2C pull-ups while the rail is off (rail.c's rail_off() calls this
 // before dropping the rail); no effect on the rail itself.
 void ui_kb_bus_release(void)
