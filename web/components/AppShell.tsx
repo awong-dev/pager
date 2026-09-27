@@ -76,8 +76,8 @@ export default function AppShell({ children }: { children: ReactNode }) {
   const { me, isAdmin, signOutUser } = useAuth();
   // Nav-visibility only (per this file's own docstring: "the client is not
   // the gate") -- `lib/locatableDevices.ts`'s `devices` mirrors exactly what
-  // `firestore.rules` will actually let this account read, so "at least one
-  // locatable device" here can never show the link to someone who then hits
+  // `firestore.rules` will actually let this account read (own devices plus
+  // `locatableBy` grants), so "at least one locatable device" here can never show the link to someone who then hits
   // a wall on `/location`.
   const { devices: locatableDevices } = useLocatableDevices();
 

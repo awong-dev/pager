@@ -1809,7 +1809,7 @@ device and the server disagree about is a limit that produces phantom `expired` 
   battery: **who may make one is a server-side allow-list decision** — the same mechanism §4.2
   applies to messages, carrying a separate "may locate" right — enforced in the relay *and* in the
   store's own access rules, and never on the device. The device answers whatever it is asked;
-  it is not the gate.
+  it is not the gate. *(27 Sep 2026: a device's owner may always locate and read their own device, no "may locate" right needed; admins get no bypass. Server-side only, nothing on the wire changes.)*
 8. `cell` rides on the same rate-limited answer — it costs the pager nothing extra to attach (the
   serving cell is already known from the modem's registration state, no separate radio activity),
   so it does not get its own rate limit or its own `loc_req`/`/locate` path; it is only ever a

@@ -282,6 +282,49 @@ def test_locatable_by_uid_can_read_device_and_its_locations(two_pairs):
     assert resp3.status_code == 403
 
 
+def test_owner_can_read_own_device_locations_but_not_non_owner_or_admin(two_pairs):
+    """Owner decision (27 Sep 2026): a device's owner reads its own
+    `locations` with no `locate` edge. It is owner-only, not admin-sees-all:
+    a non-owner without `locatableBy` and an admin who is neither owner nor
+    in `locatableBy` are both still denied, for `get` and `list`."""
+    from app.store.locations import LocationFix, add_location
+
+    devices_store.create_device(
+        device_id="pgr-rules-own-1",
+        owner_uid="u2",
+        label="d",
+        mqtt_username="pgr-rules-own-1",
+        mqtt_password_hash="x",
+    )
+    loc_id = add_location("pgr-rules-own-1", LocationFix(ts=1, fixTs=1, lat=1.0, lon=2.0))
+    path = f"devices/pgr-rules-own-1/locations/{loc_id}"
+    list_query = {
+        "structuredQuery": {
+            "from": [{"collectionId": "locations"}],
+            "orderBy": [{"field": {"fieldPath": "createdAt"}, "direction": "DESCENDING"}],
+        }
+    }
+
+    owner_token = mint_id_token("u2")
+    assert _get(path, owner_token).status_code == 200
+    resp = _run_query("devices/pgr-rules-own-1", owner_token, list_query)
+    assert resp.status_code == 200, resp.text
+    assert len([row for row in resp.json() if "document" in row]) == 1
+
+    other_token = mint_id_token("u3")
+    assert _get(path, other_token).status_code == 403
+    assert _run_query("devices/pgr-rules-own-1", other_token, list_query).status_code == 403
+
+    fb_auth.create_user(uid="admin-loc-1", email="admin-loc-1@example.com")
+    users_store.create_user(uid="admin-loc-1", alias="adminloc1", display_name="Admin", role="admin")
+    fb_auth.set_custom_user_claims("admin-loc-1", {"admin": True})
+    admin_token = mint_id_token("admin-loc-1")
+    assert _get(path, admin_token).status_code == 403
+    assert _run_query("devices/pgr-rules-own-1", admin_token, list_query).status_code == 403
+
+    assert _get(path, None).status_code == 403
+
+
 def test_locations_are_client_read_only(two_pairs):
     """docs/LOCATION_TRACKING_DESIGN.md §5's owner note (this task): "the
     rules are unchanged and still relay-write-only" even with tracking on --

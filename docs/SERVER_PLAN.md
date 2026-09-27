@@ -281,7 +281,8 @@ settings/meta                  {schemaVersion: 2, lastSweepAt, seqCounter}
   match /conversations/{k}           { allow read: if registered() && request.auth.uid in resource.data.uids; }
   match /devices/{d}                 { allow read: if resource.data.ownerUid == request.auth.uid
                                                    || request.auth.uid in resource.data.locatableBy || isAdmin();
-    match /locations/{l}             { allow read: if request.auth.uid in get(/databases/$(db)/documents/devices/$(d)).data.locatableBy; }
+    match /locations/{l}             { allow read: if request.auth.uid in get(/databases/$(db)/documents/devices/$(d)).data.locatableBy
+                                                   || get(/databases/$(db)/documents/devices/$(d)).data.ownerUid == request.auth.uid; }
     match /smsLog/{l}                { allow read: if isAdmin()
                                                    || get(/databases/$(db)/documents/devices/$(d)).data.ownerUid == request.auth.uid; } }
   match /allow/{e}                   { allow read: if isAdmin() || request.auth.uid in [resource.data.fromUid, resource.data.toUid]; }
@@ -443,7 +444,7 @@ POST /api/me/backends/{id}/verify {code}               → phone / gchat link ve
 POST /api/me/push-tokens {token} / DELETE …/{token}    → FCM registration tokens
 POST /api/conversations/{alias}/messages {body}        → 201 {id}
 POST /api/conversations/{alias}/messages/{id}/read     → webapp delivery → 'read'
-POST /api/conversations/{alias}/locate                 → 202 {request_id} (requires allow.locate)
+POST /api/conversations/{alias}/locate                 → 202 {request_id} (requires allow.locate, or alias = caller)
 POST/PATCH/DELETE /api/admin/users[/{uid}]             → admin claim; creates the Auth user too
 POST /api/admin/users/{uid}/backends {kind, config}    → admin-created backend (verifiedAt set, adminVerified)
 PUT  /api/admin/allowlist                              → replace-all; rewrites allow/* and devices.locatableBy
@@ -509,7 +510,8 @@ publish — no queue in the latency-critical path.
 ### 5.4 Allow-list semantics
 Directed edges with two flags at `allow/{from}_{to}`. `message` gates `send()`; `locate` gates
 `/locate` and read access to `locations` (via `devices.locatableBy`, rewritten whenever the list
-changes). The admin UI's "connect A and B" writes both directions; the API keeps them separately
+changes). A device's owner may always `/locate` and read their own device's `locations`, no edge needed; admin rights add nothing (owner decision, 27 Sep 2026).
+The admin UI's "connect A and B" writes both directions; the API keeps them separately
 editable. Removing an edge does not delete history; the thread goes read-only.
 
 ### 5.5 Admin

@@ -352,6 +352,37 @@ def test_loc_answer_fulfils_the_request_and_posts_a_loc_thread_message():
     assert loc_msgs[0].recipientUid == "mom"
 
 
+def test_owner_self_locate_fulfils_without_a_self_thread_message():
+    """An owner locating their own device (27 Sep 2026): the answer fulfils
+    the request and stores the fix, but posts no owner-to-owner `loc`
+    message; a coalesced second requester still gets theirs."""
+    _make_user("mom", "mom")
+    _make_user("student", "student")
+    allow_store.set_edge("mom", "student", message=True, locate=True)
+    _make_pager_device("pgr-loc-self", "student")
+    device = devices_store.get_device("pgr-loc-self")
+
+    _routing, _broker, loc = _setup()
+    req_id = loc.locate(requester_uid="student", device=device).request_id
+    assert req_id is not None
+    assert loc.locate(requester_uid="mom", device=device).request_id == req_id
+
+    location.ingest_loc("pgr-loc-self", _loc_env(req=req_id, lat=9.0, lon=8.0))
+
+    loc_req_msg = messages_store.get_message(req_id)
+    pager_bid = next(bid for bid, d in loc_req_msg.deliveries.items() if d.kind == "pager")
+    assert loc_req_msg.deliveries[pager_bid].state == "fulfilled"
+    self_thread = messages_store.list_thread(messages_store.conv_key("student", "student"))
+    assert [m for m in self_thread if m.kind == "loc"] == []
+    mom_thread = messages_store.list_thread(messages_store.conv_key("mom", "student"))
+    assert len([m for m in mom_thread if m.kind == "loc"]) == 1
+
+    from app.db.firestore import get_db
+
+    locs = list(get_db().collection("devices").document("pgr-loc-self").collection("locations").stream())
+    assert len(locs) == 1
+
+
 def test_loc_answer_fulfils_for_every_coalesced_requester():
     _make_user("mom", "mom")
     _make_user("dad", "dad")

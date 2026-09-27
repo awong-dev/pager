@@ -448,7 +448,14 @@ def ingest_loc(device_id: str, env: LocEnvelope) -> None:
                     drop_reason = f"request already past its {ttl}s TTL"
                     delete_stale_req = True
                 else:
-                    requester_uids = list(req_data.get("requesterUids") or [])
+                    # An owner locating their own device (no allow edge
+                    # needed, `routers/conversations.py`) gets no
+                    # self-conversation `kind='loc'` message: the fix is
+                    # already in `devices/{d}/locations`, which the owner
+                    # can read, and a thread with oneself is not a thing.
+                    requester_uids = [
+                        u for u in (req_data.get("requesterUids") or []) if u != owner_uid
+                    ]
                     loc_req_ref = messages_store.messages_ref(loc_req_msg_id)
                     loc_req_snap = loc_req_ref.get(transaction=transaction)
                     meta_ref = messages_store.meta_ref()

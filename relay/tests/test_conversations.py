@@ -285,6 +285,38 @@ def test_locate_target_with_no_device_is_409(client: TestClient):
     assert resp.status_code == 409
 
 
+def test_owner_can_locate_own_device_without_allow_edge(client: TestClient):
+    """Owner decision (27 Sep 2026): no `locate` edge needed for one's own
+    device; §13.3 rules 5-6 still apply (a second call coalesces)."""
+    kid_headers = _make_user("kid12", "kid12")
+    _make_pager_device("pgr-conv-own-1", "kid12")
+
+    resp = client.post("/api/conversations/kid12/locate", headers=kid_headers)
+    assert resp.status_code == 202, resp.text
+    first = resp.json()
+    assert first["requestId"]
+    assert first["cached"] is False
+
+    resp2 = client.post("/api/conversations/kid12/locate", headers=kid_headers)
+    assert resp2.status_code == 202, resp2.text
+    assert resp2.json()["requestId"] == first["requestId"]
+
+
+def test_admin_without_locate_edge_cannot_locate_someone_elses_device(client: TestClient):
+    admin_headers = _make_admin("adm13", "adm13")
+    _make_user("kid13", "kid13")
+    _make_pager_device("pgr-conv-own-2", "kid13")
+
+    resp = client.post("/api/conversations/kid13/locate", headers=admin_headers)
+    assert resp.status_code == 403
+
+
+def test_owner_with_no_device_locating_self_is_409(client: TestClient):
+    kid_headers = _make_user("kid14", "kid14")
+    resp = client.post("/api/conversations/kid14/locate", headers=kid_headers)
+    assert resp.status_code == 409
+
+
 def test_locate_requires_auth(client: TestClient):
     resp = client.post("/api/conversations/kid7/locate")
     assert resp.status_code == 401

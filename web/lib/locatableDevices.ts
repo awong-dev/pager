@@ -13,13 +13,13 @@
  * otherwise unwritable by any client (`firestore.rules`' closing
  * `allow write: if false`).
  *
- * Deliberately excludes a device's own owner: `firestore.rules`'
- * `locations` subcollection rule checks *only* `locatableBy`, with no
- * `ownerUid`/`isAdmin()` bypass (unlike the top-level `devices/{d}` read
- * rule, which has both) -- so today's model genuinely does not let an
- * owner or an admin read a device's location history "for free"; they too
- * need an explicit `locate` edge, same as anyone else. This hook mirrors
- * that boundary rather than working around it.
+ * Plus the viewer's *own* devices (`ownerUid == me.uid`, flagged `isOwn`):
+ * owner decision, 27 Sep 2026 -- `firestore.rules`' `locations` rule lets
+ * a device's owner read it, and `POST /conversations/{alias}/locate` lets
+ * the owner locate it, with no `locate` edge. Still no admin bypass: an
+ * admin sees only devices they own or hold a `locate` edge for. The two
+ * listeners are merged by device id (own wins), so a device that is both
+ * owned and in `locatableBy` appears once.
  *
  * Shared by `AppShell` (nav item visibility -- "Location" only shows once
  * this list is non-empty) and `/location` (the actual picker), so there is
@@ -27,7 +27,7 @@
  * drift.
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { collection, onSnapshot, query, where } from "firebase/firestore";
 
 import { useAuth } from "./auth-context";
@@ -36,12 +36,16 @@ import type { DeviceDoc } from "./types";
 
 export interface LocatableDevice extends DeviceDoc {
   id: string;
+  /** True when the viewer owns this device (listed as "You"). */
+  isOwn: boolean;
 }
 
 export function useLocatableDevices(): { devices: LocatableDevice[]; loaded: boolean } {
   const { me } = useAuth();
-  const [devices, setDevices] = useState<LocatableDevice[]>([]);
-  const [loaded, setLoaded] = useState(false);
+  const [granted, setGranted] = useState<LocatableDevice[]>([]);
+  const [own, setOwn] = useState<LocatableDevice[]>([]);
+  const [grantedLoaded, setGrantedLoaded] = useState(false);
+  const [ownLoaded, setOwnLoaded] = useState(false);
 
   useEffect(() => {
     if (!me) {
@@ -52,16 +56,28 @@ export function useLocatableDevices(): { devices: LocatableDevice[]; loaded: boo
       // reader of this hook before `me` ever goes null.
       return;
     }
-    const q = query(
-      collection(getFirestoreDb(), "devices"),
-      where("locatableBy", "array-contains", me.uid)
+    const devicesRef = collection(getFirestoreDb(), "devices");
+    const unsubGranted = onSnapshot(
+      query(devicesRef, where("locatableBy", "array-contains", me.uid)),
+      (snap) => {
+        setGranted(snap.docs.map((d) => ({ id: d.id, ...(d.data() as DeviceDoc), isOwn: false })));
+        setGrantedLoaded(true);
+      }
     );
-    const unsubscribe = onSnapshot(q, (snap) => {
-      setDevices(snap.docs.map((d) => ({ id: d.id, ...(d.data() as DeviceDoc) })));
-      setLoaded(true);
+    const unsubOwn = onSnapshot(query(devicesRef, where("ownerUid", "==", me.uid)), (snap) => {
+      setOwn(snap.docs.map((d) => ({ id: d.id, ...(d.data() as DeviceDoc), isOwn: true })));
+      setOwnLoaded(true);
     });
-    return unsubscribe;
+    return () => {
+      unsubGranted();
+      unsubOwn();
+    };
   }, [me]);
 
-  return { devices, loaded };
+  const devices = useMemo(() => {
+    const ownIds = new Set(own.map((d) => d.id));
+    return [...own, ...granted.filter((d) => !ownIds.has(d.id))];
+  }, [own, granted]);
+
+  return { devices, loaded: grantedLoaded && ownLoaded };
 }

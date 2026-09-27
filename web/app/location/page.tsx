@@ -4,8 +4,9 @@
  * request): a standalone location view, split out of the chat thread.
  *
  * Authorization is entirely server-side, unchanged by this page:
- * `firestore.rules`' `devices/{d}/locations/{l}` rule reads only
- * `devices/{d}.locatableBy`, which `relay/app/store/allow.py` recomputes
+ * `firestore.rules`' `devices/{d}/locations/{l}` rule admits the device's
+ * owner (listed here as "You", 27 Sep 2026) and `devices/{d}.locatableBy`,
+ * which `relay/app/store/allow.py` recomputes
  * from the admin-managed `allow/{fromUid}_{toUid}.locate` edge
  * (`/admin/allowlist`) -- a non-admin can never write `allow` themselves
  * (`app/routers/admin.py`'s allow-list route requires the `admin` claim;
@@ -70,6 +71,7 @@ import LocationTimeline from "@/components/LocationTimeline";
 import RequireAuth from "@/components/RequireAuth";
 import { ApiError, api } from "@/lib/api";
 import { locBackoffLabel } from "@/lib/deviceTrust";
+import { useAuth } from "@/lib/auth-context";
 import { useDirectory } from "@/lib/directory";
 import { getFirestoreDb } from "@/lib/firebase";
 import { buildLocationTimeline, type LocationFixRow } from "@/lib/location";
@@ -119,7 +121,7 @@ function PersonListItem({
   return (
     <ListItemButton selected={selected} onClick={onSelect} sx={{ borderRadius: 1 }}>
       <ListItemText
-        primary={alias ? `@${alias}` : `uid:${device.ownerUid.slice(0, 8)}`}
+        primary={device.isOwn ? "You" : alias ? `@${alias}` : `uid:${device.ownerUid.slice(0, 8)}`}
         secondary={`${device.label}${updatedMs !== null ? ` · updated ${formatRelativeAge(updatedMs)}` : ""}`}
       />
     </ListItemButton>
@@ -240,7 +242,9 @@ function LocationDetail({
             <ArrowBackIcon />
           </IconButton>
         )}
-        <Typography variant="h6">{ownerAlias ? `@${ownerAlias}` : device.label}</Typography>
+        <Typography variant="h6">
+          {device.isOwn ? `You · ${device.label}` : ownerAlias ? `@${ownerAlias}` : device.label}
+        </Typography>
         <Box sx={{ flexGrow: 1 }} />
         <Stack spacing={0.25} sx={{ alignItems: "flex-end" }}>
           <Button
@@ -287,6 +291,10 @@ function LocationDetail({
 
 function LocationInner() {
   const { uidToAlias } = useDirectory();
+  const { me } = useAuth();
+  // Own devices: `/locate` is addressed by the owner's alias, which is the
+  // viewer's own -- known from `me` even if the directory hasn't learned it.
+  const aliasFor = (d: LocatableDevice) => (d.isOwn ? me?.alias : uidToAlias(d.ownerUid));
   const { devices, loaded } = useLocatableDevices();
   // MUI's default `md` breakpoint (900px) -- a raw media-query string, not
   // `useTheme().breakpoints`, matching `ThreadPageClient.tsx`'s existing
@@ -310,7 +318,7 @@ function LocationInner() {
     // learned by messaging or localStorage, so this can silently miss a
     // peer never messaged before -- the person is still in the list below,
     // just not pre-selected.
-    return devices.find((d) => uidToAlias(d.ownerUid) === initialWho)?.id ?? null;
+    return devices.find((d) => !d.isOwn && uidToAlias(d.ownerUid) === initialWho)?.id ?? null;
   }, [initialWho, devices, uidToAlias]);
   const selectedId = manualSelectedId !== undefined ? manualSelectedId : autoSelectedId;
 
@@ -318,7 +326,7 @@ function LocationInner() {
     () => devices.find((d) => d.id === selectedId) ?? null,
     [devices, selectedId]
   );
-  const ownerAlias = selectedDevice ? uidToAlias(selectedDevice.ownerUid) : undefined;
+  const ownerAlias = selectedDevice ? aliasFor(selectedDevice) : undefined;
 
   const peopleList = (
     <Card variant="outlined">
@@ -331,7 +339,7 @@ function LocationInner() {
             <PersonListItem
               key={d.id}
               device={d}
-              alias={uidToAlias(d.ownerUid)}
+              alias={aliasFor(d)}
               selected={d.id === selectedId}
               onSelect={() => setManualSelectedId(d.id)}
             />
@@ -349,8 +357,8 @@ function LocationInner() {
 
       {loaded && devices.length === 0 && (
         <Alert severity="info">
-          No one has authorized you to see their location yet. Ask your admin to grant it from the allow-list
-          (&quot;Locate&quot; column).
+          You have no device of your own and no one has authorized you to see their location yet. Ask your
+          admin to grant it from the allow-list (&quot;Locate&quot; column).
         </Alert>
       )}
 

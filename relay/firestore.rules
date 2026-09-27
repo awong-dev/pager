@@ -76,10 +76,16 @@ service cloud.firestore {
         isAdmin()
       );
 
+      // `locatableBy` (a `locate` allow edge) or the device's own owner
+      // (owner decision, 27 Sep 2026: an owner sees their own device's
+      // location). Deliberately no `isAdmin()` bypass -- an admin sees a
+      // device's location only if they own it or hold a `locate` edge.
       match /locations/{l} {
-        allow read: if request.auth != null &&
+        allow read: if request.auth != null && (
           request.auth.uid in
-            get(/databases/$(db)/documents/devices/$(d)).data.get('locatableBy', []);
+            get(/databases/$(db)/documents/devices/$(d)).data.get('locatableBy', []) ||
+          get(/databases/$(db)/documents/devices/$(d)).data.ownerUid == request.auth.uid
+        );
       }
 
       // docs/V02_DESIGN.md §6: device-direct SMS audit log. Owner and admin

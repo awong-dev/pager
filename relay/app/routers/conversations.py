@@ -319,9 +319,14 @@ def locate(
     if target_uid is None:
         raise HTTPException(status_code=404, detail="unknown recipient")
 
-    edge = allow_store.get_edge(authed.uid, target_uid)
-    if edge is None or not edge.locate:
-        raise HTTPException(status_code=403, detail="not allowed to locate this user")
+    # Owner decision (27 Sep 2026): a user may always locate their *own*
+    # device, no `locate` edge needed. Only the edge check is skipped --
+    # `Location.locate`'s §13.3 rules 5-7 (one in-flight loc_req, 60 s
+    # cache) apply unchanged. Admin rights grant nothing here.
+    if target_uid != authed.uid:
+        edge = allow_store.get_edge(authed.uid, target_uid)
+        if edge is None or not edge.locate:
+            raise HTTPException(status_code=403, detail="not allowed to locate this user")
 
     # docs/SERVER_PLAN.md models one pager device per user as the common
     # case. For the (in principle possible) multi-device case: pick the
