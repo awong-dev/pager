@@ -32,7 +32,7 @@ import { useEffect, useRef } from "react";
 import { isCoarseFix, zoomForAccuracy } from "@/lib/location";
 import { OSM_ATTRIBUTION, OSM_TILE_MAX_ZOOM, OSM_TILE_URL } from "@/lib/mapTiles";
 
-const MAP_HEIGHT_PX = 200;
+const DEFAULT_MAP_HEIGHT_PX = 200;
 // Used only to pick a zoom level (see `zoomForAccuracy`), not for layout --
 // the container itself is always `width: 100%` of its card.
 const VIEWPORT_PX_ESTIMATE = 260;
@@ -51,12 +51,17 @@ export default function LocationMap({
   accM,
   src,
   trail,
+  height = DEFAULT_MAP_HEIGHT_PX,
 }: {
   lat: number;
   lon: number;
   accM?: number | null;
   src?: string | null;
   trail?: LocationMapTrailPoint[];
+  /** CSS pixel height of the map container -- `LocationCard`'s small
+   * embedded map and `/location`'s much larger main map both need
+   * Leaflet's explicit-height container, just at different sizes. */
+  height?: number;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
 
@@ -169,7 +174,7 @@ export default function LocationMap({
     <div
       ref={containerRef}
       aria-label="Map of the pager's last known location"
-      style={{ height: MAP_HEIGHT_PX, width: "100%", borderRadius: 8, outline: "none" }}
+      style={{ height, width: "100%", borderRadius: 8, outline: "none" }}
     />
   );
 }

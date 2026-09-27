@@ -3,9 +3,8 @@
 /** `/chat/[alias]` -- docs/SERVER_PLAN.md §7.2/§7.4: the thread. One
  * `onSnapshot` query on `messages` (`convKey==k`, `orderBy(seq, desc)`,
  * `limit(50)`, "load older"); a 160-code-point composer; per-message
- * delivery chips read straight off the embedded `deliveries` map; a
- * "Request location" button gated on `allow.locate`; a last-known-location
- * card with an "open in maps" link.
+ * delivery chips read straight off the embedded `deliveries` map; a small
+ * "View location" link (gated on `device.locatableBy`) to `/location`.
  *
  * The `[alias]` segment is read from `usePathname()`, not Next's route
  * `params` -- this route is statically exported as a single placeholder
@@ -19,6 +18,14 @@
  * this browser) has no known peer uid yet -- see `lib/directory.tsx`'s
  * module docstring for why, and for the "send once, learn the uid from the
  * message we can read back" bootstrap this page performs.
+ *
+ * Location tracking (map, timeline, "Locate now") moved out to `/location`
+ * (this task, 27 Sep 2026 owner request: "no longer embedded in the
+ * chat"). This file keeps only a minimal link/icon to that view -- next to
+ * the pager-status line when this peer's device is one of ours to locate,
+ * and on each `loc_req`/`loc` message row (the relay still writes those as
+ * the `/locate` round trip's own record, `app/location.py`, unchanged by
+ * this task) instead of the old inline request-state text and map card.
  */
 
 import {
@@ -32,6 +39,7 @@ import {
   query,
   where,
 } from "firebase/firestore";
+import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import Alert from "@mui/material/Alert";
@@ -49,23 +57,17 @@ import SendIcon from "@mui/icons-material/Send";
 
 import AppShell from "@/components/AppShell";
 import DeliveryChips from "@/components/DeliveryChips";
-import LocationCard from "@/components/LocationCard";
 import RequireAuth from "@/components/RequireAuth";
 import { ApiError, api } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
-import { locBackoffLabel } from "@/lib/deviceTrust";
 import { useDirectory } from "@/lib/directory";
 import { getFirestoreDb } from "@/lib/firebase";
 import { formatClock, isLocReqExpired } from "@/lib/time";
-import type { AllowEdgeDoc, DeviceDoc, LocationFixDoc, MessageDoc } from "@/lib/types";
+import type { DeviceDoc, MessageDoc } from "@/lib/types";
 
 const BODY_MAX_CODEPOINTS = 160;
 const BODY_MAX_UTF8_BYTES = 320;
 const PAGE_SIZE_STEP = 50;
-// How many of a device's most recent `locations` docs to keep around for
-// the "last known location" card's faint trail (LocationMap) -- a plain
-// Firestore listener limit, not a new endpoint.
-const RECENT_FIXES_LIMIT = 8;
 // docs/V03_PLAN.md §2: "within 80 px of the bottom" counts as at-bottom for
 // both the auto-scroll and the mark-read gate.
 const AT_BOTTOM_THRESHOLD_PX = 80;
@@ -134,20 +136,47 @@ function useAliasFromPath(): string | null {
   }, [pathname]);
 }
 
-function LocReqRow({ message, mine }: { message: MessageRow; mine: boolean }) {
+// docs/SERVER_PLAN.md §7 (this task): the relay still writes a `loc_req`
+// message for every `/locate` call (now issued from `/location`, not this
+// thread) and a `kind='loc'` reply once it's answered
+// (`app/location.py`) -- unchanged relay behaviour this page cannot (and
+// should not) suppress. Both render as one small link to `/location`
+// instead of the old inline request-state text/map card, per the owner's
+// "at most a small link or icon" instruction.
+function LocRequestLinkRow({ alias, label }: { alias: string; label: string }) {
+  return (
+    <Stack direction="row" sx={{ justifyContent: "center", my: 1 }}>
+      <Box
+        component={Link}
+        href={`/location?who=${encodeURIComponent(alias)}`}
+        sx={{
+          px: 1.5,
+          py: 0.5,
+          border: 1,
+          borderColor: "divider",
+          borderRadius: 2,
+          textDecoration: "none",
+          color: "inherit",
+        }}
+      >
+        <Typography variant="caption" color="text.secondary">
+          <LocationOnIcon fontSize="inherit" sx={{ verticalAlign: "middle" }} /> {label}
+        </Typography>
+      </Box>
+    </Stack>
+  );
+}
+
+function LocReqRow({ message, mine, alias }: { message: MessageRow; mine: boolean; alias: string }) {
   const delivery = Object.values(message.deliveries)[0];
   const expired = isLocReqExpired(message);
   const state =
     expired && delivery?.state !== "fulfilled" ? "expired" : (delivery?.state ?? "queued");
   return (
-    <Stack direction="row" sx={{ justifyContent: "center", my: 1 }}>
-      <Box sx={{ px: 1.5, py: 0.5, border: 1, borderColor: "divider", borderRadius: 2 }}>
-        <Typography variant="caption" color="text.secondary">
-          <LocationOnIcon fontSize="inherit" sx={{ verticalAlign: "middle" }} />{" "}
-          {mine ? "You requested a location" : "Location requested"} -- {state}
-        </Typography>
-      </Box>
-    </Stack>
+    <LocRequestLinkRow
+      alias={alias}
+      label={`${mine ? "You requested a location" : "Location requested"} -- ${state} -- view`}
+    />
   );
 }
 
@@ -190,20 +219,9 @@ function MessageBubble({
   );
 }
 
-function LocMessageRow({ message, mine }: { message: MessageRow; mine: boolean }) {
+function LocMessageRow({ message, mine, alias }: { message: MessageRow; mine: boolean; alias: string }) {
   if (!message.loc) return null;
-  return (
-    <Stack sx={{ alignItems: mine ? "flex-end" : "flex-start", my: 0.75 }}>
-      <LocationCard
-        lat={message.loc.lat}
-        lon={message.loc.lon}
-        accM={message.loc.accM}
-        fixTsMs={message.loc.fixTs * 1000}
-        src={message.loc.src}
-        title={mine ? "Location you shared" : "Location received"}
-      />
-    </Stack>
-  );
+  return <LocRequestLinkRow alias={alias} label={`${mine ? "Location you shared" : "Location received"} -- view`} />;
 }
 
 function ThreadInner({ alias }: { alias: string }) {
@@ -220,13 +238,10 @@ function ThreadInner({ alias }: { alias: string }) {
   const [messages, setMessages] = useState<MessageRow[]>([]);
   const [pageSize, setPageSize] = useState(PAGE_SIZE_STEP);
   const [device, setDevice] = useState<(DeviceDoc & { id: string }) | null>(null);
-  const [recentFixes, setRecentFixes] = useState<LocationFixDoc[]>([]);
-  const [allowLocate, setAllowLocate] = useState<boolean | null>(null);
 
   const [composer, setComposer] = useState("");
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
-  const [locateBusy, setLocateBusy] = useState(false);
   const [leaving, setLeaving] = useState(false);
   const [snack, setSnack] = useState<string | null>(null);
   const [showNewMessagesChip, setShowNewMessagesChip] = useState(false);
@@ -286,11 +301,13 @@ function ThreadInner({ alias }: { alias: string }) {
     return unsubscribe;
   }, [convKey, me, pageSize]);
 
-  // Peer's pager device (for the location card + "Request location") -- see
-  // lib/directory.tsx's module docstring for why the query shape differs by
-  // role: an admin can query any device directly; a member can only run a
-  // query Firestore can prove is safe, i.e. filtered on their own uid being
-  // in `locatableBy`.
+  // Peer's pager device -- just for the header's status line and the small
+  // "View location" link (`device.locatableBy.includes(me.uid)`) now that
+  // the location card/timeline/"Request location" button themselves live at
+  // `/location`. See lib/directory.tsx's module docstring for why the query
+  // shape differs by role: an admin can query any device directly; a
+  // member can only run a query Firestore can prove is safe, i.e. filtered
+  // on their own uid being in `locatableBy`.
   useEffect(() => {
     if (!me || !peerUid) {
       return;
@@ -318,55 +335,12 @@ function ThreadInner({ alias }: { alias: string }) {
     return () => unsubscribers.forEach((u) => u());
   }, [me, peerUid]);
 
-  // Recent location fixes for that device -- newest first. The card shows
-  // only the newest as "the" fix; the rest (if any) become LocationMap's
-  // faint trail.
-  useEffect(() => {
-    if (!device) {
-      return;
-    }
-    const db = getFirestoreDb();
-    const q = query(
-      collection(db, "devices", device.id, "locations"),
-      orderBy("createdAt", "desc"),
-      limit(RECENT_FIXES_LIMIT)
-    );
-    const unsubscribe = onSnapshot(q, (snap) => {
-      setRecentFixes(snap.docs.map((d) => d.data() as LocationFixDoc));
-    });
-    return unsubscribe;
-  }, [device]);
-
-  // Gated on `device` too (not just `recentFixes`), so switching to a peer
-  // with no device, or none at all, drops the previous device's stale fixes
-  // instead of the effect above having to reset state synchronously on
-  // every `device` change (react-hooks/set-state-in-effect).
-  const latestFix = device ? (recentFixes[0] ?? null) : null;
-  // Oldest to newest, for LocationMap's trail -- undefined (not just a
-  // single-point array) when there's nothing to show, so LocationCard can
-  // tell "no trail" from "trail of one".
-  const fixTrail = useMemo(
-    () =>
-      device && recentFixes.length > 1
-        ? [...recentFixes].reverse().map((f) => ({ lat: f.lat, lon: f.lon }))
-        : undefined,
-    [device, recentFixes]
-  );
-
-  // allow.locate -- gates the "Request location" button.
-  useEffect(() => {
-    if (!me || !peerUid) {
-      return;
-    }
-    const db = getFirestoreDb();
-    const ref = doc(db, "allow", `${me.uid}_${peerUid}`);
-    const unsubscribe = onSnapshot(
-      ref,
-      (snap) => setAllowLocate(snap.exists() ? (snap.data() as AllowEdgeDoc).locate : false),
-      () => setAllowLocate(false)
-    );
-    return unsubscribe;
-  }, [me, peerUid]);
+  // Whether this account can see `device`'s location (`/location`'s own
+  // gate, `lib/locatableDevices.ts`'s query shape but against the one
+  // device already loaded above rather than a second listener) -- shows
+  // the small "View location" link. `undefined`/no `device` renders
+  // nothing, same as every other optional field in this file.
+  const canViewLocation = Boolean(me && device?.locatableBy.includes(me.uid));
 
   // Mark-read: any message addressed to me with a not-yet-'read' webapp
   // delivery -- docs/SERVER_PLAN.md §6.3. Gated on the viewer actually being
@@ -379,7 +353,7 @@ function ThreadInner({ alias }: { alias: string }) {
   // scrolled up or backgrounded does not mark everything read just because
   // a new message happened to arrive.
   // Plain function, not `useCallback` -- this file's existing handlers
-  // (`handleSend`, `handleLocate`, `handleScroll` below) follow the same
+  // (`handleSend`, `handleScroll` below) follow the same
   // pattern, and the React Compiler (`eslint-config-next`'s
   // `react-hooks/preserve-manual-memoization`) rejects a hand-written
   // dependency list it disagrees with. It closes over this render's
@@ -525,28 +499,6 @@ function ThreadInner({ alias }: { alias: string }) {
     }
   }
 
-  async function handleLocate() {
-    setLocateBusy(true);
-    try {
-      const resp = await api.post<{ requestId: string | null; cached: boolean }>(
-        `/conversations/${encodeURIComponent(alias)}/locate`
-      );
-      setSnack(
-        resp.cached
-          ? "Answered from a recent fix -- see the location card."
-          : "Location requested -- watch the thread for the reply."
-      );
-    } catch (err) {
-      setSnack(err instanceof ApiError ? String(err.detail ?? "Location request failed.") : "Location request failed.");
-    } finally {
-      setLocateBusy(false);
-    }
-  }
-
-  // docs/V02_DESIGN.md §5/§4.3: unobtrusive, next to the locate action --
-  // absent on older firmware or once the backoff has cleared.
-  const locateBackoffLabel = device ? locBackoffLabel(device.status.locBackoffS) : null;
-
   // docs/GROUP_CHAT_DESIGN.md §5: leave action -> `DELETE
   // /api/conversations/{alias}/members/me`.
   async function handleLeave() {
@@ -585,37 +537,18 @@ function ThreadInner({ alias }: { alias: string }) {
             Leave
           </Button>
         )}
-        {allowLocate && (
-          <Stack spacing={0.25} sx={{ alignItems: "flex-end" }}>
-            <Button
-              size="small"
-              variant="outlined"
-              startIcon={<LocationOnIcon />}
-              disabled={locateBusy}
-              onClick={() => void handleLocate()}
-            >
-              Request location
-            </Button>
-            {locateBackoffLabel && (
-              <Typography variant="caption" color="text.secondary">
-                {locateBackoffLabel}
-              </Typography>
-            )}
-          </Stack>
+        {canViewLocation && (
+          <Button
+            size="small"
+            variant="outlined"
+            startIcon={<LocationOnIcon />}
+            component={Link}
+            href={`/location?who=${encodeURIComponent(alias)}`}
+          >
+            View location
+          </Button>
         )}
       </Stack>
-
-      {latestFix && (
-        <LocationCard
-          lat={latestFix.lat}
-          lon={latestFix.lon}
-          accM={latestFix.accM}
-          fixTsMs={(latestFix.lastTs ?? latestFix.fixTs) * 1000}
-          src={latestFix.src}
-          cached={latestFix.cached}
-          trail={fixTrail}
-        />
-      )}
 
       {!peerUid && !group && (
         <Alert severity="info">
@@ -653,8 +586,8 @@ function ThreadInner({ alias }: { alias: string }) {
           )}
           {messages.map((m) => {
             const mine = m.senderUid === me?.uid;
-            if (m.kind === "loc_req") return <LocReqRow key={m.id} message={m} mine={mine} />;
-            if (m.kind === "loc") return <LocMessageRow key={m.id} message={m} mine={mine} />;
+            if (m.kind === "loc_req") return <LocReqRow key={m.id} message={m} mine={mine} alias={alias} />;
+            if (m.kind === "loc") return <LocMessageRow key={m.id} message={m} mine={mine} alias={alias} />;
             return <MessageBubble key={m.id} message={m} mine={mine} isGroup={Boolean(group)} />;
           })}
         </Box>
@@ -719,9 +652,9 @@ export default function ThreadPageClient() {
     <RequireAuth>
       <AppShell>
         {/* `key={alias}` remounts ThreadInner on every alias change, so its
-            local state (messages, device, latestFix, allowLocate) always
-            starts fresh instead of needing an explicit "clear on dependency
-            change" effect -- avoiding a synchronous setState-in-effect. */}
+            local state (messages, device) always starts fresh instead of
+            needing an explicit "clear on dependency change" effect --
+            avoiding a synchronous setState-in-effect. */}
         {alias ? <ThreadInner key={alias} alias={alias} /> : <CircularProgress />}
       </AppShell>
     </RequireAuth>

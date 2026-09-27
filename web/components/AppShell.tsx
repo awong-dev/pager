@@ -14,9 +14,11 @@ import Toolbar from "@mui/material/Toolbar";
 import Typography from "@mui/material/Typography";
 import AdminPanelSettingsIcon from "@mui/icons-material/AdminPanelSettings";
 import ChatIcon from "@mui/icons-material/Chat";
+import LocationOnIcon from "@mui/icons-material/LocationOn";
 import SettingsIcon from "@mui/icons-material/Settings";
 
 import { useAuth } from "@/lib/auth-context";
+import { useLocatableDevices } from "@/lib/locatableDevices";
 
 import NotificationWatcher from "./NotificationWatcher";
 
@@ -72,6 +74,12 @@ function NavMenu({
  * §7.5: "keep it a plain MUI Table/AppBar"). */
 export default function AppShell({ children }: { children: ReactNode }) {
   const { me, isAdmin, signOutUser } = useAuth();
+  // Nav-visibility only (per this file's own docstring: "the client is not
+  // the gate") -- `lib/locatableDevices.ts`'s `devices` mirrors exactly what
+  // `firestore.rules` will actually let this account read, so "at least one
+  // locatable device" here can never show the link to someone who then hits
+  // a wall on `/location`.
+  const { devices: locatableDevices } = useLocatableDevices();
 
   return (
     <Box sx={{ display: "flex", flexDirection: "column", minHeight: "100vh" }}>
@@ -89,6 +97,11 @@ export default function AppShell({ children }: { children: ReactNode }) {
           <Button color="inherit" component={Link} href="/chat" startIcon={<ChatIcon />}>
             Chat
           </Button>
+          {locatableDevices.length > 0 && (
+            <Button color="inherit" component={Link} href="/location" startIcon={<LocationOnIcon />}>
+              Location
+            </Button>
+          )}
           <NavMenu label="Settings" icon={<SettingsIcon />} links={settingsLinks} />
           {isAdmin && (
             <NavMenu label="Admin" icon={<AdminPanelSettingsIcon />} links={adminLinks} />

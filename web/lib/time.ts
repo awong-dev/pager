@@ -27,6 +27,21 @@ export function formatRelativeAge(ms: number): string {
   return `${deltaD}d ago`;
 }
 
+/** Day-group heading for `/location`'s timeline -- "Today"/"Yesterday", or
+ * a short locale date otherwise. Always computed in the viewer's local time
+ * zone (the fix timestamps are plain epoch seconds/ms with no zone of their
+ * own), so a fix just after local midnight correctly starts a new group
+ * even though it's within 24h of one from "yesterday" by clock time. */
+export function formatDay(ms: number, nowMs: number = Date.now()): string {
+  const d = new Date(ms);
+  const now = new Date(nowMs);
+  const startOfDay = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const diffDays = Math.round((startOfDay(now) - startOfDay(d)) / 86_400_000);
+  if (diffDays === 0) return "Today";
+  if (diffDays === 1) return "Yesterday";
+  return d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+}
+
 /** PROTOCOL.md §13.4 / SERVER_PLAN.md §5.6: a `loc_req` still `sent` (never
  * `fulfilled`) 15 minutes after `createdAt` is `expired` -- derived at read
  * time, not stored. Mirrors the same rule for a plain message's down-ack

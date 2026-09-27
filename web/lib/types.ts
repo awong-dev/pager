@@ -70,6 +70,16 @@ export interface DeviceStatusDoc {
   // session, display/diagnosis only. Absent on firmware built before W7/W8
   // (older firmware never sends `xport`) -- render nothing, not "undefined".
   xport?: "lte" | "wifi" | null;
+  // docs/LOCATION_TRACKING_DESIGN.md §5 R7 -- `app/store/devices.py`'s
+  // `LastCell`: the serving cell from the most recent `/loc` report that
+  // carried one, recorded whether or not that report's position was
+  // resolvable (`ingest_loc` writes a `locations` doc only when it *was*
+  // resolvable). Only `ts` is mirrored here -- it's the one field
+  // `/location`'s timeline uses (a synthetic "cell only, position unknown"
+  // row when this is newer than the newest stored fix); the raw
+  // mcc/mnc/tac/ci/rsrp fields exist server-side but nothing in the web app
+  // renders them today. Absent on a device that has never sent a `cell`.
+  lastCell?: { ts: number } | null;
   updatedAt: Timestamp | null;
 }
 

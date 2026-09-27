@@ -130,9 +130,12 @@ function AllowlistInner() {
         </Button>
       </Stack>
       <Typography variant="body2" color="text.secondary">
-        Rows are the sender (&quot;from&quot;), columns are the recipient (&quot;to&quot;).
-        &quot;Message&quot; allows sending; &quot;Locate&quot; allows requesting the
-        recipient&apos;s pager location.
+        Rows are the viewer (&quot;from&quot;), columns are the other person (&quot;to&quot;).
+        &quot;Message&quot; allows sending to that person. &quot;Locate&quot; allows seeing that
+        person&apos;s pager location on /location -- their current position, their
+        history for the last 7 days, and requesting a fresh fix -- until this box is
+        unchecked. No one, including an admin, can grant themselves this; only an
+        admin can grant it to someone else here.
       </Typography>
       {error && <Alert severity="error">{error}</Alert>}
 
@@ -162,13 +165,13 @@ function AllowlistInner() {
                       <Checkbox
                         size="small"
                         checked={cell.message}
-                        title="message"
+                        title={`Allow @${from.alias} to message @${to.alias}`}
                         onChange={(e) => setCell(from.uid, to.uid, { message: e.target.checked })}
                       />
                       <Checkbox
                         size="small"
                         checked={cell.locate}
-                        title="locate"
+                        title={`Allow @${from.alias} to see @${to.alias}'s pager location`}
                         onChange={(e) => setCell(from.uid, to.uid, { locate: e.target.checked })}
                       />
                     </Stack>

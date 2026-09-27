@@ -10,7 +10,7 @@ import Typography from "@mui/material/Typography";
 import RoomIcon from "@mui/icons-material/Room";
 
 import { formatRelativeAge } from "@/lib/time";
-import { isCoarseFix, isStaleFix } from "@/lib/location";
+import { isCoarseFix, isStaleFix, sourceLabel } from "@/lib/location";
 import type { LocationMapTrailPoint } from "@/components/LocationMap";
 
 // Leaflet touches `window` at import time -- loaded client-side only. See
@@ -60,7 +60,7 @@ export default function LocationCard({
   const appleUrl = `https://maps.apple.com/?q=${coords}`;
   const coarse = isCoarseFix(src, accM);
   const stale = isStaleFix(fixTsMs);
-  const sourceLabel = src === "gnss" ? "GPS" : src === "cell" ? "cell tower" : (src ?? "unknown source");
+  const srcLabel = sourceLabel(src);
 
   return (
     <Card variant="outlined" sx={{ maxWidth: 360 }}>
@@ -95,7 +95,7 @@ export default function LocationCard({
           sx={{ display: "block", fontWeight: stale ? 600 : 400 }}
         >
           {formatRelativeAge(fixTsMs)}
-          {stale ? " -- may be out of date" : ""} &middot; {sourceLabel}
+          {stale ? " -- may be out of date" : ""} &middot; {srcLabel}
           {cached ? " (cached)" : ""}
         </Typography>
 
