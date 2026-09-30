@@ -1,5 +1,8 @@
 # Multi-family web UI and tenancy design (30 Sep 2026)
 
+**Status:** implemented overnight 30 Sep → 1 Oct 2026 per `docs/FAMILIES_TASKS.md`; see §10 for where
+the build deviated from this text.
+
 Owner request, 30 Sep: one deployment serves **many families**, each with its own parents (family
 admins) and children (members, usually pager owners). A **superadmin** sees everything. A family
 admin sees and controls only their family's people, devices, locations and the conversations their
@@ -403,3 +406,29 @@ older, member list) ride along with phase 2.
    request's "only viewable by the family admin" is read as "not by anyone outside the family".
 9. **Group join** loses its silent mutual-`locate` side effect and becomes admin-only; any member
    relying on self-service join is affected.
+
+## 10. Implementation notes (1 Oct 2026)
+
+Where the overnight build deviated from the sections above; the code is the reference now.
+
+1. **`users/{uid}/backends` rules** stay self-or-super (§3's `isFamAdmin(resource.data.familyId)`
+   needs a `familyId` copy on backends that does not exist). The People page reads sign-in
+   details from the `users` doc, not from backends.
+2. **External creation on the message route** happens only when the sender's outbound rule for
+   numbers is `any` (`open`, `any_sms`); under `people_sms`/`sms` an unknown number is 404
+   `unknown_alias` (the admin adds it through Approved numbers first).
+3. **Contact approval in `create` mode** still creates a Firebase Auth user with an `sms` backend
+   (today's path) rather than an `external`; switching it to `externals.get_or_create` would rename
+   the alias to digits. Both shapes route identically.
+4. **`LocateCrossFamily` is enforced at every API writer of `locate` edges** (`PUT
+   /api/admin/allowlist`, `PUT /api/family/members/{uid}/approved`) rather than inside
+   `store/allow.set_edge`; group create/join and contact approval never write `locate`.
+5. **Super is not pushed alerts** (no single family); family admins only, honouring
+   `notify.alerts`.
+6. **The policy gate is mutual**: a DM between two `people`/`people` members needs an edge in each
+   direction. The allow-list matrix and the Approved editor write both directions; tests that set
+   one edge were updated.
+7. **A `devices` query without `where('familyId','==', fam)` is denied by the rules** for every
+   non-super user, including the owner; every client query carries the filter.
+8. **Alerts `contact_request` cards** use Block/Dismiss in place of the old Reject-with-reason.
+9. **Migration replaced by wipe + bootstrap** (§7); `--migrate-families` was never built.

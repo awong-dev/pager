@@ -66,6 +66,8 @@ Plan:
   found 23 Sep while adding `t:"grp"`; 707 bytes vs 640 cap). Either the cap, count, or field lengths
   must give.
 - **No retention sweep for SMS audit log;** grows forever.
+- **Alerts retention sweep** (`alertsDays` setting, default 90 days): delete handled/dismissed alerts older
+  than the configured period in the weekly sweep — verify the setting and sweep mechanics.
 - **`ca_resolve.resolve_broker_ca()` never called at startup,** CA comes only from `BROKER_CA_PEM`.
 - **No end-to-end scenario for a CA push.**
 - **Per-device APN field:** API exists, no web UI; pager auto-detection makes it rarely needed.
@@ -114,6 +116,20 @@ From `docs/HARDWARE_TESTING.md` "Not yet seen working," in order:
 
 ### Decisions waiting on the owner
 
+**Multi-family (per `docs/FAMILIES_DESIGN.md` §9)**
+- **Per-family Twilio number** (decision 10): without it, unrecognised inbound SMS cannot be attributed to a
+  family unless it carries `@alias`; fallback is super-only alert. Cost ≈ $1/month per family.
+- **`any_sms` outbound** (decision 2): read literally as "numbers only, no people", or "approved people plus
+  any number" (`people_anysms` table row)?
+- **Super and `/locate`** (decision 3): super reads locations everywhere; should super also request a fix via
+  `/locate` (currently requires an edge)?
+- **Cross-family edges** (decision 4): super-only in v1; family-admin request/accept flow is the natural v1.1.
+- **External nicknames** (decision 5): per-family nickname if two families know the same number by different
+  names (small addition)?
+- **Pager modem `any_sms`** (decision 11): device firmware cannot honour `any_sms` inbound (texts from unlisted
+  numbers still blocked on-device); `cfg.sms` mode flag would be needed.
+
+**Device/firmware**
 - **CardKB bootloader reflash** (1.1 s key-loss issue; ISP header reflash without bootloader needed if selected).
 - **Modem ring indicator (RI) wiring** (simplifies UART-woken host; if routed to GPIO, phase 2 becomes
   "wake on RI, one `AT` to flush" with no byte loss — decide before S9 implementation).

@@ -40,7 +40,6 @@
 - Group chats (more than two humans in one thread). The model in §3 is pairwise; a group is a later
   additive feature and the layout does not preclude it.
 - Message content beyond text + location (no images, no attachments). The pager cannot render them.
-- Multi-tenant SaaS. One deployment = one family/household with one admin. Keep it that small.
 
 ---
 
@@ -113,17 +112,27 @@
 
 Shaped by three habits: **top-level collections** (collection-group and cross-conversation
 queries stay simple), **denormalised arrays for rules** (`uids`, `locatableBy`) so security rules
-need no lookups, and **transactions** for anything monotonic or unique.
+need no lookups, and **transactions** for anything monotonic or unique. **Multi-family** support
+adds `familyId` to users, devices, and collections, with visibility scoped by family.
 
 ```
-users/{uid}                    {alias, displayName, email, phone, role: 'admin'|'member', disabled, createdAt}
+families/{fid}                 {name, smsNumber|null, blockedNumbers: [], createdAt, createdBy}
+families/{fid}/alerts/{id}     {kind: 'new_conversation'|'sms_unknown'|'contact_request',
+                                status: 'open'|'handled'|'dismissed', ts, subjectUid, subjectAlias,
+                                peerUid|null, peerAlias|null, peerPhone|null, preview (≤120),
+                                heldBody|null, convKey|null, contactRequestKey|null,
+                                decidedAt, decidedBy}
+users/{uid}                    {alias, displayName, email, phone, role: 'super'|'admin'|'member',
+                                familyId|null, kind: 'person'|'external', 
+                                policy: {out, in}, notify: {alerts},
+                                disabled, createdAt}
 aliases/{alias}                {uid}                                  uniqueness = doc id, created in a txn
 users/{uid}/backends/{bid}     {kind: 'pager'|'webapp'|'sms'|'gchat'|…, config, enabled, verifiedAt}
-allow/{fromUid}_{toUid}        {fromUid, toUid, message: bool, locate: bool}
-devices/{deviceId}             {ownerUid, label, mqttUsername, defaultToUid|null, revokedAt,
+allow/{fromUid}_{toUid}        {fromUid, toUid, message: bool, locate: bool, familyIds: [fid…]}
+devices/{deviceId}             {ownerUid, label, mqttUsername, defaultToUid|null, revokedAt, familyId,
                                 authMode: 'hmac'|'password', provisionState: 'issued'|'provisioned',
                                 wire: 'json'|'cbor'|null, bookVersion: int,
-                                locatableBy: [uid…],                  derived from allow.locate
+                                locatableBy: [uid…],                  derived from allow.locate, in-family only
                                 smsContacts: [{name, phone}…],        v0.2 §6, max 8, owner/admin-managed
                                 status: {state, mode, battMv, rssi, session, ts, fw, locPeriodS, locMinS,
                                          authAlarm, updatedAt,
@@ -170,11 +179,12 @@ devices/{deviceId}/smsLog/{logId}
 deviceSecrets/{deviceId}       {hmacKey, mqttPasswordHash, upN, upBits, downN, sigFailures, createdAt, rotatedAt} [server-only]
 setupCodes/{bid}               {deviceId, expiresAt}                  [server-only]
 contactRequests/{deviceId}_{reqId}
-                               {deviceId, ownerUid, name, phone|null, alias|null,
+                               {deviceId, ownerUid, name, phone|null, alias|null, familyId,
                                 status: 'pending'|'approved'|'rejected', reason, createdAt, decidedAt, decidedBy}
 messages/{id}                  {id: 'm_…', seq, convKey, uids: [a, b], senderUid, recipientUid,
                                 kind: 'text'|'loc_req'|'loc', body|null, loc|null, wireId|null,
                                 originBackendKind, originBackendId|null, ts, createdAt,
+                                familyIds: [fid…], participants: {uid: {alias, displayName, kind}},
                                 deliveries: { {bid}: {kind, state: 'queued'|'sent'|'shown'|'read'|
                                                        'fulfilled'|'failed'|'expired',
                                                        attempts, externalId, error, sentTs, shownTs, readTs} },
@@ -182,7 +192,8 @@ messages/{id}                  {id: 'm_…', seq, convKey, uids: [a, b], senderU
 wireIds/{wireId}_{recipientUid} {messageId}                            QoS 1 dedup (PROTOCOL §4.2)
 locWireIds/{locId}             {deviceId, createdAt}                  /loc dedup (PROTOCOL §13.2)
 locReqs/{deviceId}             {messageId, requesterUids: [uid…], createdAt}   the one in-flight request
-conversations/{convKey}        {uids, lastMessageAt, lastPreview, unread: {uid: n}}   list-view summary
+conversations/{convKey}        {uids, lastMessageAt, lastPreview, unread: {uid: n},
+                                familyIds: [fid…], participants: {uid: {alias, displayName, kind}}}   list-view summary
 settings/retention             {messages: {n: 4, unit: 'weeks'}, locations: {n: 1, unit: 'weeks'}}
 settings/meta                  {schemaVersion: 2, lastSweepAt, seqCounter}
 ```
@@ -265,6 +276,9 @@ settings/meta                  {schemaVersion: 2, lastSweepAt, seqCounter}
   second person send as the originally-linked user.
 - Indexes: `messages(convKey, seq)`, `messages(pendingDeviceIds array-contains, createdAt)`,
   `messages(createdAt)` for the sweep, `locations(createdAt)` collection-group for the sweep.
+  Multi-family: `conversations(familyIds CONTAINS, lastMessageAt DESC)`,
+  `messages(familyIds CONTAINS, convKey, seq DESC)`, `users(familyId, alias)`,
+  `devices(familyId, label)`, `contactRequests(familyId, status, createdAt)`.
   Declared in `relay/firestore.indexes.json`. **`smsLog` needs none**: `GET /api/devices/{id}/
   sms-log`'s only query is `smsLog` (a single device's subcollection, not a collection-group)
   ordered by `ts` descending with an optional `where('ts', '<', before)` on that same field —
@@ -274,25 +288,37 @@ settings/meta                  {schemaVersion: 2, lastSweepAt, seqCounter}
 - Security rules (sketch; the real file is `relay/firestore.rules`, deployed by CI):
   ```
   function registered() { return exists(/databases/$(db)/documents/users/$(request.auth.uid)); }
-  function isAdmin()    { return request.auth.token.admin == true; }
-  match /users/{uid}                 { allow read: if request.auth.uid == uid || isAdmin(); }
-  match /users/{uid}/backends/{b}    { allow read: if request.auth.uid == uid || isAdmin(); }
-  match /messages/{id}               { allow read: if registered() && request.auth.uid in resource.data.uids; }
-  match /conversations/{k}           { allow read: if registered() && request.auth.uid in resource.data.uids; }
-  match /devices/{d}                 { allow read: if resource.data.ownerUid == request.auth.uid
-                                                   || request.auth.uid in resource.data.locatableBy || isAdmin();
-    match /locations/{l}             { allow read: if request.auth.uid in get(/databases/$(db)/documents/devices/$(d)).data.locatableBy
-                                                   || get(/databases/$(db)/documents/devices/$(d)).data.ownerUid == request.auth.uid; }
-    match /smsLog/{l}                { allow read: if isAdmin()
-                                                   || get(/databases/$(db)/documents/devices/$(d)).data.ownerUid == request.auth.uid; } }
-  match /allow/{e}                   { allow read: if isAdmin() || request.auth.uid in [resource.data.fromUid, resource.data.toUid]; }
-  match /contactRequests/{e}         { allow read: if isAdmin() || request.auth.uid == resource.data.ownerUid; }
-  match /settings/{s}                { allow read: if registered(); }
-  match /deviceSecrets/{d}           { }  /* server-only, no client reads */
-  match /setupCodes/{b}              { }  /* server-only, no client reads */
-  match /{document=**}               { allow write: if false; }
+  function role()       { return request.auth.token.get('role', ''); }
+  function fam()        { return request.auth.token.get('fam', ''); }
+  function isSuper()    { return role() == 'super'; }
+  function isFamAdmin(f) { return role() == 'admin' && fam() == f; }
+  function sameFam(f)   { return fam() != '' && fam() == f; }
+  match /families/{f}            { allow read: if isSuper() || sameFam(f); }
+  match /families/{f}/alerts/{a} { allow read: if isSuper() || isFamAdmin(f); }
+  match /users/{uid}             { allow read: if isSuper() || request.auth.uid == uid
+                                              || sameFam(resource.data.familyId); }
+  match /users/{uid}/backends/{b} { allow read: if isSuper() || request.auth.uid == uid; }
+  match /messages/{id}           { allow read: if registered() && (isSuper()
+                                              || request.auth.uid in resource.data.uids
+                                              || (role() == 'admin' && fam() in resource.data.familyIds)); }
+  match /conversations/{k}       { allow read: if registered() && (isSuper()
+                                              || request.auth.uid in resource.data.uids
+                                              || (role() == 'admin' && fam() in resource.data.familyIds)); }
+  match /devices/{d}             { allow read: if isSuper() || (sameFam(resource.data.familyId)
+                                              && (resource.data.ownerUid == request.auth.uid
+                                                  || request.auth.uid in resource.data.locatableBy
+                                                  || role() == 'admin')); }
+    match /locations/{l}         { allow read: if isSuper() || <parent predicate via get()>; }
+    match /smsLog/{l}            { allow read: if isSuper() || owner || isFamAdmin(parent.familyId); }
+  match /allow/{e}               { allow read: if isSuper() || uid in [fromUid,toUid]
+                                              || (role()=='admin' && fam() in resource.data.familyIds); }
+  match /contactRequests/{r}     { allow read: if isSuper() || uid == ownerUid || isFamAdmin(resource.data.familyId); }
+  match /settings/{s}            { allow read: if registered(); }
+  match /deviceSecrets/{d}       { }  /* server-only, no client reads */
+  match /setupCodes/{b}          { }  /* server-only, no client reads */
+  match /{document=**}           { allow write: if false; }
   ```
-  Clients never write; the `admin` claim is a Firebase custom claim. `deviceSecrets` and `setupCodes` are server-only collections with no `match` block (default-deny read) and the catch-all write deny.
+  Clients never write; claims are `{role, fam}` from Firebase Auth (no `admin` key). `deviceSecrets` and `setupCodes` are server-only collections with no `match` block (default-deny read) and the catch-all write deny. Family admins read only their own family's data.
   **`smsLog` is deliberately narrower than `locations`**: a `locate`-permission `locatableBy` uid
   may read a device's location fixes but not its SMS audit log — a location grant says nothing
   about who should see a kid's texts. In practice the web app reads this log through
@@ -437,33 +463,39 @@ publishes and lets tests inject webhook payloads.
 ### 5.1 API surface (JSON; `Authorization: Bearer <Firebase ID token>` unless noted)
 Reads that the web app can do straight from Firestore (thread, contacts, locations, status, own
 backends, settings) have **no** API endpoint. The API is writes plus anything that needs a secret.
+**Multi-family:** `Principal(uid, role, familyId)` from `{role, fam}` claims; `/api/family/*`
+requires `require_family_admin` (family admin or super with `?family=`); `/api/admin/*` requires
+`require_super`.
 ```
-GET  /api/me                                           → {user, role, claims refreshed}
+GET  /api/me                                           → {user, role, familyId, kind, policy, notify, claimsStale}
+GET  /api/directory                                    → {entries: [{uid, alias, displayName, kind, familyId, role}]}
 POST/PATCH/DELETE /api/me/backends[/{id}]              → user's own backends
 POST /api/me/backends/{id}/verify {code}               → phone / gchat link verification
 POST /api/me/push-tokens {token} / DELETE …/{token}    → FCM registration tokens
-POST /api/conversations/{alias}/messages {body}        → 201 {id}
+PATCH /api/me {notify}                                 → toggle alerts notifications
+POST /api/conversations/{alias}/messages {body}        → 201 {id}; alias can be E.164 phone number
 POST /api/conversations/{alias}/messages/{id}/read     → webapp delivery → 'read'
-POST /api/conversations/{alias}/locate                 → 202 {request_id} (requires allow.locate, or alias = caller)
-POST/PATCH/DELETE /api/admin/users[/{uid}]             → admin claim; creates the Auth user too
-POST /api/admin/users/{uid}/backends {kind, config}    → admin-created backend (verifiedAt set, adminVerified)
-PUT  /api/admin/allowlist                              → replace-all; rewrites allow/* and devices.locatableBy
-POST/DELETE /api/admin/devices[/{id}]                  → POST {device, setupCode, expiresAt, brokerPush, manualAcl}
-POST /api/admin/devices/{id}/rotate-credentials        → {device, setupCode, expiresAt, brokerPush, manualAcl}
-POST /api/admin/devices/{id}/revoke                    → revoke and delete broker credential
-POST /api/admin/devices/{id}/cfg {lock: {clear?, auto?}} → push cfg down message
-GET  /api/admin/contacts?status=pending                → list pending contact requests
-POST /api/admin/contacts/{key}/approve {mode, alias?, locate?} → approve and create user/backend if needed
-POST /api/admin/contacts/{key}/reject {reason}         → reject request
-PUT  /api/admin/settings                               → retention {n, unit} per class
-POST /api/admin/devices/{id}/ca {action: push|unpin}   → /down cfg.ca; 400 if no CA is configured  (v0.2 §4.4)
+POST /api/conversations/{alias}/locate                 → 202 {request_id}
+GET  /api/family                                       → family doc, member/device counts (family admin)
+GET/POST /api/family/members                           → list; create {alias, displayName, email|phone, role}
+PATCH /api/family/members/{uid}                        → displayName, role, disabled, policy{out,in}
+PUT  /api/family/members/{uid}/approved                → {people:[{alias,message,locate}], numbers:[phone…]}
+GET/POST/PATCH /api/family/contacts                    → externals {uid, alias, phone, displayName, approvedFor:[uid…]}
+GET/POST /api/family/devices, /{id}/rotate, /revoke, /cfg, /ca, DELETE /{id}  → device CRUD (family admin)
+POST /api/family/groups                                → {name, alias, memberUids} (family admin)
+GET /api/family/alerts?status=open|all                 → list alerts
+POST /api/family/alerts/{id}/{approve|block|dismiss}  → act on alert
+GET/POST /api/admin/families                           → list; create (super)
+PATCH /api/admin/families/{fid}                        → name, smsNumber (super)
+PATCH /api/admin/users/{uid}                           → familyId, role: super (super)
+GET  /api/admin/users, /api/admin/devices              → with ?family= filter (super)
+PUT  /api/admin/allowlist?family=                      → replace-all edges, in-family or cross-family (super)
+PUT  /api/devices/{id}/sms-contacts                    → 405; managed from /family/members/{uid}/approved
 GET  /ca/{sha256hex}.pem                               → public, no auth, immutable; 404 for an unknown hash
 GET  /api/devices                                      → caller's own devices: [{id, label, status}]
-GET  /api/devices/{id}/sms-contacts                    → {contacts: [{name, phone}], pending}  (v0.2 §6)
-PUT  /api/devices/{id}/sms-contacts {contacts}         → validate, store, push cfg.sms; same response shape
 GET  /api/devices/{id}/sms-log?limit=&before=          → {entries: [{id, ts, smsTs, dir, peer, name, st, body}]}
 POST /webhooks/mqtt                                    → broker rule engine; shared-secret header
-POST /webhooks/twilio/sms                              → Twilio signature-validated
+POST /webhooks/twilio/sms                              → Twilio signature-validated, family resolution from To
 POST /webhooks/gchat                                   → Google-issued JWT-validated
 POST /internal/tick, /internal/sweep, /internal/task   → Cloud Scheduler / Cloud Tasks; OIDC token
 GET  /healthz                                          → 200 + firestore reachable + broker API reachable
@@ -492,35 +524,58 @@ publish — no queue in the latency-critical path.
 ### 5.3 Auth — Firebase Auth
 - **Sign-in methods enabled**: email link (passwordless) and phone (SMS code). Both are "a code
   sent to email or phone" from the user's point of view. Firebase sends the email; no SMTP.
-- The relay verifies the ID token with `firebase_admin.auth.verify_id_token` in a dependency;
-  `role=admin` is a **custom claim** set by the admin API (and refreshed on `/api/me`), so rules
-  and the relay agree on who is admin without a lookup.
+- **Roles**: `super` (deployment-wide admin), `admin` (family admin only), `member`. The relay
+  verifies the ID token with `firebase_admin.auth.verify_id_token` in a dependency; **custom
+  claims** `{role, fam}` are set by the admin API (and refreshed on `/api/me`), so rules and the
+  relay agree on who is admin and which family they belong to without a lookup. A token without
+  a `role` claim is treated as `member` with no family.
 - **Registry gate**: Firebase Auth will happily create an account for any email that clicks a
   link. The relay's dependency rejects any UID with no `users/{uid}` document, and the admin
   creates users *by email/phone* ahead of time (`auth.create_user`), so a stranger who signs in
   gets a 403 and no data. Rules enforce the same (`registered()`).
 - Rate limiting of code sends is Firebase's job (it has abuse protection for phone auth).
 - Bootstrap: the first deploy runs `python -m app.bootstrap --admin-email …` (a Cloud Run job,
-  also in Terraform) — there is no startup hook to rely on when instances come and go.
+  also in Terraform); it creates `families/default`, the bootstrap user as `role: super` in that
+  family, sets the `{role, fam}` claims, and writes `schemaVersion = 2`.
 - Device auth is the broker's job (username/password per device, PROTOCOL §2 ACLs); the relay
   trusts `device_id` from the webhook's topic exactly as it trusted the MQTT topic, and the
   webhook itself is authenticated by a shared secret header (`X-Relay-Webhook-Key`, from Secret
   Manager) so nobody else can post "device traffic".
 
-### 5.4 Allow-list semantics
-Directed edges with two flags at `allow/{from}_{to}`. `message` gates `send()`; `locate` gates
-`/locate` and read access to `locations` (via `devices.locatableBy`, rewritten whenever the list
-changes). A device's owner may always `/locate` and read their own device's `locations`, no edge needed; admin rights add nothing (owner decision, 27 Sep 2026).
-The admin UI's "connect A and B" writes both directions; the API keeps them separately
-editable. Removing an edge does not delete history; the thread goes read-only.
+### 5.4 Conversation policy and allow-list semantics
+**Policy** (`users/{uid}.policy`) has two fields, `out` and `in`, each from `{open, people, people_sms, sms, any_sms}`.
+A DM from sender S to recipient R passes only if S's outbound policy and R's inbound policy both
+admit each other's `kind` (person/external), possibly requiring an `allow` edge. Externals (SMS
+numbers) have no policy; SMS-type policies handle them per rules in the policy specification in
+`FAMILIES_DESIGN.md` §2. Default policies at creation: `member` → `people`/`people`, `admin`/`super` → `open`/`any`.
 
-### 5.5 Admin
+**Allow-list edges** at `allow/{from}_{to}` have two flags, `message` and `locate`, plus `familyIds`.
+`message` gate combines policy and edges: `any` in policy skips the edge, `approved` requires it.
+`locate` gates `/locate` and read access to `locations` (via `devices.locatableBy`, rewritten
+whenever the list changes, in-family only). A device's owner may always `/locate` and read their
+own device's `locations`, no edge needed; family admins may `/locate` and read all family devices.
+Super reads locations everywhere but gets `/locate` only through an edge. The admin UI's "connect
+A and B" writes both directions; the API keeps them separately editable. Removing an edge does not
+delete history; the thread goes read-only.
+
+### 5.5 Admin — superadmin and family admin surfaces
 Everything an admin does is an API call so the test client can drive it. Creating a device
 returns the generated MQTT password once and stores only a hash; the same call is what the future
 flash-time provisioning tool (`PROTOCOL.md` §12 item 5) will consume. If the broker's REST API
 exposes credential and ACL management (EMQX does; whether the Serverless tier exposes it is D2),
 the relay pushes the device credential and its three ACL rules to the broker in the same call;
 otherwise the admin UI shows "add these to the broker" copy.
+
+**Family admin** (`/api/family/*`) manages the scoped family: members (create, edit role/policy/
+approved), devices (CRUD), contacts (externals), alerts (approve/block/dismiss SMS unknowns and
+new conversations). Approved-numbers PUT derives `devices.smsContacts` and pushes `cfg.sms`.
+
+**Superadmin** (`/api/admin/*`) manages families, all users across families, all devices, the
+allow-list (cross-family edges only), and retention settings. Locations readable everywhere but
+`/locate` requires an edge or family-admin status. SMS contact approval in `create` mode still
+creates a Firebase Auth user and `sms` backend (existing path); externals by alias are created
+on the fly by approved-numbers PUT or when a message to a phone number is sent by an `any_sms`
+member.
 
 ### 5.6 Location (`location.py`)
 - `/loc` ingest (via webhook): validate (`LocEnvelope`), dedup on `wireId`, add to
@@ -676,17 +731,23 @@ consumer Gmail this backend is dead on arrival and Email (§6.6) should take its
 /login                 email-or-phone → link/code → done (hand-built with MUI over Firebase Auth)
 /                      redirects to /chat
 /chat                  contact list from conversations/* (last message, unread badge) + device
-                       online/battery from devices/* for pager owners
+                       online/battery from devices/* for pager owners; Family tab for admins
 /chat/[alias]          thread (Firestore listener on messages where convKey==k orderBy seq desc limit 50,
                        "load older"); composer (160-cp counter); per-message state chip from the
                        embedded deliveries map (queued/sent/shown/read/failed/expired per backend);
                        "Request location" (if allow.locate); last known location card with "open in maps"
+/chat/view/[key]       read-only thread for family-admin monitoring, requires familyId array-contains fam
+/family/people         members table (name, alias, role, sign-in, devices, policy), edit drawer, create person
+/family/devices        device list (owner, label, status), owner picker from family members, create device
+/family/contacts       external contacts (name, number, approved-for member chips), rename, add; linked families
+/family/alerts         inbox of SMS unknowns, new conversations, contact requests; approve/block/dismiss; badge
+/location              device map (own, edge-granted, family devices for admins), "Locate now" enabled for scoped set
 /settings/backends     list + add (SMS phone verify, Google Chat link code, Email later) + enable toggles
-/settings/notifications  enable browser notifications → registers FCM token; test button
-/admin/users           table; create (alias, name, email/phone, role); disable; delete
-/admin/allowlist       matrix of users × users with message/locate checkboxes; save = PUT replace-all
-/admin/devices         create device (shows MQTT credentials once), owner, default recipient,
-                       revoke/rotate; last status
+/settings/notifications  enable browser notifications → registers FCM token; Family alerts toggle for admins
+/admin/families        table (name, SMS number, admins, members, devices, created); create family, edit, move users
+/admin/users           table; create (alias, name, email/phone, role, family); disable; delete; Family column + filter
+/admin/devices         table; create (owner picker, family), revoke/rotate; Family column + filter
+/admin/allowlist       matrix (message/locate checkboxes), filter to one family (Show all families switch for cross-family)
 /admin/settings        retention: number + days/weeks selector per class; note about the weekly sweep
 ```
 

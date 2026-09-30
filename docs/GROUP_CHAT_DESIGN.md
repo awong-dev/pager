@@ -12,9 +12,11 @@ model, §5.2 routing) and subordinate to `docs/PROTOCOL.md` for anything the dev
    prefix.** The body keeps all 160 code points. This makes v0.3 a device-facing protocol change:
    `sndr` is now specified in `docs/PROTOCOL.md` §3.1 (field table), §3.3 (byte budget) and §10
    (CBOR key 51). See §4 below.
-2. **Group creation is admin-only, and creating or joining a group auto-creates `allow` edges in
-   both directions between every member pair**, so the send-time allow-list gate never
-   partial-delivers. What happens when an admin later deletes an edge stays open (§8.6).
+2. **Group creation is admin-only** (family admin in multi-family deployment; superadmin creates
+   across families), **and creating or joining a group auto-creates `allow` edges in both directions
+   between every member pair**, so the send-time allow-list gate never partial-delivers. Join is
+   family-admin-only and writes `message`-only edges (no `locate`). Superseded by
+   `docs/FAMILIES_DESIGN.md` §4.
 3. **No history on join; per-copy visibility stands.** A member reads only the copies they were
    party to.
 
