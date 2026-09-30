@@ -275,7 +275,7 @@ static bool s_have_last_cell_key = false;
 static net_cell_info_t s_cell_cache = {};
 static bool s_cell_info_stale = true;
 
-// v0.2 §5: arms IO2 (LIS3DH INT1) as an ext1 light-sleep wake source, only
+// v0.2 §5: arms IO8 (LIS3DH INT1) as an ext1 light-sleep wake source, only
 // once accel.c has confirmed the chip is actually present (see
 // net_enable_accel_wake()'s own doc comment in net.h).
 static bool s_accel_wake_enabled = false;
@@ -1197,7 +1197,7 @@ extern "C" void net_sleep(uint32_t ms)
     // not a second ext0 -- the ESP32-S3 (like every ESP32 variant) has
     // exactly one ext0 source (a single fixed RTC GPIO, already spoken for
     // by the button) but ext1 takes a bitmask of any number of RTC GPIOs
-    // sharing one level mode. IO2 (LIS3DH INT1) is configured push-pull
+    // sharing one level mode. IO8 (LIS3DH INT1) is configured push-pull
     // active-high (accel.c), so ANY_HIGH is the right mode for a one-pin
     // mask; it does not need to agree with ext0's own (unrelated) active-low
     // button polarity -- the two wake sources are independent and can
@@ -1210,7 +1210,7 @@ extern "C" void net_sleep(uint32_t ms)
     // being carried does not end light sleep ~10x/s
     // (docs/DEVICE_NEXT_TASKS.md A1). Still never armed at all if the chip
     // never answered WHO_AM_I (accel.c's own module comment: an
-    // unwired/floating IO2 armed as ANY_HIGH would wake the ESP32 on every
+    // unwired/floating IO8 armed as ANY_HIGH would wake the ESP32 on every
     // light-sleep cycle for nothing).
     if (s_accel_wake_enabled) {
         esp_sleep_enable_ext1_wakeup(1ULL << PAGER_PIN_LIS3DH_INT1, ESP_EXT1_WAKEUP_ANY_HIGH);

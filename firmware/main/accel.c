@@ -189,7 +189,7 @@ static bool configure_and_arm(uint8_t who)
     }
 
     s_present = true;
-    net_enable_accel_wake(); // IO2 becomes a light-sleep wake source, net.cpp's net_sleep()
+    net_enable_accel_wake(); // IO8 becomes a light-sleep wake source, net.cpp's net_sleep()
     ESP_LOGI(TAG, "LIS3DH found (WHO_AM_I=0x%02x), configured 10Hz low-power + high-pass INT1 "
                   "motion interrupt (thresholds UNVERIFIED, see accel.c)",
              (unsigned) who);

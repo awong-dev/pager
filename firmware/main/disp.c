@@ -382,8 +382,9 @@ static void disp_send_data1(uint8_t b) { disp_send_data(&b, 1); }
 
 static void disp_power_on(void)
 {
-    // Power effect: enables the panel's VCC rail (active-low P-MOSFET gate).
-    gpio_set_level(PAGER_PIN_DISP_VCC_EN, 0);
+    // Power effect: enables the eInk Friend's onboard regulator (ENA,
+    // active-high) and so the panel's VCC.
+    gpio_set_level(PAGER_PIN_DISP_VCC_EN, PAGER_DISP_VCC_EN_ON);
     vTaskDelay(pdMS_TO_TICKS(10));
 }
 
@@ -976,7 +977,7 @@ static void disp_gpio_init(void)
 {
     gpio_config_t out_cfg = {
         .pin_bit_mask = (1ULL << PAGER_PIN_DISP_RST) | (1ULL << PAGER_PIN_DISP_DC) |
-                        (1ULL << PAGER_PIN_DISP_VCC_EN),
+                        (1ULL << PAGER_PIN_DISP_VCC_EN) | (1ULL << PAGER_PIN_DISP_SRCS),
         .mode = GPIO_MODE_OUTPUT,
         .pull_up_en = GPIO_PULLUP_DISABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
@@ -987,8 +988,9 @@ static void disp_gpio_init(void)
     // docs/RCA_SLEEP_URC.md: CONFIG_ESP_SLEEP_GPIO_RESET_WORKAROUND makes
     // IDF isolate every GPIO (driver off, floating) for the whole of each
     // light sleep. A floating RST is a controller reset waiting to happen
-    // (the 23 Sep register-loss failures), a floating VCC_EN gate drops the
-    // 3v3_en rail that also feeds the CardKB, and a floating CS/DC turns
+    // (the 23 Sep register-loss failures), a floating VCC_EN (the eInk
+    // Friend's ENA, pulled up on the Friend) would let the panel's regulator
+    // switch on regardless of what rail.c last drove, and a floating CS/DC turns
     // noise into commands. Keep these four pads driven through sleep, same
     // as net.cpp does for the modem's RTS. The SPI clock/data pads are
     // peripheral-muxed and idle between transfers; not held.
@@ -1019,7 +1021,13 @@ static void disp_gpio_init(void)
     // since the reset itself is gated behind that same unreliable read.
     gpio_sleep_sel_dis((gpio_num_t) PAGER_PIN_DISP_BUSY);
 
-    gpio_set_level(PAGER_PIN_DISP_VCC_EN, 1); // start powered off
+    // ENA's level is owned by rail.c (rail_init() turned it on at boot, and the
+    // CardKB hangs off the same regulator now): do not power-cycle it here.
+    // The Friend's SRAM shares SCK/MOSI with the panel; keep it deselected so
+    // panel traffic can never be taken as SRAM commands. rail.c pulls this
+    // low with the other bus pads during a rail-off sleep.
+    gpio_set_level(PAGER_PIN_DISP_SRCS, 1);
+    gpio_sleep_sel_dis((gpio_num_t) PAGER_PIN_DISP_SRCS);
 }
 
 static bool disp_spi_init(void)

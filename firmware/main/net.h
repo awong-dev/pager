@@ -986,7 +986,7 @@ void net_force_cell_refresh(void);
  * end light sleep up to ~10x/s (10 Hz ODR) while the pager is being
  * carried, for no benefit to a classifier that only needs two edges >=60s
  * apart. Call with `true` only after a successful WHO_AM_I probe -- an
- * unwired/floating IO2 armed as a wake source would wake the ESP32 on
+ * unwired/floating IO8 armed as a wake source would wake the ESP32 on
  * every light-sleep cycle for nothing. See net_sleep()'s own comment for
  * why this needs ext1 (not a second ext0) and which level mode it uses.
  * Power effect: none by itself; adds/removes an early-wake path to/from

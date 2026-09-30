@@ -1,8 +1,10 @@
-/* rail.h — the board's 3V3 peripheral rail (display, CardKB),
- * PAGER_PIN_3V3_EN (pins.h), active-low. The LIS3DH is NOT on this rail
- * (owner decision, 26 Sep 2026): it has its own I2C bus and is powered
- * directly from the battery via its breakout's own regulator, so it stays
- * live through every rail_off() -- see pins.h/accel.h.
+/* rail.h — the gated peripheral rail: the eInk Friend's 3V3 output, which
+ * powers the display and the CardKB and is switched by the Friend's ENA pin
+ * (PAGER_PIN_DISP_VCC_EN, pins.h, active-high). Rewired 30 Sep 2026 (owner).
+ * Walter's own switched 3V3-OUT (PAGER_PIN_3V3_EN, IO0, active-low) now
+ * feeds only the LIS3DH breakout; rail_init() turns it on once and nothing
+ * ever turns it off, so the accelerometer stays live through every
+ * rail_off() and every light sleep -- see pins.h/accel.h.
  *
  * docs/ROADMAP.md "Design needed: input and display power gating", option 2
  * (owner decision, 24 Sep 10:30 pm PDT: gate the rail off outside the
@@ -49,13 +51,14 @@
 extern "C" {
 #endif
 
-/* One-time setup: configures PAGER_PIN_3V3_EN as a plain GPIO output and
- * turns the rail ON. Must run before any peripheral downstream of it
- * (display, CardKB) is touched — same ordering board_power_init()
- * (main.c) used to require. Also excludes the pad from ESP-IDF's sleep GPIO
- * isolation (gpio_sleep_sel_dis()) so it holds whichever level rail_on()/
+/* One-time setup: configures PAGER_PIN_3V3_EN (LIS3DH supply, on for
+ * good) and PAGER_PIN_DISP_VCC_EN (the gated rail) as plain GPIO outputs
+ * and turns both ON. Must run before any peripheral downstream of either
+ * (display, CardKB, LIS3DH) is touched — same ordering board_power_init()
+ * (main.c) used to require. Also excludes both pads from ESP-IDF's sleep GPIO
+ * isolation (gpio_sleep_sel_dis()) so they hold whichever level rail_on()/
  * rail_off() last drove through every light sleep, instead of floating and
- * letting the board pull-up switch it (the 24 Sep finding this module
+ * letting the board pull-ups switch them (the 24 Sep finding this module
  * fixes properly instead of papering over with a permanent hold). Counts
  * as a rail-restore edge (rail_restored_us()) the same as a post-sleep
  * rail_on(): the CardKB MCU is powering up cold here too and needs the same
@@ -64,23 +67,23 @@ extern "C" {
  */
 void rail_init(void);
 
-/* Drives PAGER_PIN_3V3_EN low (rail on). A no-op, including no change to
+/* Drives PAGER_PIN_DISP_VCC_EN high (rail on). A no-op, including no change to
  * rail_restored_us(), if the rail is already on — so calling this every
  * wake during the attentive window (modes.c) does not re-arm ui.c's
  * post-restore keyboard guard on every 1 s cycle. Also returns the CardKB
- * I2C bus (IO8/IO9) from rail_off()'s bus-release hold back to I2C mode
+ * I2C bus (IO10/IO9) from rail_off()'s bus-release hold back to I2C mode
  * (ui_kb_bus_restore(), ui.h). Power effect: powers the display and CardKB
- * (not the LIS3DH — it is not on this rail).
+ * (not the LIS3DH — it is on Walter's never-switched 3V3-OUT).
  */
 void rail_on(void);
 
-/* Drives PAGER_PIN_3V3_EN high (rail off). A no-op if the rail is already
+/* Drives PAGER_PIN_DISP_VCC_EN low (rail off). A no-op if the rail is already
  * off. Before the drive, releases the CardKB I2C bus (ui_kb_bus_release(),
- * ui.h) so the SDA/SCL pull-ups — tied to the always-on 3V3, not this
- * gated rail — do not phantom-power the CardKB MCU through its I/O
- * protection diodes while it is meant to be off (owner, 24 Sep 11:15 pm
- * PDT). Power effect: powers down the display and CardKB (not the LIS3DH —
- * it is not on this rail) — this is the whole point of the gate (ends their
+ * ui.h) so the ESP32 side of SDA/SCL is not left driven high into the
+ * unpowered CardKB MCU's I/O protection diodes while it is meant to be off
+ * (owner, 24 Sep 11:15 pm PDT). Power effect: powers down the display and
+ * CardKB (not the LIS3DH — it is not on this rail) — this is the whole point
+ * of the gate (ends their
  * current draw for the sleep about to be entered). The CardKB MCU loses
  * power and reboots on the next
  * rail_on(); the display's panel RAM is lost (modes.c calls

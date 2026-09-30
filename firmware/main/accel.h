@@ -1,5 +1,5 @@
 /* accel.h — LIS3DH accelerometer driver (I2C 0x18, INT1 on pins.h's
- * PAGER_PIN_LIS3DH_INT1 / IO2), docs/V02_DESIGN.md §5 trigger 2 (sustained
+ * PAGER_PIN_LIS3DH_INT1 / IO8), docs/V02_DESIGN.md §5 trigger 2 (sustained
  * motion).
  *
  * Device-only (ESP-IDF I2C driver, no host-testable part of its own — the
@@ -65,7 +65,7 @@ bool accel_edge_wanted(int64_t now_us, int64_t last_reported_us, int64_t refract
 /* Probes WHO_AM_I (register 0x0F, expected 0x33). On success, configures
  * low-power 10 Hz ODR with a high-pass-filtered INT1 motion interrupt
  * (thresholds UNVERIFIED/tunable — see accel.c) and calls
- * net_enable_accel_wake() so IO2 becomes a light-sleep wake source. On
+ * net_enable_accel_wake() so IO8 becomes a light-sleep wake source. On
  * failure (no/wrong response — the expected case if the chip is not wired),
  * logs once at INFO and returns false; every other accel.c/loc.c function
  * then simply never has anything to report, which is this task's own
@@ -83,7 +83,7 @@ bool accel_init(void);
  * the chip. Call once per modes_run() loop iteration, unconditionally, same
  * polling discipline input_poll()/ui_poll_keyboard() already use — never
  * from an ISR (this chip's INT1 is only ever read as a polled register, not
- * hooked to a GPIO interrupt handler; IO2's only "interrupt" role is as the
+ * hooked to a GPIO interrupt handler; IO8's only "interrupt" role is as the
  * ext1 light-sleep wake source net_enable_accel_wake()/net_set_accel_wake()
  * arms). On an asserted interrupt, consults accel_edge_wanted() and calls
  * loc_on_motion_event() exactly once per *wanted* edge (A1: unwanted edges,

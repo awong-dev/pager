@@ -1,45 +1,72 @@
-// GPIO numbers are provisional (firmware/README.md); this is the single source of truth
+// Single source of truth for every GPIO the firmware drives (firmware/README.md
+// "Hardware" has the same table with the physical Walter header positions).
 // Never hardcode a pin elsewhere.
+//
+// Rewired 29 Sep 2026 (owner): display moved to the Adafruit eInk Breakout
+// Friend, accelerometer is the Adafruit LIS3DH breakout, and the pins were
+// remapped so the display + button take the whole left Walter header (pins
+// 5-14, in the Friend's own header order) and the CardKB + LIS3DH take the
+// right header. Walter-internal pins never to touch: IO14/IO21/IO45/IO46/
+// IO47/IO48 (modem UART, reset, wake), IO19/IO20 (USB), IO3 (strapping,
+// testpoint only).
 
 #ifndef PINS_H
 #define PINS_H
 
-// Board 3V3 peripheral rail enable. Off by default on power-up/reset;
-// GPIO0 must be driven LOW to turn it on. Found during hardware bring-up
-// (docs/DEVICE_TASKS_LOG.md): the display (and likely other peripherals
-// downstream of this rail) get no power at all until this is set, separate
-// from PAGER_PIN_DISP_VCC_EN's own local gate below. GPIO0 is a boot
-// strapping pin but is safe to repurpose as a plain GPIO output once
-// app_main() is running (strapping is sampled only during reset/boot).
-#define PAGER_PIN_3V3_EN 0  // active-low
+// Walter 3V3-OUT rail enable (header pin 4, "DFU/3V3_EN"). Off by default on
+// power-up/reset; GPIO0 must be driven LOW to turn it on. Since the 30 Sep
+// rewiring this rail feeds ONLY the LIS3DH breakout, so rail.c drives it low
+// at boot and never releases it (the accelerometer has to stay alive to wake
+// the pager). The display and CardKB are gated by the eInk Friend's ENA
+// instead (PAGER_PIN_DISP_VCC_EN below). GPIO0 is a boot strapping pin but
+// is safe to repurpose as a plain GPIO output once app_main() is running
+// (strapping is sampled only during reset/boot).
+#define PAGER_PIN_3V3_EN 0  // active-low, held low for good
 
-// Display (SSD1680, SPI)
-#define PAGER_PIN_DISP_SCK 12
-#define PAGER_PIN_DISP_MOSI 11
-#define PAGER_PIN_DISP_CS 10
-#define PAGER_PIN_DISP_DC 16
-#define PAGER_PIN_DISP_RST 17
-#define PAGER_PIN_DISP_BUSY 18
-#define PAGER_PIN_DISP_VCC_EN 15  // active-low P-MOSFET gate
+// Display: Adafruit eInk Breakout Friend (SSD1680 panel), Walter left header
+// pins 5-13 top to bottom in the Friend's own header order. The Friend's VIN
+// is wired to Walter VIN; its onboard MIC5225-3.3 regulator, gated by ENA,
+// powers the panel AND (via the Friend's 3V3 output pin) the CardKB, so ENA
+// is the one peripheral power gate rail.c toggles. SPI goes through the GPIO
+// matrix (none of these are the FSPI IO_MUX pins), which is fine at the
+// 4 MHz disp.c uses (matrix limit is 40 MHz). MISO and SDCS are not wired.
+#define PAGER_PIN_DISP_VCC_EN 12  // Friend ENA: regulator enable, ACTIVE-HIGH, pulled up on the Friend
+#define PAGER_DISP_VCC_EN_ON 1
+#define PAGER_DISP_VCC_EN_OFF 0
+#define PAGER_PIN_DISP_BUSY 11
+#define PAGER_PIN_DISP_RST 13
+#define PAGER_PIN_DISP_SRCS 38  // Friend SRAM chip select: held HIGH (deselected), the SRAM is unused
+// IO39 (header pin 9) is left unconnected.
+#define PAGER_PIN_DISP_DC 40
+#define PAGER_PIN_DISP_CS 41  // Friend ECS
+#define PAGER_PIN_DISP_MOSI 42
+#define PAGER_PIN_DISP_SCK 2
 
-// Keyboard (CardKB, I2C addr 0x5F)
-#define PAGER_PIN_KB_SDA 9 // as wired on the bench unit (was 8/9 the other way round)
-#define PAGER_PIN_KB_SCL 8
+// Button (header pin 14). ext0 light-sleep wake source (RTC GPIO).
+#define PAGER_PIN_BUTTON 1  // active-low, RTC GPIO
+
+// Keyboard (CardKB, I2C addr 0x5F) on I2C_NUM_0, right header pins 25/24.
+// Powered from the eInk Friend's 3V3 output (gated by ENA together with the
+// panel), so ui.c releases these two pads (driven low) whenever rail.c drops
+// the rail -- otherwise the ESP32 back-powers the CardKB MCU through its I/O
+// clamp diodes.
+#define PAGER_PIN_KB_SDA 10
+#define PAGER_PIN_KB_SCL 9
 #define PAGER_I2C_ADDR_CARDKB 0x5F
 
-// Motion (LIS3DH, I2C addr 0x18). Owner decision, 26 Sep 2026: its own I2C
-// bus (I2C_NUM_1), separate from the CardKB's I2C_NUM_0, and powered
-// directly from the battery via the breakout's own regulator -- NOT on the
-// gated 3V3 rail (rail.h). INT1/IO2 and the bus pins therefore all stay
-// live through every rail_off() and every light sleep. IO4/IO5 are
-// provisional -- the owner will rearrange GPIOs soon.
-#define PAGER_PIN_LIS3DH_INT1 2
+// Motion: Adafruit LIS3DH breakout (I2C addr 0x18, SDO/SA0 open), right
+// header pins 23/22/19. Its own bus, I2C_NUM_1, separate from the CardKB's
+// I2C_NUM_0, and powered from Walter's 3V3-OUT (header pin 26, held on for
+// good by PAGER_PIN_3V3_EN) so it stays alive through every rail_off() and
+// every light sleep. 3.3 V on the breakout's VIN also makes its level
+// shifter transparent: SDA/SCL pull-ups sit at the ESP32's own I/O rail, never
+// at a 5 V USB VIN. Sharing the CardKB's bus would let these always-on
+// pull-ups feed the unpowered CardKB. INT1 is an RTC GPIO: it is the ext1
+// light-sleep wake source (net.cpp), push-pull active-high, 3.3 V logic.
+#define PAGER_PIN_LIS3DH_INT1 8
 #define PAGER_I2C_ADDR_LIS3DH 0x18
-#define PAGER_PIN_ACCEL_SDA 4  // provisional; own I2C_NUM_1 bus, not the CardKB's
-#define PAGER_PIN_ACCEL_SCL 5  // provisional; own I2C_NUM_1 bus, not the CardKB's
-
-// Button
-#define PAGER_PIN_BUTTON 1  // active-low, RTC GPIO
+#define PAGER_PIN_ACCEL_SDA 15  // own I2C_NUM_1 bus, not the CardKB's
+#define PAGER_PIN_ACCEL_SCL 18  // own I2C_NUM_1 bus, not the CardKB's
 
 // LTE_WAKE0 (schematic name): a modem input, unused by firmware and by the
 // vendored library today. docs/SLEEP_PAGE_LOSS_BRIEF.md §6 item F: the

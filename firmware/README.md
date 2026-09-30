@@ -11,23 +11,85 @@ before flashing a real device. `docs/PROTOCOL.md` §12 has two still-open protoc
 
 ## Hardware
 
-| Part | Role | Interface |
+Rewired 30 Sep 2026. `main/pins.h` is the single source of truth for every GPIO below; nothing
+else in the firmware hardcodes a pin.
+
+| Part | Role | Interface / power |
 |---|---|---|
-| Walter module (DPTechnics) | ESP32-S3 + Sequans GM02SP LTE-M modem + GNSS | — |
-| GDEY029T94-FT01 (SSD1680, 296×128) | E-paper display | SPI: SCK IO12, MOSI IO11, CS IO10, DC IO16, RST IO17, BUSY IO18; VCC gated by P-MOSFET on IO15 (active low) |
-| M5Stack CardKB | Keyboard | I2C 0x5F on IO9 (SDA) / IO8 (SCL), polled |
-| LIS3DH breakout | Motion wake (implemented, untested on hardware) | I2C 0x18, INT1 on IO2, own I2C bus IO4 (SDA)/IO5 (SCL) (provisional), powered from the battery via the breakout's own regulator |
-| Push button | Wake / open reply | IO1, active low, RTC GPIO |
-| LiFePO4 18650 + LFP charger | Power | VIN 3.0–5.5 V |
+| Walter module (DPTechnics) | ESP32-S3-WROOM-1-N16R2 + Sequans GM02SP LTE-M modem + GNSS | — |
+| Adafruit eInk Breakout Friend, panel GDEY029T94-FT01 (SSD1680, 296×128) | E-paper display, and the switched 3.3 V supply for the CardKB | SPI via the GPIO matrix, 4 MHz: SCK IO2, MOSI IO42, ECS IO41, D/C IO40, RST IO13, BUSY IO11; SRCS IO38 held high (SRAM unused); MISO and SDCS not wired. ENA IO12 is the Friend's regulator enable (active-high, pulled up on the Friend): low = panel, SRAM and CardKB all unpowered. Friend VIN from Walter VIN. |
+| M5Stack CardKB | Keyboard | I2C_NUM_0 addr 0x5F, SDA IO10 / SCL IO9, polled. VCC from the Friend's 3V3 output pin, so it switches with the display. |
+| Adafruit LIS3DH breakout | Motion wake | I2C_NUM_1 addr 0x18 (SDO/SA0 open), SDA IO15 / SCL IO18; INT1 → IO8 (push-pull, active-high, 3.3 V, ext1 wake). VIN from Walter 3V3-OUT (header pin 26), which the firmware turns on at boot and never turns off. |
+| Push button | Wake / open reply | IO1 to GND, active low, RTC GPIO, ext0 wake |
+| LiFePO4 18650 + LFP charger | Power | Walter VIN 3.0–5.5 V |
 
-GPIO numbers for IO1/IO2/IO4/IO5/IO11/IO12/IO15 are provisional. All of them live in `main/pins.h`
-so they can change without touching logic.
+### Walter header map
 
-The LIS3DH operates at 1.71–3.6 V; a bare chip wired straight to a Li-ion/LiFePO4 cell (up to
-4.2 V) is out of its supply range. This is why it is specified as a breakout with its own onboard
-regulator, not a bare chip, and why it is powered directly from the battery rather than the gated
-3V3 rail (which only ever supplies 3V3 anyway) — the regulator is what makes battery-direct power
-safe here.
+Top view, USB-C at the top, datasheet pin numbers. Left column is the display side, right column
+is the input side.
+
+```
+                                        ┌─────── USB-C ───────┐
+                  (unused)  RESET   1 ──┤                     ├── 28  VIN      ◄── battery / charger out; also feeds Friend VIN
+                  (unused)  IO44    2 ──┤                     ├── 27  GND      ◄── common ground (Friend, CardKB, LIS3DH, button)
+                  (unused)  IO43    3 ──┤                     ├── 26  3V3-OUT  ──► LIS3DH breakout VIN (switched by IO0, held on)
+  3V3-OUT enable, held low  IO0     4 ──┤                     ├── 25  IO10     ◄─► CardKB SDA
+                Friend ENA  IO12    5 ──┤                     ├── 24  IO9      ──► CardKB SCL
+               Friend BUSY  IO11    6 ──┤                     ├── 23  IO8      ◄── LIS3DH INT1
+                Friend RST  IO13    7 ──┤        Walter       ├── 22  IO18     ──► LIS3DH SCL
+               Friend SRCS  IO38    8 ──┤      (top view)     ├── 21  IO17     (unused)
+                  (unused)  IO39    9 ──┤                     ├── 20  IO16     (unused)
+                Friend D/C  IO40   10 ──┤                     ├── 19  IO15     ◄─► LIS3DH SDA
+                Friend ECS  IO41   11 ──┤                     ├── 18  IO7      (unused)
+               Friend MOSI  IO42   12 ──┤                     ├── 17  IO6      (unused)
+                Friend SCK  IO2    13 ──┤                     ├── 16  IO5      (unused)
+               Wake button  IO1    14 ──┤                     ├── 15  IO4      (unused)
+                                        └────────┤ SIM ├────────┘
+
+   Off-board wires:  Friend 3V3 ──► CardKB VCC        Friend VIN ◄── Walter VIN
+                     button: IO1 ── switch ── GND      all GNDs to Walter GND
+```
+
+Per-peripheral view of the same wiring:
+
+| eInk Friend pin | Walter pin | | CardKB (Grove) | Walter / Friend | | LIS3DH breakout | Walter pin |
+|---|---|---|---|---|---|---|---|
+| VIN | 28 VIN | | VCC | Friend 3V3 | | VIN | 26 3V3-OUT |
+| 3V3 (out) | → CardKB VCC | | GND | 27 GND | | GND | 27 GND |
+| GND | 27 GND | | SDA | 25 IO10 | | SDA | 19 IO15 |
+| ENA | 5 IO12 | | SCL | 24 IO9 | | SCL | 22 IO18 |
+| SCK | 13 IO2 | | | | | INT1 | 23 IO8 |
+| MISO | — | | | | | SDO/SA0 | open (addr 0x18) |
+| MOSI | 12 IO42 | | | | | | |
+| ECS | 11 IO41 | | | | | | |
+| D/C | 10 IO40 | | | | | | |
+| SRCS | 8 IO38 | | | | | | |
+| SDCS | — | | | | | | |
+| RST | 7 IO13 | | | | | | |
+| BUSY | 6 IO11 | | | | | | |
+
+Walter-internal, never available: IO14/IO48 (modem UART RX/TX), IO21/IO47 (RTS/CTS), IO45
+(modem reset), IO46 (LTE_WAKE0), IO19/IO20 (USB), IO3 (strapping, testpoint only). IO44/IO43 are
+UART0 and unused (the console is USB Serial/JTAG).
+
+### Power domains
+
+- **Walter 3V3-OUT (header pin 26, switched by IO0)** powers only the LIS3DH breakout. `rail.c`
+  drives IO0 low at boot and never releases it: the accelerometer must stay alive to raise INT1
+  while the ESP32 sleeps. Feeding the breakout 3.3 V also makes its onboard level shifter
+  transparent, so the I2C pull-ups sit at the ESP32's own I/O rail whatever VIN is. The
+  accelerometer does lose power across an ESP32 reset (3V3-OUT is off until `app_main()` runs);
+  `accel_init()` re-programs it every boot.
+- **Walter VIN → eInk Friend → Friend 3V3 → CardKB.** The Friend's MIC5225-3.3 regulator is the
+  one peripheral power gate: `rail.c`'s `rail_on()`/`rail_off()` drive ENA (IO12) and nothing
+  else. Off outside the attentive window; the CardKB reboots on every rail-on (hence ui.c's boot
+  guard) and the panel RAM is restored from the shadow frame by `disp_note_power_loss()`. Before
+  dropping ENA the firmware drives the CardKB SDA/SCL and the display SPI pads low so the ESP32
+  never back-feeds the unpowered parts. On a LiFePO4 cell the MIC5225 is in dropout, so the
+  panel and CardKB see roughly 3.0–3.2 V; both are rated well below that.
+- **USB power.** Walter ties USB-C VBUS to VIN, so VIN is 5 V on the bench. Only the Friend sees
+  it, and the Friend's inputs are 5 V-tolerant buffers with BUSY driven from its 3.3 V side.
+  Nothing else is referenced to VIN any more.
 
 ## Device behaviour contract
 
@@ -177,7 +239,7 @@ Cheapest check: tape the button down and watch the serial log's wake-cycle count
 
 ### R3 — display VCC is never gated off, and the panel is never put to sleep (battery)
 `ui_shutdown()` (`ui.c:573`) is the only caller of `disp_power_off()` and **has no call site
-anywhere in the firmware** — so IO15 is driven on at `ui_init()` and stays on forever, and the
+anywhere in the firmware** — so the panel's VCC gate (now the eInk Friend's ENA on IO12; IO15 at the time) is driven on at `ui_init()` and stays on forever, and the
 SSD1680 never receives its `0x10` deep-sleep command in normal operation. `ui.c:228-235`'s own
 comment claims the rail is "gated off between refreshes", and PROTOCOL.md §8.4 budgets the display
 at "~0 mA" on that basis. M12 already records the deliberate reason (a VCC cycle would wipe the

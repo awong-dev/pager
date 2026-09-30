@@ -96,20 +96,24 @@ publish and a render land close together, and never during a `disptest` run (con
 never publish).
 ### Accelerometer (LIS3DH) bench wiring
 
-I2C bus shared with the CardKB, same two pins (`pins.h`'s own bench note next to
-`PAGER_PIN_KB_SDA`: "was 8/9 the other way round") — **not** the other way round:
+Adafruit LIS3DH breakout, on its own I2C bus (`I2C_NUM_1`), rewired 30 Sep 2026 (`pins.h`):
 
-- SDA -> IO9, SCL -> IO8
-- Address 0x18 (SDO/SA0 tied low). If SDO/SA0 is pulled high instead, the chip answers at 0x19
-  and `i2cscan` shows 0x19, not 0x18 — `accel_init()` looks only at 0x18 and will report "not
-  found" until either the wiring or `PAGER_I2C_ADDR_LIS3DH` (`pins.h`) changes.
-- INT1 -> IO2 (`PAGER_PIN_LIS3DH_INT1`), push-pull, active high, no external pull-up needed.
-- Power from the 3V3 peripheral rail (the one `board_power_init()` turns on by driving GPIO0
-  low) — not directly from a separate 3V3 source.
+- SDA -> IO15 (Walter pin 19), SCL -> IO18 (Walter pin 22). Not the CardKB's bus (IO10/IO9).
+- Address 0x18 (SDO/SA0 open or tied low). If SDO/SA0 is pulled high instead, the chip answers
+  at 0x19 and `i2cscan` shows 0x19, not 0x18 — `accel_init()` looks only at 0x18 and will report
+  "not found" until either the wiring or `PAGER_I2C_ADDR_LIS3DH` (`pins.h`) changes.
+- INT1 -> IO8 (Walter pin 23, `PAGER_PIN_LIS3DH_INT1`), push-pull, active high, 3.3 V logic, no
+  external pull-up needed. It is an RTC GPIO, armed as the ext1 light-sleep wake.
+- Power: breakout VIN from Walter 3V3-OUT (header pin 26). The firmware drives IO0 low at boot
+  and never releases it, so this rail is effectively always on; the CardKB and display are gated
+  by the eInk Friend's ENA instead. Do not feed the breakout from Walter VIN: on USB-C power VIN
+  is 5 V and the breakout's I2C pull-ups follow its VIN. See `firmware/README.md` "Power
+  domains".
 
-`i2cscan` is the one-line pre-flight check: expect `0x5F` (CardKB) and `0x18` (or `0x19` per the
-address note above). Neither showing up means wiring, not firmware, before anything else is
-worth trying (A2's `acceltest` will just say "not present").
+`i2cscan` is the one-line pre-flight check on the CardKB bus (expect `0x5F`); the LIS3DH is on
+the other bus, so its presence check is the boot log's `LIS3DH found (WHO_AM_I=0x33)` line or
+`acceltest`. Neither showing up means wiring, not firmware, before anything else is worth trying
+(A2's `acceltest` will just say "not present").
 
 ## Seen working on hardware
 
@@ -133,7 +137,7 @@ Dark Star (AT&T) SIMs.
 - The CardKB keyboard (22 Sep): every printable key, Enter (0x0d), Esc and the four arrows
   (0xb4-0xb7) decode as the host test predicted; a key wakes the UI from "sleeping" within one
   wake cycle; Enter opens the chat, a typed reply publishes within 50 ms of Enter. The bench cable
-  has SDA on IO9 and SCL on IO8 (`pins.h`). `i2cscan [swap]` finds the keyboard; `wake` and
+  had SDA on IO9 and SCL on IO8 at the time; since the 29 Sep rewiring it is SDA IO10 / SCL IO9 (`pins.h`). `i2cscan [swap]` finds the keyboard; `wake` and
   `key <text>` drive the UI from the console.
 - Display partial-refresh two-plane fix (22 Sep): the SSD1680 controller's two image planes must
   be kept equal after every differential update. Pre-fix (`disptest again 0` + `bars` + `seq 2 12

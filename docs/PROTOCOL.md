@@ -1105,7 +1105,7 @@ Two v1.5.0 features the design relies on:
 | 4 | RTC timer — active-mode exit | `esp_timer` while awake, not a sleep wake | 10 min with no button/keyboard activity → sleep mode | active | Yes | `mode`, `active_until` |
 | 4b | MQTT event (no sleep involved) | `setMQTTEventHandler()` → `_eventProcessingTask` | `_MESSAGE` short-circuits the wake-and-drain latency while the ESP32 happens to be awake; `_DISCONNECTED` drives F3 recovery; `_MEMORY_FULL` flags a missed drain | both | Yes — v1.5.0 API | none (handler runs while awake) |
 | 5 | ~~Modem URC / RI line into deep sleep~~ | `ext1` on the modem RX line | **Not supported by the library's public API; not pursued.** See §8.3 for why, and for the one variant that could still work if someone wants the battery back. | — | n/a | — |
-| 6 | LIS3DH INT1 (IO2) | `ext1` | Motion wake | — | **Out of scope.** Reserved only. | — |
+| 6 | LIS3DH INT1 (IO8) | `ext1` | Motion wake | — | **Out of scope.** Reserved only. | — |
 | 7 | CardKB | — | **Cannot wake the ESP32.** No interrupt line to an RTC GPIO; polled at 100 ms only while the composer is open. A reply always starts with a button press. | active | Yes (by construction) | — |
 
 **No GPIO reassignment is needed for the modem UART.** The
@@ -1204,7 +1204,7 @@ real hardware (`firmware/README.md`, M1).
 | Modem eDRX paging | 0.2–0.5 mA (estimate) | 2 paging occasions per 20.48 s cycle, ~50 ms each at ~50 mA RX, plus warm-up |
 | Modem idle floor | 0.01–0.05 mA (estimate) | Sequans GM02SP deep-sleep-between-paging |
 | Host liveness ping, amortised | ~1.2 mA (estimate) | 288 pings/day × ~0.1 mAh (§6.2); the modem sends no PINGREQ of its own, so the ESP32 re-subscribes every 300 s from a wake it takes anyway |
-| Display (gated off via IO15) | ~0 mA | e-paper VCC gated between refreshes |
+| Display (gated off via the eInk Friend's ENA, IO12) | ~0 mA | e-paper VCC gated between refreshes |
 | **Sleep-mode total** | **≈ 4.0–4.5 mA → 95–107 mAh/day** | On a ~1500 mAh LiFePO4 cell: **~14–16 days idle** |
 
 > **Why this is worse than it looks on paper.** A design built on an ESP32 deep-sleep floor of
