@@ -64,6 +64,7 @@ def test_tick_retries_only_queued_deliveries_capped_oldest_first():
     _make_user("mom", "mom")
     _make_user("student", "student")
     allow_store.set_edge("mom", "student", message=True, locate=True)
+    allow_store.set_edge("student", "mom", message=True, locate=True)
     _make_pager_device("pgr-tick-1", "student")
 
     broker = FakeBrokerClient()
@@ -97,6 +98,7 @@ def test_tick_does_not_retry_already_sent_deliveries():
     _make_user("mom", "mom")
     _make_user("student", "student")
     allow_store.set_edge("mom", "student", message=True, locate=True)
+    allow_store.set_edge("student", "mom", message=True, locate=True)
     _make_pager_device("pgr-tick-2", "student")
 
     broker = FakeBrokerClient()
@@ -124,6 +126,7 @@ def test_tick_gives_up_after_five_failed_attempts():
     _make_user("mom", "mom")
     _make_user("student", "student")
     allow_store.set_edge("mom", "student", message=True, locate=True)
+    allow_store.set_edge("student", "mom", message=True, locate=True)
     _make_pager_device("pgr-tick-fail", "student")
 
     broker = FakeBrokerClient()
@@ -200,6 +203,7 @@ def test_tick_retries_queued_sms_delivery(monkeypatch):
     _make_user("mom", "mom")
     _make_user("student", "student")
     allow_store.set_edge("mom", "student", message=True, locate=True)
+    allow_store.set_edge("student", "mom", message=True, locate=True)
     backends_store.create_backend(
         "student", kind="sms", config={"phone": "+15551234567"}, enabled=True
     )
@@ -238,6 +242,7 @@ def test_tick_caps_non_pager_retries_dispatched_per_call(monkeypatch):
     _make_user("mom3", "mom3")
     _make_user("student3", "student3")
     allow_store.set_edge("mom3", "student3", message=True, locate=True)
+    allow_store.set_edge("student3", "mom3", message=True, locate=True)
     backends_store.create_backend(
         "student3", kind="sms", config={"phone": "+15550001111"}, enabled=True
     )
@@ -265,6 +270,7 @@ def test_tick_does_not_retry_sent_sms_delivery(monkeypatch):
     _make_user("mom2", "mom2")
     _make_user("student2", "student2")
     allow_store.set_edge("mom2", "student2", message=True, locate=True)
+    allow_store.set_edge("student2", "mom2", message=True, locate=True)
     backends_store.create_backend(
         "student2", kind="sms", config={"phone": "+15550000000"}, enabled=True
     )

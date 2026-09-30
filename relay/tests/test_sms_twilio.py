@@ -140,6 +140,7 @@ def test_webhook_single_peer_fallback_routes_message(client: TestClient):
     users_store.create_user(uid="student", alias="student", display_name="Student")
     _link_sms("mom", "mom", "+15551234567")
     allow_store.set_edge("mom", "student", message=True, locate=True)
+    allow_store.set_edge("student", "mom", message=True, locate=True)
 
     resp = _post(client, {"To": "+1", "From": "+15551234567", "Body": "hi from sms"})
     assert resp.status_code == 200
@@ -159,7 +160,9 @@ def test_webhook_at_alias_prefix_routes_to_named_recipient(client: TestClient):
     users_store.create_user(uid="student", alias="student", display_name="Student")
     _link_sms("mom", "mom", "+15551234567")
     allow_store.set_edge("mom", "dad", message=True, locate=True)
+    allow_store.set_edge("dad", "mom", message=True, locate=True)
     allow_store.set_edge("mom", "student", message=True, locate=True)
+    allow_store.set_edge("student", "mom", message=True, locate=True)
 
     resp = _post(client, {"To": "+1", "From": "+15551234567", "Body": "@student pick up at 5"})
     assert resp.status_code == 200

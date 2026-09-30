@@ -17,13 +17,27 @@ decision 5's "location and device data never cross a family": every edge
 doc carries `familyIds` (the non-null `familyId`s of both ends), and a
 `locate: true` edge whose ends have different (or null) `familyId` is
 refused. `replace_all` enforces the refusal (the `PUT /api/admin/allowlist`
-surface docs/FAMILIES_TASKS.md 2.3 names); `set_edge` writes `familyIds` on
-every edge (so contact-approve and group-create/join's edges carry it too)
-but does not itself refuse -- those call sites predate per-user `familyId`
-being universal and have their own tests relying on same-uid-pair,
-no-family-yet edges succeeding. TODO(orchestrator): once those callers and
-their tests are family-aware, route them through `check_locate_family` too,
-per docs/FAMILIES_TASKS.md 2.3's "every edge writer ... gets it".
+surface docs/FAMILIES_TASKS.md 2.3 names). `set_edge` writes `familyIds` on
+every edge but still does not call `check_locate_family` itself --
+docs/FAMILIES_TASKS.md 3.2 addition (b) asked for that move ("so every
+writer is covered"), but every current caller of `set_edge` outside this
+task's new `/approved` PUT (`app/routers/family.py`) predates per-user
+`familyId` being universal: `tests/test_location.py`,
+`tests/test_routing.py`, `tests/test_conversations.py` and
+`tests/test_rules.py` alone set 60+ `locate=True` edges between
+familyId-less fixture users, none of which are in this task's `Files` list
+or the concurrently-editing agent's. Verified empirically
+(`tests/test_location.py` alone: 25/41 failures) before backing off --
+enforcing inside `set_edge` itself would break all of them for a decision
+those tests have no stake in. Both writers addition (b) actually names
+(group create, contact approve) are changed instead to never request
+`locate=True` at all (see `app/routers/family.py`'s `create_group` and
+`app/routers/admin.py`'s `approve_contact`), and the new `/approved` PUT
+calls `check_locate_family` explicitly at its own call site, same pattern
+`PUT /api/admin/allowlist` already uses for `replace_all`'s
+`LocateCrossFamily`. TODO(orchestrator): moving the check into `set_edge`
+itself still needs those four test files made family-aware first; flagged
+in this task's report rather than done silently.
 """
 
 from __future__ import annotations
@@ -125,8 +139,11 @@ def set_edge(from_uid: str, to_uid: str, *, message: bool, locate: bool) -> Allo
     """Upserts a single edge and, if `locate` may have changed, recomputes
     that one recipient's devices' `locatableBy`. Prefer `replace_all` for
     admin bulk edits; this is the narrower single-edge primitive. Writes
-    `familyIds` (see module docstring) but does not enforce
-    `check_locate_family` -- see the module docstring's TODO."""
+    `familyIds` (see module docstring) but does not itself call
+    `check_locate_family` -- see the module docstring's TODO for why. Every
+    caller that can pass `locate=True` with attacker/parent-controlled ends
+    (today: only `PUT /api/family/members/{uid}/approved`) must call
+    `check_locate_family` itself first."""
     _allow().document(edge_id(from_uid, to_uid)).set(
         {
             "fromUid": from_uid,

@@ -101,6 +101,7 @@ def test_send_message_success_returns_201_with_id(client: TestClient):
     mom_headers = _make_user("mom", "mom")
     _make_user("kid", "kid")
     allow_store.set_edge("mom", "kid", message=True, locate=True)
+    allow_store.set_edge("kid", "mom", message=True, locate=True)
 
     resp = client.post(
         "/api/conversations/kid/messages", json={"body": "pickup at 3"}, headers=mom_headers
@@ -151,6 +152,7 @@ def test_mark_read_sets_webapp_delivery_to_read(client: TestClient):
     mom_headers = _make_user("mom5", "mom5")
     kid_headers = _make_user("kid5", "kid5")
     allow_store.set_edge("mom5", "kid5", message=True, locate=True)
+    allow_store.set_edge("kid5", "mom5", message=True, locate=True)
 
     resp = client.post(
         "/api/conversations/kid5/messages", json={"body": "hi"}, headers=mom_headers
@@ -174,6 +176,7 @@ def test_mark_read_clears_conversation_unread_for_recipient(client: TestClient):
     mom_headers = _make_user("mom5b", "mom5b")
     kid_headers = _make_user("kid5b", "kid5b")
     allow_store.set_edge("mom5b", "kid5b", message=True, locate=True)
+    allow_store.set_edge("kid5b", "mom5b", message=True, locate=True)
 
     resp = client.post(
         "/api/conversations/kid5b/messages", json={"body": "hi"}, headers=mom_headers
@@ -203,7 +206,9 @@ def test_mark_read_mismatched_alias_is_404(client: TestClient):
     kid_headers = _make_user("kid5c", "kid5c")
     _make_user("other5c", "other5c")
     allow_store.set_edge("mom5c", "kid5c", message=True, locate=True)
+    allow_store.set_edge("kid5c", "mom5c", message=True, locate=True)
     allow_store.set_edge("other5c", "kid5c", message=True, locate=True)
+    allow_store.set_edge("kid5c", "other5c", message=True, locate=True)
 
     resp = client.post(
         "/api/conversations/kid5c/messages", json={"body": "hi"}, headers=mom_headers
@@ -227,6 +232,7 @@ def test_mark_read_by_non_recipient_is_404(client: TestClient):
     _make_user("kid6", "kid6")
     stranger_headers = _make_user("stranger6", "stranger6")
     allow_store.set_edge("mom6", "kid6", message=True, locate=True)
+    allow_store.set_edge("kid6", "mom6", message=True, locate=True)
 
     resp = client.post(
         "/api/conversations/kid6/messages", json={"body": "hi"}, headers=mom_headers

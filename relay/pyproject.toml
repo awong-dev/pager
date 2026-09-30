@@ -41,6 +41,12 @@ dependencies = [
     # (firebase-admin/httpx pull it in transitively) but declared explicitly
     # now that this module imports it directly.
     "cryptography",
+    # docs/FAMILIES_DESIGN.md §1 decision 6 / docs/FAMILIES_TASKS.md 3.2: an
+    # alias typed as a phone number (the "text a number" flow, and the
+    # family's approved-numbers editor) is parsed with a default region
+    # ("US") rather than `sms_twilio.normalize_e164`'s digit-strip, which
+    # cannot add a missing US country code to a bare 10-digit number.
+    "phonenumbers",
 ]
 
 [project.optional-dependencies]

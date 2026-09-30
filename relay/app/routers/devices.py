@@ -100,31 +100,6 @@ def list_my_devices(authed: Annotated[AuthedUser, Depends(require_user)]) -> lis
 # ---------------------------------------------------------------------------
 
 
-class SmsContactsRequest(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-
-    contacts: list[SmsContact]
-
-    @field_validator("contacts")
-    @classmethod
-    def _check_contacts(cls, value: list[SmsContact]) -> list[SmsContact]:
-        # Per-entry shape (name length/charset, E.164 phone) is already
-        # enforced by `SmsContact`'s own field validators
-        # (`app/store/devices.py`) -- this only checks the *list*-level
-        # rules docs/V02_DESIGN.md §6 states: "Max 8 entries" and (§4's
-        # scope note) unique phone numbers, so two entries can't silently
-        # collide on which one the device actually dials/matches against.
-        if len(value) > devices_store.MAX_SMS_CONTACTS:
-            raise ValueError(
-                f"at most {devices_store.MAX_SMS_CONTACTS} sms contacts are allowed, "
-                f"got {len(value)}"
-            )
-        phones = [c.phone for c in value]
-        if len(set(phones)) != len(phones):
-            raise ValueError("sms contact phone numbers must be unique")
-        return value
-
-
 class SmsContactsResponse(BaseModel):
     contacts: list[SmsContact]
     # True iff a `cfg.sms` push is on its way to (or sitting unacked at) the
@@ -145,17 +120,18 @@ def get_sms_contacts(
 
 @router.put("/{device_id}/sms-contacts")
 def put_sms_contacts(
-    device_id: str,
-    req: SmsContactsRequest,
-    authed: Annotated[AuthedUser, Depends(require_user)],
-    broker: Annotated[BrokerClient, Depends(get_broker)],
-) -> SmsContactsResponse:
-    _require_owner_or_admin(device_id, authed)
-    devices_store.set_sms_contacts(device_id, req.contacts)
-    devcfg.push_sms_contacts(
-        device_id, [c.model_dump() for c in req.contacts], broker
+    device_id: str, authed: Annotated[AuthedUser, Depends(require_user)]
+) -> None:
+    """docs/FAMILIES_DESIGN.md §1 decision 11 / docs/FAMILIES_TASKS.md 3.2:
+    `devices.smsContacts` is now a projection of the owning member's
+    approved numbers (`PUT /api/family/members/{uid}/approved`,
+    `app/routers/family.py`), not separately editable here -- this route
+    stays mounted (rather than removed, and still behind `require_user`)
+    only so an old client gets a clear, actionable error instead of a 404
+    or a fully anonymous 405."""
+    raise HTTPException(
+        status_code=405, detail="Managed from People → Approved numbers"
     )
-    return SmsContactsResponse(contacts=req.contacts, pending=devcfg.sms_pending(device_id))
 
 
 # ---------------------------------------------------------------------------

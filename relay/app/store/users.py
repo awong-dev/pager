@@ -206,10 +206,17 @@ def update_user(
     phone: str | None = None,
     role: Role | None = None,
     disabled: bool | None = None,
+    notify_alerts: bool | None = None,
 ) -> User:
     """Patch-semantics update of mutable fields. `alias` is intentionally
     not editable here -- changing it would orphan the old `aliases/{alias}`
-    doc or require another transaction; not needed by any caller yet."""
+    doc or require another transaction; not needed by any caller yet.
+
+    `notify_alerts` backs `PATCH /api/me {notify: {alerts}}` (task 4.2) --
+    `Notify` has exactly one field today, so overwriting the whole `notify`
+    map is equivalent to a dotted-path update and needs no Firestore
+    `FieldPath` machinery.
+    """
     updates: dict[str, object] = {}
     if display_name is not None:
         updates["displayName"] = display_name
@@ -221,6 +228,8 @@ def update_user(
         updates["role"] = role
     if disabled is not None:
         updates["disabled"] = disabled
+    if notify_alerts is not None:
+        updates["notify"] = {"alerts": notify_alerts}
     ref = get_db().collection("users").document(uid)
     if updates:
         try:

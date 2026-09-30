@@ -147,6 +147,7 @@ def test_tick_retries_queued_pager_deliveries_end_to_end():
     users_store.create_user(uid="mom", alias="mom", display_name="mom")
     users_store.create_user(uid="kid", alias="kid", display_name="kid")
     allow_store.set_edge("mom", "kid", message=True, locate=True)
+    allow_store.set_edge("kid", "mom", message=True, locate=True)
     devices_store.create_device(
         device_id="pgr-tick-int",
         owner_uid="kid",

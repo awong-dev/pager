@@ -119,6 +119,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Literal
 
+from app import policy as policy_module
 from app.backends.base import Backend, DeliverResult
 from app.backends.registry import build_registry
 from app.broker import BrokerClient
@@ -135,7 +136,12 @@ from app.store.messages import Delivery, Message, MessageKind
 
 logger = logging.getLogger("relay.routing")
 
-RejectReason = Literal["unknown_alias", "not_allowed", "not_member"]
+# docs/FAMILIES_DESIGN.md §2, §1 decision 7: `policy_out`/`policy_in` are the
+# hard-refusal verdicts from `app.policy.check` (the sender's/recipient's
+# policy names the other's `kind` outright refused); `not_allowed` covers
+# both the pre-3.1 bare-edge-missing case and an `'approved'`-rule pair
+# missing that approval (`app.policy.check`'s docstring).
+RejectReason = Literal["unknown_alias", "not_allowed", "not_member", "policy_out", "policy_in"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -200,15 +206,17 @@ class Routing:
 
         created: list[Message] = []
         for recipient_uid in candidates:
-            if not allow_store.is_message_allowed(sender_uid, recipient_uid):
+            reason = self._policy_reject_reason(sender_uid, recipient_uid)
+            if reason is not None:
                 logger.warning(
-                    "SECURITY sender %s not allowed to message recipient %s (alias=%r)",
+                    "SECURITY sender %s not allowed to message recipient %s (alias=%r) reason=%s",
                     sender_uid,
                     recipient_uid,
                     recipient_alias,
+                    reason,
                 )
                 rejected.append(
-                    RejectedRecipient(alias=recipient_alias, uid=recipient_uid, reason="not_allowed")
+                    RejectedRecipient(alias=recipient_alias, uid=recipient_uid, reason=reason)
                 )
                 continue
             msg = self._create_and_deliver(
@@ -251,6 +259,28 @@ class Routing:
             return [default_uid], []
         return allow_store.allowed_recipients(sender_uid), []
 
+    # ---- policy gate (docs/FAMILIES_DESIGN.md §2, §1 decision 7) ----
+
+    def _policy_reject_reason(self, sender_uid: str, recipient_uid: str) -> RejectReason | None:
+        """The one gate both the DM loop (`send`) and the group loop
+        (`_send_group`) run per recipient: `app.policy.check`, fed the two
+        directed edges it needs (`allow/{sender}_{recipient}.message` for
+        the sender's own "approved" list, `allow/{recipient}_{sender}
+        .message` for the recipient's). Falls back to the pre-3.1 bare edge
+        check if either party's `users/{uid}` doc is missing (never true for
+        a real sender/recipient pair -- `_candidate_recipients` only ever
+        resolves to registered uids -- but avoids a hard failure on stale
+        data rather than assuming it can't happen)."""
+        sender = users_store.get_user(sender_uid)
+        recipient = users_store.get_user(recipient_uid)
+        if sender is None or recipient is None:
+            if allow_store.is_message_allowed(sender_uid, recipient_uid):
+                return None
+            return "not_allowed"
+        has_edge_out = allow_store.is_message_allowed(sender_uid, recipient_uid)
+        has_edge_in = allow_store.is_message_allowed(recipient_uid, sender_uid)
+        return policy_module.check(sender, recipient, has_edge_out, has_edge_in)
+
     # ---- group fan-out (docs/GROUP_CHAT_DESIGN.md §3) ----
 
     def _send_group(
@@ -292,15 +322,17 @@ class Routing:
         created: list[Message] = []
         rejected: list[RejectedRecipient] = []
         for recipient_uid in sorted(uid for uid in group.uids if uid != sender_uid):
-            if not allow_store.is_message_allowed(sender_uid, recipient_uid):
+            reason = self._policy_reject_reason(sender_uid, recipient_uid)
+            if reason is not None:
                 logger.warning(
-                    "SECURITY sender %s not allowed to message group member %s (group=%s)",
+                    "SECURITY sender %s not allowed to message group member %s (group=%s) reason=%s",
                     sender_uid,
                     recipient_uid,
                     group.convKey,
+                    reason,
                 )
                 rejected.append(
-                    RejectedRecipient(alias=group.alias, uid=recipient_uid, reason="not_allowed")
+                    RejectedRecipient(alias=group.alias, uid=recipient_uid, reason=reason)
                 )
                 continue
             msg = self._create_and_deliver(

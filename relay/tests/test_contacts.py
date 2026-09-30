@@ -347,6 +347,9 @@ def test_approve_link_to_existing_verified_phone(client: TestClient, admin_heade
     ingest.handle_up(up_topic("pgr-a-2"), contact_req_payload("u_a2", "Grandma", ph="+15555550000"))
 
     key = contacts_store.key("pgr-a-2", "u_a2")
+    # docs/FAMILIES_TASKS.md 3.2 addition (b): contact approval always
+    # writes message-only edges now, so a `locate` in the request body (if
+    # a stale client still sends one) is simply ignored, not honoured.
     resp = client.post(
         f"/api/admin/contacts/{key}/approve",
         json={"mode": "link", "locate": True},
@@ -358,7 +361,7 @@ def test_approve_link_to_existing_verified_phone(client: TestClient, admin_heade
     assert allow_store.is_message_allowed("student", "grandma1")
     assert allow_store.is_message_allowed("grandma1", "student")
     edge = allow_store.get_edge("student", "grandma1")
-    assert edge is not None and edge.locate is True
+    assert edge is not None and edge.locate is False
 
     assert _book_version("pgr-a-2") == 1
 

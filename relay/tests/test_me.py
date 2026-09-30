@@ -98,6 +98,25 @@ def test_get_me_requires_auth(client: TestClient):
     assert resp.status_code == 401
 
 
+def test_patch_me_notify_alerts_round_trips(client: TestClient):
+    headers = _make_user("patchme1", "patchme1")
+
+    resp = client.patch("/api/me", json={"notify": {"alerts": False}}, headers=headers)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["notify"]["alerts"] is False
+
+    resp2 = client.get("/api/me", headers=headers)
+    assert resp2.json()["user"]["notify"]["alerts"] is False
+
+    resp3 = client.patch("/api/me", json={"notify": {"alerts": True}}, headers=headers)
+    assert resp3.json()["notify"]["alerts"] is True
+
+
+def test_patch_me_requires_auth(client: TestClient):
+    resp = client.patch("/api/me", json={"notify": {"alerts": False}})
+    assert resp.status_code == 401
+
+
 def test_list_backends_includes_implicit_webapp_backend(client: TestClient):
     headers = _make_user("me2", "me2")
     resp = client.get("/api/me/backends", headers=headers)
@@ -271,6 +290,7 @@ def test_h2_unverified_sms_backend_never_receives_a_delivery(
 
     users_store.create_user(uid="sender10", alias="sender10", display_name="Sender10")
     allow_store.set_edge("sender10", "me10", message=True, locate=True)
+    allow_store.set_edge("me10", "sender10", message=True, locate=True)
 
     routing = Routing(FakeBrokerClient())
     result = routing.send(

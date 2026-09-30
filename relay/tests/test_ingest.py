@@ -170,6 +170,7 @@ def test_v2_ack_updates_the_right_pager_delivery():
     _make_user("mom", "mom")
     _make_user("student", "student")
     allow_store.set_edge("mom", "student", message=True, locate=True)
+    allow_store.set_edge("student", "mom", message=True, locate=True)
     _make_pager_device("pgr-v2-4", "student")
 
     ingest, broker = _ingest()
@@ -197,6 +198,7 @@ def test_v2_ack_wrong_device_is_dropped():
     _make_user("mom", "mom")
     _make_user("student", "student")
     allow_store.set_edge("mom", "student", message=True, locate=True)
+    allow_store.set_edge("student", "mom", message=True, locate=True)
     _make_pager_device("pgr-v2-5a", "student")
     _make_pager_device("pgr-v2-5b", "mom")  # unrelated device owned by someone else
 
@@ -221,6 +223,7 @@ def test_v2_ack_idempotent_repeat_is_noop():
     _make_user("mom", "mom")
     _make_user("student", "student")
     allow_store.set_edge("mom", "student", message=True, locate=True)
+    allow_store.set_edge("student", "mom", message=True, locate=True)
     _make_pager_device("pgr-v2-6", "student")
 
     ingest, _broker = _ingest()
@@ -247,6 +250,7 @@ def test_v2_republish_on_session_change_resends_still_pending():
     _make_user("mom", "mom")
     _make_user("student", "student")
     allow_store.set_edge("mom", "student", message=True, locate=True)
+    allow_store.set_edge("student", "mom", message=True, locate=True)
     _make_pager_device("pgr-v2-7", "student")
 
     broker = FakeBrokerClient()
@@ -285,6 +289,7 @@ def test_v2_republish_on_link_change_same_session_resends_still_pending():
     _make_user("mom", "mom")
     _make_user("student", "student")
     allow_store.set_edge("mom", "student", message=True, locate=True)
+    allow_store.set_edge("student", "mom", message=True, locate=True)
     _make_pager_device("pgr-v2-link-1", "student")
 
     broker = FakeBrokerClient()
@@ -418,6 +423,7 @@ def test_republish_reuses_id_but_gets_a_fresh_n_and_both_publishes_verify():
     _make_user("mom", "mom")
     _make_user("student", "student")
     allow_store.set_edge("mom", "student", message=True, locate=True)
+    allow_store.set_edge("student", "mom", message=True, locate=True)
     key = _make_hmac_pager_device("pgr-hmac-republish", "student")
 
     broker = FakeBrokerClient()
@@ -454,6 +460,7 @@ def test_hmac_valid_signed_json_up_message_is_accepted():
     _make_user("mom", "mom")
     _make_user("student", "student")
     allow_store.set_edge("mom", "student", message=True, locate=True)
+    allow_store.set_edge("student", "mom", message=True, locate=True)
     key = _make_hmac_pager_device("pgr-hmac-1", "student")
 
     ingest, _broker = _ingest()
@@ -476,6 +483,7 @@ def test_hmac_valid_signed_cbor_up_message_is_accepted():
     _make_user("mom", "mom")
     _make_user("student", "student")
     allow_store.set_edge("mom", "student", message=True, locate=True)
+    allow_store.set_edge("student", "mom", message=True, locate=True)
     key = _make_hmac_pager_device("pgr-hmac-2", "student")
 
     ingest, _broker = _ingest()
@@ -518,6 +526,7 @@ def test_unsigned_up_message_from_hmac_device_is_dropped():
     _make_user("mom", "mom")
     _make_user("student", "student")
     allow_store.set_edge("mom", "student", message=True, locate=True)
+    allow_store.set_edge("student", "mom", message=True, locate=True)
     _make_hmac_pager_device("pgr-hmac-3", "student")
 
     ingest, _broker = _ingest()
@@ -538,6 +547,7 @@ def test_replayed_n_is_dropped():
     _make_user("mom", "mom")
     _make_user("student", "student")
     allow_store.set_edge("mom", "student", message=True, locate=True)
+    allow_store.set_edge("student", "mom", message=True, locate=True)
     key = _make_hmac_pager_device("pgr-hmac-4", "student")
 
     ingest, _broker = _ingest()
@@ -575,6 +585,7 @@ def test_n_inside_window_but_unseen_is_accepted():
     _make_user("mom", "mom")
     _make_user("student", "student")
     allow_store.set_edge("mom", "student", message=True, locate=True)
+    allow_store.set_edge("student", "mom", message=True, locate=True)
     key = _make_hmac_pager_device("pgr-hmac-5", "student")
 
     ingest, _broker = _ingest()

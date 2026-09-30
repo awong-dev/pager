@@ -345,6 +345,7 @@ def test_webhook_message_from_linked_space_routes_via_single_peer(client: TestCl
     bid = _link_gchat("mom", "mom")
     backends_store.set_gchat_space("SPACE1", "mom", bid)
     allow_store.set_edge("mom", "student", message=True, locate=True)
+    allow_store.set_edge("student", "mom", message=True, locate=True)
 
     resp = client.post(
         "/webhooks/gchat",

@@ -804,7 +804,6 @@ def revoke_device(
 class ContactApproveRequest(BaseModel):
     mode: Literal["link", "create"]
     alias: str | None = None
-    locate: bool = False
 
 
 class ContactRejectRequest(BaseModel):
@@ -885,11 +884,16 @@ def approve_contact(
         if request.phone is not None:
             _create_admin_asserted_backend(contact_uid, request.phone)
 
-    # §4.3: "upsert two allow edges (owner -> contact `message`, contact ->
-    # owner `message`; `locate` is a separate checkbox, default off)".
+    # §4.3 originally read "upsert two allow edges (owner -> contact
+    # `message`, contact -> owner `message`; `locate` is a separate
+    # checkbox, default off)" -- docs/FAMILIES_TASKS.md 3.2 addition (b)
+    # supersedes the checkbox: contact approval now always writes
+    # message-only edges, never `locate` (a linked/created contact may
+    # predate `familyId` entirely, or sit in a different family than the
+    # device owner's, so there is no safe default here left to honour).
     owner_uid = request.ownerUid
-    allow_store.set_edge(owner_uid, contact_uid, message=True, locate=req.locate)
-    allow_store.set_edge(contact_uid, owner_uid, message=True, locate=req.locate)
+    allow_store.set_edge(owner_uid, contact_uid, message=True, locate=False)
+    allow_store.set_edge(contact_uid, owner_uid, message=True, locate=False)
     # `set_edge` already recomputes `locatableBy` for each edge's `to_uid`
     # (i.e. both directions here); called again explicitly per this task's
     # `Do` steps, matching `POST /api/admin/devices`'s own belt-and-suspenders

@@ -13,7 +13,7 @@ persisted *user* (for the `senderAlias` lookup) and push token.
 
 from __future__ import annotations
 
-from app.backends.webapp import WebappBackend
+from app.backends.webapp import WebappBackend, push_alert
 from app.store import conversations as conversations_store
 from app.store import push_tokens as push_tokens_store
 from app.store import users as users_store
@@ -171,3 +171,121 @@ def test_deliver_dm_copy_has_no_group_msg_id_key():
 
     _, data = fcm.calls[0]
     assert "groupMsgId" not in data
+
+
+# ---------------------------------------------------------------------------
+# push_alert -- docs/FAMILIES_DESIGN.md §6 "Push", task 4.2.
+# ---------------------------------------------------------------------------
+
+
+def test_push_alert_new_conversation_sends_exact_data_map():
+    users_store.create_user(
+        uid="fam1admin", alias="fam1admin", display_name="Admin", role="admin", family_id="fam1"
+    )
+    push_tokens_store.add_token("fam1admin", "tok_admin")
+
+    fcm = _RecordingFCMClient()
+    push_alert(
+        "fam1",
+        {
+            "kind": "new_conversation",
+            "id": "alert1",
+            "subjectAlias": "kid",
+            "peerAlias": "peer",
+            "preview": "hey there",
+        },
+        fcm_client=fcm,
+    )
+
+    assert len(fcm.calls) == 1
+    tokens, data = fcm.calls[0]
+    assert tokens == ["tok_admin"]
+    assert data == {
+        "kind": "alert",
+        "alertKind": "new_conversation",
+        "id": "alert1",
+        "title": "New chat: @kid ↔ @peer",
+        "body": "hey there",
+        "url": "/family/alerts",
+    }
+    assert all(isinstance(v, str) for v in data.values())
+
+
+def test_push_alert_sms_unknown_title_and_truncated_body():
+    users_store.create_user(
+        uid="fam2admin", alias="fam2admin", display_name="Admin", role="admin", family_id="fam2"
+    )
+    push_tokens_store.add_token("fam2admin", "tok_admin2")
+
+    fcm = _RecordingFCMClient()
+    long_body = "x" * 200
+    push_alert(
+        "fam2",
+        {
+            "kind": "sms_unknown",
+            "id": "alert2",
+            "subjectAlias": "kid2",
+            "preview": long_body,
+        },
+        fcm_client=fcm,
+    )
+
+    _, data = fcm.calls[0]
+    assert data["title"] == "Text from an unknown number for @kid2"
+    assert data["body"] == long_body[:120]
+    assert len(data["body"]) == 120
+
+
+def test_push_alert_contact_request_title_and_empty_preview():
+    users_store.create_user(
+        uid="fam3admin", alias="fam3admin", display_name="Admin", role="admin", family_id="fam3"
+    )
+    push_tokens_store.add_token("fam3admin", "tok_admin3")
+
+    fcm = _RecordingFCMClient()
+    push_alert(
+        "fam3",
+        {"kind": "contact_request", "id": "alert3", "subjectAlias": "kid3"},
+        fcm_client=fcm,
+    )
+
+    _, data = fcm.calls[0]
+    assert data["title"] == "Contact request from @kid3's pager"
+    assert data["body"] == ""
+
+
+def test_push_alert_skips_admin_who_opted_out():
+    users_store.create_user(
+        uid="fam4admin", alias="fam4admin", display_name="Admin", role="admin", family_id="fam4"
+    )
+    users_store.update_user("fam4admin", notify_alerts=False)
+    push_tokens_store.add_token("fam4admin", "tok_admin4")
+
+    fcm = _RecordingFCMClient()
+    push_alert(
+        "fam4",
+        {"kind": "contact_request", "id": "alert4", "subjectAlias": "kid4"},
+        fcm_client=fcm,
+    )
+
+    assert fcm.calls == []
+
+
+def test_push_alert_skips_member_and_super():
+    users_store.create_user(
+        uid="fam5member", alias="fam5member", display_name="Member", role="member", family_id="fam5"
+    )
+    users_store.create_user(
+        uid="fam5super", alias="fam5super", display_name="Super", role="super", family_id="fam5"
+    )
+    push_tokens_store.add_token("fam5member", "tok_member5")
+    push_tokens_store.add_token("fam5super", "tok_super5")
+
+    fcm = _RecordingFCMClient()
+    push_alert(
+        "fam5",
+        {"kind": "contact_request", "id": "alert5", "subjectAlias": "kid5"},
+        fcm_client=fcm,
+    )
+
+    assert fcm.calls == []

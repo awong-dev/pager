@@ -547,9 +547,13 @@ def test_get_sms_contacts_unknown_device_404(client: TestClient):
     assert resp.status_code == 404
 
 
-def test_put_sms_contacts_stores_pushes_and_returns_shape(
+def test_put_sms_contacts_is_405_pointing_at_the_people_page(
     client: TestClient, broker: FakeBrokerClient
 ):
+    """docs/FAMILIES_DESIGN.md §1 decision 11 / docs/FAMILIES_TASKS.md 3.2:
+    `devices.smsContacts` is derived from the owning member's approved
+    numbers now -- this route is a fixed 405, even for the device's own
+    owner, and pushes nothing."""
     _make_user("owner7", "owner7")
     _make_pager_device("pgr-api-7", "owner7")
 
@@ -558,86 +562,18 @@ def test_put_sms_contacts_stores_pushes_and_returns_shape(
         json={"contacts": [{"name": "Mom", "phone": "+12065550100"}]},
         headers=auth_header("owner7"),
     )
-    assert resp.status_code == 200, resp.text
-    assert resp.json() == {
-        "contacts": [{"name": "Mom", "phone": "+12065550100"}],
-        "pending": True,
-    }
-    sent = json.loads(broker.published[0].payload)
-    assert sent["cfg"]["sms"] == [{"n": "Mom", "p": "+12065550100"}]
-
-    # And it landed on the device doc itself.
-    assert devices_store.get_device("pgr-api-7").smsContacts[0].name == "Mom"
+    assert resp.status_code == 405, resp.text
+    assert resp.json() == {"detail": "Managed from People → Approved numbers"}
+    assert broker.published == []
+    assert devices_store.get_device("pgr-api-7").smsContacts == []
 
 
-def test_put_sms_contacts_forbidden_for_non_owner(client: TestClient):
+def test_put_sms_contacts_is_405_for_an_unauthenticated_caller(client: TestClient):
     _make_user("owner8", "owner8")
-    _make_user("stranger8", "stranger8")
     _make_pager_device("pgr-api-8", "owner8")
 
-    resp = client.put(
-        "/api/devices/pgr-api-8/sms-contacts",
-        json={"contacts": []},
-        headers=auth_header("stranger8"),
-    )
-    assert resp.status_code == 403
-
-
-def test_put_sms_contacts_over_max_is_422(client: TestClient):
-    _make_user("owner9", "owner9")
-    _make_pager_device("pgr-api-9", "owner9")
-
-    contacts = [{"name": f"c{i}", "phone": f"+1206555010{i}"} for i in range(9)]
-    resp = client.put(
-        "/api/devices/pgr-api-9/sms-contacts",
-        json={"contacts": contacts},
-        headers=auth_header("owner9"),
-    )
-    assert resp.status_code == 422
-    assert "at most 8" in resp.text
-
-
-def test_put_sms_contacts_duplicate_phone_is_422(client: TestClient):
-    _make_user("owner10", "owner10")
-    _make_pager_device("pgr-api-10", "owner10")
-
-    resp = client.put(
-        "/api/devices/pgr-api-10/sms-contacts",
-        json={
-            "contacts": [
-                {"name": "Mom", "phone": "+12065550100"},
-                {"name": "Mom Cell", "phone": "+12065550100"},
-            ]
-        },
-        headers=auth_header("owner10"),
-    )
-    assert resp.status_code == 422
-    assert "unique" in resp.text
-
-
-def test_put_sms_contacts_bad_phone_is_422_naming_the_entry(client: TestClient):
-    _make_user("owner11", "owner11")
-    _make_pager_device("pgr-api-11", "owner11")
-
-    resp = client.put(
-        "/api/devices/pgr-api-11/sms-contacts",
-        json={"contacts": [{"name": "Bad", "phone": "0000"}]},
-        headers=auth_header("owner11"),
-    )
-    assert resp.status_code == 422
-    assert "0000" in resp.text
-
-
-def test_put_sms_contacts_name_too_long_is_422(client: TestClient):
-    _make_user("owner12", "owner12")
-    _make_pager_device("pgr-api-12", "owner12")
-
-    resp = client.put(
-        "/api/devices/pgr-api-12/sms-contacts",
-        json={"contacts": [{"name": "N" * 17, "phone": "+12065550100"}]},
-        headers=auth_header("owner12"),
-    )
-    assert resp.status_code == 422
+    resp = client.put("/api/devices/pgr-api-8/sms-contacts", json={"contacts": []})
+    assert resp.status_code == 401
 
 
 def test_get_sms_log_resolves_name_and_orders_newest_first(client: TestClient):

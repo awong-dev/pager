@@ -142,3 +142,66 @@ class WebappBackend:
 
     def render_state(self, delivery: Delivery) -> str:
         return delivery.state
+
+
+# ---------------------------------------------------------------------------
+# alert push -- docs/FAMILIES_DESIGN.md §6 "Push"
+# ---------------------------------------------------------------------------
+
+ALERT_URL = "/family/alerts"
+
+_ALERT_TITLES = {
+    "new_conversation": lambda a: f"New chat: @{a['subjectAlias']} ↔ @{a.get('peerAlias')}",
+    "sms_unknown": lambda a: f"Text from an unknown number for @{a['subjectAlias']}",
+    "contact_request": lambda a: f"Contact request from @{a['subjectAlias']}'s pager",
+}
+
+
+def push_alert(family_id: str, alert: dict, fcm_client: FCMClient | None = None) -> None:
+    """docs/FAMILIES_DESIGN.md §6 "Push": `alerts.py` (task 4.1, not yet
+    built) calls this once after it creates a `families/{family_id}/
+    alerts/{id}` doc. Every `users/{uid}` with `familyId == family_id` and
+    `role == 'admin'` (never `super`, never `member` -- exactly the family's
+    admins) whose `notify.alerts` is not `False` gets one FCM data message
+    per registered push token, same client/dead-token handling as
+    `WebappBackend.deliver`'s message push (`app/backends/fcm.py`'s
+    `FirebaseFCMClient` deletes a token the first time FCM reports it dead;
+    this module never touches that logic directly, only through
+    `FCMClient.send_data`).
+
+    `fcm_client` mirrors `WebappBackend.__init__`'s own injection seam
+    (default `NullFCMClient`, a real `FirebaseFCMClient` in prod when
+    `PUSH_BACKEND=fcm`) -- this function has no instance to carry one on,
+    so callers (`alerts.py`, tests) pass it explicitly instead.
+
+    Best-effort per admin: one admin's push failure (or a `send_data` that
+    raises) must not stop the rest from being notified, mirroring
+    `WebappBackend.deliver`'s own `except Exception` around the FCM call.
+    """
+    fcm = fcm_client or NullFCMClient()
+    title_fn = _ALERT_TITLES.get(alert["kind"])
+    if title_fn is None:
+        raise ValueError(f"unknown alert kind: {alert['kind']!r}")
+    data = {
+        "kind": "alert",
+        "alertKind": str(alert["kind"]),
+        "id": str(alert["id"]),
+        "title": title_fn(alert),
+        "body": (alert.get("preview") or "")[:PREVIEW_MAX_CHARS],
+        "url": ALERT_URL,
+    }
+    for user in users_store.list_users():
+        if user.familyId != family_id or user.role != "admin":
+            continue
+        if user.notify.alerts is False:
+            continue
+        try:
+            tokens = push_tokens_store.list_tokens(user.uid)
+            if tokens:
+                fcm.send_data(tokens, data)
+        except Exception:
+            # Same rationale as `WebappBackend.deliver`: the alert doc
+            # already exists regardless of whether this admin's push
+            # succeeds, so a push failure for one admin must not raise out
+            # of `push_alert` and skip the rest.
+            logger.exception("FCM alert push failed for user %s", user.uid)

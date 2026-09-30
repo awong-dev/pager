@@ -55,7 +55,7 @@ import logging
 import os
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from google.cloud.firestore import FieldFilter
 from pydantic import BaseModel
 
@@ -138,6 +138,24 @@ def get_me(authed: Annotated[AuthedUser, Depends(require_user)]) -> MeResponse:
     )
 
 
+class NotifyPatch(BaseModel):
+    alerts: bool
+
+
+class PatchMeRequest(BaseModel):
+    notify: NotifyPatch | None = None
+
+
+@router.patch("/api/me")
+def patch_me(req: PatchMeRequest, authed: Annotated[AuthedUser, Depends(require_user)]) -> User:
+    """docs/FAMILIES_DESIGN.md §5.6 / task 4.2: today's only field is
+    `notify.alerts` (whether this admin's family alerts are pushed,
+    `app/backends/webapp.py`'s `push_alert`); a member can toggle it too,
+    it just has no effect since `push_alert` only ever considers admins."""
+    notify_alerts = req.notify.alerts if req.notify is not None else None
+    return users_store.update_user(authed.uid, notify_alerts=notify_alerts)
+
+
 # ---------------------------------------------------------------------------
 # directory
 # ---------------------------------------------------------------------------
@@ -161,7 +179,16 @@ class DirectoryEntry(BaseModel):
 
 
 @router.get("/api/directory")
-def get_directory(authed: Annotated[AuthedUser, Depends(require_user)]) -> dict:
+def get_directory(
+    authed: Annotated[AuthedUser, Depends(require_user)],
+    # docs/FAMILIES_TASKS.md 3.2 addition (a): only consulted for a `super`
+    # caller (an `admin`'s own scope is always their own `familyId`, a
+    # `member`'s never has one) -- same `?family=` shape `/api/family/*`
+    # already uses, but this route stays open to every registered caller,
+    # not `require_family_admin`-gated, so a bare `member` passing it is
+    # simply ignored rather than 403ed.
+    family: Annotated[str | None, Query()] = None,
+) -> dict:
     """docs/FAMILIES_DESIGN.md §4 `GET /api/directory`: the aliases the
     caller may resolve even though `firestore.rules` only lets a member
     read `users/{uid}` docs inside their own family (1.4) -- edge peers in
@@ -169,7 +196,11 @@ def get_directory(authed: Annotated[AuthedUser, Depends(require_user)]) -> dict:
     otherwise invisible to `useDirectory()` (§5.1). Union of: every user
     sharing the caller's `familyId` (skipped when the caller has none);
     both ends of every `allow` edge the caller is a party to; every uid
-    appearing in the `uids` of a conversation the caller belongs to.
+    appearing in the `uids` of a conversation the caller belongs to; and,
+    for an `admin` (own family) or a `super` naming one via `?family=`,
+    both ends of *every* `allow` edge tagged with that family -- addition
+    (a) -- so a family admin sees an external a member approved even
+    though the admin holds no edge of their own to it.
     """
     me = authed.uid
     db = get_db()
@@ -196,6 +227,21 @@ def get_directory(authed: Annotated[AuthedUser, Depends(require_user)]) -> dict:
     ).stream():
         for uid in (snap.to_dict() or {}).get("uids") or []:
             uids.add(uid)
+
+    admin_scope_family_id = (
+        family
+        if (authed.user.role == "super" and family)
+        else (family_id if authed.user.role == "admin" else None)
+    )
+    if admin_scope_family_id:
+        for snap in db.collection("allow").where(
+            filter=FieldFilter("familyIds", "array_contains", admin_scope_family_id)
+        ).stream():
+            data = snap.to_dict() or {}
+            if data.get("fromUid"):
+                uids.add(data["fromUid"])
+            if data.get("toUid"):
+                uids.add(data["toUid"])
 
     entries: list[DirectoryEntry] = []
     for uid in uids:

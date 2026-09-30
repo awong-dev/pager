@@ -183,6 +183,7 @@ def test_webhook_store_error_on_up_message_is_500_not_200(monkeypatch):
     users_store.create_user(uid="student", alias="student", display_name="Student")
     users_store.create_user(uid="mom", alias="mom", display_name="Mom")
     allow_store.set_edge("student", "mom", message=True, locate=True)
+    allow_store.set_edge("mom", "student", message=True, locate=True)
     devices_store.create_device(
         device_id="pgr-broken",
         owner_uid="student",
