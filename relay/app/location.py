@@ -466,11 +466,20 @@ def ingest_loc(device_id: str, env: LocEnvelope) -> None:
                     # coalesced requester gets their own `kind='loc'`
                     # message, so `familyIds`/`participants` are computed
                     # per (owner, requester) pair, not once over the whole
-                    # `requester_uids` list -- read here (transactionally,
-                    # before any write; see `_fulfil_loc_req_in_txn`'s
-                    # caller, which starts staging writes right after this
-                    # read phase) so the write phase only ever stages
-                    # writes.
+                    # `requester_uids` list. Users do not change during a
+                    # locate, so this `users/{uid}` read needs no
+                    # transactional consistency -- unlike `conv_refs`/
+                    # `conv_snaps` just above, it is a **plain** (no
+                    # `transaction=`) read: enrolling it in this
+                    # transaction's read set would only widen the window in
+                    # which a concurrent locate on the same device's
+                    # `locReqs/{deviceId}` (the doc this transaction
+                    # actually needs atomicity on) can abort it, without
+                    # buying any invariant this function needs (see CI
+                    # regression note in git history: this loop originally
+                    # passed `transaction=transaction` here and exhausted
+                    # `run_transaction`'s 5-attempt retry budget under
+                    # N-way concurrent `/locate` contention).
                     pair_participants: dict[str, dict[str, dict[str, str]]] = {}
                     pair_family_ids: dict[str, list[str]] = {}
                     for uid in requester_uids:
@@ -479,7 +488,7 @@ def ingest_loc(device_id: str, env: LocEnvelope) -> None:
                         conv_refs[uid] = ref
                         conv_snaps[uid] = ref.get(transaction=transaction)
                         participants, family_ids = messages_store.build_participants_and_family_ids(
-                            [owner_uid, uid], transaction=transaction
+                            [owner_uid, uid]
                         )
                         pair_participants[uid] = participants
                         pair_family_ids[uid] = family_ids
@@ -838,6 +847,22 @@ class Location:
         # it) rather than threading a flag through, since it is one cheap
         # read and keeps `_txn` simple.
         pager_backend = _find_pager_backend(device)
+        # docs/FAMILIES_DESIGN.md §1 decisions 3-4: `familyIds` for the
+        # (requester, owner) pair, needed only by the "claim a fresh slot"
+        # branch below. Hoisted out of `_txn` and read plainly (not
+        # `transaction=transaction`) for the same reason as
+        # `pager_backend` above, plus one more: users do not change during
+        # a locate, so this `users/{uid}` read needs no transactional
+        # consistency, and enrolling it in the transaction's read set only
+        # widened the window for `locReqs/{device.id}` write contention
+        # under N-way concurrent `/locate` calls (this module's own
+        # concurrency test reproduced `run_transaction` exhausting its
+        # 5-attempt retry budget once this read moved inside `_txn`).
+        # Computed unconditionally, same "cheap and keeps `_txn` simple"
+        # tradeoff as `pager_backend`.
+        _, claim_family_ids = messages_store.build_participants_and_family_ids(
+            [requester_uid, device.ownerUid]
+        )
 
         def _txn(transaction: Transaction) -> tuple[str, str | None, LocationFix | None]:
             req_snap = req_ref.get(transaction=transaction)
@@ -900,11 +925,9 @@ class Location:
             meta_ref = messages_store.meta_ref()
             meta_snap = meta_ref.get(transaction=transaction)
             # docs/FAMILIES_DESIGN.md §1 decisions 3-4: `familyIds` on every
-            # message write -- read here, in the read phase (no write has
-            # been staged yet on this "claim a fresh slot" path).
-            _, family_ids = messages_store.build_participants_and_family_ids(
-                [requester_uid, device.ownerUid], transaction=transaction
-            )
+            # message write -- `claim_family_ids` was computed before this
+            # transaction started (see above).
+            family_ids = claim_family_ids
 
             seq = ((meta_snap.get("seqCounter") if meta_snap.exists else 0) or 0) + 1
             if meta_snap.exists:
