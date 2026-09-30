@@ -462,11 +462,27 @@ def ingest_loc(device_id: str, env: LocEnvelope) -> None:
                     meta_snap = meta_ref.get(transaction=transaction)
                     conv_refs: dict[str, DocumentReference] = {}
                     conv_snaps: dict[str, DocumentSnapshot] = {}
+                    # docs/FAMILIES_DESIGN.md §1 decisions 3-4: each
+                    # coalesced requester gets their own `kind='loc'`
+                    # message, so `familyIds`/`participants` are computed
+                    # per (owner, requester) pair, not once over the whole
+                    # `requester_uids` list -- read here (transactionally,
+                    # before any write; see `_fulfil_loc_req_in_txn`'s
+                    # caller, which starts staging writes right after this
+                    # read phase) so the write phase only ever stages
+                    # writes.
+                    pair_participants: dict[str, dict[str, dict[str, str]]] = {}
+                    pair_family_ids: dict[str, list[str]] = {}
                     for uid in requester_uids:
                         key = messages_store.conv_key(owner_uid, uid)
                         ref = messages_store.conversation_ref(key)
                         conv_refs[uid] = ref
                         conv_snaps[uid] = ref.get(transaction=transaction)
+                        participants, family_ids = messages_store.build_participants_and_family_ids(
+                            [owner_uid, uid], transaction=transaction
+                        )
+                        pair_participants[uid] = participants
+                        pair_family_ids[uid] = family_ids
                     fulfil = _FulfilPlan(
                         loc_req_msg_id=loc_req_msg_id,
                         loc_req_ref=loc_req_ref,
@@ -476,6 +492,8 @@ def ingest_loc(device_id: str, env: LocEnvelope) -> None:
                         requester_uids=requester_uids,
                         conv_refs=conv_refs,
                         conv_snaps=conv_snaps,
+                        pair_participants=pair_participants,
+                        pair_family_ids=pair_family_ids,
                     )
 
         # -- every write from here on --
@@ -577,6 +595,11 @@ class _FulfilPlan:
     requester_uids: list[str]
     conv_refs: dict[str, DocumentReference]
     conv_snaps: dict[str, DocumentSnapshot]
+    # docs/FAMILIES_DESIGN.md §1 decisions 3-4: per-requester
+    # `participants`/`familyIds` for the (owner, requester) pair, computed
+    # during the read phase -- see the loop that builds this plan.
+    pair_participants: dict[str, dict[str, dict[str, str]]]
+    pair_family_ids: dict[str, list[str]]
 
 
 def _fulfil_loc_req_in_txn(
@@ -620,6 +643,7 @@ def _fulfil_loc_req_in_txn(
         seq += 1
         key = messages_store.conv_key(owner_uid, uid)
         uids_sorted = sorted([owner_uid, uid])
+        family_ids = plan.pair_family_ids[uid]
         new_msg_ref = messages_store.messages_ref(new_id("m_"))
         transaction.set(
             new_msg_ref,
@@ -639,6 +663,7 @@ def _fulfil_loc_req_in_txn(
                 "createdAt": SERVER_TIMESTAMP,
                 "deliveries": {},
                 "pendingDeviceIds": [],
+                "familyIds": family_ids,
             },
         )
         conv_snap = plan.conv_snaps[uid]
@@ -653,6 +678,12 @@ def _fulfil_loc_req_in_txn(
         if conv_snap.exists:
             transaction.update(plan.conv_refs[uid], conv_data)
         else:
+            # docs/FAMILIES_DESIGN.md §1 decisions 3-4: a `loc` message can
+            # be the very first thing between owner and requester, lazily
+            # creating their conversation doc exactly like `create_message`
+            # does -- same `participants`/`familyIds` write on creation.
+            conv_data["participants"] = plan.pair_participants[uid]
+            conv_data["familyIds"] = family_ids
             transaction.set(plan.conv_refs[uid], conv_data)
 
     if plan.meta_snap.exists:
@@ -868,6 +899,12 @@ class Location:
             conv_key = messages_store.conv_key(requester_uid, device.ownerUid)
             meta_ref = messages_store.meta_ref()
             meta_snap = meta_ref.get(transaction=transaction)
+            # docs/FAMILIES_DESIGN.md §1 decisions 3-4: `familyIds` on every
+            # message write -- read here, in the read phase (no write has
+            # been staged yet on this "claim a fresh slot" path).
+            _, family_ids = messages_store.build_participants_and_family_ids(
+                [requester_uid, device.ownerUid], transaction=transaction
+            )
 
             seq = ((meta_snap.get("seqCounter") if meta_snap.exists else 0) or 0) + 1
             if meta_snap.exists:
@@ -903,6 +940,7 @@ class Location:
                         }
                     },
                     "pendingDeviceIds": [device.id],
+                    "familyIds": family_ids,
                 },
             )
             # PROTOCOL.md §3.2: a loc_req "is not a thread entry" -- unlike

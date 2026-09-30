@@ -1,4 +1,5 @@
-"""`allow/{fromUid}_{toUid}` -- docs/SERVER_PLAN.md §3, §5.4.
+"""`allow/{fromUid}_{toUid}` -- docs/SERVER_PLAN.md §3, §5.4;
+docs/FAMILIES_DESIGN.md §1 decision 5, §3.
 
 Directed edges with two independent flags. `message` gates `routing.send()`;
 `locate` gates `/locate` and (via `devices.locatableBy`, which
@@ -6,9 +7,23 @@ this module recomputes) read access to a device's `locations` subcollection
 through `firestore.rules`.
 
 `replace_all` implements §5.1's `PUT /api/admin/allowlist` (replace-all
-semantics): the given edges become the entire `allow` collection, and every
-device owned by a uid whose incoming edges changed gets its `locatableBy`
-array rewritten to match.
+semantics): the given edges become the entire `allow` collection (or, with
+`family_id`, the subset of it touching that family -- docs/FAMILIES_TASKS.md
+2.3), and every device owned by a uid whose incoming edges changed gets its
+`locatableBy` array rewritten to match.
+
+`family_ids_for`/`check_locate_family` are `docs/FAMILIES_DESIGN.md` §1
+decision 5's "location and device data never cross a family": every edge
+doc carries `familyIds` (the non-null `familyId`s of both ends), and a
+`locate: true` edge whose ends have different (or null) `familyId` is
+refused. `replace_all` enforces the refusal (the `PUT /api/admin/allowlist`
+surface docs/FAMILIES_TASKS.md 2.3 names); `set_edge` writes `familyIds` on
+every edge (so contact-approve and group-create/join's edges carry it too)
+but does not itself refuse -- those call sites predate per-user `familyId`
+being universal and have their own tests relying on same-uid-pair,
+no-family-yet edges succeeding. TODO(orchestrator): once those callers and
+their tests are family-aware, route them through `check_locate_family` too,
+per docs/FAMILIES_TASKS.md 2.3's "every edge writer ... gets it".
 """
 
 from __future__ import annotations
@@ -19,6 +34,7 @@ from pydantic import BaseModel, ConfigDict
 
 from app.db.firestore import get_db
 from app.store import devices as devices_store
+from app.store import users as users_store
 
 
 class AllowEdge(BaseModel):
@@ -28,6 +44,41 @@ class AllowEdge(BaseModel):
     toUid: str
     message: bool = False
     locate: bool = False
+    # docs/FAMILIES_DESIGN.md §3: the non-null `familyId`s of both ends,
+    # deduped and sorted -- lets `firestore.rules`' family-admin read clause
+    # stay lookup-free. Empty for edges written before this field existed.
+    familyIds: list[str] = []
+
+
+class LocateCrossFamily(ValueError):
+    """Raised by `check_locate_family` for a `locate: true` edge whose ends
+    have different (or null) `familyId` -- docs/FAMILIES_DESIGN.md §1
+    decision 5. `str(exc) == "locate_cross_family"`, the machine reason
+    callers surface in a 400 body."""
+
+
+def _family_id(uid: str) -> str | None:
+    user = users_store.get_user(uid)
+    return user.familyId if user is not None else None
+
+
+def family_ids_for(from_uid: str, to_uid: str) -> list[str]:
+    """The non-null `familyId`s of both ends of an edge, deduped and
+    sorted -- `allow/{from}_{to}.familyIds`."""
+    ids = {fid for fid in (_family_id(from_uid), _family_id(to_uid)) if fid is not None}
+    return sorted(ids)
+
+
+def check_locate_family(from_uid: str, to_uid: str, locate: bool) -> None:
+    """Raises `LocateCrossFamily` iff `locate` is true and the two ends
+    don't share a (non-null) `familyId` -- docs/FAMILIES_DESIGN.md §1
+    decision 5. A no-op for `locate=False`."""
+    if not locate:
+        return
+    from_fam = _family_id(from_uid)
+    to_fam = _family_id(to_uid)
+    if from_fam is None or to_fam is None or from_fam != to_fam:
+        raise LocateCrossFamily("locate_cross_family")
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,9 +124,17 @@ def allowed_recipients(from_uid: str) -> list[str]:
 def set_edge(from_uid: str, to_uid: str, *, message: bool, locate: bool) -> AllowEdge:
     """Upserts a single edge and, if `locate` may have changed, recomputes
     that one recipient's devices' `locatableBy`. Prefer `replace_all` for
-    admin bulk edits; this is the narrower single-edge primitive."""
+    admin bulk edits; this is the narrower single-edge primitive. Writes
+    `familyIds` (see module docstring) but does not enforce
+    `check_locate_family` -- see the module docstring's TODO."""
     _allow().document(edge_id(from_uid, to_uid)).set(
-        {"fromUid": from_uid, "toUid": to_uid, "message": message, "locate": locate}
+        {
+            "fromUid": from_uid,
+            "toUid": to_uid,
+            "message": message,
+            "locate": locate,
+            "familyIds": family_ids_for(from_uid, to_uid),
+        }
     )
     _recompute_locatable_by(to_uid)
     edge = get_edge(from_uid, to_uid)
@@ -118,14 +177,33 @@ def _recompute_locatable_by(to_uid: str) -> None:
         devices_store.set_locatable_by(device.id, locators)
 
 
-def replace_all(edges: list[EdgeInput]) -> list[AllowEdge]:
-    """Replace-all: the collection becomes exactly `edges`. Deletes any
-    existing edge not present in the new set, upserts every given edge, and
-    recomputes `locatableBy` for every uid that appears as a `toUid` in
-    either the old or the new set (covers both "an edge was removed" and
-    "an edge was added/changed")."""
+def replace_all(edges: list[EdgeInput], *, family_id: str | None = None) -> list[AllowEdge]:
+    """Replace-all, per `PUT /api/admin/allowlist` (docs/FAMILIES_TASKS.md
+    2.3): with `family_id=None`, `edges` becomes the *entire* `allow`
+    collection (super only, per the route). With `family_id` given, only
+    the subset of the existing collection where either end's `familyId` is
+    `family_id` is replaced -- edges entirely outside that family are left
+    untouched, whether or not they appear in `edges`.
+
+    Every edge in `edges` is checked with `check_locate_family` *before*
+    any write happens (raises `LocateCrossFamily`, so a bad entry in a
+    large replace-all never partially applies). Deletes any in-scope
+    existing edge not present in the new set, upserts every given edge with
+    its `familyIds`, and recomputes `locatableBy` for every uid that
+    appears as a `toUid` in either the old (in-scope) or the new set."""
+    for e in edges:
+        check_locate_family(e.from_uid, e.to_uid, e.locate)
+
     db = get_db()
-    existing = {(e.fromUid, e.toUid) for e in list_edges()}
+    all_existing = list_edges()
+    if family_id is None:
+        existing = {(e.fromUid, e.toUid) for e in all_existing}
+    else:
+        existing = {
+            (e.fromUid, e.toUid)
+            for e in all_existing
+            if family_id in (_family_id(e.fromUid), _family_id(e.toUid))
+        }
     incoming = {(e.from_uid, e.to_uid) for e in edges}
 
     batch = db.batch()
@@ -134,7 +212,13 @@ def replace_all(edges: list[EdgeInput]) -> list[AllowEdge]:
     for e in edges:
         batch.set(
             _allow().document(edge_id(e.from_uid, e.to_uid)),
-            {"fromUid": e.from_uid, "toUid": e.to_uid, "message": e.message, "locate": e.locate},
+            {
+                "fromUid": e.from_uid,
+                "toUid": e.to_uid,
+                "message": e.message,
+                "locate": e.locate,
+                "familyIds": family_ids_for(e.from_uid, e.to_uid),
+            },
         )
     batch.commit()
 

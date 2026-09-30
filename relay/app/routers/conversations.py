@@ -316,11 +316,27 @@ def locate(
     # Owner decision (27 Sep 2026): a user may always locate their *own*
     # device, no `locate` edge needed. Only the edge check is skipped --
     # `Location.locate`'s §13.3 rules 5-7 (one in-flight loc_req, 60 s
-    # cache) apply unchanged. Admin rights grant nothing here.
+    # cache) apply unchanged. docs/FAMILIES_TASKS.md 2.3 adds one more
+    # bypass: a family admin (role `admin`, claims-only) of the target's
+    # `familyId` may also locate without a `locate` edge -- `target_uid`
+    # doubles as the device owner in this single-device-per-user model, so
+    # there's no separate "target's owner" case to handle here. Super gets
+    # no bypass at all: it must hold a `locate` edge like anyone else
+    # (docs/FAMILIES_DESIGN.md §1 decision 5: "Super may read stored fixes
+    # everywhere but does not get `/locate` by role").
     if target_uid != authed.uid:
-        edge = allow_store.get_edge(authed.uid, target_uid)
-        if edge is None or not edge.locate:
-            raise HTTPException(status_code=403, detail="not allowed to locate this user")
+        principal = principal_for(authed)
+        target_user = users_store.get_user(target_uid)
+        is_family_admin = (
+            principal.role == "admin"
+            and principal.family_id is not None
+            and target_user is not None
+            and target_user.familyId == principal.family_id
+        )
+        if not is_family_admin:
+            edge = allow_store.get_edge(authed.uid, target_uid)
+            if edge is None or not edge.locate:
+                raise HTTPException(status_code=403, detail="not allowed to locate this user")
 
     # docs/SERVER_PLAN.md models one pager device per user as the common
     # case. For the (in principle possible) multi-device case: pick the

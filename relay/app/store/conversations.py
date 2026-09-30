@@ -28,7 +28,11 @@ from google.cloud.firestore import FieldFilter, Transaction
 
 from app.db.firestore import get_db, run_transaction
 from app.ids import new_id
-from app.store.messages import Conversation, get_conversation
+from app.store.messages import (
+    Conversation,
+    build_participants_and_family_ids,
+    get_conversation,
+)
 from app.store.users import ALIAS_RE, RESERVED_ALIASES, InvalidAlias
 
 
@@ -78,6 +82,12 @@ def create_group(
     alias_ref = _aliases().document(alias)
 
     def _txn(transaction: Transaction) -> None:
+        # docs/FAMILIES_DESIGN.md §1 decisions 3-4: `participants`/
+        # `familyIds` over the full member list, written once here on
+        # creation (see `build_participants_and_family_ids`'s docstring).
+        participants, family_ids = build_participants_and_family_ids(
+            members, transaction=transaction
+        )
         transaction.create(alias_ref, {"convKey": key})
         transaction.set(
             conv_ref,
@@ -90,6 +100,8 @@ def create_group(
                 "lastMessageAt": None,
                 "lastPreview": "",
                 "unread": {},
+                "participants": participants,
+                "familyIds": family_ids,
             },
         )
 
@@ -152,7 +164,15 @@ def add_member(conv_key: str, uid: str) -> Conversation:
         if not snap.exists:
             raise KeyError(f"no such conversation: {conv_key!r}")
         members = sorted(set(snap.get("uids") or []) | {uid})
-        transaction.update(ref, {"uids": members})
+        # docs/FAMILIES_DESIGN.md §3's trigger list: a join rewrites both
+        # `participants` (the new member's entry appears) and `familyIds`
+        # (their family may not have been represented yet).
+        participants, family_ids = build_participants_and_family_ids(
+            members, transaction=transaction
+        )
+        transaction.update(
+            ref, {"uids": members, "participants": participants, "familyIds": family_ids}
+        )
 
     run_transaction(_txn)
     fetched = get_conversation(conv_key)
@@ -171,7 +191,16 @@ def remove_member(conv_key: str, uid: str) -> Conversation:
         if not snap.exists:
             raise KeyError(f"no such conversation: {conv_key!r}")
         members = sorted(set(snap.get("uids") or []) - {uid})
-        transaction.update(ref, {"uids": members})
+        # See `add_member`'s docstring note -- a leave rewrites both the
+        # same way (the leaver's `participants` entry and, if they were the
+        # only member of their family, that family drops out of
+        # `familyIds`).
+        participants, family_ids = build_participants_and_family_ids(
+            members, transaction=transaction
+        )
+        transaction.update(
+            ref, {"uids": members, "participants": participants, "familyIds": family_ids}
+        )
 
     run_transaction(_txn)
     fetched = get_conversation(conv_key)

@@ -32,8 +32,8 @@ def routing(broker: FakeBrokerClient) -> Routing:
     return Routing(broker)
 
 
-def _make_user(uid: str, alias: str) -> None:
-    users_store.create_user(uid=uid, alias=alias, display_name=alias)
+def _make_user(uid: str, alias: str, *, family_id: str | None = None) -> None:
+    users_store.create_user(uid=uid, alias=alias, display_name=alias, family_id=family_id)
 
 
 def _make_pager_device(device_id: str, owner_uid: str, *, default_to_uid: str | None = None):
@@ -365,6 +365,36 @@ def test_group_send_fans_out_to_every_member_but_sender(routing: Routing):
         # The message document's own `uids` stays the sender/recipient pair,
         # never the full member list (docs/GROUP_CHAT_DESIGN.md §2).
         assert set(m.uids) == {"gowner", m.recipientUid}
+
+
+def test_group_send_message_family_ids_are_per_pair_not_whole_group(routing: Routing):
+    """docs/FAMILIES_DESIGN.md §1 decisions 3-4: each fan-out copy's own
+    `familyIds` covers only its `[senderUid, recipientUid]` pair (three
+    families total on the *conversation*, but never all three on a single
+    two-party message copy)."""
+    _make_user("fowner", "fowner", family_id="fam_x")
+    _make_user("fmem1", "fmem1", family_id="fam_y")
+    _make_user("fmem2", "fmem2", family_id="fam_z")
+    _all_edges(["fowner", "fmem1", "fmem2"])
+    group = conversations_store.create_group(
+        name="Three fam",
+        alias="fam-routing-3",
+        member_uids=["fowner", "fmem1", "fmem2"],
+        created_by="fowner",
+    )
+    assert group.familyIds == ["fam_x", "fam_y", "fam_z"]
+
+    result = routing.send(
+        sender_uid="fowner",
+        recipient_alias="fam-routing-3",
+        kind="text",
+        body="hi all",
+        origin_backend_kind="webapp",
+    )
+    assert result.rejected == []
+    by_recipient = {m.recipientUid: m for m in result.messages}
+    assert by_recipient["fmem1"].familyIds == ["fam_x", "fam_y"]
+    assert by_recipient["fmem2"].familyIds == ["fam_x", "fam_z"]
 
 
 def test_group_send_with_one_pager_publishes_one_page(routing: Routing, broker):

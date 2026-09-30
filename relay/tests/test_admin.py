@@ -15,6 +15,7 @@ from firebase_admin import auth as fb_auth
 from app import devcfg
 from app.config import Settings
 from app.main import create_app
+from app.store import allow as allow_store
 from app.store import device_secrets as device_secrets_store
 from app.store import devices as devices_store
 from app.store import families as families_store
@@ -295,11 +296,20 @@ def test_create_device_picks_up_locatable_by_from_a_pre_existing_allow_edge(
     `locatableBy` on devices that already exist at the moment an edge
     changes, so without `POST /api/admin/devices` recomputing it once more
     right after creation, this device would stay `locatableBy: []` forever
-    (see `app.store.allow.recompute_locatable_by_for_owner`'s docstring)."""
+    (see `app.store.allow.recompute_locatable_by_for_owner`'s docstring).
+
+    docs/FAMILIES_TASKS.md 2.3: a `locate: true` edge is refused unless both
+    ends share a `familyId`, so mom3/kid3 are created in the same family."""
+    family = families_store.create_family(name="F-locate3", created_by="rootadmin")
     for alias in ("mom3", "kid3"):
         client.post(
             "/api/admin/users",
-            json={"alias": alias, "displayName": alias, "email": f"{alias}@example.com"},
+            json={
+                "alias": alias,
+                "displayName": alias,
+                "email": f"{alias}@example.com",
+                "familyId": family.id,
+            },
             headers=admin_headers,
         )
     mom_uid = users_store.get_uid_for_alias("mom3")
@@ -468,10 +478,18 @@ def test_revoke_device_unknown_id_is_404(client: TestClient, admin_headers: dict
 def test_allowlist_replace_all_rewrites_locatable_by(
     client: TestClient, admin_headers: dict[str, str]
 ):
+    # docs/FAMILIES_TASKS.md 2.3: `locate: true` edges are refused across
+    # families, so all three share one.
+    family = families_store.create_family(name="F-locate2", created_by="rootadmin")
     for alias in ("mom2", "dad2", "kid2"):
         client.post(
             "/api/admin/users",
-            json={"alias": alias, "displayName": alias, "email": f"{alias}@example.com"},
+            json={
+                "alias": alias,
+                "displayName": alias,
+                "email": f"{alias}@example.com",
+                "familyId": family.id,
+            },
             headers=admin_headers,
         )
     client.post(
@@ -523,6 +541,181 @@ def test_allowlist_unknown_alias_is_400(client: TestClient, admin_headers: dict[
         headers=admin_headers,
     )
     assert resp.status_code == 400
+
+
+# ---- docs/FAMILIES_TASKS.md 2.3: locate-cross-family refusal, familyIds,
+# and `?family=` scoped replace-all ----
+
+
+def test_allowlist_locate_true_cross_family_is_400(
+    client: TestClient, admin_headers: dict[str, str]
+):
+    fam_a = families_store.create_family(name="F-cross-a", created_by="rootadmin")
+    fam_b = families_store.create_family(name="F-cross-b", created_by="rootadmin")
+    client.post(
+        "/api/admin/users",
+        json={
+            "alias": "crossmom",
+            "displayName": "m",
+            "email": "crossmom@example.com",
+            "familyId": fam_a.id,
+        },
+        headers=admin_headers,
+    )
+    client.post(
+        "/api/admin/users",
+        json={
+            "alias": "crosskid",
+            "displayName": "k",
+            "email": "crosskid@example.com",
+            "familyId": fam_b.id,
+        },
+        headers=admin_headers,
+    )
+
+    resp = client.put(
+        "/api/admin/allowlist",
+        json={
+            "entries": [
+                {"fromAlias": "crossmom", "toAlias": "crosskid", "message": True, "locate": True}
+            ]
+        },
+        headers=admin_headers,
+    )
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["detail"] == "locate_cross_family"
+    assert (
+        allow_store.get_edge(
+            users_store.get_uid_for_alias("crossmom"), users_store.get_uid_for_alias("crosskid")
+        )
+        is None
+    )
+
+
+def test_allowlist_locate_true_null_family_is_400(
+    client: TestClient, admin_headers: dict[str, str]
+):
+    """Same refusal when one (or both) end has no family at all."""
+    client.post(
+        "/api/admin/users",
+        json={"alias": "nullmom", "displayName": "m", "email": "nullmom@example.com"},
+        headers=admin_headers,
+    )
+    client.post(
+        "/api/admin/users",
+        json={"alias": "nullkid", "displayName": "k", "email": "nullkid@example.com"},
+        headers=admin_headers,
+    )
+
+    resp = client.put(
+        "/api/admin/allowlist",
+        json={
+            "entries": [
+                {"fromAlias": "nullmom", "toAlias": "nullkid", "message": True, "locate": True}
+            ]
+        },
+        headers=admin_headers,
+    )
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["detail"] == "locate_cross_family"
+
+
+def test_allowlist_writes_family_ids_on_every_edge(
+    client: TestClient, admin_headers: dict[str, str]
+):
+    family = families_store.create_family(name="F-fids", created_by="rootadmin")
+    client.post(
+        "/api/admin/users",
+        json={
+            "alias": "fidsmom",
+            "displayName": "m",
+            "email": "fidsmom@example.com",
+            "familyId": family.id,
+        },
+        headers=admin_headers,
+    )
+    client.post(
+        "/api/admin/users",
+        json={
+            "alias": "fidskid",
+            "displayName": "k",
+            "email": "fidskid@example.com",
+            "familyId": family.id,
+        },
+        headers=admin_headers,
+    )
+
+    resp = client.put(
+        "/api/admin/allowlist",
+        json={
+            "entries": [
+                {"fromAlias": "fidsmom", "toAlias": "fidskid", "message": True, "locate": True}
+            ]
+        },
+        headers=admin_headers,
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()[0]["familyIds"] == [family.id]
+
+
+def test_allowlist_family_scoped_put_leaves_other_family_edges_untouched(
+    client: TestClient, admin_headers: dict[str, str]
+):
+    """docs/FAMILIES_TASKS.md 2.3: `?family=` replaces only edges where
+    either end is in that family; an edge entirely outside it survives even
+    though it's absent from the submitted entries."""
+    fam_a = families_store.create_family(name="F-scope-a", created_by="rootadmin")
+    fam_b = families_store.create_family(name="F-scope-b", created_by="rootadmin")
+    for alias, fam in (
+        ("scopea1", fam_a),
+        ("scopea2", fam_a),
+        ("scopeb1", fam_b),
+        ("scopeb2", fam_b),
+    ):
+        client.post(
+            "/api/admin/users",
+            json={
+                "alias": alias,
+                "displayName": alias,
+                "email": f"{alias}@example.com",
+                "familyId": fam.id,
+            },
+            headers=admin_headers,
+        )
+    # Seed one edge per family with a plain (unscoped) replace-all.
+    resp0 = client.put(
+        "/api/admin/allowlist",
+        json={
+            "entries": [
+                {"fromAlias": "scopea1", "toAlias": "scopea2", "message": True, "locate": True},
+                {"fromAlias": "scopeb1", "toAlias": "scopeb2", "message": True, "locate": True},
+            ]
+        },
+        headers=admin_headers,
+    )
+    assert resp0.status_code == 200, resp0.text
+
+    # A family-A-scoped replace-all that submits no entries at all must not
+    # touch family B's edge.
+    resp = client.put(
+        f"/api/admin/allowlist?family={fam_a.id}",
+        json={"entries": []},
+        headers=admin_headers,
+    )
+    assert resp.status_code == 200, resp.text
+
+    assert (
+        allow_store.get_edge(
+            users_store.get_uid_for_alias("scopea1"), users_store.get_uid_for_alias("scopea2")
+        )
+        is None
+    )
+    assert (
+        allow_store.get_edge(
+            users_store.get_uid_for_alias("scopeb1"), users_store.get_uid_for_alias("scopeb2")
+        )
+        is not None
+    )
 
 
 # ---- docs/PROTOCOL.md §3.7 (v0.4) / docs/CHAT_UI_DESIGN.md §1: book-bump

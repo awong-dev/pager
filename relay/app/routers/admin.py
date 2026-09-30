@@ -55,6 +55,7 @@ from app.store import contacts as contacts_store
 from app.store import device_secrets as device_secrets_store
 from app.store import devices as devices_store
 from app.store import families as families_store
+from app.store import messages as messages_store
 from app.store import rate_limits as rate_limits_store
 from app.store import settings as settings_store
 from app.store import users as users_store
@@ -275,6 +276,11 @@ def _patch_user_impl(
             for device in devices_store.list_devices(owner_uid=owner_uid):
                 contacts_store.bump_book_version(device.id)
                 devcfg.push_book(device.id, broker)
+        # docs/FAMILIES_DESIGN.md §3's trigger list: a displayName change
+        # rewrites `participants` (and `familyIds`) in every conversation
+        # this uid is a member of -- same trigger list as the book
+        # republish just above.
+        messages_store.rewrite_participants_for_user(uid)
     return user
 
 
@@ -389,7 +395,14 @@ def _message_sets_by_owner(edges: list[AllowEdge]) -> dict[str, frozenset[str]]:
 
 @router.put("/allowlist", dependencies=[Depends(require_admin_write_rate_limit)])
 def put_allowlist(
-    req: PutAllowlistRequest, broker: Annotated[BrokerClient, Depends(get_broker)]
+    req: PutAllowlistRequest,
+    broker: Annotated[BrokerClient, Depends(get_broker)],
+    # docs/FAMILIES_DESIGN.md §4 / docs/FAMILIES_TASKS.md 2.3: stays
+    # replace-all and super-only (the whole router is
+    # `Depends(require_admin)`) either way -- `?family=` only narrows *which
+    # existing edges* the replace touches (`allow_store.replace_all`'s
+    # `family_id`), it does not relax who may call this.
+    family: Annotated[str | None, Query()] = None,
 ) -> list[AllowEdge]:
     edges = [
         EdgeInput(
@@ -407,7 +420,12 @@ def put_allowlist(
     # may omit an owner's untouched rows entirely under replace-all
     # semantics).
     old_message_sets = _message_sets_by_owner(allow_store.list_edges())
-    result = allow_store.replace_all(edges)
+    try:
+        result = allow_store.replace_all(edges, family_id=family)
+    except allow_store.LocateCrossFamily as exc:
+        # docs/FAMILIES_DESIGN.md §1 decision 5: a `locate: true` edge whose
+        # ends don't share a (non-null) `familyId` is refused outright.
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     new_message_sets = _message_sets_by_owner(result)
     changed_owner_uids = {
         owner_uid

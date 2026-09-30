@@ -98,6 +98,23 @@ class Message(BaseModel):
     # never need a `users/{uid}` read per delivery. Both `None` on a DM copy.
     groupMsgId: str | None = None
     senderAlias: str | None = None
+    # docs/FAMILIES_DESIGN.md §1 decision 3, §3: sorted unique non-null
+    # `familyId` over this message's own `uids` pair -- an admin-read rule
+    # lookup field (task 2.2), not a membership check on its own.
+    familyIds: list[str] = []
+
+
+class Participant(BaseModel):
+    """One entry of `conversations/{k}.participants` -- docs/FAMILIES_DESIGN.md
+    §3. Denormalised so the web app never needs a `users/{uid}` read per
+    conversation row (retires the `localStorage` directory hack, per the
+    same doc)."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    alias: str
+    displayName: str
+    kind: str = "person"
 
 
 class Conversation(BaseModel):
@@ -114,6 +131,11 @@ class Conversation(BaseModel):
     lastMessageAt: datetime | None = None
     lastPreview: str = ""
     unread: dict[str, int] = {}
+    # docs/FAMILIES_DESIGN.md §1 decisions 3-4, §3: written on conversation
+    # create and rewritten on group join/leave and a member's `displayName`
+    # change (see `build_participants_and_family_ids` below).
+    familyIds: list[str] = []
+    participants: dict[str, Participant] = {}
 
 
 def conv_key(uid_a: str, uid_b: str) -> str:
@@ -140,8 +162,68 @@ def _conversations():
     return get_db().collection("conversations")
 
 
+def _users():
+    return get_db().collection("users")
+
+
 def _meta_ref():
     return get_db().collection("settings").document("meta")
+
+
+def build_participants_and_family_ids(
+    uids: list[str], *, transaction: Transaction | None = None
+) -> tuple[dict[str, dict[str, str]], list[str]]:
+    """`participants`/`familyIds` (docs/FAMILIES_DESIGN.md §1 decisions 3-4,
+    §3) for a set of member uids: `participants` maps each uid to its
+    `{alias, displayName, kind}` snapshot, `familyIds` is the sorted unique
+    set of non-null `familyId`s among them (an external's `familyId` is
+    always `None`, per decision 6, so it contributes nothing -- which is
+    exactly what makes an SMS conversation's `familyIds` just the one
+    member's family). Reads `users/{uid}` once per uid -- household/group
+    scale, so no batching. `transaction`, when given, threads every read
+    through the caller's own transaction (Firestore requires every read
+    before any write is staged within one transaction -- see
+    `app/db/firestore.py`'s `run_transaction` docstring), so the recompute
+    lands in that transaction's read phase and commits atomically with
+    whatever write triggered it. A uid with no `users` doc (shouldn't
+    happen -- every uid reaching here resolved from a real alias or member
+    list) is skipped rather than raising."""
+    users_ref = _users()
+    participants: dict[str, dict[str, str]] = {}
+    family_ids: set[str] = set()
+    for uid in uids:
+        ref = users_ref.document(uid)
+        snap = ref.get(transaction=transaction) if transaction is not None else ref.get()
+        if not snap.exists:
+            continue
+        data = snap.to_dict() or {}
+        participants[uid] = {
+            "alias": data.get("alias", ""),
+            "displayName": data.get("displayName", ""),
+            "kind": data.get("kind", "person"),
+        }
+        family_id = data.get("familyId")
+        if family_id:
+            family_ids.add(family_id)
+    return participants, sorted(family_ids)
+
+
+def rewrite_participants_for_user(uid: str) -> None:
+    """Re-derives `participants`/`familyIds` in every `conversations/{k}`
+    doc listing `uid` as a member -- docs/FAMILIES_DESIGN.md §3's trigger
+    list. Called by `app/routers/admin.py`'s `_patch_user_impl` after a
+    `displayName` change, alongside the existing book-republish side
+    effect, and by `app/store/conversations.py`'s `add_member`/
+    `remove_member` for a group join/leave. Plain (non-transactional)
+    reads/writes -- like the book republish it piggybacks on, this is a
+    best-effort projection refresh, not an invariant anything else needs
+    atomic with the triggering write."""
+    query = _conversations().where(filter=FieldFilter("uids", "array_contains", uid))
+    for snap in query.stream():
+        data = snap.to_dict() or {}
+        members = data.get("uids") or []
+        participants, family_ids = build_participants_and_family_ids(members)
+        snap.reference.update({"participants": participants, "familyIds": family_ids})
 
 
 def allocate_seq() -> int:
@@ -232,6 +314,13 @@ def create_message(
         # exists by then, which is what matters.
         meta_snap = None if seq is not None else meta_ref.get(transaction=transaction)
         conv_snap = conv_ref.get(transaction=transaction)
+        # docs/FAMILIES_DESIGN.md §1 decisions 3-4: `familyIds` on every
+        # message write, over this message's own `uids` pair; `participants`
+        # too, but only used below when this send also creates the
+        # conversation doc (an existing conversation's `participants` is
+        # only ever rewritten by a join/leave or a displayName change, never
+        # by an ordinary send).
+        participants, family_ids = build_participants_and_family_ids(pair, transaction=transaction)
 
         if wire_ref is not None:
             # Dedup: raises AlreadyExists (not retried -- that's a real
@@ -277,6 +366,7 @@ def create_message(
                 "pendingDeviceIds": pending_device_ids or [],
                 "groupMsgId": group_msg_id,
                 "senderAlias": sender_alias,
+                "familyIds": family_ids,
             },
         )
 
@@ -302,6 +392,12 @@ def create_message(
             # `create_group`, so this branch's `uids: pair` is correct for
             # DMs and not reachable in practice for a group send.
             conv_data["uids"] = pair
+            # docs/FAMILIES_DESIGN.md §1 decisions 3-4: written once, here,
+            # on conversation creation -- see `build_participants_and_family_
+            # ids`'s docstring for why an existing conversation is never
+            # touched by this branch instead.
+            conv_data["participants"] = participants
+            conv_data["familyIds"] = family_ids
             transaction.set(conv_ref, conv_data)
 
     try:

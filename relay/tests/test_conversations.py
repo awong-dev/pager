@@ -326,11 +326,38 @@ def test_owner_can_locate_own_device_without_allow_edge(client: TestClient):
 
 
 def test_admin_without_locate_edge_cannot_locate_someone_elses_device(client: TestClient):
+    """`_make_admin` is the *global* `super` role, not a family admin --
+    docs/FAMILIES_DESIGN.md §1 decision 5: super gets `/locate` only
+    through an edge, never by role."""
     admin_headers = _make_admin("adm13", "adm13")
     _make_user("kid13", "kid13")
     _make_pager_device("pgr-conv-own-2", "kid13")
 
     resp = client.post("/api/conversations/kid13/locate", headers=admin_headers)
+    assert resp.status_code == 403
+
+
+def test_family_admin_can_locate_family_members_device_without_edge(client: TestClient):
+    """docs/FAMILIES_TASKS.md 2.3: a family admin may `/locate` a member of
+    their own family with no `locate` edge at all."""
+    family = families_store.create_family(name="loc-fam-a", created_by="root-uid")
+    admin_headers = _make_family_admin_in("locadm1", "locadm1", family.id)
+    _make_family_member_in("lockid1", "lockid1", family.id)
+    _make_pager_device("pgr-conv-fam-1", "lockid1")
+
+    resp = client.post("/api/conversations/lockid1/locate", headers=admin_headers)
+    assert resp.status_code == 202, resp.text
+
+
+def test_family_admin_cannot_locate_other_familys_device(client: TestClient):
+    """Same as above, but the target is in a different family."""
+    family_a = families_store.create_family(name="loc-fam-b1", created_by="root-uid")
+    family_b = families_store.create_family(name="loc-fam-b2", created_by="root-uid")
+    admin_headers = _make_family_admin_in("locadm2", "locadm2", family_a.id)
+    _make_family_member_in("lockid2", "lockid2", family_b.id)
+    _make_pager_device("pgr-conv-fam-2", "lockid2")
+
+    resp = client.post("/api/conversations/lockid2/locate", headers=admin_headers)
     assert resp.status_code == 403
 
 

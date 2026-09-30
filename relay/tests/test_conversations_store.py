@@ -12,8 +12,8 @@ from app.store import messages as messages_store
 from app.store import users as users_store
 
 
-def _make_user(uid: str, alias: str) -> None:
-    users_store.create_user(uid=uid, alias=alias, display_name=alias)
+def _make_user(uid: str, alias: str, *, family_id: str | None = None) -> None:
+    users_store.create_user(uid=uid, alias=alias, display_name=alias, family_id=family_id)
 
 
 def test_create_group_returns_conversation_with_sorted_members():
@@ -207,3 +207,54 @@ def test_group_copies_share_one_seq_and_group_msg_id():
     assert conv_after.unread["member1"] == 1
     assert conv_after.unread["member2"] == 1
     assert "owner1" not in conv_after.unread
+
+
+# ---------------------------------------------------------------------------
+# docs/FAMILIES_DESIGN.md §1 decisions 3-4, §3: `familyIds`/`participants` on
+# group create and join.
+# ---------------------------------------------------------------------------
+
+
+def test_create_group_carries_family_ids_of_every_member():
+    _make_user("g_fam_a", "g_fam_a", family_id="fam_a")
+    _make_user("g_fam_b", "g_fam_b", family_id="fam_b")
+    _make_user("g_fam_c", "g_fam_c", family_id="fam_c")
+
+    conv = conversations_store.create_group(
+        name="Three families",
+        alias="three-families",
+        member_uids=["g_fam_a", "g_fam_b", "g_fam_c"],
+        created_by="g_fam_a",
+    )
+
+    assert conv.familyIds == ["fam_a", "fam_b", "fam_c"]
+    assert set(conv.participants) == {"g_fam_a", "g_fam_b", "g_fam_c"}
+    assert conv.participants["g_fam_b"].alias == "g_fam_b"
+
+
+def test_add_member_adds_the_new_members_family_and_participant_entry():
+    _make_user("j_fam_a", "j_fam_a", family_id="fam_a")
+    _make_user("j_fam_b", "j_fam_b", family_id="fam_b")
+    _make_user("j_fam_d", "j_fam_d", family_id="fam_d")
+
+    conv = conversations_store.create_group(
+        name="Pair", alias="join-pair", member_uids=["j_fam_a", "j_fam_b"], created_by="j_fam_a"
+    )
+    assert conv.familyIds == ["fam_a", "fam_b"]
+
+    joined = conversations_store.add_member(conv.convKey, "j_fam_d")
+    assert joined.familyIds == ["fam_a", "fam_b", "fam_d"]
+    assert "j_fam_d" in joined.participants
+    assert joined.participants["j_fam_d"].alias == "j_fam_d"
+
+
+def test_remove_member_drops_participant_entry():
+    _make_user("l_fam_a", "l_fam_a", family_id="fam_a")
+    _make_user("l_fam_b", "l_fam_b", family_id="fam_b")
+
+    conv = conversations_store.create_group(
+        name="Pair", alias="leave-pair", member_uids=["l_fam_a", "l_fam_b"], created_by="l_fam_a"
+    )
+    left = conversations_store.remove_member(conv.convKey, "l_fam_b")
+    assert left.familyIds == ["fam_a"]
+    assert "l_fam_b" not in left.participants
