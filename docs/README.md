@@ -17,6 +17,7 @@ Reference, cited by section number throughout the code (do not renumber):
 | [DEVICE_PLAN.md](DEVICE_PLAN.md) | Pager-side design: setup codes and the bootstrap bundle, per-device signing, the address book, the UI, the lock |
 | [SERVER_PLAN.md](SERVER_PLAN.md) | Server-side design: data model, routing, allow-lists, delivery backends, the web app, security rules, cost |
 | [V02_DESIGN.md](V02_DESIGN.md) | The v0.2 additions: vendored modem library, wider replay counter, CA trust and delivery, location, device SMS |
+| [FAMILIES_DESIGN.md](FAMILIES_DESIGN.md) | Multi-family tenancy: families, super/admin/member roles, conversation policies, SMS externals, admin alerts, and the web UI per role. Tasks in [FAMILIES_TASKS.md](FAMILIES_TASKS.md) |
 
 Other:
 
