@@ -42,7 +42,7 @@ from firebase_admin import auth as fb_auth
 from pydantic import BaseModel, ConfigDict, Field
 
 from app import apn_presets, ca_resolve, devcfg, devsetup
-from app.auth import AuthedUser, require_super, set_claims
+from app.auth import AuthedUser, principal_for, require_super, set_claims
 from app.backends.sms_twilio import normalize_e164
 from app.broker import BrokerClient
 from app.config import Settings
@@ -149,7 +149,10 @@ class CreateUserRequest(BaseModel):
     phone: str | None = None
     role: Literal["admin", "member"] = "member"
     # docs/FAMILIES_DESIGN.md §4: super may pin a new user's family directly;
-    # `None` (unset) keeps the pre-families default of no family.
+    # `None` (unset) defaults to the calling super's own family
+    # (`create_user` below) -- a `person` user must never end up with
+    # `familyId: null` (docs/FAMILIES_DESIGN.md §1 decision 1: "every user
+    # belongs to exactly one family").
     familyId: str | None = None
     uid: str | None = None  # optional: pin a specific uid (tests, re-runs)
 
@@ -162,15 +165,29 @@ class PatchUserRequest(BaseModel):
     # here (family admins do this through `PATCH /api/family/members/{uid}`,
     # which only ever accepts `admin`/`member`).
     role: Literal["super", "admin", "member"] | None = None
-    # docs/FAMILIES_DESIGN.md §4: moves a user between families.
+    # docs/FAMILIES_DESIGN.md §4: moves a user between families. Patch
+    # semantics: an absent field is indistinguishable from an explicit
+    # `null` here (both parse to `None`), and `_patch_user_impl` below
+    # treats either as "leave familyId alone" -- so this field can move a
+    # `person` user between families but can never null one out.
     familyId: str | None = None
     disabled: bool | None = None
 
 
 @router.post("/users", dependencies=[Depends(require_admin_write_rate_limit)])
-def create_user(req: CreateUserRequest) -> User:
+def create_user(
+    req: CreateUserRequest, authed: Annotated[AuthedUser, Depends(require_super)]
+) -> User:
     if not req.email and not req.phone:
         raise HTTPException(status_code=400, detail="email or phone is required")
+
+    # docs/FAMILIES_DESIGN.md §1 decision 1: an omitted `familyId` defaults
+    # to the calling super's own family (`fam` claim) rather than `None` --
+    # a `person` user (the only `kind` this route ever creates) must never
+    # end up family-less. Still `None` if the calling super has no family
+    # of their own (a bootstrap/test-only edge case, not a real deployment
+    # -- `app.bootstrap` always puts the super in `families/default`).
+    family_id = req.familyId if req.familyId is not None else principal_for(authed).family_id
 
     kwargs: dict[str, object] = {}
     if req.uid:
@@ -194,7 +211,7 @@ def create_user(req: CreateUserRequest) -> User:
             email=req.email,
             phone=req.phone,
             role=req.role,
-            family_id=req.familyId,
+            family_id=family_id,
         )
     except (users_store.AliasTaken, users_store.InvalidAlias) as exc:
         # Roll back the just-created Auth account so a rejected alias

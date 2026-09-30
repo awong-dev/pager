@@ -1434,6 +1434,7 @@ def scenario_address_book() -> None:
 
     admin = pager_client.ServerClient(RELAY_URL, AUTH_URL)
     admin.login("admin")
+    family_id = admin.me()["user"]["familyId"] or "default"
     admin.admin_user_add("abstudent", "ABStudent", email="abstudent@example.com", phone=None)
     create_device_with_secret(admin, "pgr-e2e-book", "abstudent")
 
@@ -1443,24 +1444,35 @@ def scenario_address_book() -> None:
 
     req_id = device.publish_contact_req("Grandma", "+15550001111")
 
-    def _pending_request() -> dict | None:
-        pending = admin.admin_list_contacts("pending")
+    # docs/FAMILIES_TASKS.md 4.1/5.1: `contact_req` now surfaces as an
+    # open `contact_request` alert (`GET /api/family/alerts`), not a row
+    # under the removed `/api/admin/contacts` -- `contactRequestKey` is the
+    # old `contactRequests/{deviceId}_{reqId}` doc id this scenario used to
+    # match on directly.
+    def _pending_alert() -> dict | None:
+        alerts = admin.family_list_alerts(family_id, status="open")
         return next(
-            (r for r in pending if r["deviceId"] == "pgr-e2e-book" and r["reqId"] == req_id), None
+            (
+                a
+                for a in alerts
+                if a["kind"] == "contact_request"
+                and a.get("contactRequestKey") == f"pgr-e2e-book_{req_id}"
+            ),
+            None,
         )
 
     wait_until(
-        lambda: _pending_request() is not None,
+        lambda: _pending_alert() is not None,
         timeout=10,
-        description="contact_req to land as a pending contactRequests row",
+        description="contact_req to land as an open contact_request alert",
     )
-    request = _pending_request()
-    assert request is not None
-    assert request["name"] == "Grandma" and request["phone"] == "+15550001111", request
-    print(f"address_book: contact_req landed pending (key={request['key']})")
+    alert = _pending_alert()
+    assert alert is not None
+    assert alert["peerPhone"] == "+15550001111", alert
+    print(f"address_book: contact_req landed as an open alert (id={alert['id']})")
 
-    approved = admin.admin_approve_contact(request["key"], mode="create", alias="grandma")
-    assert approved["status"] == "approved", approved
+    approved = admin.family_approve_alert(family_id, alert["id"], mode="create", alias="grandma")
+    assert approved["status"] == "handled", approved
     print("address_book: admin approved with mode=create, alias=grandma")
 
     def _book_has_grandma() -> bool:
@@ -1522,20 +1534,25 @@ def scenario_address_book() -> None:
 
 
 def scenario_sms_log() -> None:
-    """docs/V02_DESIGN.md §6: admin pushes an SMS contact allow-list
-    (`PUT /api/devices/{id}/sms-contacts`) -> device receives and applies
-    `/down cfg.sms`, acks `shown` -> device sends an SMS to the listed
-    contact (`sms out`) and receives one from an unlisted number
-    (`sms in`) -> both land in `devices/{id}/smsLog` with the right `st`,
-    readable back through `GET /api/devices/{id}/sms-log` (name resolved for
-    the listed contact, `null` for the unlisted one) -- covers the relay's
-    whole device-direct-SMS surface end to end, run as
+    """docs/V02_DESIGN.md §6: admin approves an SMS number for the student
+    (`PUT /api/family/members/{uid}/approved`, docs/FAMILIES_DESIGN.md §1
+    decision 11 -- supersedes the old direct `PUT /api/devices/{id}/
+    sms-contacts`) -> the derived `devices.smsContacts` projection pushes
+    `/down cfg.sms`, device applies it and acks `shown` -> device sends an
+    SMS to the listed contact (`sms out`) and receives one from an unlisted
+    number (`sms in`) -> both land in `devices/{id}/smsLog` with the right
+    `st`, readable back through `GET /api/devices/{id}/sms-log` (name
+    resolved for the listed contact, `null` for the unlisted one) --
+    covers the relay's whole device-direct-SMS surface end to end, run as
     `tools/e2e_v2.py sms_log`."""
     bootstrap_admin()
 
     admin = pager_client.ServerClient(RELAY_URL, AUTH_URL)
     admin.login("admin")
-    admin.admin_user_add("smsstudent", "SMSStudent", email="smsstudent@example.com", phone=None)
+    family_id = admin.me()["user"]["familyId"] or "default"
+    smsstudent = admin.admin_user_add(
+        "smsstudent", "SMSStudent", email="smsstudent@example.com", phone=None
+    )
     create_device_with_secret(admin, "pgr-e2e-sms", "smsstudent")
 
     device = make_device("pgr-e2e-sms")
@@ -1544,9 +1561,11 @@ def scenario_sms_log() -> None:
 
     mom_phone = "+15550002222"
     stranger_phone = "+15550003333"
-    pushed = admin.sms_contacts_put("pgr-e2e-sms", [{"name": "Mom", "phone": mom_phone}])
-    assert pushed["contacts"] == [{"name": "Mom", "phone": mom_phone}], pushed
-    print("sms_log: admin pushed sms-contacts=[Mom]")
+    pushed = admin.family_put_approved(
+        family_id, smsstudent["uid"], numbers=[{"phone": mom_phone, "name": "Mom"}]
+    )
+    assert pushed["numbers"] == [{"phone": mom_phone, "name": "Mom"}], pushed
+    print("sms_log: admin approved numbers=[Mom]")
 
     wait_until(
         lambda: any(c.get("phone") == mom_phone for c in device.sms_contacts),

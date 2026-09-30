@@ -52,8 +52,9 @@ docs/PROTOCOL.md §3.2's `contact_req`/`book`/`cfg` kinds):
           locations <alias> [n],
           admin user-add / allow / deny / device-add / ca push|unpin <device_id> /
           settings retention messages=<n><d|w> locations=<n><d|w> /
-          contacts [pending|approved|rejected] / approve <key> link|create [alias] [--locate] /
-          reject <key> <reason> / cfg <device_id> [--auto <min>] [--clear],
+          alerts <family> [open|all] / approve <family> <alert_id> [link|create] [alias] /
+          block <family> <alert_id> / dismiss <family> <alert_id> /
+          cfg <device_id> [--auto <min>] [--clear],
           backend add <kind> <json-config>,
           smscontacts get <device_id> | smscontacts set <device_id> <name> <phone> [<name> <phone>...] |
           smslog <device_id> [limit]
@@ -1170,6 +1171,11 @@ class ServerClient:
         self.alias: str | None = None
         self.uid: str | None = None
         self._id_token: str | None = None
+        # `_device_id_for_owner`'s own family-scoping filter (see there) --
+        # populated lazily via `GET /api/me` the first time it's needed,
+        # not eagerly in `login()`, so every other caller of `login()`
+        # (most of this script) pays no extra request for it.
+        self._family_id: str | None | Literal["unset"] = "unset"
         self._http = httpx.Client(timeout=10.0)
 
     @property
@@ -1202,7 +1208,13 @@ class ServerClient:
         exchange.raise_for_status()
         self._id_token = exchange.json()["idToken"]
         self.alias = alias
+        self._family_id = "unset"
         print(f"logged in as {alias} (uid={self.uid})")
+
+    def _my_family_id(self) -> str | None:
+        if self._family_id == "unset":
+            self._family_id = self.me()["user"]["familyId"]
+        return self._family_id
 
     # ---- relay API ----
 
@@ -1373,40 +1385,96 @@ class ServerClient:
             raise RuntimeError(f"admin settings retention failed: {resp.status_code} {resp.text}")
         return resp.json()
 
-    # ---- admin: address book (docs/DEVICE_TASKS.md S4.1/S4.2/S4.5,
-    # docs/DEVICE_PLAN.md §4.3, §5.8) ----
-
-    def admin_list_contacts(
-        self, status: Literal["pending", "approved", "rejected"] | None = None
-    ) -> list[dict[str, Any]]:
-        path = "/api/admin/contacts" + (f"?status={status}" if status else "")
-        resp = self.api_get(path)
+    def me(self) -> dict[str, Any]:
+        """`GET /api/me` -- docs/SERVER_PLAN.md §5.1. Used (among other
+        things) to look up the currently-logged-in user's own `familyId`
+        for the `family_*` methods below, which all need a `?family=`
+        (a `super` acting on a family names it explicitly; an `admin`
+        acting on their own family may omit it -- see
+        `app.auth.require_family_admin`)."""
+        resp = self.api_get("/api/me")
         resp.raise_for_status()
         return resp.json()
 
-    def admin_approve_contact(
+    # ---- family: alerts (docs/FAMILIES_DESIGN.md §4 `/api/family/alerts`,
+    # §6; docs/FAMILIES_TASKS.md 4.1) -- supersedes the old admin-only
+    # `/api/admin/contacts/*` (docs/DEVICE_TASKS.md S4.1/S4.2/S4.5,
+    # docs/DEVICE_PLAN.md §4.3, §5.8), which `/api/admin/contacts/*` this
+    # was renamed from -- removed entirely (docs/FAMILIES_TASKS.md 5.1).
+    # `contact_request` is one of three alert kinds (`sms_unknown`,
+    # `new_conversation` are the other two); a pending device `contact_req`
+    # (docs/PROTOCOL.md §3.2) now surfaces as one of these with
+    # `kind == "contact_request"` and a `contactRequestKey` pointing back at
+    # the underlying `contactRequests/{deviceId}_{reqId}` doc. ----
+
+    def family_list_alerts(
+        self, family: str, status: Literal["open", "all"] = "open"
+    ) -> list[dict[str, Any]]:
+        resp = self.api_get(f"/api/family/alerts?family={family}&status={status}")
+        resp.raise_for_status()
+        return resp.json()["alerts"]
+
+    def family_approve_alert(
         self,
-        key: str,
+        family: str,
+        alert_id: str,
         *,
-        mode: Literal["link", "create"],
+        mode: Literal["link", "create"] | None = None,
         alias: str | None = None,
-        locate: bool = False,
+        name: str | None = None,
+        for_alias: str | None = None,
     ) -> dict[str, Any]:
-        """`POST /api/admin/contacts/{key}/approve` -- docs/DEVICE_PLAN.md
-        §4.3's approval dialog. `key` is the `contactRequests/{deviceId}_
-        {reqId}` document id, as returned by `admin_list_contacts()`."""
-        body: dict[str, Any] = {"mode": mode, "locate": locate}
+        """`POST /api/family/alerts/{id}/approve` -- one body shape for all
+        three alert kinds (`app.routers.family.ApproveAlertRequest`):
+        `contact_request` takes `mode`/`alias`, `sms_unknown` takes
+        `name`/`forAlias`, `new_conversation` takes neither."""
+        body: dict[str, Any] = {}
+        if mode is not None:
+            body["mode"] = mode
         if alias is not None:
             body["alias"] = alias
-        resp = self.api_post(f"/api/admin/contacts/{key}/approve", body)
+        if name is not None:
+            body["name"] = name
+        if for_alias is not None:
+            body["forAlias"] = for_alias
+        resp = self.api_post(f"/api/family/alerts/{alert_id}/approve?family={family}", body)
         if resp.status_code >= 400:
-            raise RuntimeError(f"admin approve_contact failed: {resp.status_code} {resp.text}")
+            raise RuntimeError(f"family approve_alert failed: {resp.status_code} {resp.text}")
         return resp.json()
 
-    def admin_reject_contact(self, key: str, reason: str) -> dict[str, Any]:
-        resp = self.api_post(f"/api/admin/contacts/{key}/reject", {"reason": reason})
+    def family_block_alert(self, family: str, alert_id: str) -> dict[str, Any]:
+        resp = self.api_post(f"/api/family/alerts/{alert_id}/block?family={family}", {})
         if resp.status_code >= 400:
-            raise RuntimeError(f"admin reject_contact failed: {resp.status_code} {resp.text}")
+            raise RuntimeError(f"family block_alert failed: {resp.status_code} {resp.text}")
+        return resp.json()
+
+    def family_dismiss_alert(self, family: str, alert_id: str) -> dict[str, Any]:
+        resp = self.api_post(f"/api/family/alerts/{alert_id}/dismiss?family={family}", {})
+        if resp.status_code >= 400:
+            raise RuntimeError(f"family dismiss_alert failed: {resp.status_code} {resp.text}")
+        return resp.json()
+
+    def family_put_approved(
+        self,
+        family: str,
+        uid: str,
+        *,
+        people: list[dict[str, Any]] | None = None,
+        numbers: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """`PUT /api/family/members/{uid}/approved` -- docs/FAMILIES_DESIGN.md
+        §1 decision 7/11: the member's own outgoing allow edges (`people`,
+        `[{alias, message, locate}]`) and approved SMS numbers (`numbers`,
+        `[{phone, name}]`), replace-all per call. Supersedes the old
+        `PUT /api/devices/{id}/sms-contacts` (docs/FAMILIES_TASKS.md 3.2)
+        for numbers -- `devices.smsContacts` is now a projection of a
+        member's approved numbers (the first 8 by name), not separately
+        editable; `sms_contacts_put` above is dead-lettered by the relay
+        for exactly this reason."""
+        body = {"people": people or [], "numbers": numbers or []}
+        resp = self.api_put(f"/api/family/members/{uid}/approved?family={family}", body)
+        if resp.status_code >= 400:
+            raise RuntimeError(f"family put_approved failed: {resp.status_code} {resp.text}")
         return resp.json()
 
     def admin_push_cfg(
@@ -1617,17 +1685,49 @@ class ServerClient:
         so it *can* stream real results -- which may include devices owned
         by users other than `owner_uid` (every device this caller may
         locate at all), so the match on `owner_uid` happens client-side
-        below rather than in the query."""
+        below rather than in the query.
+
+        docs/FAMILIES_DESIGN.md §1 decision 5 added a `sameFam(...)`
+        conjunct to `devices/{d}`'s own `allow read` (`firestore.rules`) --
+        the abstract pre-check above has no way to prove *that* either
+        unless the query itself also carries a `familyId` equality filter
+        (an abstract-provable literal, the same trick the array-contains
+        filter already plays for `locatableBy`). `self._my_family_id()` is
+        `None` for a caller with no family of their own (an edge case --
+        real callers have one, docs/FAMILIES_DESIGN.md §1 decision 1) --
+        the composite filter is only added when it's set, since a `None`
+        equality filter would just as abstractly-fail the check it's
+        meant to satisfy."""
+        family_id = self._my_family_id()
+        locatable_by_filter = {
+            "fieldFilter": {
+                "field": {"fieldPath": "locatableBy"},
+                "op": "ARRAY_CONTAINS",
+                "value": {"stringValue": self.uid},
+            }
+        }
+        if family_id is not None:
+            where = {
+                "compositeFilter": {
+                    "op": "AND",
+                    "filters": [
+                        locatable_by_filter,
+                        {
+                            "fieldFilter": {
+                                "field": {"fieldPath": "familyId"},
+                                "op": "EQUAL",
+                                "value": {"stringValue": family_id},
+                            }
+                        },
+                    ],
+                }
+            }
+        else:
+            where = locatable_by_filter
         query = {
             "structuredQuery": {
                 "from": [{"collectionId": "devices"}],
-                "where": {
-                    "fieldFilter": {
-                        "field": {"fieldPath": "locatableBy"},
-                        "op": "ARRAY_CONTAINS",
-                        "value": {"stringValue": self.uid},
-                    }
-                },
+                "where": where,
             }
         }
         resp = self.firestore_run_query(query)
@@ -1988,8 +2088,8 @@ class PagerShell(cmd.Cmd):
         parts = shlex.split(arg)
         if not parts:
             print(
-                "usage: admin user-add|device-add|allow|deny|settings|contacts|"
-                "approve|reject|cfg|ca ..."
+                "usage: admin user-add|device-add|allow|deny|settings|alerts|"
+                "approve|block|dismiss|cfg|ca ..."
             )
             return
         sub, rest = parts[0], parts[1:]
@@ -2003,12 +2103,14 @@ class PagerShell(cmd.Cmd):
             self._admin_deny(rest)
         elif sub == "settings":
             self._admin_settings(rest)
-        elif sub == "contacts":
-            self._admin_contacts(rest)
+        elif sub == "alerts":
+            self._admin_alerts(rest)
         elif sub == "approve":
             self._admin_approve(rest)
-        elif sub == "reject":
-            self._admin_reject(rest)
+        elif sub == "block":
+            self._admin_block(rest)
+        elif sub == "dismiss":
+            self._admin_dismiss(rest)
         elif sub == "cfg":
             self._admin_cfg(rest)
         elif sub == "ca":
@@ -2090,34 +2192,44 @@ class PagerShell(cmd.Cmd):
             return
         self._out(result)
 
-    def _admin_contacts(self, args: list[str]) -> None:
-        status = args[0] if args else None
-        if status is not None and status not in ("pending", "approved", "rejected"):
-            print("usage: admin contacts [pending|approved|rejected]")
+    def _admin_alerts(self, args: list[str]) -> None:
+        if not args:
+            print("usage: admin alerts <family> [open|all]")
             return
-        self._out(self.server.admin_list_contacts(status))
+        family = args[0]
+        status = args[1] if len(args) > 1 else "open"
+        if status not in ("open", "all"):
+            print("usage: admin alerts <family> [open|all]")
+            return
+        self._out(self.server.family_list_alerts(family, status))
 
     def _admin_approve(self, args: list[str]) -> None:
         parser = argparse.ArgumentParser(prog="admin approve", add_help=False)
-        parser.add_argument("key")
-        parser.add_argument("mode", choices=["link", "create"])
+        parser.add_argument("family")
+        parser.add_argument("alert_id")
+        parser.add_argument("mode", nargs="?", choices=["link", "create"])
         parser.add_argument("alias", nargs="?")
-        parser.add_argument("--locate", action="store_true")
         try:
             ns = parser.parse_args(args)
         except SystemExit:
             return
         self._out(
-            self.server.admin_approve_contact(
-                ns.key, mode=ns.mode, alias=ns.alias, locate=ns.locate
+            self.server.family_approve_alert(
+                ns.family, ns.alert_id, mode=ns.mode, alias=ns.alias
             )
         )
 
-    def _admin_reject(self, args: list[str]) -> None:
-        if len(args) < 2:
-            print("usage: admin reject <key> <reason>")
+    def _admin_block(self, args: list[str]) -> None:
+        if len(args) != 2:
+            print("usage: admin block <family> <alert_id>")
             return
-        self._out(self.server.admin_reject_contact(args[0], " ".join(args[1:])))
+        self._out(self.server.family_block_alert(args[0], args[1]))
+
+    def _admin_dismiss(self, args: list[str]) -> None:
+        if len(args) != 2:
+            print("usage: admin dismiss <family> <alert_id>")
+            return
+        self._out(self.server.family_dismiss_alert(args[0], args[1]))
 
     def _admin_cfg(self, args: list[str]) -> None:
         parser = argparse.ArgumentParser(prog="admin cfg", add_help=False)

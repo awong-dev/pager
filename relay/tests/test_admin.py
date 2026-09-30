@@ -1067,6 +1067,64 @@ def test_create_user_with_family_id(client: TestClient, admin_headers: dict[str,
     assert refreshed.custom_claims == {"role": "member", "fam": family.id}
 
 
+def test_create_user_defaults_family_to_callers_family(client: TestClient):
+    """A real deployment's super always has a family of their own
+    (`app.bootstrap` puts them in `families/default`) -- an omitted
+    `familyId` must pick that up, not fall back to `None`, so a `person`
+    user never ends up family-less (the bug CI's e2e caught: `tools/
+    e2e_v2.py` created users with no `familyId`, which then made its
+    `locate: true` allow-list `PUT` 400 with `locate_cross_family`)."""
+    family = families_store.create_family(name="Caller Family", created_by="root-uid")
+    caller = fb_auth.create_user(email="fam-super@example.com")
+    users_store.create_user(
+        uid=caller.uid,
+        alias="famsuper",
+        display_name="Fam Super",
+        role="super",
+        family_id=family.id,
+    )
+    fb_auth.set_custom_user_claims(caller.uid, {"role": "super", "fam": family.id})
+    headers = auth_header(caller.uid)
+
+    resp = client.post(
+        "/api/admin/users",
+        json={"alias": "childkid", "displayName": "Child", "email": "childkid@example.com"},
+        headers=headers,
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["familyId"] == family.id
+    refreshed = fb_auth.get_user(resp.json()["uid"])
+    assert refreshed.custom_claims == {"role": "member", "fam": family.id}
+
+
+def test_patch_user_cannot_null_out_family_id(client: TestClient, admin_headers: dict[str, str]):
+    """`PATCH /api/admin/users/{uid}` moves a `person` between families but
+    must never null one out -- an explicit `"familyId": null` is
+    indistinguishable from an omitted field (patch semantics) and is a
+    no-op here, same as omitting it."""
+    family = families_store.create_family(name="Sticky Family", created_by="root-uid")
+    created = client.post(
+        "/api/admin/users",
+        json={
+            "alias": "sticky",
+            "displayName": "Sticky",
+            "email": "sticky@example.com",
+            "familyId": family.id,
+        },
+        headers=admin_headers,
+    ).json()
+    assert created["familyId"] == family.id
+
+    resp = client.patch(
+        f"/api/admin/users/{created['uid']}",
+        json={"familyId": None},
+        headers=admin_headers,
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["familyId"] == family.id
+    assert users_store.get_user(created["uid"]).familyId == family.id
+
+
 def test_list_users_filters_by_family_query_param(client: TestClient, admin_headers: dict[str, str]):
     family_a = families_store.create_family(name="List A", created_by="root-uid")
     family_b = families_store.create_family(name="List B", created_by="root-uid")
