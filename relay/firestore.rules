@@ -1,4 +1,6 @@
-// Firestore security rules -- docs/SERVER_PLAN.md §3's sketch, made exact.
+// Firestore security rules -- docs/SERVER_PLAN.md §3's sketch, made exact,
+// and docs/FAMILIES_DESIGN.md §3's rules sketch (multi-family rules v2,
+// docs/FAMILIES_TASKS.md 1.4).
 //
 // The relay is the only writer (app/db/firestore.py uses the firebase-admin
 // SDK, which bypasses these rules entirely -- docs/SERVER_PLAN.md §2
@@ -14,113 +16,163 @@ service cloud.firestore {
       return exists(/databases/$(db)/documents/users/$(request.auth.uid));
     }
 
-    function isAdmin() {
-      // `.get('admin', false)`, not a bare `request.auth.token.admin`
-      // (same root cause as `devices/{d}`'s `locatableBy` note below): a non-admin caller's token simply has no
-      // `admin` claim at all (`app/auth.py`'s `_set_admin_claim` only ever
-      // sets it for actual admins), and Firestore's *abstract* rule
-      // pre-check for `list` (collection query) requests -- run once
-      // against the query's shape, before any real document -- throws
-      // `PERMISSION_DENIED: Property admin is undefined on object` on a
-      // bare field access instead of just treating it as falsy. Every
-      // `allow read` in this file routes through `isAdmin()`, so this one
-      // fix covers all of them; a bare `get` (single-document read, what
-      // every single-document test exercises) is unaffected either way.
-      return request.auth.token.get('admin', false) == true;
+    // Claims-only (FAMILIES_DESIGN.md §1 decision 2 / §3): `role` and `fam`
+    // are the *only* source of truth for these rules -- the legacy `admin`
+    // custom claim is never consulted anywhere below. `role() == 'admin'`
+    // now means *family* admin, scoped by `fam()`, not the old global
+    // admin bit; a bare `admin: true` claim with no `role`/`fam` claim
+    // grants nothing (`role()`/`fam()` both default to `''`, so every
+    // predicate below is false for it, same as a plain member).
+    function role() { return request.auth.token.get('role', ''); }
+    function fam() { return request.auth.token.get('fam', ''); }
+    function isSuper() { return role() == 'super'; }
+    function isFamAdmin(f) { return role() == 'admin' && fam() == f; }
+    function sameFam(f) { return fam() != '' && fam() == f; }
+
+    match /families/{f} {
+      allow read: if request.auth != null && (isSuper() || sameFam(f));
+
+      match /alerts/{a} {
+        allow read: if request.auth != null && (isSuper() || isFamAdmin(f));
+      }
     }
 
     match /users/{uid} {
-      allow read: if request.auth.uid == uid || isAdmin();
+      // Super, self, or a same-family member (`.get('familyId', null)`, not
+      // a bare `resource.data.familyId`, for the same abstract-list-precheck
+      // reason as `devices/{d}`'s `locatableBy` below -- see that comment).
+      // Externals have `familyId: null`; `sameFam(null)` is always false
+      // (`fam()` is never `null`), so a member can only ever resolve an
+      // external through a conversation's `participants` map, never by
+      // reading `users/{uid}` directly (FAMILIES_DESIGN.md §3's own note).
+      allow read: if request.auth != null && (
+        isSuper() || request.auth.uid == uid ||
+        sameFam(resource.data.get('familyId', null))
+      );
 
+      // No family copy on `backends/{b}` docs -- self or super only, same
+      // as before this task (FAMILIES_DESIGN.md 1.4: "stays self or super").
       match /backends/{b} {
-        allow read: if request.auth.uid == uid || isAdmin();
+        allow read: if request.auth.uid == uid || isSuper();
       }
     }
 
     // A `list` against either collection is authorised by an *abstract*
     // pre-check, run against the query's own declared filters before any
     // document is read -- so the query MUST carry a filter this rule can
-    // prove itself from, i.e. `where('uids', 'array-contains', <self>)`.
-    // Both readers do (web/app/chat/page.tsx for conversations,
-    // chat/[alias]/ThreadPageClient.tsx for messages). A thread query
-    // filtered only on `convKey` is denied outright, which is correct: it
-    // asserts nothing about who is allowed to read the result.
-    // `relay/tests/test_rules.py` pins both directions.
+    // prove itself from, i.e. `where('uids', 'array-contains', <self>)` or,
+    // for a family admin's monitor view, `where('familyIds',
+    // 'array-contains', <fam>)`. Both readers do (web/app/chat/page.tsx for
+    // conversations, chat/[alias]/ThreadPageClient.tsx and the family
+    // monitor thread for messages). A thread query filtered only on
+    // `convKey` is denied outright, which is correct: it asserts nothing
+    // about who is allowed to read the result. `relay/tests/test_rules.py`
+    // pins both directions.
+    //
+    // docs/FAMILIES_TASKS.md 2.2 / docs/FAMILIES_DESIGN.md §3: super, a
+    // party (`uids`), or a family admin whose family is in the document's
+    // `familyIds` (populated by 2.1; `.get(..., [])` so a document written
+    // before 2.1 lands, or one with no `familyIds` at all, simply excludes
+    // the family-admin clause instead of throwing). Symmetric across both
+    // families of a cross-family DM/group by construction, since
+    // `familyIds` is the union of every participant's family.
     match /messages/{id} {
-      allow read: if registered() && request.auth.uid in resource.data.uids;
+      allow read: if registered() && (
+        isSuper() ||
+        request.auth.uid in resource.data.uids ||
+        (role() == 'admin' && fam() in resource.data.get('familyIds', []))
+      );
     }
 
     match /conversations/{k} {
-      allow read: if registered() && request.auth.uid in resource.data.uids;
+      allow read: if registered() && (
+        isSuper() ||
+        request.auth.uid in resource.data.uids ||
+        (role() == 'admin' && fam() in resource.data.get('familyIds', []))
+      );
     }
 
     match /devices/{d} {
-      // `.get('locatableBy', [])`, not a bare `resource.data.locatableBy`
-      // every `devices/{d}` document created by
-      // `app/store/devices.py`'s `create_device` always sets `locatableBy`
-      // explicitly, so a `get` (single-document read) never actually hits a
-      // missing field. But `list` (collection query -- e.g.
-      // `tools/pager_client.py`'s `locations()`, which queries `devices`
-      // filtered by `ownerUid` to resolve an alias to a device id)
-      // evaluates this rule in an additional, *abstract* pre-check against
-      // the query's own filter shape before touching real documents, and
-      // that abstract check has no `locatableBy` value to offer -- a bare
-      // `resource.data.locatableBy` access throws `PERMISSION_DENIED:
-      // Property locatableBy is undefined on object` for every `list`
-      // query, even ones a real client is fully allowed to run and that
-      // return zero matches. The null-safe accessor sidesteps the abstract
-      // check without changing what any `get` ever returned.
+      // `.get('locatableBy', [])`/`.get('familyId', null)`, not a bare
+      // `resource.data.locatableBy`/`.familyId`: every `devices/{d}`
+      // document created by `app/store/devices.py`'s `create_device`
+      // always sets `locatableBy` explicitly, so a `get` (single-document
+      // read) never actually hits a missing field. But `list` (collection
+      // query -- e.g. `tools/pager_client.py`'s `locations()`, which
+      // queries `devices` filtered by `ownerUid` to resolve an alias to a
+      // device id) evaluates this rule in an additional, *abstract*
+      // pre-check against the query's own filter shape before touching
+      // real documents, and that abstract check has no `locatableBy`/
+      // `familyId` value to offer -- a bare field access throws
+      // `PERMISSION_DENIED: Property ... is undefined on object` for
+      // every `list` query, even ones a real client is fully allowed to
+      // run and that return zero matches. The null-safe accessor
+      // sidesteps the abstract check without changing what any `get`
+      // ever returned.
+      //
+      // Super, or same-family and (owner, a `locate` edge holder, or a
+      // family admin of this device's family) -- FAMILIES_DESIGN.md §1
+      // decision 5: family admins read and request location for every
+      // device in their family.
       allow read: if request.auth != null && (
-        resource.data.ownerUid == request.auth.uid ||
-        request.auth.uid in resource.data.get('locatableBy', []) ||
-        isAdmin()
+        isSuper() || (
+          sameFam(resource.data.get('familyId', null)) && (
+            resource.data.ownerUid == request.auth.uid ||
+            request.auth.uid in resource.data.get('locatableBy', []) ||
+            role() == 'admin'
+          )
+        )
       );
 
-      // `locatableBy` (a `locate` allow edge) or the device's own owner
-      // (owner decision, 27 Sep 2026: an owner sees their own device's
-      // location). Deliberately no `isAdmin()` bypass -- an admin sees a
-      // device's location only if they own it or hold a `locate` edge.
+      // The parent (`devices/{d}`) predicate via `get()`, exactly --
+      // FAMILIES_DESIGN.md §1 decision 5 extends location reads to a
+      // family admin of the device's family, superseding the 27 Sep
+      // owner-only decision's admin exclusion for this subcollection.
       match /locations/{l} {
         allow read: if request.auth != null && (
-          request.auth.uid in
-            get(/databases/$(db)/documents/devices/$(d)).data.get('locatableBy', []) ||
-          get(/databases/$(db)/documents/devices/$(d)).data.ownerUid == request.auth.uid
+          isSuper() || (
+            sameFam(get(/databases/$(db)/documents/devices/$(d)).data.get('familyId', null)) && (
+              get(/databases/$(db)/documents/devices/$(d)).data.ownerUid == request.auth.uid ||
+              request.auth.uid in
+                get(/databases/$(db)/documents/devices/$(d)).data.get('locatableBy', []) ||
+              role() == 'admin'
+            )
+          )
         );
       }
 
-      // docs/V02_DESIGN.md §6: device-direct SMS audit log. Owner and admin
-      // only -- unlike `locations`, this is *not* opened up to everyone in
-      // `locatableBy` (a location permission says nothing about whether
-      // someone should read a kid's SMS history). The web app actually
-      // reads this through `GET /api/devices/{id}/sms-log`
-      // (`app/routers/devices.py`), not straight from Firestore -- this
-      // rule exists so that boundary is enforced independently of the API
-      // route too, the same "the rule, not just the code" discipline this
-      // file's own header comment states, and per this task's own brief
-      // ("client-readable only by the device's owner and admins if the
-      // rules already give owners read access to their device document" --
-      // they do, `devices/{d}`'s own `allow read` above).
+      // docs/V02_DESIGN.md §6: device-direct SMS audit log. Super, the
+      // device's own owner, or a family admin of this device's family --
+      // deliberately narrower than `locations` for `role() == 'admin'`
+      // outside the owner's own family (a location permission says
+      // nothing about whether someone should read a kid's SMS history,
+      // but a family admin of the *same* family may, same as before).
       match /smsLog/{l} {
         allow read: if request.auth != null && (
-          isAdmin() ||
-          get(/databases/$(db)/documents/devices/$(d)).data.ownerUid == request.auth.uid
+          isSuper() ||
+          get(/databases/$(db)/documents/devices/$(d)).data.ownerUid == request.auth.uid ||
+          isFamAdmin(get(/databases/$(db)/documents/devices/$(d)).data.get('familyId', null))
         );
       }
     }
 
     match /allow/{e} {
       allow read: if request.auth != null && (
-        isAdmin() ||
-        request.auth.uid in [resource.data.fromUid, resource.data.toUid]
+        isSuper() ||
+        request.auth.uid in [resource.data.fromUid, resource.data.toUid] ||
+        (role() == 'admin' && fam() in resource.data.get('familyIds', []))
       );
     }
 
     // docs/DEVICE_PLAN.md §4.1: "`contactRequests` is readable by admins and
     // by the device owner (the kid can see their own pending list in the web
-    // app too); written only by the relay."
+    // app too); written only by the relay." Now super, the owner, or a
+    // family admin of the request's family.
     match /contactRequests/{r} {
       allow read: if request.auth != null && (
-        isAdmin() || request.auth.uid == resource.data.ownerUid
+        isSuper() ||
+        request.auth.uid == resource.data.ownerUid ||
+        isFamAdmin(resource.data.get('familyId', null))
       );
     }
 
@@ -128,8 +180,8 @@ service cloud.firestore {
       allow read: if registered();
     }
 
-    // Clients never write; the admin claim is a Firebase custom claim, set
-    // by the relay (app/auth.py), and every write goes through the relay API.
+    // Clients never write; role/family are Firebase custom claims, set by
+    // the relay (app/auth.py), and every write goes through the relay API.
     match /{document=**} {
       allow write: if false;
     }

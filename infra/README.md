@@ -299,7 +299,69 @@ gcloud run jobs execute pager-relay-bootstrap \
 safe to rerun. The email is passed at execution time, not baked into Terraform, so it never ends
 up in state or this repo — see `infra/modules/relay-service/main.tf`'s comment on the job.)
 
-## 12. (Optional) Custom domain
+## 12. Multi-family cutover: wipe and re-bootstrap (one-time, no migration)
+
+`docs/FAMILIES_DESIGN.md` §7: this project has no migration path from the old single-household
+schema to the families schema (`relay/app/bootstrap.py`'s `bootstrap_admin`, which now also
+creates `families/default` and sets `{role, fam}` claims). The owner's 30 Sep call: production
+holds only disposable test data, so the cutover is wipe-everything-and-re-bootstrap, not a
+backfill job. **Do this exactly once**, right before deploying the families-schema build; running
+it again later destroys real data with no way back.
+
+1. **Wipe every Firestore document.** `firebase-tools` has this built in
+   (verified via `npx firebase-tools firestore:delete --help`, this repo's installed version
+   `15.32.0`):
+
+   ```
+   npx firebase-tools firestore:delete --all-collections --project <PROJECT_ID> --force
+   ```
+
+2. **Wipe every Firebase Auth user.** There is no delete-all here: `firebase auth:export` only
+   reads accounts out to a file, `firebase auth:import` only loads accounts in (verified via
+   `npx firebase-tools auth --help`, `auth:export --help`, `auth:import --help` — neither
+   subcommand takes a delete/wipe flag), and this gcloud install has no `gcloud
+   identity-platform` command group at all (`gcloud identity-platform --help` on this machine's
+   gcloud 577.0.0 returns "Invalid choice: 'identity-platform'"; `gcloud beta identity-platform`
+   fails the same way; `gcloud alpha identity-platform` exists only after installing the `alpha`
+   component, which was not done here and is not verified to have the command either — don't
+   guess with a real project). The command that does work is the Admin SDK's own
+   `list_users`/`delete_users` (verified present and matching this signature in `relay/.venv`'s
+   installed `firebase-admin==7.5.0`: `auth.list_users(page_token=None, max_results=1000,
+   app=None)`, `auth.delete_users(uids, app=None)`). Run it from a machine authenticated as a
+   principal with Firebase Authentication Admin on the project (`gcloud auth
+   application-default login`, or the relay's own deploy service account):
+
+   ```
+   cd relay && .venv/bin/python3 -c "
+   import firebase_admin
+   from firebase_admin import auth
+   firebase_admin.initialize_app(options={'projectId': '<PROJECT_ID>'})
+   uids = [u.uid for u in auth.list_users().iterate_all()]
+   for i in range(0, len(uids), 1000):
+       auth.delete_users(uids[i:i + 1000])
+   print(f'deleted {len(uids)} users')
+   "
+   ```
+
+3. **Re-run bootstrap** (step 11's command, idempotent — safe even though the wipe already made
+   it start from nothing):
+
+   ```
+   gcloud run jobs execute pager-relay-bootstrap \
+     --region <REGION> --project <PROJECT_ID> \
+     --args="--admin-email=<the admin's real email>"
+   ```
+
+   This creates `families/default` (name "Home", override with a second `--args="--family-name=
+   ..."`), the bootstrap user as `role: super` in that family, `{role: 'super', fam: 'default'}`
+   custom claims, and `settings/meta.schemaVersion = 2`.
+
+4. **Deploy order after the wipe**: rules and indexes first (`firebase deploy --only
+   firestore` — step 9's `firebase-deploy` job covers this, or run it by hand), then the relay
+   (steps 7-8), then web (`firebase deploy --only hosting`) — rules must be in place before the
+   relay or web can write anything into the freshly emptied database.
+
+## 13. (Optional) Custom domain
 
 Set `custom_domain` in `terraform.tfvars` (`docs/SERVER_PLAN.md` §10 D6), `terraform apply`,
 then follow the Firebase Hosting console's DNS verification instructions (a TXT record, then an
@@ -308,7 +370,7 @@ A/AAAA or CNAME record) — Terraform cannot prove domain ownership on its own. 
 blocks until verification completes, so do the DNS record changes in another terminal/tab while
 it's running, not after.
 
-## 13. If EMQX Cloud Serverless doesn't pan out: the `broker-gce` fallback
+## 14. If EMQX Cloud Serverless doesn't pan out: the `broker-gce` fallback
 
 Only if step 10.2's checks failed. In `terraform.tfvars`:
 
@@ -332,7 +394,7 @@ and the one genuinely non-zero cost line (the external IPv4 address, `docs/SERVE
 Device credentials/ACLs have the same gap noted in step 10.6 — this module provisions the broker
 process, not per-device auth.
 
-## 14. Cold-start measurement (`docs/SERVER_PLAN.md` §9.3, §10 D10) — procedure, not yet performed
+## 15. Cold-start measurement (`docs/SERVER_PLAN.md` §9.3, §10 D10) — procedure, not yet performed
 
 There is no real deployment yet (no `terraform apply` has ever been run against a real project), so
 this is written for a human to follow **after** a real deployment exists, not executed now.

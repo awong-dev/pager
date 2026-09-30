@@ -657,9 +657,9 @@ def client(broker: FakeBrokerClient) -> Iterator[TestClient]:
 def admin_headers() -> dict[str, str]:
     auth_user = fb_auth.create_user(email="devcfg-admin@example.com")
     users_store.create_user(
-        uid=auth_user.uid, alias="devcfgadmin", display_name="Admin", role="admin"
+        uid=auth_user.uid, alias="devcfgadmin", display_name="Admin", role="super"
     )
-    fb_auth.set_custom_user_claims(auth_user.uid, {"admin": True})
+    fb_auth.set_custom_user_claims(auth_user.uid, {"role": "super", "fam": ""})
     return auth_header(auth_user.uid)
 
 

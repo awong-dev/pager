@@ -56,14 +56,17 @@ import os
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from google.cloud.firestore import FieldFilter
 from pydantic import BaseModel
 
-from app.auth import AuthedUser, require_user
+from app.auth import AuthedUser, principal_for, require_user, set_claims
 from app.backends.base import Backend as BackendImpl
 from app.backends.sms_twilio import normalize_e164
+from app.db.firestore import get_db
 from app.store import backends as backends_store
 from app.store import push_tokens as push_tokens_store
 from app.store import rate_limits as rate_limits_store
+from app.store import users as users_store
 from app.store.backends import Backend, BackendKind
 from app.store.users import User
 
@@ -114,11 +117,123 @@ class MeResponse(BaseModel):
     user: User
     role: str
     claims: dict
+    # docs/FAMILIES_DESIGN.md §1 decision 2: true when the token's `role`/
+    # `fam` claims disagree with the `users/{uid}` doc -- the web forces
+    # `getIdToken(true)` and refetches when it sees this. Re-issued
+    # server-side below so the *next* forced refresh already carries the
+    # right claims, rather than waiting for whatever next wrote them.
+    claimsStale: bool = False
 
 
 @router.get("/api/me")
 def get_me(authed: Annotated[AuthedUser, Depends(require_user)]) -> MeResponse:
-    return MeResponse(user=authed.user, role=authed.user.role, claims=authed.claims)
+    principal = principal_for(authed)
+    stale = principal.role != authed.user.role or (
+        principal.family_id or ""
+    ) != (authed.user.familyId or "")
+    if stale:
+        set_claims(authed.uid, authed.user.role, authed.user.familyId)
+    return MeResponse(
+        user=authed.user, role=authed.user.role, claims=authed.claims, claimsStale=stale
+    )
+
+
+# ---------------------------------------------------------------------------
+# directory
+# ---------------------------------------------------------------------------
+
+# docs/FAMILIES_TASKS.md 1.5: "Cap 500 entries, deduplicated by uid, sorted
+# by alias."
+DIRECTORY_MAX_ENTRIES = 500
+
+
+class DirectoryEntry(BaseModel):
+    uid: str
+    alias: str
+    displayName: str
+    kind: str
+    familyId: str | None
+    role: str
+    # Only set for `kind == 'external'`, from their `sms` backend's
+    # `config.phone` (docs/FAMILIES_DESIGN.md §1 decision 6: an external has
+    # exactly one `sms` backend).
+    phone: str | None = None
+
+
+@router.get("/api/directory")
+def get_directory(authed: Annotated[AuthedUser, Depends(require_user)]) -> dict:
+    """docs/FAMILIES_DESIGN.md §4 `GET /api/directory`: the aliases the
+    caller may resolve even though `firestore.rules` only lets a member
+    read `users/{uid}` docs inside their own family (1.4) -- edge peers in
+    another family and conversation participants (including externals) are
+    otherwise invisible to `useDirectory()` (§5.1). Union of: every user
+    sharing the caller's `familyId` (skipped when the caller has none);
+    both ends of every `allow` edge the caller is a party to; every uid
+    appearing in the `uids` of a conversation the caller belongs to.
+    """
+    me = authed.uid
+    db = get_db()
+    uids: set[str] = set()
+
+    family_id = authed.user.familyId
+    if family_id:
+        for snap in db.collection("users").where(
+            filter=FieldFilter("familyId", "==", family_id)
+        ).stream():
+            uids.add(snap.id)
+
+    for snap in db.collection("allow").where(filter=FieldFilter("fromUid", "==", me)).stream():
+        to_uid = (snap.to_dict() or {}).get("toUid")
+        if to_uid:
+            uids.add(to_uid)
+    for snap in db.collection("allow").where(filter=FieldFilter("toUid", "==", me)).stream():
+        from_uid = (snap.to_dict() or {}).get("fromUid")
+        if from_uid:
+            uids.add(from_uid)
+
+    for snap in db.collection("conversations").where(
+        filter=FieldFilter("uids", "array_contains", me)
+    ).stream():
+        for uid in (snap.to_dict() or {}).get("uids") or []:
+            uids.add(uid)
+
+    entries: list[DirectoryEntry] = []
+    for uid in uids:
+        user = users_store.get_user(uid)
+        if user is None:
+            continue
+        phone: str | None = None
+        if user.kind == "external":
+            for backend in backends_store.list_backends(uid):
+                if backend.kind == "sms":
+                    phone = backend.config.get("phone")
+                    break
+        entries.append(
+            DirectoryEntry(
+                uid=user.uid,
+                alias=user.alias,
+                displayName=user.displayName,
+                kind=user.kind,
+                familyId=user.familyId,
+                role=user.role,
+                phone=phone,
+            )
+        )
+
+    entries.sort(key=lambda e: e.alias)
+    # `phone` is `str | None = None` on the model so the field always
+    # exists for `model_dump()`'s benefit above, but the web's `DirectoryEntry`
+    # declares it `phone?: string` (present only for externals, per this
+    # task) -- drop the key rather than serialize a `null` for every
+    # person, since `familyId`'s own `null` (an external's, or a person
+    # with none yet) is meaningful and must stay.
+    out: list[dict] = []
+    for entry in entries[:DIRECTORY_MAX_ENTRIES]:
+        data = entry.model_dump()
+        if data["phone"] is None:
+            del data["phone"]
+        out.append(data)
+    return {"entries": out}
 
 
 # ---------------------------------------------------------------------------

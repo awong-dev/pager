@@ -17,6 +17,7 @@ from app.config import Settings
 from app.main import create_app
 from app.store import device_secrets as device_secrets_store
 from app.store import devices as devices_store
+from app.store import families as families_store
 from app.store import users as users_store
 from tests.fake_transport import FakeBrokerClient
 from tests.firebase_test_utils import auth_header
@@ -91,8 +92,10 @@ def client(fake_emqx: FakeEmqxAdmin, broker: FakeBrokerClient) -> Iterator[TestC
 @pytest.fixture
 def admin_headers() -> dict[str, str]:
     auth_user = fb_auth.create_user(email="root-admin@example.com")
-    users_store.create_user(uid=auth_user.uid, alias="rootadmin", display_name="Root Admin", role="admin")
-    fb_auth.set_custom_user_claims(auth_user.uid, {"admin": True})
+    users_store.create_user(
+        uid=auth_user.uid, alias="rootadmin", display_name="Root Admin", role="super"
+    )
+    fb_auth.set_custom_user_claims(auth_user.uid, {"role": "super", "fam": ""})
     return auth_header(auth_user.uid)
 
 
@@ -117,6 +120,11 @@ def test_create_user_creates_auth_and_firestore_and_alias(
     assert auth_user.uid == data["uid"]
     # And the alias resolves.
     assert users_store.get_uid_for_alias("mom") == data["uid"]
+
+    # docs/FAMILIES_DESIGN.md §1 decision 2: every created user (not just
+    # admins) gets `{role, fam}` claims in sync with the doc.
+    refreshed = fb_auth.get_user(data["uid"])
+    assert refreshed.custom_claims == {"role": "member", "fam": ""}
 
 
 def test_create_user_requires_email_or_phone(client: TestClient, admin_headers: dict[str, str]):
@@ -166,8 +174,11 @@ def test_patch_user_updates_fields_and_admin_claim(
     assert data["displayName"] == "Kiddo"
     assert data["role"] == "admin"
 
+    # docs/FAMILIES_DESIGN.md §1 decision 2: claims are `{role, fam}`
+    # exactly -- no `admin` key -- `fam` empty since this legacy
+    # `/api/admin/users` route (task 1.3 re-homes it) never sets a family.
     refreshed = fb_auth.get_user(created["uid"])
-    assert refreshed.custom_claims and refreshed.custom_claims.get("admin") is True
+    assert refreshed.custom_claims == {"role": "admin", "fam": ""}
 
 
 def test_patch_user_404_for_unknown_uid(client: TestClient, admin_headers: dict[str, str]):
@@ -314,6 +325,31 @@ def test_create_device_picks_up_locatable_by_from_a_pre_existing_allow_edge(
 
     device = devices_store.get_device("pgr-5005")
     assert device.locatableBy == [mom_uid]
+
+
+def test_create_device_copies_owner_family_id(
+    client: TestClient, admin_headers: dict[str, str]
+):
+    """docs/FAMILIES_DESIGN.md §1 decision 1/§3: a device's `familyId` is
+    copied from its owner at creation time."""
+    family = families_store.create_family(name="Device Family", created_by="root-uid")
+    users_store.create_user(
+        uid="device-owner-uid",
+        alias="deviceowner",
+        display_name="Device Owner",
+        family_id=family.id,
+    )
+
+    resp = client.post(
+        "/api/admin/devices",
+        json={"deviceId": "pgr-fam-1", "ownerAlias": "deviceowner", "label": "family pager"},
+        headers=admin_headers,
+    )
+    assert resp.status_code == 200, resp.text
+
+    device = devices_store.get_device("pgr-fam-1")
+    assert device is not None
+    assert device.familyId == family.id
 
 
 def test_create_device_unknown_owner_alias_is_400(client: TestClient, admin_headers: dict[str, str]):
@@ -734,3 +770,151 @@ def test_set_device_apn_validates_and_clears(client: TestClient, admin_headers: 
 
     missing = client.put("/api/admin/devices/nope/apn", json={"apn": "ereseller"}, headers=admin_headers)
     assert missing.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# families -- docs/FAMILIES_DESIGN.md §4, docs/FAMILIES_TASKS.md 1.3.
+# ---------------------------------------------------------------------------
+
+
+def test_create_and_list_families(client: TestClient, admin_headers: dict[str, str]):
+    resp = client.post(
+        "/api/admin/families", json={"name": "The Ngs"}, headers=admin_headers
+    )
+    assert resp.status_code == 200, resp.text
+    created = resp.json()
+    assert created["name"] == "The Ngs"
+    assert created["smsNumber"] is None
+
+    resp2 = client.get("/api/admin/families", headers=admin_headers)
+    assert resp2.status_code == 200, resp2.text
+    names = {f["name"] for f in resp2.json()}
+    assert "The Ngs" in names
+
+
+def test_patch_family_renames_and_sets_sms_number(client: TestClient, admin_headers: dict[str, str]):
+    created = client.post(
+        "/api/admin/families", json={"name": "Old"}, headers=admin_headers
+    ).json()
+
+    resp = client.patch(
+        f"/api/admin/families/{created['id']}",
+        json={"name": "New", "smsNumber": "+15551234567"},
+        headers=admin_headers,
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["name"] == "New"
+    assert data["smsNumber"] == "+15551234567"
+
+
+def test_patch_family_missing_is_404(client: TestClient, admin_headers: dict[str, str]):
+    resp = client.patch(
+        "/api/admin/families/no-such-family", json={"name": "x"}, headers=admin_headers
+    )
+    assert resp.status_code == 404
+
+
+def test_super_creates_a_family_and_moves_a_user(client: TestClient, admin_headers: dict[str, str]):
+    """docs/FAMILIES_TASKS.md 1.3 Verify: "super creates a family and moves
+    a user"."""
+    family = client.post(
+        "/api/admin/families", json={"name": "New Family"}, headers=admin_headers
+    ).json()
+    created = client.post(
+        "/api/admin/users",
+        json={"alias": "movable", "displayName": "Movable", "email": "movable@example.com"},
+        headers=admin_headers,
+    ).json()
+    assert created["familyId"] is None
+
+    resp = client.patch(
+        f"/api/admin/users/{created['uid']}",
+        json={"familyId": family["id"]},
+        headers=admin_headers,
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["familyId"] == family["id"]
+
+    refreshed = fb_auth.get_user(created["uid"])
+    assert refreshed.custom_claims == {"role": "member", "fam": family["id"]}
+
+
+def test_patch_user_role_super_is_accepted(client: TestClient, admin_headers: dict[str, str]):
+    created = client.post(
+        "/api/admin/users",
+        json={"alias": "futuresuper", "displayName": "Future Super", "email": "fs@example.com"},
+        headers=admin_headers,
+    ).json()
+
+    resp = client.patch(
+        f"/api/admin/users/{created['uid']}", json={"role": "super"}, headers=admin_headers
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["role"] == "super"
+    refreshed = fb_auth.get_user(created["uid"])
+    assert refreshed.custom_claims == {"role": "super", "fam": ""}
+
+
+def test_create_user_with_family_id(client: TestClient, admin_headers: dict[str, str]):
+    family = families_store.create_family(name="Pinned Family", created_by="root-uid")
+    resp = client.post(
+        "/api/admin/users",
+        json={
+            "alias": "famkid",
+            "displayName": "Fam Kid",
+            "email": "famkid@example.com",
+            "familyId": family.id,
+        },
+        headers=admin_headers,
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["familyId"] == family.id
+    refreshed = fb_auth.get_user(resp.json()["uid"])
+    assert refreshed.custom_claims == {"role": "member", "fam": family.id}
+
+
+def test_list_users_filters_by_family_query_param(client: TestClient, admin_headers: dict[str, str]):
+    family_a = families_store.create_family(name="List A", created_by="root-uid")
+    family_b = families_store.create_family(name="List B", created_by="root-uid")
+    client.post(
+        "/api/admin/users",
+        json={"alias": "usera", "displayName": "A", "email": "usera@example.com", "familyId": family_a.id},
+        headers=admin_headers,
+    )
+    client.post(
+        "/api/admin/users",
+        json={"alias": "userb", "displayName": "B", "email": "userb@example.com", "familyId": family_b.id},
+        headers=admin_headers,
+    )
+
+    resp = client.get(f"/api/admin/users?family={family_a.id}", headers=admin_headers)
+    assert resp.status_code == 200, resp.text
+    aliases = {u["alias"] for u in resp.json()}
+    assert aliases == {"usera"}
+
+
+def test_list_devices_filters_by_family_query_param(client: TestClient, admin_headers: dict[str, str]):
+    family_a = families_store.create_family(name="Dev List A", created_by="root-uid")
+    family_b = families_store.create_family(name="Dev List B", created_by="root-uid")
+    users_store.create_user(
+        uid="devowner-a", alias="devownera", display_name="Owner A", family_id=family_a.id
+    )
+    users_store.create_user(
+        uid="devowner-b", alias="devownerb", display_name="Owner B", family_id=family_b.id
+    )
+    client.post(
+        "/api/admin/devices",
+        json={"deviceId": "pgr-filt-a", "ownerAlias": "devownera", "label": "a"},
+        headers=admin_headers,
+    )
+    client.post(
+        "/api/admin/devices",
+        json={"deviceId": "pgr-filt-b", "ownerAlias": "devownerb", "label": "b"},
+        headers=admin_headers,
+    )
+
+    resp = client.get(f"/api/admin/devices?family={family_a.id}", headers=admin_headers)
+    assert resp.status_code == 200, resp.text
+    ids = {d["id"] for d in resp.json()}
+    assert ids == {"pgr-filt-a"}

@@ -16,6 +16,7 @@ from app.store import allow as allow_store
 from app.store import backends as backends_store
 from app.store import conversations as conversations_store
 from app.store import devices as devices_store
+from app.store import families as families_store
 from app.store import messages as messages_store
 from app.store import users as users_store
 from tests.fake_transport import FakeBrokerClient
@@ -52,8 +53,30 @@ def _make_user(uid: str, alias: str) -> dict[str, str]:
 
 def _make_admin(uid: str, alias: str) -> dict[str, str]:
     fb_auth.create_user(uid=uid, email=f"{uid}@example.com")
-    users_store.create_user(uid=uid, alias=alias, display_name=alias, role="admin")
-    fb_auth.set_custom_user_claims(uid, {"admin": True})
+    users_store.create_user(uid=uid, alias=alias, display_name=alias, role="super")
+    fb_auth.set_custom_user_claims(uid, {"role": "super", "fam": ""})
+    return auth_header(uid)
+
+
+def _make_family_admin_in(uid: str, alias: str, family_id: str) -> dict[str, str]:
+    """docs/FAMILIES_TASKS.md 1.3: group creation moved to `POST
+    /api/family/groups`, gated on `require_family_admin` -- these group
+    tests need a real family admin (role `admin`, a `familyId`), not the
+    global `super` `_make_admin` above."""
+    fb_auth.create_user(uid=uid, email=f"{uid}@example.com")
+    users_store.create_user(
+        uid=uid, alias=alias, display_name=alias, role="admin", family_id=family_id
+    )
+    fb_auth.set_custom_user_claims(uid, {"role": "admin", "fam": family_id})
+    return auth_header(uid)
+
+
+def _make_family_member_in(uid: str, alias: str, family_id: str) -> dict[str, str]:
+    fb_auth.create_user(uid=uid, email=f"{uid}@example.com")
+    users_store.create_user(
+        uid=uid, alias=alias, display_name=alias, role="member", family_id=family_id
+    )
+    fb_auth.set_custom_user_claims(uid, {"role": "member", "fam": family_id})
     return auth_header(uid)
 
 
@@ -323,101 +346,23 @@ def test_locate_requires_auth(client: TestClient):
 
 
 # ---------------------------------------------------------------------------
-# Group admin API -- docs/GROUP_CHAT_DESIGN.md §3, task G2.
+# Group admin API -- docs/GROUP_CHAT_DESIGN.md §3, docs/FAMILIES_DESIGN.md §4.
+# Creation itself (`POST /api/family/groups`, family-admin-gated, membership
+# restricted to family-or-edge peers) is covered by
+# `tests/test_family_router.py` -- these tests exercise what's still mounted
+# under `/api/conversations` (send, mark-read, join, leave), each needing an
+# already-created group.
 # ---------------------------------------------------------------------------
 
 
-def test_create_group_requires_admin(client: TestClient):
-    mom_headers = _make_user("gapi-mom", "gapi-mom")
-    _make_user("gapi-kid", "gapi-kid")
-    resp = client.post(
-        "/api/conversations",
-        json={"name": "Family", "alias": "gapi-fam", "memberUids": ["gapi-mom", "gapi-kid"]},
-        headers=mom_headers,
-    )
-    assert resp.status_code == 403
-
-
-def test_create_group_success_returns_conv_key_and_creates_allow_edges(client: TestClient):
-    admin_headers = _make_admin("gapi-admin1", "gapi-admin1")
-    _make_user("gapi-m1", "gapi-m1")
-    _make_user("gapi-m2", "gapi-m2")
-
-    resp = client.post(
-        "/api/conversations",
-        json={
-            "name": "Family",
-            "alias": "gapi-fam1",
-            "memberUids": ["gapi-m1", "gapi-m2"],
-        },
-        headers=admin_headers,
-    )
-    assert resp.status_code == 201, resp.text
-    body = resp.json()
-    assert body["alias"] == "gapi-fam1"
-    assert body["convKey"].startswith("g_")
-
-    conv = messages_store.get_conversation(body["convKey"])
-    assert conv is not None
-    assert conv.kind == "group"
-    assert conv.uids == ["gapi-m1", "gapi-m2"]
-
-    # Decision 2: creating a group auto-creates allow edges both ways
-    # between every member pair.
-    assert allow_store.is_message_allowed("gapi-m1", "gapi-m2")
-    assert allow_store.is_message_allowed("gapi-m2", "gapi-m1")
-
-
-def test_create_group_tolerates_creator_already_in_member_uids(client: TestClient):
-    """The web client always includes the creating admin's own uid in
-    `memberUids` -- the endpoint must dedupe, not reject."""
-    admin_headers = _make_admin("gapi-admin2", "gapi-admin2")
-    _make_user("gapi-m3", "gapi-m3")
-
-    resp = client.post(
-        "/api/conversations",
-        json={
-            "name": "Family",
-            "alias": "gapi-fam2",
-            "memberUids": ["gapi-admin2", "gapi-m3", "gapi-admin2"],
-        },
-        headers=admin_headers,
-    )
-    assert resp.status_code == 201, resp.text
-    conv = messages_store.get_conversation(resp.json()["convKey"])
-    assert conv is not None
-    assert conv.uids == ["gapi-admin2", "gapi-m3"]
-
-
-def test_create_group_alias_collision_is_409(client: TestClient):
-    admin_headers = _make_admin("gapi-admin3", "gapi-admin3")
-    _make_user("gapi-m4", "gapi-m4")
-    _make_user("gapi-m5", "gapi-m5")
-    payload = {"name": "Family", "alias": "gapi-dupe", "memberUids": ["gapi-m4", "gapi-m5"]}
-    first = client.post("/api/conversations", json=payload, headers=admin_headers)
-    assert first.status_code == 201, first.text
-
-    second = client.post("/api/conversations", json=payload, headers=admin_headers)
-    assert second.status_code == 409
-
-
-def test_create_group_unknown_member_uid_is_404(client: TestClient):
-    admin_headers = _make_admin("gapi-admin4", "gapi-admin4")
-    resp = client.post(
-        "/api/conversations",
-        json={"name": "Family", "alias": "gapi-fam4", "memberUids": ["gapi-admin4", "ghost-uid"]},
-        headers=admin_headers,
-    )
-    assert resp.status_code == 404
-
-
 def test_send_group_message_and_mark_read(client: TestClient):
-    admin_headers = _make_admin("gapi-admin5", "gapi-admin5")
-    kid_headers = _make_user("gapi-kid5", "gapi-kid5")
-    _make_user("gapi-kid6", "gapi-kid6")
+    family = families_store.create_family(name="gapi-fam5-family", created_by="root-uid")
+    admin_headers = _make_family_admin_in("gapi-admin5", "gapi-admin5", family.id)
+    kid_headers = _make_family_member_in("gapi-kid5", "gapi-kid5", family.id)
+    _make_family_member_in("gapi-kid6", "gapi-kid6", family.id)
 
     created = client.post(
-        "/api/conversations",
+        "/api/family/groups",
         json={
             "name": "Family",
             "alias": "gapi-fam5",
@@ -445,12 +390,13 @@ def test_send_group_message_and_mark_read(client: TestClient):
 
 
 def test_send_group_message_by_non_member_is_403(client: TestClient):
-    admin_headers = _make_admin("gapi-admin6", "gapi-admin6")
-    _make_user("gapi-kid7", "gapi-kid7")
+    family = families_store.create_family(name="gapi-fam6-family", created_by="root-uid")
+    admin_headers = _make_family_admin_in("gapi-admin6", "gapi-admin6", family.id)
+    _make_family_member_in("gapi-kid7", "gapi-kid7", family.id)
     outsider_headers = _make_user("gapi-outsider", "gapi-outsider")
 
     created = client.post(
-        "/api/conversations",
+        "/api/family/groups",
         json={
             "name": "Family",
             "alias": "gapi-fam6",
@@ -467,12 +413,13 @@ def test_send_group_message_by_non_member_is_403(client: TestClient):
 
 
 def test_add_member_then_leave(client: TestClient):
-    admin_headers = _make_admin("gapi-admin7", "gapi-admin7")
-    kid_headers = _make_user("gapi-kid8", "gapi-kid8")
+    family = families_store.create_family(name="gapi-fam7-family", created_by="root-uid")
+    admin_headers = _make_family_admin_in("gapi-admin7", "gapi-admin7", family.id)
+    kid_headers = _make_family_member_in("gapi-kid8", "gapi-kid8", family.id)
     _make_user("gapi-newmem", "gapi-newmem")
 
     created = client.post(
-        "/api/conversations",
+        "/api/family/groups",
         json={
             "name": "Family",
             "alias": "gapi-fam7",
@@ -502,13 +449,14 @@ def test_add_member_then_leave(client: TestClient):
 
 
 def test_add_member_by_non_member_is_403(client: TestClient):
-    admin_headers = _make_admin("gapi-admin8", "gapi-admin8")
-    _make_user("gapi-kid9", "gapi-kid9")
+    family = families_store.create_family(name="gapi-fam8-family", created_by="root-uid")
+    admin_headers = _make_family_admin_in("gapi-admin8", "gapi-admin8", family.id)
+    _make_family_member_in("gapi-kid9", "gapi-kid9", family.id)
     outsider_headers = _make_user("gapi-outsider2", "gapi-outsider2")
     _make_user("gapi-target", "gapi-target")
 
     created = client.post(
-        "/api/conversations",
+        "/api/family/groups",
         json={
             "name": "Family",
             "alias": "gapi-fam8",
@@ -526,81 +474,58 @@ def test_add_member_by_non_member_is_403(client: TestClient):
     assert resp.status_code == 403
 
 
-# ---------------------------------------------------------------------------
-# book push on membership change -- build/bench-logs/group-acceptance.md's
-# "Gap found": create/add-member/leave must bump `devices/{d}.bookVersion`
-# and re-publish the book to any member's device, the same
-# bump_book_version+push_book idiom `app/routers/admin.py`'s contact
-# approve/reject already uses.
-# ---------------------------------------------------------------------------
+def test_add_member_writes_message_edge_only_not_locate(client: TestClient):
+    """docs/FAMILIES_DESIGN.md §1 decision 9: group join no longer has the
+    silent mutual-`locate` side effect -- only `message`, both ways."""
+    family = families_store.create_family(name="gapi-fam8b-family", created_by="root-uid")
+    admin_headers = _make_family_admin_in("gapi-admin8b", "gapi-admin8b", family.id)
+    _make_family_member_in("gapi-kid9b", "gapi-kid9b", family.id)
+    _make_user("gapi-newmem8b", "gapi-newmem8b")
 
-
-def test_create_group_pushes_book_to_pager_member_but_not_web_only_member(
-    client: TestClient,
-):
-    admin_headers = _make_admin("gbk-admin1", "gbk-admin1")
-    _make_user("gbk-webonly1", "gbk-webonly1")
-    _make_pager_device("gbk-dev1", "gbk-admin1")
-
-    resp = client.post(
-        "/api/conversations",
+    created = client.post(
+        "/api/family/groups",
         json={
             "name": "Family",
-            "alias": "gbk-fam1",
-            "memberUids": ["gbk-admin1", "gbk-webonly1"],
+            "alias": "gapi-fam8b",
+            "memberUids": ["gapi-admin8b", "gapi-kid9b"],
         },
         headers=admin_headers,
     )
-    assert resp.status_code == 201, resp.text
-
-    broker = client.app.state.broker
-    pushes = [p for p in broker.published if p.topic == "pager/gbk-dev1/down"]
-    assert len(pushes) == 1
-    sent = json.loads(pushes[0].payload)
-    assert sent["kind"] == "book"
-    assert {"a": "gbk-fam1", "n": "Family", "t": "grp"} in sent["c"]
-
-    # No device for gbk-webonly1 -- nothing to push to, and no other topic
-    # was touched.
-    assert all(p.topic == "pager/gbk-dev1/down" for p in broker.published)
-
-
-def test_create_group_bumps_book_version(client: TestClient):
-    from app.db.firestore import get_db
-
-    admin_headers = _make_admin("gbk-admin2", "gbk-admin2")
-    _make_pager_device("gbk-dev2", "gbk-admin2")
-    _make_user("gbk-kid2", "gbk-kid2")
-
-    before = int(
-        (get_db().collection("devices").document("gbk-dev2").get().to_dict() or {}).get(
-            "bookVersion", 0
-        )
-    )
+    assert created.status_code == 201, created.text
 
     resp = client.post(
-        "/api/conversations",
-        json={"name": "Family", "alias": "gbk-fam2", "memberUids": ["gbk-admin2", "gbk-kid2"]},
+        "/api/conversations/gapi-fam8b/members",
+        json={"uid": "gapi-newmem8b"},
         headers=admin_headers,
     )
-    assert resp.status_code == 201, resp.text
+    assert resp.status_code == 200, resp.text
 
-    after = int(
-        (get_db().collection("devices").document("gbk-dev2").get().to_dict() or {}).get(
-            "bookVersion", 0
-        )
-    )
-    assert after == before + 1
+    edge = allow_store.get_edge("gapi-newmem8b", "gapi-admin8b")
+    assert edge is not None
+    assert edge.message is True
+    assert edge.locate is False
+
+
+# ---------------------------------------------------------------------------
+# book push on membership change -- build/bench-logs/group-acceptance.md's
+# "Gap found": add-member/leave must bump `devices/{d}.bookVersion` and
+# re-publish the book to any member's device, the same
+# bump_book_version+push_book idiom `app/routers/admin.py`'s contact
+# approve/reject already uses. (Creation's own book-push is covered by
+# `tests/test_family_router.py` now that it lives on `POST
+# /api/family/groups`.)
+# ---------------------------------------------------------------------------
 
 
 def test_add_member_pushes_book_to_new_pager_member(client: TestClient):
-    admin_headers = _make_admin("gbk-admin3", "gbk-admin3")
-    _make_user("gbk-kid3", "gbk-kid3")
+    family = families_store.create_family(name="gbk-fam3-family", created_by="root-uid")
+    admin_headers = _make_family_admin_in("gbk-admin3", "gbk-admin3", family.id)
+    _make_family_member_in("gbk-kid3", "gbk-kid3", family.id)
     _make_user("gbk-newmem3", "gbk-newmem3")
     _make_pager_device("gbk-dev3", "gbk-newmem3")
 
     created = client.post(
-        "/api/conversations",
+        "/api/family/groups",
         json={"name": "Family", "alias": "gbk-fam3", "memberUids": ["gbk-admin3", "gbk-kid3"]},
         headers=admin_headers,
     )
@@ -624,13 +549,14 @@ def test_add_member_pushes_book_to_new_pager_member(client: TestClient):
 
 
 def test_leave_group_pushes_book_to_leaving_pager_member_only(client: TestClient):
-    admin_headers = _make_admin("gbk-admin4", "gbk-admin4")
-    kid_headers = _make_user("gbk-kid4", "gbk-kid4")
+    family = families_store.create_family(name="gbk-fam4-family", created_by="root-uid")
+    admin_headers = _make_family_admin_in("gbk-admin4", "gbk-admin4", family.id)
+    kid_headers = _make_family_member_in("gbk-kid4", "gbk-kid4", family.id)
     _make_pager_device("gbk-dev4-admin", "gbk-admin4")
     _make_pager_device("gbk-dev4-kid", "gbk-kid4")
 
     created = client.post(
-        "/api/conversations",
+        "/api/family/groups",
         json={"name": "Family", "alias": "gbk-fam4", "memberUids": ["gbk-admin4", "gbk-kid4"]},
         headers=admin_headers,
     )

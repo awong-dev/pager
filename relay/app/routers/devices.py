@@ -25,7 +25,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, field_validator
 
 from app import devcfg
-from app.auth import AuthedUser, require_user
+from app.auth import AuthedUser, principal_for, require_user
 from app.broker import BrokerClient
 from app.store import device_secrets as device_secrets_store
 from app.store import devices as devices_store
@@ -51,19 +51,26 @@ def get_broker(request: Request) -> BrokerClient:
     return request.app.state.broker
 
 
-def _is_admin(authed: AuthedUser) -> bool:
-    return bool(authed.claims.get("admin")) or authed.user.role == "admin"
+def _is_family_admin_or_super(device: Device, authed: AuthedUser) -> bool:
+    """docs/FAMILIES_DESIGN.md §4: "owner-or-admin ... becomes owner, or
+    family admin of the device's `familyId`, or super." Claims-only, via
+    `Principal` -- never `authed.user.role`/the legacy `admin` claim."""
+    principal = principal_for(authed)
+    if principal.role == "super":
+        return True
+    return principal.role == "admin" and principal.family_id == device.familyId
 
 
 def _require_owner_or_admin(device_id: str, authed: AuthedUser) -> Device:
     """404 for an unknown device id (never distinguishing "doesn't exist"
     from "exists but isn't yours" for the *not found* case, same as
     `app/routers/conversations.py`'s `mark_read`), 403 for a signed-in,
-    registered caller who is neither this device's owner nor an admin."""
+    registered caller who is neither this device's owner, its family's
+    admin, nor super."""
     device = devices_store.get_device(device_id)
     if device is None:
         raise HTTPException(status_code=404, detail="no such device")
-    if device.ownerUid != authed.uid and not _is_admin(authed):
+    if device.ownerUid != authed.uid and not _is_family_admin_or_super(device, authed):
         raise HTTPException(status_code=403, detail="not this device's owner")
     return device
 

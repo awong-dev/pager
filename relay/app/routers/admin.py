@@ -1,6 +1,12 @@
-"""`/api/admin/*` -- docs/SERVER_PLAN.md §5.1, §5.5. Every route here is
-gated on `app.auth.require_admin` (the `admin` custom claim, refreshed by
-`app.auth`/`app.bootstrap`).
+"""`/api/admin/*` -- docs/SERVER_PLAN.md §5.1, §5.5; docs/FAMILIES_DESIGN.md
+§4. Every route here is gated on `app.auth.require_admin` (an alias of
+`require_super` -- role `super` by claim only, docs/FAMILIES_TASKS.md 1.2).
+Several of this router's handlers (`_create_device_impl`,
+`_rotate_credentials_impl`, `_revoke_device_impl`, `_push_cfg_impl`,
+`_push_ca_impl`, `_delete_device_impl`, `_patch_user_impl`) are factored into
+private module-level functions so `app/routers/family.py`'s family-scoped
+routes can call the exact same setup-code/broker-push flow after their own
+in-family check, instead of duplicating it (docs/FAMILIES_TASKS.md 1.3).
 
 Admin creates users *ahead of time* by email/phone (docs/SERVER_PLAN.md
 §5.3's registry gate): `POST /api/admin/users` creates both the Firebase
@@ -31,12 +37,12 @@ import secrets
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from firebase_admin import auth as fb_auth
 from pydantic import BaseModel, ConfigDict, Field
 
 from app import apn_presets, ca_resolve, devcfg, devsetup
-from app.auth import AuthedUser, require_admin
+from app.auth import AuthedUser, require_admin, set_claims
 from app.backends.sms_twilio import normalize_e164
 from app.broker import BrokerClient
 from app.config import Settings
@@ -48,6 +54,7 @@ from app.store import backends as backends_store
 from app.store import contacts as contacts_store
 from app.store import device_secrets as device_secrets_store
 from app.store import devices as devices_store
+from app.store import families as families_store
 from app.store import rate_limits as rate_limits_store
 from app.store import settings as settings_store
 from app.store import users as users_store
@@ -55,6 +62,7 @@ from app.store.allow import AllowEdge, EdgeInput
 from app.store.backends import Backend
 from app.store.contacts import ContactRequest
 from app.store.devices import Device
+from app.store.families import Family
 from app.store.settings import RetentionSetting, RetentionSettings
 from app.store.users import ALIAS_RE, User
 
@@ -139,6 +147,9 @@ class CreateUserRequest(BaseModel):
     email: str | None = None
     phone: str | None = None
     role: Literal["admin", "member"] = "member"
+    # docs/FAMILIES_DESIGN.md §4: super may pin a new user's family directly;
+    # `None` (unset) keeps the pre-families default of no family.
+    familyId: str | None = None
     uid: str | None = None  # optional: pin a specific uid (tests, re-runs)
 
 
@@ -146,12 +157,13 @@ class PatchUserRequest(BaseModel):
     displayName: str | None = None
     email: str | None = None
     phone: str | None = None
-    role: Literal["admin", "member"] | None = None
+    # docs/FAMILIES_DESIGN.md §4: super may also promote/demote to `super`
+    # here (family admins do this through `PATCH /api/family/members/{uid}`,
+    # which only ever accepts `admin`/`member`).
+    role: Literal["super", "admin", "member"] | None = None
+    # docs/FAMILIES_DESIGN.md §4: moves a user between families.
+    familyId: str | None = None
     disabled: bool | None = None
-
-
-def _set_admin_claim(uid: str, is_admin: bool) -> None:
-    fb_auth.set_custom_user_claims(uid, {"admin": True} if is_admin else {})
 
 
 @router.post("/users", dependencies=[Depends(require_admin_write_rate_limit)])
@@ -181,6 +193,7 @@ def create_user(req: CreateUserRequest) -> User:
             email=req.email,
             phone=req.phone,
             role=req.role,
+            family_id=req.familyId,
         )
     except (users_store.AliasTaken, users_store.InvalidAlias) as exc:
         # Roll back the just-created Auth account so a rejected alias
@@ -189,33 +202,65 @@ def create_user(req: CreateUserRequest) -> User:
         fb_auth.delete_user(auth_user.uid)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    if req.role == "admin":
-        _set_admin_claim(user.uid, True)
+    # docs/FAMILIES_DESIGN.md §1 decision 2: claims are the only source of
+    # truth for `role`/`fam`, so every created user (not just admins) gets
+    # them written, in sync with the doc just created.
+    set_claims(user.uid, user.role, user.familyId)
     return user
 
 
 @router.get("/users")
-def list_users() -> list[User]:
-    return users_store.list_users()
+def list_users(family: Annotated[str | None, Query()] = None) -> list[User]:
+    """docs/FAMILIES_DESIGN.md §4: `?family=` narrows the global listing to
+    one family -- filtered in Python (household/deployment scale, same
+    "no index needed yet" call `app/store/conversations.py`'s
+    `list_groups_for_member` already makes) rather than a Firestore query,
+    since `app/store/users.py` (outside this task's `Files` list) does not
+    yet expose a `familyId`-filtered read."""
+    users = users_store.list_users()
+    if family is not None:
+        users = [u for u in users if u.familyId == family]
+    return users
 
 
-@router.patch("/users/{uid}", dependencies=[Depends(require_admin_write_rate_limit)])
-def patch_user(
-    uid: str, req: PatchUserRequest, broker: Annotated[BrokerClient, Depends(get_broker)]
+def _patch_user_impl(
+    uid: str,
+    *,
+    display_name: str | None,
+    email: str | None,
+    phone: str | None,
+    role: str | None,
+    family_id: str | None,
+    disabled: bool | None,
+    broker: BrokerClient,
 ) -> User:
+    """Shared by `PATCH /api/admin/users/{uid}` (below, no family
+    restriction) and `PATCH /api/family/members/{uid}`
+    (`app/routers/family.py`, which checks the target is in its own scope
+    family and never passes `family_id`) -- one setup-code-free "patch a
+    user, re-issue claims if role/family changed, bump listing owners' books
+    on a displayName change" flow, not duplicated per caller."""
     existing = users_store.get_user(uid)
     if existing is None:
         raise HTTPException(status_code=404, detail="no such user")
+    if family_id is not None:
+        # docs/FAMILIES_DESIGN.md §4: "moves a user between families" --
+        # `app.store.users.update_user` (task 1.1's `Files` list, not this
+        # task's) has no `family_id` parameter yet, so this writes the field
+        # directly on `users/{uid}`, the same "the store doesn't expose a
+        # setter for this field yet" pattern `_create_admin_asserted_
+        # backend`'s `adminVerified` write already uses in this file.
+        get_db().collection("users").document(uid).update({"familyId": family_id})
     user = users_store.update_user(
         uid,
-        display_name=req.displayName,
-        email=req.email,
-        phone=req.phone,
-        role=req.role,
-        disabled=req.disabled,
+        display_name=display_name,
+        email=email,
+        phone=phone,
+        role=role,
+        disabled=disabled,
     )
-    if req.role is not None:
-        _set_admin_claim(uid, req.role == "admin")
+    if role is not None or family_id is not None:
+        set_claims(uid, user.role, user.familyId)
     # docs/CHAT_UI_DESIGN.md §1 / docs/PROTOCOL.md §3.7: "a `displayName`
     # change of anyone the book lists" bumps and re-pushes the book of
     # "every owner O with `is_message_allowed(O, uid)`" -- every user with
@@ -224,13 +269,29 @@ def patch_user(
     # `_approved_contacts`). Only fires on an actual change, and only when
     # this request even carried `displayName` at all (patch semantics: an
     # absent field never counts as "changed").
-    if req.displayName is not None and req.displayName != existing.displayName:
+    if display_name is not None and display_name != existing.displayName:
         owner_uids = {e.fromUid for e in allow_store.list_edges() if e.toUid == uid and e.message}
         for owner_uid in owner_uids:
             for device in devices_store.list_devices(owner_uid=owner_uid):
                 contacts_store.bump_book_version(device.id)
                 devcfg.push_book(device.id, broker)
     return user
+
+
+@router.patch("/users/{uid}", dependencies=[Depends(require_admin_write_rate_limit)])
+def patch_user(
+    uid: str, req: PatchUserRequest, broker: Annotated[BrokerClient, Depends(get_broker)]
+) -> User:
+    return _patch_user_impl(
+        uid,
+        display_name=req.displayName,
+        email=req.email,
+        phone=req.phone,
+        role=req.role,
+        family_id=req.familyId,
+        disabled=req.disabled,
+        broker=broker,
+    )
 
 
 @router.delete("/users/{uid}", dependencies=[Depends(require_admin_write_rate_limit)])
@@ -458,14 +519,19 @@ def _broker_push_outcome(
     return "manual", _manual_acl_lines(device_id)
 
 
-@router.post("/devices", dependencies=[Depends(require_admin_write_rate_limit)])
-def create_device(
+def _create_device_impl(
     req: CreateDeviceRequest,
-    broker: Annotated[BrokerClient, Depends(get_broker)],
-    emqx: Annotated[EmqxAdmin, Depends(get_emqx)],
-    settings: Annotated[Settings, Depends(get_app_settings)],
+    broker: BrokerClient,
+    emqx: EmqxAdmin,
+    settings: Settings,
 ) -> DeviceSetupCodeResponse:
+    """The whole setup-code flow, factored out so `app/routers/family.py`'s
+    `POST /api/family/devices` can call it too, after its own in-family
+    check on `req.ownerAlias` (docs/FAMILIES_TASKS.md 1.3) -- this function
+    itself does not know or care whether the caller is `require_admin` or
+    `require_family_admin`."""
     owner_uid = _resolve_uid(req.ownerAlias)
+    owner = users_store.get_user(owner_uid)
     default_to_uid = _resolve_uid(req.defaultToAlias) if req.defaultToAlias else None
     try:
         apn = apn_presets.validate_apn(req.apn)
@@ -486,6 +552,9 @@ def create_device(
         device_id=req.deviceId,
         owner_uid=owner_uid,
         label=req.label,
+        # docs/FAMILIES_DESIGN.md §1 decision 1: a device's family is
+        # copied from its owner at creation time, not chosen separately.
+        family_id=owner.familyId if owner is not None else None,
         mqtt_username=req.deviceId,
         mqtt_password_hash=password_hash,
         default_to_uid=default_to_uid,
@@ -557,13 +626,28 @@ def create_device(
     )
 
 
+@router.post("/devices", dependencies=[Depends(require_admin_write_rate_limit)])
+def create_device(
+    req: CreateDeviceRequest,
+    broker: Annotated[BrokerClient, Depends(get_broker)],
+    emqx: Annotated[EmqxAdmin, Depends(get_emqx)],
+    settings: Annotated[Settings, Depends(get_app_settings)],
+) -> DeviceSetupCodeResponse:
+    return _create_device_impl(req, broker, emqx, settings)
+
+
 @router.get("/devices")
-def list_devices() -> list[Device]:
-    return devices_store.list_devices()
+def list_devices(family: Annotated[str | None, Query()] = None) -> list[Device]:
+    """docs/FAMILIES_DESIGN.md §4: `?family=` narrows the global listing --
+    same Python-side filter as `list_users` above, for the same reason
+    (`app/store/devices.py` has no `familyId`-filtered read)."""
+    devices = devices_store.list_devices()
+    if family is not None:
+        devices = [d for d in devices if d.familyId == family]
+    return devices
 
 
-@router.delete("/devices/{device_id}", dependencies=[Depends(require_admin_write_rate_limit)])
-def delete_device(device_id: str) -> dict[str, bool]:
+def _delete_device_impl(device_id: str) -> dict[str, bool]:
     device = devices_store.get_device(device_id)
     if device is None:
         raise HTTPException(status_code=404, detail="no such device")
@@ -574,16 +658,17 @@ def delete_device(device_id: str) -> dict[str, bool]:
     return {"ok": True}
 
 
-@router.post(
-    "/devices/{device_id}/rotate-credentials",
-    dependencies=[Depends(require_admin_write_rate_limit)],
-)
-def rotate_credentials(
+@router.delete("/devices/{device_id}", dependencies=[Depends(require_admin_write_rate_limit)])
+def delete_device(device_id: str) -> dict[str, bool]:
+    return _delete_device_impl(device_id)
+
+
+def _rotate_credentials_impl(
     device_id: str,
-    broker: Annotated[BrokerClient, Depends(get_broker)],
-    emqx: Annotated[EmqxAdmin, Depends(get_emqx)],
-    settings: Annotated[Settings, Depends(get_app_settings)],
-    ingest: Annotated[Ingest, Depends(get_ingest)],
+    broker: BrokerClient,
+    emqx: EmqxAdmin,
+    settings: Settings,
+    ingest: Ingest,
 ) -> DeviceSetupCodeResponse:
     device = devices_store.get_device(device_id)
     if device is None:
@@ -647,12 +732,20 @@ def rotate_credentials(
 
 
 @router.post(
-    "/devices/{device_id}/revoke", dependencies=[Depends(require_admin_write_rate_limit)]
+    "/devices/{device_id}/rotate-credentials",
+    dependencies=[Depends(require_admin_write_rate_limit)],
 )
-def revoke_device(
+def rotate_credentials(
     device_id: str,
+    broker: Annotated[BrokerClient, Depends(get_broker)],
     emqx: Annotated[EmqxAdmin, Depends(get_emqx)],
-) -> Device:
+    settings: Annotated[Settings, Depends(get_app_settings)],
+    ingest: Annotated[Ingest, Depends(get_ingest)],
+) -> DeviceSetupCodeResponse:
+    return _rotate_credentials_impl(device_id, broker, emqx, settings, ingest)
+
+
+def _revoke_device_impl(device_id: str, emqx: EmqxAdmin) -> Device:
     """docs/DEVICE_PLAN.md §3.5: mounts the store function that already
     existed (`devices_store.revoke_device`) and additionally deletes the
     broker credential -- "so a stolen device cannot even connect"."""
@@ -661,6 +754,16 @@ def revoke_device(
         raise HTTPException(status_code=404, detail="no such device")
     emqx.delete_user(device.mqttUsername)
     return devices_store.revoke_device(device_id)
+
+
+@router.post(
+    "/devices/{device_id}/revoke", dependencies=[Depends(require_admin_write_rate_limit)]
+)
+def revoke_device(
+    device_id: str,
+    emqx: Annotated[EmqxAdmin, Depends(get_emqx)],
+) -> Device:
+    return _revoke_device_impl(device_id, emqx)
 
 
 # ---------------------------------------------------------------------------
@@ -820,17 +923,21 @@ class PushCfgRequest(BaseModel):
     lock: LockCfg
 
 
+def _push_cfg_impl(device_id: str, req: PushCfgRequest, broker: BrokerClient) -> dict[str, bool]:
+    if devices_store.get_device(device_id) is None:
+        raise HTTPException(status_code=404, detail="no such device")
+    lock = {k: v for k, v in req.lock.model_dump().items() if v is not None}
+    ok = devcfg.push_cfg(device_id, lock, broker)
+    return {"ok": ok}
+
+
 @router.post("/devices/{device_id}/cfg", dependencies=[Depends(require_admin_write_rate_limit)])
 def push_cfg(
     device_id: str,
     req: PushCfgRequest,
     broker: Annotated[BrokerClient, Depends(get_broker)],
 ) -> dict[str, bool]:
-    if devices_store.get_device(device_id) is None:
-        raise HTTPException(status_code=404, detail="no such device")
-    lock = {k: v for k, v in req.lock.model_dump().items() if v is not None}
-    ok = devcfg.push_cfg(device_id, lock, broker)
-    return {"ok": ok}
+    return _push_cfg_impl(device_id, req, broker)
 
 
 # ---------------------------------------------------------------------------
@@ -864,12 +971,8 @@ def set_device_apn(device_id: str, req: SetApnRequest) -> dict[str, str | None]:
     return {"apn": apn}
 
 
-@router.post("/devices/{device_id}/ca", dependencies=[Depends(require_admin_write_rate_limit)])
-def push_ca(
-    device_id: str,
-    req: PushCaRequest,
-    broker: Annotated[BrokerClient, Depends(get_broker)],
-    settings: Annotated[Settings, Depends(get_app_settings)],
+def _push_ca_impl(
+    device_id: str, req: PushCaRequest, broker: BrokerClient, settings: Settings
 ) -> dict[str, bool]:
     """`{"action": "push"}` pushes the relay's own current CA
     (`settings.broker_ca_pem` or `ca_resolve.get_broker_ca_pem()`, same
@@ -894,6 +997,16 @@ def push_ca(
     return {"ok": ok}
 
 
+@router.post("/devices/{device_id}/ca", dependencies=[Depends(require_admin_write_rate_limit)])
+def push_ca(
+    device_id: str,
+    req: PushCaRequest,
+    broker: Annotated[BrokerClient, Depends(get_broker)],
+    settings: Annotated[Settings, Depends(get_app_settings)],
+) -> dict[str, bool]:
+    return _push_ca_impl(device_id, req, broker, settings)
+
+
 # ---------------------------------------------------------------------------
 # settings
 # ---------------------------------------------------------------------------
@@ -912,3 +1025,40 @@ def put_settings(req: PutSettingsRequest) -> RetentionSettings:
 @router.get("/settings")
 def get_settings() -> RetentionSettings:
     return settings_store.get_retention()
+
+
+# ---------------------------------------------------------------------------
+# families -- docs/FAMILIES_DESIGN.md §4. Super-only: creating a family and
+# renaming one/setting its SMS number. Everything scoped *to* a family (the
+# member/device/group CRUD) lives in `app/routers/family.py`, reachable by a
+# family's own `admin` too via `require_family_admin`.
+# ---------------------------------------------------------------------------
+
+
+class CreateFamilyRequest(BaseModel):
+    name: str
+
+
+class PatchFamilyRequest(BaseModel):
+    name: str | None = None
+    smsNumber: str | None = None
+
+
+@router.get("/families")
+def list_families() -> list[Family]:
+    return families_store.list_families()
+
+
+@router.post("/families", dependencies=[Depends(require_admin_write_rate_limit)])
+def create_family(
+    req: CreateFamilyRequest, authed: Annotated[AuthedUser, Depends(require_admin)]
+) -> Family:
+    return families_store.create_family(name=req.name, created_by=authed.uid)
+
+
+@router.patch("/families/{fid}", dependencies=[Depends(require_admin_write_rate_limit)])
+def patch_family(fid: str, req: PatchFamilyRequest) -> Family:
+    try:
+        return families_store.update_family(fid, name=req.name, sms_number=req.smsNumber)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc

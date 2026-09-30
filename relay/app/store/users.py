@@ -14,7 +14,7 @@ from typing import Literal
 
 from google.api_core.exceptions import AlreadyExists, NotFound
 from google.cloud.firestore import SERVER_TIMESTAMP, Transaction
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.db.firestore import get_db, run_transaction
 from app.store import backends as backends_store
@@ -23,7 +23,46 @@ from app.store import backends as backends_store
 ALIAS_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,15}$")
 RESERVED_ALIASES = {"system"}
 
-Role = Literal["admin", "member"]
+# docs/FAMILIES_DESIGN.md §1 decision 2: "super" is the global superadmin,
+# "admin" is now a *family* admin.
+Role = Literal["super", "admin", "member"]
+Kind = Literal["person", "external"]
+
+# docs/FAMILIES_DESIGN.md §2: the two policy pickers' machine codes. Kept as
+# plain `str` here (not restricted to these literals) because `app/
+# policy.py` (task 3.1) is the module that owns validating them against
+# `OUT`/`IN` -- this module only needs a shape to store the default in.
+
+
+class Policy(BaseModel):
+    """`users/{uid}.policy` -- docs/FAMILIES_DESIGN.md §2. `in` is a Python
+    keyword, hence `in_`/`Field(alias="in")`; `populate_by_name` lets
+    callers construct one with either name, while `model_validate` (used
+    when reading the Firestore dict back, which has a literal `"in"` key)
+    always works via the alias regardless."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    out: str
+    in_: str = Field(alias="in")
+
+
+class Notify(BaseModel):
+    """`users/{uid}.notify` -- docs/FAMILIES_DESIGN.md §3. Only one flag so
+    far: whether this user's family-admin alerts are pushed (task 4.2)."""
+
+    alerts: bool = True
+
+
+# docs/FAMILIES_DESIGN.md §2, last paragraph: "Defaults are applied at user
+# creation from role (`member` -> `people`/`people`, `admin`/`super` ->
+# `open`/`any`)".
+_DEFAULT_MEMBER_POLICY = {"out": "people", "in": "people"}
+_DEFAULT_ADMIN_POLICY = {"out": "open", "in": "any"}
+
+
+def _default_policy(role: Role) -> dict[str, str]:
+    return dict(_DEFAULT_MEMBER_POLICY if role == "member" else _DEFAULT_ADMIN_POLICY)
 
 
 class User(BaseModel):
@@ -35,6 +74,13 @@ class User(BaseModel):
     email: str | None = None
     phone: str | None = None
     role: Role = "member"
+    # docs/FAMILIES_DESIGN.md §1 decision 1: every user belongs to exactly
+    # one family; `None` only for externals (decision 6) and for users
+    # created before this field existed.
+    familyId: str | None = None
+    kind: Kind = "person"
+    policy: Policy = Field(default_factory=lambda: Policy.model_validate(_DEFAULT_MEMBER_POLICY))
+    notify: Notify = Field(default_factory=Notify)
     disabled: bool = False
     createdAt: datetime | None = None
 
@@ -69,11 +115,19 @@ def create_user(
     email: str | None = None,
     phone: str | None = None,
     role: Role = "member",
+    family_id: str | None = None,
+    kind: Kind = "person",
 ) -> User:
     """Creates `users/{uid}` and `aliases/{alias}` in one transaction --
     `aliases/{alias}` is created with `transaction.create`, which raises
     `AlreadyExists` (re-raised here as `AliasTaken`) if the alias is already
-    taken, so the two documents can never be created out of sync."""
+    taken, so the two documents can never be created out of sync.
+
+    `family_id` defaults to `None` so every existing caller outside
+    `app/routers/family.py` (task 1.3, which always passes the scope
+    family) keeps working unchanged; `policy` is never a parameter -- it is
+    always the role's default (docs/FAMILIES_DESIGN.md §2), computed here
+    from `role`."""
     _validate_alias(alias)
     db = get_db()
     user_ref = db.collection("users").document(uid)
@@ -89,6 +143,10 @@ def create_user(
                 "email": email,
                 "phone": phone,
                 "role": role,
+                "familyId": family_id,
+                "kind": kind,
+                "policy": _default_policy(role),
+                "notify": {"alerts": True},
                 "disabled": False,
                 "createdAt": SERVER_TIMESTAMP,
             },

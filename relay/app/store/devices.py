@@ -177,6 +177,20 @@ class SmsContact(BaseModel):
         return value
 
 
+class PendingPush(BaseModel):
+    """One of `devices/{d}`'s five independent "newest unacked" push slots
+    (`app/devcfg.py`'s module docstring): `id` is the down envelope's own
+    id, `obj` the exact unsigned envelope built and handed to
+    `BrokerClient.publish_down` (replayed byte-identical on republish),
+    `acked` whether the device has acked that id yet."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    id: str
+    obj: dict[str, object]
+    acked: bool
+
+
 class Device(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -220,6 +234,25 @@ class Device(BaseModel):
     # `/status` from that device arrives. `None` only for devices created
     # before this field existed.
     provisionState: Literal["issued", "provisioned"] | None = None
+    # docs/FAMILIES_DESIGN.md §1 decision 1/§3: copied from the owner's
+    # `familyId` at creation time (`app/routers/admin.py`'s `create_device`);
+    # `None` only for devices created before this field existed.
+    familyId: str | None = None
+    # docs/DEVICE_PLAN.md §4.1 / app/store/contacts.py's `bump_book_version`:
+    # written directly via `get_db()` (not through this model) since before
+    # this task -- modelled here only so `devices_store.get_device()` stops
+    # dropping it on read (`extra="ignore"` silently discarded it).
+    bookVersion: int = 0
+    # docs/DEVICE_PLAN.md §4.3/§5.8, app/devcfg.py's module docstring: each
+    # of the five independent "newest unacked" pending-push slots
+    # (book/lock/ca/sms/wifi), written directly via `get_db()` by
+    # `app/devcfg.py`, same "not modelled, so silently dropped on read"
+    # story as `bookVersion` above.
+    pendingBook: PendingPush | None = None
+    pendingCfg: PendingPush | None = None
+    pendingCfgCa: PendingPush | None = None
+    pendingCfgSms: PendingPush | None = None
+    pendingCfgWifi: PendingPush | None = None
 
 
 def _devices():
@@ -236,6 +269,7 @@ def create_device(
     default_to_uid: str | None = None,
     auth_mode: Literal["password", "hmac"] = "hmac",
     apn: str | None = None,
+    family_id: str | None = None,
 ) -> Device:
     """`mqtt_password_hash` is accepted but no longer written anywhere
     (docs/DEVICE_TASKS.md S2.2, per S1.1's own note that `devices/{d}`
@@ -265,6 +299,7 @@ def create_device(
             "authMode": auth_mode,
             "wire": None,
             "provisionState": "issued",
+            "familyId": family_id,
         }
     )
     fetched = get_device(device_id)

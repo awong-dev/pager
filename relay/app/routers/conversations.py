@@ -11,11 +11,10 @@ import time
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from google.api_core.exceptions import AlreadyExists
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from app import devcfg
-from app.auth import AuthedUser, require_admin, require_user
+from app.auth import AuthedUser, principal_for, require_user
 from app.broker import BrokerClient
 from app.location import Location, NoLocatableDevice
 from app.routing import Routing
@@ -26,7 +25,6 @@ from app.store import devices as devices_store
 from app.store import messages as messages_store
 from app.store import users as users_store
 from app.store.conversations import Conversation
-from app.store.users import InvalidAlias
 from app.wire import (
     BODY_MAX_CODEPOINTS,
     BODY_MAX_UTF8_BYTES,
@@ -145,20 +143,15 @@ def mark_read(
 
 
 # ---------------------------------------------------------------------------
-# Group admin API -- docs/GROUP_CHAT_DESIGN.md §3. All `require_user`;
-# creation is admin-only in v1 (`require_admin`).
+# Group admin API -- docs/GROUP_CHAT_DESIGN.md §3, docs/FAMILIES_DESIGN.md §4.
+# Creation moved to `POST /api/family/groups` (`app/routers/family.py`,
+# docs/FAMILIES_TASKS.md 1.3) -- `_push_book_to_members`/
+# `_create_missing_allow_edges` below are reused from there, hence not
+# module-private in practice even though the leading underscore (an internal
+# helper of this router, not a public API) is unchanged. Join
+# (`add_group_member` below) and leave stay mounted here under
+# `/api/conversations`, `require_user`.
 # ---------------------------------------------------------------------------
-
-
-class CreateGroupRequest(BaseModel):
-    name: str
-    alias: str
-    memberUids: list[str] = Field(min_length=2)
-
-
-class CreateGroupResponse(BaseModel):
-    convKey: str
-    alias: str
 
 
 def _push_book_to_members(uids: list[str], broker: BrokerClient) -> None:
@@ -204,37 +197,27 @@ def _create_missing_allow_edges(member_uids: list[str]) -> None:
                 allow_store.set_edge(a, b, message=True, locate=True)
 
 
-@router.post("", status_code=201)
-def create_group(
-    req: CreateGroupRequest,
-    authed: Annotated[AuthedUser, Depends(require_admin)],
-    broker: Annotated[BrokerClient, Depends(get_broker)],
-) -> CreateGroupResponse:
-    member_uids = sorted(set(req.memberUids))
-    for uid in member_uids:
-        if users_store.get_user(uid) is None:
-            raise HTTPException(status_code=404, detail=f"no such user: {uid!r}")
-
-    try:
-        conv = conversations_store.create_group(
-            name=req.name, alias=req.alias, member_uids=member_uids, created_by=authed.uid
-        )
-    except InvalidAlias as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except AlreadyExists as exc:
-        raise HTTPException(status_code=409, detail="alias already taken") from exc
-
-    _create_missing_allow_edges(conv.uids)
-    # Every member's book gains this group as a `t:"grp"` contact -- see
-    # `_push_book_to_members`'s docstring.
-    _push_book_to_members(conv.uids, broker)
-    return CreateGroupResponse(convKey=conv.convKey, alias=req.alias)
+def _create_missing_message_edges(member_uids: list[str]) -> None:
+    """docs/FAMILIES_DESIGN.md §1 decision 9: group *join* (unlike group
+    *create*, which still calls `_create_missing_allow_edges` above with its
+    `locate=True`) no longer has the silent mutual-`locate` side effect --
+    only `message` edges, both ways, and only for pairs missing one
+    entirely (same "never narrow an existing deliberate decision" rule)."""
+    for a in member_uids:
+        for b in member_uids:
+            if a == b:
+                continue
+            if allow_store.get_edge(a, b) is None:
+                allow_store.set_edge(a, b, message=True, locate=False)
 
 
 class AddMemberRequest(BaseModel):
     uid: str
+
+
+def _group_creator_family_id(group: Conversation) -> str | None:
+    creator = users_store.get_user(group.createdBy) if group.createdBy else None
+    return creator.familyId if creator is not None else None
 
 
 @router.post("/{alias}/members", status_code=200)
@@ -247,17 +230,28 @@ def add_group_member(
     group = conversations_store.get_by_alias(alias)
     if group is None:
         raise HTTPException(status_code=404, detail="no such group")
-    if authed.uid not in group.uids:
-        raise HTTPException(status_code=403, detail="not a member of this group")
+
+    # docs/FAMILIES_TASKS.md 1.3 / docs/FAMILIES_DESIGN.md §4: joining is no
+    # longer self-service for any current member -- the caller must be a
+    # family admin of the group *creator's* family (or super).
+    principal = principal_for(authed)
+    is_authorized = principal.role == "super" or (
+        principal.role == "admin"
+        and principal.family_id is not None
+        and principal.family_id == _group_creator_family_id(group)
+    )
+    if not is_authorized:
+        raise HTTPException(
+            status_code=403,
+            detail="only a family admin of the group creator's family may add members",
+        )
     if users_store.get_user(req.uid) is None:
         raise HTTPException(status_code=404, detail=f"no such user: {req.uid!r}")
 
     updated = conversations_store.add_member(group.convKey, req.uid)
-    # Decision 2 again -- joining auto-creates the missing edges between the
-    # new member and every *existing* member (the new member's own pairing
-    # with `authed.uid` is covered by this too, since `authed.uid` is one of
-    # `updated.uids`).
-    _create_missing_allow_edges(updated.uids)
+    # docs/FAMILIES_DESIGN.md §1 decision 9: `message` edges only, never
+    # `locate` -- see `_create_missing_message_edges`'s docstring.
+    _create_missing_message_edges(updated.uids)
     # The new member's book gains this group; see `_push_book_to_members`'s
     # docstring for why pushing to every current member (not just the new
     # one) is harmless.

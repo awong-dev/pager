@@ -20,7 +20,7 @@ from typing import Annotated, Any
 import google.auth.jwt as google_jwt
 import google.auth.transport.requests as google_requests
 import google.oauth2.id_token as google_id_token
-from fastapi import Depends, HTTPException
+from fastapi import Depends, Header, HTTPException, Query
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from firebase_admin import auth as fb_auth
 
@@ -69,12 +69,81 @@ def require_user(
     return AuthedUser(uid=uid, claims=claims, user=user)
 
 
-def require_admin(
+@dataclass(frozen=True, slots=True)
+class Principal:
+    """The token's `role`/`fam` custom claims only -- never the
+    `users/{uid}` document's own `role`/`familyId` fields --
+    docs/FAMILIES_DESIGN.md §1 decision 2: "Firebase custom claims `role`
+    and `fam` are the *only* source of truth for the relay dependency and
+    the rules." A token minted before these claims existed (or a bare
+    legacy `{"admin": True}` claim, which is never consulted) is `member`
+    with no family -- there is no OR-with-the-user-doc fallback."""
+
+    uid: str
+    role: str
+    family_id: str | None
+
+
+def principal_for(authed: AuthedUser) -> Principal:
+    role = authed.claims.get("role") or "member"
+    fam = authed.claims.get("fam") or None
+    return Principal(uid=authed.uid, role=role, family_id=fam)
+
+
+def require_super(
     authed: Annotated[AuthedUser, Depends(require_user)],
 ) -> AuthedUser:
-    if not authed.claims.get("admin") and authed.user.role != "admin":
-        raise HTTPException(status_code=403, detail="admin only")
+    """Role `super` by claim only. Returns `AuthedUser` (not `Principal`) so
+    the existing `/api/admin/*` call sites of `require_admin` below, which
+    only ever read `authed.uid`, keep working unchanged until task 5.1
+    re-homes them."""
+    if principal_for(authed).role != "super":
+        raise HTTPException(status_code=403, detail="super admin only")
     return authed
+
+
+def require_family_admin(
+    authed: Annotated[AuthedUser, Depends(require_user)],
+    family: Annotated[str | None, Query()] = None,
+    x_family: Annotated[str | None, Header(alias="X-Family")] = None,
+) -> tuple[Principal, str]:
+    """docs/FAMILIES_DESIGN.md §4: role `admin` acting on their own family,
+    or role `super` naming any family via `?family=`/`X-Family`. An `admin`
+    naming a *different* family in either place is refused outright -- it
+    is never silently redirected back to their own family."""
+    principal = principal_for(authed)
+    requested = family or x_family
+    if principal.role == "admin":
+        if principal.family_id is None:
+            raise HTTPException(status_code=403, detail="family admin only")
+        if requested is not None and requested != principal.family_id:
+            raise HTTPException(status_code=403, detail="cannot act on another family")
+        return principal, principal.family_id
+    if principal.role == "super":
+        if not requested:
+            raise HTTPException(status_code=400, detail="?family= or X-Family is required")
+        return principal, requested
+    raise HTTPException(status_code=403, detail="family admin only")
+
+
+# docs/FAMILIES_TASKS.md 1.2: `require_admin` stays a plain alias of
+# `require_super` until task 5.1 re-homes every current `/api/admin/*` route
+# under `require_family_admin`/`require_super` -- keeps `app/routers/
+# admin.py` and `app/routers/conversations.py`'s existing
+# `Depends(require_admin)` call sites working unchanged in the meantime.
+require_admin = require_super
+
+
+def set_claims(uid: str, role: str, family_id: str | None) -> None:
+    """docs/FAMILIES_DESIGN.md §1 decision 2: the *only* custom claims the
+    relay writes from here on are `role` and `fam` -- consumed by
+    `Principal` (task 1.2) and by `firestore.rules`'s `role()`/`fam()`
+    helpers (task 1.4). Replaces the old `{"admin": True}` claim (written by
+    `app/routers/admin.py`'s now-removed `_set_admin_claim`), which is never
+    written again anywhere. `family_id=None` writes `fam: ""`, matching
+    `fam()`'s own `request.auth.token.get('fam', '')` default for a claim
+    that was never set."""
+    fb_auth.set_custom_user_claims(uid, {"role": role, "fam": family_id or ""})
 
 
 # ---------------------------------------------------------------------------

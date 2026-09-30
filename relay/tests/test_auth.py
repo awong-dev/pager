@@ -7,15 +7,23 @@ from __future__ import annotations
 from collections.abc import Iterator
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from firebase_admin import auth as fb_auth
 
+from app.auth import (
+    AuthedUser,
+    Principal,
+    principal_for,
+    require_family_admin,
+    require_super,
+)
 from app.config import Settings
 from app.main import create_app
 from app.store import users as users_store
+from app.store.users import User
 from tests.fake_transport import FakeBrokerClient
 from tests.firebase_test_utils import auth_header, mint_id_token
-
 
 
 def make_settings(**overrides: object) -> Settings:
@@ -65,14 +73,117 @@ def test_valid_token_registered_non_admin_is_403_on_admin_route(client: TestClie
     assert resp.status_code == 403
 
 
-def test_valid_token_registered_admin_is_authorized(client: TestClient):
+def test_valid_token_registered_super_is_authorized(client: TestClient):
+    # docs/FAMILIES_TASKS.md 1.2: `require_admin` is now a plain alias of
+    # `require_super` -- only the `role: 'super'` claim grants `/api/admin/*`,
+    # not the legacy `admin` claim and not a family `admin`.
     auth_user = fb_auth.create_user(email="boss@example.com")
     users_store.create_user(
-        uid=auth_user.uid, alias="boss", display_name="Boss", role="admin"
+        uid=auth_user.uid, alias="boss", display_name="Boss", role="super"
+    )
+    fb_auth.set_custom_user_claims(auth_user.uid, {"role": "super", "fam": ""})
+    resp = client.get("/api/admin/users", headers=auth_header(auth_user.uid))
+    assert resp.status_code == 200
+
+
+def test_bare_legacy_admin_claim_grants_nothing_on_admin_route(client: TestClient):
+    auth_user = fb_auth.create_user(email="legacy-admin@example.com")
+    users_store.create_user(
+        uid=auth_user.uid, alias="legacyadmin", display_name="Legacy Admin", role="admin"
     )
     fb_auth.set_custom_user_claims(auth_user.uid, {"admin": True})
     resp = client.get("/api/admin/users", headers=auth_header(auth_user.uid))
-    assert resp.status_code == 200
+    assert resp.status_code == 403
+
+
+def test_family_admin_is_403_on_super_only_admin_route(client: TestClient):
+    auth_user = fb_auth.create_user(email="famadmin@example.com")
+    users_store.create_user(
+        uid=auth_user.uid, alias="famadmin", display_name="Fam Admin", role="admin"
+    )
+    fb_auth.set_custom_user_claims(auth_user.uid, {"role": "admin", "fam": "famA"})
+    resp = client.get("/api/admin/users", headers=auth_header(auth_user.uid))
+    assert resp.status_code == 403
+
+
+def _authed(*, uid: str, role: str, family_id: str | None) -> AuthedUser:
+    """Built directly, no Firebase round trip -- `require_family_admin`/
+    `require_super` are plain functions of `AuthedUser`, so a unit test for
+    them does not need a real token, only a `Principal`-shaped claims dict."""
+    claims: dict = {"role": role, "fam": family_id or ""}
+    user = User(uid=uid, alias=uid, displayName=uid, role=role, familyId=family_id)
+    return AuthedUser(uid=uid, claims=claims, user=user)
+
+
+def test_principal_for_defaults_a_claimless_token_to_member_no_family():
+    authed = AuthedUser(uid="u1", claims={}, user=User(uid="u1", alias="u1", displayName="u1"))
+    principal = principal_for(authed)
+    assert principal == Principal(uid="u1", role="member", family_id=None)
+
+
+def test_require_family_admin_rejects_a_member():
+    authed = _authed(uid="mem1", role="member", family_id="famA")
+    with pytest.raises(HTTPException) as exc_info:
+        require_family_admin(authed, family=None, x_family=None)
+    assert exc_info.value.status_code == 403
+
+
+def test_require_family_admin_admin_naming_another_family_is_403():
+    authed = _authed(uid="admA", role="admin", family_id="famA")
+    with pytest.raises(HTTPException) as exc_info:
+        require_family_admin(authed, family="famB", x_family=None)
+    assert exc_info.value.status_code == 403
+
+
+def test_require_family_admin_admin_on_own_family_is_ok():
+    authed = _authed(uid="admA", role="admin", family_id="famA")
+    principal, family_id = require_family_admin(authed, family=None, x_family=None)
+    assert family_id == "famA"
+    assert principal.uid == "admA"
+
+
+def test_require_family_admin_super_without_family_is_400():
+    authed = _authed(uid="sup1", role="super", family_id=None)
+    with pytest.raises(HTTPException) as exc_info:
+        require_family_admin(authed, family=None, x_family=None)
+    assert exc_info.value.status_code == 400
+
+
+def test_require_family_admin_super_with_family_query_is_ok():
+    authed = _authed(uid="sup1", role="super", family_id=None)
+    principal, family_id = require_family_admin(authed, family="famB", x_family=None)
+    assert family_id == "famB"
+    assert principal.role == "super"
+
+
+def test_require_family_admin_super_with_x_family_header_is_ok():
+    authed = _authed(uid="sup1", role="super", family_id=None)
+    _principal, family_id = require_family_admin(authed, family=None, x_family="famC")
+    assert family_id == "famC"
+
+
+def test_require_super_rejects_family_admin():
+    authed = _authed(uid="admA", role="admin", family_id="famA")
+    with pytest.raises(HTTPException) as exc_info:
+        require_super(authed)
+    assert exc_info.value.status_code == 403
+
+
+def test_require_super_rejects_bare_legacy_admin_claim():
+    authed = AuthedUser(
+        uid="legacy1",
+        claims={"admin": True},
+        user=User(uid="legacy1", alias="legacy1", displayName="Legacy", role="admin"),
+    )
+    with pytest.raises(HTTPException) as exc_info:
+        require_super(authed)
+    assert exc_info.value.status_code == 403
+
+
+def test_require_super_accepts_super():
+    authed = _authed(uid="sup1", role="super", family_id="default")
+    result = require_super(authed)
+    assert result.uid == "sup1"
 
 
 def test_disabled_user_is_403(client: TestClient):

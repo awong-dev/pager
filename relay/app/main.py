@@ -31,6 +31,7 @@ from app.routers import (
     dev,
     device_book,
     devices,
+    family,
     internal,
     me,
     webhooks,
@@ -122,6 +123,7 @@ def create_app(
     app.include_router(devices.router)
     app.include_router(device_book.router)
     app.include_router(conversations.router)
+    app.include_router(family.router)
     app.include_router(me.router)
     app.include_router(internal.router)
 
