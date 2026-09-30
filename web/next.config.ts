@@ -37,6 +37,13 @@ const nextConfig: NextConfig = {
       // `afterFiles` rewrite (the bare-array default) would never fire.
       // `:alias` matches a single segment, so `/chat` itself is untouched.
       beforeFiles: [
+        // Listed before `/chat/:alias` below to mirror
+        // `web/firebase.json`'s Hosting rewrite order (docs/
+        // FAMILIES_TASKS.md 2.4) -- `:alias` only matches one path segment,
+        // so it can't actually shadow the two-segment `/chat/view/:key`,
+        // but keeping the same relative order in both places avoids the two
+        // configs silently drifting.
+        { source: "/chat/view/:key", destination: "/chat/view/_" },
         { source: "/chat/:alias", destination: "/chat/_" },
         { source: "/devices/:id", destination: "/devices/_" },
       ],

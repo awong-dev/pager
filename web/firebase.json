@@ -20,6 +20,10 @@
         }
       },
       {
+        "source": "/chat/view/**",
+        "destination": "/chat/view/_.html"
+      },
+      {
         "source": "/chat/**",
         "destination": "/chat/_.html"
       },

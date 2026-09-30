@@ -12,14 +12,36 @@
 
 import { getFirebaseAuth } from "./firebase";
 
+// docs/FAMILIES_DESIGN.md §4: a policy-gated write's 403 body carries
+// `{reason, message}` -- `reason` a machine code (`policy_out`,
+// `policy_in`, `not_allowed`, `not_member`, ...), `message` the exact text
+// the UI shows verbatim (docs/FAMILIES_TASKS.md 3.5). `request()` below
+// already unwraps a `{detail: {...}}` envelope into `detail`, so by the
+// time it reaches here a `{reason, message}` body looks the same whether
+// the relay nested it under `detail` or sent it bare.
+function parseReasonMessage(detail: unknown): { reason?: string; message?: string } | null {
+  if (!detail || typeof detail !== "object") return null;
+  const d = detail as Record<string, unknown>;
+  if (typeof d.reason !== "string" && typeof d.message !== "string") return null;
+  return {
+    reason: typeof d.reason === "string" ? d.reason : undefined,
+    message: typeof d.message === "string" ? d.message : undefined,
+  };
+}
+
 export class ApiError extends Error {
   status: number;
   detail: unknown;
+  /** Machine-readable reason code from a `{reason, message}` 403 body,
+   * when the relay sent one -- `undefined` for every other error shape. */
+  reason?: string;
 
   constructor(status: number, detail: unknown) {
-    super(typeof detail === "string" ? detail : `request failed with status ${status}`);
+    const parsed = parseReasonMessage(detail);
+    super(parsed?.message ?? (typeof detail === "string" ? detail : `request failed with status ${status}`));
     this.status = status;
     this.detail = detail;
+    this.reason = parsed?.reason;
   }
 }
 

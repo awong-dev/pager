@@ -27,9 +27,12 @@ firebase.initializeApp({
 const messaging = firebase.messaging();
 
 // Payload contract, docs/SERVER_PLAN.md §7.6 -- all values are strings
-// (FCM data maps are string-only): `kind` (`message` | `geofence`),
-// `convKey`, `id`, `senderUid`, `senderAlias`, `title`, `body`, `url` (the
-// path to open, e.g. `/chat/{alias}`).
+// (FCM data maps are string-only): `kind` (`message` | `geofence` |
+// `alert`), `convKey`, `id`, `senderUid`, `senderAlias`, `title`, `body`,
+// `url` (the path to open, e.g. `/chat/{alias}` or, for `alert`,
+// `/family/alerts`). `alert` additionally carries `alertKind`
+// (docs/FAMILIES_DESIGN.md §6 "Alert creation"), not needed here since the
+// title/body are already rendered server-side.
 messaging.onBackgroundMessage((payload) => {
   const data = payload.data || {};
   const title = data.title || "Pager";
@@ -55,6 +58,14 @@ messaging.onBackgroundMessage((payload) => {
         body,
         icon: "/icons/icon-192.png",
         tag: data.id ? `pager-geofence-${data.id}` : undefined,
+        data: { url },
+      };
+      break;
+    case "alert":
+      options = {
+        body,
+        icon: "/icons/icon-192.png",
+        tag: data.id ? `pager-alert-${data.id}` : undefined,
         data: { url },
       };
       break;

@@ -45,7 +45,6 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import Alert from "@mui/material/Alert";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
-import Chip from "@mui/material/Chip";
 import CircularProgress from "@mui/material/CircularProgress";
 import Snackbar from "@mui/material/Snackbar";
 import Stack from "@mui/material/Stack";
@@ -56,13 +55,13 @@ import LocationOnIcon from "@mui/icons-material/LocationOn";
 import SendIcon from "@mui/icons-material/Send";
 
 import AppShell from "@/components/AppShell";
-import DeliveryChips from "@/components/DeliveryChips";
+import MessageList, { type MessageRow } from "@/components/MessageList";
 import RequireAuth from "@/components/RequireAuth";
 import { ApiError, api } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { useDirectory } from "@/lib/directory";
+import { useFamily } from "@/lib/family-context";
 import { getFirestoreDb } from "@/lib/firebase";
-import { formatClock, isLocReqExpired } from "@/lib/time";
 import type { DeviceDoc, MessageDoc } from "@/lib/types";
 
 const BODY_MAX_CODEPOINTS = 160;
@@ -71,10 +70,6 @@ const PAGE_SIZE_STEP = 50;
 // docs/V03_PLAN.md §2: "within 80 px of the bottom" counts as at-bottom for
 // both the auto-scroll and the mark-read gate.
 const AT_BOTTOM_THRESHOLD_PX = 80;
-
-interface MessageRow extends MessageDoc {
-  id: string;
-}
 
 // `useLayoutEffect` warns when it runs during the `output: 'export'`
 // prerender pass (no browser, so nothing to lay out before paint) --
@@ -136,96 +131,9 @@ function useAliasFromPath(): string | null {
   }, [pathname]);
 }
 
-// docs/SERVER_PLAN.md §7 (this task): the relay still writes a `loc_req`
-// message for every `/locate` call (now issued from `/location`, not this
-// thread) and a `kind='loc'` reply once it's answered
-// (`app/location.py`) -- unchanged relay behaviour this page cannot (and
-// should not) suppress. Both render as one small link to `/location`
-// instead of the old inline request-state text/map card, per the owner's
-// "at most a small link or icon" instruction.
-function LocRequestLinkRow({ alias, label }: { alias: string; label: string }) {
-  return (
-    <Stack direction="row" sx={{ justifyContent: "center", my: 1 }}>
-      <Box
-        component={Link}
-        href={`/location?who=${encodeURIComponent(alias)}`}
-        sx={{
-          px: 1.5,
-          py: 0.5,
-          border: 1,
-          borderColor: "divider",
-          borderRadius: 2,
-          textDecoration: "none",
-          color: "inherit",
-        }}
-      >
-        <Typography variant="caption" color="text.secondary">
-          <LocationOnIcon fontSize="inherit" sx={{ verticalAlign: "middle" }} /> {label}
-        </Typography>
-      </Box>
-    </Stack>
-  );
-}
-
-function LocReqRow({ message, mine, alias }: { message: MessageRow; mine: boolean; alias: string }) {
-  const delivery = Object.values(message.deliveries)[0];
-  const expired = isLocReqExpired(message);
-  const state =
-    expired && delivery?.state !== "fulfilled" ? "expired" : (delivery?.state ?? "queued");
-  return (
-    <LocRequestLinkRow
-      alias={alias}
-      label={`${mine ? "You requested a location" : "Location requested"} -- ${state} -- view`}
-    />
-  );
-}
-
-function MessageBubble({
-  message,
-  mine,
-  isGroup,
-}: {
-  message: MessageRow;
-  mine: boolean;
-  isGroup: boolean;
-}) {
-  const atMs = (message.ts ?? 0) * 1000;
-  return (
-    <Stack sx={{ alignItems: mine ? "flex-end" : "flex-start", my: 0.75 }}>
-      {isGroup && message.senderAlias && (
-        <Typography variant="caption" color="text.secondary" sx={{ px: 0.5 }}>
-          {message.senderAlias}
-        </Typography>
-      )}
-      <Box
-        sx={{
-          px: 1.5,
-          py: 1,
-          maxWidth: "80%",
-          borderRadius: 2,
-          bgcolor: mine ? "primary.main" : "grey.100",
-          color: mine ? "primary.contrastText" : "text.primary",
-        }}
-      >
-        <Typography variant="body1" sx={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
-          {message.body}
-        </Typography>
-        <Typography variant="caption" sx={{ opacity: 0.7, display: "block", mt: 0.25 }}>
-          {formatClock(atMs)}
-        </Typography>
-      </Box>
-      {mine && <DeliveryChips message={message} />}
-    </Stack>
-  );
-}
-
-function LocMessageRow({ message, mine, alias }: { message: MessageRow; mine: boolean; alias: string }) {
-  if (!message.loc) return null;
-  return <LocRequestLinkRow alias={alias} label={`${mine ? "Location you shared" : "Location received"} -- view`} />;
-}
-
 function ThreadInner({ alias }: { alias: string }) {
   const { me } = useAuth();
+  const { familyId } = useFamily();
   const { aliasToUid, learn, groupByAlias } = useDirectory();
   const router = useRouter();
   const peerUid = aliasToUid(alias);
@@ -309,22 +217,37 @@ function ThreadInner({ alias }: { alias: string }) {
   // member can only run a query Firestore can prove is safe, i.e. filtered
   // on their own uid being in `locatableBy`.
   useEffect(() => {
-    if (!me || !peerUid) {
+    // `familyId` gates both branches below (docs/FAMILIES_DESIGN.md §5.3 /
+    // firestore.rules `devices/{d}`'s `sameFam(familyId)` clause, which a
+    // `list` query must carry a matching `where` for) -- skip until
+    // `useFamily()` has resolved a scope.
+    if (!me || !peerUid || !familyId) {
       return;
     }
     const db = getFirestoreDb();
     const unsubscribers: Unsubscribe[] = [];
     if (me.role === "admin") {
       unsubscribers.push(
-        onSnapshot(query(collection(db, "devices"), where("ownerUid", "==", peerUid)), (snap) => {
-          const first = snap.docs[0];
-          setDevice(first ? { id: first.id, ...(first.data() as DeviceDoc) } : null);
-        })
+        onSnapshot(
+          query(
+            collection(db, "devices"),
+            where("familyId", "==", familyId),
+            where("ownerUid", "==", peerUid)
+          ),
+          (snap) => {
+            const first = snap.docs[0];
+            setDevice(first ? { id: first.id, ...(first.data() as DeviceDoc) } : null);
+          }
+        )
       );
     } else {
       unsubscribers.push(
         onSnapshot(
-          query(collection(db, "devices"), where("locatableBy", "array-contains", me.uid)),
+          query(
+            collection(db, "devices"),
+            where("familyId", "==", familyId),
+            where("locatableBy", "array-contains", me.uid)
+          ),
           (snap) => {
             const match = snap.docs.find((d) => (d.data() as DeviceDoc).ownerUid === peerUid);
             setDevice(match ? { id: match.id, ...(match.data() as DeviceDoc) } : null);
@@ -333,7 +256,7 @@ function ThreadInner({ alias }: { alias: string }) {
       );
     }
     return () => unsubscribers.forEach((u) => u());
-  }, [me, peerUid]);
+  }, [me, peerUid, familyId]);
 
   // Whether this account can see `device`'s location (`/location`'s own
   // gate, `lib/locatableDevices.ts`'s query shape but against the one
@@ -493,7 +416,11 @@ function ThreadInner({ alias }: { alias: string }) {
         }
       }
     } catch (err) {
-      setSendError(err instanceof ApiError ? String(err.detail ?? err.message) : "Failed to send");
+      // docs/FAMILIES_DESIGN.md §4/§2: a policy-gated send 403s with
+      // `{reason, message}`; `lib/api.ts`'s `ApiError` already folds that
+      // `message` into `err.message` (falling back to a generic string for
+      // any other error shape), so this can render it verbatim.
+      setSendError(err instanceof ApiError ? err.message : "Failed to send");
     } finally {
       setSending(false);
     }
@@ -550,63 +477,29 @@ function ThreadInner({ alias }: { alias: string }) {
         )}
       </Stack>
 
-      {!peerUid && !group && (
-        <Alert severity="info">
-          No conversation with @{alias} yet on this account. Send a message below to start one.
-        </Alert>
-      )}
+      {!peerUid && !group && <Alert severity="info">No conversation with @{alias} yet</Alert>}
 
-      {/* `position: relative` lives on this wrapper, not the scrolling Box
-          below -- an absolutely positioned child of the scroll container
-          itself is positioned against that container's padding box at
-          scroll origin and scrolls away WITH the content, which is exactly
-          when the chip needs to stay visible. `minHeight: 0` keeps this
-          flex child shrinkable so the inner `overflowY: auto` box is the
-          one that actually scrolls, not this wrapper. */}
-      <Box sx={{ position: "relative", flexGrow: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
-        <Box ref={listRef} onScroll={handleScroll} sx={{ flexGrow: 1, overflowY: "auto", px: 1 }}>
-          {peerUid && messages.length >= pageSize && (
-            <Stack direction="row" sx={{ justifyContent: "center", mb: 1 }}>
-              <Button
-                size="small"
-                onClick={() => {
-                  // Read the pre-prepend scrollHeight now -- the layout
-                  // effect that fires once the bigger-limit listener
-                  // delivers its next snapshot needs the "before" figure,
-                  // and by then the DOM already reflects the "after" one.
-                  if (listRef.current) {
-                    prevScrollHeightRef.current = listRef.current.scrollHeight;
-                  }
-                  setPageSize((n) => n + PAGE_SIZE_STEP);
-                }}
-              >
-                Load older
-              </Button>
-            </Stack>
-          )}
-          {messages.map((m) => {
-            const mine = m.senderUid === me?.uid;
-            if (m.kind === "loc_req") return <LocReqRow key={m.id} message={m} mine={mine} alias={alias} />;
-            if (m.kind === "loc") return <LocMessageRow key={m.id} message={m} mine={mine} alias={alias} />;
-            return <MessageBubble key={m.id} message={m} mine={mine} isGroup={Boolean(group)} />;
-          })}
-        </Box>
-        {showNewMessagesChip && (
-          <Chip
-            label="New messages ↓"
-            color="primary"
-            onClick={() => scrollToBottom(reducedMotion ? "auto" : "smooth")}
-            sx={{
-              position: "absolute",
-              bottom: 8,
-              left: "50%",
-              transform: "translateX(-50%)",
-              cursor: "pointer",
-              boxShadow: 2,
-            }}
-          />
-        )}
-      </Box>
+      <MessageList
+        messages={messages}
+        meUid={me?.uid ?? null}
+        isGroup={Boolean(group)}
+        locationAlias={alias}
+        canLoadOlder={Boolean(convKey) && messages.length >= pageSize}
+        onLoadOlder={() => {
+          // Read the pre-prepend scrollHeight now -- the layout effect that
+          // fires once the bigger-limit listener delivers its next snapshot
+          // needs the "before" figure, and by then the DOM already reflects
+          // the "after" one.
+          if (listRef.current) {
+            prevScrollHeightRef.current = listRef.current.scrollHeight;
+          }
+          setPageSize((n) => n + PAGE_SIZE_STEP);
+        }}
+        listRef={listRef}
+        onScroll={handleScroll}
+        showNewMessagesChip={showNewMessagesChip}
+        onJumpToBottom={() => scrollToBottom(reducedMotion ? "auto" : "smooth")}
+      />
 
       <Stack direction="row" spacing={1} sx={{ alignItems: "flex-end" }}>
         <TextField

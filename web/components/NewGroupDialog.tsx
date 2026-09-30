@@ -1,11 +1,16 @@
 "use client";
 
-/** Admin-only "create group" dialog -- docs/GROUP_CHAT_DESIGN.md §5: "dialog
+/** Family-admin "create group" dialog -- docs/GROUP_CHAT_DESIGN.md §5: "dialog
  * on /chat -- name, alias, checkbox list of existing contacts from the
- * directory; `POST /api/conversations`." Creation is admin-only (design
- * decision 2, §9 G6); the caller (`web/app/chat/page.tsx`) gates rendering
- * on `useAuth().isAdmin`, same convention as every other admin-only dialog
- * in this app (e.g. `web/app/admin/users/page.tsx`'s create dialog). */
+ * directory; `POST /api/conversations`." Creation is family-admin-only
+ * (docs/FAMILIES_TASKS.md 1.3/2.5: `POST /api/family/groups`, scoped to
+ * members of the caller's family plus their `message`-edge peers); the
+ * caller (`web/app/chat/page.tsx`) gates rendering on
+ * `useAuth().isFamilyAdmin`, same convention as every other admin-only
+ * dialog in this app (e.g. `web/app/admin/users/page.tsx`'s create dialog).
+ * Member checkboxes come from `useDirectory().contacts`, populated for
+ * every signed-in account (not just admins) since docs/FAMILIES_TASKS.md
+ * 1.9. */
 
 import { useState } from "react";
 import Alert from "@mui/material/Alert";
@@ -23,6 +28,7 @@ import Typography from "@mui/material/Typography";
 import { ApiError, api } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { useDirectory } from "@/lib/directory";
+import { familyQuery } from "@/lib/family-context";
 
 // Same shape as `relay/app/store/users.py`'s `ALIAS_RE`, mirrored in
 // `web/app/admin/contacts/page.tsx` -- client-side "is Create enabled yet"
@@ -83,7 +89,7 @@ export default function NewGroupDialog({ open, onClose }: NewGroupDialogProps) {
       // this redundant, not wrong; see this task's report for the exact
       // assumption.
       const memberUids = Array.from(new Set([me.uid, ...selected]));
-      await api.post("/conversations", { name: name.trim(), alias, memberUids });
+      await api.post(`/family/groups${familyQuery()}`, { name: name.trim(), alias, memberUids });
       handleClose();
     } catch (err) {
       setError(err instanceof ApiError ? String(err.detail ?? err.message) : "Failed to create group");

@@ -1,35 +1,21 @@
 "use client";
 
-/** `/admin/devices` -- docs/SERVER_PLAN.md §7.2/§5.5, docs/DEVICE_PLAN.md
- * §3.2: create device (Add device wizard), rotate, revoke, last status.
+/** `/family/devices` -- docs/FAMILIES_DESIGN.md §5.4 Devices,
+ * docs/FAMILIES_TASKS.md 1.9: a family-admin-scoped copy of `/admin/devices`
+ * (`web/app/admin/devices/page.tsx`) -- same table and dialogs, but reading
+ * `devices where familyId == useFamily().familyId` instead of the whole
+ * collection, the owner/default pickers built from the directory's family
+ * members instead of a separate `users` listener, and every write rerouted
+ * to `/api/family/devices*` (docs/FAMILIES_DESIGN.md §4) with `familyQuery()`
+ * appended for a super browsing a chosen family.
  *
- * `POST /admin/devices` and `POST /admin/devices/{id}/rotate-credentials`
- * (`relay/app/routers/admin.py`'s `DeviceSetupCodeResponse`, S2.2) return a
- * one-time `setupCode` string -- never the plaintext MQTT password or HMAC
- * key, which leave the relay exactly once inside the encrypted bootstrap
- * bundle a real device fetches over its own bootstrap MQTT hop. This page
- * holds the response only in local React state (`setupResult`, cleared when
- * the panel closes) -- never written to Firestore, never persisted to
- * localStorage.
- *
- * `POST /admin/devices/{id}/revoke` is mounted (docs/DEVICE_PLAN.md §3.5,
- * S2.2) and also deletes the device's broker credential.
- *
- * **Lock controls (docs/DEVICE_PLAN.md §5.8, docs/DEVICE_TASKS.md W4.4):**
- * "Clear passcode" and the auto-lock select both call `POST /admin/devices/
- * {id}/cfg` (`relay/app/routers/admin.py`'s `PushCfgRequest{lock:{clear?,
- * auto?}}`). The select's current value is read from the device's raw
- * `pendingCfg.obj.cfg.lock.auto` field (`relay/app/devcfg.py`'s
- * `push_cfg`/`_set_pending`) -- the *last requested* auto-lock minutes, not
- * necessarily yet acked by the device (§5.8: `cfg` is "acked `shown` on
- * apply"). `pendingCfg` is, like `provisionState` above, not part of
- * `lib/types.ts`'s `DeviceDoc` mirror -- read straight off the Firestore
- * snapshot instead of adding it there, outside this task's `Files` list.
+ * See `web/app/admin/devices/page.tsx`'s docstring for the setup-code,
+ * lock-control and CA-trust design notes -- unchanged here, just re-scoped.
  */
 
-import { collection, onSnapshot } from "firebase/firestore";
+import { collection, onSnapshot, query, where } from "firebase/firestore";
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Alert from "@mui/material/Alert";
 import Button from "@mui/material/Button";
 import Dialog from "@mui/material/Dialog";
@@ -55,14 +41,15 @@ import RequireAuth from "@/components/RequireAuth";
 import { ApiError, api } from "@/lib/api";
 import { locBackoffLabel } from "@/lib/deviceTrust";
 import { useDirectory } from "@/lib/directory";
-import { useFamily } from "@/lib/family-context";
+import { familyQuery, useFamily } from "@/lib/family-context";
 import { getFirestoreDb } from "@/lib/firebase";
-import type { DeviceDoc, UserDoc } from "@/lib/types";
+import type { DeviceDoc } from "@/lib/types";
 
-import SetupCodePanel, { type SetupCodeResult } from "./SetupCodePanel";
+import SetupCodePanel, { type SetupCodeResult } from "../../admin/devices/SetupCodePanel";
 
-// docs/V02_DESIGN.md §4.4: `POST /api/admin/devices/{id}/ca`
-// `{"action":"push"|"unpin"}` (`relay/app/routers/admin.py`'s `push_ca`).
+// docs/V02_DESIGN.md §4.4: `POST /api/family/devices/{id}/ca`
+// `{"action":"push"|"unpin"}` (`relay/app/routers/family.py`, same body as
+// today's `relay/app/routers/admin.py`'s `push_ca`).
 type CaAction = "push" | "unpin";
 
 interface CaConfirmState {
@@ -71,9 +58,9 @@ interface CaConfirmState {
   action: CaAction;
 }
 
-// `devices/{d}.provisionState` (docs/DEVICE_PLAN.md §3.2/§D0.2) is not yet
-// part of `lib/types.ts`'s `DeviceDoc` mirror; declared locally here rather
-// than editing that shared file, which is outside this task's `Files` list.
+// `devices/{d}.provisionState` (docs/DEVICE_PLAN.md §3.2/§D0.2) is not part
+// of `lib/types.ts`'s `DeviceDoc` mirror; declared locally, same as
+// `web/app/admin/devices/page.tsx`.
 type ProvisionState = "issued" | "provisioned" | null | undefined;
 
 // `devices/{d}.pendingCfg` -- `relay/app/devcfg.py`'s `_set_pending` shape,
@@ -90,13 +77,10 @@ interface DeviceRow extends DeviceDoc {
   pendingCfg?: PendingCfgDoc;
 }
 
-const ALL_FAMILIES = "__all__";
-
-const emptyForm = { deviceId: "", ownerAlias: "", label: "", defaultToAlias: "", familyId: "" };
+const emptyForm = { deviceId: "", ownerAlias: "", label: "", defaultToAlias: "" };
 
 // docs/DEVICE_PLAN.md §5.8: `auto_min` is a `u8` minutes value, 0 = never;
-// default 5. This is the same small fixed menu a parent needs, not a free
-// numeric field.
+// default 5.
 const AUTO_LOCK_OPTIONS: { value: number; label: string }[] = [
   { value: 0, label: "Off" },
   { value: 5, label: "5 min" },
@@ -105,9 +89,8 @@ const AUTO_LOCK_OPTIONS: { value: number; label: string }[] = [
   { value: 60, label: "60 min" },
 ];
 
-// `relay/app/routers/admin.py`'s `DeviceSetupCodeResponse` (S2.2), shared by
-// `POST /devices` and `POST /devices/{id}/rotate-credentials`; only the
-// fields this page reads are declared.
+// `relay/app/routers/family.py`'s device-create/rotate response -- same
+// shape as `relay/app/routers/admin.py`'s `DeviceSetupCodeResponse` (S2.2).
 interface DeviceSetupResponse {
   device: { id: string };
   setupCode: string;
@@ -116,11 +99,10 @@ interface DeviceSetupResponse {
   manualAcl?: string[] | null;
 }
 
-function DevicesInner() {
-  const { uidToAlias } = useDirectory();
-  const { familyId: scopeFamilyId, families } = useFamily();
+function FamilyDevicesInner() {
+  const { byUid, contacts } = useDirectory();
+  const { familyId } = useFamily();
   const [devices, setDevices] = useState<DeviceRow[]>([]);
-  const [users, setUsers] = useState<{ uid: string; alias: string; familyId: string | null }[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [form, setForm] = useState(emptyForm);
@@ -129,14 +111,23 @@ function DevicesInner() {
   const [caBusy, setCaBusy] = useState(false);
   const [caError, setCaError] = useState<string | null>(null);
   const [caSuccess, setCaSuccess] = useState<string | null>(null);
-  // "All" by default only when the switcher itself has no family selected
-  // (docs/FAMILIES_TASKS.md 1.8: "default = the switcher family, 'All'
-  // option").
-  const [filterFamily, setFilterFamily] = useState<string>(scopeFamilyId ?? ALL_FAMILIES);
+
+  // Owner/default pickers: family members only, from the directory rather
+  // than a second `users` listener (docs/FAMILIES_TASKS.md 1.9).
+  const familyMembers = useMemo(
+    () => contacts.filter((c) => byUid(c.uid)?.familyId === familyId),
+    [contacts, byUid, familyId]
+  );
 
   useEffect(() => {
-    const db = getFirestoreDb();
-    const unsubDevices = onSnapshot(collection(db, "devices"), (snap) => {
+    if (!familyId) {
+      // No family in scope yet -- leave whatever state already held rather
+      // than clearing synchronously in the effect body (same convention as
+      // `lib/directory.tsx`'s family listener).
+      return;
+    }
+    const q = query(collection(getFirestoreDb(), "devices"), where("familyId", "==", familyId));
+    const unsubscribe = onSnapshot(q, (snap) => {
       const rows: DeviceRow[] = [];
       snap.forEach((d) => {
         const data = d.data() as DeviceDoc & {
@@ -147,43 +138,20 @@ function DevicesInner() {
       });
       setDevices(rows);
     });
-    const unsubUsers = onSnapshot(collection(db, "users"), (snap) => {
-      const rows: { uid: string; alias: string; familyId: string | null }[] = [];
-      snap.forEach((d) => {
-        const data = d.data() as UserDoc;
-        rows.push({ uid: d.id, alias: data.alias, familyId: data.familyId ?? null });
-      });
-      setUsers(rows);
-    });
-    return () => {
-      unsubDevices();
-      unsubUsers();
-    };
-  }, []);
-
-  function openCreate() {
-    // Defaults the dialog's family picker to the switcher's family, without
-    // clobbering a family the admin already picked earlier in this session.
-    setForm((f) => ({ ...f, familyId: f.familyId || scopeFamilyId || "" }));
-    setCreateOpen(true);
-  }
-
-  const familyNameById = new Map(families.map((f) => [f.id, f.name]));
-  const visibleDevices =
-    filterFamily === ALL_FAMILIES ? devices : devices.filter((d) => d.familyId === filterFamily);
-  const ownerOptions = form.familyId ? users.filter((u) => u.familyId === form.familyId) : users;
+    return unsubscribe;
+  }, [familyId]);
 
   async function createDevice() {
     setError(null);
     try {
-      const resp = await api.post<DeviceSetupResponse>("/admin/devices", {
+      const resp = await api.post<DeviceSetupResponse>(`/family/devices${familyQuery()}`, {
         deviceId: form.deviceId,
         ownerAlias: form.ownerAlias,
         label: form.label,
         defaultToAlias: form.defaultToAlias || null,
       });
       setCreateOpen(false);
-      setForm({ ...emptyForm, familyId: scopeFamilyId ?? "" });
+      setForm(emptyForm);
       setSetupResult({
         deviceId: resp.device.id,
         label: form.label,
@@ -201,7 +169,7 @@ function DevicesInner() {
     setError(null);
     try {
       const resp = await api.post<DeviceSetupResponse>(
-        `/admin/devices/${device.id}/rotate-credentials`
+        `/family/devices/${device.id}/rotate-credentials${familyQuery()}`
       );
       setSetupResult({
         deviceId: device.id,
@@ -222,7 +190,7 @@ function DevicesInner() {
       return;
     }
     try {
-      await api.post(`/admin/devices/${deviceId}/revoke`);
+      await api.post(`/family/devices/${deviceId}/revoke${familyQuery()}`);
     } catch (err) {
       setError(err instanceof ApiError ? String(err.detail ?? err.message) : "Failed to revoke device");
     }
@@ -232,7 +200,7 @@ function DevicesInner() {
     setError(null);
     if (!window.confirm(`Delete device ${deviceId}? This cannot be undone.`)) return;
     try {
-      await api.del(`/admin/devices/${deviceId}`);
+      await api.del(`/family/devices/${deviceId}${familyQuery()}`);
     } catch (err) {
       setError(err instanceof ApiError ? String(err.detail ?? err.message) : "Failed to delete device");
     }
@@ -241,7 +209,7 @@ function DevicesInner() {
   async function setAutoLock(deviceId: string, minutes: number) {
     setError(null);
     try {
-      await api.post(`/admin/devices/${deviceId}/cfg`, { lock: { auto: minutes } });
+      await api.post(`/family/devices/${deviceId}/cfg${familyQuery()}`, { lock: { auto: minutes } });
     } catch (err) {
       setError(err instanceof ApiError ? String(err.detail ?? err.message) : "Failed to set auto-lock");
     }
@@ -251,21 +219,20 @@ function DevicesInner() {
     setError(null);
     if (!window.confirm(`Clear ${deviceId}'s passcode? The pager unlocks immediately.`)) return;
     try {
-      await api.post(`/admin/devices/${deviceId}/cfg`, { lock: { clear: true } });
+      await api.post(`/family/devices/${deviceId}/cfg${familyQuery()}`, { lock: { clear: true } });
     } catch (err) {
       setError(err instanceof ApiError ? String(err.detail ?? err.message) : "Failed to clear passcode");
     }
   }
 
-  // docs/V02_DESIGN.md §4.4: the change is asynchronous -- the chip only
-  // updates once the pager's next `/status` arrives, so success here says
-  // exactly that rather than implying it already happened.
   async function submitCaAction() {
     if (!caConfirm) return;
     setCaBusy(true);
     setCaError(null);
     try {
-      await api.post(`/admin/devices/${caConfirm.deviceId}/ca`, { action: caConfirm.action });
+      await api.post(`/family/devices/${caConfirm.deviceId}/ca${familyQuery()}`, {
+        action: caConfirm.action,
+      });
       setCaConfirm(null);
       setCaSuccess("Sent to the pager; it applies on its next connection.");
     } catch (err) {
@@ -289,25 +256,10 @@ function DevicesInner() {
     <Stack spacing={2}>
       <Stack direction="row" sx={{ justifyContent: "space-between", alignItems: "center" }}>
         <Typography variant="h5">Devices</Typography>
-        <Button variant="contained" onClick={openCreate}>
+        <Button variant="contained" onClick={() => setCreateOpen(true)}>
           Add device
         </Button>
       </Stack>
-      <TextField
-        select
-        size="small"
-        label="Family"
-        value={filterFamily}
-        onChange={(e) => setFilterFamily(e.target.value)}
-        sx={{ maxWidth: 240 }}
-      >
-        <MenuItem value={ALL_FAMILIES}>All families</MenuItem>
-        {families.map((f) => (
-          <MenuItem key={f.id} value={f.id}>
-            {f.name}
-          </MenuItem>
-        ))}
-      </TextField>
       {error && <Alert severity="error">{error}</Alert>}
 
       <TableContainer sx={{ overflowX: "auto" }}>
@@ -317,7 +269,6 @@ function DevicesInner() {
               <TableCell>Device ID</TableCell>
               <TableCell>Label</TableCell>
               <TableCell>Owner</TableCell>
-              <TableCell>Family</TableCell>
               <TableCell>Default to</TableCell>
               <TableCell>Status</TableCell>
               <TableCell>Provisioned</TableCell>
@@ -328,15 +279,16 @@ function DevicesInner() {
             </TableRow>
           </TableHead>
           <TableBody>
-            {visibleDevices.map((d) => {
+            {devices.map((d) => {
               const backoff = locBackoffLabel(d.status?.locBackoffS);
               return (
                 <TableRow key={d.id}>
                   <TableCell>{d.id}</TableCell>
                   <TableCell>{d.label}</TableCell>
-                  <TableCell>@{uidToAlias(d.ownerUid) ?? d.ownerUid.slice(0, 8)}</TableCell>
-                  <TableCell>{d.familyId ? (familyNameById.get(d.familyId) ?? d.familyId) : "--"}</TableCell>
-                  <TableCell>{d.defaultToUid ? `@${uidToAlias(d.defaultToUid) ?? d.defaultToUid.slice(0, 8)}` : "--"}</TableCell>
+                  <TableCell>@{byUid(d.ownerUid)?.alias ?? d.ownerUid.slice(0, 8)}</TableCell>
+                  <TableCell>
+                    {d.defaultToUid ? `@${byUid(d.defaultToUid)?.alias ?? d.defaultToUid.slice(0, 8)}` : "--"}
+                  </TableCell>
                   <TableCell>
                     {d.status?.state ?? "unknown"}
                     {backoff && (
@@ -433,26 +385,12 @@ function DevicesInner() {
             />
             <TextField
               select
-              label="Family"
-              value={form.familyId}
-              onChange={(e) => setForm({ ...form, familyId: e.target.value, ownerAlias: "" })}
-              helperText="Narrows the owner picker below; the device's own family is set from its owner."
-              fullWidth
-            >
-              {families.map((f) => (
-                <MenuItem key={f.id} value={f.id}>
-                  {f.name}
-                </MenuItem>
-              ))}
-            </TextField>
-            <TextField
-              select
               label="Owner"
               value={form.ownerAlias}
               onChange={(e) => setForm({ ...form, ownerAlias: e.target.value })}
               fullWidth
             >
-              {ownerOptions.map((u) => (
+              {familyMembers.map((u) => (
                 <MenuItem key={u.uid} value={u.alias}>
                   @{u.alias}
                 </MenuItem>
@@ -466,7 +404,7 @@ function DevicesInner() {
               fullWidth
             >
               <MenuItem value="">(none -- broadcast to all allowed)</MenuItem>
-              {users.map((u) => (
+              {familyMembers.map((u) => (
                 <MenuItem key={u.uid} value={u.alias}>
                   @{u.alias}
                 </MenuItem>
@@ -542,11 +480,11 @@ function DevicesInner() {
   );
 }
 
-export default function DevicesPage() {
+export default function FamilyDevicesPage() {
   return (
-    <RequireAuth requireRole="super">
+    <RequireAuth requireRole="admin">
       <AppShell>
-        <DevicesInner />
+        <FamilyDevicesInner />
       </AppShell>
     </RequireAuth>
   );

@@ -247,21 +247,26 @@ function LocationDetail({
         </Typography>
         <Box sx={{ flexGrow: 1 }} />
         <Stack spacing={0.25} sx={{ alignItems: "flex-end" }}>
-          <Button
-            size="small"
-            variant="outlined"
-            startIcon={<LocationOnIcon />}
-            disabled={locateBusy || !ownerAlias}
-            onClick={() => void handleLocate()}
-          >
-            Locate now
-          </Button>
+          {/* docs/FAMILIES_DESIGN.md §5.3: hidden (not just disabled) for a
+           * super who neither owns this device nor holds a `locate` edge to
+           * it -- `device.canLocate` is `lib/locatableDevices.ts`'s call. */}
+          {device.canLocate && (
+            <Button
+              size="small"
+              variant="outlined"
+              startIcon={<LocationOnIcon />}
+              disabled={locateBusy || !ownerAlias}
+              onClick={() => void handleLocate()}
+            >
+              Locate now
+            </Button>
+          )}
           {backoffLabel && (
             <Typography variant="caption" color="text.secondary">
               {backoffLabel}
             </Typography>
           )}
-          {!ownerAlias && (
+          {device.canLocate && !ownerAlias && (
             <Typography variant="caption" color="text.secondary">
               can&apos;t request yet -- alias unknown
             </Typography>

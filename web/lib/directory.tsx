@@ -1,38 +1,26 @@
 "use client";
 
 /**
- * Best-effort alias <-> uid directory.
+ * Family-scoped directory -- docs/FAMILIES_DESIGN.md §5.1 `useDirectory()`,
+ * docs/FAMILIES_TASKS.md 1.9.
  *
- * **Known gap, not a bug**: `firestore.rules`' `users/{uid}` read rule is
- * `request.auth.uid == uid || isAdmin()` (docs/SERVER_PLAN.md §3) -- a
- * regular (non-admin) member can read their *own* `users/{uid}` doc but not
- * a conversation partner's, and there is no other collection or API route
- * (§5.1) that maps a peer's uid to their alias for a non-admin caller. Since
- * `messages`/`conversations` documents are keyed by uid (not alias), and the
- * relay's write endpoints (`POST /api/conversations/{alias}/...`) are keyed
- * by *alias*, a plain member's browser has no server-provided way to learn a
- * new contact's alias before ever messaging them.
+ * Two sources merged into one uid-keyed map:
+ * - a live Firestore listener on `users where familyId == useFamily().familyId`
+ *   (`firestore.rules`'s `sameFam()` predicate, task 1.4, lets any member of
+ *   a family list the whole family, not just an admin) -- always fresh for
+ *   the caller's own family;
+ * - `GET /api/directory` (task 1.5), fetched once per sign-in and again on
+ *   every family switch (super only -- `familyId` never changes for anyone
+ *   else) -- the caller's family plus every `allow`-edge peer (possibly in
+ *   another family) and every external they share a conversation with.
  *
- * The real fix is server-side: either loosen `users/{uid}`'s read rule to
- * `registered()` (aliases and display names are not secret -- PROTOCOL.md's
- * own addressing model has devices typing `@alias` in the clear), or add a
- * `GET /api/me/contacts`-shaped endpoint returning `{uid, alias,
- * displayName}` for the caller's conversation/allow-list partners.
- *
- * Workaround implemented below (client-only, no relay/rules change):
- * - An **admin** can list the whole `users` collection (`isAdmin()` doesn't
- *   depend on the resource, so a full collection `list` is provably safe --
- *   the same reasoning `/admin/users` already relies on) -- admins get a
- *   complete, always-current directory for free.
- * - A **member** starts with just themselves resolvable. Opening
- *   `/chat/[alias]` for a brand new contact shows a "starting a new
- *   conversation" composer-only state (no thread listener yet, since the
- *   peer's uid is unknown); the first successful send returns a message id,
- *   which the sender is always allowed to read back (`registered() &&
- *   auth.uid in uids`), revealing `recipientUid`. `learn()` records that
- *   mapping in memory *and* in `localStorage` (key `pager.directory.v1`), so
- *   every contact a member has ever messaged from this browser resolves
- *   instantly on every later visit, even offline.
+ * This replaces the old client-only workaround: an admin-only full `users`
+ * listener plus a per-browser `localStorage` cache seeded by `learn()` on a
+ * contact's first send (see git history for that version's long docstring).
+ * Every signed-in member now has a server-provided way to resolve a peer's
+ * alias, so that cache is gone. `learn()` is kept as a documented no-op so
+ * call sites this task does not touch (`web/app/chat/[alias]/
+ * ThreadPageClient.tsx`) keep compiling.
  */
 
 import {
@@ -46,44 +34,27 @@ import {
 } from "react";
 import { collection, onSnapshot, query, where } from "firebase/firestore";
 
+import { api } from "./api";
 import { useAuth } from "./auth-context";
+import { useFamily } from "./family-context";
 import { getFirestoreDb } from "./firebase";
-import type { ConversationDoc, UserDoc } from "./types";
+import type { ConversationDoc, Role, UserDoc, UserKind } from "./types";
 
-const STORAGE_KEY = "pager.directory.v1";
-
-interface StoredDirectory {
-  uidToAlias: Record<string, string>;
-}
-
-function loadStored(): StoredDirectory {
-  if (typeof window === "undefined") {
-    return { uidToAlias: {} };
-  }
-  try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (!raw) return { uidToAlias: {} };
-    const parsed = JSON.parse(raw) as StoredDirectory;
-    return { uidToAlias: parsed.uidToAlias ?? {} };
-  } catch {
-    return { uidToAlias: {} };
-  }
-}
-
-function saveStored(data: StoredDirectory): void {
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-  } catch {
-    // Storage full/unavailable (private browsing) -- the directory just
-    // stays memory-only for this session, not worth surfacing to the user.
-  }
+// docs/FAMILIES_DESIGN.md §4: `GET /api/directory`'s entry shape, also used
+// (minus `phone`) for the rows read straight off the `users` listener.
+export interface DirectoryEntry {
+  uid: string;
+  alias: string;
+  displayName: string;
+  kind: UserKind;
+  familyId: string | null;
+  role: Role;
+  phone?: string;
 }
 
 // docs/GROUP_CHAT_DESIGN.md §5: the "New group" dialog's checkbox list of
-// existing contacts. Populated by the same admin-only `users` snapshot as
-// `uidToAliasMap` below, just kept in list (not map) form -- only ever
-// non-empty for an admin, same gate as `isComplete`.
+// existing contacts -- a narrower shape than `DirectoryEntry`, kept as its
+// own type since that's all `NewGroupDialog.tsx` (outside this task) needs.
 export interface Contact {
   uid: string;
   alias: string;
@@ -92,10 +63,7 @@ export interface Contact {
 
 // docs/GROUP_CHAT_DESIGN.md §5: a group conversation this member belongs
 // to, keyed by the group's own `alias` field so `ThreadPageClient.tsx` can
-// resolve `/chat/[alias]` to a `convKey` without a new query or index (the
-// listener below is the same `uids array-contains me` shape
-// `web/app/chat/page.tsx` already runs and `firestore.rules` already
-// allows).
+// resolve `/chat/[alias]` to a `convKey` without a new query or index.
 export interface GroupInfo {
   convKey: string;
   alias: string;
@@ -104,71 +72,117 @@ export interface GroupInfo {
 }
 
 interface DirectoryContextValue {
-  /** `undefined` if this alias has never been resolved by this browser. */
+  /** `undefined` if `uid` has not been resolved by either source below. */
+  byUid: (uid: string) => DirectoryEntry | undefined;
+  /** Same lookup, keyed by `alias`. */
+  byAlias: (alias: string) => DirectoryEntry | undefined;
+  /** @deprecated alias for `byAlias(alias)?.uid`, kept for call sites this
+   * task does not touch (docs/FAMILIES_TASKS.md 1.9). */
   aliasToUid: (alias: string) => string | undefined;
+  /** @deprecated alias for `byUid(uid)?.alias`, same as above. */
   uidToAlias: (uid: string) => string | undefined;
-  /** Records a newly-discovered (uid, alias) pair, in memory and locally. */
+  /** @deprecated no-op -- the directory is now server-provided and live, so
+   * there is nothing left to "learn" client-side. Kept so
+   * `ThreadPageClient.tsx`'s post-send call keeps compiling. */
   learn: (uid: string, alias: string) => void;
-  /** True once an admin's full-directory snapshot has loaded at least once. */
+  /** True once the family listener and the one-shot `/api/directory` fetch
+   * have both resolved at least once for the family currently in scope. */
   isComplete: boolean;
-  /** Admin-only; empty for a member (see `Contact`'s docstring). */
+  /** Every resolved person (family members plus allow-edge/conversation
+   * peers, in or out of family), including self. */
   contacts: Contact[];
-  /** `undefined` if `alias` names no group this member belongs to (either
-   * it's a DM peer's alias, or a group this account isn't a member of --
-   * indistinguishable from here, same as `aliasToUid`'s `undefined`). */
+  /** Every resolved external (SMS) contact. */
+  externals: DirectoryEntry[];
   groupByAlias: (alias: string) => GroupInfo | undefined;
 }
 
 const DirectoryContext = createContext<DirectoryContextValue | null>(null);
 
+interface ApiDirectoryResponse {
+  entries: DirectoryEntry[];
+}
+
 export function DirectoryProvider({ children }: { children: ReactNode }) {
-  const { isAdmin, me } = useAuth();
-  // Lazy initializer (runs once, on first mount only) rather than a mount
-  // effect + setState -- avoids a synchronous setState-in-effect and the
-  // extra empty-map render that would come before it.
-  const [uidToAliasMap, setUidToAliasMap] = useState<Map<string, string>>(
-    () => new Map(Object.entries(loadStored().uidToAlias))
-  );
-  const [isComplete, setIsComplete] = useState(false);
-  const [contacts, setContacts] = useState<Contact[]>([]);
+  const { me } = useAuth();
+  const { familyId } = useFamily();
+  const [familyEntries, setFamilyEntries] = useState<Map<string, DirectoryEntry>>(new Map());
+  const [familyLoaded, setFamilyLoaded] = useState(false);
+  const [apiEntries, setApiEntries] = useState<Map<string, DirectoryEntry>>(new Map());
+  const [apiLoaded, setApiLoaded] = useState(false);
   const [groupsByAlias, setGroupsByAlias] = useState<Map<string, GroupInfo>>(new Map());
 
-  // Admins get the whole directory live; a member's map stays whatever
-  // localStorage + `learn()` have accumulated (self is folded in below at
-  // read time, not written into this map, so no effect is needed just to
-  // resolve one's own uid).
+  // Live: every member of the family in scope. `firestore.rules` (task 1.4)
+  // lets any `sameFam()` member list this query, not just an admin.
   useEffect(() => {
-    if (!isAdmin) {
+    if (!familyId) {
+      // No family in scope yet (a super who hasn't picked one, or the
+      // instant after sign-in before `/api/me` resolves) -- leave whatever
+      // the map already held rather than clearing synchronously in the
+      // effect body (same `react-hooks/set-state-in-effect` constraint
+      // `lib/family-context.tsx`'s admin-only `families` listener sidesteps
+      // by never resetting on `!isSuper` either) -- harmless, since a
+      // stale/empty map from a different scope is replaced the moment this
+      // effect's own listener below fires for the new scope.
       return;
     }
-    const unsubscribe = onSnapshot(collection(getFirestoreDb(), "users"), (snap) => {
-      const nextContacts: Contact[] = [];
-      setUidToAliasMap((prev) => {
-        const next = new Map(prev);
-        snap.forEach((doc) => {
-          const data = doc.data() as UserDoc;
-          next.set(doc.id, data.alias);
-          nextContacts.push({ uid: doc.id, alias: data.alias, displayName: data.displayName });
+    const q = query(collection(getFirestoreDb(), "users"), where("familyId", "==", familyId));
+    const unsubscribe = onSnapshot(q, (snap) => {
+      const next = new Map<string, DirectoryEntry>();
+      snap.forEach((doc) => {
+        const data = doc.data() as UserDoc;
+        next.set(doc.id, {
+          uid: doc.id,
+          alias: data.alias,
+          displayName: data.displayName,
+          kind: data.kind,
+          familyId: data.familyId,
+          role: data.role,
         });
-        return next;
       });
-      setContacts(nextContacts);
-      setIsComplete(true);
+      setFamilyEntries(next);
+      setFamilyLoaded(true);
     });
     return unsubscribe;
-  }, [isAdmin]);
+  }, [familyId]);
 
-  // Group conversations this member belongs to -- every signed-in account,
-  // not just admins (membership, not admin status, is what scopes a group
-  // read; `firestore.rules` agrees). A DM's `conversations` doc has no
-  // `alias` field and is simply skipped.
+  // One-shot: cross-family peers and externals -- refetched on sign-in and
+  // on every family switch (super only; `familyId` is otherwise fixed, so
+  // this only ever runs once per sign-in for an admin/member).
   useEffect(() => {
     if (!me) {
-      // Signed out: leave whatever the map already held rather than
-      // setState-ing synchronously in the effect body (the same
-      // `react-hooks/set-state-in-effect` constraint the admin-directory
-      // effect above sidesteps by never resetting on `!isAdmin` either) --
-      // harmless, since nothing reads this map while signed out.
+      // Signed out: leave whatever the map already held, same convention
+      // as the family listener above -- harmless, since nothing reads this
+      // map while signed out.
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const resp = await api.get<ApiDirectoryResponse>("/directory");
+        if (cancelled) return;
+        const next = new Map<string, DirectoryEntry>();
+        for (const entry of resp.entries) {
+          next.set(entry.uid, entry);
+        }
+        setApiEntries(next);
+      } catch {
+        // Transient (offline, relay not up yet in dev) -- the family
+        // listener above still resolves same-family peers; cross-family and
+        // external resolution just stays whatever it last was.
+      } finally {
+        if (!cancelled) setApiLoaded(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [me, familyId]);
+
+  // Group conversations this member belongs to -- every signed-in account,
+  // unaffected by the directory rewrite above. A DM's `conversations` doc
+  // has no `alias` field and is simply skipped.
+  useEffect(() => {
+    if (!me) {
       return;
     }
     const q = query(collection(getFirestoreDb(), "conversations"), where("uids", "array-contains", me.uid));
@@ -190,31 +204,66 @@ export function DirectoryProvider({ children }: { children: ReactNode }) {
     return unsubscribe;
   }, [me]);
 
-  const learn = useCallback((uid: string, alias: string) => {
-    setUidToAliasMap((prev) => {
-      if (prev.get(uid) === alias) return prev;
-      const next = new Map(prev);
-      next.set(uid, alias);
-      saveStored({ uidToAlias: Object.fromEntries(next) });
-      return next;
-    });
-  }, []);
-
-  const aliasToUidMap = useMemo(() => {
-    const inverse = new Map<string, string>();
-    for (const [uid, alias] of uidToAliasMap) {
-      inverse.set(alias, uid);
+  // Merge: the live family listener wins over the one-shot API fetch for
+  // any uid both name (freshest alias/displayName/role for the family in
+  // scope); the API fetch is the only source for cross-family peers and
+  // externals. Self is always resolvable from `me`, even before either
+  // source above has loaded.
+  const byUidMap = useMemo(() => {
+    const merged = new Map<string, DirectoryEntry>(apiEntries);
+    for (const [uid, entry] of familyEntries) {
+      merged.set(uid, entry);
     }
-    if (me) inverse.set(me.alias, me.uid);
+    if (me) {
+      const existing = merged.get(me.uid);
+      merged.set(me.uid, {
+        uid: me.uid,
+        alias: me.alias,
+        displayName: me.displayName,
+        kind: me.kind,
+        familyId: me.familyId,
+        role: me.role,
+        phone: existing?.phone,
+      });
+    }
+    return merged;
+  }, [apiEntries, familyEntries, me]);
+
+  const byAliasMap = useMemo(() => {
+    const inverse = new Map<string, DirectoryEntry>();
+    for (const entry of byUidMap.values()) {
+      inverse.set(entry.alias, entry);
+    }
     return inverse;
-  }, [uidToAliasMap, me]);
+  }, [byUidMap]);
+
+  // No-op -- see module docstring. Declared with no parameters (still
+  // assignable to `(uid: string, alias: string) => void`) so there is
+  // nothing to mark unused.
+  const learn = useCallback(() => {}, []);
+
+  const contacts = useMemo<Contact[]>(
+    () =>
+      Array.from(byUidMap.values())
+        .filter((e) => e.kind === "person")
+        .map((e) => ({ uid: e.uid, alias: e.alias, displayName: e.displayName })),
+    [byUidMap]
+  );
+
+  const externals = useMemo(
+    () => Array.from(byUidMap.values()).filter((e) => e.kind === "external"),
+    [byUidMap]
+  );
 
   const value: DirectoryContextValue = {
-    aliasToUid: (alias) => aliasToUidMap.get(alias),
-    uidToAlias: (uid) => (me && uid === me.uid ? me.alias : uidToAliasMap.get(uid)),
+    byUid: (uid) => byUidMap.get(uid),
+    byAlias: (alias) => byAliasMap.get(alias),
+    aliasToUid: (alias) => byAliasMap.get(alias)?.uid,
+    uidToAlias: (uid) => byUidMap.get(uid)?.alias,
     learn,
-    isComplete,
+    isComplete: familyLoaded && apiLoaded,
     contacts,
+    externals,
     groupByAlias: (alias) => groupsByAlias.get(alias),
   };
 

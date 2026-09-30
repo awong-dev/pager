@@ -22,14 +22,18 @@
  * exact response shapes below as the contract to reconcile against, not a
  * confirmed observation):
  *   GET  /api/devices/{id}/sms-contacts -> {"contacts":[{"name","phone"}], "pending": boolean}
- *   PUT  /api/devices/{id}/sms-contacts body {"contacts":[...]} -> same shape; 422 on bad input
  *   GET  /api/devices/{id}/sms-log?limit=100&before=<epoch s> -> {"entries":[...]} newest first
  * The device header (label, status, `smsLost`) comes from a direct
  * Firestore listener on `devices/{id}` instead (allowed for the owner or an
  * admin by `firestore.rules`), matching this app's "reads are Firestore
  * listeners" convention -- only the SMS contacts/log, which need
- * PUT-validation and cursor pagination that a plain `onSnapshot` doesn't
- * give you, go through the API.
+ * cursor pagination that a plain `onSnapshot` doesn't give you, go through
+ * the API.
+ *
+ * docs/FAMILIES_DESIGN.md §5.4 / docs/FAMILIES_TASKS.md 3.4: the contacts
+ * list is now derived server-side from the owner's approved numbers
+ * (`ApprovedEditor` on `/family/people`), so this page only displays it --
+ * `PUT /api/devices/{id}/sms-contacts` returns 405 as of relay task 3.2.
  */
 
 import { doc, onSnapshot } from "firebase/firestore";
@@ -50,31 +54,24 @@ import TableCell from "@mui/material/TableCell";
 import TableContainer from "@mui/material/TableContainer";
 import TableHead from "@mui/material/TableHead";
 import TableRow from "@mui/material/TableRow";
-import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
-import DeleteIcon from "@mui/icons-material/Delete";
 
 import AppShell from "@/components/AppShell";
 import DeviceTrustChip from "@/components/DeviceTrustChip";
 import RequireAuth from "@/components/RequireAuth";
 import WifiPanel from "@/components/WifiPanel";
 import { ApiError, api } from "@/lib/api";
+import { useDirectory } from "@/lib/directory";
 import { xportChipInfo } from "@/lib/deviceTrust";
 import { getFirestoreDb } from "@/lib/firebase";
 import {
-  PHONE_E164_EXAMPLE,
-  SMS_CONTACT_MAX,
-  SMS_NAME_MAX,
   type SmsContact,
   type SmsContactsResponse,
   type SmsLogEntry,
   type SmsLogResponse,
   dirArrow,
-  isValidName,
-  isValidPhone,
   statusColor,
-  validateContacts,
 } from "@/lib/smsContacts";
 import type { DeviceDoc } from "@/lib/types";
 
@@ -106,9 +103,6 @@ function DeviceInner() {
   const [contacts, setContacts] = useState<SmsContact[] | null>(null);
   const [pending, setPending] = useState(false);
   const [contactsError, setContactsError] = useState<string | null>(null);
-  const [validationErrors, setValidationErrors] = useState<string[]>([]);
-  const [saving, setSaving] = useState(false);
-  const [saved, setSaved] = useState(false);
 
   const [log, setLog] = useState<SmsLogEntry[] | null>(null);
   const [logError, setLogError] = useState<string | null>(null);
@@ -207,48 +201,11 @@ function DeviceInner() {
     }
   }
 
-  function updateContact(index: number, patch: Partial<SmsContact>) {
-    setContacts((prev) => {
-      if (!prev) return prev;
-      const next = [...prev];
-      next[index] = { ...next[index], ...patch };
-      return next;
-    });
-    setSaved(false);
-  }
-
-  function removeContact(index: number) {
-    setContacts((prev) => (prev ? prev.filter((_, i) => i !== index) : prev));
-    setSaved(false);
-  }
-
-  function addContact() {
-    setContacts((prev) => [...(prev ?? []), { name: "", phone: "" }]);
-    setSaved(false);
-  }
-
-  async function saveContacts() {
-    if (!contacts) return;
-    const errors = validateContacts(contacts);
-    setValidationErrors(errors);
-    if (errors.length > 0) return;
-    setSaving(true);
-    setContactsError(null);
-    try {
-      const resp = await api.put<SmsContactsResponse>(`/devices/${id}/sms-contacts`, { contacts });
-      setContacts(resp.contacts);
-      setPending(resp.pending);
-      setSaved(true);
-    } catch (err) {
-      setContactsError(
-        err instanceof ApiError ? String(err.detail ?? err.message) : "Failed to save SMS contacts."
-      );
-    } finally {
-      setSaving(false);
-    }
-  }
-
   const smsLost = device?.status?.smsLost ?? 0;
+  // docs/FAMILIES_DESIGN.md §5.4: the read-only note names the owner's
+  // alias -- resolved from the directory the same way every other peer name
+  // in this app is (`lib/directory.tsx`), not a second Firestore read.
+  const ownerAlias = useDirectory().byUid(device?.ownerUid ?? "")?.alias;
   const xportChip = xportChipInfo(device?.status?.xport);
 
   return (
@@ -281,8 +238,9 @@ function DeviceInner() {
             SMS contacts
           </Typography>
           <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-            The pager can text only these numbers, and only they can text it. Only you can change
-            this list. Every text in either direction is recorded below.
+            The pager can text only these numbers, and only they can text it. Every text in either
+            direction is recorded below. Managed from People &rarr; @{ownerAlias ?? "..."} &rarr;
+            Approved numbers.
           </Typography>
 
           {pending && <Chip size="small" color="warning" label="waiting for the pager to confirm" sx={{ mb: 2 }} />}
@@ -291,78 +249,32 @@ function DeviceInner() {
               {contactsError}
             </Alert>
           )}
-          {validationErrors.length > 0 && (
-            <Alert severity="error" sx={{ mb: 2 }}>
-              <Stack spacing={0.5}>
-                {validationErrors.map((e, i) => (
-                  <span key={i}>{e}</span>
-                ))}
-              </Stack>
-            </Alert>
-          )}
-          {saved && validationErrors.length === 0 && !contactsError && (
-            <Alert severity="success" sx={{ mb: 2 }} onClose={() => setSaved(false)}>
-              Saved.
-            </Alert>
-          )}
 
           {contacts === null ? (
             <CircularProgress size={24} />
+          ) : contacts.length === 0 ? (
+            <Typography variant="body2" color="text.secondary">
+              No approved numbers yet.
+            </Typography>
           ) : (
-            <Stack spacing={1.5}>
-              {contacts.map((c, i) => {
-                const nameOk = isValidName(c.name);
-                const phoneOk = isValidPhone(c.phone);
-                return (
-                  <Stack key={i} direction="row" spacing={1} sx={{ alignItems: "flex-start", flexWrap: "wrap" }}>
-                    <TextField
-                      size="small"
-                      label="Name"
-                      value={c.name}
-                      onChange={(e) => updateContact(i, { name: e.target.value })}
-                      error={c.name.length > 0 && !nameOk}
-                      helperText={`1-${SMS_NAME_MAX} chars`}
-                      sx={{ minWidth: 140 }}
-                    />
-                    <TextField
-                      size="small"
-                      label="Phone"
-                      value={c.phone}
-                      onChange={(e) => updateContact(i, { phone: e.target.value })}
-                      error={c.phone.length > 0 && !phoneOk}
-                      helperText={`e.g. ${PHONE_E164_EXAMPLE}`}
-                      sx={{ minWidth: 180 }}
-                    />
-                    <IconButton
-                      aria-label="remove contact"
-                      onClick={() => removeContact(i)}
-                      sx={{ mt: 0.5 }}
-                    >
-                      <DeleteIcon fontSize="small" />
-                    </IconButton>
-                  </Stack>
-                );
-              })}
-
-              <Stack direction="row" spacing={2} sx={{ mt: 1 }}>
-                <Button size="small" onClick={addContact} disabled={contacts.length >= SMS_CONTACT_MAX}>
-                  Add contact
-                </Button>
-                <Button
-                  size="small"
-                  variant="contained"
-                  onClick={() => void saveContacts()}
-                  disabled={saving}
-                >
-                  Save
-                </Button>
-              </Stack>
-              {contacts.length >= SMS_CONTACT_MAX && (
-                <Typography variant="caption" color="text.secondary">
-                  Maximum {SMS_CONTACT_MAX} contacts.
-                </Typography>
-              )}
-            </Stack>
+            <TableContainer>
+              <Table size="small">
+                <TableHead>
+                  <TableRow>
+                    <TableCell>Name</TableCell>
+                    <TableCell>Phone</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {contacts.map((c, i) => (
+                    <TableRow key={i}>
+                      <TableCell>{c.name}</TableCell>
+                      <TableCell>{c.phone}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </TableContainer>
           )}
         </CardContent>
       </Card>
