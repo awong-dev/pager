@@ -74,9 +74,9 @@ def test_valid_token_registered_non_admin_is_403_on_admin_route(client: TestClie
 
 
 def test_valid_token_registered_super_is_authorized(client: TestClient):
-    # docs/FAMILIES_TASKS.md 1.2: `require_admin` is now a plain alias of
-    # `require_super` -- only the `role: 'super'` claim grants `/api/admin/*`,
-    # not the legacy `admin` claim and not a family `admin`.
+    # docs/FAMILIES_TASKS.md 1.2/5.1: `/api/admin/*` is gated on
+    # `require_super` -- only the `role: 'super'` claim grants it, not the
+    # legacy `admin` claim and not a family `admin`.
     auth_user = fb_auth.create_user(email="boss@example.com")
     users_store.create_user(
         uid=auth_user.uid, alias="boss", display_name="Boss", role="super"

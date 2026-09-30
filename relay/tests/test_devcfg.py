@@ -25,12 +25,14 @@ from app.config import Settings
 from app.db.firestore import get_db
 from app.ingest import Ingest
 from app.main import create_app
+from app.store import alerts as alerts_store
 from app.store import allow as allow_store
 from app.store import backends as backends_store
 from app.store import contacts as contacts_store
 from app.store import conversations as conversations_store
 from app.store import device_secrets as device_secrets_store
 from app.store import devices as devices_store
+from app.store import families as families_store
 from app.store import users as users_store
 from tests.conftest import (
     ack_payload,
@@ -793,7 +795,18 @@ def test_admin_push_ca_requires_admin(broker: FakeBrokerClient):
 def test_approve_contact_publishes_book(
     client: TestClient, admin_headers: dict[str, str], broker: FakeBrokerClient
 ):
-    _make_user("student20", "student20")
+    """docs/FAMILIES_TASKS.md 5.1: `POST /api/admin/contacts/{key}/approve`
+    is deleted -- approval now goes through `POST /api/family/alerts/{id}/
+    approve`'s `contact_request` case (`app/routers/family.py`, still backed
+    by the same `admin_router._approve_contact_impl`/`devcfg.push_book`).
+    The device owner needs a `familyId` for the `contact_request` alert
+    `app/store/contacts.py`'s `create_request` raises to even exist; the
+    `admin_headers` fixture is `role: 'super'` with no family, so it acts
+    via `?family=`, same as `require_family_admin` lets any super do."""
+    family = families_store.create_family(name="Devcfg20", created_by="root-devcfg20")
+    users_store.create_user(
+        uid="student20", alias="student20", display_name="student20", family_id=family.id
+    )
     _make_pager_device("pgr-b-20", "student20")
     ingest = Ingest(broker)
     ingest.handle_up(
@@ -813,9 +826,11 @@ def test_approve_contact_publishes_book(
     )
     broker.clear()
 
-    key = contacts_store.key("pgr-b-20", "u_b20")
+    alert = alerts_store.list_alerts(family.id, "open")[0]
+    assert alert.kind == "contact_request"
     resp = client.post(
-        f"/api/admin/contacts/{key}/approve",
+        f"/api/family/alerts/{alert.id}/approve",
+        params={"family": family.id},
         json={"mode": "create", "alias": "grandma20"},
         headers=admin_headers,
     )
@@ -829,10 +844,22 @@ def test_approve_contact_publishes_book(
     assert books[0]["c"] == [{"a": "grandma20", "n": "Grandma", "t": "sms"}]
 
 
-def test_reject_contact_publishes_book(
+def test_block_contact_publishes_book(
     client: TestClient, admin_headers: dict[str, str], broker: FakeBrokerClient
 ):
-    _make_user("student21", "student21")
+    """docs/FAMILIES_TASKS.md 5.1: `POST /api/admin/contacts/{key}/reject`
+    is deleted, and docs/FAMILIES_DESIGN.md §10 item 8 replaces
+    Reject-with-reason with Block/Dismiss on the `contact_request` alert
+    (`app/routers/family.py`'s `block_alert`). Rewired onto that real HTTP
+    path (docs/FAMILIES_TASKS.md 4.1 fix): `block_alert` now also calls
+    `contacts_store.reject`/`bump_book_version`/`devcfg.push_book` for the
+    alert's linked `contactRequestKey`, same as the deleted route did --
+    same `client`/`admin_headers`/`broker` fixture shape as
+    `test_approve_contact_publishes_book` above."""
+    family = families_store.create_family(name="Devcfg21", created_by="root-devcfg21")
+    users_store.create_user(
+        uid="student21", alias="student21", display_name="student21", family_id=family.id
+    )
     _make_pager_device("pgr-b-21", "student21")
     ingest = Ingest(broker)
     ingest.handle_up(
@@ -852,13 +879,20 @@ def test_reject_contact_publishes_book(
     )
     broker.clear()
 
-    key = contacts_store.key("pgr-b-21", "u_b21")
+    alert = alerts_store.list_alerts(family.id, "open")[0]
+    assert alert.kind == "contact_request"
     resp = client.post(
-        f"/api/admin/contacts/{key}/reject",
-        json={"reason": "not_allowed"},
+        f"/api/family/alerts/{alert.id}/block",
+        params={"family": family.id},
         headers=admin_headers,
     )
     assert resp.status_code == 200, resp.text
+
+    key = contacts_store.key("pgr-b-21", "u_b21")
+    request = contacts_store.get_request(key)
+    assert request is not None
+    assert request.status == "rejected"
+    assert request.reason == "blocked"
 
     books = [
         json.loads(p.payload) for p in broker.published if json.loads(p.payload).get("kind") == "book"

@@ -31,6 +31,8 @@ from app.emqx_admin import EmqxAdmin
 from app.ingest import Ingest
 from app.routers import admin as admin_router
 from app.routers import conversations as conversations_router
+from app.routing import Routing
+from app.store import alerts as alerts_store
 from app.store import allow as allow_store
 from app.store import backends as backends_store
 from app.store import contacts as contacts_store
@@ -40,6 +42,7 @@ from app.store import externals as externals_store
 from app.store import families as families_store
 from app.store import rate_limits as rate_limits_store
 from app.store import users as users_store
+from app.store.alerts import Alert
 from app.store.devices import Device, SmsContact
 from app.store.families import Family
 from app.store.users import InvalidAlias, Policy, User
@@ -89,6 +92,10 @@ def get_emqx(request: Request) -> EmqxAdmin:
 
 def get_app_settings(request: Request) -> Settings:
     return request.app.state.settings
+
+
+def get_routing(request: Request) -> Routing:
+    return request.app.state.routing
 
 
 # ---------------------------------------------------------------------------
@@ -628,3 +635,165 @@ def patch_contact(uid: str, req: PatchContactRequest, scope: FamilyScope) -> Con
         displayName=updated.displayName,
         approvedFor=sorted(approvers),
     )
+
+
+# ---------------------------------------------------------------------------
+# alerts -- docs/FAMILIES_DESIGN.md §4 `/api/family/alerts`, §6 "Alert
+# creation", §5.4 Alerts; docs/FAMILIES_TASKS.md 4.1.
+# ---------------------------------------------------------------------------
+
+
+class AlertsOut(BaseModel):
+    alerts: list[Alert]
+
+
+@router.get("/alerts")
+def list_alerts(scope: FamilyScope, status: Literal["open", "all"] = "open") -> AlertsOut:
+    _, family_id = scope
+    return AlertsOut(alerts=alerts_store.list_alerts(family_id, status))
+
+
+def _require_open_family_alert(alert_id: str, family_id: str) -> Alert:
+    alert = alerts_store.get(family_id, alert_id)
+    if alert is None:
+        raise HTTPException(status_code=404, detail="no such alert")
+    if alert.status != "open":
+        raise HTTPException(status_code=409, detail="alert already decided")
+    return alert
+
+
+class ApproveAlertRequest(BaseModel):
+    """One Optional-everything body for all three alert kinds (docs/
+    FAMILIES_TASKS.md 4.1's web contract): `sms_unknown` sends `{name,
+    forAlias}`, `new_conversation` sends `{}`, `contact_request` sends
+    `{mode, alias}`. Dispatch is on the *stored* alert's `kind`, not on
+    which of these fields the client happened to send."""
+
+    name: str | None = None
+    forAlias: str | None = None
+    mode: Literal["link", "create"] | None = None
+    alias: str | None = None
+
+
+def _approve_sms_unknown(alert: Alert, req: ApproveAlertRequest, family_id: str, routing: Routing) -> None:
+    if not req.name:
+        raise HTTPException(status_code=400, detail="name is required")
+    if alert.peerPhone is None:
+        raise HTTPException(status_code=400, detail="alert has no phone number")
+
+    target_uid = alert.subjectUid
+    if target_uid is None:
+        if not req.forAlias:
+            raise HTTPException(status_code=400, detail="forAlias is required for this alert")
+        target_uid = users_store.get_uid_for_alias(req.forAlias)
+        if target_uid is None:
+            raise HTTPException(status_code=400, detail=f"unknown alias: {req.forAlias!r}")
+    target = users_store.get_user(target_uid)
+    if target is None or target.familyId != family_id:
+        raise HTTPException(status_code=403, detail="target is not a member of this family")
+
+    external = externals_store.get_or_create(alert.peerPhone, req.name)
+    allow_store.set_edge(target_uid, external.uid, message=True, locate=False)
+    allow_store.recompute_locatable_by_for_owner(external.uid)
+
+    if alert.heldBody:
+        ext_match = backends_store.get_by_phone(externals_store.normalize_phone(alert.peerPhone))
+        ext_bid = ext_match[1] if ext_match is not None else None
+        routing.send(
+            sender_uid=external.uid,
+            recipient_alias=target.alias,
+            kind="text",
+            body=alert.heldBody,
+            origin_backend_kind="sms",
+            origin_backend_id=ext_bid,
+        )
+
+
+def _approve_new_conversation(alert: Alert) -> None:
+    if alert.subjectUid is None or alert.peerUid is None:
+        raise HTTPException(status_code=400, detail="alert has no subject/peer to approve")
+    allow_store.set_edge(alert.subjectUid, alert.peerUid, message=True, locate=False)
+    allow_store.recompute_locatable_by_for_owner(alert.peerUid)
+
+
+@router.post("/alerts/{alert_id}/approve", dependencies=[Depends(require_family_write_rate_limit)])
+def approve_alert(
+    alert_id: str,
+    req: ApproveAlertRequest,
+    scope: FamilyScope,
+    broker: Annotated[BrokerClient, Depends(get_broker)],
+    routing: Annotated[Routing, Depends(get_routing)],
+) -> Alert:
+    principal, family_id = scope
+    alert = _require_open_family_alert(alert_id, family_id)
+
+    if alert.kind == "sms_unknown":
+        _approve_sms_unknown(alert, req, family_id, routing)
+    elif alert.kind == "new_conversation":
+        _approve_new_conversation(alert)
+    else:  # "contact_request"
+        if alert.contactRequestKey is None:
+            raise HTTPException(status_code=400, detail="alert has no linked contact request")
+        if req.mode is None:
+            raise HTTPException(status_code=400, detail="mode is required")
+        admin_router._approve_contact_impl(
+            alert.contactRequestKey,
+            admin_router.ContactApproveRequest(mode=req.mode, alias=req.alias),
+            decided_by=principal.uid,
+            broker=broker,
+        )
+
+    return alerts_store.decide(family_id, alert_id, "handled", principal.uid)
+
+
+def _reject_linked_contact_request(
+    alert: Alert, reason: str, decided_by: str, broker: BrokerClient
+) -> None:
+    """A `contact_request` alert wraps a `contactRequests/{key}` doc
+    (docs/FAMILIES_DESIGN.md §6 "Alert creation") -- blocking/dismissing the
+    alert must also reject the underlying request, the same
+    reject-then-bump-then-push sequence `POST
+    /api/admin/contacts/{key}/reject` used to perform (`git show
+    HEAD~3:relay/app/routers/admin.py`'s `reject_contact`), or the request
+    stays `pending` forever: still counted against the pager's 5-pending cap
+    and never removed from the device's book. A no-op if the request is
+    already decided (e.g. a retried/duplicate alert action) -- matches this
+    route's own idempotent-on-already-decided-alert behaviour."""
+    if alert.kind != "contact_request" or alert.contactRequestKey is None:
+        return
+    request = contacts_store.get_request(alert.contactRequestKey)
+    if request is None or request.status != "pending":
+        return
+    contacts_store.reject(alert.contactRequestKey, reason=reason, decided_by=decided_by)
+    contacts_store.bump_book_version(request.deviceId)
+    devcfg.push_book(request.deviceId, broker)
+
+
+@router.post("/alerts/{alert_id}/block", dependencies=[Depends(require_family_write_rate_limit)])
+def block_alert(
+    alert_id: str,
+    scope: FamilyScope,
+    broker: Annotated[BrokerClient, Depends(get_broker)],
+) -> Alert:
+    """docs/FAMILIES_DESIGN.md §5.4: adds the alert's `peerPhone` to
+    `families.blockedNumbers` (a no-op if the alert carries none -- e.g. a
+    `new_conversation`/`contact_request` alert, which the web's Alert card
+    never offers Block for, but nothing here assumes that)."""
+    principal, family_id = scope
+    alert = _require_open_family_alert(alert_id, family_id)
+    if alert.peerPhone is not None:
+        families_store.add_blocked_number(family_id, alert.peerPhone)
+    _reject_linked_contact_request(alert, "blocked", principal.uid, broker)
+    return alerts_store.decide(family_id, alert_id, "handled", principal.uid)
+
+
+@router.post("/alerts/{alert_id}/dismiss", dependencies=[Depends(require_family_write_rate_limit)])
+def dismiss_alert(
+    alert_id: str,
+    scope: FamilyScope,
+    broker: Annotated[BrokerClient, Depends(get_broker)],
+) -> Alert:
+    principal, family_id = scope
+    alert = _require_open_family_alert(alert_id, family_id)
+    _reject_linked_contact_request(alert, "dismissed", principal.uid, broker)
+    return alerts_store.decide(family_id, alert_id, "dismissed", principal.uid)

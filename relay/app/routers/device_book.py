@@ -1,7 +1,7 @@
 """`GET /api/device/book` -- docs/PROTOCOL.md §3.7 (book pull, v0.4) /
 §14.7 (authenticating the request, response signature).
 
-No `require_user`/`require_admin` dependency: this route is device-facing,
+No `require_user`/`require_super` dependency: this route is device-facing,
 authenticated by the device's own HMAC key (§14.7), the same shape
 `app/routers/ca.py`'s `GET /ca/{sha}.pem` and `POST /webhooks/mqtt` already
 use for "the caller is not a Firebase-Auth'd human". Unlike `ca.py`'s public

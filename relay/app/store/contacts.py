@@ -3,9 +3,11 @@ docs/PROTOCOL.md §3.2's `kind:"contact_req"`/`kind:"book"`.
 
 The device's address book is a *projection* of the relay's allow-list plus
 the device owner's own pending requests (§4.1): the device can only *ask*
-(`/up kind:"contact_req"`, handled by `app.ingest.Ingest`), and only an admin
-can approve or reject (`app/routers/admin.py`'s `/api/admin/contacts/*`,
-§4.3). This module owns the `contactRequests` collection's CRUD and the two
+(`/up kind:"contact_req"`, handled by `app.ingest.Ingest`), and only a
+family admin can approve or block it (`app/routers/family.py`'s
+`POST /api/family/alerts/{id}/{approve|block}`, docs/FAMILIES_TASKS.md 4.1,
+5.1 -- superseding the old admin-only approve/reject router, §4.3). This
+module owns the `contactRequests` collection's CRUD and the two
 small pieces of cross-cutting bookkeeping every approve/reject must do:
 bumping `devices/{d}.bookVersion` and (eventually) pushing a fresh `book`
 down to the device.
@@ -185,6 +187,17 @@ def create_request(
     )
     fetched = get_request(doc_key)
     assert fetched is not None
+
+    # docs/FAMILIES_DESIGN.md §6 "Alert creation" / docs/FAMILIES_TASKS.md
+    # 4.1: every *new* contactRequests write (not the dedup/no-op returns
+    # above) raises a `contact_request` alert for the device owner's family
+    # admins. Imported inside the function, not at module scope: `app/
+    # alerts.py` imports `app.store.contacts` for its own `ContactRequest`
+    # type, so a top-of-file `from app import alerts` here would be a
+    # circular import at module load time.
+    from app import alerts as alerts_module
+
+    alerts_module.contact_request(fetched)
     return fetched
 
 

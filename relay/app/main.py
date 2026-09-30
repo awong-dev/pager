@@ -17,7 +17,9 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
+from app import alerts as alerts_module
 from app.backends.registry import build_registry
+from app.backends.webapp import NullFCMClient
 from app.broker import BrokerClient
 from app.config import Settings
 from app.db.firestore import get_db
@@ -81,6 +83,16 @@ def create_app(
             from app.backends.fcm import FirebaseFCMClient
 
             fcm_client = FirebaseFCMClient()
+        # docs/FAMILIES_TASKS.md 4.1: `app/alerts.py`'s `create` pushes
+        # through this same client -- unlike `WebappBackend` (constructed
+        # fresh per app, its `_fcm` an instance attribute), `app/alerts.py`'s
+        # client is a module-level global (it has no per-request/per-app
+        # object of its own to carry one on), so this call is unconditional
+        # (not just the `push_backend == "fcm"` branch above) to reset it
+        # back to `NullFCMClient` on every `create_app()` call -- otherwise
+        # one test building an app with `push_backend="fcm"` would leave a
+        # real `FirebaseFCMClient` behind for every later test's alerts.
+        alerts_module.set_fcm_client(fcm_client if fcm_client is not None else NullFCMClient())
         app.state.backend_registry = build_registry(app.state.broker, fcm_client=fcm_client)
         # One Routing instance per app -- shared by the webhook path (via
         # Ingest) and every API router that sends a message, so

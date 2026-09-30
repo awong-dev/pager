@@ -94,9 +94,8 @@ def require_super(
     authed: Annotated[AuthedUser, Depends(require_user)],
 ) -> AuthedUser:
     """Role `super` by claim only. Returns `AuthedUser` (not `Principal`) so
-    the existing `/api/admin/*` call sites of `require_admin` below, which
-    only ever read `authed.uid`, keep working unchanged until task 5.1
-    re-homes them."""
+    `/api/admin/*`'s call sites (`app/routers/admin.py`), which only ever
+    read `authed.uid`, need no further translation."""
     if principal_for(authed).role != "super":
         raise HTTPException(status_code=403, detail="super admin only")
     return authed
@@ -126,20 +125,12 @@ def require_family_admin(
     raise HTTPException(status_code=403, detail="family admin only")
 
 
-# docs/FAMILIES_TASKS.md 1.2: `require_admin` stays a plain alias of
-# `require_super` until task 5.1 re-homes every current `/api/admin/*` route
-# under `require_family_admin`/`require_super` -- keeps `app/routers/
-# admin.py` and `app/routers/conversations.py`'s existing
-# `Depends(require_admin)` call sites working unchanged in the meantime.
-require_admin = require_super
-
-
 def set_claims(uid: str, role: str, family_id: str | None) -> None:
     """docs/FAMILIES_DESIGN.md §1 decision 2: the *only* custom claims the
     relay writes from here on are `role` and `fam` -- consumed by
     `Principal` (task 1.2) and by `firestore.rules`'s `role()`/`fam()`
     helpers (task 1.4). Replaces the old `{"admin": True}` claim (written by
-    `app/routers/admin.py`'s now-removed `_set_admin_claim`), which is never
+    a now-deleted `app/routers/admin.py` helper, task 5.1), which is never
     written again anywhere. `family_id=None` writes `fam: ""`, matching
     `fam()`'s own `request.auth.token.get('fam', '')` default for a claim
     that was never set."""

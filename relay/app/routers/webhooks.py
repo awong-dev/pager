@@ -64,6 +64,8 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from google.api_core.exceptions import GoogleAPICallError
 from starlette.concurrency import run_in_threadpool
 
+from app import alerts as alerts_module
+from app import policy as policy_module
 from app.backends import gchat as gchat_backend
 from app.backends import sms_twilio
 from app.backends.resolve import USAGE_HINT, resolve_reply
@@ -72,7 +74,12 @@ from app.ingest import Ingest
 from app.notify import sms as sms_client
 from app.routing import Routing
 from app.store import backends as backends_store
+from app.store import externals as externals_store
 from app.store import rate_limits as rate_limits_store
+from app.store import users as users_store
+from app.store.families import Family
+from app.store.users import User
+from app.wire import is_valid_alias
 
 logger = logging.getLogger("relay.webhooks")
 
@@ -212,6 +219,101 @@ def _redact_phone(phone: str) -> str:
     return f"...{phone[-4:]}" if len(phone) >= 4 else "..."
 
 
+def _split_alias_prefix(text: str) -> tuple[str, str] | None:
+    """Same `@alias body` shape `app/backends/resolve.py`'s `resolve_reply`
+    parses, for a sender with no `uid` yet (an unrecognised number has none
+    to call `resolve_reply` with). `None` means `text` does not start with a
+    valid `@alias ` prefix."""
+    text = text.strip()
+    if not text.startswith("@"):
+        return None
+    parts = text[1:].split(None, 1)
+    if len(parts) != 2:
+        return None
+    alias, rest = parts[0].lower(), parts[1].strip()
+    if not is_valid_alias(alias) or not rest:
+        return None
+    return alias, rest
+
+
+def _single_any_external_member(family: Family) -> User | None:
+    """docs/FAMILIES_TASKS.md 3.3: "the single family member whose inbound
+    rule for externals is `any`" -- `None` if there is zero or more than
+    one such member (ambiguous, same "no target" treatment as zero)."""
+    candidates = [
+        u
+        for u in users_store.list_users()
+        if u.familyId == family.id
+        and u.kind == "person"
+        and policy_module.rule(u.policy.in_, "external") == "any"
+    ]
+    return candidates[0] if len(candidates) == 1 else None
+
+
+def _handle_unknown_sms(request: Request, from_number: str, to_number: str, raw_body: str) -> None:
+    """docs/FAMILIES_DESIGN.md §2 last paragraph, §4 Webhooks, §1 decision
+    10: an inbound text from a number with no `phoneIndex` entry at all --
+    never linked to any user (verified or external). Resolved to a family
+    via `To`, then delivered-and-alerted, held-and-alerted, or dropped
+    exactly as docs/FAMILIES_TASKS.md 3.3 spells out."""
+    family = sms_twilio.resolve_family_for_to(to_number)
+    if family is not None and from_number in family.blockedNumbers:
+        logger.info(
+            "sms webhook from blocked number %s dropped (family=%s)",
+            _redact_phone(from_number),
+            family.id,
+        )
+        return
+
+    split = _split_alias_prefix(raw_body)
+    target: User | None = None
+    if split is not None:
+        alias, effective_body = split
+        candidate = users_store.get_user_by_alias(alias)
+        if candidate is not None and candidate.kind == "person":
+            target = candidate
+    else:
+        effective_body = raw_body.strip()
+        if family is not None:
+            target = _single_any_external_member(family)
+
+    if target is None:
+        if family is None:
+            logger.info(
+                "sms webhook from unrecognised number %s dropped (no family, no @alias)",
+                _redact_phone(from_number),
+            )
+            return
+        alerts_module.sms_unknown(family.id, from_number, None, effective_body, held=True)
+        return
+
+    family_id = family.id if family is not None else target.familyId
+    if family_id is None:
+        # Defensive: a `kind == 'person'` target with no family is stale
+        # data, never true in normal operation (every person belongs to a
+        # family) -- nothing to attribute an alert to.
+        logger.warning("sms webhook target %s has no familyId, dropping", target.uid)
+        return
+
+    if policy_module.rule(target.policy.in_, "external") == "any":
+        e164 = externals_store.normalize_phone(from_number)
+        external = externals_store.get_or_create(e164, e164)
+        ext_match = backends_store.get_by_phone(e164)
+        ext_bid = ext_match[1] if ext_match is not None else None
+        routing: Routing = request.app.state.routing
+        routing.send(
+            sender_uid=external.uid,
+            recipient_alias=target.alias,
+            kind="text",
+            body=effective_body,
+            origin_backend_kind="sms",
+            origin_backend_id=ext_bid,
+        )
+        alerts_module.sms_unknown(family_id, from_number, target.uid, effective_body, held=False)
+    else:
+        alerts_module.sms_unknown(family_id, from_number, target.uid, effective_body, held=True)
+
+
 @router.post("/webhooks/twilio/sms")
 async def twilio_sms_webhook(request: Request) -> Response:
     _check_webhook_ip_rate_limit(request, "sms")
@@ -233,11 +335,12 @@ async def twilio_sms_webhook(request: Request) -> Response:
 
     match = backends_store.get_by_phone(from_number)
     if match is None:
-        # No verified user owns this number -- nothing to route to, and
-        # texting an unrecognised number back would be both a cost and a
-        # potential information leak. Log + drop, the same class of event
-        # as `app/ingest.py`'s unregistered-device case.
-        logger.info("sms webhook from unlinked number %s dropped", _redact_phone(from_number))
+        # No verified user (person or external) owns this number --
+        # docs/FAMILIES_DESIGN.md §2 last paragraph / §4 Webhooks / §1
+        # decision 10: resolve a family from `To` and hold-or-deliver per
+        # the target member's inbound rule, rather than the old
+        # unconditional drop.
+        _handle_unknown_sms(request, from_number, params.get("To", ""), body)
         return Response(status_code=200)
     uid, bid = match
 

@@ -11,7 +11,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from google.api_core.exceptions import NotFound
-from google.cloud.firestore import SERVER_TIMESTAMP
+from google.cloud.firestore import SERVER_TIMESTAMP, ArrayUnion
 from pydantic import BaseModel, ConfigDict
 
 from app.db.firestore import get_db
@@ -87,6 +87,22 @@ def update_family(
             ref.update(updates)
         except NotFound as exc:
             raise KeyError(f"no such family: {family_id!r}") from exc
+    fetched = get_family(family_id)
+    if fetched is None:
+        raise KeyError(f"no such family: {family_id!r}")
+    return fetched
+
+
+def add_blocked_number(family_id: str, phone: str) -> Family:
+    """Adds `phone` to `families/{family_id}.blockedNumbers` (an `ArrayUnion`
+    -- idempotent, a no-op if already blocked) -- docs/FAMILIES_DESIGN.md §4
+    `/api/family/alerts/{id}/block` (docs/FAMILIES_TASKS.md 4.1), the "mutated
+    elsewhere" this module's own docstring above anticipated."""
+    ref = _families().document(family_id)
+    try:
+        ref.update({"blockedNumbers": ArrayUnion([phone])})
+    except NotFound as exc:
+        raise KeyError(f"no such family: {family_id!r}") from exc
     fetched = get_family(family_id)
     if fetched is None:
         raise KeyError(f"no such family: {family_id!r}")

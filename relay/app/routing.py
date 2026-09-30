@@ -119,6 +119,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Literal
 
+from app import alerts as alerts_module
 from app import policy as policy_module
 from app.backends.base import Backend, DeliverResult
 from app.backends.registry import build_registry
@@ -219,6 +220,19 @@ class Routing:
                     RejectedRecipient(alias=recipient_alias, uid=recipient_uid, reason=reason)
                 )
                 continue
+            # docs/FAMILIES_DESIGN.md §6 "Alert creation": whether this send
+            # is about to *create* the DM's `conversations` doc has to be
+            # known before `_create_and_deliver` runs (its own
+            # `create_message` only reports dedup, not "was this doc already
+            # there") -- a plain pre-read, not inside `create_message`'s own
+            # transaction, since this alert is best-effort, not an
+            # invariant anything else needs atomic with the send itself.
+            conv_existed = (
+                messages_store.get_conversation(
+                    messages_store.conv_key(sender_uid, recipient_uid)
+                )
+                is not None
+            )
             msg = self._create_and_deliver(
                 sender_uid=sender_uid,
                 recipient_uid=recipient_uid,
@@ -232,7 +246,28 @@ class Routing:
             )
             if msg is not None:
                 created.append(msg)
+                if not conv_existed:
+                    self._maybe_alert_new_conversation(sender_uid, recipient_uid, msg.convKey)
         return SendResult(messages=created, rejected=rejected)
+
+    def _maybe_alert_new_conversation(
+        self, sender_uid: str, recipient_uid: str, conv_key: str
+    ) -> None:
+        """docs/FAMILIES_DESIGN.md §6: fires `app/alerts.py`'s
+        `new_conversation` exactly when this send just created a DM's
+        `conversations` doc, the sender's `policy.out == 'open'`, and no
+        outgoing `message` edge from sender to recipient exists yet --
+        `app/alerts.py`'s own `new_conversation` re-checks `sender.familyId`
+        and does the actual write; this only gathers the inputs it needs."""
+        sender = users_store.get_user(sender_uid)
+        recipient = users_store.get_user(recipient_uid)
+        if sender is None or recipient is None:
+            return
+        if sender.policy.out != "open":
+            return
+        if allow_store.is_message_allowed(sender_uid, recipient_uid):
+            return
+        alerts_module.new_conversation(sender, recipient, conv_key)
 
     # ---- recipient resolution (§5.2 step 1) ----
 

@@ -1,11 +1,16 @@
 """`kind:"contact_req"` ingest handling (docs/PROTOCOL.md §3.2, §4.2) and the
-admin approve/reject flow (docs/DEVICE_PLAN.md §4.3) -- docs/DEVICE_TASKS.md
-S4.1.
+contact-request approve/block flow (docs/DEVICE_PLAN.md §4.3,
+docs/FAMILIES_DESIGN.md §10 item 8) -- docs/DEVICE_TASKS.md S4.1,
+docs/FAMILIES_TASKS.md 5.1.
 
 Ingest-level tests exercise `app.ingest.Ingest.handle_up` directly, the same
-style `tests/test_ingest.py` uses; admin-level tests go through the real
-FastAPI app (`tests/test_admin.py`'s style) so the rate limiting / auth
-dependencies are exercised too.
+style `tests/test_ingest.py` uses. The approve/block flow used to be
+admin-only (`POST /api/admin/contacts/{key}/{approve|reject}`); task 5.1
+deleted that router in favour of `POST /api/family/alerts/{id}/
+{approve|block}` (`app/routers/family.py`, task 4.1) -- those tests go
+through the real FastAPI app (`tests/test_admin.py`'s style) so the rate
+limiting / `require_family_admin` dependency are exercised too, same as
+before, just against the new route.
 """
 
 from __future__ import annotations
@@ -23,11 +28,13 @@ from app.config import Settings
 from app.db.firestore import get_db
 from app.ingest import Ingest
 from app.main import create_app
+from app.store import alerts as alerts_store
 from app.store import allow as allow_store
 from app.store import backends as backends_store
 from app.store import contacts as contacts_store
 from app.store import device_secrets as device_secrets_store
 from app.store import devices as devices_store
+from app.store import families as families_store
 from app.store import users as users_store
 from tests.conftest import up_topic
 from tests.fake_transport import FakeBrokerClient
@@ -41,8 +48,13 @@ _HMAC_KEY = b"k" * 32
 # ---------------------------------------------------------------------------
 
 
-def _make_user(uid: str, alias: str) -> None:
-    users_store.create_user(uid=uid, alias=alias, display_name=alias)
+def _make_user(uid: str, alias: str, *, family_id: str | None = None) -> None:
+    """`family_id` defaults to `None` for the ingest-level tests below,
+    which never need one; the family-scoped alerts-route tests further down
+    pass one so `app/alerts.py`'s `contact_request` (fired by
+    `contacts_store.create_request`) has a family to raise the alert in --
+    a device owner with no `familyId` gets no alert at all."""
+    users_store.create_user(uid=uid, alias=alias, display_name=alias, family_id=family_id)
 
 
 def _make_pager_device(device_id: str, owner_uid: str) -> None:
@@ -274,7 +286,9 @@ def test_hmac_signed_contact_req_is_verified_then_stored():
 
 
 # ---------------------------------------------------------------------------
-# admin: /api/admin/contacts, /api/admin/users/{uid}/backends
+# family alerts: POST /api/family/alerts/{id}/{approve|block} for the
+# `contact_request` kind (docs/FAMILIES_TASKS.md 4.1, 5.1); admin:
+# /api/admin/users/{uid}/backends
 # ---------------------------------------------------------------------------
 
 
@@ -310,31 +324,34 @@ def admin_headers() -> dict[str, str]:
     return auth_header(auth_user.uid)
 
 
-def test_list_contacts_filters_by_status(client: TestClient, admin_headers: dict[str, str]):
-    _make_user("student", "student")
-    _make_pager_device("pgr-a-1", "student")
-    ingest, _broker = _ingest()
-    ingest.handle_up(up_topic("pgr-a-1"), contact_req_payload("u_a1", "Grandma", ph="+15554440000"))
-
-    resp = client.get("/api/admin/contacts?status=pending", headers=admin_headers)
-    assert resp.status_code == 200, resp.text
-    data = resp.json()
-    assert len(data) == 1
-    assert data[0]["name"] == "Grandma"
-
-    resp2 = client.get("/api/admin/contacts?status=approved", headers=admin_headers)
-    assert resp2.json() == []
+def _make_family(name: str) -> families_store.Family:
+    return families_store.create_family(name=name, created_by="root-contacts")
 
 
-def test_contacts_endpoints_require_admin(client: TestClient):
-    fb_auth.create_user(uid="nonadmin1", email="nonadmin1@example.com")
-    users_store.create_user(uid="nonadmin1", alias="nonadmin1", display_name="NA")
-    resp = client.get("/api/admin/contacts", headers=auth_header("nonadmin1"))
-    assert resp.status_code == 403
+def _make_family_admin(uid: str, alias: str, family_id: str) -> dict[str, str]:
+    fb_auth.create_user(uid=uid, email=f"{uid}@example.com")
+    users_store.create_user(
+        uid=uid, alias=alias, display_name=alias, role="admin", family_id=family_id
+    )
+    fb_auth.set_custom_user_claims(uid, {"role": "admin", "fam": family_id})
+    return auth_header(uid)
 
 
-def test_approve_link_to_existing_verified_phone(client: TestClient, admin_headers: dict[str, str]):
-    _make_user("student", "student")
+def _open_contact_request_alert(family_id: str):
+    """The single open `contact_request` alert `app/alerts.py`'s
+    `contact_request` (called from `contacts_store.create_request`) raised
+    for `family_id` -- every test below sets up exactly one pending
+    request, so there is exactly one."""
+    alerts = alerts_store.list_alerts(family_id, "all")
+    assert len(alerts) == 1
+    assert alerts[0].kind == "contact_request"
+    return alerts[0]
+
+
+def test_approve_link_to_existing_verified_phone(client: TestClient):
+    family = _make_family("Link1")
+    headers = _make_family_admin("cadmin1", "cadmin1", family.id)
+    _make_user("student", "student", family_id=family.id)
     _make_pager_device("pgr-a-2", "student")
     users_store.create_user(uid="grandma1", alias="grandma1", display_name="Grandma")
     backend = backends_store.create_backend(
@@ -346,42 +363,44 @@ def test_approve_link_to_existing_verified_phone(client: TestClient, admin_heade
     ingest, _broker = _ingest()
     ingest.handle_up(up_topic("pgr-a-2"), contact_req_payload("u_a2", "Grandma", ph="+15555550000"))
 
-    key = contacts_store.key("pgr-a-2", "u_a2")
+    alert = _open_contact_request_alert(family.id)
     # docs/FAMILIES_TASKS.md 3.2 addition (b): contact approval always
     # writes message-only edges now, so a `locate` in the request body (if
     # a stale client still sends one) is simply ignored, not honoured.
     resp = client.post(
-        f"/api/admin/contacts/{key}/approve",
+        f"/api/family/alerts/{alert.id}/approve",
         json={"mode": "link", "locate": True},
-        headers=admin_headers,
+        headers=headers,
     )
     assert resp.status_code == 200, resp.text
-    assert resp.json()["status"] == "approved"
+    assert resp.json()["status"] == "handled"
 
     assert allow_store.is_message_allowed("student", "grandma1")
     assert allow_store.is_message_allowed("grandma1", "student")
     edge = allow_store.get_edge("student", "grandma1")
     assert edge is not None and edge.locate is False
 
+    request = contacts_store.get_by_device_and_req("pgr-a-2", "u_a2")
+    assert request is not None and request.status == "approved"
     assert _book_version("pgr-a-2") == 1
 
 
-def test_approve_create_creates_user_backend_and_edges(
-    client: TestClient, admin_headers: dict[str, str]
-):
-    _make_user("student", "student")
+def test_approve_create_creates_user_backend_and_edges(client: TestClient):
+    family = _make_family("Create1")
+    headers = _make_family_admin("cadmin2", "cadmin2", family.id)
+    _make_user("student", "student", family_id=family.id)
     _make_pager_device("pgr-a-3", "student")
     ingest, _broker = _ingest()
     ingest.handle_up(up_topic("pgr-a-3"), contact_req_payload("u_a3", "Auntie", ph="+15556660000"))
 
-    key = contacts_store.key("pgr-a-3", "u_a3")
+    alert = _open_contact_request_alert(family.id)
     resp = client.post(
-        f"/api/admin/contacts/{key}/approve",
+        f"/api/family/alerts/{alert.id}/approve",
         json={"mode": "create", "alias": "auntie"},
-        headers=admin_headers,
+        headers=headers,
     )
     assert resp.status_code == 200, resp.text
-    assert resp.json()["status"] == "approved"
+    assert resp.json()["status"] == "handled"
 
     new_uid = users_store.get_uid_for_alias("auntie")
     assert new_uid is not None
@@ -397,67 +416,117 @@ def test_approve_create_creates_user_backend_and_edges(
     assert _book_version("pgr-a-3") == 1
 
 
-def test_approve_create_requires_alias_when_none_can_be_derived(
-    client: TestClient, admin_headers: dict[str, str]
-):
-    _make_user("student", "student")
+def test_approve_create_requires_alias_when_none_can_be_derived(client: TestClient):
+    family = _make_family("Create2")
+    headers = _make_family_admin("cadmin3", "cadmin3", family.id)
+    _make_user("student", "student", family_id=family.id)
     _make_pager_device("pgr-a-4", "student")
     ingest, _broker = _ingest()
     ingest.handle_up(up_topic("pgr-a-4"), contact_req_payload("u_a4", "小明"))
 
-    key = contacts_store.key("pgr-a-4", "u_a4")
+    alert = _open_contact_request_alert(family.id)
     resp = client.post(
-        f"/api/admin/contacts/{key}/approve", json={"mode": "create"}, headers=admin_headers
+        f"/api/family/alerts/{alert.id}/approve", json={"mode": "create"}, headers=headers
     )
     assert resp.status_code == 400
 
 
-def test_approve_link_without_a_match_is_400(client: TestClient, admin_headers: dict[str, str]):
-    _make_user("student", "student")
+def test_approve_link_without_a_match_is_400(client: TestClient):
+    family = _make_family("Link2")
+    headers = _make_family_admin("cadmin4", "cadmin4", family.id)
+    _make_user("student", "student", family_id=family.id)
     _make_pager_device("pgr-a-5", "student")
     ingest, _broker = _ingest()
     ingest.handle_up(up_topic("pgr-a-5"), contact_req_payload("u_a5", "Ghost", ph="+15550001234"))
 
-    key = contacts_store.key("pgr-a-5", "u_a5")
+    alert = _open_contact_request_alert(family.id)
     resp = client.post(
-        f"/api/admin/contacts/{key}/approve", json={"mode": "link"}, headers=admin_headers
+        f"/api/family/alerts/{alert.id}/approve", json={"mode": "link"}, headers=headers
     )
     assert resp.status_code == 400
 
 
-def test_reject_stores_reason_and_bumps_book(client: TestClient, admin_headers: dict[str, str]):
-    _make_user("student", "student")
+def test_block_contact_request_alert_adds_blocked_number_and_marks_handled(client: TestClient):
+    """docs/FAMILIES_DESIGN.md §10 item 8: Block replaces the old
+    Reject-with-reason for `contact_request` alerts. `block_alert`
+    (`app/routers/family.py`) adds the alert's `peerPhone` to
+    `families.blockedNumbers`, marks the alert `handled`, *and* -- same as
+    the deleted `POST /api/admin/contacts/{key}/reject` route -- rejects the
+    underlying `contactRequests` doc and bumps/republishes the device's
+    book, so the pager's 5-pending cap and its book both reflect the
+    decision."""
+    family = _make_family("Block1")
+    headers = _make_family_admin("cadmin5", "cadmin5", family.id)
+    _make_user("student", "student", family_id=family.id)
     _make_pager_device("pgr-a-6", "student")
     ingest, _broker = _ingest()
     ingest.handle_up(up_topic("pgr-a-6"), contact_req_payload("u_a6", "Stranger", ph="+15557770000"))
 
-    key = contacts_store.key("pgr-a-6", "u_a6")
-    resp = client.post(
-        f"/api/admin/contacts/{key}/reject",
-        json={"reason": "not_allowed"},
-        headers=admin_headers,
-    )
+    alert = _open_contact_request_alert(family.id)
+    resp = client.post(f"/api/family/alerts/{alert.id}/block", headers=headers)
     assert resp.status_code == 200, resp.text
-    data = resp.json()
-    assert data["status"] == "rejected"
-    assert data["reason"] == "not_allowed"
+    assert resp.json()["status"] == "handled"
+
+    updated_family = families_store.get_family(family.id)
+    assert updated_family is not None
+    assert "+15557770000" in updated_family.blockedNumbers
+
+    request = contacts_store.get_by_device_and_req("pgr-a-6", "u_a6")
+    assert request is not None
+    assert request.status == "rejected"
+    assert request.reason == "blocked"
+    assert request.decidedBy == "cadmin5"
     assert _book_version("pgr-a-6") == 1
 
 
-def test_approve_already_decided_is_conflict(client: TestClient, admin_headers: dict[str, str]):
-    _make_user("student", "student")
+def test_dismiss_contact_request_alert_rejects_request_and_publishes_book(client: TestClient):
+    """`dismiss_alert` (`app/routers/family.py`) has no `peerPhone`/
+    `blockedNumbers` step, but for a `contact_request` alert it must still
+    reject the underlying `contactRequests` doc and bump/republish the
+    device's book, the same as `block_alert` above (docs/FAMILIES_TASKS.md
+    4.1)."""
+    family = _make_family("Dismiss1")
+    headers = _make_family_admin("cadmin8", "cadmin8", family.id)
+    _make_user("student", "student", family_id=family.id)
+    _make_pager_device("pgr-a-8", "student")
+    ingest, _broker = _ingest()
+    ingest.handle_up(up_topic("pgr-a-8"), contact_req_payload("u_a8", "Rando", ph="+15559990001"))
+
+    alert = _open_contact_request_alert(family.id)
+    resp = client.post(f"/api/family/alerts/{alert.id}/dismiss", headers=headers)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "dismissed"
+
+    request = contacts_store.get_by_device_and_req("pgr-a-8", "u_a8")
+    assert request is not None
+    assert request.status == "rejected"
+    assert request.reason == "dismissed"
+    assert request.decidedBy == "cadmin8"
+    assert _book_version("pgr-a-8") == 1
+
+
+def test_approve_already_decided_is_conflict(client: TestClient):
+    family = _make_family("Conflict1")
+    headers = _make_family_admin("cadmin7", "cadmin7", family.id)
+    _make_user("student", "student", family_id=family.id)
     _make_pager_device("pgr-a-7", "student")
+    users_store.create_user(uid="grandma7", alias="grandma7", display_name="Grandma7")
+    backend = backends_store.create_backend(
+        "grandma7", kind="sms", config={"phone": "+15558880000"}
+    )
+    backends_store.update_backend("grandma7", backend.id, verified=True)
+    backends_store.set_phone_index("+15558880000", "grandma7", backend.id)
     ingest, _broker = _ingest()
     ingest.handle_up(up_topic("pgr-a-7"), contact_req_payload("u_a7", "Once", ph="+15558880000"))
 
-    key = contacts_store.key("pgr-a-7", "u_a7")
+    alert = _open_contact_request_alert(family.id)
     resp1 = client.post(
-        f"/api/admin/contacts/{key}/reject", json={"reason": "x"}, headers=admin_headers
+        f"/api/family/alerts/{alert.id}/approve", json={"mode": "link"}, headers=headers
     )
     assert resp1.status_code == 200
 
     resp2 = client.post(
-        f"/api/admin/contacts/{key}/approve", json={"mode": "link"}, headers=admin_headers
+        f"/api/family/alerts/{alert.id}/approve", json={"mode": "link"}, headers=headers
     )
     assert resp2.status_code == 409
 

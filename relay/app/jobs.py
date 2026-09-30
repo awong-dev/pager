@@ -38,7 +38,11 @@ conversations use `retention.messages`; locations/locWireIds/locReqs use
 `retention.locations`. `locWireIds` needs sweeping alongside `locations` or
 it grows unbounded, and `locReqs` similarly has no other eventual cleanup
 once `app.location.clear_stale_loc_reqs`'s much shorter 15-minute TTL has
-already fired.
+already fired. A seventh, `families/{fid}/alerts/{id}` (docs/FAMILIES_TASKS.md
+4.1), uses its own `retention.alertsDays` (a plain day count, default 90)
+against `ts`, and only for `status in ('handled', 'dismissed')` -- see
+`_sweep_alerts` below for why that one collection needs its own loop instead
+of `_sweep_by_created_at`.
 
 - `messages` (+ their `wireIds/{wireId}_{recipientUid}` companion, looked up
   from the message doc's own `wireId`/`recipientUid` fields rather than a
@@ -348,6 +352,59 @@ def _sweep_by_created_at(
     return deleted
 
 
+def _sweep_alerts(cutoff: datetime, batch_size: int) -> int:
+    """`families/{fid}/alerts/{id}` docs with `status in ('handled',
+    'dismissed')` and `ts < cutoff` -- docs/FAMILIES_DESIGN.md §6 ("Held SMS
+    bodies are stored in the alert until handled; retention sweep should
+    include `alerts`") / docs/FAMILIES_TASKS.md 4.1: `settings/retention.
+    alertsDays` (default 90). An `open` alert is *never* swept regardless of
+    age (still awaiting an admin's decision).
+
+    Unlike `_sweep_by_created_at`'s callers, this can't push the `status`
+    filter into the Firestore query itself alongside the `ts` range without
+    a composite index (`ts` range + `status` equality/`in`, two different
+    fields) this project has no purpose-built index for -- same choice `app/
+    store/messages.py`'s `list_recent_queued_by_kind` documents for a
+    similar case -- so it queries by the single-field `ts` range alone
+    (automatically indexed) and filters `status` in Python. Paginates with an
+    explicit `start_after` cursor rather than `_sweep_by_created_at`'s
+    "requery the same window" loop: an old, still-`open` alert is never
+    deleted, so a page consisting entirely of `open` alerts must not be
+    fetched forever -- the cursor advances past it either way.
+
+    `db.collection_group('alerts')` -- every family's alerts live under one
+    collection id (`families/{fid}/alerts`), the same cross-family
+    collection-group shape `locations` (`devices/{d}/locations`) already
+    uses below."""
+    db = get_db()
+    deleted = 0
+    last_snap = None
+    while True:
+        query: Query | CollectionGroup = (
+            db.collection_group("alerts")
+            .where(filter=FieldFilter("ts", "<", cutoff))
+            .order_by("ts")
+            .limit(batch_size)
+        )
+        if last_snap is not None:
+            query = query.start_after(last_snap)
+        docs = list(query.stream())
+        if not docs:
+            break
+        batch = _AutoBatch(db)
+        for snap in docs:
+            data = snap.to_dict() or {}
+            if data.get("status") in ("handled", "dismissed"):
+                batch.reserve(1)
+                batch.delete(snap.reference)
+                deleted += 1
+        batch.commit()
+        last_snap = docs[-1]
+        if len(docs) < batch_size:
+            break
+    return deleted
+
+
 def _sweep_expired(
     query_factory, now_epoch_s: int, batch_size: int, *, expires_field: str = "expiresAt"
 ) -> int:
@@ -394,6 +451,7 @@ class SweepResult:
     orphanedWireIdsDeleted: int = 0
     conversationsDeleted: int = 0
     gchatLinkCodesDeleted: int = 0
+    alertsDeleted: int = 0
 
 
 def sweep() -> SweepResult:
@@ -458,12 +516,16 @@ def sweep() -> SweepResult:
     gchat_link_codes_deleted = _sweep_expired(
         lambda: db.collection("gchatLinkCodes"), int(time.time()), batch_size
     )
+    # `families/{fid}/alerts/{id}` -- docs/FAMILIES_TASKS.md 4.1: handled/
+    # dismissed alerts older than `retention.alertsDays` (default 90).
+    alerts_cutoff = _cutoff(retention.alertsDays * 86400)
+    alerts_deleted = _sweep_alerts(alerts_cutoff, batch_size)
 
     settings_store.mark_swept()
 
     logger.info(
         "sweep complete: messages=%d wireIds=%d locations=%d locWireIds=%d locReqs=%d "
-        "orphanedWireIds=%d conversations=%d gchatLinkCodes=%d",
+        "orphanedWireIds=%d conversations=%d gchatLinkCodes=%d alerts=%d",
         messages_deleted,
         wire_ids_deleted,
         locations_deleted,
@@ -472,6 +534,7 @@ def sweep() -> SweepResult:
         orphaned_wire_ids_deleted,
         conversations_deleted,
         gchat_link_codes_deleted,
+        alerts_deleted,
     )
     return SweepResult(
         messagesDeleted=messages_deleted,
@@ -482,4 +545,5 @@ def sweep() -> SweepResult:
         orphanedWireIdsDeleted=orphaned_wire_ids_deleted,
         conversationsDeleted=conversations_deleted,
         gchatLinkCodesDeleted=gchat_link_codes_deleted,
+        alertsDeleted=alerts_deleted,
     )

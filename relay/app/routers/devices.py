@@ -10,7 +10,7 @@ admin API, so it lives here.
 `sms-contacts`/`sms-log` are gated on **owner or admin**
 (`_require_owner_or_admin` below), unlike every route in
 `app/routers/admin.py`, which is admin-only end to end
-(`Depends(require_admin)` on the whole router). A device's owner is the
+(`Depends(require_super)` on the whole router). A device's owner is the
 *student* carrying it (docs/V02_DESIGN.md §6: "only the device's owner (or
 an admin)... The pager has no UI to add/edit/remove a number" -- the owner
 manages the allow-list from the web app, same as an admin can).

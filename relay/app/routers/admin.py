@@ -1,7 +1,7 @@
 """`/api/admin/*` -- docs/SERVER_PLAN.md §5.1, §5.5; docs/FAMILIES_DESIGN.md
-§4. Every route here is gated on `app.auth.require_admin` (an alias of
-`require_super` -- role `super` by claim only, docs/FAMILIES_TASKS.md 1.2).
-Several of this router's handlers (`_create_device_impl`,
+§4. Every route here is gated on `app.auth.require_super` (role `super` by
+claim only, docs/FAMILIES_TASKS.md 1.2/5.1). Several of this router's
+handlers (`_create_device_impl`,
 `_rotate_credentials_impl`, `_revoke_device_impl`, `_push_cfg_impl`,
 `_push_ca_impl`, `_delete_device_impl`, `_patch_user_impl`) are factored into
 private module-level functions so `app/routers/family.py`'s family-scoped
@@ -42,7 +42,7 @@ from firebase_admin import auth as fb_auth
 from pydantic import BaseModel, ConfigDict, Field
 
 from app import apn_presets, ca_resolve, devcfg, devsetup
-from app.auth import AuthedUser, require_admin, set_claims
+from app.auth import AuthedUser, require_super, set_claims
 from app.backends.sms_twilio import normalize_e164
 from app.broker import BrokerClient
 from app.config import Settings
@@ -67,7 +67,7 @@ from app.store.families import Family
 from app.store.settings import RetentionSetting, RetentionSettings
 from app.store.users import ALIAS_RE, User
 
-router = APIRouter(prefix="/api/admin", dependencies=[Depends(require_admin)])
+router = APIRouter(prefix="/api/admin", dependencies=[Depends(require_super)])
 
 MQTT_PASSWORD_BYTES = 24
 
@@ -123,9 +123,9 @@ def get_app_settings(request: Request) -> Settings:
 
 
 def require_admin_write_rate_limit(
-    authed: Annotated[AuthedUser, Depends(require_admin)],
+    authed: Annotated[AuthedUser, Depends(require_super)],
 ) -> None:
-    """`Depends(require_admin)` here is the *same* callable the router-level
+    """`Depends(require_super)` here is the *same* callable the router-level
     dependency already ran for this request, so FastAPI's per-request
     dependency cache (the default `use_cache=True`) returns the cached
     `AuthedUser` rather than re-verifying the bearer token a second time --
@@ -399,7 +399,7 @@ def put_allowlist(
     broker: Annotated[BrokerClient, Depends(get_broker)],
     # docs/FAMILIES_DESIGN.md §4 / docs/FAMILIES_TASKS.md 2.3: stays
     # replace-all and super-only (the whole router is
-    # `Depends(require_admin)`) either way -- `?family=` only narrows *which
+    # `Depends(require_super)`) either way -- `?family=` only narrows *which
     # existing edges* the replace touches (`allow_store.replace_all`'s
     # `family_id`), it does not relax who may call this.
     family: Annotated[str | None, Query()] = None,
@@ -546,7 +546,7 @@ def _create_device_impl(
     """The whole setup-code flow, factored out so `app/routers/family.py`'s
     `POST /api/family/devices` can call it too, after its own in-family
     check on `req.ownerAlias` (docs/FAMILIES_TASKS.md 1.3) -- this function
-    itself does not know or care whether the caller is `require_admin` or
+    itself does not know or care whether the caller is `require_super` or
     `require_family_admin`."""
     owner_uid = _resolve_uid(req.ownerAlias)
     owner = users_store.get_user(owner_uid)
@@ -806,10 +806,6 @@ class ContactApproveRequest(BaseModel):
     alias: str | None = None
 
 
-class ContactRejectRequest(BaseModel):
-    reason: str
-
-
 def _slugify_name(name: str) -> str | None:
     """docs/DEVICE_PLAN.md §4.3: "alias defaults to a slug of `name` when one
     can be derived (a CJK name yields none, so the admin types the alias)."
@@ -839,20 +835,23 @@ def _resolve_link_uid(request: ContactRequest, admin_alias: str | None) -> str |
     return None
 
 
-@router.get("/contacts")
-def list_contacts(
-    status: Literal["pending", "approved", "rejected"] | None = None,
-) -> list[ContactRequest]:
-    return contacts_store.list_requests(status=status)
-
-
-@router.post("/contacts/{key}/approve", dependencies=[Depends(require_admin_write_rate_limit)])
-def approve_contact(
+def _approve_contact_impl(
     key: str,
     req: ContactApproveRequest,
-    authed: Annotated[AuthedUser, Depends(require_admin)],
-    broker: Annotated[BrokerClient, Depends(get_broker)],
+    *,
+    decided_by: str,
+    broker: BrokerClient,
 ) -> ContactRequest:
+    """The shared body `POST /api/family/alerts/{id}/approve`'s
+    `contact_request` case calls (docs/FAMILIES_TASKS.md 4.1: "reuse its
+    implementation"; the `POST` route under the old admin contacts prefix
+    this was originally factored out of was itself deleted by task 5.1).
+    Factored out so there is exactly one place that creates/links the
+    contact and writes the mutual `allow` edges -- `app/routers/family.py`'s
+    alert-approve route calls this after resolving the alert's
+    `contactRequestKey` to a `ContactRequest`, with no in-family check of its
+    own (the alert itself is already scoped to the caller's family via
+    `require_family_admin` and `families/{fam}/alerts/{id}`)."""
     request = contacts_store.get_request(key)
     if request is None:
         raise HTTPException(status_code=404, detail="no such contact request")
@@ -902,29 +901,22 @@ def approve_contact(
     allow_store.recompute_locatable_by_for_owner(owner_uid)
     allow_store.recompute_locatable_by_for_owner(contact_uid)
 
-    updated = contacts_store.approve(key, decided_by=authed.uid)
+    updated = contacts_store.approve(key, decided_by=decided_by)
     contacts_store.bump_book_version(request.deviceId)
     devcfg.push_book(request.deviceId, broker)
     return updated
 
 
-@router.post("/contacts/{key}/reject", dependencies=[Depends(require_admin_write_rate_limit)])
-def reject_contact(
-    key: str,
-    req: ContactRejectRequest,
-    authed: Annotated[AuthedUser, Depends(require_admin)],
-    broker: Annotated[BrokerClient, Depends(get_broker)],
-) -> ContactRequest:
-    request = contacts_store.get_request(key)
-    if request is None:
-        raise HTTPException(status_code=404, detail="no such contact request")
-    if request.status != "pending":
-        raise HTTPException(status_code=409, detail="contact request already decided")
-
-    updated = contacts_store.reject(key, reason=req.reason, decided_by=authed.uid)
-    contacts_store.bump_book_version(request.deviceId)
-    devcfg.push_book(request.deviceId, broker)
-    return updated
+# docs/FAMILIES_TASKS.md 5.1: this router's old `GET`/approve/reject routes
+# under the `/contacts` prefix are deleted -- `_approve_contact_impl` above
+# is now called only from `app/routers/family.py`'s
+# `POST /api/family/alerts/{id}/approve` (the `contact_request` case).
+# `contacts_store.reject` (the old reject flow this router's now-removed
+# reject route called) is left in `app/store/contacts.py` as dead code:
+# docs/FAMILIES_DESIGN.md §10 item 8 replaces "Reject-with-reason" with
+# Block/Dismiss on the alert (`app/routers/family.py`'s `block_alert`/
+# `dismiss_alert`), neither of which calls it -- `app/store/contacts.py` is
+# not in this task's `Files` list, so that module is left unedited.
 
 
 # ---------------------------------------------------------------------------
@@ -1073,7 +1065,7 @@ def list_families() -> list[Family]:
 
 @router.post("/families", dependencies=[Depends(require_admin_write_rate_limit)])
 def create_family(
-    req: CreateFamilyRequest, authed: Annotated[AuthedUser, Depends(require_admin)]
+    req: CreateFamilyRequest, authed: Annotated[AuthedUser, Depends(require_super)]
 ) -> Family:
     return families_store.create_family(name=req.name, created_by=authed.uid)
 

@@ -76,19 +76,34 @@ def from_number() -> str:
     return os.environ.get("TWILIO_FROM_NUMBER", DEFAULT_FROM_NUMBER)
 
 
-def send_sms(to: str, body: str) -> TwilioSendResult:
+# Captured at module load, before `send_sms`'s own `from_number` parameter
+# below would otherwise shadow this name within that function's body --
+# lets `send_sms` still reach the env-reader under its own established name.
+_env_from_number = from_number
+
+
+def send_sms(to: str, body: str, from_number: str | None = None) -> TwilioSendResult:
     """`POST .../Accounts/{Sid}/Messages.json`, the exact Twilio REST shape
     `tools/mocks/twilio_mock.py` mirrors. Never raises -- a transport error
     or a non-2xx both come back as `TwilioSendResult(ok=False, error=...)`,
-    a "leave it queued/failed, let the caller decide" contract."""
+    a "leave it queued/failed, let the caller decide" contract.
+
+    `from_number` overrides the deployment's default `From` number --
+    docs/FAMILIES_DESIGN.md §1 decision 10: an outbound SMS to an external
+    from a member uses the member's family `smsNumber` when set, else the
+    deployment's shared `TWILIO_FROM_NUMBER`. `None` (the default) falls
+    back to `from_number()`'s (the module-level env-reader, captured above
+    as `_env_from_number`) env-configured value, exactly like before this
+    parameter existed."""
     url = base_url()
     if url is None:
         return TwilioSendResult(ok=False, error="TWILIO_BASE_URL not configured")
     sid = account_sid()
+    effective_from = from_number if from_number else _env_from_number()
     try:
         resp = httpx.post(
             f"{url.rstrip('/')}/2010-04-01/Accounts/{sid}/Messages.json",
-            data={"To": to, "From": from_number(), "Body": body},
+            data={"To": to, "From": effective_from, "Body": body},
             auth=(sid, auth_token()),
             timeout=REQUEST_TIMEOUT_S,
         )

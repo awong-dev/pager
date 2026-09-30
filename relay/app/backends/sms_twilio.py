@@ -44,8 +44,12 @@ from pydantic import BaseModel, ConfigDict
 from app.backends.base import DeliverResult, LinkStep
 from app.notify import sms as sms_client
 from app.store import backends as backends_store
+from app.store import externals as externals_store
+from app.store import families as families_store
 from app.store import messages as messages_store
+from app.store import users as users_store
 from app.store.backends import Backend as BackendRow
+from app.store.families import Family
 from app.store.messages import Delivery, Message
 from app.store.users import User
 from app.wire import BODY_MAX_CODEPOINTS
@@ -111,6 +115,27 @@ def normalize_e164(phone: str) -> str:
     return normalized
 
 
+# docs/FAMILIES_DESIGN.md §1 decision 10 / docs/FAMILIES_TASKS.md 3.3: "an
+# outbound SMS to an external from a member uses the member's family
+# smsNumber when set, else TWILIO_FROM_NUMBER". `app/notify/sms.py`'s
+# `send_sms()` takes an explicit `from_number` parameter for exactly this
+# (default: its own env-configured value), so this module just resolves the
+# sender's family number, if any, and passes it straight through -- no
+# environment mutation, no lock.
+
+
+def _from_number_for_sender(sender_uid: str) -> str | None:
+    """`None` means "no per-family override" -- `send_sms` then falls
+    through to its own env-configured default."""
+    sender = users_store.get_user(sender_uid)
+    if sender is None or sender.familyId is None:
+        return None
+    family = families_store.get_family(sender.familyId)
+    if family is None:
+        return None
+    return family.smsNumber
+
+
 class SmsTwilioBackend:
     kind = "sms"
     config_schema = SmsConfig
@@ -122,7 +147,8 @@ class SmsTwilioBackend:
             return DeliverResult(ok=False, state="failed", error="sms backend missing phone")
 
         body = _render_body(msg)
-        result = sms_client.send_sms(phone, body)
+        family_from_number = _from_number_for_sender(msg.senderUid)
+        result = sms_client.send_sms(phone, body, from_number=family_from_number)
         if result.ok:
             messages_store.mark_delivery_sent_if_queued(msg.id, backend.id)
             return DeliverResult(ok=True, state="sent", external_id=result.sid)
@@ -209,6 +235,27 @@ def verify_twilio_signature(
     # single 0xFF byte produces a non-ASCII `str`). Comparing bytes keeps a
     # forged header a 401 rather than an unhandled 500.
     return hmac.compare_digest(expected.encode("utf-8"), signature.encode("utf-8"))
+
+
+def resolve_family_for_to(to: str) -> Family | None:
+    """docs/FAMILIES_DESIGN.md §1 decision 10 / §4 Webhooks: the family
+    whose `smsNumber` matches the inbound webhook's `To`, else `None` (the
+    shared `TWILIO_FROM_NUMBER` deployment number, or a `To` no family has
+    claimed -- both mean "no family"). `to` is normalized the same way
+    `app/store/externals.py`'s `normalize_phone` normalizes an admin-typed
+    number before comparing, so equivalent spellings of a `families.
+    smsNumber` still match; a `to` that isn't a plausible phone number at
+    all (e.g. this module's own pre-multi-family tests' placeholder `"+1"`)
+    is compared as-is rather than raising, since it can never equal a real
+    `smsNumber` anyway."""
+    try:
+        normalized = externals_store.normalize_phone(to)
+    except ValueError:
+        normalized = to
+    for family in families_store.list_families():
+        if family.smsNumber and family.smsNumber == normalized:
+            return family
+    return None
 
 
 def twilio_webhook_url() -> str:

@@ -35,6 +35,14 @@ class RetentionSettings(BaseModel):
 
     messages: RetentionSetting = RetentionSetting.model_validate(DEFAULT_MESSAGES_RETENTION)
     locations: RetentionSetting = RetentionSetting.model_validate(DEFAULT_LOCATIONS_RETENTION)
+    # docs/FAMILIES_DESIGN.md §6 "Held SMS bodies ... retention sweep should
+    # include `alerts` (default 90 days)"; docs/FAMILIES_TASKS.md 4.1: only
+    # `handled`/`dismissed` alerts age out (an `open` one -- awaiting an
+    # admin's decision -- is never swept regardless of age). A plain
+    # day-count int, not a `RetentionSetting` (no unit picker in the design
+    # or the web), since nothing here reuses `set_retention`'s
+    # messages/locations PUT shape for it.
+    alertsDays: int = 90
 
 
 class MetaSettings(BaseModel):

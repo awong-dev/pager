@@ -23,9 +23,11 @@ from fastapi.testclient import TestClient
 
 from app.backends import sms_twilio
 from app.config import Settings
+from app.db.firestore import get_db
 from app.main import create_app
 from app.store import allow as allow_store
 from app.store import backends as backends_store
+from app.store import families as families_store
 from app.store import messages as messages_store
 from app.store import users as users_store
 from tests.fake_transport import FakeBrokerClient
@@ -117,6 +119,24 @@ def _link_sms(uid: str, alias: str, phone: str) -> str:
     backends_store.update_backend(uid, backend.id, verified=True)
     backends_store.set_phone_index(phone, uid, backend.id)
     return backend.id
+
+
+def _link_sms_existing(uid: str, phone: str) -> str:
+    """`_link_sms` minus `create_user` -- for a uid created separately (e.g.
+    with a non-default `role`, which `create_user` derives the default
+    `policy` from)."""
+    backend = backends_store.create_backend(uid, kind="sms", config={"phone": phone}, enabled=True)
+    backends_store.update_backend(uid, backend.id, verified=True)
+    backends_store.set_phone_index(phone, uid, backend.id)
+    return backend.id
+
+
+def _set_policy(uid: str, *, out: str, in_: str) -> None:
+    """Whitebox: direct Firestore write of `users/{uid}.policy` -- `app/
+    store/users.py`'s `update_user` has no `policy` parameter (task 3.1
+    left that to `PATCH /api/family/members/{uid}`, outside this task's
+    files), so tests that need a non-default policy write it directly."""
+    get_db().collection("users").document(uid).update({"policy": {"out": out, "in": in_}})
 
 
 def test_webhook_missing_signature_is_401(client: TestClient):
@@ -268,6 +288,60 @@ def test_m1_normalize_e164_strips_formatting_and_validates():
         sms_twilio.normalize_e164("+0invalid/path")
 
 
+def test_deliver_sends_from_the_sender_family_sms_number(monkeypatch: pytest.MonkeyPatch):
+    """Cleanup, docs/FAMILIES_TASKS.md 4.1: `SmsTwilioBackend.deliver()`
+    resolves the sender's family `smsNumber` (docs/FAMILIES_DESIGN.md §1
+    decision 10) and passes it straight through as `notify/sms.py`'s
+    `send_sms(..., from_number=...)` parameter -- no `os.environ`
+    mutation, no lock. Asserted against the real (monkeypatched at the
+    `httpx.post` boundary, not `send_sms` itself) Twilio Messages-API call
+    so this exercises the actual `From` field the mock/real Twilio API
+    would receive."""
+    monkeypatch.setenv("TWILIO_BASE_URL", "http://twilio.test")
+    captured: dict[str, str] = {}
+
+    class FakeResponse:
+        status_code = 201
+        text = ""
+
+        def json(self) -> dict[str, str]:
+            return {"sid": "SM123"}
+
+    def fake_post(url: str, *, data: dict[str, str], auth: tuple[str, str], timeout: float):
+        captured.update(data)
+        return FakeResponse()
+
+    monkeypatch.setattr(sms_twilio.sms_client.httpx, "post", fake_post)
+
+    family = families_store.create_family(
+        name="Wong", created_by="super1", sms_number="+15005550999"
+    )
+    users_store.create_user(
+        uid="parent1", alias="parent1", display_name="Parent", family_id=family.id
+    )
+    aunt_bid = _link_sms("aunt_x", "aunt19995550001", "+19995550001")
+
+    msg = messages_store.Message(
+        id="m1",
+        seq=1,
+        convKey="k",
+        uids=["parent1", "aunt_x"],
+        senderUid="parent1",
+        recipientUid="aunt_x",
+        kind="text",
+        body="hi aunt",
+        ts=0,
+    )
+    delivery = messages_store.Delivery(kind="sms", state="queued")
+    backend_row = backends_store.get_backend("aunt_x", aunt_bid)
+    assert backend_row is not None
+
+    result = sms_twilio.SmsTwilioBackend().deliver(msg, delivery, backend_row)
+    assert result.ok
+    assert captured["From"] == "+15005550999"
+    assert captured["To"] == "+19995550001"
+
+
 def test_webhook_self_addressed_reply_excludes_sms_origin_backend(client: TestClient):
     """S2a, exercised through the real webhook: a reply that resolves back
     to the sender's own uid (self-addressed `@alias`) must not re-queue an
@@ -287,3 +361,123 @@ def test_webhook_self_addressed_reply_excludes_sms_origin_backend(client: TestCl
     kinds = {d.kind for d in msg.deliveries.values()}
     assert "sms" not in kinds
     assert "webapp" in kinds
+
+
+# ---------------------------------------------------------------------------
+# docs/FAMILIES_TASKS.md 3.3 -- family resolution, hold-or-deliver.
+# ---------------------------------------------------------------------------
+
+
+def _alerts(family_id: str) -> list[dict]:
+    return [
+        snap.to_dict()
+        for snap in get_db().collection("families").document(family_id).collection("alerts").stream()
+    ]
+
+
+def test_resolve_family_for_to_matches_families_sms_number():
+    family_a = families_store.create_family(name="A", created_by="super1", sms_number="+15005550100")
+    families_store.create_family(name="B", created_by="super1", sms_number="+15005550200")
+
+    resolved = sms_twilio.resolve_family_for_to("+15005550100")
+    assert resolved is not None
+    assert resolved.id == family_a.id
+    assert sms_twilio.resolve_family_for_to("+19995559999") is None
+
+
+def test_webhook_unknown_sender_any_sms_member_is_delivered_and_alert_handled(
+    client: TestClient,
+):
+    family = families_store.create_family(name="Wong", created_by="super1", sms_number="+15005550300")
+    users_store.create_user(uid="kid_any", alias="kidany", display_name="Kid", family_id=family.id)
+    _set_policy("kid_any", out="people", in_="any_sms")
+
+    resp = _post(
+        client, {"To": "+15005550300", "From": "+19995551111", "Body": "hi from a stranger"}
+    )
+    assert resp.status_code == 200
+
+    external_uid = users_store.get_uid_for_alias("19995551111")
+    assert external_uid is not None
+    convo = messages_store.list_thread(messages_store.conv_key(external_uid, "kid_any"))
+    assert len(convo) == 1
+    assert convo[0].body == "hi from a stranger"
+
+    alerts = _alerts(family.id)
+    assert len(alerts) == 1
+    assert alerts[0]["kind"] == "sms_unknown"
+    assert alerts[0]["status"] == "handled"
+    assert alerts[0]["heldBody"] is None
+    assert alerts[0]["subjectUid"] == "kid_any"
+    assert alerts[0]["subjectAlias"] == "kidany"
+    assert alerts[0]["peerPhone"] == "+19995551111"
+
+
+def test_webhook_unknown_sender_people_only_family_holds_alert_and_sends_nothing(
+    client: TestClient,
+):
+    family = families_store.create_family(name="Lee", created_by="super1", sms_number="+15005550400")
+    users_store.create_user(uid="kid_people", alias="kidpeople", display_name="Kid", family_id=family.id)
+    # default member policy is people/people -- no member has an `any`
+    # inbound rule for externals.
+
+    resp = _post(
+        client, {"To": "+15005550400", "From": "+19995552222", "Body": "unsolicited text"}
+    )
+    assert resp.status_code == 200
+
+    assert users_store.get_uid_for_alias("19995552222") is None
+
+    alerts = _alerts(family.id)
+    assert len(alerts) == 1
+    assert alerts[0]["kind"] == "sms_unknown"
+    assert alerts[0]["status"] == "open"
+    assert alerts[0]["heldBody"] == "unsolicited text"
+    assert alerts[0]["subjectUid"] is None
+    assert alerts[0]["subjectAlias"] is None
+    assert alerts[0]["peerPhone"] == "+19995552222"
+
+
+def test_webhook_blocked_number_is_dropped_with_no_alert(client: TestClient):
+    family = families_store.create_family(
+        name="Chen",
+        created_by="super1",
+        sms_number="+15005550500",
+    )
+    get_db().collection("families").document(family.id).update(
+        {"blockedNumbers": ["+19995553333"]}
+    )
+    users_store.create_user(uid="kid_blocked", alias="kidblocked", display_name="Kid", family_id=family.id)
+    _set_policy("kid_blocked", out="people", in_="any_sms")
+
+    resp = _post(
+        client, {"To": "+15005550500", "From": "+19995553333", "Body": "spam"}
+    )
+    assert resp.status_code == 200
+
+    assert users_store.get_uid_for_alias("19995553333") is None
+    assert _alerts(family.id) == []
+
+
+def test_webhook_known_sender_people_sms_recipient_without_edge_sends_hint(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+):
+    sent: list[tuple[str, str]] = []
+
+    def fake_send_sms(to: str, body: str):
+        sent.append((to, body))
+        return sms_twilio.sms_client.TwilioSendResult(ok=True)
+
+    monkeypatch.setattr(sms_twilio.sms_client, "send_sms", fake_send_sms)
+
+    users_store.create_user(uid="admin_sender", alias="adminsender", display_name="Admin", role="admin")
+    _link_sms_existing("admin_sender", "+15559990000")
+    users_store.create_user(uid="kid_psms", alias="kidpsms", display_name="Kid")
+    _set_policy("kid_psms", out="people", in_="people_sms")
+
+    resp = _post(client, {"To": "+1", "From": "+15559990000", "Body": "@kidpsms hi there"})
+    assert resp.status_code == 200
+
+    assert messages_store.list_thread(messages_store.conv_key("admin_sender", "kid_psms")) == []
+    assert len(sent) == 1
+    assert sent[0][0] == "+15559990000"
