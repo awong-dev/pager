@@ -1034,7 +1034,7 @@ static bool disp_spi_init(void)
 {
     spi_bus_config_t buscfg = {
         .mosi_io_num = PAGER_PIN_DISP_MOSI,
-        .miso_io_num = -1,
+        .miso_io_num = PAGER_PIN_DISP_MISO,
         .sclk_io_num = PAGER_PIN_DISP_SCK,
         .quadwp_io_num = -1,
         .quadhd_io_num = -1,

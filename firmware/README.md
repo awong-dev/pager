@@ -17,7 +17,7 @@ else in the firmware hardcodes a pin.
 | Part | Role | Interface / power |
 |---|---|---|
 | Walter module (DPTechnics) | ESP32-S3-WROOM-1-N16R2 + Sequans GM02SP LTE-M modem + GNSS | — |
-| Adafruit eInk Breakout Friend, panel GDEY029T94-FT01 (SSD1680, 296×128) | E-paper display, and the switched 3.3 V supply for the CardKB | SPI via the GPIO matrix, 4 MHz: SCK IO2, MOSI IO42, ECS IO41, D/C IO40, RST IO13, BUSY IO11; SRCS IO38 held high (SRAM unused); MISO and SDCS not wired. ENA IO12 is the Friend's regulator enable (active-high, pulled up on the Friend): low = panel, SRAM and CardKB all unpowered. Friend VIN from Walter VIN. |
+| Adafruit eInk Breakout Friend, panel GDEY029T94-FT01 (SSD1680, 296×128) | E-paper display, and the switched 3.3 V supply for the CardKB | SPI via the GPIO matrix, 4 MHz: SCK IO2, MISO IO42, MOSI IO41, ECS IO40, D/C IO39, RST IO13, BUSY IO11; SRCS IO38 held high (SRAM unused); SDCS not wired. ENA IO12 is the Friend's regulator enable (active-high, pulled up on the Friend): low = panel, SRAM and CardKB all unpowered. Friend VIN from Walter VIN. |
 | M5Stack CardKB | Keyboard | I2C_NUM_0 addr 0x5F, SDA IO10 / SCL IO9, polled. VCC from the Friend's 3V3 output pin, so it switches with the display. |
 | Adafruit LIS3DH breakout | Motion wake | I2C_NUM_1 addr 0x18 (SDO/SA0 open), SDA IO15 / SCL IO18; INT1 → IO8 (push-pull, active-high, 3.3 V, ext1 wake). VIN from Walter 3V3-OUT (header pin 26), which the firmware turns on at boot and never turns off. |
 | Push button | Wake / open reply | IO1 to GND, active low, RTC GPIO, ext0 wake |
@@ -38,10 +38,10 @@ is the input side.
                Friend BUSY  IO11    6 ──┤                     ├── 23  IO8      ◄── LIS3DH INT1
                 Friend RST  IO13    7 ──┤        Walter       ├── 22  IO18     ──► LIS3DH SCL
                Friend SRCS  IO38    8 ──┤      (top view)     ├── 21  IO17     (unused)
-                  (unused)  IO39    9 ──┤                     ├── 20  IO16     (unused)
-                Friend D/C  IO40   10 ──┤                     ├── 19  IO15     ◄─► LIS3DH SDA
-                Friend ECS  IO41   11 ──┤                     ├── 18  IO7      (unused)
-               Friend MOSI  IO42   12 ──┤                     ├── 17  IO6      (unused)
+                Friend D/C  IO39    9 ──┤                     ├── 20  IO16     (unused)
+                Friend ECS  IO40   10 ──┤                     ├── 19  IO15     ◄─► LIS3DH SDA
+               Friend MOSI  IO41   11 ──┤                     ├── 18  IO7      (unused)
+               Friend MISO  IO42   12 ──┤                     ├── 17  IO6      (unused)
                 Friend SCK  IO2    13 ──┤                     ├── 16  IO5      (unused)
                Wake button  IO1    14 ──┤                     ├── 15  IO4      (unused)
                                         └────────┤ SIM ├────────┘
@@ -59,10 +59,10 @@ Per-peripheral view of the same wiring:
 | GND | 27 GND | | SDA | 25 IO10 | | SDA | 19 IO15 |
 | ENA | 5 IO12 | | SCL | 24 IO9 | | SCL | 22 IO18 |
 | SCK | 13 IO2 | | | | | INT1 | 23 IO8 |
-| MISO | — | | | | | SDO/SA0 | open (addr 0x18) |
-| MOSI | 12 IO42 | | | | | | |
-| ECS | 11 IO41 | | | | | | |
-| D/C | 10 IO40 | | | | | | |
+| MISO | 12 IO42 | | | | | SDO/SA0 | open (addr 0x18) |
+| MOSI | 11 IO41 | | | | | | |
+| ECS | 10 IO40 | | | | | | |
+| D/C | 9 IO39 | | | | | | |
 | SRCS | 8 IO38 | | | | | | |
 | SDCS | — | | | | | | |
 | RST | 7 IO13 | | | | | | |

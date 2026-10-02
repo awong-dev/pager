@@ -9,6 +9,12 @@
 // right header. Walter-internal pins never to touch: IO14/IO21/IO45/IO46/
 // IO47/IO48 (modem UART, reset, wake), IO19/IO20 (USB), IO3 (strapping,
 // testpoint only).
+//
+// Rewired again 2 Oct 2026 (owner): the Friend's own header plugs straight
+// onto Walter left-header pins 5-13 in the Friend's header order (ENA, BUSY,
+// RST, SRCS, D/C, ECS, MOSI, MISO, SCK read top to bottom), so D/C, ECS and
+// MOSI shifted down one pin each and MISO is now wired (pin 12, IO42). The
+// wake button stays on IO1 (header pin 14).
 
 #ifndef PINS_H
 #define PINS_H
@@ -29,17 +35,17 @@
 // powers the panel AND (via the Friend's 3V3 output pin) the CardKB, so ENA
 // is the one peripheral power gate rail.c toggles. SPI goes through the GPIO
 // matrix (none of these are the FSPI IO_MUX pins), which is fine at the
-// 4 MHz disp.c uses (matrix limit is 40 MHz). MISO and SDCS are not wired.
+// 4 MHz disp.c uses (matrix limit is 40 MHz). SDCS is not wired.
 #define PAGER_PIN_DISP_VCC_EN 12  // Friend ENA: regulator enable, ACTIVE-HIGH, pulled up on the Friend
 #define PAGER_DISP_VCC_EN_ON 1
 #define PAGER_DISP_VCC_EN_OFF 0
 #define PAGER_PIN_DISP_BUSY 11
 #define PAGER_PIN_DISP_RST 13
 #define PAGER_PIN_DISP_SRCS 38  // Friend SRAM chip select: held HIGH (deselected), the SRAM is unused
-// IO39 (header pin 9) is left unconnected.
-#define PAGER_PIN_DISP_DC 40
-#define PAGER_PIN_DISP_CS 41  // Friend ECS
-#define PAGER_PIN_DISP_MOSI 42
+#define PAGER_PIN_DISP_DC 39  // IO39 is a JTAG pad (MTCK); unused since the USB console owns the JTAG function
+#define PAGER_PIN_DISP_CS 40  // Friend ECS
+#define PAGER_PIN_DISP_MOSI 41
+#define PAGER_PIN_DISP_MISO 42  // Friend SRAM MISO, unused today (SRAM not read); wired through for the Friend's fixed header order
 #define PAGER_PIN_DISP_SCK 2
 
 // Button (header pin 14). ext0 light-sleep wake source (RTC GPIO).
