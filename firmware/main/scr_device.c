@@ -13,6 +13,11 @@
 //     existed.
 //   - "Text size: normal/large" [REAL]: ui_text_size()/ui_toggle_text_size()
 //     (ui.c), NVS-backed.
+//   - "Rotate display: off/on" [REAL]: owner request (menu parity with the
+//     console's `flip on|off`) — disp_get_flip()/disp_set_flip() (disp.c),
+//     the same setter and NVS key (`disp_flip`) the console command uses, so
+//     both surfaces stay consistent. Enter forces a disp_full_refresh() right
+//     away, same as cmd_flip() (main.c).
 //   - "Passcode / Auto-lock" [REAL, F6.5]:
 //     lock.c now exists. "Passcode" cycles set -> change -> off per
 //     docs/DEVICE_PLAN.md §5.8 ("asks for the current passcode first" for
@@ -61,6 +66,9 @@
 #include "lock.h" /* F6.5: passcode/auto-lock/senders rows, docs/DEVICE_PLAN.md §5.8 */
 #include "msg.h"  /* owner task 2026-09-20: msg_history_erase() on factory reset */
 #include "book.h" /* T3: book_get_bv() for the "session ... book v<n>" info line */
+#include "disp.h" /* owner request: menu-driven display rotation, disp_get_flip()/
+                   * disp_set_flip()/disp_full_refresh() — same setter the console's
+                   * `flip on|off` (main.c) uses, so both paths stay consistent. */
 
 #include <stdio.h>
 #include <string.h>
@@ -70,6 +78,8 @@
 typedef enum {
     MROW_RESYNC = 0,
     MROW_TEXTSIZE,
+    MROW_ROTATE, /* owner request: menu-driven 180-degree display rotation,
+                  * same setter the console's `flip on|off` uses (disp.h) */
     MROW_PASSCODE,
     MROW_AUTOLOCK,
     MROW_CARRIER,
@@ -257,6 +267,17 @@ static void device_on_key(input_key_t key)
         case MROW_TEXTSIZE:
             ui_toggle_text_size();
             break;
+        case MROW_ROTATE:
+            // Same setter the console's `flip on|off` (main.c) calls, so both
+            // paths stay consistent. Power effect: one NVS (flash) write plus
+            // one disp_full_refresh() (~2-4s panel refresh current, that
+            // function's own comment) — forced here (disp_set_flip() itself
+            // does not refresh) so the whole screen redraws rotated as a
+            // single clean frame instead of a partial tearing between the
+            // old and new orientation, same reasoning cmd_flip() gives.
+            disp_set_flip(!disp_get_flip());
+            disp_full_refresh();
+            break;
         case MROW_PASSCODE:
             s_pw_len = 0;
             s_pw_buf[0] = '\0';
@@ -405,6 +426,8 @@ static void device_render_normal(void)
     selectable[n++] = true;
     snprintf(lines[n], DEVICE_LINE_LEN, "Text size: %s",
              ui_text_size() == GFX_FONT_LARGE ? "large" : "normal");
+    selectable[n++] = true;
+    snprintf(lines[n], DEVICE_LINE_LEN, "Rotate display: %s", disp_get_flip() ? "on" : "off");
     selectable[n++] = true;
     snprintf(lines[n], DEVICE_LINE_LEN, "Passcode: %s", lock_is_set() ? "set" : "not set");
     selectable[n++] = true;

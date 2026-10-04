@@ -19,7 +19,7 @@ nothing else in the firmware hardcodes a pin.
 | Part | Role | Interface / power |
 |---|---|---|
 | Walter module (DPTechnics) | ESP32-S3-WROOM-1-N16R2 + Sequans GM02SP LTE-M modem + GNSS | — |
-| Adafruit eInk Breakout Friend, panel GDEY029T94-FT01 (SSD1680, 296×128) | E-paper display | SPI via the GPIO matrix, 4 MHz: SCK IO2, MISO IO42, MOSI IO41, ECS IO40, D/C IO39, RST IO13, BUSY IO11; SRCS IO38 held high (SRAM unused); SDCS not wired. ENA IO12 is the Friend's regulator enable (active-high, pulled up on the Friend): low = panel unpowered. Friend VIN from the power board's always-on "3V" rail, not Walter VIN or Walter 3V3-OUT. |
+| Adafruit eInk Breakout Friend, panel Orient Display AES128296A00-2.9ENRS (SSD1680-compatible, 296×128; replaced the GDEY029T94-FT01 on 4 Oct 2026; partial-waveform OTP unverified, see HARDWARE_TESTING.md) | E-paper display | SPI via the GPIO matrix, 4 MHz: SCK IO2, MISO IO42, MOSI IO41, ECS IO40, D/C IO39, RST IO13, BUSY IO11; SRCS IO38 held high (SRAM unused); SDCS not wired. ENA IO12 is the Friend's regulator enable (active-high, pulled up on the Friend): low = panel unpowered. Friend VIN from the power board's always-on "3V" rail, not Walter VIN or Walter 3V3-OUT. |
 | M5Stack CardKB | Keyboard | I2C_NUM_0 addr 0x5F, SDA IO10 / SCL IO9, polled. VCC from Walter's own switched 3V3-OUT (header pin 26, gated by IO0), so it switches with the attentive window independently of the display. |
 | Adafruit LIS3DH breakout | Motion wake | I2C_NUM_1 addr 0x18 (SDO/SA0 open), SDA IO5 / SCL IO4; INT1 → IO6 (push-pull, active-high, 3.3 V, ext1 wake, shared with the button). VIN from the power board's always-on "3V" rail (not gated by any Walter GPIO), so it stays alive through every rail_off() and every light sleep/reset. |
 | Push button | Wake / open reply | IO8 to the power board's always-on 3V (not GND), active high, RTC GPIO, ext1 wake shared with the LIS3DH's INT1 |
@@ -108,7 +108,8 @@ crosses the wire; this section covers the device-local behaviour the protocol do
   composer is open.
 - **Display refresh**: partial refresh for the message pane, with a full refresh every 20th
   partial. 20 is this project's deliberate choice over the panel's more common "~10" guidance.
-- **Display orientation**: `disp_flip` (NVS, default off; console `flip on|off|status`)
+- **Display orientation**: `disp_flip` (NVS, default off; console `flip on|off|status`, or the
+  Device screen's "Rotate display" row)
   180-degree-rotates the whole 296x128 image at blit time, so every screen/partial/toast reads
   upside down together — not a per-screen setting.
 - **Message bodies** are at most 160 characters.

@@ -906,6 +906,7 @@ session   s_3ab91c02   book v7
 counters  memfull 0  drops 0  resets 0
 > Re-sync address book
   Text size: normal
+  Rotate display: off
   Passcode: set          Auto-lock: 5 min
   Set up again
   Factory reset
@@ -913,6 +914,9 @@ counters  memfull 0  drops 0  resets 0
 
 - **Re-sync address book** — publishes a `/status` now (it carries `bv`), which is the sync trigger.
 - **Text size** — toggles 1×/2×.
+- **Rotate display** — toggles the panel's persistent 180-degree rotation (owner request); same
+  `disp_set_flip()` (NVS `disp_flip`) the console's `flip on|off` uses, forcing one full refresh so
+  the new orientation shows as a single clean frame.
 - **Passcode / Auto-lock** — §5.8. *Passcode* cycles set → change → off, asking
   for the current one first; *Auto-lock* cycles 0 (never), 1, 2, 5, 10, 30, 60 minutes.
 - **Set up again** — enters Setup mode (§3.2) to take a new setup code: rotation or re-homing. The
