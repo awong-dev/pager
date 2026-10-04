@@ -436,6 +436,32 @@ static void disp_send_data(const uint8_t *data, size_t len)
 
 static void disp_send_data1(uint8_t b) { disp_send_data(&b, 1); }
 
+// disp_spi_init()'s bus is SPI_DMA_DISABLED with max_transfer_sz ==
+// GFX_FB_ROW_BYTES (16) -- every existing data write (cmd params,
+// disp_send_fb_rows()'s one-row-at-a-time calls) already fits under that in
+// a single disp_send_data() transaction. The 153-byte host-written LUT
+// (WF_PARTIAL_2IN9) does not: a single disp_send_data(..., 153) trips
+// check_trans_valid()'s "txdata transfer > host maximum" check (153*8 bits >
+// bus max_transfer_sz*8), and raising max_transfer_sz past 64 would not help
+// either -- 64 bytes is the hard non-DMA SPI CPU-FIFO limit on the S3
+// (SOC_SPI_MAXIMUM_BUFFER_SIZE). Splits any length into GFX_FB_ROW_BYTES-
+// sized (or smaller final) chunks and sends each as its own
+// disp_send_data() transaction -- exactly the same CS-toggles-between-
+// transactions pattern disp_send_fb_rows() already relies on for a
+// multi-row RAM write, so this is not a new wire behaviour for the panel.
+// `data` may point into flash/rodata (WF_PARTIAL_2IN9 is `static const`):
+// fine here only because the bus stays non-DMA, so each chunk is read by
+// the CPU directly with no DMA-capable-buffer requirement.
+static void disp_send_data_chunked(const uint8_t *data, size_t len)
+{
+    while (len > 0) {
+        size_t n = len < GFX_FB_ROW_BYTES ? len : GFX_FB_ROW_BYTES;
+        disp_send_data(data, n);
+        data += n;
+        len -= n;
+    }
+}
+
 // Console `flip on|off` (main.c) is the only caller. Persists immediately
 // (one NVS/flash write, negligible) so the choice survives a reboot; does
 // NOT itself trigger a refresh — the caller must do that (disp_full_
@@ -886,10 +912,10 @@ static void partial_refresh_locked(uint8_t tag)
     // previously loaded LUT, so there is nothing to skip on repeat calls.
     if (s_partial_use_lut) {
         disp_send_cmd(0x32);
-        disp_send_data(WF_PARTIAL_2IN9, WF_PARTIAL_2IN9_LUT_LEN);
+        disp_send_data_chunked(WF_PARTIAL_2IN9, WF_PARTIAL_2IN9_LUT_LEN);
         disp_send_cmd(0x22);
         disp_send_data1(0xCF); // load LUT from host write (vs. 0xFF = OTP/MCU default)
-        ESP_LOGI(TAG, "partial: lut mode (host-written WF_PARTIAL_2IN9)");
+        ESP_LOGI(TAG, "partial: lut mode (host-written WF_PARTIAL_2IN9, 0x22=0xCF)");
     } else {
         disp_send_cmd(0x22);
         disp_send_data1(0xFF); // inferred, not datasheet-verified
