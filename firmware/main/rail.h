@@ -1,28 +1,30 @@
-/* rail.h — the gated peripheral rail: the eInk Friend's 3V3 output, which
- * powers the display and the CardKB and is switched by the Friend's ENA pin
- * (PAGER_PIN_DISP_VCC_EN, pins.h, active-high). Rewired 30 Sep 2026 (owner).
- * Walter's own switched 3V3-OUT (PAGER_PIN_3V3_EN, IO0, active-low) now
- * feeds only the LIS3DH breakout; rail_init() turns it on once and nothing
- * ever turns it off, so the accelerometer stays live through every
- * rail_off() and every light sleep -- see pins.h/accel.h.
+/* rail.h — the gated peripheral rail: two enables driven together by
+ * rail_on()/rail_off(), the eInk Friend's ENA pin (PAGER_PIN_DISP_VCC_EN,
+ * pins.h, active-high), which powers the display, and Walter's own switched
+ * 3V3-OUT (PAGER_PIN_3V3_EN, IO0, active-low), which powers the CardKB.
+ * Rewired 3 Oct 2026 (owner): previously ENA alone gated both the display
+ * and (via the Friend's own 3V3 output pin) the CardKB, and IO0 fed the
+ * LIS3DH permanently; now the CardKB moved to its own IO0 gate and the
+ * LIS3DH moved off Walter entirely, onto the power board's always-on "3V"
+ * rail, so this module never touches it.
  *
  * docs/ROADMAP.md "Design needed: input and display power gating", option 2
  * (owner decision, 24 Sep 10:30 pm PDT: gate the rail off outside the
  * attentive window — reverses the 24-Sep-earlier "hold the rail through
  * sleep" stopgap now that the IO1 wake button, not the keyboard, is the
  * always-on way to wake the pager). This module is the single place that
- * decides/drives the rail level; modes.c only calls rail_on()/rail_off() at
+ * decides/drives either gate; modes.c only calls rail_on()/rail_off() at
  * the sleep-entry/wake-path call sites its own comments describe, it never
- * touches PAGER_PIN_3V3_EN directly.
+ * touches PAGER_PIN_3V3_EN or PAGER_PIN_DISP_VCC_EN directly.
  *
  * TASK_ui_round2.md Do #4 (lazy rail, owner feedback 25 Sep 2:30 am PDT):
  * the rail comes on for exactly four reasons, none of them "every wake
  * regardless of whether there is anything to draw" any more:
  *   (a) at boot — rail_init() below, called once from main.c.
- *   (b) on a wake whose cause is EXT0 (the IO1 button) or EXT1 (the LIS3DH
- *       motion interrupt) — modes.c's wake path, right after net_sleep()
- *       returns, calls ui_ensure_powered() (ui.h) when
- *       esp_sleep_get_wakeup_cause() is one of those two.
+ *   (b) on a wake whose cause is EXT1 (shared by the IO1 button and the
+ *       LIS3DH motion interrupt, 3 Oct 2026 rewiring) — modes.c's wake
+ *       path, right after net_sleep() returns, calls ui_ensure_powered()
+ *       (ui.h) whenever esp_sleep_get_wakeup_cause() is EXT1.
  *   (c) whenever a render is about to happen — ui_ensure_powered() (ui.h)
  *       itself, called from the top of ui_render() and ui_incoming()'s own
  *       synchronous render path (and so, transitively, from every caller of
@@ -36,7 +38,7 @@
  *       CardKB mid-session.
  * rail_on() itself is a no-op, including no change to rail_restored_us(), if
  * the rail is already on — so (b)/(c)/(d) overlapping in the same iteration
- * (the common case: an EXT0 wake immediately followed by a render) costs
+ * (the common case: an EXT1 wake immediately followed by a render) costs
  * exactly one rail edge, not three.
  *
  * device-only (GPIO), not built on the host.
@@ -51,45 +53,47 @@
 extern "C" {
 #endif
 
-/* One-time setup: configures PAGER_PIN_3V3_EN (LIS3DH supply, on for
- * good) and PAGER_PIN_DISP_VCC_EN (the gated rail) as plain GPIO outputs
- * and turns both ON. Must run before any peripheral downstream of either
- * (display, CardKB, LIS3DH) is touched — same ordering board_power_init()
- * (main.c) used to require. Also excludes both pads from ESP-IDF's sleep GPIO
- * isolation (gpio_sleep_sel_dis()) so they hold whichever level rail_on()/
- * rail_off() last drove through every light sleep, instead of floating and
- * letting the board pull-ups switch them (the 24 Sep finding this module
- * fixes properly instead of papering over with a permanent hold). Counts
- * as a rail-restore edge (rail_restored_us()) the same as a post-sleep
- * rail_on(): the CardKB MCU is powering up cold here too and needs the same
- * settle time before its first read. Power effect: turns the 3V3 peripheral
- * rail on for the rest of this boot, until the first rail_off().
+/* One-time setup: configures PAGER_PIN_3V3_EN (CardKB supply gate, since the
+ * 3 Oct 2026 rewiring) and PAGER_PIN_DISP_VCC_EN (ENA, the display gate) as
+ * plain GPIO outputs and turns both ON. Must run before either downstream
+ * peripheral (display, CardKB) is touched — same ordering board_power_init()
+ * (main.c) used to require; the LIS3DH is on the power board's always-on
+ * "3V" rail and needs no such ordering. Also excludes both pads from
+ * ESP-IDF's sleep GPIO isolation (gpio_sleep_sel_dis()) so they hold
+ * whichever level rail_on()/rail_off() last drove through every light
+ * sleep, instead of floating and letting the board pull-ups switch them
+ * (the 24 Sep finding this module fixes properly instead of papering over
+ * with a permanent hold). Counts as a rail-restore edge (rail_restored_us())
+ * the same as a post-sleep rail_on(): the CardKB MCU is powering up cold
+ * here too and needs the same settle time before its first read. Power
+ * effect: turns both gated rails on for the rest of this boot, until the
+ * first rail_off().
  */
 void rail_init(void);
 
-/* Drives PAGER_PIN_DISP_VCC_EN high (rail on). A no-op, including no change to
- * rail_restored_us(), if the rail is already on — so calling this every
- * wake during the attentive window (modes.c) does not re-arm ui.c's
- * post-restore keyboard guard on every 1 s cycle. Also returns the CardKB
- * I2C bus (IO10/IO9) from rail_off()'s bus-release hold back to I2C mode
- * (ui_kb_bus_restore(), ui.h). Power effect: powers the display and CardKB
- * (not the LIS3DH — it is on Walter's never-switched 3V3-OUT).
+/* Drives PAGER_PIN_DISP_VCC_EN high and PAGER_PIN_3V3_EN low (both gates
+ * on). A no-op, including no change to rail_restored_us(), if the rail is
+ * already on — so calling this every wake during the attentive window
+ * (modes.c) does not re-arm ui.c's post-restore keyboard guard on every 1 s
+ * cycle. Also returns the CardKB I2C bus (IO5/IO4) from rail_off()'s
+ * bus-release hold back to I2C mode (ui_kb_bus_restore(), ui.h). Power
+ * effect: powers the display and CardKB (not the LIS3DH — it is on the
+ * power board's always-on "3V" rail, never gated by either pin).
  */
 void rail_on(void);
 
-/* Drives PAGER_PIN_DISP_VCC_EN low (rail off). A no-op if the rail is already
- * off. Before the drive, releases the CardKB I2C bus (ui_kb_bus_release(),
- * ui.h) so the ESP32 side of SDA/SCL is not left driven high into the
- * unpowered CardKB MCU's I/O protection diodes while it is meant to be off
- * (owner, 24 Sep 11:15 pm PDT). Power effect: powers down the display and
- * CardKB (not the LIS3DH — it is not on this rail) — this is the whole point
- * of the gate (ends their
- * current draw for the sleep about to be entered). The CardKB MCU loses
- * power and reboots on the next
- * rail_on(); the display's panel RAM is lost (modes.c calls
- * disp_note_power_loss() on the matching wake, which restores it from disp.c's
- * own shadow copy of the last frame so the next refresh can still be a
- * partial, per disp.h).
+/* Drives PAGER_PIN_DISP_VCC_EN low and PAGER_PIN_3V3_EN high (both gates
+ * off). A no-op if the rail is already off. Before the drive, releases the
+ * CardKB I2C bus (ui_kb_bus_release(), ui.h) so the ESP32 side of SDA/SCL is
+ * not left driven high into the unpowered CardKB MCU's I/O protection
+ * diodes while it is meant to be off (owner, 24 Sep 11:15 pm PDT). Power
+ * effect: powers down the display and CardKB (not the LIS3DH — it is not on
+ * either gate) — this is the whole point of the gate (ends their current
+ * draw for the sleep about to be entered). The CardKB MCU loses power and
+ * reboots on the next rail_on(); the display's panel RAM is lost (modes.c
+ * calls disp_note_power_loss() on the matching wake, which restores it from
+ * disp.c's own shadow copy of the last frame so the next refresh can still
+ * be a partial, per disp.h).
  */
 void rail_off(void);
 

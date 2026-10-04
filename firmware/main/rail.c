@@ -11,19 +11,20 @@
 #include "ui.h" /* ui_kb_bus_release()/ui_kb_bus_restore(): stop back-powering the
                   * CardKB through the I2C pull-ups while the rail is off, owner
                   * 24 Sep 11:15 pm PDT finding, see ui.h's own comment. The
-                  * LIS3DH (accel.c) is NOT on this rail or this bus (owner, 26
-                  * Sep 2026: its own I2C bus, powered from the battery) -- this
-                  * module never touches it. */
+                  * LIS3DH (accel.c) is NOT on either gate this module drives
+                  * (owner, 3 Oct 2026: it is powered from the power board's
+                  * always-on "3V" rail, off-Walter entirely) -- this module
+                  * never touches it. */
 
 static bool s_rail_on = false;
 static int64_t s_restored_us = 0;
 
 // Round 9 (the "6s from tap to password: on a real sleep wake" defect):
-// universal settle delay between the 3V3 rail actually coming up and this
-// module touching ANY downstream peripheral (display and CardKB, both on
-// the eInk Friend's 3V3 output since the 30 Sep rewiring; the LIS3DH is on
-// Walter's own never-switched 3V3-OUT, see pins.h). Owner ruling, 26 Sep:
-// mandatory,
+// universal settle delay between the gated rails actually coming up and
+// this module touching ANY downstream peripheral (display, gated by ENA;
+// CardKB, gated by its own PAGER_PIN_3V3_EN since the 3 Oct 2026 rewiring --
+// the LIS3DH is on the power board's always-on "3V" rail, see pins.h, and
+// is never touched by this module). Owner ruling, 26 Sep: mandatory,
 // applied once here rather than as a per-peripheral fix, since every
 // peripheral on this rail needs its own supply to have actually risen
 // before its first command/read, not just the display. Datasheet minimums
@@ -93,14 +94,16 @@ uint32_t rail_debug_get_settle_ms(void) { return s_settle_ms; }
 
 void rail_init(void)
 {
-    // 30 Sep 2026 rewiring (owner): two enables, one gate.
-    //  - PAGER_PIN_3V3_EN (IO0, active-low) switches Walter's 3V3-OUT, which
-    //    now feeds ONLY the LIS3DH breakout. It is driven low here and never
-    //    released again: the accelerometer must stay powered through every
-    //    sleep to raise its wake interrupt.
+    // 3 Oct 2026 rewiring (owner): two enables, both following the
+    // attentive window together.
+    //  - PAGER_PIN_3V3_EN (IO0, active-low) switches Walter's own 3V3-OUT,
+    //    which now feeds ONLY the CardKB.
     //  - PAGER_PIN_DISP_VCC_EN (IO12, the eInk Friend's ENA, active-high)
-    //    gates the Friend's regulator, whose 3V3 output feeds both the panel
-    //    and the CardKB. This is the "rail" rail_on()/rail_off() toggle.
+    //    gates the Friend's regulator, whose 3V3 output feeds the panel
+    //    only (the LIS3DH and the Friend's own VIN are on the power board's
+    //    always-on "3V" rail, never gated by either pin here).
+    // Both are driven to their ON level here and toggled together by
+    // rail_on()/rail_off() below.
     gpio_config_t cfg = {
         .pin_bit_mask = (1ULL << PAGER_PIN_3V3_EN) | (1ULL << PAGER_PIN_DISP_VCC_EN),
         .mode = GPIO_MODE_OUTPUT,
@@ -109,8 +112,8 @@ void rail_init(void)
         .intr_type = GPIO_INTR_DISABLE,
     };
     gpio_config(&cfg);
-    gpio_set_level(PAGER_PIN_3V3_EN, 0); // active-low: LIS3DH supply on, permanently
-    gpio_set_level(PAGER_PIN_DISP_VCC_EN, PAGER_DISP_VCC_EN_ON); // Friend regulator on: panel + CardKB
+    gpio_set_level(PAGER_PIN_3V3_EN, 0); // active-low: CardKB supply on
+    gpio_set_level(PAGER_PIN_DISP_VCC_EN, PAGER_DISP_VCC_EN_ON); // Friend regulator on: panel
     // Not otherwise excluded from ESP-IDF's sleep GPIO isolation
     // (CONFIG_ESP_SLEEP_GPIO_RESET_WORKAROUND) -- without this the pads
     // float through every light sleep and the board pull-ups (Walter's on
@@ -129,10 +132,13 @@ void rail_on(void)
     if (s_rail_on) {
         return; // already on: no power edge, do not re-arm the CardKB boot guard
     }
-    // The gated rail is the eInk Friend's 3V3 output (panel + CardKB), via
-    // its ENA pin; Walter's own 3V3-OUT (IO0) stays on and is not touched
-    // here. The settle below covers the MIC5225's start-up too.
-    gpio_set_level(PAGER_PIN_DISP_VCC_EN, PAGER_DISP_VCC_EN_ON);
+    // 3 Oct 2026 rewiring: two gates, driven together -- ENA (the eInk
+    // Friend's regulator enable, panel only) and PAGER_PIN_3V3_EN (Walter's
+    // own 3V3-OUT, CardKB only). The LIS3DH is on neither; it is on the
+    // power board's always-on "3V" rail and is not touched here. The settle
+    // below covers both the MIC5225's and the CardKB's own supply start-up.
+    gpio_set_level(PAGER_PIN_DISP_VCC_EN, PAGER_DISP_VCC_EN_ON); // ENA on: panel
+    gpio_set_level(PAGER_PIN_3V3_EN, 0); // active-low: CardKB supply on
     // Round 9: universal settle before touching ANYTHING downstream (see
     // s_settle_ms's own comment above) -- must come before ui_kb_bus_
     // restore() below, not after, so the I2C bus is not driven while the
@@ -154,16 +160,16 @@ void rail_off(void)
     if (!s_rail_on) {
         return;
     }
-    // Before dropping the rail: stop driving the I2C pull-ups' idle-high
+    // Before dropping either gate: stop driving the I2C pull-ups' idle-high
     // level so the CardKB is not phantom-powered through its I/O protection
     // diodes for the sleep about to be entered (owner, 24 Sep 11:15 pm PDT).
-    // The LIS3DH is on Walter's never-switched 3V3-OUT, not this rail, and is
-    // untouched by this call. Power effect: see ui_kb_bus_release()'s own
-    // comment.
+    // The LIS3DH is on the power board's always-on "3V" rail, not either
+    // gate here, and is untouched by this call. Power effect: see
+    // ui_kb_bus_release()'s own comment.
     ui_kb_bus_release();
     rail_disp_bus_release();
-    gpio_set_level(PAGER_PIN_DISP_VCC_EN, PAGER_DISP_VCC_EN_OFF); // Friend regulator off: panel + CardKB unpowered
-    // PAGER_PIN_3V3_EN (LIS3DH supply) deliberately stays low: see rail_init().
+    gpio_set_level(PAGER_PIN_DISP_VCC_EN, PAGER_DISP_VCC_EN_OFF); // ENA off: panel unpowered
+    gpio_set_level(PAGER_PIN_3V3_EN, 1); // active-low: CardKB supply off
     s_rail_on = false;
 }
 

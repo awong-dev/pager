@@ -140,14 +140,14 @@ static const char *TAG = "modes";
 // Owner request, 2026-09-20: nothing to receive while unregistered (no MQTT
 // session at all) -- sleep mode's own wake interval can lengthen well past
 // the registered T=5s without costing any latency that matters, since there
-// is nothing to poll for. Still keeps the button (ext0) wake via net_sleep()
+// is nothing to poll for. Still keeps the button (ext1) wake via net_sleep()
 // unchanged. UNVERIFIED exact current saving (see coverage.h's own estimate
 // block); 30s is a conservative middle ground, not a measured optimum.
 #define PAGER_WAKE_INTERVAL_UNREGISTERED_MS 30000u
 // docs/ROADMAP.md "24 Sep evening finding" / rail hold task: the 20 s wake
 // cadence above is tuned for URC delivery, not for a person typing right
 // now. Once the rail hold (main.c board_power_init()) keeps the keyboard
-// powered through sleep, a key/button event or an ext0/ext1 wake starts a
+// powered through sleep, a key/button event or an ext1 wake starts a
 // PAGER_ATTENTIVE_S window in which the wake interval is shortened to this
 // instead, so the next keypress is picked up promptly rather than after up
 // to 20 s. 1000 ms is well below PAGER_PROBE_WAIT_MIN_INTERVAL_MS (10000 ms),
@@ -174,10 +174,10 @@ static const char *TAG = "modes";
 // UNVERIFIED: the minimum, and whether an AT poke right after the wake would
 // let it be shorter (docs/ROADMAP.md).
 #define PAGER_POST_WAKE_YIELD_MS 200u
-// UI-first fix (25 Sep, "10s from tap to `password:`"): an EXT0/EXT1 wake IS
-// real user input (input_note_ext0_wake() above already seeds the button FSM
-// with it), and input.c's arm_awake_window() (called from the same wake path,
-// modes_run()'s `input_note_ext0_wake()` call above and input_poll()'s own
+// UI-first fix (25 Sep, "10s from tap to `password:`"): an EXT1 wake IS
+// real user input (input_note_button_wake() above already seeds the button
+// FSM with it), and input.c's arm_awake_window() (called from the same wake
+// path, modes_run()'s `input_note_button_wake()` call above and input_poll()'s own
 // resolution below) arms a PAGER_UI_AWAKE_S (30 s, input.c) window in which
 // every subsequent loop iteration has ui_awake==true, so skip_sleep is true
 // and the loop never calls net_sleep() again for that whole window --
@@ -189,7 +189,7 @@ static const char *TAG = "modes";
 // cutting the yield) on an input wake loses no URC-delivery guarantee, it
 // only stops blocking the render behind a wait that was never necessary in
 // the first place. L4/F7's >=30ms floor below is still respected. Power
-// effect: an EXT0/EXT1 wake stays awake ~40 ms here instead of up to
+// effect: an EXT1 wake stays awake ~40 ms here instead of up to
 // PAGER_POST_WAKE_YIELD_MS + PAGER_PROBE_WAIT_MS (~15.2 s) before it does
 // anything else -- more current for those 40 ms (no change, this iteration
 // was already fully awake), far less current summed over the old wait, which
@@ -379,7 +379,7 @@ static bool s_was_mqtt_connected = false;
 static bool s_ui_awake_prev = false; // F6.3: edge-detects input_awake() for ui_wake_status_refresh()
 
 // Rail hold task (docs/ROADMAP.md "24 Sep evening finding"): esp_timer_get_time()
-// of the most recent key event, button short/long event, or ext0/ext1 wake.
+// of the most recent key event, button short/long event, or ext1 wake.
 // RAM-only, modes_run()'s task only (same reasoning s_ui_awake_prev above
 // uses) -- the attentive window is a UX nicety, not state that needs to
 // survive a reset, so it is deliberately not in g_rtc/RTC_DATA_ATTR.
@@ -390,7 +390,7 @@ static bool s_ui_awake_prev = false; // F6.3: edge-detects input_awake() for ui_
 // local, both below) read as a small, in-window value for the whole first
 // PAGER_ATTENTIVE_S (120s) of every boot, spuriously treating "no input
 // seen yet" as "attentive" (rail held on, 1s wake cadence) until the first
-// real key/button/ext0/ext1 event. This sentinel is far enough in the past
+// real key/button/ext1 event. This sentinel is far enough in the past
 // that `now - s_last_input_us` already exceeds PAGER_ATTENTIVE_S*1e6 on the
 // very first modes_run() iteration, so the window reads closed at boot and
 // s_attentive_prev's own edge-detect (below) never fires a spurious
@@ -662,6 +662,15 @@ static void on_auth_epoch_wrap(void)
 #define PAGER_BATT_MV_MIN 2000
 #define PAGER_BATT_MV_MAX 4500
 
+// "Unknown" placeholder returned before any real AT+SQNVMON reading has
+// landed this boot (refresh_batt_mv()/modes_get_batt_mv() below) -- not a
+// threshold, just a value that must sit safely above LOC_BATTERY_FLOOR_MV
+// (loc.h, 3550 mV since the 3 Oct 2026 LiPo rewiring) so an unknown reading
+// never coincidentally straddles the floor the way the old 3300 placeholder
+// did against the old 3300 mV LiFePO4 floor (loc.c's own comment on the
+// coincidence this is retargeted to avoid).
+#define PAGER_BATT_MV_UNKNOWN_PLACEHOLDER 3700
+
 #define PAGER_RSSI_UNSET (-1000) // outside net_get_rssi()'s valid [-113,-51] range
 
 // Last known-good battery/RSSI readings, so a single failed AT command
@@ -689,7 +698,7 @@ static int refresh_batt_mv(void)
     int batt_mv;
     if (!net_get_battery_mv(&batt_mv) || batt_mv < PAGER_BATT_MV_MIN ||
         batt_mv > PAGER_BATT_MV_MAX) {
-        batt_mv = (s_last_batt_mv != 0) ? s_last_batt_mv : 3300;
+        batt_mv = (s_last_batt_mv != 0) ? s_last_batt_mv : PAGER_BATT_MV_UNKNOWN_PLACEHOLDER;
     } else {
         s_last_batt_mv = batt_mv;
     }
@@ -738,8 +747,8 @@ static bool attentive_now(void)
 }
 
 // TASK_clock.md Do #2: "in use" for the status bar's live clock is the
-// attentive window (PAGER_ATTENTIVE_S = 120s from the last key/button/ext0/
-// ext1 event, s_last_input_us above), NOT input.c's shorter 30s
+// attentive window (PAGER_ATTENTIVE_S = 120s from the last key/button/ext1
+// event, s_last_input_us above), NOT input.c's shorter 30s
 // input_awake() UI-awake window ui_awake_now/render_now gate off of below --
 // the rail hold task keeps the display/CardKB rail on for the whole of the
 // attentive window (see the `if (attentive) rail_on()` comment further down
@@ -753,7 +762,7 @@ bool modes_in_use(void)
 }
 
 // Bench diagnostic (round 4, `attn` debug console command, main.c): raw
-// microsecond age of the last recorded key/button/ext0/ext1 event, so a
+// microsecond age of the last recorded key/button/ext1 event, so a
 // bench session can watch s_last_input_us tick up (or, if it never does,
 // see exactly what is re-arming it) without guessing from the "wake
 // cadence:" log's coarse edge-only transitions. Plain RAM read.
@@ -765,13 +774,13 @@ int64_t modes_debug_last_input_age_us(void)
 // F6.3: status-bar/Device-screen getters (modes.h) - plain cache reads, no
 // AT round trip of their own; see modes.h's own doc comment.
 int modes_get_rssi_dbm(void) { return (s_last_rssi_dbm != PAGER_RSSI_UNSET) ? s_last_rssi_dbm : -113; }
-int modes_get_batt_mv(void) { return (s_last_batt_mv != 0) ? s_last_batt_mv : 3300; }
+int modes_get_batt_mv(void) { return (s_last_batt_mv != 0) ? s_last_batt_mv : PAGER_BATT_MV_UNKNOWN_PLACEHOLDER; }
 // This task: s_last_batt_mv stays 0 until net_get_battery_mv() (AT+SQNVMON)
 // returns something inside [PAGER_BATT_MV_MIN, PAGER_BATT_MV_MAX] -- see
-// refresh_batt_mv() above. modes_get_batt_mv()'s 3300 fallback above is a
-// placeholder, not a reading; this accessor is how a caller (loc.c's
-// battery floor) tells the two apart instead of trusting the coincidence
-// that the placeholder equals LOC_BATTERY_FLOOR_MV exactly.
+// refresh_batt_mv() above. modes_get_batt_mv()'s PAGER_BATT_MV_UNKNOWN_
+// PLACEHOLDER fallback above is a placeholder, not a reading; this accessor
+// is how a caller (loc.c's battery floor) tells the two apart instead of
+// trusting a coincidence between the placeholder and LOC_BATTERY_FLOOR_MV.
 bool modes_batt_mv_known(void) { return s_last_batt_mv != 0; }
 const char *modes_get_fw_version(void) { return PAGER_FW_VERSION; }
 const char *modes_get_session_id(void) { return g_rtc.session_id; }
@@ -1203,7 +1212,7 @@ static uint32_t s_st_wake_attentive = 0;
 // rail_off()/rail_on(), so off_sleeps + kept_on_sleeps == s_st_sleeps.
 static uint32_t s_st_rail_off_sleeps = 0, s_st_rail_kept_on_sleeps = 0;
 // TASK_ui_round2.md Do #4 (lazy rail): how many wakes brought the rail up
-// via rule (b) — an EXT0/EXT1 wake cause — counted at that wake-path call
+// via rule (b) — an EXT1 wake cause — counted at that wake-path call
 // site (modes_run()). The complementary "lazy_on" count (rule (c), a render
 // that needed the rail up on its own, e.g. a page arriving on a timer wake)
 // is ui.c's own free-running ui_rail_lazy_on_count(), not window-scoped like
@@ -1593,7 +1602,7 @@ void modes_debug_sleeptest_report(void)
     // fix) is ui_kb_bus_release_count() — should track off_sleeps 1:1 (one
     // release per rail_off() edge, ui.c/rail.c). on_wakes/lazy_on
     // (TASK_ui_round2.md Do #4, the lazy-rail rewrite): on_wakes is this
-    // window's count of EXT0/EXT1 wakes that brought the rail up (rule (b),
+    // window's count of EXT1 wakes that brought the rail up (rule (b),
     // this file's own wake-path comment); lazy_on is ui.c's free-running
     // ui_rail_lazy_on_count() (rule (c), a render that needed the rail up on
     // its own — not window-scoped, so it only reads zero here if none have
@@ -2477,9 +2486,9 @@ void modes_run(void)
         // button must not re-enter a level-triggered light sleep it would
         // just immediately exit again), OR input_button_stuck() (same
         // reason, still true for BTN_STUCK - net_sleep() (net.cpp) arms
-        // ext0 wake at level 0, so it would return immediately over and
-        // over for as long as the button stays down; fixing that needs the
-        // net_sleep() ext0-level-1 variant firmware/README.md R2 specifies,
+        // ext1 wake on the button's active-high level, so it would return
+        // immediately over and over for as long as the button stays down;
+        // fixing that needs the net_sleep() release-edge variant firmware/README.md R2 specifies,
         // which touches net.cpp and is out of this task's Files list - see
         // input.h's input_button_stuck() doc comment), OR input_awake()
         // (docs/DEVICE_PLAN.md §5.3's 30s UI-awake window, armed by the
@@ -2633,7 +2642,7 @@ void modes_run(void)
             // stopgap): outside the attentive window, the display/CardKB
             // rail (the LIS3DH is not on it, owner 26 Sep 2026) need not
             // stay powered through this sleep -- the
-            // IO1 wake button (ext0) is the always-on way to wake the
+            // IO1 wake button (ext1) is the always-on way to wake the
             // pager, not the keyboard. Inside the attentive window the rail
             // stays ON through every 1 s sleep instead (rail_on() is a
             // no-op if it is already on): switching it off/on every second
@@ -2665,7 +2674,7 @@ void modes_run(void)
             // Wake path (TASK_ui_round2.md Do #4, the lazy-rail rewrite —
             // supersedes the old unconditional rail_on() this comment used
             // to describe): the rail is NO LONGER brought up unconditionally
-            // on every wake. Rule (b) — a wake button (ext0) or accel int1
+            // on every wake. Rule (b) — a wake button (ext1) or accel int1
             // (ext1) wake is real input, same as a decoded key/button event
             // below — brings it up right here, exactly like the old
             // unconditional call used to for every wake, and (same as
@@ -2687,7 +2696,7 @@ void modes_run(void)
             // effect: rule (b) below powers the display/CardKB back up
             // (not the LIS3DH -- it is not on this rail, and its own INT1
             // wake stays armed through this sleep regardless of rail state)
-            // on an EXT0/EXT1 wake even with nothing (yet) to draw; a timer
+            // on an EXT1 wake even with nothing (yet) to draw; a timer
             // wake with nothing to draw now leaves the rail OFF instead of
             // paying that cost every single wake.
             // wake_is_input: read by the yield/wait_for_probe_answer() logic
@@ -2697,14 +2706,20 @@ void modes_run(void)
             bool wake_is_input = false;
             {
                 esp_sleep_wakeup_cause_t wake_cause = esp_sleep_get_wakeup_cause();
-                if (wake_cause == ESP_SLEEP_WAKEUP_EXT0 || wake_cause == ESP_SLEEP_WAKEUP_EXT1) {
+                // 3 Oct 2026 rewiring: the button and the LIS3DH motion
+                // interrupt now share one ext1 mask (net.cpp's net_sleep()
+                // own comment) -- esp_sleep_get_ext1_wakeup_status()'s
+                // bitmask (button = IO1, motion = IO8) is what tells them
+                // apart; there is no more ESP_SLEEP_WAKEUP_EXT0.
+                if (wake_cause == ESP_SLEEP_WAKEUP_EXT1) {
                     wake_is_input = true;
                     int64_t wake_now_us = esp_timer_get_time();
                     s_last_input_us = wake_now_us;
                     ui_ensure_powered(); // rule (b): this wake IS real input, bring the rail up now
-                    if (wake_cause == ESP_SLEEP_WAKEUP_EXT0) {
+                    uint64_t ext1_status = esp_sleep_get_ext1_wakeup_status();
+                    if (ext1_status & (1ULL << PAGER_PIN_BUTTON)) {
                         // Bug fix (25 Sep, "lock screen never switches to
-                        // password: on a quick IO1 press"): ext0 is a LEVEL
+                        // password: on a quick IO1 press"): ext1 is a LEVEL
                         // wake on the button, so this wake edge IS the
                         // press, but input_poll() (below, later this same
                         // iteration) is the first thing that ever samples
@@ -2713,9 +2728,9 @@ void modes_run(void)
                         // starts, silently dropping the press. Seed the FSM
                         // with the press here, at the wake, so input_poll()
                         // resolves short-vs-long from it exactly as for a
-                        // polled press (input_note_ext0_wake()'s own doc
+                        // polled press (input_note_button_wake()'s own doc
                         // comment, input.h). Power effect: none of its own.
-                        input_note_ext0_wake(wake_now_us);
+                        input_note_button_wake(wake_now_us);
                     }
 #ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
                     s_st_rail_on_wakes++;

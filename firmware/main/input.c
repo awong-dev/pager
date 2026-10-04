@@ -97,8 +97,12 @@ static void push_event(input_event_t evt)
     }
 }
 
-/* Button short/long/stuck FSM. Note the hazard BTN_STUCK exists to avoid: a
- * LEVEL wake (esp_sleep_enable_ext0_wakeup(..., 0)) makes
+/* Button short/long/stuck FSM. `level` is the raw PAGER_PIN_BUTTON read;
+ * since the 3 Oct 2026 rewiring (button now to the board's always-on 3V,
+ * not GND) the button is active-high, so `level != 0` is pressed and
+ * `level == 0` is released -- the inverse of the pre-rewiring active-low
+ * polarity. Note the hazard BTN_STUCK exists to avoid: a LEVEL wake
+ * (esp_sleep_enable_ext1_wakeup(..., ESP_EXT1_WAKEUP_ANY_HIGH)) makes
  * esp_light_sleep_start() return immediately for as long as the button is
  * held, so a held button busy-loops modes_run() at ~40mA
  * (firmware/README.md R2). input_button_busy() returning false for
@@ -111,7 +115,7 @@ static void button_fsm_step(int level, int64_t now_us)
 {
     switch (s_btn_state) {
     case BTN_IDLE:
-        if (level == 0) {
+        if (level != 0) {
             if (s_btn_debounce_start_us == 0) {
                 s_btn_debounce_start_us = now_us;
             } else if ((now_us - s_btn_debounce_start_us) >=
@@ -128,7 +132,7 @@ static void button_fsm_step(int level, int64_t now_us)
         break;
 
     case BTN_DOWN:
-        if (level != 0) {
+        if (level == 0) {
             /* Released before the long-press threshold: short press. */
             arm_awake_window(now_us);
             push_event((input_event_t) { .type = INPUT_EVT_BTN_SHORT });
@@ -143,7 +147,7 @@ static void button_fsm_step(int level, int64_t now_us)
         break;
 
     case BTN_HELD:
-        if (level != 0) {
+        if (level == 0) {
             s_btn_state = BTN_IDLE;
         } else if ((now_us - s_btn_held_t0_us) >= (int64_t) PAGER_BTN_STUCK_MS * 1000) {
             ESP_LOGI(TAG, "button held >=%us since long-press fired; entering BTN_STUCK "
@@ -155,7 +159,7 @@ static void button_fsm_step(int level, int64_t now_us)
         break;
 
     case BTN_STUCK:
-        if (level != 0) {
+        if (level == 0) {
             ESP_LOGI(TAG, "button released after BTN_STUCK");
             s_btn_state = BTN_IDLE;
         }
@@ -168,8 +172,8 @@ void input_init(void)
     gpio_config_t cfg = {
         .pin_bit_mask = 1ULL << PAGER_PIN_BUTTON,
         .mode = GPIO_MODE_INPUT,
-        .pull_up_en = GPIO_PULLUP_ENABLE, /* active low */
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_ENABLE, /* active high: 3 Oct 2026 rewiring, pins.h */
         .intr_type = GPIO_INTR_DISABLE,
     };
     gpio_config(&cfg);
@@ -184,10 +188,10 @@ void input_poll(void)
     button_fsm_step(gpio_get_level((gpio_num_t) PAGER_PIN_BUTTON), now_us);
 }
 
-void input_note_ext0_wake(int64_t now_us)
+void input_note_button_wake(int64_t now_us)
 {
     /* Merge into a press the FSM is already tracking (a held button across
-     * consecutive ext0 wakes, or a press input_poll() already debounced
+     * consecutive ext1 wakes, or a press input_poll() already debounced
      * this same iteration before this got called) instead of seeding a
      * second BTN_DOWN for it — see this function's doc comment in
      * input.h. */

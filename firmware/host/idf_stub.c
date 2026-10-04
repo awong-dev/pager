@@ -16,7 +16,7 @@ void gpio_config(const gpio_config_t *cfg)
     (void) cfg; /* no real GPIO on the host; input.c only configures the button pin */
 }
 
-static int s_button_level = 1; /* idle (active-low, released) by default */
+static int s_button_level = 0; /* idle (active-high, released) by default */
 
 int gpio_get_level(gpio_num_t pin)
 {

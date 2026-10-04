@@ -790,8 +790,8 @@ change)*.
   every UI wake. Bars from dBm: ≥ −85 → 4, ≥ −95 → 3, ≥ −105 → 2, ≥ −115 → 1, else 0; not
   registered → `x`. Redraw only when the *bucket* changes.
 - **Battery.** `net_get_battery_mv()` at every UI wake and hourly, cached in `modes.c` as today.
-  Segments from mV (LiFePO4 is flat, so these are coarse and `PENDING_HW`, to be set from M15 and a
-  discharge curve): ≥ 3300 → 4, ≥ 3250 → 3, ≥ 3200 → 2, ≥ 3100 → 1, < 3100 → 0 plus a "charge me"
+  Segments from mV (LiPo has a steeper curve, so these are `PENDING_HW`, to be set from M15 and a
+  discharge curve): ≥ 4000 → 4, ≥ 3850 → 3, ≥ 3700 → 2, ≥ 3550 → 1, < 3550 → 0 plus a "charge me"
   toast once per boot. Percent stays a UI-side mapping per `PROTOCOL.md` §5.1.
 - **Unread** = down messages in the ring not yet `read`.
 
@@ -1201,7 +1201,7 @@ Listed here so the diff to the authoritative document is reviewable on its own. 
 | 5.3 | CardKB sends `0xB4`–`0xB7` for arrows, `0x1B` esc, `0x09` tab | Part of M13, 5 min |
 | 5.3 | CardKB holds the last key until read (enables key-to-wake) | Part of M13: press a key, wait 5 s, read; 2 min |
 | 5.4 | `walter-modem` v1.5.0 exposes a signal-quality call usable from application code | Read `src/WalterModem.h`, 10 min, no hardware |
-| 5.4 | LiFePO4 mV thresholds for the battery icon | Discharge curve under the device's own load, with M15 |
+| 5.4 | LiPo mV thresholds for the battery icon | Discharge curve under the device's own load, with M15 |
 | 5.3 | I²C polling works across 100 ms light-sleep cycles | One afternoon with M1's current trace |
 | 2.6 | EMQX built-in-database auth accepts the credential shape the relay pushes | Phase 2's e2e |
 | 3.3 | Which public root EMQX Cloud Serverless's `*.emqxsl.com` certificate chains to | `openssl s_client -showcerts` against the real account; 2 min |

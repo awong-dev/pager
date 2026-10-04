@@ -190,7 +190,7 @@ failed or wrong fix is an acceptable answer; battery matters more.
   3. *Charger/USB power present*, if detectable: skip.
   A reset puts the backoff at zero but leaves a **floor of 10 min since the last attempt**, so a
   child walking between classrooms all day cannot turn every request into an attempt.
-- **Battery floor**: below 3.3 V (LiFePO4, `batt_mv`), never power GNSS; answer cached/`no_fix`.
+- **Battery floor**: below 3.55 V (LiPo, `batt_mv`), never power GNSS; answer cached/`no_fix`.
 - **Route to the radio: in place only** (owner decision, 26 Sep 2026,
   `LOCATION_TRACKING_DESIGN.md`): ask for a fix while attached, in the eDRX idle gap, through the
   library `gnss*` API. **Any failure** — `LTE_CONCURRENCY` refusal, timeout, no fix, confidence
@@ -355,7 +355,7 @@ keeps "broker declares a truly dead pager offline" at ≤12 min, unchanged.
 | Per ping | ~0.1 mAh (estimate) | §6.2's RRC figure: ~3 s at ~120 mA. **The weakest number here** — an RRC release tail of 10 s instead of 3 s would make it 0.28 mAh |
 | Pings/day | 288 worst case | 86400/300 with no other uplink; every publish resets the timer, so a school day is ~250 |
 | **Energy** | **~28.8 mAh/day → 1.2 mA** | replaces `PROTOCOL.md` §8.4's 0.75 mA keepalive line, which assumed pings that never happened |
-| Sleep-mode total | 3.95–4.45 mA → **95–107 mAh/day** → 14–16 days on 1500 mAh | §8.4's other terms unchanged |
+| Sleep-mode total | 3.95–4.45 mA → **95–107 mAh/day** → 23–26 days on 2500 mAh LiPo | §8.4's other terms unchanged |
 | Data | 288 × ~0.17 kB ≈ **49 kB/day** (+1.5 MB/month) | SUBSCRIBE ~28 B + SUBACK 5 B, each +29 B TLS +40 B TCP/IP (§7.1). Nominal day goes 57 → 106 kB; the 10 MB bar holds |
 
 If the per-ping measurement comes back at ≥0.25 mAh, raise `N` to whatever the §9.6 NAT

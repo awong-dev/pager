@@ -20,7 +20,7 @@ Conventions follow `PROTOCOL.md`: `(estimate)`, `(IDF doc)` = a figure read out 
    `low-power-mode.rst`, which is untranslated): an associated station at 160 MHz costs
    **40.1 / 38.7 / 38.2 mA** (DTIM 1 / 3 / 10) in plain Modem-sleep, **20.7 / 19.9 / 19.5 mA** with
    DFS, and **2.45 / 1.33 / 0.93 mA** with *automatic* Light-sleep. Only the third column is
-   survivable: 38 mA on a 1500 mAh cell is **1.6 days**. Automatic light sleep needs
+   survivable: 38 mA on a 2500 mAh cell is **2.7 days**. Automatic light sleep needs
    `CONFIG_PM_ENABLE`, which is **off today** (`firmware/sdkconfig:918`).
 2. **Manual light sleep and an associated station are mutually exclusive** as ESP-IDF documents it:
    "Wi-Fi connections are not maintained in Deep-sleep or Light-sleep mode"
@@ -139,16 +139,16 @@ lands at the top of that range and the owner is not using SMS.
 
 ## 3. Power
 
-All figures per day on a 1500 mAh LiFePO4 cell. Today's LTE-only baseline is **4.0–4.5 mA →
-95–107 mAh/day → 14–16 days** (`V02_DESIGN.md` §9.3).
+All figures per day on a 2500 mAh LiPo cell. Today's LTE-only baseline is **4.0–4.5 mA →
+95–107 mAh/day → 23–26 days** (`V02_DESIGN.md` §9.3).
 
 | Configuration | ESP32+WiFi | Modem | MQTT keepalive | Total | Days |
 |---|---|---|---|---|---|
-| (a) WiFi, no `CONFIG_PM_ENABLE`, Modem-sleep only | 38.2 mA (IDF doc, DTIM10) | 0.2–0.5 | in the 38 | **≈38.5 mA → 925 mAh/day** | **1.6** |
-| (b) WiFi, `PM_ENABLE` + DFS, no light sleep | 19.5 mA (IDF doc, DTIM10) | 0.2–0.5 | in the 19.5 | ≈20 mA → 480 mAh/day | 3 |
-| (c) **WiFi, `PM_ENABLE` + auto light sleep, `WIFI_PS_MAX_MODEM`, listen_interval 10** | 0.93 mA (IDF doc, DTIM10) | 0.2–0.5 | 0.17 (est.) | **≈1.3–1.6 mA → 31–38 mAh/day** | **39–48** |
+| (a) WiFi, no `CONFIG_PM_ENABLE`, Modem-sleep only | 38.2 mA (IDF doc, DTIM10) | 0.2–0.5 | in the 38 | **≈38.5 mA → 925 mAh/day** | **2.7** |
+| (b) WiFi, `PM_ENABLE` + DFS, no light sleep | 19.5 mA (IDF doc, DTIM10) | 0.2–0.5 | in the 19.5 | ≈20 mA → 480 mAh/day | 5 |
+| (c) **WiFi, `PM_ENABLE` + auto light sleep, `WIFI_PS_MAX_MODEM`, listen_interval 10** | 0.93 mA (IDF doc, DTIM10) | 0.2–0.5 | 0.17 (est.) | **≈1.3–1.6 mA → 31–38 mAh/day** | **65–80** |
 | (d) same, `WIFI_PS_MIN_MODEM` (active mode) | 2.45 mA (IDF doc, DTIM1) | 0.2–0.5 | 0.17 | ≈2.8–3.1 mA | — |
-| (e) LTE today | 2.6 | 0.2–0.5 + 1.2 | — | 4.0–4.5 mA | 14–16 |
+| (e) LTE today | 2.6 | 0.2–0.5 + 1.2 | — | 4.0–4.5 mA | 23–26 |
 
 Keepalive estimate: 1440 PINGREQ/day × ~100 ms of radio at ~100 mA = 4 mAh/day = 0.17 mA
 (estimate — measure it). The IDF rows are Espressif devkit measurements, not this board: the Walter

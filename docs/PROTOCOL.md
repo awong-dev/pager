@@ -645,7 +645,7 @@ broker-generated LWT.
 | `v` | int | no (default 1) | `1` | Schema version |
 | `state` | string | **yes** | `online` \| `offline` | See §5.2 for the precise meaning |
 | `mode` | string | yes when `online` | `sleep` \| `active` | Device mode (firmware/README.md) |
-| `batt_mv` | int | yes when `online` | 2000…4500 | Battery millivolts. *(raw mV, not percent; LiFePO4 has a flat 3.2 V plateau so any percent mapping belongs in the UI where it can be changed without a firmware flash.)* |
+| `batt_mv` | int | yes when `online` | 2000…4500 | Battery millivolts. *(raw mV, not percent; LiPo discharge curve is relatively steep so any percent mapping belongs in the UI where it can be changed without a firmware flash.)* |
 | `rssi` | int | yes when `online` | −140…0 | RSSI in dBm (now published at every `/status` for field debugging and status bar rendering). |
 | `session` | string | **yes** | `^s_[0-9a-f]{8}$` | Cold-boot session id (§1). Lets the relay tell a reboot from a deep-sleep cycle. |
 | `ts` | int | yes when `online` | epoch s, or 0 | Same rule as §3.5 |
@@ -1100,7 +1100,7 @@ Two v1.5.0 features the design relies on:
 | # | Wake source | Mechanism | Trigger | Mode | Verified? | RTC state that must survive |
 |---|---|---|---|---|---|---|
 | 1 | **Wake-and-drain timer** (primary) | `esp_sleep_enable_timer_wakeup(T)` + `esp_light_sleep_start()`, `T` = 5 s sleep / 2 s active | Wake, reassert RTS, let the modem flush the URC it held, let the library's RX and event tasks dispatch it to the MQTT handler, which calls `mqttReceive(topic, mid, …)`. **No polling call is made** (§8.0). | both | Mechanism yes; the RTS hold-off behaviour is **UNVERIFIED** (§8.3) | Light sleep retains RAM, so *nothing* has to survive — this is the point |
-| 2 | Button IO1 | `esp_sleep_enable_ext0_wakeup(IO1, 0)`, active low, RTC GPIO | Short press = mark read / open composer; long press = send reply | both | Yes — IO1 is an RTC GPIO | `mode`, `active_until`, msg ring, `pending_acks` (deep-sleep path only) |
+| 2 | Button IO1 | `esp_sleep_enable_ext1_wakeup(...)`, active high to 3V, RTC GPIO | Short press = mark read / open composer; long press = send reply | both | Yes — IO1 is an RTC GPIO | `mode`, `active_until`, msg ring, `pending_acks` (deep-sleep path only) |
 | 3 | ~~RTC timer — keepalive~~ | — | **Not needed.** The MQTT client is in the modem and the library exposes no ping API; PINGREQ is the modem's job (§6.2). The status heartbeat rides an ordinary poll wake using a counter in RTC memory. | — | n/a | `status_pub_count` |
 | 4 | RTC timer — active-mode exit | `esp_timer` while awake, not a sleep wake | 10 min with no button/keyboard activity → sleep mode | active | Yes | `mode`, `active_until` |
 | 4b | MQTT event (no sleep involved) | `setMQTTEventHandler()` → `_eventProcessingTask` | `_MESSAGE` short-circuits the wake-and-drain latency while the ESP32 happens to be awake; `_DISCONNECTED` drives F3 recovery; `_MEMORY_FULL` flags a missed drain | both | Yes — v1.5.0 API | none (handler runs while awake) |
@@ -1205,7 +1205,7 @@ real hardware (`firmware/README.md`, M1).
 | Modem idle floor | 0.01–0.05 mA (estimate) | Sequans GM02SP deep-sleep-between-paging |
 | Host liveness ping, amortised | ~1.2 mA (estimate) | 288 pings/day × ~0.1 mAh (§6.2); the modem sends no PINGREQ of its own, so the ESP32 re-subscribes every 300 s from a wake it takes anyway |
 | Display (gated off via the eInk Friend's ENA, IO12) | ~0 mA | e-paper VCC gated between refreshes |
-| **Sleep-mode total** | **≈ 4.0–4.5 mA → 95–107 mAh/day** | On a ~1500 mAh LiFePO4 cell: **~14–16 days idle** |
+| **Sleep-mode total** | **≈ 4.0–4.5 mA → 95–107 mAh/day** | On a ~2500 mAh LiPo cell: **~23–26 days idle** |
 
 > **Why this is worse than it looks on paper.** A design built on an ESP32 deep-sleep floor of
 > 0.01–0.10 mA would give 0.6–1.2 mA → 15–29 mAh/day → ~50–100 days. That floor is only reachable
@@ -1598,7 +1598,7 @@ the future.
   `+3V3`/`+1V8` regulated rails, and that net is not sourced anywhere inside Walter's onboard
   Power Management block (which only produces `+3V3`/`+1V8`);
   - Walter's onboard regulator (`TPS6208833`) is a **buck-boost**, which only makes sense if `VIN`
-  is expected to sometimes sit *below* 3.3V — i.e. a single Li-ion/LiFePO4 cell directly, not
+  is expected to sometimes sit *below* 3.3V — i.e. a single LiPo cell directly, not
   only a fixed 5V USB input;
   - DPTechnics' own official reference battery design in the same repo (`walter-feels`) wires its
   battery charger IC's `VBAT` output — the real, live cell voltage — **directly into Walter's

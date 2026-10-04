@@ -74,7 +74,7 @@ extern "C" {
 #define LOC_MOTION_WINDOW_S 180u  /* 3 min trailing window for the motion classifier */
 #define LOC_MOTION_SUSTAIN_S 60u  /* interrupts must span at least this long inside the window */
 
-#define LOC_BATTERY_FLOOR_MV 3300 /* LiFePO4, docs/V02_DESIGN.md §5 */
+#define LOC_BATTERY_FLOOR_MV 3550 /* 3.7V LiPo (3 Oct 2026 rewiring, owner), was 3300 for LiFePO4 */
 #define LOC_FIX_CONFIDENCE_MAX 100.0 /* vendor demo threshold, docs/V02_DESIGN.md §5 */
 
 /* This task: sentinel `batt_mv` meaning "no real reading yet" (modes.c's

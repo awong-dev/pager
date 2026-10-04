@@ -89,18 +89,18 @@ typedef struct {
     input_key_t key; /* valid iff type == INPUT_EVT_KEY */
 } input_event_t;
 
-/* One-time init: button GPIO (input, pull-up, active-low, per pins.h) and
- * the static event queue. Call once from modes_boot(), before modes_run().
- * Power effect: GPIO config + queue allocation only — no modem or
- * sleep-state change. */
+/* One-time init: button GPIO (input, pull-down, active-high, per pins.h)
+ * and the static event queue. Call once from modes_boot(), before
+ * modes_run(). Power effect: GPIO config + queue allocation only — no modem
+ * or sleep-state change. */
 void input_init(void);
 
 /* Call once per modes_run() loop iteration. Steps the button FSM against
- * the current PAGER_PIN_BUTTON level; a resolved event (BTN_DOWN/SHORT/
- * LONG) arms the UI-awake window and is pushed to the queue
- * input_get_event() drains. Power effect: one GPIO read — no I2C, no modem
- * effect (see this header's scope note on why CardKB reads are not done
- * here yet). */
+ * the current PAGER_PIN_BUTTON level (active-high since the 3 Oct 2026
+ * rewiring, pins.h); a resolved event (BTN_DOWN/SHORT/LONG) arms the
+ * UI-awake window and is pushed to the queue input_get_event() drains.
+ * Power effect: one GPIO read — no I2C, no modem effect (see this header's
+ * scope note on why CardKB reads are not done here yet). */
 void input_poll(void);
 
 /* Decodes `byte` and, if it is not INPUT_KEY_NONE, arms the UI-awake window
@@ -153,43 +153,46 @@ bool input_button_busy(void);
 /* True once a held button has crossed PAGER_BTN_STUCK_MS in BTN_HELD
  * (firmware/README.md R2). What this deliberately does NOT do: make
  * modes_run() call net_sleep() again. net_sleep() (net.cpp) arms
- * esp_sleep_enable_ext0_wakeup() on PAGER_PIN_BUTTON at level 0
- * (active-low) — with the button still physically held (level stuck at
- * 0), esp_light_sleep_start() would return immediately on every call
+ * esp_sleep_enable_ext1_wakeup() on a mask that always includes
+ * PAGER_PIN_BUTTON, ESP_EXT1_WAKEUP_ANY_HIGH (active-high since the 3 Oct
+ * 2026 rewiring) — with the button still physically held (level stuck
+ * high), esp_light_sleep_start() would return immediately on every call
  * (the original hazard this state exists to name), and net_sleep() also
  * deasserts RTS around that call, so spinning it at high frequency risks
  * doing that to the modem mid-transaction repeatedly. Fixing that needs a
- * net_sleep() variant that arms ext0 on level 1 (wake on release) —
- * README R2's own fix spec — which touches net.cpp and is out of this
- * task's Files list. What BTN_STUCK buys today, in scope: modes_run()
+ * net_sleep() variant that arms the button's wake on the release edge
+ * instead — README R2's own fix spec — which touches net.cpp and is out
+ * of this task's Files list. What BTN_STUCK buys today, in scope: modes_run()
  * stops needing input_button_busy()'s fine ~20ms polling once a press
  * stops being measured, so callers should fall back to a much coarser
  * poll interval instead (still not net_sleep()) while this is true. */
 bool input_button_stuck(void);
 
-/* Seeds the button FSM with a press observed at `now_us`, for the ext0
- * (IO1/PAGER_PIN_BUTTON) wake path (modes.c, right after
- * esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_EXT0): ext0 is a LEVEL
- * wake on the button's active-low press, so the wake edge itself IS the
- * press, but modes.c's own rail-restore/probe/post-wake-yield sequence
- * runs before this loop iteration ever reaches input_poll() — a quick
- * press-and-release can be back to level 1 by the time input_poll() first
- * samples the pin, and BTN_IDLE's debounce-then-BTN_DOWN transition (which
- * only starts counting from a *polled* low sample) never runs, so no
- * BTN_DOWN/BTN_SHORT is ever emitted and the FSM silently drops the press.
- * Calling this right after the wake, before input_poll() runs, seeds
- * BTN_DOWN (with the wake time as the press start, skipping the software
- * debounce — the wake itself is real hardware/RTC-controller-debounced
- * edge detection, not bounce) exactly as a polled press would; the FSM's
- * own next input_poll() call then resolves short-vs-long from the current
- * pin level precisely as for an ordinary polled press. Idempotent/safe to
- * call on every ext0 wake even while the button is held across several
- * such wakes (the BTN_STUCK hazard this header's own comment above
- * describes): a no-op whenever the FSM is not BTN_IDLE (already mid-press
- * from an earlier wake or an earlier input_poll() this same iteration) —
- * never seeds a second BTN_DOWN for one physical press. Power effect:
- * none — FSM state only, no GPIO/I2C/modem access. */
-void input_note_ext0_wake(int64_t now_us);
+/* Seeds the button FSM with a press observed at `now_us`, for the ext1
+ * (IO1/PAGER_PIN_BUTTON, shared with the LIS3DH's INT1) wake path (modes.c,
+ * right after esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_EXT1 and
+ * esp_sleep_get_ext1_wakeup_status() shows the button's bit set): ext1 is a
+ * LEVEL wake on the button's active-high press (3 Oct 2026 rewiring,
+ * pins.h), so the wake edge itself IS the press, but modes.c's own
+ * rail-restore/probe/post-wake-yield sequence runs before this loop
+ * iteration ever reaches input_poll() — a quick press-and-release can be
+ * back to level 0 by the time input_poll() first samples the pin, and
+ * BTN_IDLE's debounce-then-BTN_DOWN transition (which only starts counting
+ * from a *polled* high sample) never runs, so no BTN_DOWN/BTN_SHORT is ever
+ * emitted and the FSM silently drops the press. Calling this right after
+ * the wake, before input_poll() runs, seeds BTN_DOWN (with the wake time as
+ * the press start, skipping the software debounce — the wake itself is
+ * real hardware/RTC-controller-debounced edge detection, not bounce)
+ * exactly as a polled press would; the FSM's own next input_poll() call
+ * then resolves short-vs-long from the current pin level precisely as for
+ * an ordinary polled press. Idempotent/safe to call on every ext1 button
+ * wake even while the button is held across several such wakes (the
+ * BTN_STUCK hazard this header's own comment above describes): a no-op
+ * whenever the FSM is not BTN_IDLE (already mid-press from an earlier wake
+ * or an earlier input_poll() this same iteration) — never seeds a second
+ * BTN_DOWN for one physical press. Power effect: none — FSM state only, no
+ * GPIO/I2C/modem access. */
+void input_note_button_wake(int64_t now_us);
 
 #endif /* ESP_PLATFORM */
 

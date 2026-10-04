@@ -104,16 +104,16 @@ Adafruit LIS3DH breakout, on its own I2C bus (`I2C_NUM_1`), rewired 30 Sep 2026 
   "not found" until either the wiring or `PAGER_I2C_ADDR_LIS3DH` (`pins.h`) changes.
 - INT1 -> IO8 (Walter pin 23, `PAGER_PIN_LIS3DH_INT1`), push-pull, active high, 3.3 V logic, no
   external pull-up needed. It is an RTC GPIO, armed as the ext1 light-sleep wake.
-- Power: breakout VIN from Walter 3V3-OUT (header pin 26). The firmware drives IO0 low at boot
-  and never releases it, so this rail is effectively always on; the CardKB and display are gated
-  by the eInk Friend's ENA instead. Do not feed the breakout from Walter VIN: on USB-C power VIN
-  is 5 V and the breakout's I2C pull-ups follow its VIN. See `firmware/README.md` "Power
-  domains".
+- Power: breakout VIN from the power board (6092) 3V terminal, always on.
 
 `i2cscan` is the one-line pre-flight check on the CardKB bus (expect `0x5F`); the LIS3DH is on
 the other bus, so its presence check is the boot log's `LIS3DH found (WHO_AM_I=0x33)` line or
 `acceltest`. Neither showing up means wiring, not firmware, before anything else is worth trying
 (A2's `acceltest` will just say "not present").
+
+### Power board (Adafruit 6092)
+
+SYS terminal (bq25185 4.2 V regulator) → Walter VIN (4.5 V on USB, battery voltage minus protection FET, BUVLO at 3.0 V). 3V terminal (TLV62569 3.3 V buck, 35 µA quiescent) → LIS3DH and eInk Friend VIN (always on). Walter IO0 (3V3-OUT, switched) → CardKB only. Wake button (active-high, ext1 shared with LIS3DH INT1) → board's 3V. Board green 3.3 V LED is removed. Passive distribution carries no capacitors; the TLV62569 wants 10–47 µF total, already satisfied on the 6092.
 
 ## Seen working on hardware
 

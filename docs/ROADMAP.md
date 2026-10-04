@@ -102,6 +102,7 @@ From `docs/HARDWARE_TESTING.md` "Not yet seen working," in order:
 6. `gnsstest` outdoors: which radio route (in-place vs `CFUN=4` window), cold/hot fix times, re-attach time.
 7. SMS: does SIM carry it; texts from listed and unlisted numbers.
 8. Accelerometer and button on hardware.
+9. Power board bring-up: SYS to Walter VIN, 3V to Friend/LIS3DH, CardKB gated by IO0, button to 3V, sleep current with the green LED removed.
 
 ### Measurements (unverified, driving design trade-offs)
 
@@ -110,8 +111,8 @@ From `docs/HARDWARE_TESTING.md` "Not yet seen working," in order:
 - **Host liveness ping energy and carrier idle timeout:** per-ping mA and true carrier timeout unmeasured.
   300 s interval set at half the shortest observed death; measured 13 min timeout would allow 540 s and
   nearly halve the power cost. Measure and set by owner decision (SLEEP_URC_TASKS S14).
-- **Battery budget current trace:** design assumed ~1% awake, 48 pings/day (43–50 mAh/day, ~20 days on 1500 mAh).
-  Now 4% awake, 288 pings/day (95–107 mAh/day, ~14–16 days). Every term still an estimate. Current trace and
+- **Battery budget current trace:** design assumed ~1% awake, 48 pings/day (43–50 mAh/day, ~34 days on 1500 mAh LiFePO4).
+  Now 4% awake, 288 pings/day (95–107 mAh/day, ~23–26 days on 2500 mAh LiPo). Every term still an estimate. Current trace and
   wake-window shrink next (docs/PROTOCOL.md §8.4).
 
 ### Decisions waiting on the owner

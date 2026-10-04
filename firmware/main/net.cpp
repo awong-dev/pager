@@ -196,7 +196,10 @@ static uint8_t s_ca_written_hash[IDENT_CA_HASH_LEN];
 static int64_t s_clock_epoch = 0;    // 0 = no network time yet (§3.5)
 static int64_t s_clock_epoch_us = 0; // esp_timer_get_time() at the moment s_clock_epoch was read
 
-static bool s_wake_sources_armed = false;
+// 3 Oct 2026 rewiring (owner): the button moved to ext1 (see net_sleep()'s
+// own comment below) and is always part of the mask, so there is no more
+// "once only" latch to keep -- the mask is recomputed and re-armed on every
+// net_sleep() call, same as the accel bit always was.
 
 // S1 (docs/SLEEP_URC_DESIGN.md §5(1)): true once WalterModem::begin() has
 // succeeded and stays false only across a net_recover_modem() reset --
@@ -1187,39 +1190,32 @@ extern "C" void net_sleep(uint32_t ms)
     //
     // This is deliberately NOT WalterModem::sleep(ms, true): that call is
     // timer-only (WalterModem.cpp:4413-4450) and would starve out the
-    // button's ext0 wake if we let it own esp_light_sleep_start(). We
-    // replicate its RTS choreography by hand instead.
-    if (!s_wake_sources_armed) {
-        esp_sleep_enable_ext0_wakeup((gpio_num_t) PAGER_PIN_BUTTON, 0 /* active low */);
-        s_wake_sources_armed = true;
-    }
-    // v0.2 §5 trigger 2 (motion): a second, independent wake pin needs ext1,
-    // not a second ext0 -- the ESP32-S3 (like every ESP32 variant) has
-    // exactly one ext0 source (a single fixed RTC GPIO, already spoken for
-    // by the button) but ext1 takes a bitmask of any number of RTC GPIOs
-    // sharing one level mode. IO8 (LIS3DH INT1) is configured push-pull
-    // active-high (accel.c), so ANY_HIGH is the right mode for a one-pin
-    // mask; it does not need to agree with ext0's own (unrelated) active-low
-    // button polarity -- the two wake sources are independent and can
-    // coexist armed simultaneously.
+    // button's wake if we let it own esp_light_sleep_start(). We replicate
+    // its RTS choreography by hand instead.
     //
-    // A1: unlike ext0/button above, this is evaluated fresh on *every*
-    // net_sleep() call rather than latched once -- accel.c toggles
-    // s_accel_wake_enabled off for a refractory window after every edge it
-    // reports (net_set_accel_wake()), so a wake storm while the pager is
-    // being carried does not end light sleep ~10x/s
-    // (docs/DEVICE_NEXT_TASKS.md A1). Still never armed at all if the chip
-    // never answered WHO_AM_I (accel.c's own module comment: an
+    // 3 Oct 2026 rewiring (owner): the button moved from GND to the board's
+    // always-on 3V, so it is active-high now and can no longer use ext0 --
+    // the ESP32-S3 (like every ESP32 variant) has exactly one ext0 source (a
+    // single fixed RTC GPIO, polarity fixed at the esp_sleep_enable_ext0_
+    // wakeup() call) but ext1 takes a bitmask of any number of RTC GPIOs
+    // sharing one level mode, so both the button (IO1) and the LIS3DH's
+    // INT1 (IO8, push-pull active-high, accel.c) now share one ext1 mask,
+    // ESP_EXT1_WAKEUP_ANY_HIGH. The mask is built fresh and re-armed on
+    // every net_sleep() call rather than latched once: the button bit is
+    // unconditional (it must stay armed -- esp_sleep_disable_wakeup_source()
+    // is never called on ESP_SLEEP_WAKEUP_EXT1 any more), and the accel bit
+    // follows s_accel_wake_enabled, which accel.c toggles off for a
+    // refractory window after every edge it reports (net_set_accel_wake()),
+    // so a wake storm while the pager is being carried does not end light
+    // sleep ~10x/s (docs/DEVICE_NEXT_TASKS.md A1) -- also never set if the
+    // chip never answered WHO_AM_I (accel.c's own module comment: an
     // unwired/floating IO8 armed as ANY_HIGH would wake the ESP32 on every
     // light-sleep cycle for nothing).
+    uint64_t ext1_mask = 1ULL << PAGER_PIN_BUTTON;
     if (s_accel_wake_enabled) {
-        esp_sleep_enable_ext1_wakeup(1ULL << PAGER_PIN_LIS3DH_INT1, ESP_EXT1_WAKEUP_ANY_HIGH);
-    } else {
-        // Harmless (ESP_ERR_INVALID_STATE, ignored) if ext1 was never armed
-        // in the first place -- e.g. the chip is absent, or this is the
-        // very first net_sleep() call before accel_init() has run yet.
-        esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_EXT1);
+        ext1_mask |= 1ULL << PAGER_PIN_LIS3DH_INT1;
     }
+    esp_sleep_enable_ext1_wakeup(ext1_mask, ESP_EXT1_WAKEUP_ANY_HIGH);
     esp_sleep_enable_timer_wakeup((uint64_t) ms * 1000ULL);
 
     // Disable RTS (drive it high) so the modem is free to sleep, exactly as
@@ -1267,11 +1263,16 @@ extern "C" void net_sleep(uint32_t ms)
 
     esp_light_sleep_start();
 
-    // A1: count ext1 (motion) wakes, before anything below can touch the
-    // wakeup-cause register -- net_get_ext1_wakes() is A2's `acceltest`
-    // print and A4's bench measurement of this task's whole justification
-    // (refr 0 vs. refr 20, expect roughly two orders of magnitude fewer).
-    if (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_EXT1) {
+    // A1: count ext1 wakes actually caused by motion, before anything below
+    // can touch the wakeup-cause register -- net_get_ext1_wakes() is A2's
+    // `acceltest` print and A4's bench measurement of this task's whole
+    // justification (refr 0 vs. refr 20, expect roughly two orders of
+    // magnitude fewer). 3 Oct 2026 rewiring: ext1 now also fires for the
+    // button, so esp_sleep_get_ext1_wakeup_status()'s bitmask (button =
+    // IO1, motion = IO8) is what tells the two apart, not the wakeup-cause
+    // alone.
+    if (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_EXT1 &&
+        (esp_sleep_get_ext1_wakeup_status() & (1ULL << PAGER_PIN_LIS3DH_INT1))) {
         s_ext1_wakes++;
     }
 

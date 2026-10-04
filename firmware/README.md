@@ -17,11 +17,11 @@ of truth for every GPIO below; nothing else in the firmware hardcodes a pin.
 | Part | Role | Interface / power |
 |---|---|---|
 | Walter module (DPTechnics) | ESP32-S3-WROOM-1-N16R2 + Sequans GM02SP LTE-M modem + GNSS | — |
-| Adafruit eInk Breakout Friend, panel GDEY029T94-FT01 (SSD1680, 296×128) | E-paper display, and the switched 3.3 V supply for the CardKB | SPI via the GPIO matrix, 4 MHz: SCK IO2, MISO IO42, MOSI IO41, ECS IO40, D/C IO39, RST IO13, BUSY IO11; SRCS IO38 held high (SRAM unused); SDCS not wired. ENA IO12 is the Friend's regulator enable (active-high, pulled up on the Friend): low = panel, SRAM and CardKB all unpowered. Friend VIN from Walter VIN. |
-| M5Stack CardKB | Keyboard | I2C_NUM_0 addr 0x5F, SDA IO5 / SCL IO4, polled. VCC from the Friend's 3V3 output pin, so it switches with the display. |
-| Adafruit LIS3DH breakout | Motion wake | I2C_NUM_1 addr 0x18 (SDO/SA0 open), SDA IO15 / SCL IO18; INT1 → IO8 (push-pull, active-high, 3.3 V, ext1 wake). VIN from Walter 3V3-OUT (header pin 26), which the firmware turns on at boot and never turns off. |
-| Push button | Wake / open reply | IO1 to GND, active low, RTC GPIO, ext0 wake |
-| LiFePO4 18650 + LFP charger | Power | Walter VIN 3.0–5.5 V |
+| Adafruit eInk Breakout Friend, panel GDEY029T94-FT01 (SSD1680, 296×128) | E-paper display | SPI via the GPIO matrix, 4 MHz: SCK IO2, MISO IO42, MOSI IO41, ECS IO40, D/C IO39, RST IO13, BUSY IO11; SRCS IO38 held high (SRAM unused); SDCS not wired. ENA IO12 is the Friend's regulator enable (active-high, pulled up on the Friend): low = panel unpowered. Friend VIN from the power board's always-on "3V" rail, not Walter VIN or Walter 3V3-OUT. |
+| M5Stack CardKB | Keyboard | I2C_NUM_0 addr 0x5F, SDA IO5 / SCL IO4, polled. VCC from Walter's own switched 3V3-OUT (header pin 26, gated by IO0), so it switches with the attentive window independently of the display. |
+| Adafruit LIS3DH breakout | Motion wake | I2C_NUM_1 addr 0x18 (SDO/SA0 open), SDA IO15 / SCL IO18; INT1 → IO8 (push-pull, active-high, 3.3 V, ext1 wake, shared with the button). VIN from the power board's always-on "3V" rail (not gated by any Walter GPIO), so it stays alive through every rail_off() and every light sleep/reset. |
+| Push button | Wake / open reply | IO1 to the power board's always-on 3V (not GND), active high, RTC GPIO, ext1 wake shared with the LIS3DH's INT1 |
+| Adafruit 6092 (bq25185 + TLV62569) power board + 3.7 V 2500 mAh LiPo (Adafruit 328) | Power | Board "4.5V" (SYS) → Walter VIN; board always-on "3V" buck → Friend VIN + LIS3DH VIN + button |
 
 ### Walter header map
 
@@ -30,10 +30,10 @@ is the input side.
 
 ```
                                         ┌─────── USB-C ───────┐
-                  (unused)  RESET   1 ──┤                     ├── 28  VIN      ◄── battery / charger out; also feeds Friend VIN
-                  (unused)  IO44    2 ──┤                     ├── 27  GND      ◄── common ground (Friend, CardKB, LIS3DH, button)
-                  (unused)  IO43    3 ──┤                     ├── 26  3V3-OUT  ──► LIS3DH breakout VIN (switched by IO0, held on)
-  3V3-OUT enable, held low  IO0     4 ──┤                     ├── 25  IO10     (unused)
+                  (unused)  RESET   1 ──┤                     ├── 28  VIN      ◄── power board SYS (4.5V) out
+                  (unused)  IO44    2 ──┤                     ├── 27  GND      ◄── common ground (Friend, CardKB, LIS3DH, button, power board)
+                  (unused)  IO43    3 ──┤                     ├── 26  3V3-OUT  ──► CardKB VCC (switched by IO0)
+       CardKB supply gate  IO0     4 ──┤                     ├── 25  IO10     (unused)
                 Friend ENA  IO12    5 ──┤                     ├── 24  IO9      (unused)
                Friend BUSY  IO11    6 ──┤                     ├── 23  IO8      ◄── LIS3DH INT1
                 Friend RST  IO13    7 ──┤        Walter       ├── 22  IO18     ──► LIS3DH SCL
@@ -46,21 +46,21 @@ is the input side.
                Wake button  IO1    14 ──┤                     ├── 15  IO4      ──► CardKB SCL
                                         └────────┤ SIM ├────────┘
 
-   Off-board wires:  Friend 3V3 ──► CardKB VCC        Friend VIN ◄── Walter VIN
-                     button: IO1 ── switch ── GND      all GNDs to Walter GND
+   Off-board wires:  power board 3V ──► Friend VIN, LIS3DH VIN (always on)
+                     button: IO1 ── switch ── power board 3V (not GND; active-high)
+                     all GNDs to Walter GND; no capacitors on the distribution board
 ```
 
 Per-peripheral view of the same wiring:
 
-| eInk Friend pin | Walter pin | | CardKB (Grove) | Walter / Friend | | LIS3DH breakout | Walter pin |
+| eInk Friend pin | Walter pin | | CardKB (Grove) | Walter pin | | LIS3DH breakout | Walter pin |
 |---|---|---|---|---|---|---|---|
-| VIN | 28 VIN | | VCC | Friend 3V3 | | VIN | 26 3V3-OUT |
-| 3V3 (out) | → CardKB VCC | | GND | 27 GND | | GND | 27 GND |
-| GND | 27 GND | | SDA | 16 IO5 | | SDA | 19 IO15 |
-| ENA | 5 IO12 | | SCL | 15 IO4 | | SCL | 22 IO18 |
-| SCK | 13 IO2 | | | | | INT1 | 23 IO8 |
-| MISO | 12 IO42 | | | | | SDO/SA0 | open (addr 0x18) |
-| MOSI | 11 IO41 | | | | | | |
+| VIN | power board 3V (off-board, always on) | | VCC | 26 3V3-OUT | | VIN | power board 3V (off-board, always on) |
+| GND | 27 GND | | GND | 27 GND | | GND | 27 GND |
+| ENA | 5 IO12 | | SDA | 16 IO5 | | SDA | 19 IO15 |
+| SCK | 13 IO2 | | SCL | 15 IO4 | | SCL | 22 IO18 |
+| MISO | 12 IO42 | | | | | INT1 | 23 IO8 |
+| MOSI | 11 IO41 | | | | | SDO/SA0 | open (addr 0x18) |
 | ECS | 10 IO40 | | | | | | |
 | D/C | 9 IO39 | | | | | | |
 | SRCS | 8 IO38 | | | | | | |
@@ -74,22 +74,21 @@ UART0 and unused (the console is USB Serial/JTAG).
 
 ### Power domains
 
-- **Walter 3V3-OUT (header pin 26, switched by IO0)** powers only the LIS3DH breakout. `rail.c`
-  drives IO0 low at boot and never releases it: the accelerometer must stay alive to raise INT1
-  while the ESP32 sleeps. Feeding the breakout 3.3 V also makes its onboard level shifter
-  transparent, so the I2C pull-ups sit at the ESP32's own I/O rail whatever VIN is. The
-  accelerometer does lose power across an ESP32 reset (3V3-OUT is off until `app_main()` runs);
-  `accel_init()` re-programs it every boot.
-- **Walter VIN → eInk Friend → Friend 3V3 → CardKB.** The Friend's MIC5225-3.3 regulator is the
-  one peripheral power gate: `rail.c`'s `rail_on()`/`rail_off()` drive ENA (IO12) and nothing
-  else. Off outside the attentive window; the CardKB reboots on every rail-on (hence ui.c's boot
-  guard) and the panel RAM is restored from the shadow frame by `disp_note_power_loss()`. Before
-  dropping ENA the firmware drives the CardKB SDA/SCL and the display SPI pads low so the ESP32
-  never back-feeds the unpowered parts. On a LiFePO4 cell the MIC5225 is in dropout, so the
-  panel and CardKB see roughly 3.0–3.2 V; both are rated well below that.
-- **USB power.** Walter ties USB-C VBUS to VIN, so VIN is 5 V on the bench. Only the Friend sees
-  it, and the Friend's inputs are 5 V-tolerant buffers with BUSY driven from its 3.3 V side.
-  Nothing else is referenced to VIN any more.
+- **Power board always-on "3V".** The Adafruit 6092 (bq25185 + TLV62569) power board's buck
+  output feeds the eInk Friend's VIN and the LIS3DH breakout's VIN directly, off-board, never
+  gated by any Walter GPIO. Neither loses power across an ESP32 reset or any light sleep;
+  `accel_init()` still re-programs the LIS3DH every boot (a chip-side reset, not a supply one).
+  The board's "4.5V" (SYS) output feeds Walter VIN itself.
+- **Walter 3V3-OUT (header pin 26, switched by IO0) and the Friend's ENA (IO12) — two gates,
+  one rail.** `rail.c`'s `rail_on()`/`rail_off()` drive both together: IO0 switches the CardKB's
+  VCC, ENA switches the Friend's MIC5225-3.3 regulator, which powers the panel only. Both are off
+  outside the attentive window; the CardKB reboots on every rail-on (hence ui.c's boot guard) and
+  the panel RAM is restored from the shadow frame by `disp_note_power_loss()`. Before dropping
+  either gate the firmware drives the CardKB SDA/SCL and the display SPI pads low so the ESP32
+  never back-feeds the unpowered parts.
+- **USB power.** Walter ties USB-C VBUS to VIN, so VIN is 5 V on the bench (in place of the power
+  board's SYS output). Nothing downstream of the Friend/LIS3DH/CardKB gates is referenced to VIN
+  any more.
 
 ## Device behaviour contract
 
@@ -147,7 +146,7 @@ measured. See `docs/PROTOCOL.md` §6.5, §8.2-§8.4 for the arithmetic these num
 | M16 | I²C CardKB polling (`ui.c`'s composer read / `input_feed_key()`, F6.2) across repeated 100 ms light-sleep cycles | `DEVICE_PLAN.md` §10's own open assumption: whether the CardKB and its I2C bus survive `net_sleep()`'s light-sleep re-entry without a dropped or garbled byte while the composer is open. The plan's own cheapest experiment is "one afternoon with M1's current trace" |
 | M17 | UI-awake window current draw (active mode, composer open, CardKB polled every 100 ms, `PAGER_UI_AWAKE_S`=30s) | Validates `DEVICE_PLAN.md` §5.7's ≈ 7 mAh/day-at-20-interactions estimate and the "one more AT round trip per UI wake (signal + battery), ≈ 100 ms at 40 mA" it is built on |
 | M18 | `bars_from_rssi_dbm()` bucket thresholds (`ui.c`: dBm ≥ -85/-95/-105/-115 → 4/3/2/1/0 bars) against a real cell | The dBm conversion itself is settled in source (F3.4: `WalterModem::getRSSI()`/AT+CSQ, `dBm = -113 + raw*2`, `raw==99` guarded off as "no reading" — `net.cpp`'s `net_get_rssi()`); the bucket boundaries chosen for the status-bar icon are engineering estimates that have never been seen against a live signal |
-| M19 | `segs_from_batt_mv()` LiFePO4 threshold calibration (`ui.c`: 3300/3250/3200/3100 mV → 4/3/2/1/0 segments) | `DEVICE_PLAN.md` §10: these thresholds were picked, not derived from a real discharge curve under the device's own load; pairs with M15's voltage-reading check |
+| M19 | `segs_from_batt_mv()` LiPo threshold calibration (`ui.c`: 4000/3850/3700/3550 mV → 4/3/2/1/0 segments) | `DEVICE_PLAN.md` §10: these thresholds were picked, not derived from a real discharge curve under the device's own load; pairs with M15's voltage-reading check |
 
 Also unresolved and not measurable without hardware: whether the modem/broker silently clamp
 a 1800s MQTT keepalive, and whether the carrier's NAT tolerates a 1800s idle TCP flow
@@ -230,11 +229,12 @@ climbing in the serial log.
 `skip_sleep` keeps `net_sleep()` out for as long as the FSM is not IDLE (`modes.c:704`). There is
 no tickless idle in `sdkconfig.defaults`, so that is ~40 mA continuously: a button wedged in a
 backpack flattens a 1500 mAh cell in roughly 1.5 days. (A worse version of this — a
-level-triggered ext0 wake spinning `esp_light_sleep_start()` — is already fixed; the held-button
+level-triggered ext1 wake spinning `esp_light_sleep_start()` — is already fixed; the held-button
 case is still a full-power loop.) It also makes the F4 health check fire every ~1.2 s instead of every
 5 min, because that check counts wake cycles, not time (`modes.c:771-774`). Fix spec: add a
-`BTN_STUCK` state entered after ~5 s in `BTN_HELD`, and a `net_sleep()` variant that arms ext0 on
-level **1** (wake on release) so the device can light-sleep while the button is down.
+`BTN_STUCK` state entered after ~5 s in `BTN_HELD`, and a `net_sleep()` variant that arms the
+button's ext1 wake on the release level (low, since the 3 Oct 2026 rewiring made the button
+active-high) so the device can light-sleep while the button is down.
 Cheapest check: tape the button down and watch the serial log's wake-cycle counter rate.
 
 ### R3 — display VCC is never gated off, and the panel is never put to sleep (battery)
@@ -325,12 +325,12 @@ true means the library accepted the call, not that a PUBACK arrived, so §4.1 ru
 the first: re-read the slot's `state` after re-acquiring the lock and only clear `in_use` if it
 still matches what was published.
 
-### R11 — ext0 pull-up across light sleep is unverified (battery, phantom presses)
-The button pull-up is configured digitally (`gpio_config()`, `modes.c:498-508`) but ext0 wake keeps
+### R11 — ext1 pull-down across light sleep is unverified (battery, phantom presses)
+The button pull-down is configured digitally (`input_init()`, `input.c`) but ext1 wake keeps
 the RTC peripheral domain powered and reads the pad through RTC IO, whose own pull settings
-default to off. If the digital pull-up is not in force during light sleep and there is no external
-pull-up on IO1, the pin floats and the device wakes constantly (battery) with phantom short
-presses (UX). I am not certain either way for light sleep on the ESP32-S3 and will not guess.
+default to off. If the digital pull-down is not in force during light sleep and there is no
+external pull-down on IO1, the pin floats and the device wakes constantly (battery) with phantom
+short presses (UX). I am not certain either way for light sleep on the ESP32-S3 and will not guess.
 Cheapest check: log `esp_sleep_get_wakeup_cause()` after every `net_sleep()` and count non-timer
 wakes over an idle hour; if it is real, the fix is one `rtc_gpio_pullup_en()` call, no GPIO change.
 

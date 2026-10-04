@@ -63,21 +63,23 @@ int modes_get_batt_mv(void);
 bool modes_in_use(void);
 
 /* Round 4 bench diagnostic (`attn` debug console command, main.c): raw
- * microsecond age of the last recorded key/button/ext0/ext1 event
+ * microsecond age of the last recorded key/button/ext1 event
  * (esp_timer_get_time() - s_last_input_us). Plain RAM read: no modem or
  * sleep-state effect. */
 int64_t modes_debug_last_input_age_us(void);
 
 /* True once at least one good AT+SQNVMON reading has been taken this boot.
- * modes_get_batt_mv() returns a hardcoded 3300 mV placeholder before that
- * (or if every reading since boot has been out of range) purely so the UI
- * battery icon and the /status `batt_mv` field (PROTOCOL.md §5.1's
- * [2000,4500] range requirement) always have *something* numeric to show —
- * it is NOT a real reading. loc.c's battery floor (V02_DESIGN.md §5, exactly
- * 3300 mV) must not treat that placeholder as a real "at the floor" reading:
- * callers that gate on the battery floor must check this first (this task,
- * found on hardware bench-logs/08-locreq2.log logging "batt=3300mV" while on
- * USB power with AT+SQNVMON returning an out-of-range value). */
+ * modes_get_batt_mv() returns a hardcoded "unknown" mV placeholder
+ * (PAGER_BATT_MV_UNKNOWN_PLACEHOLDER, modes.c) before that (or if every
+ * reading since boot has been out of range) purely so the UI battery icon
+ * and the /status `batt_mv` field (PROTOCOL.md §5.1's [2000,4500] range
+ * requirement) always have *something* numeric to show — it is NOT a real
+ * reading. loc.c's battery floor (LOC_BATTERY_FLOOR_MV, loc.h) must not
+ * treat that placeholder as a real "at the floor" reading: callers that
+ * gate on the battery floor must check this first (this task, found on
+ * hardware bench-logs/08-locreq2.log logging "batt=3300mV" while on USB
+ * power with AT+SQNVMON returning an out-of-range value, back when the
+ * placeholder and the LiFePO4 floor were both 3300). */
 bool modes_batt_mv_known(void);
 const char *modes_get_fw_version(void);
 const char *modes_get_session_id(void);

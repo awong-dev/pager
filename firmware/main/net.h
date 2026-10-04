@@ -413,10 +413,10 @@ void net_get_resub_hold_stats(uint32_t *holds, uint32_t *max_hold_ms, uint32_t *
 void net_set_msg_cb(void (*cb)(const char *topic, const char *body, uint16_t len));
 
 /* Light-sleep the ESP32 for up to `ms` milliseconds, or until the button
- * (pins.h PAGER_PIN_BUTTON) wakes it early. This is net.c's own
- * esp_light_sleep_start() call, NOT WalterModem::sleep(t, true): the
- * library version is timer-only and would starve out the button's ext0
- * wake. It replicates the library's own RTS choreography by hand
+ * (pins.h PAGER_PIN_BUTTON) or the LIS3DH motion interrupt wakes it early.
+ * This is net.c's own esp_light_sleep_start() call, NOT WalterModem::sleep(t,
+ * true): the library version is timer-only and would starve out the
+ * button's ext1 wake. It replicates the library's own RTS choreography by hand
  * (WalterModem.cpp:4413-4450): flow control off + RTS forced high before
  * sleep, uart_set_pin()/UART_HW_FLOWCTRL_CTS_RTS restored after.
  * Power effect: ESP32 draws the vendor-documented ~1 mA light-sleep floor

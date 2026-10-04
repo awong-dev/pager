@@ -37,10 +37,10 @@ uint32_t loc_next_backoff_s(uint32_t current_s)
 bool loc_battery_ok(int batt_mv)
 {
     // This task: an unknown reading must never block a GNSS attempt. Before
-    // this fix the caller passed modes_get_batt_mv()'s 3300 placeholder
-    // straight through, which happened to sit exactly on LOC_BATTERY_FLOOR_MV
-    // (3300 >= 3300 is true) -- it passed today only by coincidence, not by
-    // design, and would have silently started blocking GNSS the moment
+    // this fix the caller passed modes_get_batt_mv()'s unknown-reading
+    // placeholder straight through, which happened to sit exactly on
+    // LOC_BATTERY_FLOOR_MV at the time -- it passed only by coincidence, not
+    // by design, and would have silently started blocking GNSS the moment
     // either constant changed independently of the other.
     if (batt_mv == LOC_BATTERY_UNKNOWN_MV) {
         return true;
@@ -1122,10 +1122,11 @@ bool loc_ingest_req_cbor(const uint8_t *buf, uint16_t len)
     }
 
     // This task: modes_get_batt_mv() alone cannot be trusted for the battery
-    // floor -- it returns a fixed 3300 mV placeholder (not a reading) before
-    // the first good AT+SQNVMON response this boot, which coincidentally
-    // equals LOC_BATTERY_FLOOR_MV. modes_batt_mv_known() tells them apart;
-    // loc_battery_ok() treats LOC_BATTERY_UNKNOWN_MV as passing the floor.
+    // floor -- it returns a fixed "unknown" mV placeholder (not a reading)
+    // before the first good AT+SQNVMON response this boot, chosen to sit
+    // safely clear of LOC_BATTERY_FLOOR_MV rather than coincidentally on it.
+    // modes_batt_mv_known() tells them apart; loc_battery_ok() treats
+    // LOC_BATTERY_UNKNOWN_MV as passing the floor.
     int batt_mv = modes_batt_mv_known() ? modes_get_batt_mv() : LOC_BATTERY_UNKNOWN_MV;
     int64_t now_us = esp_timer_get_time();
 

@@ -257,12 +257,15 @@ static int bars_from_rssi_dbm(int dbm)
     return 0;
 }
 
+// 3 Oct 2026 rewiring (owner): power source is now a 3.7 V 2500 mAh LiPo
+// (Adafruit 328) through an Adafruit 6092 bq25185 charger board, not a
+// LiFePO4 18650 -- thresholds retuned to a LiPo discharge curve.
 static int segs_from_batt_mv(int mv)
 {
-    if (mv >= 3300) return 4;
-    if (mv >= 3250) return 3;
-    if (mv >= 3200) return 2;
-    if (mv >= 3100) return 1;
+    if (mv >= 4000) return 4;
+    if (mv >= 3850) return 3;
+    if (mv >= 3700) return 2;
+    if (mv >= 3550) return 1;
     return 0;
 }
 

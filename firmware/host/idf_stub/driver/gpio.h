@@ -25,16 +25,19 @@ typedef struct {
 
 #define GPIO_MODE_INPUT 1
 #define GPIO_PULLUP_ENABLE 1
+#define GPIO_PULLUP_DISABLE 0
+#define GPIO_PULLDOWN_ENABLE 1
 #define GPIO_PULLDOWN_DISABLE 0
 #define GPIO_INTR_DISABLE 0
 
 void gpio_config(const gpio_config_t *cfg);
 int gpio_get_level(gpio_num_t pin);
 
-/* Test-only: overrides the level gpio_get_level() returns (default 1,
- * released/idle, active-low), so a host test can drive input.c's button
- * FSM through input_poll() with a chosen pin state. input.c itself never
- * calls this -- device code always reads the real pin. */
+/* Test-only: overrides the level gpio_get_level() returns (default 0,
+ * released/idle, active-high since the 3 Oct 2026 rewiring), so a host test
+ * can drive input.c's button FSM through input_poll() with a chosen pin
+ * state. input.c itself never calls this -- device code always reads the
+ * real pin. */
 void idf_stub_set_button_level(int level);
 
 #endif

@@ -379,9 +379,10 @@ static int cmd_attn(int argc, char **argv)
 }
 
 // Bench diagnostic (round 6, defect 1 triage, architect hypothesis 8a):
-// `railcycle` -- drive the display/CardKB/LIS3DH 3V3 rail off exactly the
+// `railcycle` -- drive the display/CardKB gated rails off exactly the
 // way sleep entry does (modes.c's `if (attentive) rail_on(); else
-// rail_off();` branch, this same file's rail.h include), hold it off 2s
+// rail_off();` branch, this same file's rail.h include; the LIS3DH is on
+// the power board's always-on "3V" rail and is untouched by this), hold it off 2s
 // (long enough for the SSD1680 to actually lose its RAM/registers if it is
 // going to, well past a "still back-powered through RST/DC/CS" near-miss),
 // then bring it back up exactly the way the EXT0 (button) wake path does
@@ -399,8 +400,9 @@ static int cmd_railcycle(int argc, char **argv)
     // min) to reproduce the "asleep 2+ minutes" scenario defect 1 actually
     // reported, rather than the acute 2s near-miss the first round tested.
     // The off-duration itself makes no electrical difference to rail_off()
-    // (rail.c drives PAGER_PIN_3V3_EN low once and is done; nothing times
-    // out or degrades while it sits low) — it only changes how long the
+    // (rail.c drives both gates to their off level once and is done;
+    // nothing times out or degrades while they sit there) — it only changes
+    // how long the
     // SSD1680 has been unpowered, which is the variable defect 1's own "2+
     // min" claim is actually about.
     //
