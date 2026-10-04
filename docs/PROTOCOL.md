@@ -562,7 +562,7 @@ state. States are **monotonic** — a message never moves backwards.
 | `queued` | relay | message committed to the relay's store by the send API | Also the state of a message whose publish attempt failed (broker down). |
 | `sent` | relay | broker returns **PUBACK** for the QoS 1 `/down` publish — equivalently, the broker's REST publish API accepts the QoS 1 publish with a 2xx | Means *the broker accepted it*, **not** that the device received it. The UI must not say "delivered" here. *(the two are the same fact carried over different transports (§2), so the state machine, its rules and its timings are untouched.)* |
 | `shown` | relay, on device report | device publishes `{"id":…,"ack":"shown"}` on `/up` | Device publishes this **after the e-paper refresh completes** (BUSY deasserted), never before. **Exception:** if the device is locked, `shown` is **not** published for a message that arrived while locked; the message stays `sent` and is re-published on an online edge (§5.3). |
-| `read` | relay, on device report | device publishes `{"id":…,"ack":"read"}` on `/up` | Triggered by a short press of button IO1 while the message is on screen. |
+| `read` | relay, on device report | device publishes `{"id":…,"ack":"read"}` on `/up` | Triggered by a short press of button IO8 while the message is on screen. |
 | `expired` | relay | still `queued` or `sent` 24 h after creation | *(a pickup pager delivering "be at the gym at 3:15" two days late is worse than not delivering it. A terminal, relay-only state; the device never sees or acks it.)* |
 
 ### 4.1 Rules
@@ -1100,12 +1100,12 @@ Two v1.5.0 features the design relies on:
 | # | Wake source | Mechanism | Trigger | Mode | Verified? | RTC state that must survive |
 |---|---|---|---|---|---|---|
 | 1 | **Wake-and-drain timer** (primary) | `esp_sleep_enable_timer_wakeup(T)` + `esp_light_sleep_start()`, `T` = 5 s sleep / 2 s active | Wake, reassert RTS, let the modem flush the URC it held, let the library's RX and event tasks dispatch it to the MQTT handler, which calls `mqttReceive(topic, mid, …)`. **No polling call is made** (§8.0). | both | Mechanism yes; the RTS hold-off behaviour is **UNVERIFIED** (§8.3) | Light sleep retains RAM, so *nothing* has to survive — this is the point |
-| 2 | Button IO1 | `esp_sleep_enable_ext1_wakeup(...)`, active high to 3V, RTC GPIO | Short press = mark read / open composer; long press = send reply | both | Yes — IO1 is an RTC GPIO | `mode`, `active_until`, msg ring, `pending_acks` (deep-sleep path only) |
+| 2 | Button IO8 | `esp_sleep_enable_ext1_wakeup(...)`, active high to 3V, RTC GPIO | Short press = mark read / open composer; long press = send reply | both | Yes — IO8 is an RTC GPIO | `mode`, `active_until`, msg ring, `pending_acks` (deep-sleep path only) |
 | 3 | ~~RTC timer — keepalive~~ | — | **Not needed.** The MQTT client is in the modem and the library exposes no ping API; PINGREQ is the modem's job (§6.2). The status heartbeat rides an ordinary poll wake using a counter in RTC memory. | — | n/a | `status_pub_count` |
 | 4 | RTC timer — active-mode exit | `esp_timer` while awake, not a sleep wake | 10 min with no button/keyboard activity → sleep mode | active | Yes | `mode`, `active_until` |
 | 4b | MQTT event (no sleep involved) | `setMQTTEventHandler()` → `_eventProcessingTask` | `_MESSAGE` short-circuits the wake-and-drain latency while the ESP32 happens to be awake; `_DISCONNECTED` drives F3 recovery; `_MEMORY_FULL` flags a missed drain | both | Yes — v1.5.0 API | none (handler runs while awake) |
 | 5 | ~~Modem URC / RI line into deep sleep~~ | `ext1` on the modem RX line | **Not supported by the library's public API; not pursued.** See §8.3 for why, and for the one variant that could still work if someone wants the battery back. | — | n/a | — |
-| 6 | LIS3DH INT1 (IO8) | `ext1` | Motion wake | — | **Out of scope.** Reserved only. | — |
+| 6 | LIS3DH INT1 (IO6) | `ext1` | Motion wake | — | **Out of scope.** Reserved only. | — |
 | 7 | CardKB | — | **Cannot wake the ESP32.** No interrupt line to an RTC GPIO; polled at 100 ms only while the composer is open. A reply always starts with a button press. | active | Yes (by construction) | — |
 
 **No GPIO reassignment is needed for the modem UART.** The

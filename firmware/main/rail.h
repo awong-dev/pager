@@ -75,7 +75,7 @@ void rail_init(void);
  * on). A no-op, including no change to rail_restored_us(), if the rail is
  * already on — so calling this every wake during the attentive window
  * (modes.c) does not re-arm ui.c's post-restore keyboard guard on every 1 s
- * cycle. Also returns the CardKB I2C bus (IO5/IO4) from rail_off()'s
+ * cycle. Also returns the CardKB I2C bus (IO10/IO9) from rail_off()'s
  * bus-release hold back to I2C mode (ui_kb_bus_restore(), ui.h). Power
  * effect: powers the display and CardKB (not the LIS3DH — it is on the
  * power board's always-on "3V" rail, never gated by either pin).

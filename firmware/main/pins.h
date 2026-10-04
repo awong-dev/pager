@@ -25,6 +25,13 @@
 // wake button moved from GND to the board's always-on 3V, so it is
 // active-high now, and shares the ext1 wake with the LIS3DH's INT1 (one
 // ext0 RTC GPIO is no longer enough; ext1's bitmask covers both).
+//
+// Rewired again 5 Oct 2026 (owner): right (VIN-side) header final. CardKB
+// SDA/SCL moved back to pins 25/24 (IO10/IO9); LIS3DH INT1/SDA/SCL moved to
+// pins 17/16/15 (IO6/IO5/IO4). The wake button also moved this same day,
+// from IO1 (left header pin 14, now unused) to IO8 (right header pin 23,
+// still active-high, still ext1, still shared with the LIS3DH's INT1).
+// Pins 22 (IO18) and 19 (IO15) are now unused.
 
 #ifndef PINS_H
 #define PINS_H
@@ -60,35 +67,41 @@
 #define PAGER_PIN_DISP_MISO 42  // Friend SRAM MISO, unused today (SRAM not read); wired through for the Friend's fixed header order
 #define PAGER_PIN_DISP_SCK 2
 
-// Button (header pin 14). Rewired 3 Oct 2026 (owner): connects IO1 to the
-// power board's always-on 3V, not GND, so the button is now active-high.
-// ext1 light-sleep wake source (RTC GPIO), shared with the LIS3DH's INT1.
-#define PAGER_PIN_BUTTON 1  // active-high to the board's 3V, ext1 shared with LIS3DH INT1
+// Button (header pin 23, right header). Rewired 3 Oct 2026 (owner): connects
+// the button to the power board's always-on 3V, not GND, so it is
+// active-high. Rewired again 5 Oct 2026 (owner): moved from IO1 (header pin
+// 14, left header, now unused) to IO8 (header pin 23, right header) as part
+// of the same-day right-header rework; still active-high to the board's 3V,
+// still an RTC GPIO, still shares the ext1 wake with the LIS3DH's INT1.
+#define PAGER_PIN_BUTTON 8  // active-high to the board's 3V, ext1 shared with LIS3DH INT1
 
-// Keyboard (CardKB, I2C addr 0x5F) on I2C_NUM_0, right header pins 16/15
-// (moved from pins 25/24 / IO10,IO9 on 3 Oct 2026 -- owner decision).
+// Keyboard (CardKB, I2C addr 0x5F) on I2C_NUM_0, right header pins 25/24
+// (moved from pins 16/15 / IO5,IO4 on 3 Oct 2026, then back to 25/24 /
+// IO10,IO9 on 5 Oct 2026 -- owner decision, final).
 // Powered from Walter's own switched 3V3-OUT (PAGER_PIN_3V3_EN, IO0 above),
 // not the Friend's 3V3 output, so ui.c releases these two pads (driven low)
 // whenever rail.c drops the rail -- otherwise the ESP32 back-powers the
 // CardKB MCU through its I/O clamp diodes.
-#define PAGER_PIN_KB_SDA 5
-#define PAGER_PIN_KB_SCL 4
+#define PAGER_PIN_KB_SDA 10
+#define PAGER_PIN_KB_SCL 9
 #define PAGER_I2C_ADDR_CARDKB 0x5F
 
 // Motion: Adafruit LIS3DH breakout (I2C addr 0x18, SDO/SA0 open), right
-// header pins 23/22/19. Its own bus, I2C_NUM_1, separate from the CardKB's
-// I2C_NUM_0, and powered from the Adafruit 6092 power board's always-on "3V"
-// rail (not Walter 3V3-OUT, not gated by any Walter GPIO) so it stays alive
-// through every rail_off() and every light sleep. 3.3 V on the breakout's
-// VIN also makes its level shifter transparent: SDA/SCL pull-ups sit at the
-// ESP32's own I/O rail, never at a 5 V USB VIN. Sharing the CardKB's bus
-// would let these always-on pull-ups feed the unpowered CardKB. INT1 is an
-// RTC GPIO: it is an ext1 light-sleep wake source (net.cpp), shared with the
-// button, push-pull active-high, 3.3 V logic.
-#define PAGER_PIN_LIS3DH_INT1 8
+// header pins 17/16/15 (moved from pins 23/22/19 / IO8,IO15,IO18 on 5 Oct
+// 2026 -- owner decision, final). Its own bus, I2C_NUM_1, separate from the
+// CardKB's I2C_NUM_0, and powered from the Adafruit 6092 power board's
+// always-on "3V" rail (not Walter 3V3-OUT, not gated by any Walter GPIO) so
+// it stays alive through every rail_off() and every light sleep. 3.3 V on
+// the breakout's VIN also makes its level shifter transparent: SDA/SCL
+// pull-ups sit at the ESP32's own I/O rail, never at a 5 V USB VIN. Sharing
+// the CardKB's bus would let these always-on pull-ups feed the unpowered
+// CardKB. INT1 is an RTC GPIO (IO6 still is, same as IO8 was): it is an
+// ext1 light-sleep wake source (net.cpp), shared with the button, push-pull
+// active-high, 3.3 V logic.
+#define PAGER_PIN_LIS3DH_INT1 6
 #define PAGER_I2C_ADDR_LIS3DH 0x18
-#define PAGER_PIN_ACCEL_SDA 15  // own I2C_NUM_1 bus, not the CardKB's
-#define PAGER_PIN_ACCEL_SCL 18  // own I2C_NUM_1 bus, not the CardKB's
+#define PAGER_PIN_ACCEL_SDA 5  // own I2C_NUM_1 bus, not the CardKB's
+#define PAGER_PIN_ACCEL_SCL 4  // own I2C_NUM_1 bus, not the CardKB's
 
 // LTE_WAKE0 (schematic name): a modem input, unused by firmware and by the
 // vendored library today. docs/SLEEP_PAGE_LOSS_BRIEF.md §6 item F: the

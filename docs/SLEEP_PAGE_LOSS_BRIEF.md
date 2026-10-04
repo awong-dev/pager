@@ -109,7 +109,7 @@ mAh/day against a ~100 mAh/day target.
 
 `firmware/main/modes.c` `modes_run()` loop, constants at :127-173:
 
-1. `net_sleep(20000)` (`firmware/main/net.cpp:1116`): arm timer + ext0 button (IO1) + ext1
+1. `net_sleep(20000)` (`firmware/main/net.cpp:1116`): arm timer + ext0 button (IO8) + ext1
    accelerometer (IO2); disable UART flow control; drive RTS high (= not ready) as a plain GPIO;
    `gpio_sleep_sel_dis(RTS)` so the pad really holds through sleep (before this fix the pad
    floated and pages were 35-182 s late); `esp_light_sleep_start()`. Display RST/DC/CS/VCC_EN

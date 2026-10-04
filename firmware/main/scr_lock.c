@@ -7,7 +7,7 @@
 // no unread info (commit c291504's own rule still stands; this task only
 // changes state (a)'s remaining "enter unlock / btn hold = nothing" footer
 // text, which is gone too now — "nothing else" means nothing else). (b)
-// entering, reached ONLY by an IO1 short press (Do #6: "not by typing" —
+// entering, reached ONLY by an IO8 short press (Do #6: "not by typing" —
 // scr_lock_start_entry(), called from ui.c's ui_on_button_short(), never
 // from this file's own lock_on_key()): the single line becomes
 // "password: ****", typing digits fills the mask, Enter verifies (existing
@@ -78,7 +78,7 @@ static void lock_on_event(ui_evt_t evt)
 void scr_lock_start_entry(void)
 {
     // Do #4: "No-op if already entering" (see this function's own ui.h doc
-    // comment) — a second IO1 short press mid-entry does not reset the
+    // comment) — a second IO8 short press mid-entry does not reset the
     // field or its idle timer; typing/backspacing already keeps both alive
     // (lock_on_key() below).
     if (s_state == LOCK_UI_ENTERING) {
@@ -182,7 +182,7 @@ static void lock_on_key(input_key_t key)
 {
     if (s_state == LOCK_UI_IDLE) {
         // Do #4/#6: "Keys typed in state (a) are ignored (they no longer
-        // open the field)" — unlocking starts ONLY from an IO1 short press
+        // open the field)" — unlocking starts ONLY from an IO8 short press
         // (scr_lock_start_entry(), called by ui.c's ui_on_button_short()).
         return;
     }

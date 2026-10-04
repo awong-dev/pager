@@ -688,7 +688,7 @@ and receiving SMS directly, to a parent-managed allow-list.
 
 296 × 128 px, 1-bit, landscape; partial refresh 0.3–0.8 s budgeted, full refresh 2–4 s
 (`firmware/README.md` M7/M14, both `PENDING_HW`); every 20th partial is a full. Input: one button on
-IO1 (the only thing that can wake the ESP32) and the CardKB over I²C, which cannot wake anything and
+IO8 (the only thing that can wake the ESP32) and the CardKB over I²C, which cannot wake anything and
 must be polled. The panel keeps its image with no power, which is what makes "the UI goes to sleep
 but the screen stays" free.
 
@@ -940,7 +940,7 @@ revealed underneath either.
 *Lock now*, a restart while a passcode is set, or the boot Greeting screen above once the network is
 usable and a passcode is set. Status bar as usual; nothing else is reachable. (a) idle: the single
 centered word, nothing else — no instructions, no field, no unread info. (b) entering, reached ONLY
-by an IO1 short press (never by typing): the same line becomes `password:` plus the masked field;
+by an IO8 short press (never by typing): the same line becomes `password:` plus the masked field;
 Enter verifies, Esc or 30s idle returns to (a), a wrong code returns to (a).
 
 ```

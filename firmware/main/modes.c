@@ -2642,7 +2642,7 @@ void modes_run(void)
             // stopgap): outside the attentive window, the display/CardKB
             // rail (the LIS3DH is not on it, owner 26 Sep 2026) need not
             // stay powered through this sleep -- the
-            // IO1 wake button (ext1) is the always-on way to wake the
+            // IO8 wake button (ext1) is the always-on way to wake the
             // pager, not the keyboard. Inside the attentive window the rail
             // stays ON through every 1 s sleep instead (rail_on() is a
             // no-op if it is already on): switching it off/on every second
@@ -2709,7 +2709,7 @@ void modes_run(void)
                 // 3 Oct 2026 rewiring: the button and the LIS3DH motion
                 // interrupt now share one ext1 mask (net.cpp's net_sleep()
                 // own comment) -- esp_sleep_get_ext1_wakeup_status()'s
-                // bitmask (button = IO1, motion = IO8) is what tells them
+                // bitmask (button = IO8, motion = IO6) is what tells them
                 // apart; there is no more ESP_SLEEP_WAKEUP_EXT0.
                 if (wake_cause == ESP_SLEEP_WAKEUP_EXT1) {
                     wake_is_input = true;
@@ -2719,7 +2719,7 @@ void modes_run(void)
                     uint64_t ext1_status = esp_sleep_get_ext1_wakeup_status();
                     if (ext1_status & (1ULL << PAGER_PIN_BUTTON)) {
                         // Bug fix (25 Sep, "lock screen never switches to
-                        // password: on a quick IO1 press"): ext1 is a LEVEL
+                        // password: on a quick IO8 press"): ext1 is a LEVEL
                         // wake on the button, so this wake edge IS the
                         // press, but input_poll() (below, later this same
                         // iteration) is the first thing that ever samples

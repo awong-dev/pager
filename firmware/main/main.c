@@ -457,13 +457,13 @@ static int cmd_railcycle(int argc, char **argv)
 
 // Round 7, authorized: `btn` / `btn long` -- push a simulated button press
 // through input.c's own queue (input_feed_button_short()/_long(), input.h),
-// the same INPUT_EVT_BTN_DOWN+SHORT/LONG pair a real IO1 press resolves to
+// the same INPUT_EVT_BTN_DOWN+SHORT/LONG pair a real IO8 press resolves to
 // and the same modes_run() drain path consumes (set_mode(ACTIVE, ...) on
 // BTN_DOWN, ui_on_button_short()/ui_on_button_long() on the resolving
 // event) -- there is no console equivalent of the physical debounce/hold
 // timing, only of its outcome. Needed because scr_lock.c's unlock entry is
 // deliberately reachable ONLY from a button short press ("Keys typed in
-// state (a) are ignored ... unlocking starts ONLY from an IO1 short press",
+// state (a) are ignored ... unlocking starts ONLY from an IO8 short press",
 // scr_lock.c's own comment) -- `key` alone cannot open the passcode field.
 // Debug build only, same gating as `attn`/`railcycle`.
 static int cmd_btn(int argc, char **argv)
@@ -717,7 +717,7 @@ static int cmd_key(int argc, char **argv)
     return 0;
 }
 
-// `i2cscan`: probe every 7-bit address on the keyboard bus (IO8/IO9) and
+// `i2cscan`: probe every 7-bit address on the keyboard bus (IO10/IO9) and
 // print who ACKs. Bench aid: tells wiring faults from a dead keyboard.
 static int cmd_i2cscan(int argc, char **argv)
 {
@@ -1732,7 +1732,7 @@ static void start_normal_console(void)
 
     const esp_console_cmd_t btn_cmd = {
         .command = "btn",
-        .help = "btn [long] -- push a simulated IO1 button press (BTN_DOWN + BTN_SHORT, or "
+        .help = "btn [long] -- push a simulated IO8 button press (BTN_DOWN + BTN_SHORT, or "
                  "BTN_LONG with `long`) through input.c's real event queue, same path a "
                  "physical press takes downstream; needed to reach scr_lock.c's passcode entry "
                  "from the console",

@@ -518,7 +518,7 @@ void ui_dispatch_key(input_key_t key)
 void ui_on_button_short(void)
 {
     // TASK_ui_finish.md Do #4/#6 (owner list, 24 Sep 22:30 PDT): "Unlocking
-    // is only started by the IO1 button (the wake button), not by typing."
+    // is only started by the IO8 button (the wake button), not by typing."
     // A short press while the Locked screen is on top starts passcode entry
     // (scr_lock_start_entry() — no-op if already entering) instead of
     // opening Chat right over it. If, for whatever reason, the device is

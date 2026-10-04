@@ -654,7 +654,7 @@ Two mechanical answers the cadence change needs: the wake interval **is** a plai
 `PAGER_WAKE_INTERVAL_SLEEP_MS 5000u` (`modes.c:117`), `PAGER_WAKE_INTERVAL_ACTIVE_MS 2000u` (`:118`),
 `PAGER_WAKE_INTERVAL_UNREGISTERED_MS 30000u` (`:131`) — and the `sleeptest` override
 (`modes.c:2048`) replaces it in **both** modes, which is what lets one window measure both pages
-under the same policy. And the ext wakes are unaffected: `net_sleep()` arms ext0 (button, IO1) and
+under the same policy. And the ext wakes are unaffected: `net_sleep()` arms ext0 (button, IO8) and
 ext1 (LIS3DH INT1, IO2) on every call independently of `esp_sleep_enable_timer_wakeup()`
 (`net.cpp:1136-1167`), so a longer timer only lengthens the *timer* path. The real UX cost is the
 **CardKB**, which is I2C-polled and not a wake source at all: in SLEEP mode a keypress is already

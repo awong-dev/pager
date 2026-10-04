@@ -278,7 +278,7 @@ static bool s_have_last_cell_key = false;
 static net_cell_info_t s_cell_cache = {};
 static bool s_cell_info_stale = true;
 
-// v0.2 §5: arms IO8 (LIS3DH INT1) as an ext1 light-sleep wake source, only
+// v0.2 §5: arms IO6 (LIS3DH INT1) as an ext1 light-sleep wake source, only
 // once accel.c has confirmed the chip is actually present (see
 // net_enable_accel_wake()'s own doc comment in net.h).
 static bool s_accel_wake_enabled = false;
@@ -1200,8 +1200,8 @@ extern "C" void net_sleep(uint32_t ms)
     // the ESP32-S3 (like every ESP32 variant) has exactly one ext0 source (a
     // single fixed RTC GPIO, polarity fixed at the esp_sleep_enable_ext0_
     // wakeup() call) but ext1 takes a bitmask of any number of RTC GPIOs
-    // sharing one level mode, so both the button (IO1) and the LIS3DH's
-    // INT1 (IO8, push-pull active-high, accel.c) now share one ext1 mask,
+    // sharing one level mode, so both the button (IO8) and the LIS3DH's
+    // INT1 (IO6, push-pull active-high, accel.c) now share one ext1 mask,
     // ESP_EXT1_WAKEUP_ANY_HIGH. The mask is built fresh and re-armed on
     // every net_sleep() call rather than latched once: the button bit is
     // unconditional (it must stay armed -- esp_sleep_disable_wakeup_source()
@@ -1211,7 +1211,7 @@ extern "C" void net_sleep(uint32_t ms)
     // so a wake storm while the pager is being carried does not end light
     // sleep ~10x/s (docs/DEVICE_NEXT_TASKS.md A1) -- also never set if the
     // chip never answered WHO_AM_I (accel.c's own module comment: an
-    // unwired/floating IO8 armed as ANY_HIGH would wake the ESP32 on every
+    // unwired/floating IO6 armed as ANY_HIGH would wake the ESP32 on every
     // light-sleep cycle for nothing).
     uint64_t ext1_mask = 1ULL << PAGER_PIN_BUTTON;
     if (s_accel_wake_enabled) {
@@ -1271,7 +1271,7 @@ extern "C" void net_sleep(uint32_t ms)
     // justification (refr 0 vs. refr 20, expect roughly two orders of
     // magnitude fewer). 3 Oct 2026 rewiring: ext1 now also fires for the
     // button, so esp_sleep_get_ext1_wakeup_status()'s bitmask (button =
-    // IO1, motion = IO8) is what tells the two apart, not the wakeup-cause
+    // IO1, motion = IO6) is what tells the two apart, not the wakeup-cause
     // alone.
     if (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_EXT1 &&
         (esp_sleep_get_ext1_wakeup_status() & (1ULL << PAGER_PIN_LIS3DH_INT1))) {
