@@ -1369,6 +1369,31 @@ static int cmd_disptest(int argc, char **argv)
     return 1;
 }
 
+// Owner request: persistent 180-degree display rotation so the pager can be
+// read upside down (NVS `disp_flip`, disp.c's disp_get_flip()/
+// disp_set_flip()). `flip on`/`off` persists immediately and forces one
+// full refresh right away (disp_set_flip() itself does not refresh — see
+// its own comment) so the new orientation is visible as a single clean
+// frame instead of partials tearing between old and new. `flip status`
+// only reads, no refresh. Registered the same way as every other config
+// command here (carrier/lockset/wifi) — no debug-build gating.
+static int cmd_flip(int argc, char **argv)
+{
+    if (argc == 2 && strcmp(argv[1], "status") == 0) {
+        printf("flip: %s\n", disp_get_flip() ? "on" : "off");
+        return 0;
+    }
+    if (argc == 2 && (strcmp(argv[1], "on") == 0 || strcmp(argv[1], "off") == 0)) {
+        bool on = strcmp(argv[1], "on") == 0;
+        disp_set_flip(on);
+        disp_full_refresh(); // power effect: ~2-4s panel refresh, disp_full_refresh()'s own comment
+        printf("flip: %s (full refresh done)\n", on ? "on" : "off");
+        return 0;
+    }
+    printf("usage: flip on|off|status\n");
+    return 1;
+}
+
 // docs/WIFI_TASKS.md W5: `wifi set|clear|on|off|status|scan`. Debug build
 // only -- phase 1's manual selection policy (docs/WIFI_DESIGN.md §2/§3:
 // "the console turns it on; nothing turns it on by itself") lives entirely
@@ -1869,6 +1894,16 @@ static void start_normal_console(void)
         .func = &cmd_disptest,
     };
     ESP_ERROR_CHECK(esp_console_cmd_register(&disptest_cmd));
+
+    const esp_console_cmd_t flip_cmd = {
+        .command = "flip",
+        .help = "flip on|off|status -- persist and apply a 180-degree display rotation (NVS "
+                 "disp_flip) so the pager can be read upside down; `on`/`off` force one full "
+                 "refresh immediately",
+        .hint = NULL,
+        .func = &cmd_flip,
+    };
+    ESP_ERROR_CHECK(esp_console_cmd_register(&flip_cmd));
 
     const esp_console_cmd_t wifi_cmd = {
         .command = "wifi",

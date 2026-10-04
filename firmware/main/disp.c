@@ -3,6 +3,7 @@
  * unchanged from the pre-split driver (docs/PROTOCOL.md §6).
  */
 #include "disp.h"
+#include "disp_flip.h"
 #include "gfx.h"
 #include "pins.h"
 
@@ -16,6 +17,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "nvs.h"
 
 #include "flightrec.h" // round 9: 'D' (BUSY timeout)/'L' (power-loss-to-render latency)
                         // events, so the diagnosis survives a wake where the USB port
@@ -183,6 +185,37 @@ static bool s_force_full = false;
 // effect: none by itself — it only decides whether the extra RAM write
 // below runs, which is documented at that write.
 static bool s_partial_write_again = true;
+
+// Owner request: persistent 180-degree display rotation so the pager can be
+// read upside down. NVS namespace/key follow ui.c's text-size setting
+// (load-once-at-init static cache, console-driven setter that re-persists) —
+// disp.c's own concern (panel orientation), not the relay-config ("cfg" CBOR
+// envelope) module, same reasoning ui.c's own setting uses: this is a
+// device-local UI preference, never sent by or to the relay. Read by
+// full_refresh_locked()/partial_refresh_locked()/restore_ram_planes_locked()
+// via disp_send_fb_rows() (defined below, once disp_send_data()/disp_lock()
+// exist); see disp_flip.h's own module comment for the two-axis rotation
+// math and why it's done as a software byte reorder rather than an SSD1680
+// register change. Power effect: none by itself -- see disp_set_flip()'s
+// own comment for what a change actually costs.
+#define DISP_NVS_NAMESPACE "disp"
+#define DISP_NVS_KEY_FLIP "flip"
+static bool s_disp_flip = false;
+
+static void disp_load_flip(void)
+{
+    nvs_handle_t h;
+    if (nvs_open(DISP_NVS_NAMESPACE, NVS_READONLY, &h) != ESP_OK) {
+        return; // never set yet; stays false (normal orientation)
+    }
+    uint8_t v = 0;
+    if (nvs_get_u8(h, DISP_NVS_KEY_FLIP, &v) == ESP_OK) {
+        s_disp_flip = (v != 0);
+    }
+    nvs_close(h);
+}
+
+bool disp_get_flip(void) { return s_disp_flip; }
 
 /* docs/DEVICE_PLAN.md §5.3: "one mutex in disp.c" — see disp.h's header
  * comment. Created in disp_init(); every public refresh entry point takes
@@ -379,6 +412,54 @@ static void disp_send_data(const uint8_t *data, size_t len)
 }
 
 static void disp_send_data1(uint8_t b) { disp_send_data(&b, 1); }
+
+// Console `flip on|off` (main.c) is the only caller. Persists immediately
+// (one NVS/flash write, negligible) so the choice survives a reboot; does
+// NOT itself trigger a refresh — the caller must do that (disp_full_
+// refresh()), since flipping mid-partial-cadence would otherwise show a
+// torn frame (part of the glass in the old orientation, part in the new)
+// until the next full refresh happened to land. Power effect: none beyond
+// that one flash write — the next refresh this enables sends exactly the
+// same number of SPI bytes either way, just reordered (disp_flip.h).
+void disp_set_flip(bool on)
+{
+    disp_lock();
+    s_disp_flip = on;
+    disp_unlock();
+    nvs_handle_t h;
+    if (nvs_open(DISP_NVS_NAMESPACE, NVS_READWRITE, &h) != ESP_OK) {
+        ESP_LOGI(TAG, "disp_flip NVS open failed; new orientation not persisted this boot");
+        return;
+    }
+    nvs_set_u8(h, DISP_NVS_KEY_FLIP, (uint8_t) on);
+    nvs_commit(h);
+    nvs_close(h);
+}
+
+// Sends `win_last - win_first + 1` native rows of panel RAM data for the
+// already-current SSD1680 RAM window/address counter (panel addresses
+// win_first..win_first+1..win_last, the caller's own disp_set_ram_window()
+// call) — the one choke point every 0x24/0x26 data phase in this file goes
+// through, so the flip logic exists in exactly one place. `src` is indexed
+// in SOURCE (gfx_fb_native_row()) space, exactly like s_fb_snap/s_fb_old
+// always are — flip never touches the diff/shadow-plane bookkeeping, only
+// the bytes actually put on the wire. When s_disp_flip is false this is
+// byte-for-byte the original unflipped loop. When true, panel row r gets
+// disp_flip_row()'s rotation of source row disp_flip_src_row(r, GFX_FB_ROWS)
+// — see disp_flip.h's own module comment for the two-axis argument. Power
+// effect: none — identical SPI byte count, only reordered.
+static void disp_send_fb_rows(const uint8_t src[][GFX_FB_ROW_BYTES], int win_first, int win_last)
+{
+    for (int r = win_first; r <= win_last; r++) {
+        if (!s_disp_flip) {
+            disp_send_data(src[r], GFX_FB_ROW_BYTES);
+        } else {
+            uint8_t tmp[GFX_FB_ROW_BYTES];
+            disp_flip_row(src[disp_flip_src_row(r, GFX_FB_ROWS)], tmp, GFX_FB_ROW_BYTES);
+            disp_send_data(tmp, GFX_FB_ROW_BYTES);
+        }
+    }
+}
 
 static void disp_power_on(void)
 {
@@ -601,16 +682,17 @@ static void full_refresh_locked(uint8_t tag, bool upgraded)
         memcpy(s_fb_snap[r], gfx_fb_native_row(r), GFX_FB_ROW_BYTES);
     }
 
+    // disp_send_fb_rows() reorders these bytes for s_disp_flip (owner's
+    // 180-degree-rotation setting, `flip on`/`off`) — see its own comment;
+    // the panel-address window itself is unchanged here (0..295, a fixed
+    // point of the mirror, disp_flip.h's own comment) because a full
+    // refresh always writes every row regardless of orientation.
     disp_set_ram_window(0, 295);
     disp_send_cmd(0x24);
-    for (int r = 0; r < GFX_FB_ROWS; r++) {
-        disp_send_data(s_fb_snap[r], GFX_FB_ROW_BYTES);
-    }
+    disp_send_fb_rows(s_fb_snap, 0, GFX_FB_ROWS - 1);
     disp_set_ram_window(0, 295); // rule 1 above: reset before every RAM write
     disp_send_cmd(0x26);
-    for (int r = 0; r < GFX_FB_ROWS; r++) {
-        disp_send_data(s_fb_snap[r], GFX_FB_ROW_BYTES);
-    }
+    disp_send_fb_rows(s_fb_snap, 0, GFX_FB_ROWS - 1);
     disp_send_cmd(0x3C);
     disp_send_data1(0x05);
     disp_send_cmd(0x22);
@@ -751,16 +833,28 @@ static void partial_refresh_locked(uint8_t tag)
              pre_first, pre_last, first, last, last - first + 1, x0, x1, (int) s_partial_write_again);
 
     // Snapshot now, before anything below can block — see this function's
-    // banner comment.
+    // banner comment. Always in SOURCE (gfx_fb_native_row()) space, same as
+    // s_fb_old above — the diff and this snapshot never know about flip.
     for (int r = first; r <= last; r++) {
         memcpy(s_fb_snap[r], gfx_fb_native_row(r), GFX_FB_ROW_BYTES);
     }
 
-    disp_set_ram_window((uint16_t) first, (uint16_t) last);
-    disp_send_cmd(0x24);
-    for (int r = first; r <= last; r++) {
-        disp_send_data(s_fb_snap[r], GFX_FB_ROW_BYTES);
+    // s_disp_flip (owner's 180-degree-rotation setting): the panel-address
+    // window that must actually be programmed is the mirror of the source
+    // window just diffed/snapshotted above — see disp_flip_mirror_window()'s
+    // own comment for why this is still 8-row-aligned and why doing this
+    // AFTER the PAGER_UI_PARTIAL_ROW_ALIGN widening above (not before) is
+    // required for that alignment to hold. disp_send_fb_rows() below reads
+    // s_fb_snap back through the same mirror, so only rows already
+    // snapshotted (first..last) are ever touched.
+    int win_first = first, win_last = last;
+    if (s_disp_flip) {
+        disp_flip_mirror_window(first, last, GFX_FB_ROWS, &win_first, &win_last);
     }
+
+    disp_set_ram_window((uint16_t) win_first, (uint16_t) win_last);
+    disp_send_cmd(0x24);
+    disp_send_fb_rows(s_fb_snap, win_first, win_last);
     disp_send_cmd(0x3C);
     disp_send_data1(0x80); // HiZ border for partial, PROTOCOL.md §6
     disp_send_cmd(0x22);
@@ -789,11 +883,9 @@ static void partial_refresh_locked(uint8_t tag)
     // Re-sync the "old" RAM plane and the host shadow to EXACTLY what we
     // just sent (s_fb_snap, not a fresh gfx_fb_native_row() read) — window
     // and pointer explicitly reset again first.
-    disp_set_ram_window((uint16_t) first, (uint16_t) last);
+    disp_set_ram_window((uint16_t) win_first, (uint16_t) win_last);
     disp_send_cmd(0x26);
-    for (int r = first; r <= last; r++) {
-        disp_send_data(s_fb_snap[r], GFX_FB_ROW_BYTES);
-    }
+    disp_send_fb_rows(s_fb_snap, win_first, win_last);
     for (int r = first; r <= last; r++) {
         memcpy(s_fb_old[r], s_fb_snap[r], GFX_FB_ROW_BYTES);
     }
@@ -827,11 +919,9 @@ static void partial_refresh_locked(uint8_t tag)
     // (last-first+1)*GFX_FB_ROW_BYTES-byte write) — negligible next to the
     // panel's own ~0.3-0.8s update time this is guarding the correctness of.
     if (s_partial_write_again) {
-        disp_set_ram_window((uint16_t) first, (uint16_t) last);
+        disp_set_ram_window((uint16_t) win_first, (uint16_t) win_last);
         disp_send_cmd(0x24);
-        for (int r = first; r <= last; r++) {
-            disp_send_data(s_fb_snap[r], GFX_FB_ROW_BYTES);
-        }
+        disp_send_fb_rows(s_fb_snap, win_first, win_last);
     }
 
     s_partial_count++;
@@ -956,16 +1046,18 @@ static bool restore_ram_planes_locked(void)
         }
     }
 
+    // disp_send_fb_rows() applies s_disp_flip here too: this must restore
+    // BOTH SSD1680 RAM planes to exactly whichever orientation the glass is
+    // actually still showing (the one the last completed refresh, before
+    // power loss, wrote with the same flag) — see disp_send_fb_rows()'s own
+    // comment. Full window (0..295) is a fixed point of the mirror either
+    // way (disp_flip_mirror_window()'s own comment).
     disp_set_ram_window(0, 295);
     disp_send_cmd(0x24);
-    for (int r = 0; r < GFX_FB_ROWS; r++) {
-        disp_send_data(s_fb_old[r], GFX_FB_ROW_BYTES);
-    }
+    disp_send_fb_rows(s_fb_old, 0, GFX_FB_ROWS - 1);
     disp_set_ram_window(0, 295); // rule 1, full_refresh_locked()'s own comment
     disp_send_cmd(0x26);
-    for (int r = 0; r < GFX_FB_ROWS; r++) {
-        disp_send_data(s_fb_old[r], GFX_FB_ROW_BYTES);
-    }
+    disp_send_fb_rows(s_fb_old, 0, GFX_FB_ROWS - 1);
     return true;
 }
 
@@ -1065,6 +1157,7 @@ bool disp_init(void)
     if (s_mutex == NULL) {
         s_mutex = xSemaphoreCreateMutex();
     }
+    disp_load_flip(); // owner's persisted 180-degree-rotation setting, before the first frame
     disp_gpio_init();
     if (!s_spi_ready) {
         s_spi_ready = disp_spi_init();

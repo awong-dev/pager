@@ -108,6 +108,9 @@ crosses the wire; this section covers the device-local behaviour the protocol do
   composer is open.
 - **Display refresh**: partial refresh for the message pane, with a full refresh every 20th
   partial. 20 is this project's deliberate choice over the panel's more common "~10" guidance.
+- **Display orientation**: `disp_flip` (NVS, default off; console `flip on|off|status`)
+  180-degree-rotates the whole 296x128 image at blit time, so every screen/partial/toast reads
+  upside down together — not a per-screen setting.
 - **Message bodies** are at most 160 characters.
 - The managed `walter-modem` component is never patched in place. Anything the vendor API cannot
   express is either worked around in our own code or documented as a limitation.

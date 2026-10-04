@@ -43,6 +43,7 @@ Setup mode has `setup` and `carrier`. The debug build has all of these, in any m
 | `coverage` | Debug the no-coverage radio duty cycle (deregister with `at AT+COPS=2`, recover with `at AT+COPS=0`) |
 | `at <command>` | One raw AT command; the reply shows in the trace |
 | `acceltest [samples <n>\|ths <0-127>\|dur <0-127>\|refr <seconds>]` | LIS3DH register/sample dump and runtime tuning (A2); re-probes WHO_AM_I every call, so wiring the chip needs no reboot. `acceltest` alone prints registers, THS in mg, the refractory setting, edges reported and ext1 wake count |
+| `flip on\|off\|status` | Persist and apply a 180-degree display rotation (NVS `disp_flip`) so the pager can be read upside down; `on`/`off` force one full refresh immediately |
 
 Run modem commands only after `MQTT session usable` has appeared. Before that they collide with
 the pager's own attach. Never send a slow raw command (`AT+COPS=0`, `AT+CFUN`) while the

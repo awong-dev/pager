@@ -122,6 +122,22 @@ void disp_busy_idle_hook(void);
  * as disp_busy_idle_hook()). */
 void disp_pre_write_gate_hook(void);
 
+/* Owner-visible display orientation: NVS-persisted 180-degree rotation of
+ * the full 296x128 image (console `flip on|off|status`, main.c), so the
+ * pager can be read upside down. Applied at the blit level inside
+ * full_refresh_locked()/partial_refresh_locked()/restore_ram_planes_locked()
+ * (disp.c's disp_send_fb_rows()) — every screen, partial refresh and toast
+ * flips with it, since none of them know this flag exists. disp_get_flip()
+ * reflects whatever disp_init() loaded from NVS (or a later disp_set_flip())
+ * — there is no separate "pending" state. disp_set_flip() persists
+ * immediately but does NOT itself trigger a refresh; the caller must call
+ * disp_full_refresh() right after so the new orientation is visible as one
+ * clean frame rather than a torn one (see disp_set_flip()'s own comment).
+ * Power effect: none by itself — same SPI byte count either way, just
+ * reordered (disp_flip.h). */
+bool disp_get_flip(void);
+void disp_set_flip(bool on);
+
 /* Bench A/B for the garbled-bands fix: false = pre-fix behaviour (only the
  * previous-image plane is re-synced after a partial), true = also re-write the
  * new-image plane, as the vendor reference does. Default true (CONFIRMED on
