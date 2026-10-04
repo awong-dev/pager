@@ -961,8 +961,24 @@ void disp_pre_write_gate_hook(void)
 // Public init/shutdown
 // ---------------------------------------------------------------------------
 
+// Idempotency: main.c calls ui_init() once at boot; setup.c's setup_run()
+// calls it again on every `setup <code>` console invocation, not knowing
+// whether boot already ran it. Without this guard the second call re-ran
+// i2c_driver_install() on an already-installed I2C_NUM_0 (logged
+// "i2c driver install error") and gfx_init()'s asset-partition mmap on an
+// already-mapped region ("mmap: paddr block is mapped already") -- both
+// harmless-looking but undefined to repeat. Power effect: none beyond the
+// first call; a second call touches no GPIO/I2C/mmap state at all and just
+// returns the cached result.
+static bool s_ui_inited = false;
+static bool s_ui_init_result = false;
+
 bool ui_init(void)
 {
+    if (s_ui_inited) {
+        return s_ui_init_result;
+    }
+    s_ui_inited = true;
     i2c_kb_init();
     gfx_clear();
 #ifdef ESP_PLATFORM
@@ -973,5 +989,6 @@ bool ui_init(void)
     load_text_size();
     s_depth = 0;
     ui_go_home(); // establishes the stack even if disp_init() below fails (headless is not fatal)
-    return disp_init(); // power effect: see disp_init()'s own comment
+    s_ui_init_result = disp_init(); // power effect: see disp_init()'s own comment
+    return s_ui_init_result;
 }

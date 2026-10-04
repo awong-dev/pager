@@ -898,6 +898,8 @@ extern "C" bool net_bootstrap_attach(const char *apn)
 
     WalterModem::setMQTTEventHandler(pager_mqtt_event_handler, nullptr);
     WalterModem::setNetworkEventHandler(pager_network_event_handler, nullptr);
+    // v0.2 §4.4: setup's CA fetch needs the socket ring/close events too.
+    WalterModem::setSocketEventHandler(pager_socket_event_handler, nullptr);
 
     if (!WalterModem::setOpState(WALTER_MODEM_OPSTATE_NO_RF)) {
         ESP_LOGI(TAG, "setOpState(NO_RF) failed (bootstrap)");
