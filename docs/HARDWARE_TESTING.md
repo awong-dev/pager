@@ -98,7 +98,7 @@ never publish).
 
 Adafruit LIS3DH breakout, on its own I2C bus (`I2C_NUM_1`), rewired 30 Sep 2026 (`pins.h`):
 
-- SDA -> IO15 (Walter pin 19), SCL -> IO18 (Walter pin 22). Not the CardKB's bus (IO10/IO9).
+- SDA -> IO15 (Walter pin 19), SCL -> IO18 (Walter pin 22). Not the CardKB's bus (IO5/IO4).
 - Address 0x18 (SDO/SA0 open or tied low). If SDO/SA0 is pulled high instead, the chip answers
   at 0x19 and `i2cscan` shows 0x19, not 0x18 — `accel_init()` looks only at 0x18 and will report
   "not found" until either the wiring or `PAGER_I2C_ADDR_LIS3DH` (`pins.h`) changes.
@@ -137,7 +137,7 @@ Dark Star (AT&T) SIMs.
 - The CardKB keyboard (22 Sep): every printable key, Enter (0x0d), Esc and the four arrows
   (0xb4-0xb7) decode as the host test predicted; a key wakes the UI from "sleeping" within one
   wake cycle; Enter opens the chat, a typed reply publishes within 50 ms of Enter. The bench cable
-  had SDA on IO9 and SCL on IO8 at the time; since the 29 Sep rewiring it is SDA IO10 / SCL IO9 (`pins.h`). `i2cscan [swap]` finds the keyboard; `wake` and
+  had SDA on IO9 and SCL on IO8 at the time; since the 3 Oct rewiring it is SDA IO5 / SCL IO4 (`pins.h`). `i2cscan [swap]` finds the keyboard; `wake` and
   `key <text>` drive the UI from the console.
 - Display partial-refresh two-plane fix (22 Sep): the SSD1680 controller's two image planes must
   be kept equal after every differential update. Pre-fix (`disptest again 0` + `bars` + `seq 2 12

@@ -51,13 +51,14 @@
 // Button (header pin 14). ext0 light-sleep wake source (RTC GPIO).
 #define PAGER_PIN_BUTTON 1  // active-low, RTC GPIO
 
-// Keyboard (CardKB, I2C addr 0x5F) on I2C_NUM_0, right header pins 25/24.
+// Keyboard (CardKB, I2C addr 0x5F) on I2C_NUM_0, right header pins 16/15
+// (moved from pins 25/24 / IO10,IO9 on 3 Oct 2026 -- owner decision).
 // Powered from the eInk Friend's 3V3 output (gated by ENA together with the
 // panel), so ui.c releases these two pads (driven low) whenever rail.c drops
 // the rail -- otherwise the ESP32 back-powers the CardKB MCU through its I/O
 // clamp diodes.
-#define PAGER_PIN_KB_SDA 10
-#define PAGER_PIN_KB_SCL 9
+#define PAGER_PIN_KB_SDA 5
+#define PAGER_PIN_KB_SCL 4
 #define PAGER_I2C_ADDR_CARDKB 0x5F
 
 // Motion: Adafruit LIS3DH breakout (I2C addr 0x18, SDO/SA0 open), right
