@@ -102,8 +102,8 @@ extern const ui_screen_t g_scr_lock;
 /* TASK_ui_finish.md Do #4/#6 (owner list, 24 Sep 22:30 PDT): the Locked
  * screen's own idle->entering transition (its "locked" -> "password:" +
  * masked field). Called ONLY from ui_on_button_short() (ui.c) below, on an
- * IO1 short press while g_scr_lock is on top and idle — Do #6: "Unlocking
- * is only started by the IO1 button ... not by typing." No-op if already
+ * IO8 short press while g_scr_lock is on top and idle — Do #6: "Unlocking
+ * is only started by the IO8 button ... not by typing." No-op if already
  * entering (scr_lock.c's own doc comment). No modem or sleep-state effect:
  * a screen-local UI state flip only. */
 void scr_lock_start_entry(void);

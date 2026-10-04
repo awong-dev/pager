@@ -11,7 +11,7 @@
  * docs/ROADMAP.md "Design needed: input and display power gating", option 2
  * (owner decision, 24 Sep 10:30 pm PDT: gate the rail off outside the
  * attentive window — reverses the 24-Sep-earlier "hold the rail through
- * sleep" stopgap now that the IO1 wake button, not the keyboard, is the
+ * sleep" stopgap now that the IO8 wake button, not the keyboard, is the
  * always-on way to wake the pager). This module is the single place that
  * decides/drives either gate; modes.c only calls rail_on()/rail_off() at
  * the sleep-entry/wake-path call sites its own comments describe, it never
@@ -21,7 +21,7 @@
  * the rail comes on for exactly four reasons, none of them "every wake
  * regardless of whether there is anything to draw" any more:
  *   (a) at boot — rail_init() below, called once from main.c.
- *   (b) on a wake whose cause is EXT1 (shared by the IO1 button and the
+ *   (b) on a wake whose cause is EXT1 (shared by the IO8 button and the
  *       LIS3DH motion interrupt, 3 Oct 2026 rewiring) — modes.c's wake
  *       path, right after net_sleep() returns, calls ui_ensure_powered()
  *       (ui.h) whenever esp_sleep_get_wakeup_cause() is EXT1.

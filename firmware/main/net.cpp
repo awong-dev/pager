@@ -1271,7 +1271,7 @@ extern "C" void net_sleep(uint32_t ms)
     // justification (refr 0 vs. refr 20, expect roughly two orders of
     // magnitude fewer). 3 Oct 2026 rewiring: ext1 now also fires for the
     // button, so esp_sleep_get_ext1_wakeup_status()'s bitmask (button =
-    // IO1, motion = IO6) is what tells the two apart, not the wakeup-cause
+    // IO8, motion = IO6) is what tells the two apart, not the wakeup-cause
     // alone.
     if (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_EXT1 &&
         (esp_sleep_get_ext1_wakeup_status() & (1ULL << PAGER_PIN_LIS3DH_INT1))) {

@@ -169,7 +169,7 @@ bool input_button_busy(void);
 bool input_button_stuck(void);
 
 /* Seeds the button FSM with a press observed at `now_us`, for the ext1
- * (IO1/PAGER_PIN_BUTTON, shared with the LIS3DH's INT1) wake path (modes.c,
+ * (IO8/PAGER_PIN_BUTTON, shared with the LIS3DH's INT1) wake path (modes.c,
  * right after esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_EXT1 and
  * esp_sleep_get_ext1_wakeup_status() shows the button's bit set): ext1 is a
  * LEVEL wake on the button's active-high press (3 Oct 2026 rewiring,
