@@ -149,6 +149,17 @@ void disp_set_flip(bool on);
 void disp_set_partial_write_again(bool on);
 bool disp_partial_write_again(void);
 
+/* A/B hypothesis test (firmware-architect, 5 Oct 2026): the new Orient
+ * AES128296A00-2.9ENRS panel may have no partial-refresh waveform in its
+ * OTP. false (default) = today's command stream unchanged (0x22=0xFF, no
+ * 0x32). true = partial_refresh_locked() also writes command 0x32 + the
+ * 153-byte WF_PARTIAL_2IN9 LUT (firmware/main/wf_partial_2in9.h) before
+ * every partial, and sends 0x22=0xCF (load LUT from host write) instead of
+ * 0xFF. Not NVS-persisted -- bench A/B only, `disptest lut 0|1` (main.c).
+ * Power effect: +154 SPI bytes per partial when true; otherwise none. */
+void disp_set_partial_lut(bool on);
+bool disp_get_partial_lut(void);
+
 /* Number of native rows where gfx.c's framebuffer differs from the shadow
  * plane, i.e. what the next partial refresh would send. 0 right after any
  * successful refresh. Bench diagnostic. */

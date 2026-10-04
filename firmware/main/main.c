@@ -1190,6 +1190,8 @@ static const char *DISPTEST_USAGE =
     "disptest                     -- same as `disptest info`\n"
     "disptest info                -- print again-mode, partial count, disp_dirty_rows()\n"
     "disptest again <0|1>         -- set the partial-write-again A/B flag\n"
+    "disptest lut <0|1>           -- set the host-written partial LUT A/B flag (0x32 "
+    "WF_PARTIAL_2IN9 + 0x22=0xCF vs. today's 0x22=0xFF)\n"
     "disptest bars                -- paint the baseline pattern and FULL refresh\n"
     "disptest step <n>            -- invert the 8px screen column at x=n*8 (full height), then "
     "ONE partial refresh; n must be 0..(GFX_SCREEN_W/8 - 1)\n"
@@ -1238,9 +1240,9 @@ static void disptest_step(int n)
 static int cmd_disptest(int argc, char **argv)
 {
     if (argc < 2 || strcmp(argv[1], "info") == 0) {
-        printf("disptest: again=%d partial_count=%u dirty_rows=%d\n",
-               (int) disp_partial_write_again(), (unsigned) disp_partial_count(),
-               disp_dirty_rows());
+        printf("disptest: again=%d lut=%d partial_count=%u dirty_rows=%d\n",
+               (int) disp_partial_write_again(), (int) disp_get_partial_lut(),
+               (unsigned) disp_partial_count(), disp_dirty_rows());
         return 0;
     }
     if (strcmp(argv[1], "again") == 0) {
@@ -1250,6 +1252,15 @@ static int cmd_disptest(int argc, char **argv)
         }
         disp_set_partial_write_again(strcmp(argv[2], "1") == 0);
         printf("disptest: again=%d\n", (int) disp_partial_write_again());
+        return 0;
+    }
+    if (strcmp(argv[1], "lut") == 0) {
+        if (argc != 3 || (strcmp(argv[2], "0") != 0 && strcmp(argv[2], "1") != 0)) {
+            printf("usage: disptest lut <0|1>\n");
+            return 1;
+        }
+        disp_set_partial_lut(strcmp(argv[2], "1") == 0);
+        printf("disptest: lut=%d\n", (int) disp_get_partial_lut());
         return 0;
     }
     if (strcmp(argv[1], "bars") == 0) {
@@ -1885,7 +1896,8 @@ static void start_normal_console(void)
 
     const esp_console_cmd_t disptest_cmd = {
         .command = "disptest",
-        .help = "disptest [info|again <0|1>|bars|step <n>|seq [n0] [n1] [ms]|full|swreset] -- "
+        .help = "disptest [info|again <0|1>|lut <0|1>|bars|step <n>|seq [n0] [n1] [ms]|full|"
+                 "swreset] -- "
                  "deterministic e-paper partial-refresh bench harness (docs task-disp-fix.md); "
                  "run `disptest` with no args for the full usage. NOTE: do not use `wake` or "
                  "`key` while this is running -- the UI render task would repaint over the test "

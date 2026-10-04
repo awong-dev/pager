@@ -68,6 +68,7 @@ runs — the UI render task would repaint over the test pattern. Commands:
 |---|---|
 | `disptest` or `disptest info` | Print refresh mode, partial count, and dirty rows. Run again to re-read. |
 | `disptest again <0\|1>` | `0` deliberately reproduces the pre-fix two-plane bug; `1` is the corrected code. |
+| `disptest lut <0\|1>` | A/B for the Orient AES128296A00-2.9ENRS "no partial waveform in OTP" hypothesis (5 Oct 2026). `0` (default) = today's partial command stream unchanged (0x22=0xFF). `1` = also sends 0x32 + the 153-byte `WF_PARTIAL_2IN9` LUT (`firmware/main/wf_partial_2in9.h`, copied from `docs/reference/wf_partial_2in9.h`) before 0x20, and 0x22=0xCF instead of 0xFF. Not persisted; per-partial log line says which mode ran. |
 | `disptest bars` | Paint 8-pixel wide full-height stripes (black / white / black / ...) with a FULL refresh. Establishes a baseline pattern. |
 | `disptest step <n>` | Invert the 8-pixel screen column at x=n*8, trigger ONE partial refresh, wait for BUSY. |
 | `disptest seq [n0] [n1] [ms]` | Step through columns n0 to n1 inclusive, ms apart (defaults: 2 12 1500). Watch for band flipping; verify pattern matches prediction. |

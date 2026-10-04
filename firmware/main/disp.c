@@ -6,6 +6,7 @@
 #include "disp_flip.h"
 #include "gfx.h"
 #include "pins.h"
+#include "wf_partial_2in9.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -185,6 +186,28 @@ static bool s_force_full = false;
 // effect: none by itself — it only decides whether the extra RAM write
 // below runs, which is documented at that write.
 static bool s_partial_write_again = true;
+
+// A/B hypothesis test (firmware-architect, 5 Oct 2026, one flash): the new
+// Orient AES128296A00-2.9ENRS panel may have no partial-refresh waveform in
+// its OTP, so every partial_refresh_locked() call below completes BUSY but
+// leaves the glass unchanged while full refreshes (which carry their own
+// LUT from OTP via the panel's internal default, same as before) still
+// work. Default OFF = byte-for-byte today's command stream (0x22=0xFF, no
+// 0x32). ON = host-written LUT: command 0x32 + the 153-byte
+// WF_PARTIAL_2IN9 table (docs/reference/wf_partial_2in9.h, copied into
+// firmware/main/wf_partial_2in9.h -- see that file's own comment) loaded
+// every partial (0x12 in disp_pre_refresh_reset() wipes any previously
+// loaded LUT, so this cannot be loaded once and left), then 0x22=0xCF
+// ("load LUT from host write" per the SSD1680 datasheet's update-mode
+// encoding, vs. 0xFF "load LUT from OTP/MCU default") in place of 0xFF.
+// Not NVS-persisted -- this is a bench A/B, not an owner-visible setting
+// (`disptest lut 0|1`, main.c). Power effect: +154 SPI bytes (1 cmd + 153
+// data) per partial when on; negligible next to the refresh itself.
+static bool s_partial_use_lut = false;
+
+void disp_set_partial_lut(bool on) { s_partial_use_lut = on; }
+
+bool disp_get_partial_lut(void) { return s_partial_use_lut; }
 
 // Owner request: persistent 180-degree display rotation so the pager can be
 // read upside down. NVS namespace/key follow ui.c's text-size setting
@@ -857,8 +880,21 @@ static void partial_refresh_locked(uint8_t tag)
     disp_send_fb_rows(s_fb_snap, win_first, win_last);
     disp_send_cmd(0x3C);
     disp_send_data1(0x80); // HiZ border for partial, PROTOCOL.md §6
-    disp_send_cmd(0x22);
-    disp_send_data1(0xFF); // inferred, not datasheet-verified
+    // s_partial_use_lut (disptest lut 0|1): host-written LUT A/B, see that
+    // flag's own comment. Must be re-sent every partial -- the 0x12 inside
+    // disp_pre_refresh_reset() above already ran this call and wipes any
+    // previously loaded LUT, so there is nothing to skip on repeat calls.
+    if (s_partial_use_lut) {
+        disp_send_cmd(0x32);
+        disp_send_data(WF_PARTIAL_2IN9, WF_PARTIAL_2IN9_LUT_LEN);
+        disp_send_cmd(0x22);
+        disp_send_data1(0xCF); // load LUT from host write (vs. 0xFF = OTP/MCU default)
+        ESP_LOGI(TAG, "partial: lut mode (host-written WF_PARTIAL_2IN9)");
+    } else {
+        disp_send_cmd(0x22);
+        disp_send_data1(0xFF); // inferred, not datasheet-verified
+        ESP_LOGI(TAG, "partial: otp mode (no host LUT)");
+    }
     disp_send_cmd(0x20);
     // Real update in flight (0x20, partial) — use the fixed-wait fallback if
     // BUSY doesn't assert.
