@@ -2702,9 +2702,13 @@ void modes_run(void)
                 bool wake_is_button =
                     wake_is_ext1 &&
                     (esp_sleep_get_ext1_wakeup_status() & (1ULL << PAGER_PIN_BUTTON));
-                if (wake_is_ext1 && !wake_is_button) {
-                    ui_ensure_powered(); // motion wake: rail on now (see above)
-                }
+                // 5 Oct 2026 ~5 am: NO rail_on() on a motion-only wake. Tried for
+                // an hour: handling the pager to press a key is itself a motion
+                // wake, the rail pulsed on for ~1 s (CardKB LED lit, 1.1 s boot
+                // never finished), the loop slept again, rail off, and the 20 s
+                // refractory then left the keyboard dark -- keys lost, stars
+                // missing. The rail comes on only when a shake is confirmed
+                // (accel_poll() -> ui_ensure_powered(), below) or on IO8.
                 if (wake_is_button) {
                     int64_t wake_now_us = esp_timer_get_time();
                     s_last_input_us = wake_now_us;
