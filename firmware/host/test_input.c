@@ -271,6 +271,60 @@ static void test_ext1_wake_merges_into_press_fsm_already_saw(void)
     expect_event(INPUT_EVT_BTN_SHORT, "ext1/merge: release resolves the one press tracked");
     expect_no_event("ext1/merge: drained");
 }
+
+static void test_shake_from_sleep_opens_hot_window_only(void)
+{
+    input_init();
+    idf_stub_advance_us(200 * 1000000); /* let earlier tests' awake window lapse */
+    idf_stub_set_button_level(0);
+    input_note_shake_wake(esp_timer_get_time());
+    CHECK(input_hot(), "shake: hot window not open");
+    CHECK(!input_awake(), "shake: awake window armed by a bare shake");
+    expect_no_event("shake: no event pushed");
+    idf_stub_advance_us(16 * 1000000);
+    CHECK(!input_hot(), "shake: hot window did not expire after 16 s");
+}
+
+static void test_key_during_hot_promotes_to_awake(void)
+{
+    input_init();
+    idf_stub_advance_us(200 * 1000000); /* let earlier tests' awake window lapse */
+    input_note_shake_wake(esp_timer_get_time());
+    CHECK(input_hot(), "hot-key: hot not open");
+    input_feed_key('a');
+    CHECK(!input_hot(), "hot-key: hot not cleared by key");
+    CHECK(input_awake(), "hot-key: awake not armed by key");
+    expect_event(INPUT_EVT_KEY, "hot-key: key event");
+    expect_no_event("hot-key: drained");
+}
+
+static void test_shake_while_awake_extends_awake(void)
+{
+    input_init();
+    idf_stub_advance_us(200 * 1000000); /* let earlier tests' awake window lapse */
+    input_arm_awake();
+    idf_stub_advance_us(100 * 1000000);
+    input_note_shake_wake(esp_timer_get_time());
+    idf_stub_advance_us(100 * 1000000); /* 200 s after arm: only alive if extended */
+    CHECK(input_awake(), "shake-awake: window not extended");
+    CHECK(!input_hot(), "shake-awake: hot opened while awake");
+    expect_no_event("shake-awake: no event");
+}
+
+static void test_shake_during_button_press_is_ignored(void)
+{
+    input_init();
+    idf_stub_advance_us(200 * 1000000); /* let earlier tests' awake window lapse */
+    idf_stub_set_button_level(1);
+    input_note_button_wake(esp_timer_get_time());
+    expect_event(INPUT_EVT_BTN_DOWN, "shake-btn: seed");
+    input_note_shake_wake(esp_timer_get_time());
+    CHECK(!input_hot(), "shake-btn: hot opened during a press");
+    expect_no_event("shake-btn: no extra event");
+    idf_stub_set_button_level(0);
+    input_poll();
+    expect_event(INPUT_EVT_BTN_SHORT, "shake-btn: release");
+}
 #endif
 
 int main(void)
@@ -286,6 +340,10 @@ int main(void)
     test_ext1_wake_then_released_is_short();
     test_ext1_wake_then_held_past_long_threshold_is_long();
     test_ext1_wake_merges_into_press_fsm_already_saw();
+    test_shake_from_sleep_opens_hot_window_only();
+    test_key_during_hot_promotes_to_awake();
+    test_shake_while_awake_extends_awake();
+    test_shake_during_button_press_is_ignored();
 #endif
 
     if (g_failures == 0) {

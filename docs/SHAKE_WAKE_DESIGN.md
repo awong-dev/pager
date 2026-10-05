@@ -1,9 +1,9 @@
 # Shake-to-wake (5 Oct 2026)
 
-Goal: a deliberate, vigorous shake does exactly what an IO8 short press does (UI-awake window,
-`BTN_DOWN` then `BTN_SHORT`, so the lock prompt opens or Home/newest unread shows). Ordinary
-motion keeps doing what it does today: it wakes the chip over ext1, arms the attentive window
-(rail on, keyboard powered) and feeds `loc_on_motion_event()`. Inputs: brief
+Goal: a deliberate, vigorous shake opens a 15 s hot keyboard window (rail on, keyboard polled at
+100 ms, nothing drawn); the first key promotes it to the full UI-awake window and draws. Ordinary
+motion wakes the chip over ext1 and feeds `loc_on_motion_event()` only: no attentive window, no
+rail, no keyboard. Inputs: brief
 `build/bench-logs/DESIGN_shake_wake_brief.md`. Task: `build/bench-logs/TASK_shake_wake.md`.
 
 ## Decisions
@@ -66,17 +66,21 @@ mean one ext1 wake plus a 20 ms busy chain per stride.
   LOCATION_TRACKING_DESIGN §power). This decision does not change it.
 - `accel_edge_wanted()`, `acceltest refr` and the loc.c call stay as they are.
 
-**D8. Wake path.**
-- `accel_poll()` now returns `true` on FIRED. modes.c then calls a new
+**D8. Wake path (hot window, owner decision 5 Oct 2026).** (This is the "D7 wake path" of the
+hot-window task; the refractory decision is D7.)
+- `accel_poll()` returns `true` on FIRED. modes.c then calls `ui_ensure_powered()` (rail on and
+  panel power-loss note, so the eventual first render is a correct partial) and
   `input_note_shake_wake(now)`.
-- That function does nothing unless the button FSM is `BTN_IDLE` and the UI is not already awake.
-  (While the UI is awake it only re-arms the window. A shake is a wake gesture, not a
-  "next chat" key.) Otherwise it arms the window and pushes `BTN_DOWN` + `BTN_SHORT`.
-- The existing drain then calls `set_mode(ACTIVE)` and `ui_on_button_short()`, exactly as IO8
-  does.
-- The ext1 block in modes.c needs no change: the IO6 bit already arms attentive and the rail.
-- We do not reuse `input_note_button_wake()`. That function seeds the FSM from a pin that is not
-  pressed and relies on `input_poll()` reading it as an instant release.
+- That function does nothing unless the button FSM is `BTN_IDLE`. If the UI is already awake it
+  only re-arms the awake window. Otherwise it opens the `PAGER_UI_HOT_S` (15 s) hot window and
+  pushes NO event. `input_hot()` keeps the loop at the 100 ms cadence with no light sleep.
+- The first decoded key (`input_feed_key`) clears the hot window, arms the full 119 s window and
+  the ordinary render path draws. A shake alone draws nothing.
+- The ext1 block in modes.c: only the IO8 bit is input (rail, `s_last_input_us`,
+  `input_note_button_wake`). A wake with only the LIS3DH bit reports the edge (accel_poll -> loc)
+  and returns to the normal cadence.
+- We do not reuse `input_note_button_wake()` for shake. That function seeds the FSM from a pin
+  that is not pressed and relies on `input_poll()` reading it as an instant release.
 
 **D9. Logs.**
 - `accel: intentional shake (n=.. in .. ms)` at INFO, once per FIRED.
@@ -102,14 +106,16 @@ their latches. CTRL_REG3 is written only when the wanted value changes.
 ## Power (assumptions stated; nothing here is measured on this board)
 - **LIS3DH at 25 Hz LP:** about 4 µA vs about 3 µA at 10 Hz (datasheet LP table; the brief's 6 µA
   is the 50 Hz figure). That is +0.03 mAh/day.
-- **Motion path:** unchanged (D7).
-- **Intentional shake:** the same as a button press, 119 s UI-awake at ~40 mA ≈ **1.3 mAh** each.
+- **Motion wake:** no attentive window any more: about 0.002 mAh per motion wake (bare timer-style
+  wake), at most one per 20 s refractory while moving. The edge still feeds `loc_on_motion_event()`.
+- **Intentional shake:** 15 s hot window at ~40 mA ≈ **0.2 mAh** unless a key follows; a key
+  promotes it to the 119 s UI-awake window (≈ 1.3 mAh, as a button press).
 - **Rejected candidate:** about 0.4 s awake at ~40 mA ≈ 0.0045 mAh. Worst case is continuous
   running with one candidate per 10 s holdoff: ≈ **1.6 mA average, ≈1.6 mAh per hour running**.
   Walking (≤0.5 g HP) does not produce candidates.
 - **Residual false-positive risk:** irregular jolting with sub-250 ms gaps, for example a bag
-  bouncing while running, a bike on cobbles, or a rough car ride. Each false fire costs 1.3 mAh
-  and a harmless lock prompt.
+  bouncing while running, a bike on cobbles, or a rough car ride. Each false fire costs 0.2 mAh
+  and draws nothing.
 - **Fallback if the glass shows false fires:** route the LIS3DH click engine instead (double-tap,
   CLICK_CFG, `I1_CLICK`). This is a fallback only, not implemented now.
 
@@ -126,12 +132,13 @@ Host: `make test`. The new classifier cases are in the task file.
 On the glass, owner checklist, debug build first and then release:
 1. Boot log shows 25 Hz ±4 g, CTRL_REG3=0x60, CTRL_REG5=0x0A. `acceltest samples 50` while
    shaking shows INT2_SRC IA set (proves IA2 reaches the pin's latch).
-2. Locked and idle for more than 2 min (rail off): a 2 s vigorous shake brings up the
-   "password:" prompt. 5/5.
-3. Unlocked and idle: a shake shows the same screen an IO8 short press would.
-4. Three table taps: no `intentional shake`, no UI wake.
-5. 2 min walking in a pocket: no UI wake, and `edges_reported` grows.
-6. Drop from 30 cm onto a bag: no UI wake (a `rejected` line is fine).
-7. 30 s jogging in place: no UI wake. Record the count of `rejected` lines.
-8. Walk, then shake within 20 s of a motion edge: it wakes. This is the D7 fix.
+2. Locked and idle for more than 2 min (rail off): a 2 s vigorous shake alone draws NOTHING.
+   Shake, then press a key within 15 s: the screen draws ("password:" prompt when locked). 5/5.
+3. Unlocked and idle: shake alone draws nothing; shake + key draws.
+4. Three table taps: no `intentional shake`, nothing drawn, keyboard stays unpowered.
+5. 2 min walking in a pocket: nothing drawn, keyboard unpowered, and `edges_reported` grows.
+6. Drop from 30 cm onto a bag: nothing drawn (a `rejected` line is fine).
+7. 30 s jogging in place / steps: nothing drawn. Record the count of `rejected` lines.
+8. Walk, then shake within 20 s of a motion edge: the hot window opens (key draws). This is the
+   D7 fix.
 9. 1 h untouched soak (debug build): zero `intentional shake`, zero `rejected` lines.

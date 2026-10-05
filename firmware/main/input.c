@@ -64,6 +64,8 @@ static const char *TAG = "input";
  * unread key. Must stay shorter than modes.c's PAGER_ATTENTIVE_S (120) by at
  * least one attentive wake interval (1s). */
 #define PAGER_UI_AWAKE_S 119
+/* Hot keyboard window opened by a shake from sleep (see input_hot()). */
+#define PAGER_UI_HOT_S 15
 
 #define INPUT_QUEUE_DEPTH 8
 
@@ -84,6 +86,8 @@ static int64_t s_awake_until_us = 0;
 static StaticQueue_t s_queue_buf;
 static uint8_t s_queue_storage[INPUT_QUEUE_DEPTH * sizeof(input_event_t)];
 static QueueHandle_t s_queue;
+
+static int64_t s_hot_until_us;
 
 static void arm_awake_window(int64_t now_us)
 {
@@ -218,6 +222,8 @@ void input_note_button_wake(int64_t now_us)
     push_event((input_event_t) { .type = INPUT_EVT_BTN_DOWN });
 }
 
+/* A shake from sleep only opens the short hot window and draws nothing, so
+ * an accidental shake costs ~0.2 mAh instead of ~1.3 mAh. */
 void input_note_shake_wake(int64_t now_us)
 {
     if (s_btn_state != BTN_IDLE) {
@@ -227,9 +233,12 @@ void input_note_shake_wake(int64_t now_us)
         arm_awake_window(now_us);
         return;
     }
-    arm_awake_window(now_us);
-    push_event((input_event_t) { .type = INPUT_EVT_BTN_DOWN });
-    push_event((input_event_t) { .type = INPUT_EVT_BTN_SHORT });
+    s_hot_until_us = now_us + (int64_t) PAGER_UI_HOT_S * 1000000;
+}
+
+bool input_hot(void)
+{
+    return esp_timer_get_time() < s_hot_until_us;
 }
 
 void input_feed_key(uint8_t byte)
@@ -238,6 +247,7 @@ void input_feed_key(uint8_t byte)
     if (key.type == INPUT_KEY_NONE) {
         return;
     }
+    s_hot_until_us = 0; /* the full awake window supersedes the hot one */
     arm_awake_window(esp_timer_get_time());
     push_event((input_event_t) { .type = INPUT_EVT_KEY, .key = key });
 }

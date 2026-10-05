@@ -194,17 +194,19 @@ bool input_button_stuck(void);
  * GPIO/I2C/modem access. */
 void input_note_button_wake(int64_t now_us);
 
-/* Shake-to-wake (accel.c's accel_poll() returned true; design D8): does what
- * an IO8 short press does. If the button FSM is not BTN_IDLE it does nothing.
- * If the UI is already awake it only re-arms the awake window (a shake is a
- * wake gesture, not a "next chat" key). Otherwise it arms the window and
- * pushes BTN_DOWN then BTN_SHORT, which modes.c's event drain turns into
- * set_mode(ACTIVE) + ui_on_button_short(). It never touches the FSM state:
- * input_note_button_wake() seeds BTN_DOWN from a pin that is not pressed and
- * relies on input_poll() reading an instant release, which is wrong here.
- * Power effect: none of its own; the 119 s awake window it arms costs about
- * 1.3 mAh. */
+/* Shake-to-wake (accel.c's accel_poll() returned true). If the button FSM is
+ * not BTN_IDLE it does nothing. If the UI is already awake it re-arms the
+ * awake window. Otherwise it opens the PAGER_UI_HOT_S (15 s) hot window and
+ * pushes NO event (nothing is drawn). Power effect: the hot window costs
+ * about 0.2 mAh (100 ms keyboard cadence, no light sleep) unless a key
+ * follows, which promotes it to the full 119 s window. */
 void input_note_shake_wake(int64_t now_us);
+
+/* True while the hot window is open: keyboard polled at the 100 ms cadence
+ * with no light sleep and NOTHING drawn. The first decoded key
+ * (input_feed_key) clears it, arms the full PAGER_UI_AWAKE_S window and the
+ * ordinary render path draws the screen. */
+bool input_hot(void);
 
 #endif /* ESP_PLATFORM */
 

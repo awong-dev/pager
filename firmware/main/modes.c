@@ -2520,7 +2520,7 @@ void modes_run(void)
         // same shape as net_connect_in_flight()/net_publish_in_flight() above.
         bool skip_sleep = btn_busy || btn_stuck || ui_awake || net_modem_busy() || net_connect_in_flight() ||
                            net_publish_in_flight() || bookpull_fetch_in_progress() || net_resub_hold() ||
-                           accel_shake_pending();
+                           accel_shake_pending() || input_hot();
         // pump_blocked keys ONLY on net_modem_busy() (the UART/RTS interlock
         // against the MQTT event handler, see the comment above on
         // net_modem_busy()) -- NOT on btn_busy/btn_stuck/ui_awake, and NOT on
@@ -2685,27 +2685,29 @@ void modes_run(void)
                 // own comment) -- esp_sleep_get_ext1_wakeup_status()'s
                 // bitmask (button = IO8, motion = IO6) is what tells them
                 // apart; there is no more ESP_SLEEP_WAKEUP_EXT0.
-                if (wake_cause == ESP_SLEEP_WAKEUP_EXT1) {
+                // Rule (b), 5 Oct 2026: only the button bit is input. Motion
+                // wakes (LIS3DH bit only) report the edge (accel_poll -> loc)
+                // and return to the normal cadence; the keyboard comes alive
+                // only by shake (input_hot() window) or button.
+                if (wake_cause == ESP_SLEEP_WAKEUP_EXT1 &&
+                    (esp_sleep_get_ext1_wakeup_status() & (1ULL << PAGER_PIN_BUTTON))) {
                     wake_is_input = true;
                     int64_t wake_now_us = esp_timer_get_time();
                     s_last_input_us = wake_now_us;
                     ui_ensure_powered(); // rule (b): this wake IS real input, bring the rail up now
-                    uint64_t ext1_status = esp_sleep_get_ext1_wakeup_status();
-                    if (ext1_status & (1ULL << PAGER_PIN_BUTTON)) {
-                        // Bug fix (25 Sep, "lock screen never switches to
-                        // password: on a quick IO8 press"): ext1 is a LEVEL
-                        // wake on the button, so this wake edge IS the
-                        // press, but input_poll() (below, later this same
-                        // iteration) is the first thing that ever samples
-                        // the pin — by then a quick press can already be
-                        // released and BTN_IDLE's poll-driven debounce never
-                        // starts, silently dropping the press. Seed the FSM
-                        // with the press here, at the wake, so input_poll()
-                        // resolves short-vs-long from it exactly as for a
-                        // polled press (input_note_button_wake()'s own doc
-                        // comment, input.h). Power effect: none of its own.
-                        input_note_button_wake(wake_now_us);
-                    }
+                    // Bug fix (25 Sep, "lock screen never switches to
+                    // password: on a quick IO8 press"): ext1 is a LEVEL
+                    // wake on the button, so this wake edge IS the
+                    // press, but input_poll() (below, later this same
+                    // iteration) is the first thing that ever samples
+                    // the pin — by then a quick press can already be
+                    // released and BTN_IDLE's poll-driven debounce never
+                    // starts, silently dropping the press. Seed the FSM
+                    // with the press here, at the wake, so input_poll()
+                    // resolves short-vs-long from it exactly as for a
+                    // polled press (input_note_button_wake()'s own doc
+                    // comment, input.h). Power effect: none of its own.
+                    input_note_button_wake(wake_now_us);
 #ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
                     s_st_rail_on_wakes++;
 #endif
@@ -2841,8 +2843,9 @@ void modes_run(void)
             // touching net_sleep() (see the skip_sleep comment above).
             vTaskDelay(pdMS_TO_TICKS(PAGER_WAKE_INTERVAL_SLEEP_MS));
         } else {
-            // ui_awake (or a busy/stuck button): docs/DEVICE_PLAN.md §5.3,
-            // CardKB polled at 100ms, no light-sleep.
+            // ui_awake, input_hot() (15 s shake window, nothing drawn) or a
+            // busy/stuck button: docs/DEVICE_PLAN.md §5.3, CardKB polled at
+            // 100ms, no light-sleep.
             vTaskDelay(pdMS_TO_TICKS(100));
         }
 
@@ -3349,6 +3352,7 @@ void modes_run(void)
 #endif
         watchdog_kick(WD_LOC);
         if (accel_poll()) {
+            ui_ensure_powered(); // rail on + panel power-loss note so the first render is a correct partial
             input_note_shake_wake(esp_timer_get_time());
         }
         loc_service();
