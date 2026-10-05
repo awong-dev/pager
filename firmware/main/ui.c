@@ -911,6 +911,24 @@ void ui_poll_keyboard(void)
     input_feed_key(byte); // arms the UI-awake window, queues INPUT_EVT_KEY (input.h)
 }
 
+void ui_boot_status(const char *text)
+{
+    if (!text || ui_top() != &g_scr_greeting || strcmp(text, scr_greeting_get_status()) == 0) {
+        return;
+    }
+    scr_greeting_set_status(text);
+    ui_render(); // power effect: one partial refresh, ~0.3-0.8 s, PENDING_HW
+}
+
+// Strong definition of net.h's weak net_boot_progress_hook(): same seam style
+// as disp_busy_idle_hook() below. net.cpp only calls it from the synchronous
+// wait code running on net_init()'s caller task (the modes task), never from
+// the modem event task.
+void net_boot_progress_hook(const char *status)
+{
+    ui_boot_status(status);
+}
+
 // Strong definition of disp.h's weak disp_busy_idle_hook() — bench bug fix:
 // each key event made modes.c render a partial refresh whose
 // disp_wait_busy_fb() (disp.c) blocks the calling task for ~455ms polling

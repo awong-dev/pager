@@ -587,8 +587,17 @@ void note_registration(bool registered)
 
 bool configure_session(void); // not `static`: net_internal.h re-declares this for xport_lte.cpp
 
+// Weak default: no-op. Layering seam (same style as disp_busy_idle_hook()):
+// ui.c supplies the strong definition. Called only from net_bringup() below,
+// i.e. on net_init()'s caller task, never from URC/event handlers.
+extern "C" __attribute__((weak)) void net_boot_progress_hook(const char *status)
+{
+    (void) status;
+}
+
 static bool net_bringup(int attach_wait_s)
 {
+    net_boot_progress_hook("connecting");
 #ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
     // Debug builds only (main/CMakeLists.txt): raw AT TX:/RX: trace, so URCs
     // such as +SQNSMQTTONMESSAGE are visible on the console.
@@ -693,6 +702,7 @@ static bool net_bringup(int attach_wait_s)
     // session), not a condition: on a timeout the radio stays up and
     // searching, and the session is configured later, from net_session_up().
     bool attached = false;
+    net_boot_progress_hook("registering");
     for (int waited_s = 0; waited_s < attach_wait_s; waited_s++) {
         watchdog_feed(); // up to 300 s of legitimate waiting at boot
         WalterModemNetworkRegState st = WalterModem::getNetworkRegState();
@@ -704,6 +714,7 @@ static bool net_bringup(int attach_wait_s)
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
     note_registration(attached);
+    net_boot_progress_hook(attached ? "attached" : "no signal");
     if (!attached) {
         ESP_LOGI(TAG, "no network after %d s; the radio stays on and the session will be set up "
                       "when coverage appears",

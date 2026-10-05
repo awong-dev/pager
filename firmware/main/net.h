@@ -67,6 +67,13 @@ typedef struct {
  * PENDING_HW) attach transient then settles to the idle-attached floor. */
 bool net_init(void);
 
+/* Boot progress seam (5 Oct 2026 "booting" splash). net.cpp calls this with
+ * "connecting", "registering", "attached" or "no signal" from net_init()'s
+ * bring-up, which runs on the CALLER's task (modes task) - never from URC/
+ * event-task handlers. Weak no-op default in net.cpp; ui.c overrides it.
+ * Power effect: none here; the override paints one partial refresh. */
+void net_boot_progress_hook(const char *status);
+
 /* Configures TLS profile 3 (bootstrap only) with
  * WALTER_MODEM_TLS_VALIDATION_NONE, for the one-time bootstrap MQTT hop of
  * docs/DEVICE_PLAN.md §3.2 step 3 (setup.c, F3.5). Does not touch profile 2

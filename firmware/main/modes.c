@@ -2217,34 +2217,14 @@ void modes_boot(void)
     if (!ui_init()) {
         ESP_LOGI(TAG, "display init failed; continuing headless (network/replies/acks unaffected)");
     } else {
-        // Owner report, 25 Sep 2026: the old "booting" splash (scr_greeting.c,
-        // pushed here, replaced later by greeting_sync() once modes_run()'s
-        // loop started) held the glass on "booting" for the whole synchronous
-        // net_init()/net_session_up() bring-up below — observed ~100s on a
-        // slow attach — because that swap could only happen once modes_run()
-        // took its first iteration, and nothing before that point runs the
-        // loop. The device is usable (Lock or Home, browsable message
-        // history already restored by lock_init()/msg_init() above) the
-        // instant the glass is drawn regardless of network state, so the
-        // FIRST frame this boot ever paints is now the real one: ui_init()
-        // already left Home on the stack floor (ui_go_home(), ui.c), so only
-        // a locked device needs anything pushed on top of it, mirroring
-        // lock_screen_sync()'s own steady-state logic (below in this file).
-        // No greeting/"booting" screen is pushed on a normal boot at all —
-        // scr_greeting.c is unused here now and stays in place only for
-        // main.c's own pre-provisioning (IDENT-missing) Setup mode splash.
-        //
-        // Keys/button presses that arrive during the net_init()/
-        // net_session_up() stretch below are still queued by input.c as
-        // today (its GPIO ISR/CardKB poll do not depend on modes_run()) but
-        // are not drained until modes_run()'s loop actually starts after
-        // this function returns — this change does not make input work
-        // during bring-up, it only fixes what is drawn before that loop
-        // starts.
-        if (lock_is_locked()) {
-            ui_push(&g_scr_lock);
-        }
-        ui_render_boot(); // first real frame: Lock or Home; disp_init() primes the cadence counter to force a full refresh
+        // Owner decision, 5 Oct 2026 (supersedes the 25 Sep removal): the glass
+        // says "booting" immediately, then the splash UPDATES ("connecting",
+        // "registering", "attached"/"no signal") from net.cpp's bring-up via
+        // net_boot_progress_hook() until "boot complete" below swaps in the
+        // real Lock/Home screen. Updates run on this task only.
+        scr_greeting_set_status("booting");
+        ui_push(&g_scr_greeting);
+        ui_render_boot(); // first frame; disp_init() primes the cadence counter to force a full refresh
     }
 
     net_set_msg_cb(on_incoming_message);
@@ -2299,6 +2279,15 @@ void modes_boot(void)
     g_rtc.mode = (uint8_t) PAGER_MODE_SLEEP; // firmware/README.md: boot in sleep mode
     rtc_save();
     rtc_unlock();
+
+    // 5 Oct 2026: replace the boot splash with the real screen (partial).
+    if (ui_top() == &g_scr_greeting) {
+        ui_pop();
+        if (lock_is_locked()) {
+            ui_push(&g_scr_lock);
+        }
+        ui_render();
+    }
 
     ESP_LOGI(TAG, "boot complete, entering sleep mode");
 }

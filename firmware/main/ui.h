@@ -131,6 +131,15 @@ void scr_greeting_set_mode(scr_greeting_mode_t mode);
  * post-ident-load push is unaffected. Copies into a fixed internal buffer;
  * `status` need not outlive the call. */
 void scr_greeting_set_status(const char *status);
+const char *scr_greeting_get_status(void);
+
+/* 5 Oct 2026 boot splash: if the greeting is the top screen and `text`
+ * differs from its current status, sets it and paints a partial (ui_render()).
+ * No-op otherwise. MODES TASK ONLY (it renders): never call from the modem
+ * event task or any URC handler. net.cpp reaches it through the
+ * net_boot_progress_hook() seam. Power effect: one partial refresh,
+ * ~0.3-0.8 s, PENDING_HW. */
+void ui_boot_status(const char *text);
 extern const ui_screen_t g_scr_greeting;
 
 /* scr_chat.c's own "mark every currently-visible down message read"

@@ -48,6 +48,8 @@ void scr_greeting_set_status(const char *status)
     snprintf(s_status, sizeof(s_status), "%s", status);
 }
 
+const char *scr_greeting_get_status(void) { return s_status; }
+
 static void render(void)
 {
     // Do #3: "a single centered string at 16px in the middle of the body."
