@@ -181,10 +181,16 @@ static void try_unlock(void)
 static void lock_on_key(input_key_t key)
 {
     if (s_state == LOCK_UI_IDLE) {
-        // Do #4/#6: "Keys typed in state (a) are ignored (they no longer
-        // open the field)" — unlocking starts ONLY from an IO8 short press
-        // (scr_lock_start_entry(), called by ui.c's ui_on_button_short()).
-        return;
+        // Do #4/#6 (24 Sep) said keys in state (a) are ignored and only an
+        // IO8 short press opens the field. Reversed 5 Oct 2026 for
+        // shake-to-wake (docs/SHAKE_WAKE_DESIGN.md): a shake powers the
+        // keyboard but draws nothing, so the first CHARACTER typed opens
+        // "password:" and counts as its first digit. Everything else (Esc,
+        // Enter, backspace, arrows) stays a no-op in state (a).
+        if (key.type != INPUT_KEY_CHAR) {
+            return;
+        }
+        scr_lock_start_entry();
     }
     switch (key.type) {
     case INPUT_KEY_CHAR:
