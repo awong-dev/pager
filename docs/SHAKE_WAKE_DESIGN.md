@@ -76,9 +76,13 @@ hot-window task; the refractory decision is D7.)
   pushes NO event. `input_hot()` keeps the loop at the 100 ms cadence with no light sleep.
 - The first decoded key (`input_feed_key`) clears the hot window, arms the full 119 s window and
   the ordinary render path draws. A shake alone draws nothing.
-- The ext1 block in modes.c: only the IO8 bit is input (rail, `s_last_input_us`,
-  `input_note_button_wake`). A wake with only the LIS3DH bit reports the edge (accel_poll -> loc)
-  and returns to the normal cadence.
+- The ext1 block in modes.c is UI first: any ext1 wake (button or LIS3DH) takes the short
+  `PAGER_INPUT_WAKE_YIELD_MS` yield and skips `wait_for_probe_answer()`, so the shake classifier
+  starts within ~40 ms. Only the IO8 bit is input (`s_last_input_us`, `input_note_button_wake`).
+  A LIS3DH-only wake calls `ui_ensure_powered()` at once so the CardKB boots during the ~0.5 s
+  classifier (~1 s of CardKB current per motion wake; the next sleep's `rail_off()` ends it).
+- Mode-edge `/status` publishes are deferred (`s_status_publish_pending`): sent after the render,
+  once `!input_awake() && !input_hot()` or after 30 s. The relay learns mode=active a little late.
 - We do not reuse `input_note_button_wake()` for shake. That function seeds the FSM from a pin
   that is not pressed and relies on `input_poll()` reading it as an instant release.
 

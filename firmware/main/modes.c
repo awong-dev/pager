@@ -911,6 +911,11 @@ static bool build_status_cbor(uint8_t *out, size_t cap, size_t *out_len, const c
     return true;
 }
 
+#define PAGER_STATUS_PUBLISH_DEFER_MAX_MS 30000
+// Set by set_mode() (event task or loop task), consumed by modes_run().
+static volatile bool s_status_publish_pending = false;
+static volatile int64_t s_status_publish_pending_since_us = 0;
+
 static void publish_status_online(void)
 {
     uint8_t buf[256];
@@ -1010,8 +1015,17 @@ static void set_mode(pager_mode_t new_mode, pager_mode_reason_t reason)
     // races the next connect's own online announcement.
     net_mqtt_status_t st;
     net_get_mqtt_status(&st);
+    // Deferred (5 Oct 2026, UI first): never publish synchronously on a mode
+    // edge -- the render would queue behind the publish-quiet gate. The loop
+    // sends it after the render (s_status_publish_pending). The relay learns
+    // the new mode a little late; incoming pages are unaffected (the session
+    // is up either way). publish_status_online() keeps its own session guard
+    // via the mqtt_connected check at send time.
     if (st.mqtt_connected) {
-        publish_status_online();
+        if (!s_status_publish_pending) {
+            s_status_publish_pending_since_us = esp_timer_get_time();
+            s_status_publish_pending = true;
+        }
     }
     // F6.3: no direct render here any more. README R5's fix funnels every
     // render through modes_run()'s own task (ui_render(), called once per
@@ -2662,11 +2676,12 @@ void modes_run(void)
             // on an EXT1 wake even with nothing (yet) to draw; a timer
             // wake with nothing to draw now leaves the rail OFF instead of
             // paying that cost every single wake.
-            // wake_is_input: read by the yield/wait_for_probe_answer() logic
-            // below (PAGER_INPUT_WAKE_YIELD_MS's own comment) -- this is the
-            // same wake_cause test the rail-gate rule (b) below already makes,
-            // hoisted into a variable instead of read twice.
-            bool wake_is_input = false;
+            // wake_is_ext1: any ext1 wake (button OR LIS3DH bit). Read by the
+            // yield/wait_for_probe_answer() logic below (PAGER_INPUT_WAKE_YIELD_MS's
+            // own comment): UI first, every ext1 wake takes the short yield and
+            // skips the probe wait. wake_is_button: the IO8 bit only -- the
+            // only thing that counts as input (attentive window, FSM seed).
+            bool wake_is_ext1 = false;
             {
                 esp_sleep_wakeup_cause_t wake_cause = esp_sleep_get_wakeup_cause();
                 // 3 Oct 2026 rewiring: the button and the LIS3DH motion
@@ -2674,13 +2689,23 @@ void modes_run(void)
                 // own comment) -- esp_sleep_get_ext1_wakeup_status()'s
                 // bitmask (button = IO8, motion = IO6) is what tells them
                 // apart; there is no more ESP_SLEEP_WAKEUP_EXT0.
-                // Rule (b), 5 Oct 2026: only the button bit is input. Motion
-                // wakes (LIS3DH bit only) report the edge (accel_poll -> loc)
-                // and return to the normal cadence; the keyboard comes alive
-                // only by shake (input_hot() window) or button.
-                if (wake_cause == ESP_SLEEP_WAKEUP_EXT1 &&
-                    (esp_sleep_get_ext1_wakeup_status() & (1ULL << PAGER_PIN_BUTTON))) {
-                    wake_is_input = true;
+                // Rule (b), 5 Oct 2026: only the button bit is input (attentive
+                // window, FSM seed). A motion wake (LIS3DH bit only) is still
+                // an ext1 wake, so it gets the UI-first handling (short yield,
+                // no probe wait) so the shake classifier (accel_poll) starts
+                // at once, and the rail comes on right here so the CardKB
+                // (1.1 s boot) is ready by the time a shake is classified.
+                // Power effect: ~1 s of CardKB current per motion wake; if no
+                // shake follows, the normal sleep branch's rail_off() turns it
+                // off again at the next sleep.
+                wake_is_ext1 = (wake_cause == ESP_SLEEP_WAKEUP_EXT1);
+                bool wake_is_button =
+                    wake_is_ext1 &&
+                    (esp_sleep_get_ext1_wakeup_status() & (1ULL << PAGER_PIN_BUTTON));
+                if (wake_is_ext1 && !wake_is_button) {
+                    ui_ensure_powered(); // motion wake: rail on now (see above)
+                }
+                if (wake_is_button) {
                     int64_t wake_now_us = esp_timer_get_time();
                     s_last_input_us = wake_now_us;
                     ui_ensure_powered(); // rule (b): this wake IS real input, bring the rail up now
@@ -2777,7 +2802,7 @@ void modes_run(void)
             // URC delivery, above) below PAGER_INPUT_WAKE_YIELD_MS is still
             // honoured. UI first: this is the wake the owner is staring at
             // the screen for.
-            if (wake_is_input && yield_ms > PAGER_INPUT_WAKE_YIELD_MS) {
+            if (wake_is_ext1 && yield_ms > PAGER_INPUT_WAKE_YIELD_MS) {
                 yield_ms = PAGER_INPUT_WAKE_YIELD_MS;
             }
 #ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
@@ -2819,7 +2844,7 @@ void modes_run(void)
             // asserted far longer than this wait's own PAGER_PROBE_WAIT_MS
             // bound ever would). Power effect: an input wake never pays this
             // wait's up-to-15s cost.
-            if (!wake_is_input) {
+            if (!wake_is_ext1) {
                 wait_for_probe_answer(interval_ms);
             }
         } else if (btn_busy || accel_shake_pending()) {
@@ -3044,6 +3069,23 @@ void modes_run(void)
             // docs/DEVICE_PLAN.md §5.4: the moment the UI-awake window
             // lapses is where a due full refresh is allowed to land.
             ui_on_awake_lapse();
+        }
+
+        // Deferred mode-edge /status publish (set_mode()): after this
+        // iteration's render, and only once the UI is idle, or after the cap.
+        // Power effect: one small MQTT publish on an already-up session.
+        if (s_status_publish_pending) {
+            bool idle = !input_awake() && !input_hot();
+            bool overdue = (esp_timer_get_time() - s_status_publish_pending_since_us) >=
+                           (int64_t) PAGER_STATUS_PUBLISH_DEFER_MAX_MS * 1000;
+            if (idle || overdue) {
+                s_status_publish_pending = false;
+                net_mqtt_status_t pst;
+                net_get_mqtt_status(&pst);
+                if (pst.mqtt_connected) {
+                    publish_status_online();
+                }
+            }
         }
 
         rtc_lock();
