@@ -466,6 +466,39 @@ static int cmd_railcycle(int argc, char **argv)
 // state (a) are ignored ... unlocking starts ONLY from an IO8 short press",
 // scr_lock.c's own comment) -- `key` alone cannot open the passcode field.
 // Debug build only, same gating as `attn`/`railcycle`.
+// Bench-only: `gpio <n> [sample <ms>]` -- read a pad level without touching
+// its configuration. `sample` polls every 10 ms and reports high/low counts
+// and transitions, so a floating pad shows as mixed and a stuck pad as
+// all-one-level (added 5 Oct 2026 while chasing IO8 reading high).
+static int cmd_gpio(int argc, char **argv)
+{
+    if (argc < 2) {
+        printf("usage: gpio <0-48> [sample <ms<=5000>]\n");
+        return 1;
+    }
+    int n = atoi(argv[1]);
+    if (n < 0 || n > 48) {
+        printf("gpio: pin out of range\n");
+        return 1;
+    }
+    printf("gpio %d: level=%d\n", n, gpio_get_level((gpio_num_t) n));
+    if (argc >= 4 && strcmp(argv[2], "sample") == 0) {
+        int ms = atoi(argv[3]);
+        if (ms < 10) ms = 10;
+        if (ms > 5000) ms = 5000;
+        int hi = 0, lo = 0, trans = 0, last = -1;
+        for (int t = 0; t < ms; t += 10) {
+            int l = gpio_get_level((gpio_num_t) n);
+            if (l) hi++; else lo++;
+            if (last >= 0 && l != last) trans++;
+            last = l;
+            vTaskDelay(pdMS_TO_TICKS(10));
+        }
+        printf("gpio %d: %d ms sampled: high=%d low=%d transitions=%d\n", n, ms, hi, lo, trans);
+    }
+    return 0;
+}
+
 static int cmd_btn(int argc, char **argv)
 {
     bool is_long = (argc >= 2) && (strcmp(argv[1], "long") == 0);
@@ -1765,6 +1798,14 @@ static void start_normal_console(void)
         .func = &cmd_railcycle,
     };
     ESP_ERROR_CHECK(esp_console_cmd_register(&railcycle_cmd));
+
+    const esp_console_cmd_t gpio_cmd = {
+        .command = "gpio",
+        .help = "gpio <n> [sample <ms>] -- read a pad level (and poll it) without reconfiguring it",
+        .hint = NULL,
+        .func = &cmd_gpio,
+    };
+    ESP_ERROR_CHECK(esp_console_cmd_register(&gpio_cmd));
 
     const esp_console_cmd_t btn_cmd = {
         .command = "btn",
