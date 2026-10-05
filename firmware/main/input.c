@@ -46,6 +46,7 @@ input_key_t input_decode_key(uint8_t byte)
 #include "pins.h"
 
 #include "driver/gpio.h"
+#include "driver/rtc_io.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -171,6 +172,16 @@ static void button_fsm_step(int level, int64_t now_us)
 
 void input_init(void)
 {
+    /* 5 Oct 2026 (bench, proto3; also the earlier Walter's "unexplained" BTN_STUCK):
+     * ESP-IDF's ext1_wakeup_prepare() latches an RTC pad HOLD on every ext1 pad before
+     * each light sleep and, on the S3, never releases it. The hold lives in the RTC
+     * domain and survives every reset short of a power cycle; while it is set the
+     * pad's digital input is frozen (gpio_get_level() read 1 with 0 V on the pin:
+     * phantom press 200 ms after boot complete, BTN_STUCK 5 s later, CardKB polled
+     * once per 20 s). A held pad also ignores gpio_config(), so release it FIRST.
+     * net_sleep() (net.cpp) releases it again after every wake. */
+    rtc_gpio_hold_dis((gpio_num_t) PAGER_PIN_BUTTON);
+
     gpio_config_t cfg = {
         .pin_bit_mask = 1ULL << PAGER_PIN_BUTTON,
         .mode = GPIO_MODE_INPUT,

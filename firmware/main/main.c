@@ -14,6 +14,11 @@
 #include "freertos/task.h"
 
 #include "driver/gpio.h"
+#include "driver/rtc_io.h"
+#include "soc/gpio_reg.h"
+#include "soc/io_mux_reg.h"
+#include "soc/rtc_cntl_reg.h"
+#include "soc/rtc_io_reg.h"
 #include "driver/i2c.h"
 
 #include <stdio.h>
@@ -470,6 +475,54 @@ static int cmd_railcycle(int argc, char **argv)
 // its configuration. `sample` polls every 10 ms and reports high/low counts
 // and transitions, so a floating pad shows as mixed and a stuck pad as
 // all-one-level (added 5 Oct 2026 while chasing IO8 reading high).
+// 5 Oct 2026 bench instrument (debug build): the button pad IO8 read 1 via
+// gpio_get_level() while a meter had 0 V on header pin 23. Dump everything
+// that decides what the digital read sees: IO MUX (function/pulls/input
+// enable/sleep-select), RTC IO (rtc mux select, pulls, input enable), the
+// RTC pad hold bit, the raw GPIO_IN bit, and both level readers.
+static int cmd_padinfo(int argc, char **argv)
+{
+    (void) argc;
+    (void) argv;
+    uint32_t rtc = REG_READ(RTC_IO_TOUCH_PAD8_REG);
+    uint32_t hold = REG_READ(RTC_CNTL_PAD_HOLD_REG);
+    uint32_t mux = REG_READ(IO_MUX_GPIO8_REG);
+    uint32_t in = REG_READ(GPIO_IN_REG);
+    printf("padinfo IO8: gpio_get_level=%d rtc_gpio_get_level=%u GPIO_IN.bit8=%u\n",
+           gpio_get_level((gpio_num_t) 8), (unsigned) rtc_gpio_get_level((gpio_num_t) 8),
+           (unsigned) ((in >> 8) & 1u));
+    printf("  RTC_IO_TOUCH_PAD8=0x%08x rtc_mux_sel=%u rtc_fun_ie=%u rue=%u rde=%u rtc_fun_sel=%u\n",
+           (unsigned) rtc, (unsigned) !!(rtc & RTC_IO_TOUCH_PAD8_MUX_SEL),
+           (unsigned) !!(rtc & RTC_IO_TOUCH_PAD8_FUN_IE), (unsigned) !!(rtc & RTC_IO_TOUCH_PAD8_RUE),
+           (unsigned) !!(rtc & RTC_IO_TOUCH_PAD8_RDE),
+           (unsigned) ((rtc >> RTC_IO_TOUCH_PAD8_FUN_SEL_S) & 3u));
+    printf("  RTC_CNTL_PAD_HOLD=0x%08x pad8_hold=%u\n", (unsigned) hold,
+           (unsigned) !!(hold & RTC_CNTL_TOUCH_PAD8_HOLD));
+    printf("  IO_MUX_GPIO8=0x%08x mcu_sel=%u fun_ie=%u fun_pu=%u fun_pd=%u slp_sel=%u\n",
+           (unsigned) mux, (unsigned) ((mux >> MCU_SEL_S) & 7u), (unsigned) !!(mux & FUN_IE),
+           (unsigned) !!(mux & FUN_PU), (unsigned) !!(mux & FUN_PD), (unsigned) !!(mux & SLP_SEL));
+    gpio_dump_io_configuration(stdout, 1ULL << 8);
+    return 0;
+}
+
+// Companion: force IO8 back to a plain digital input with pull-down (hold off,
+// digital mux, gpio_config as input_init() does) and dump again.
+static int cmd_padfix(int argc, char **argv)
+{
+    rtc_gpio_hold_dis((gpio_num_t) 8);
+    rtc_gpio_deinit((gpio_num_t) 8);
+    gpio_config_t cfg = {
+        .pin_bit_mask = 1ULL << 8,
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_ENABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    gpio_config(&cfg);
+    printf("padfix: hold_dis + rtc_gpio_deinit + gpio_config(input, pull-down) applied to IO8\n");
+    return cmd_padinfo(argc, argv);
+}
+
 static int cmd_gpio(int argc, char **argv)
 {
     if (argc < 2) {
@@ -1806,6 +1859,21 @@ static void start_normal_console(void)
         .func = &cmd_gpio,
     };
     ESP_ERROR_CHECK(esp_console_cmd_register(&gpio_cmd));
+
+    const esp_console_cmd_t padinfo_cmd = {
+        .command = "padinfo",
+        .help = "padinfo -- dump IO8's IO MUX / RTC IO / hold registers and both level readers",
+        .hint = NULL,
+        .func = &cmd_padinfo,
+    };
+    ESP_ERROR_CHECK(esp_console_cmd_register(&padinfo_cmd));
+    const esp_console_cmd_t padfix_cmd = {
+        .command = "padfix",
+        .help = "padfix -- IO8: hold off, digital mux, input+pull-down, then padinfo",
+        .hint = NULL,
+        .func = &cmd_padfix,
+    };
+    ESP_ERROR_CHECK(esp_console_cmd_register(&padfix_cmd));
 
     const esp_console_cmd_t btn_cmd = {
         .command = "btn",

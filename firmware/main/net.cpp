@@ -37,6 +37,7 @@
 #include "esp_sleep.h"
 #include "driver/uart.h"
 #include "driver/gpio.h"
+#include "driver/rtc_io.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -1264,6 +1265,13 @@ extern "C" void net_sleep(uint32_t ms)
     flightrec_event('S', (int32_t) ms, flightrec_cts_level());
 
     esp_light_sleep_start();
+
+    // 5 Oct 2026 (bench, proto3): ext1_wakeup_prepare() above (inside
+    // esp_light_sleep_start()) latches an RTC pad HOLD on every ext1 pad and, on the
+    // S3, never releases it -- while held, gpio_get_level(PAGER_PIN_BUTTON) is frozen
+    // (read 1 with 0 V on the pin). Release it on every wake; input_init() (input.c)
+    // releases a hold left over from a previous boot, since it survives resets.
+    rtc_gpio_hold_dis((gpio_num_t) PAGER_PIN_BUTTON);
 
     // A1: count ext1 wakes actually caused by motion, before anything below
     // can touch the wakeup-cause register -- net_get_ext1_wakes() is A2's

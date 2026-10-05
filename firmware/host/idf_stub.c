@@ -6,6 +6,7 @@
  * on the host (task 1.0, docs/V03_TASKS.md).
  */
 #include "driver/gpio.h"
+#include "driver/rtc_io.h"
 #include "esp_timer.h"
 #include "freertos/queue.h"
 
@@ -15,6 +16,8 @@ void gpio_config(const gpio_config_t *cfg)
 {
     (void) cfg; /* no real GPIO on the host; input.c only configures the button pin */
 }
+
+void rtc_gpio_hold_dis(gpio_num_t pin) { (void) pin; }
 
 static int s_button_level = 0; /* idle (active-high, released) by default */
 
