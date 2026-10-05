@@ -2106,6 +2106,7 @@ void app_main(void)
     // exists for the rest of the device's life; esp_console_start_repl()
     // does not block here.
     start_normal_console();
+    esp_log_level_set("ui", ESP_LOG_DEBUG); // 4 Oct 2026: raw CardKB bytes (ui.c's ESP_LOGD "CardKB: 0x..") for the wrong-character report
 #endif
 
     // modes_boot() decides cold-boot vs. reset-recovery internally by
