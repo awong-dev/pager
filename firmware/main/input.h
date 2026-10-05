@@ -194,6 +194,18 @@ bool input_button_stuck(void);
  * GPIO/I2C/modem access. */
 void input_note_button_wake(int64_t now_us);
 
+/* Shake-to-wake (accel.c's accel_poll() returned true; design D8): does what
+ * an IO8 short press does. If the button FSM is not BTN_IDLE it does nothing.
+ * If the UI is already awake it only re-arms the awake window (a shake is a
+ * wake gesture, not a "next chat" key). Otherwise it arms the window and
+ * pushes BTN_DOWN then BTN_SHORT, which modes.c's event drain turns into
+ * set_mode(ACTIVE) + ui_on_button_short(). It never touches the FSM state:
+ * input_note_button_wake() seeds BTN_DOWN from a pin that is not pressed and
+ * relies on input_poll() reading an instant release, which is wrong here.
+ * Power effect: none of its own; the 119 s awake window it arms costs about
+ * 1.3 mAh. */
+void input_note_shake_wake(int64_t now_us);
+
 #endif /* ESP_PLATFORM */
 
 #ifdef __cplusplus

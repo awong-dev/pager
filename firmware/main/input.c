@@ -218,6 +218,20 @@ void input_note_button_wake(int64_t now_us)
     push_event((input_event_t) { .type = INPUT_EVT_BTN_DOWN });
 }
 
+void input_note_shake_wake(int64_t now_us)
+{
+    if (s_btn_state != BTN_IDLE) {
+        return;
+    }
+    if (input_awake()) {
+        arm_awake_window(now_us);
+        return;
+    }
+    arm_awake_window(now_us);
+    push_event((input_event_t) { .type = INPUT_EVT_BTN_DOWN });
+    push_event((input_event_t) { .type = INPUT_EVT_BTN_SHORT });
+}
+
 void input_feed_key(uint8_t byte)
 {
     input_key_t key = input_decode_key(byte);

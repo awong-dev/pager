@@ -16,6 +16,13 @@
  *    0/20/40/60s -> span 60s -> fires)
  *  - a negative/backwards clock never wedges (does not permanently return
  *    "not wanted")
+ * Shake-to-wake classifier accel_shake_step() (docs/SHAKE_WAKE_DESIGN.md):
+ *  - fires on a sustained shake (n=11 in 400 ms at 20 ms polling), no reject
+ *  - one jolt: no fire, one REJECTED, then the 10 s holdoff and its end
+ *  - running (stride gap > 250 ms): never fires, rejects
+ *  - gap boundary: 250 ms spacing fires, 251 ms spacing rejects
+ *  - N gate (5 observations pending, 6th fires) and span gate (400 ms)
+ *  - backwards clock resets the chain and a fresh shake still fires
  */
 #include "accel.h"
 #include "loc.h"
@@ -117,6 +124,163 @@ static void test_gated_sequence_still_fires_classifier(void)
                  "refractory gate");
 }
 
+
+/* ---------------------------------------------------------------------
+ * accel_shake_step(): shake-to-wake classifier.
+ * --------------------------------------------------------------------- */
+#define MS(x) ((int64_t) (x) * 1000)
+
+static const accel_shake_cfg_t SHAKE_CFG = {
+    .n_min = ACCEL_SHAKE_N,
+    .gap_ms = ACCEL_SHAKE_GAP_MS,
+    .span_ms = ACCEL_SHAKE_SPAN_MS,
+    .cooldown_ms = ACCEL_SHAKE_COOLDOWN_MS,
+    .holdoff_ms = ACCEL_SHAKE_HOLDOFF_MS,
+};
+
+static void test_shake_fires(void)
+{
+    accel_shake_t s = { 0 };
+    int fired = 0, rejected = 0;
+    for (int t = 0; t <= 3000; t += 20) {
+        accel_shake_verdict_t v = accel_shake_step(&s, &SHAKE_CFG, MS(t), t % 40 == 0);
+        if (v == ACCEL_SHAKE_FIRED) {
+            fired++;
+            CHECK(t == 400, "shake fires at t=400 ms, got %d", t);
+            CHECK(s.out_n == 11, "shake out_n=11, got %u", (unsigned) s.out_n);
+            CHECK(s.out_span_ms == 400, "shake out_span_ms=400, got %u", (unsigned) s.out_span_ms);
+        }
+        if (v == ACCEL_SHAKE_REJECTED) {
+            rejected++;
+        }
+    }
+    CHECK(fired == 1, "exactly one FIRED, got %d", fired);
+    CHECK(rejected == 0, "no REJECTED before 3000 ms, got %d", rejected);
+}
+
+static void test_shake_one_jolt(void)
+{
+    accel_shake_t s = { 0 };
+    int fired = 0, rejected = 0;
+    for (int t = 0; t <= 2000; t += 20) {
+        bool ia2 = (t == 0 || t == 40 || t == 80 || t == 1000);
+        accel_shake_verdict_t v = accel_shake_step(&s, &SHAKE_CFG, MS(t), ia2);
+        if (v == ACCEL_SHAKE_FIRED) {
+            fired++;
+        }
+        if (v == ACCEL_SHAKE_REJECTED) {
+            rejected++;
+            CHECK(t == 340, "jolt rejected at t=340, got %d", t);
+            CHECK(s.out_n == 3, "jolt out_n=3, got %u", (unsigned) s.out_n);
+        }
+        if (t == 1000) {
+            CHECK(v == ACCEL_SHAKE_IDLE, "ia2 at t=1000 is ignored during holdoff, got %d", (int) v);
+        }
+    }
+    CHECK(fired == 0, "a jolt never fires, got %d", fired);
+    CHECK(rejected == 1, "exactly one REJECTED, got %d", rejected);
+    CHECK(accel_shake_step(&s, &SHAKE_CFG, MS(10360), true) == ACCEL_SHAKE_PENDING,
+          "ia2 at t=10360 (holdoff over) starts a chain");
+}
+
+static void test_shake_running(void)
+{
+    accel_shake_t s = { 0 };
+    int fired = 0, rejected = 0;
+    int next_idx = 0; /* index into the sorted target list k*333, k*333+40 */
+    int64_t targets[62];
+    for (int k = 0; k <= 30; k++) {
+        targets[2 * k] = (int64_t) k * 333;
+        targets[2 * k + 1] = (int64_t) k * 333 + 40;
+    }
+    for (int t = 0; t < 10000; t += 20) {
+        bool ia2 = false;
+        while (next_idx < 62 && targets[next_idx] <= t) {
+            ia2 = true;
+            next_idx++;
+        }
+        accel_shake_verdict_t v = accel_shake_step(&s, &SHAKE_CFG, MS(t), ia2);
+        if (v == ACCEL_SHAKE_FIRED) {
+            fired++;
+        }
+        if (v == ACCEL_SHAKE_REJECTED) {
+            rejected++;
+        }
+    }
+    CHECK(fired == 0, "running never fires, got %d", fired);
+    CHECK(rejected >= 1, "running yields at least one REJECTED, got %d", rejected);
+}
+
+static void test_shake_gap_boundary(void)
+{
+    accel_shake_t s = { 0 };
+    accel_shake_verdict_t v = ACCEL_SHAKE_IDLE;
+    for (int i = 0; i < 6; i++) {
+        v = accel_shake_step(&s, &SHAKE_CFG, MS(i * 250), true);
+        if (i < 5) {
+            CHECK(v == ACCEL_SHAKE_PENDING, "250 ms spacing, call %d pending, got %d", i + 1, (int) v);
+        }
+    }
+    CHECK(v == ACCEL_SHAKE_FIRED, "250 ms spacing fires at the 6th call (t=1250), got %d", (int) v);
+
+    accel_shake_t s2 = { 0 };
+    int fired = 0;
+    for (int i = 0; i < 6; i++) {
+        v = accel_shake_step(&s2, &SHAKE_CFG, (int64_t) i * 251000, true);
+        if (v == ACCEL_SHAKE_FIRED) {
+            fired++;
+        }
+        if (i == 1) {
+            CHECK(v == ACCEL_SHAKE_REJECTED, "251 ms spacing rejected at the 2nd call, got %d", (int) v);
+        }
+    }
+    CHECK(fired == 0, "251 ms spacing never fires, got %d", fired);
+}
+
+static void test_shake_n_gate(void)
+{
+    accel_shake_t s = { 0 };
+    accel_shake_verdict_t v = ACCEL_SHAKE_IDLE;
+    for (int i = 0; i < 5; i++) {
+        v = accel_shake_step(&s, &SHAKE_CFG, MS(i * 200), true);
+    }
+    CHECK(v == ACCEL_SHAKE_PENDING, "5 observations spanning 800 ms stay PENDING, got %d", (int) v);
+    v = accel_shake_step(&s, &SHAKE_CFG, MS(1000), true);
+    CHECK(v == ACCEL_SHAKE_FIRED, "6th observation at 1000 ms fires, got %d", (int) v);
+}
+
+static void test_shake_span_gate(void)
+{
+    accel_shake_t s = { 0 };
+    int fired = 0;
+    for (int t = 0; t <= 400; t += 20) {
+        accel_shake_verdict_t v = accel_shake_step(&s, &SHAKE_CFG, MS(t), true);
+        if (v == ACCEL_SHAKE_FIRED) {
+            fired++;
+            CHECK(t == 400, "span gate: fires at t=400, got %d", t);
+        }
+    }
+    CHECK(fired == 1, "span gate: one FIRED by t=400, got %d", fired);
+}
+
+static void test_shake_backwards_clock(void)
+{
+    accel_shake_t s = { 0 };
+    accel_shake_step(&s, &SHAKE_CFG, MS(1000), true);
+    accel_shake_step(&s, &SHAKE_CFG, MS(1040), true);
+    CHECK(s.n == 2, "chain started, n=%u", (unsigned) s.n);
+    accel_shake_verdict_t v = accel_shake_step(&s, &SHAKE_CFG, MS(500), true);
+    CHECK(v == ACCEL_SHAKE_IDLE, "backwards clock returns IDLE, got %d", (int) v);
+    CHECK(s.n == 0, "backwards clock resets the chain, n=%u", (unsigned) s.n);
+    int fired = 0;
+    for (int t = 600; t <= 1000; t += 20) {
+        if (accel_shake_step(&s, &SHAKE_CFG, MS(t), true) == ACCEL_SHAKE_FIRED) {
+            fired++;
+        }
+    }
+    CHECK(fired == 1, "a fresh shake after the backwards clock still fires, got %d", fired);
+}
+
 int main(void)
 {
     test_first_edge_always_wanted();
@@ -124,6 +288,13 @@ int main(void)
     test_refractory_zero_means_off();
     test_backwards_clock_never_wedges();
     test_gated_sequence_still_fires_classifier();
+    test_shake_fires();
+    test_shake_one_jolt();
+    test_shake_running();
+    test_shake_gap_boundary();
+    test_shake_n_gate();
+    test_shake_span_gate();
+    test_shake_backwards_clock();
 
     if (g_failures == 0) {
         printf("PASS: accel refractory gate, 0 failures\n");

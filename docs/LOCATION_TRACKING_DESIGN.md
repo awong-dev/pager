@@ -19,7 +19,7 @@ relay. Every mAh figure is an **estimate** unless it says **measured**, and each
 - `loc.h` `LOC_STATUS_PERIOD_S 0`. The `loc_trigger_*` cell/motion triggers only zero the backoff
   (and set a 10 min floor); attempts start only from `loc_req`. While moving, the motion trigger
   re-fires every ~60–80 s, which would pin the backoff at zero once attempts are scheduled.
-- `accel.c`: 10 Hz low power, latched INT1 on IO2 (ext1), 20 s refractory, ≤3 edges/min.
+- `accel.c`: 25 Hz low power ±4 g, latched INT1 on IO6 (ext1), 20 s refractory applied at the sensor (CTRL_REG3 I1_IA1), ≤3 edges/min; generator 2 on the same pin = shake-to-wake (SHAKE_WAKE_DESIGN.md).
 - `net.cpp` refreshes the cell (`AT+SQNMONI`) only after a `+CEREG` change. A URC lost in light
   sleep is a missed change.
 - Keep-alive (`xport_lte.cpp:733`): raw re-SUBSCRIBE after 300 s of uplink silence. Every

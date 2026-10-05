@@ -44,8 +44,8 @@ extern "C" {
  *
  * CTRL_REG5's LIR_INT1 latches INT1 until INT1_SRC is read, and ext1 is
  * armed ESP_EXT1_WAKEUP_ANY_HIGH on that same pin -- so while the pager is
- * moving, every LIS3DH sample above threshold (up to 10/s at the configured
- * 10 Hz ODR) would otherwise end light sleep. The 60s-within-3min motion
+ * moving, every LIS3DH sample above threshold (up to 25/s at the configured
+ * 25 Hz ODR) would otherwise end light sleep. The 60s-within-3min motion
  * classifier (loc_trigger_motion_event()) needs only two edges at least 60s
  * apart, so throttling reported edges to at most one per `refractory_us`
  * costs it nothing while cutting the wake rate by roughly two orders of
@@ -62,9 +62,63 @@ extern "C" {
  * else a clock reading feeds a gate. */
 bool accel_edge_wanted(int64_t now_us, int64_t last_reported_us, int64_t refractory_us);
 
+/* Shake-to-wake classifier (docs/SHAKE_WAKE_DESIGN.md D5/D6), pure and
+ * host-tested like accel_edge_wanted(). A "chain" is a run of accel_poll()
+ * observations with LIS3DH generator 2 (IA2) set. Defaults for the cfg: */
+#define ACCEL_SHAKE_N           6
+#define ACCEL_SHAKE_GAP_MS      250
+#define ACCEL_SHAKE_SPAN_MS     400
+#define ACCEL_SHAKE_COOLDOWN_MS 3000
+#define ACCEL_SHAKE_HOLDOFF_MS  10000
+
+typedef struct {
+    uint8_t n_min;
+    uint16_t gap_ms, span_ms;
+    uint32_t cooldown_ms, holdoff_ms;
+} accel_shake_cfg_t;
+
+typedef struct {
+    uint16_t n;
+    int64_t first_us, last_us, cooldown_until_us, holdoff_until_us;
+    uint16_t out_n;
+    uint32_t out_span_ms;
+} accel_shake_t; /* zero-init = idle */
+
+typedef enum {
+    ACCEL_SHAKE_IDLE,
+    ACCEL_SHAKE_PENDING,
+    ACCEL_SHAKE_FIRED,
+    ACCEL_SHAKE_REJECTED
+} accel_shake_verdict_t;
+
+/* Feeds one observation (`ia2` = generator 2 was set in this poll) at
+ * `now_us`. Evaluated in this order:
+ *  (a) Backwards clock (s->n && now_us < s->last_us): reset the chain
+ *      (n=0) and return IDLE. If cooldown_until_us or holdoff_until_us lies
+ *      more than its own duration ahead of now, clear it. This is the
+ *      never-wedge rule.
+ *  (b) If s->n > 0 and now - last > gap: set out_n=n and
+ *      out_span_ms=(last-first)/1000, n=0, holdoff_until=now+holdoff and
+ *      return REJECTED.
+ *  (c) If now < cooldown_until or now < holdoff_until: return IDLE (ia2 is
+ *      ignored).
+ *  (d) If ia2: when n==0 set first=now; then n++ and last=now. If
+ *      n >= n_min and now-first >= span: set out_n/out_span_ms, n=0,
+ *      cooldown_until=now+cooldown and return FIRED.
+ *  (e) Return PENDING if n>0, else IDLE.
+ * out_n / out_span_ms are valid only after FIRED or REJECTED. No ESP-IDF
+ * calls, no side effects beyond *s. */
+accel_shake_verdict_t accel_shake_step(accel_shake_t *s, const accel_shake_cfg_t *c, int64_t now_us, bool ia2);
+
+/* True while the device's shake chain has n>0, i.e. the main loop should
+ * keep polling at the fast cadence instead of light-sleeping. Device state
+ * (accel.c); false if the chip is absent. Power effect: none by itself. */
+bool accel_shake_pending(void);
+
 /* Probes WHO_AM_I (register 0x0F, expected 0x33). On success, configures
- * low-power 10 Hz ODR with a high-pass-filtered INT1 motion interrupt
- * (thresholds UNVERIFIED/tunable — see accel.c) and calls
+ * low-power 25 Hz ODR at +-4 g with high-pass-filtered motion (generator 1)
+ * and shake-candidate (generator 2) interrupts, both routed to INT1
+ * (docs/SHAKE_WAKE_DESIGN.md) and calls
  * net_enable_accel_wake() so IO6 becomes a light-sleep wake source. On
  * failure (no/wrong response — the expected case if the chip is not wired),
  * logs once at INFO and returns false; every other accel.c/loc.c function
@@ -78,24 +132,19 @@ bool accel_edge_wanted(int64_t now_us, int64_t last_reported_us, int64_t refract
  * this board). */
 bool accel_init(void);
 
-/* Reads INT1_SRC (register 0x31) once — the read itself clears the LIS3DH's
- * latched interrupt (CTRL_REG5 LIR_INT1). No-op if accel_init() did not find
- * the chip. Call once per modes_run() loop iteration, unconditionally, same
- * polling discipline input_poll()/ui_poll_keyboard() already use — never
- * from an ISR (this chip's INT1 is only ever read as a polled register, not
- * hooked to a GPIO interrupt handler; IO6's only "interrupt" role is as the
- * ext1 light-sleep wake source net_enable_accel_wake()/net_set_accel_wake()
- * arms). On an asserted interrupt, consults accel_edge_wanted() and calls
- * loc_on_motion_event() exactly once per *wanted* edge (A1: unwanted edges,
- * inside the refractory window, are drained from INT1_SRC -- clearing the
- * latch -- but never reported to the classifier). Power effect: one I2C
- * transaction, same class as ui_poll_keyboard()'s CardKB read, PLUS -- on a
- * wanted edge, while the refractory window is non-zero -- one
- * net_set_accel_wake(false) that disarms the ext1 light-sleep wake source
- * for that window (cutting the ~10 Hz wake storm down to at most 1
- * wake/refractory-window while the pager is being carried), and later one
- * net_set_accel_wake(true) re-arming it once the window has elapsed. */
-void accel_poll(void);
+/* Reads INT1_SRC (0x31) and INT2_SRC (0x35) once each -- the reads clear the
+ * LIS3DH's latched interrupts (CTRL_REG5 LIR_INT1/LIR_INT2). No-op (returns
+ * false) if accel_init() did not find the chip. Call once per modes_run()
+ * loop iteration, unconditionally, never from an ISR. On a generator 1
+ * (motion) edge, consults accel_edge_wanted() and calls loc_on_motion_event()
+ * exactly once per *wanted* edge, then clears CTRL_REG3 I1_IA1 at the sensor
+ * for the refractory window (the ext1 bit stays armed so IA2 can always
+ * wake). Generator 2 observations feed accel_shake_step(). Returns true
+ * exactly once per intentional shake (FIRED); the caller turns that into a
+ * wake gesture (input_note_shake_wake()). Power effect: two I2C reads, same
+ * class as ui_poll_keyboard()'s CardKB read, plus at most one CTRL_REG3
+ * write when the wanted IA1/IA2 routing changes. */
+bool accel_poll(void);
 
 /* ---------------------------------------------------------------------
  * Debug-only accessors for main.c's `acceltest` console command
@@ -114,7 +163,14 @@ typedef struct {
     uint8_t who_am_i;
     uint8_t ctrl_reg1, ctrl_reg2, ctrl_reg3, ctrl_reg4, ctrl_reg5;
     uint8_t int1_cfg, int1_ths, int1_duration, int1_src;
-    uint32_t ths_mg;           /* int1_ths * 16 mg, at +-2g (accel.c's own INT1_THS comment) */
+    uint8_t int2_cfg, int2_ths, int2_duration, int2_src;
+    uint32_t ths_mg;           /* int1_ths * THS LSB for the CTRL_REG4 FS bits (16/32/62/186 mg) */
+    uint32_t ths2_mg;          /* int2_ths * the same LSB */
+    bool shake_enabled;
+    uint8_t shake_n;           /* the s_shake_cfg fields */
+    uint16_t shake_gap_ms, shake_span_ms;
+    uint32_t shake_cooldown_ms, shake_holdoff_ms;
+    uint32_t shake_candidates, shake_rejected, shake_fired;
     int64_t refractory_us;     /* current accel_edge_wanted() window, 0 = off */
     uint32_t edges_reported;   /* wanted edges passed to loc_on_motion_event() since boot */
     uint32_t ext1_wakes;       /* net_get_ext1_wakes() at the moment of this call */
@@ -131,15 +187,19 @@ typedef struct {
 bool accel_debug_status(accel_debug_status_t *out, bool *out_newly_configured);
 
 /* One live sample: OUT_X_L..OUT_Z_H (0x28, auto-increment bit 0x80) plus
- * INT1_SRC, converted to mg using the same 16 mg/LSB, +-2g scale as
- * INT1_THS (CTRL_REG1's LPen=1 selects the LIS3DH's 8-bit low-power
- * resolution, left-justified in the high byte of each axis -- UNVERIFIED
- * against real hardware, like every other threshold in this file, but
- * good enough for a human eyeballing "is this reading sane"). Returns
- * false (chip absent) without touching x_mg / y_mg / z_mg / int1_src.
- * Power effect: two I2C transactions (6-byte OUT burst + INT1_SRC),
- * same class as accel_poll(). */
-bool accel_debug_sample(int16_t *x_mg, int16_t *y_mg, int16_t *z_mg, uint8_t *int1_src);
+ * INT1_SRC and INT2_SRC, converted to mg from the current CTRL_REG4 FS bits
+ * (CTRL_REG1's LPen=1 selects the LIS3DH's 8-bit low-power resolution,
+ * left-justified in the high byte of each axis: value = (raw >> 8) * LSB,
+ * LSB 16/32/62/186 mg for +-2/4/8/16 g). Returns false (chip absent)
+ * without touching the outputs. Power effect: three I2C transactions
+ * (6-byte OUT burst + the two SRC reads), same class as accel_poll(). */
+bool accel_debug_sample(int16_t *x_mg, int16_t *y_mg, int16_t *z_mg, uint8_t *int1_src,
+                        uint8_t *int2_src);
+
+/* Sample period in ms for the current CTRL_REG1 ODR bits (1->1000, 2->100,
+ * 3->40, 4->20, 5->10, else 100), so `acceltest samples` paces at the real
+ * ODR. Power effect: one I2C read. */
+uint32_t accel_debug_sample_period_ms(void);
 
 /* Writes INT1_THS (0-127) and reads it back into *readback. Returns false
  * (readback unchanged) if the chip is absent or either I2C transaction
@@ -149,6 +209,26 @@ bool accel_debug_set_ths(uint8_t ths, uint8_t *readback);
 /* Writes INT1_DURATION (0-127) and reads it back into *readback. Same
  * contract/power effect as accel_debug_set_ths(). */
 bool accel_debug_set_dur(uint8_t dur, uint8_t *readback);
+
+/* Writes INT2_THS / INT2_DURATION (0-127) and reads back into *readback.
+ * Same contract/power effect as accel_debug_set_ths(). */
+bool accel_debug_set_ths2(uint8_t ths, uint8_t *readback);
+bool accel_debug_set_dur2(uint8_t dur, uint8_t *readback);
+
+/* Enables/disables the shake feature: off takes IA2 off the pin (CTRL_REG3
+ * on the next accel_poll()) and keeps the classifier idle. Resets the chain
+ * and the holdoff either way. Power effect: none by itself. */
+void accel_debug_set_shake(bool enabled);
+
+/* Replaces the classifier cfg (n_min, gap, span, holdoff in seconds) and
+ * resets the chain and holdoff. Power effect: none by itself. */
+void accel_debug_set_shake_cfg(uint8_t n, uint16_t gap_ms, uint16_t span_ms, uint32_t holdoff_s);
+
+/* Writes CTRL_REG1 and CTRL_REG4 and reads both back; true only if both
+ * read-backs equal the written values. Power effect: four I2C transactions;
+ * the ODR change alters the sensor's own current draw (about 3-4 uA at
+ * 10-25 Hz LP). */
+bool accel_debug_set_cfg(uint8_t ctrl1, uint8_t ctrl4);
 
 /* Sets the refractory window accel_poll() passes to accel_edge_wanted(),
  * in seconds (0 = off, reproducing the pre-A1 wake storm on purpose).

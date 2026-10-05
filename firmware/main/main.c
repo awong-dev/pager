@@ -1127,13 +1127,19 @@ static int cmd_smslist(int argc, char **argv)
 // Runs on this console task; the IDF I2C driver is per-port mutexed, so
 // concurrent ui_poll_keyboard()/accel_poll() (modes_run()'s task) is safe.
 // `acceltest samples 600` blocks THIS task (never modes_run()'s) for ~60s
-// (100ms/sample at the LIS3DH's 10Hz ODR).
+// (one sample per ODR period, 40ms at the default 25Hz).
 static const char *ACCELTEST_USAGE =
-    "acceltest                 -- WHO_AM_I, CTRL_REG1-5, INT1_CFG/THS/DURATION/SRC, THS in mg, "
-    "the refractory setting, edges reported, and ext1 wake count\n"
-    "acceltest samples <n>     -- n (1..600) live x/y/z samples at 10Hz, plus INT1_SRC when IA is set\n"
+    "acceltest                 -- WHO_AM_I, CTRL_REG1-5, INT1/INT2 CFG/THS/DURATION/SRC, THS in mg, "
+    "the shake settings and counters, the refractory setting, edges reported, and ext1 wake count\n"
+    "acceltest samples <n>     -- n (1..600) live x/y/z samples paced at the current ODR, plus "
+    "INT1_SRC/INT2_SRC when an IA bit is set\n"
     "acceltest ths <0-127>     -- write INT1_THS, echo the read-back\n"
     "acceltest dur <0-127>     -- write INT1_DURATION, echo the read-back\n"
+    "acceltest ths2 <0-127>    -- write INT2_THS, echo the read-back\n"
+    "acceltest dur2 <0-127>    -- write INT2_DURATION, echo the read-back\n"
+    "acceltest shake on|off    -- shake-to-wake on (default) or off (IA2 off the pin, classifier idle)\n"
+    "acceltest shake <n 1-50> <gap_ms 20-2000> <span_ms 0-5000> <holdoff_s 0-600> -- classifier settings\n"
+    "acceltest cfg <ctrl1> <ctrl4> -- write CTRL_REG1 and CTRL_REG4 (0-255, hex ok, e.g. 0x2F 0x00)\n"
     "acceltest refr <seconds>  -- set A1's refractory window (0 = off, reproduces the wake storm)\n";
 
 static int cmd_acceltest(int argc, char **argv)
@@ -1159,6 +1165,16 @@ static int cmd_acceltest(int argc, char **argv)
                "INT1_SRC=0x%02x\n",
                (unsigned) st.int1_cfg, (unsigned) st.int1_ths, (unsigned) st.ths_mg,
                (unsigned) st.int1_duration, (unsigned) st.int1_src);
+        printf("acceltest: INT2_CFG=0x%02x INT2_THS=0x%02x (%u mg) INT2_DURATION=0x%02x "
+               "INT2_SRC=0x%02x\n",
+               (unsigned) st.int2_cfg, (unsigned) st.int2_ths, (unsigned) st.ths2_mg,
+               (unsigned) st.int2_duration, (unsigned) st.int2_src);
+        printf("acceltest: shake=%s n=%u gap=%ums span=%ums holdoff=%us candidates=%u rejected=%u "
+               "fired=%u\n",
+               st.shake_enabled ? "on" : "off", (unsigned) st.shake_n, (unsigned) st.shake_gap_ms,
+               (unsigned) st.shake_span_ms, (unsigned) (st.shake_holdoff_ms / 1000),
+               (unsigned) st.shake_candidates, (unsigned) st.shake_rejected,
+               (unsigned) st.shake_fired);
         printf("acceltest: refractory=%llds edges_reported=%u ext1_wakes=%u\n",
                (long long) (st.refractory_us / 1000000), (unsigned) st.edges_reported,
                (unsigned) st.ext1_wakes);
@@ -1180,18 +1196,20 @@ static int cmd_acceltest(int argc, char **argv)
             printf("acceltest: not present\n");
             return 1;
         }
+        uint32_t period_ms = accel_debug_sample_period_ms();
         for (long i = 0; i < n; i++) {
             int16_t x_mg = 0, y_mg = 0, z_mg = 0;
-            uint8_t src = 0;
-            if (!accel_debug_sample(&x_mg, &y_mg, &z_mg, &src)) {
+            uint8_t src = 0, src2 = 0;
+            if (!accel_debug_sample(&x_mg, &y_mg, &z_mg, &src, &src2)) {
                 printf("acceltest: sample %ld: I2C read failed\n", i);
             } else {
                 printf("acceltest: x=%d y=%d z=%d mg\n", (int) x_mg, (int) y_mg, (int) z_mg);
-                if (src & 0x40) { // IA
-                    printf("acceltest: INT1_SRC=0x%02x\n", (unsigned) src);
+                if ((src & 0x40) || (src2 & 0x40)) { // IA
+                    printf("acceltest: INT1_SRC=0x%02x INT2_SRC=0x%02x\n", (unsigned) src,
+                           (unsigned) src2);
                 }
             }
-            vTaskDelay(pdMS_TO_TICKS(100)); // 10 Hz ODR
+            vTaskDelay(pdMS_TO_TICKS(period_ms)); // one sample per ODR period
         }
         return 0;
     }
@@ -1234,6 +1252,88 @@ static int cmd_acceltest(int argc, char **argv)
             return 1;
         }
         printf("acceltest: INT1_DURATION=0x%02x\n", (unsigned) readback);
+        return 0;
+    }
+
+    if (strcmp(argv[1], "ths2") == 0 || strcmp(argv[1], "dur2") == 0) {
+        bool is_ths = argv[1][0] == 't';
+        if (argc != 3) {
+            printf("usage: acceltest %s <0-127>\n", argv[1]);
+            return 1;
+        }
+        char *end = NULL;
+        long v = strtol(argv[2], &end, 10);
+        if (!end || *end != '\0' || v < 0 || v > 127) {
+            printf("acceltest: %s must be 0..127\n", argv[1]);
+            return 1;
+        }
+        uint8_t readback = 0;
+        if (!(is_ths ? accel_debug_set_ths2((uint8_t) v, &readback)
+                     : accel_debug_set_dur2((uint8_t) v, &readback))) {
+            printf("acceltest: not present, or the write failed\n");
+            return 1;
+        }
+        if (is_ths) {
+            accel_debug_status_t st2;
+            accel_debug_status(&st2, NULL);
+            printf("acceltest: INT2_THS=0x%02x (%u mg)\n", (unsigned) readback,
+                   (unsigned) st2.ths2_mg);
+        } else {
+            printf("acceltest: INT2_DURATION=0x%02x\n", (unsigned) readback);
+        }
+        return 0;
+    }
+
+    if (strcmp(argv[1], "shake") == 0) {
+        if (argc == 3 && (strcmp(argv[2], "on") == 0 || strcmp(argv[2], "off") == 0)) {
+            bool on = argv[2][1] == 'n';
+            accel_debug_set_shake(on);
+            printf("acceltest: shake=%s\n", on ? "on" : "off");
+            return 0;
+        }
+        if (argc != 6) {
+            printf("usage: acceltest shake on|off | acceltest shake <n 1-50> <gap_ms 20-2000> "
+                   "<span_ms 0-5000> <holdoff_s 0-600>\n");
+            return 1;
+        }
+        long vals[4];
+        for (int k = 0; k < 4; k++) {
+            char *end = NULL;
+            vals[k] = strtol(argv[2 + k], &end, 10);
+            if (!end || *end != '\0') {
+                printf("acceltest: shake arguments must be numbers\n");
+                return 1;
+            }
+        }
+        if (vals[0] < 1 || vals[0] > 50 || vals[1] < 20 || vals[1] > 2000 || vals[2] < 0 ||
+            vals[2] > 5000 || vals[3] < 0 || vals[3] > 600) {
+            printf("acceltest: n 1-50, gap_ms 20-2000, span_ms 0-5000, holdoff_s 0-600\n");
+            return 1;
+        }
+        accel_debug_set_shake_cfg((uint8_t) vals[0], (uint16_t) vals[1], (uint16_t) vals[2],
+                                  (uint32_t) vals[3]);
+        printf("acceltest: shake n=%ld gap=%ldms span=%ldms holdoff=%lds\n", vals[0], vals[1],
+               vals[2], vals[3]);
+        return 0;
+    }
+
+    if (strcmp(argv[1], "cfg") == 0) {
+        if (argc != 4) {
+            printf("usage: acceltest cfg <ctrl1> <ctrl4>\n");
+            return 1;
+        }
+        char *e1 = NULL, *e4 = NULL;
+        long c1 = strtol(argv[2], &e1, 0);
+        long c4 = strtol(argv[3], &e4, 0);
+        if (!e1 || *e1 != '\0' || !e4 || *e4 != '\0' || c1 < 0 || c1 > 255 || c4 < 0 || c4 > 255) {
+            printf("acceltest: ctrl1 and ctrl4 must be 0..255 (hex ok)\n");
+            return 1;
+        }
+        if (!accel_debug_set_cfg((uint8_t) c1, (uint8_t) c4)) {
+            printf("acceltest: not present, the write failed, or the read-back differs\n");
+            return 1;
+        }
+        printf("acceltest: CTRL_REG1=0x%02x CTRL_REG4=0x%02x\n", (unsigned) c1, (unsigned) c4);
         return 0;
     }
 
@@ -1995,7 +2095,7 @@ static void start_normal_console(void)
 
     const esp_console_cmd_t acceltest_cmd = {
         .command = "acceltest",
-        .help = "acceltest [samples <n>|ths <0-127>|dur <0-127>|refr <seconds>] -- LIS3DH "
+        .help = "acceltest [samples <n>|ths|dur|ths2|dur2 <0-127>|shake on|off|<n> <gap> <span> <holdoff_s>|cfg <c1> <c4>|refr <seconds>] -- LIS3DH "
                  "register/sample dump and runtime tuning (docs/DEVICE_NEXT_TASKS.md A2); run "
                  "`acceltest` with no args for the full usage",
         .hint = NULL,

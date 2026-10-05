@@ -2519,7 +2519,8 @@ void modes_run(void)
         // xport_lte.cpp), so a lost SUBACK cannot pin the device awake --
         // same shape as net_connect_in_flight()/net_publish_in_flight() above.
         bool skip_sleep = btn_busy || btn_stuck || ui_awake || net_modem_busy() || net_connect_in_flight() ||
-                           net_publish_in_flight() || bookpull_fetch_in_progress() || net_resub_hold();
+                           net_publish_in_flight() || bookpull_fetch_in_progress() || net_resub_hold() ||
+                           accel_shake_pending();
         // pump_blocked keys ONLY on net_modem_busy() (the UART/RTS interlock
         // against the MQTT event handler, see the comment above on
         // net_modem_busy()) -- NOT on btn_busy/btn_stuck/ui_awake, and NOT on
@@ -2830,8 +2831,8 @@ void modes_run(void)
             if (!wake_is_input) {
                 wait_for_probe_answer(interval_ms);
             }
-        } else if (btn_busy) {
-            vTaskDelay(pdMS_TO_TICKS(PAGER_BTN_POLL_MS)); // button FSM debounce/timing granularity
+        } else if (btn_busy || accel_shake_pending()) {
+            vTaskDelay(pdMS_TO_TICKS(PAGER_BTN_POLL_MS)); // button FSM debounce/timing granularity / shake chain sampling (accel.c, 25 Hz)
         } else if (btn_stuck) {
             // BTN_STUCK: nothing left to time-measure (no more short/long
             // resolution while held), so the fine 20ms cadence buys
@@ -3340,11 +3341,16 @@ void modes_run(void)
         // chip) and one GNSS attempt-state-machine step (a no-op if no
         // attempt is in progress). Neither blocks for more than one small,
         // bounded piece of work — see accel.h/loc.h's own doc comments.
+        // accel_poll() returns true on an intentional shake; the event drain
+        // turns it into BTN_DOWN+BTN_SHORT on the next iteration, the same
+        // path as IO8. See docs/SHAKE_WAKE_DESIGN.md.
 #ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
         ST_MARK(4);
 #endif
         watchdog_kick(WD_LOC);
-        accel_poll();
+        if (accel_poll()) {
+            input_note_shake_wake(esp_timer_get_time());
+        }
         loc_service();
 
         // v0.2 §6 (device-direct SMS, sms.c): one bounded step of the

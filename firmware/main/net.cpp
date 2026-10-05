@@ -1207,10 +1207,11 @@ extern "C" void net_sleep(uint32_t ms)
     // every net_sleep() call rather than latched once: the button bit is
     // unconditional (it must stay armed -- esp_sleep_disable_wakeup_source()
     // is never called on ESP_SLEEP_WAKEUP_EXT1 any more), and the accel bit
-    // follows s_accel_wake_enabled, which accel.c toggles off for a
-    // refractory window after every edge it reports (net_set_accel_wake()),
-    // so a wake storm while the pager is being carried does not end light
-    // sleep ~10x/s (docs/DEVICE_NEXT_TASKS.md A1) -- also never set if the
+    // follows s_accel_wake_enabled, which now stays armed: accel.c applies
+    // the motion refractory at the sensor (CTRL_REG3 I1_IA1 cleared for the
+    // window), so the wake storm while the pager is being carried is still
+    // cut (docs/DEVICE_NEXT_TASKS.md A1) and IA2 (the shake,
+    // docs/SHAKE_WAKE_DESIGN.md) can always wake -- also never set if the
     // chip never answered WHO_AM_I (accel.c's own module comment: an
     // unwired/floating IO6 armed as ANY_HIGH would wake the ESP32 on every
     // light-sleep cycle for nothing).
