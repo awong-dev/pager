@@ -417,6 +417,26 @@ static int64_t s_last_input_us = -(int64_t) (PAGER_ATTENTIVE_S + 1) * 1000000;
 // fires once per transition, not once per attentive wake.
 static bool s_attentive_prev = false;
 
+// Sleep indicator (owner, 5 Oct 2026): the release build has no console, so
+// the glass shows "zz" in the status bar while in the normal 20 s sleep
+// cadence, and on the next awake stretch the number of ext1 wakes that
+// happened meanwhile (an interrupt storm shows as a large count). One extra
+// partial per sleep-stretch entry (after each awake stretch), none per 20 s
+// cycle. Pages arriving asleep render while s_sleep_shown is still true.
+static bool s_sleep_shown = false;
+static uint32_t s_sleep_entry_ext1 = 0;
+static uint32_t s_last_sleep_ext1_wakes = 0;
+
+bool modes_sleep_indicator(void)
+{
+    return s_sleep_shown;
+}
+
+uint32_t modes_last_sleep_ext1_wakes(void)
+{
+    return s_last_sleep_ext1_wakes;
+}
+
 // Key-render coalescing removed 4 Oct 2026 (TASK_keylat.md): it added up to
 // ~300ms of latency per keystroke. The bug it was written against (a key
 // typed mid-refresh was lost outright) is prevented by disp_busy_idle_hook()
@@ -2608,7 +2628,20 @@ void modes_run(void)
             }
         }
 #endif
+        // Leaving the normal sleep cadence: stop showing "zz", keep the ext1 wake
+        // delta for the awake stretch's first render. No power effect (RAM only).
+        if (s_sleep_shown && (skip_sleep || attentive)) {
+            s_sleep_shown = false;
+            s_last_sleep_ext1_wakes = net_get_ext1_wakes() - s_sleep_entry_ext1;
+        }
         if (!skip_sleep) {
+            // Entering the normal sleep cadence: one partial painting "zz" (power: one
+            // display refresh per stretch entry, before rail_off() below).
+            if (!attentive && !s_sleep_shown) {
+                s_sleep_shown = true;
+                s_sleep_entry_ext1 = net_get_ext1_wakes();
+                ui_render();
+            }
 #ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
             int64_t st_t0 = esp_timer_get_time();
             int64_t st_rtc0 = (int64_t) esp_clk_rtc_time();

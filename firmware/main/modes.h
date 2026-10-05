@@ -62,6 +62,11 @@ int modes_get_batt_mv(void);
  * read: no modem or sleep-state effect. */
 bool modes_in_use(void);
 
+// True while the loop is in the normal-cadence (20 s) sleep stretch; ui.c draws "zz".
+bool modes_sleep_indicator(void);
+// ext1 wakes counted during the last sleep stretch (0 if none); ui.c draws "w<n>".
+uint32_t modes_last_sleep_ext1_wakes(void);
+
 /* Round 4 bench diagnostic (`attn` debug console command, main.c): raw
  * microsecond age of the last recorded key/button/ext1 event
  * (esp_timer_get_time() - s_last_input_us). Plain RAM read: no modem or

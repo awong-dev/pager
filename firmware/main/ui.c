@@ -399,6 +399,30 @@ static void draw_status_bar(void)
         gfx_icon(crash_x, 0, GFX_ICON_CRASH);
     }
 
+    // Sleep indicator slot (owner, 5 Oct 2026): the sleep icon while in the normal
+    // sleep cadence, else "w<n>" (ext1 wakes during the last sleep stretch) if any.
+    // Immediately left of the icon group; dropped if it would hit the left text.
+    {
+        char sl[12];
+        sl[0] = '\0';
+        bool sleep_icon = modes_sleep_indicator();
+        if (!sleep_icon && modes_last_sleep_ext1_wakes() > 0) {
+            snprintf(sl, sizeof(sl), "w%u", (unsigned) modes_last_sleep_ext1_wakes());
+        }
+        if (sleep_icon || sl[0]) {
+            int group_x = s_crash_indicator ? tls_x - GFX_ICON_W - UI_STATUS_ICON_GAP : tls_x;
+            int sl_w = sleep_icon ? GFX_ICON_W : gfx_text_width(GFX_FONT_NORMAL, sl);
+            int sl_x = group_x - UI_STATUS_ICON_GAP - sl_w;
+            if (sl_x > gfx_text_width(GFX_FONT_NORMAL, buf) + UI_STATUS_ICON_GAP) {
+                if (sleep_icon) {
+                    gfx_icon(sl_x, 0, GFX_ICON_SLEEP);
+                } else {
+                    gfx_text(sl_x, UI_STATUS_TEXT_Y, GFX_FONT_NORMAL, sl);
+                }
+            }
+        }
+    }
+
     gfx_hline(0, GFX_SCREEN_W - 1, UI_STATUS_H);
 }
 

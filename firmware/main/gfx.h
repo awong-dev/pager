@@ -143,6 +143,7 @@ typedef enum {
      * every other icon here (icon_crash(), gfx.c), not from the assets
      * partition. */
     GFX_ICON_CRASH,
+    GFX_ICON_SLEEP, /* sleeping face + z: in the normal sleep cadence */
     GFX_ICON_COUNT,
 } gfx_icon_t;
 #define GFX_ICON_W 12

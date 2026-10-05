@@ -594,6 +594,28 @@ static void icon_crash(int x, int y)
     }
 }
 
+// Sleep indicator (owner, 5 Oct 2026): a round sleeping face (closed eyes, small
+// mouth) with a tiny "z" at the upper right, drawn from code like the others.
+static void icon_sleep(int x, int y)
+{
+    static const char *const face[10] = {
+        "..XXXXXX..", ".X......X.", "X........X", "X........X", "X.XX..XX.X",
+        "X........X", "X...XX...X", "X........X", ".X......X.", "..XXXXXX..",
+    };
+    for (int r = 0; r < 10; r++) {
+        for (int c = 0; c < 10; c++) {
+            if (face[r][c] == 'X') {
+                gfx_set_pixel(x + c, y + 2 + r, true);
+            }
+        }
+    }
+    for (int i = 0; i < 3; i++) {
+        gfx_set_pixel(x + 9 + i, y, true);     // z top
+        gfx_set_pixel(x + 9 + i, y + 2, true); // z bottom
+    }
+    gfx_set_pixel(x + 10, y + 1, true); // z diagonal
+}
+
 void gfx_icon(int x, int y, gfx_icon_t id)
 {
     switch (id) {
@@ -688,6 +710,9 @@ void gfx_icon(int x, int y, gfx_icon_t id)
         break;
     case GFX_ICON_CRASH:
         icon_crash(x, y);
+        break;
+    case GFX_ICON_SLEEP:
+        icon_sleep(x, y);
         break;
     default:
         gfx_rect(x, y, GFX_ICON_W, GFX_ICON_H);
