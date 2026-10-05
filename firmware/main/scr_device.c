@@ -354,8 +354,10 @@ static void device_render_confirm(void)
     gfx_text(0, UI_FOOTER_Y, GFX_FONT_NORMAL, "enter confirm  esc cancel");
 }
 
-// F6.5: the passcode modal's own render — masked, never the actual
-// characters (same reasoning scr_lock.c's Locked-screen field gives).
+// F6.5: the passcode modal's own render. Owner, 5 Oct 2026: when SETTING a new
+// passcode the characters are shown in clear so a typo is visible before it is
+// committed; the "Current passcode" prompt here and scr_lock.c's unlock field
+// stay masked ('*' per character), since those authenticate rather than set.
 static void device_render_pw(void)
 {
     int y = UI_BODY_TOP + 2;
@@ -370,8 +372,9 @@ static void device_render_pw(void)
     size_t i = 0;
     mask[i++] = '>';
     mask[i++] = ' ';
+    bool show_clear = (s_pw_modal == PW_MODAL_NEW);
     for (size_t j = 0; j < s_pw_len; j++) {
-        mask[i++] = '*';
+        mask[i++] = show_clear ? s_pw_buf[j] : '*';
     }
     mask[i++] = '_';
     mask[i] = '\0';
