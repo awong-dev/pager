@@ -442,6 +442,26 @@ void ui_ensure_powered(void)
 // Rendering
 // ---------------------------------------------------------------------------
 
+#ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
+// TASK_looptime.md: wall-clock cost of ui_render()'s own paint_frame()/
+// disp_partial_refresh() calls, debug builds only. RAM-only statics (no
+// heap, no new task) — written by ui_render() below, read back by
+// ui_debug_render_times() from modes.c's modes_run() loop. No power effect
+// of their own.
+static int64_t s_dbg_paint_us = 0;
+static int64_t s_dbg_refresh_us = 0;
+
+void ui_debug_render_times(int64_t *paint_us, int64_t *refresh_us)
+{
+    if (paint_us) {
+        *paint_us = s_dbg_paint_us;
+    }
+    if (refresh_us) {
+        *refresh_us = s_dbg_refresh_us;
+    }
+}
+#endif
+
 static void paint_frame(void)
 {
     if (s_depth == 0) {
@@ -458,7 +478,14 @@ static void paint_frame(void)
 void ui_render(void)
 {
     ui_ensure_powered(); // lazy rail gate (Do #4): a render is about to happen
+#ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
+    int64_t dbg_t0 = esp_timer_get_time();
+#endif
     paint_frame();
+#ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
+    int64_t dbg_t1 = esp_timer_get_time();
+    s_dbg_paint_us = dbg_t1 - dbg_t0;
+#endif
     // docs/DEVICE_PLAN.md §5.4: "the full refresh is never taken on the
     // inbound-message path (README R9): it is deferred to the moment the
     // UI-awake window lapses." This is the render path modes_run() calls on
@@ -470,6 +497,9 @@ void ui_render(void)
     // boot-time full refresh (modes_boot() calls disp_refresh_cadence()
     // directly via paint_frame()+ui_render_boot(), not this function).
     disp_partial_refresh(); // power effect: ~0.3-0.8s, PENDING_HW; no-op if nothing changed
+#ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
+    s_dbg_refresh_us = esp_timer_get_time() - dbg_t1; // ~0 when disp_partial_refresh() took its no-op path
+#endif
 }
 
 // Called once, from modes_boot(), right after a successful ui_init() — the

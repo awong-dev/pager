@@ -334,6 +334,17 @@ uint32_t ui_rail_lazy_on_count(void);
  * math only, no SPI). */
 void ui_render(void);
 
+#ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
+/* TASK_looptime.md: debug builds only. Returns the paint_frame()/
+ * disp_partial_refresh() wall-clock cost (esp_timer_get_time() deltas, us)
+ * ui_render()'s most recent call recorded — *refresh_us is near-zero when
+ * disp_partial_refresh() took its own no-op/nothing-changed path, since the
+ * timing still wraps the call either way. No power effect of its own (reads
+ * two statics); modes.c's modes_run() loop calls this once per awake
+ * iteration right after ui_render() to log "looptime: ...". */
+void ui_debug_render_times(int64_t *paint_us, int64_t *refresh_us);
+#endif
+
 /* Same content-painting as ui_render(), but via disp_refresh_cadence() —
  * the one call site (besides ui_on_awake_lapse() below) allowed to consume
  * disp_init()'s "force a full refresh on the first call" priming

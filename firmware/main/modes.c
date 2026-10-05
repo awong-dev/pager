@@ -378,6 +378,23 @@ static void rtc_unlock(void) { xSemaphoreGive(s_rtc_mutex); }
 static bool s_was_mqtt_connected = false;
 static bool s_ui_awake_prev = false; // F6.3: edge-detects input_awake() for ui_wake_status_refresh()
 
+#ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
+// TASK_looptime.md: awake-loop timing, debug builds only. RAM-only statics,
+// modes_run()'s task only (same reasoning s_ui_awake_prev above uses).
+// s_dbg_looptime_prev_us is the esp_timer_get_time() this same loop reached
+// its one marked point (just below bool ui_awake_now = input_awake();) on
+// the PREVIOUS iteration, awake or not — so the first iteration after a
+// UI-awake edge-in still reports a real (large) period spanning however
+// long the device was asleep, which is deliberate: that is the iteration
+// where the first-key cost (including ui_wake_status_refresh()) is paid and
+// this task wants it visible, not folded into "rest" as zero. No power
+// effect of its own (RAM reads only).
+static int64_t s_dbg_looptime_prev_us = 0;
+// Rate limit for the steady-state (non-edge-in) log line — see the log call
+// site's own comment for why the edge-in iteration bypasses this.
+static int64_t s_dbg_looptime_last_log_us = 0;
+#endif
+
 // Rail hold task (docs/ROADMAP.md "24 Sep evening finding"): esp_timer_get_time()
 // of the most recent key event, button short/long event, or ext1 wake.
 // RAM-only, modes_run()'s task only (same reasoning s_ui_awake_prev above
@@ -2862,6 +2879,16 @@ void modes_run(void)
         // screen to type into unless the UI is awake, and reading I2C while
         // asleep would cost a transaction for nothing.
         bool ui_awake_now = input_awake();
+#ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
+        // TASK_looptime.md: the one marked point `period` is measured
+        // from/to, every iteration (awake or not) — see
+        // s_dbg_looptime_prev_us's own doc comment above for why the
+        // reference updates unconditionally.
+        int64_t dbg_now_us = esp_timer_get_time();
+        int64_t dbg_period_us = dbg_now_us - s_dbg_looptime_prev_us;
+        s_dbg_looptime_prev_us = dbg_now_us;
+        int64_t dbg_status_us = 0; // set below iff ui_awake_edge_in fires this iteration
+#endif
         // Bench finding (21 Sep): with no button wired, a keystroke is the only
         // way to wake the UI, and the keyboard was read only while awake. Poll
         // it on every loop iteration instead: awake, that is the 100 ms
@@ -2909,7 +2936,17 @@ void modes_run(void)
         bool ui_awake_edge_out = !ui_awake_now && s_ui_awake_prev;
         s_ui_awake_prev = ui_awake_now;
         if (ui_awake_edge_in) {
+#ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
+            // TASK_looptime.md: ui_wake_status_refresh() is defined right
+            // here in modes.c (not ui.c, despite living next to ui_render()
+            // in the loop below) — so this times it in place instead of
+            // through a ui.c getter.
+            int64_t dbg_status_t0 = esp_timer_get_time();
+#endif
             ui_wake_status_refresh();
+#ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
+            dbg_status_us = esp_timer_get_time() - dbg_status_t0;
+#endif
             // F6.5: "...and every UI wake" — the other half of
             // lock_check_autolock()'s call-site contract (docs/DEVICE_PLAN.md
             // §5.8), covering a UI wake with no fresh input event (should not
@@ -2976,6 +3013,40 @@ void modes_run(void)
             // (disp_partial_refresh()'s own "no-op if nothing changed"
             // contract).
             ui_render();
+#ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
+            // TASK_looptime.md: render_now is always true here whenever
+            // ui_awake_now is true (render_now starts as ui_awake_now,
+            // above) -- ui_clock_due() can ALSO set it true while
+            // ui_awake_now is false (the wider attentive-window clock tick),
+            // which this `if (ui_awake_now)` guard excludes, matching the
+            // task's "when ui_awake_now is true" scope exactly.
+            if (ui_awake_now) {
+                int64_t dbg_paint_us = 0, dbg_refresh_us = 0;
+                ui_debug_render_times(&dbg_paint_us, &dbg_refresh_us);
+                int64_t dbg_render_us = dbg_paint_us + dbg_refresh_us;
+                // The 100 ms cadence delay this build's ui_awake path takes
+                // (vTaskDelay(pdMS_TO_TICKS(100)) a few hundred lines above,
+                // the `else` arm of the skip_sleep if/else-if chain) -- the
+                // other budgeted piece of `period` besides render itself.
+                int64_t dbg_rest_us = dbg_period_us - dbg_render_us - 100000;
+                if (dbg_rest_us < 0) {
+                    dbg_rest_us = 0;
+                }
+                int64_t dbg_log_now_us = esp_timer_get_time();
+                // Always log the first iteration after the UI-awake edge-in
+                // (the first-key cost, including ui_wake_status_refresh(),
+                // must be visible) -- otherwise rate-limited to 1/1000ms.
+                if (ui_awake_edge_in ||
+                    (dbg_log_now_us - s_dbg_looptime_last_log_us) >= 1000000) {
+                    s_dbg_looptime_last_log_us = dbg_log_now_us;
+                    ESP_LOGI(TAG,
+                             "looptime: period=%lld ms paint=%lld refresh=%lld status=%lld rest=%lld",
+                             (long long) (dbg_period_us / 1000), (long long) (dbg_paint_us / 1000),
+                             (long long) (dbg_refresh_us / 1000), (long long) (dbg_status_us / 1000),
+                             (long long) (dbg_rest_us / 1000));
+                }
+            }
+#endif
         } else if (ui_awake_edge_out) {
             // docs/DEVICE_PLAN.md §5.4: the moment the UI-awake window
             // lapses is where a due full refresh is allowed to land.
