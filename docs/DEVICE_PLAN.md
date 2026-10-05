@@ -746,6 +746,7 @@ but the screen stays" free.
   30 s × ~40 mA ≈ 0.33 mAh per interaction; 20 interactions/day ≈ 7 mAh/day on top of §8.4's
   43–50. Worth measuring whether 100 ms light-sleep between polls (I_light(0.1) ≈ 21 mA) keeps I²C
   usable; if so the term halves. The window is independent of the 10-minute *modem* active window.
+  4 Oct 2026: 119 s (see input.c); ≈ +16 mAh/day at 20 interactions.
 - **Waking from a keyboard press (optional, needs M13).** If the CardKB holds the last key in its
   buffer until read, polling it once per wake-and-drain cycle (one I²C read, ~0.1 ms) gives "press
   any key to wake the UI" with ≤ 5 s latency and no button. Enabled only if M13 confirms the hold.
@@ -991,6 +992,7 @@ Enter verifies, Esc or 30s idle returns to (a), a wrong code returns to (a).
 - The UI-awake window adds ≈ 7 mAh/day at 20 interactions (§5.3). Everything else is unchanged:
   the wake-and-drain cadence, the modem active window, and §6.5's latency budget, which the
   deferred full refresh (§5.4) actually helps.
+  4 Oct 2026: 119 s (see input.c); ≈ +16 mAh/day at 20 interactions.
 - One more AT round trip per UI wake (signal + battery), ≈ 100 ms at 40 mA, negligible.
 - Verifying `/down` signatures is microseconds and does not enter the §6.5 budget.
 

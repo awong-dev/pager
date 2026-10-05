@@ -58,9 +58,11 @@ static const char *TAG = "input";
 #define PAGER_BTN_DEBOUNCE_MS 30u
 #define PAGER_BTN_STUCK_MS 5000u /* R2: "~5s in BTN_HELD" */
 
-/* docs/DEVICE_PLAN.md §5.3: "A key or button event arms a 30s timer
- * (PAGER_UI_AWAKE_S, compile-time)". */
-#define PAGER_UI_AWAKE_S 30
+/* 4 Oct 2026, was 30 s (TASK_keylat.md): the 30-120s gap polled the
+ * (powered) CardKB once per 1s light-sleep wake and it holds only the last
+ * unread key. Must stay shorter than modes.c's PAGER_ATTENTIVE_S (120) by at
+ * least one attentive wake interval (1s). */
+#define PAGER_UI_AWAKE_S 119
 
 #define INPUT_QUEUE_DEPTH 8
 

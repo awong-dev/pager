@@ -178,7 +178,7 @@ static const char *TAG = "modes";
 // real user input (input_note_button_wake() above already seeds the button
 // FSM with it), and input.c's arm_awake_window() (called from the same wake
 // path, modes_run()'s `input_note_button_wake()` call above and input_poll()'s own
-// resolution below) arms a PAGER_UI_AWAKE_S (30 s, input.c) window in which
+// resolution below) arms a PAGER_UI_AWAKE_S (119 s, input.c) window in which
 // every subsequent loop iteration has ui_awake==true, so skip_sleep is true
 // and the loop never calls net_sleep() again for that whole window --
 // RTS/hardware flow control stays asserted (net.cpp's net_sleep() is the only
@@ -400,57 +400,13 @@ static int64_t s_last_input_us = -(int64_t) (PAGER_ATTENTIVE_S + 1) * 1000000;
 // fires once per transition, not once per attentive wake.
 static bool s_attentive_prev = false;
 
-// Bench bug fix (typing on the CardKB dropped ~every other character):
-// modes_run()'s render call below (ui_render()) used to fire on every loop
-// iteration a key event was drained, and each one blocks the task for
-// disp_partial_refresh()'s ~455ms BUSY wait (disp.c) - ui_poll_keyboard()
-// (called once per iteration, before this drain) could not run again until
-// that wait returned, and the CardKB only holds the single most recent
-// unread key, so a key typed mid-refresh was lost outright even with
-// disp_busy_idle_hook() now polling during the wait (that fix stops the
-// *loss*; this one cuts down how often the *long block* happens at all).
-// modes_run()'s event-drain switch below (INPUT_EVT_KEY case) calls
-// key_render_note() instead of rendering immediately; the render decision
-// block further down calls key_render_due() to decide whether this
-// iteration's render is allowed to fire. RAM-only, modes_run()'s task only
-// - no cross-task lock needed (same reasoning s_ui_awake_prev above uses).
-static bool s_key_render_pending = false;
-static int64_t s_key_render_first_us = 0;
-static int64_t s_key_render_deadline_us = 0;
-
-// Called from the INPUT_EVT_KEY case below on every key event. First key of
-// a burst: deadline = now+250ms. Every further key pushes the deadline back
-// out to now+250ms, but never past first_key_time+1000ms, so a sustained
-// fast typist still gets a render at least once a second rather than
-// starving it indefinitely.
-static void key_render_note(int64_t now_us)
-{
-    if (!s_key_render_pending) {
-        s_key_render_pending = true;
-        s_key_render_first_us = now_us;
-        s_key_render_deadline_us = now_us + 250000;
-        return;
-    }
-    int64_t candidate = now_us + 250000;
-    int64_t cap = s_key_render_first_us + 1000000;
-    s_key_render_deadline_us = (candidate < cap) ? candidate : cap;
-}
-
-// True if a key-triggered render is due (deadline passed) or there is none
-// outstanding at all - i.e. this iteration's render is allowed to proceed.
-// Clears the pending flag as a side effect once it lets a render through,
-// so the caller's own render call is what "pays off" the debounce.
-static bool key_render_due(int64_t now_us)
-{
-    if (!s_key_render_pending) {
-        return true;
-    }
-    if (now_us < s_key_render_deadline_us) {
-        return false;
-    }
-    s_key_render_pending = false;
-    return true;
-}
+// Key-render coalescing removed 4 Oct 2026 (TASK_keylat.md): it added up to
+// ~300ms of latency per keystroke. The bug it was written against (a key
+// typed mid-refresh was lost outright) is prevented by disp_busy_idle_hook()
+// (ui.c), which polls the CardKB during disp_partial_refresh()'s BUSY wait;
+// a key that arrives during a refresh is queued by that hook and drained on
+// the next modes_run() iteration, where it renders together with whatever
+// else drained that iteration.
 
 // v0.2 §9.5/§7 key 50: per-MQTT-session counter within this boot, incremented
 // in the rising-edge block below on every session start (including a
@@ -748,7 +704,7 @@ static bool attentive_now(void)
 
 // TASK_clock.md Do #2: "in use" for the status bar's live clock is the
 // attentive window (PAGER_ATTENTIVE_S = 120s from the last key/button/ext1
-// event, s_last_input_us above), NOT input.c's shorter 30s
+// event, s_last_input_us above), NOT input.c's shorter PAGER_UI_AWAKE_S (119 s)
 // input_awake() UI-awake window ui_awake_now/render_now gate off of below --
 // the rail hold task keeps the display/CardKB rail on for the whole of the
 // attentive window (see the `if (attentive) rail_on()` comment further down
@@ -2491,7 +2447,7 @@ void modes_run(void)
         // fixing that needs the net_sleep() release-edge variant firmware/README.md R2 specifies,
         // which touches net.cpp and is out of this task's Files list - see
         // input.h's input_button_stuck() doc comment), OR input_awake()
-        // (docs/DEVICE_PLAN.md §5.3's 30s UI-awake window, armed by the
+        // (docs/DEVICE_PLAN.md §5.3's PAGER_UI_AWAKE_S (119 s) UI-awake window, armed by the
         // last key/button event - F6.3 dropped the separate "composer
         // open" carve-out the pre-F6.3 code had here: every screen's text
         // entry now keeps this window armed via input_feed_key() on each
@@ -2558,7 +2514,7 @@ void modes_run(void)
         // attempt just fails cheaply, same as it does today for any other
         // disconnected stretch) -- withholding it would only delay a publish
         // that becomes possible again the moment CONNECTED/SUBSCRIBED lands,
-        // for no benefit. A 30s input_awake() window after every keystroke
+        // for no benefit. A PAGER_UI_AWAKE_S (119 s) input_awake() window after every keystroke
         // used to gate msg_pump() off entirely, which is what let a typed
         // reply sit unsent for up to 116s waiting for that window (and the
         // UI-awake busy-poll cadence) to expire. See the rate limit at the
@@ -2849,7 +2805,7 @@ void modes_run(void)
             // which is the mis-attribution §9.1 had to unpick by arithmetic.
             // UI first (25 Sep): skipped entirely on an input wake --
             // PAGER_INPUT_WAKE_YIELD_MS's own comment has the full argument
-            // for why this loses no URC-delivery guarantee (the 30 s
+            // for why this loses no URC-delivery guarantee (the PAGER_UI_AWAKE_S (119 s)
             // input-awake window this same wake just armed keeps RTS
             // asserted far longer than this wait's own PAGER_PROBE_WAIT_MS
             // bound ever would). Power effect: an input wake never pays this
@@ -2914,12 +2870,6 @@ void modes_run(void)
         // within one cycle if the CardKB holds it until read (README M13).
         ui_poll_keyboard(); // power effect: one I2C read - see ui.h
 
-        // Set when this iteration drains a button event: button events keep
-        // their existing immediate render (see the render decision block
-        // below) - only INPUT_EVT_KEY goes through key_render_note()'s
-        // deadline instead.
-        bool btn_event_this_iter = false;
-
         input_event_t ievt;
         while (input_get_event(&ievt)) {
             modes_note_activity(); // any resolved key/button event counts as activity
@@ -2931,24 +2881,17 @@ void modes_run(void)
             case INPUT_EVT_BTN_DOWN:
                 // firmware/README.md: button press enters active mode.
                 set_mode(PAGER_MODE_ACTIVE, MODE_REASON_BUTTON);
-                btn_event_this_iter = true;
                 break;
             case INPUT_EVT_BTN_SHORT:
                 ui_on_button_short(); // docs/DEVICE_PLAN.md §5.5 (ui.c)
-                btn_event_this_iter = true;
                 s_last_input_us = esp_timer_get_time(); // rail hold task: arm the attentive cadence
                 break;
             case INPUT_EVT_BTN_LONG:
                 ui_on_button_long();
-                btn_event_this_iter = true;
                 s_last_input_us = esp_timer_get_time(); // rail hold task: arm the attentive cadence
                 break;
             case INPUT_EVT_KEY:
                 ui_dispatch_key(ievt.key); // routed to the top screen's on_key() (ui.c)
-                // Coalesce: defer the render instead of letting the
-                // unconditional call below fire this same iteration - see
-                // key_render_note()'s own comment.
-                key_render_note(esp_timer_get_time());
                 s_last_input_us = esp_timer_get_time(); // rail hold task: arm the attentive cadence
                 break;
             }
@@ -3006,31 +2949,18 @@ void modes_run(void)
         // a normal boot at all — modes_boot()'s own comment) is never
         // touched by this edge either way.
 
-        // Coalesce key-triggered renders (bug fix, see s_key_render_pending's
-        // own comment): a button event this iteration always renders
-        // immediately, same as before this fix (and pays off any
-        // outstanding key debounce too - the render it triggers covers
-        // whatever the keys already did to the framebuffer); otherwise this
-        // iteration's render only proceeds once key_render_due() says the
-        // 250ms/1000ms-capped deadline has passed (or there was never a key
-        // debounce outstanding at all - the ordinary idle-iteration case,
-        // unchanged). Both only consulted while ui_awake_now, matching this
-        // block's pre-fix "only while awake" gating.
-        bool render_now = false;
-        if (ui_awake_now) {
-            if (btn_event_this_iter) {
-                render_now = true;
-                s_key_render_pending = false;
-            } else {
-                render_now = key_render_due(esp_timer_get_time());
-            }
-        }
+        // Keys and buttons both render this iteration (coalescing removed 4
+        // Oct 2026, see the "Key-render coalescing removed" comment near the
+        // top of this file); an idle iteration's ui_render() is a no-op diff
+        // in partial_refresh_locked() so this costs nothing extra when
+        // nothing changed.
+        bool render_now = ui_awake_now;
         // TASK_clock.md Do #3: checked every loop pass, not just while
-        // ui_awake_now (the 30s window above) — modes_in_use() (ui_clock_due()'s
+        // ui_awake_now (the PAGER_UI_AWAKE_S (119 s) window above) — modes_in_use() (ui_clock_due()'s
         // own gate) is the wider 120s attentive window, and the rail hold
         // task keeps the display rail on for the whole of it (see
         // modes_in_use()'s own doc comment, modes.h), so a status-bar-only
-        // partial refresh is safe here even after the 30s UI-awake window
+        // partial refresh is safe here even after the PAGER_UI_AWAKE_S (119 s) UI-awake window
         // has already lapsed. ui_clock_due() itself is cheap when nothing
         // changed (a string compare, no AT call) and returns false outright
         // whenever not in use, so this costs one extra partial per minute

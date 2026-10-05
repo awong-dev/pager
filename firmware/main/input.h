@@ -7,8 +7,8 @@
  * composer. This module is the single owner of both going forward and adds
  * what neither had: the full key table (arrows/esc/tab), `BTN_STUCK`
  * (firmware/README.md R2), a queue instead of direct calls back into
- * modes.c, and the 30s UI-awake window that arms on any key or button
- * event.
+ * modes.c, and the PAGER_UI_AWAKE_S (119s) UI-awake window that arms on any
+ * key or button event.
  *
  * `input_decode_key()` has no ESP-IDF dependency and is compiled on the
  * host for `firmware/host/test_input.c` (same `#ifdef ESP_PLATFORM` split
@@ -114,7 +114,7 @@ void input_feed_key(uint8_t byte);
  * queue is empty. */
 bool input_get_event(input_event_t *out);
 
-/* True for PAGER_UI_AWAKE_S (30s, compile-time) after the most recent
+/* True for PAGER_UI_AWAKE_S (119s, compile-time) after the most recent
  * event armed the window. Independent of the 10-minute modem active
  * window (docs/DEVICE_PLAN.md §5.3) — modes.c's set_mode()/
  * active_until_us own that one. modes_run() uses this to decide the
