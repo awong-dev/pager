@@ -32,6 +32,15 @@ export interface MessageRow extends MessageDoc {
   id: string;
 }
 
+/** Render side is decided by ORIGIN, not alias/uid alone: a device's owner
+ * and the owner's browser share one `senderUid`, so a message the relay
+ * stored with `originBackendKind === "pager"` (app/ingest.py, device `/up`)
+ * is the pager's, never "mine" (the web user's), even when the sender is
+ * the signed-in user. */
+function isFromPager(m: MessageDoc): boolean {
+  return m.originBackendKind === "pager";
+}
+
 // docs/SERVER_PLAN.md §7 (this task): the relay writes a `loc_req` message
 // for every `/locate` call and a `kind='loc'` reply once it's answered
 // (`app/location.py`) -- both render as one small link to `/location`
@@ -90,10 +99,12 @@ function MessageBubble({
   message,
   mine,
   isGroup,
+  meUid,
 }: {
   message: MessageRow;
   mine: boolean;
   isGroup: boolean;
+  meUid: string | null;
 }) {
   const atMs = (message.ts ?? 0) * 1000;
   return (
@@ -101,6 +112,12 @@ function MessageBubble({
       {isGroup && message.senderAlias && (
         <Typography variant="caption" color="text.secondary" sx={{ px: 0.5 }}>
           {message.senderAlias}
+          {isFromPager(message) ? " (pager)" : ""}
+        </Typography>
+      )}
+      {!isGroup && isFromPager(message) && message.senderUid === meUid && (
+        <Typography variant="caption" color="text.secondary" sx={{ px: 0.5 }}>
+          your pager
         </Typography>
       )}
       <Box
@@ -120,7 +137,7 @@ function MessageBubble({
           {formatClock(atMs)}
         </Typography>
       </Box>
-      {mine && <DeliveryChips message={message} />}
+      {message.senderUid === meUid && <DeliveryChips message={message} />}
     </Stack>
   );
 }
@@ -179,14 +196,14 @@ export default function MessageList({
           </Stack>
         )}
         {messages.map((m) => {
-          const mine = m.senderUid === meUid;
+          const mine = m.senderUid === meUid && !isFromPager(m);
           if (m.kind === "loc_req") {
             return <LocReqRow key={m.id} message={m} mine={mine} alias={locationAlias} />;
           }
           if (m.kind === "loc") {
             return <LocMessageRow key={m.id} message={m} mine={mine} alias={locationAlias} />;
           }
-          return <MessageBubble key={m.id} message={m} mine={mine} isGroup={isGroup} />;
+          return <MessageBubble key={m.id} message={m} mine={mine} isGroup={isGroup} meUid={meUid} />;
         })}
       </Box>
       {showNewMessagesChip && (

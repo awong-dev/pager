@@ -146,6 +146,10 @@ function ThreadInner({ alias }: { alias: string }) {
   const [messages, setMessages] = useState<MessageRow[]>([]);
   const [pageSize, setPageSize] = useState(PAGE_SIZE_STEP);
   const [device, setDevice] = useState<(DeviceDoc & { id: string }) | null>(null);
+  // True once an admin's device query for the peer has answered (an empty
+  // answer is authoritative for an admin; a member's `locatableBy` query is
+  // not, so this stays false for them).
+  const [peerDeviceKnownNone, setPeerDeviceKnownNone] = useState(false);
 
   const [composer, setComposer] = useState("");
   const [sending, setSending] = useState(false);
@@ -237,6 +241,7 @@ function ThreadInner({ alias }: { alias: string }) {
           (snap) => {
             const first = snap.docs[0];
             setDevice(first ? { id: first.id, ...(first.data() as DeviceDoc) } : null);
+            setPeerDeviceKnownNone(!first);
           }
         )
       );
@@ -528,6 +533,12 @@ function ThreadInner({ alias }: { alias: string }) {
         </Button>
       </Stack>
       {sendError && <Alert severity="error">{sendError}</Alert>}
+      {peerDeviceKnownNone && !group && peerUid !== me?.uid && (
+        <Alert severity="info">
+          @{alias} has no pager. Messages go only to their other backends (e.g. web app) and show
+          as &quot;sent&quot; until read there.
+        </Alert>
+      )}
 
       <Snackbar
         open={snack !== null}
