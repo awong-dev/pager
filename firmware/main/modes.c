@@ -2246,6 +2246,8 @@ void modes_boot(void)
     // below: a nudge could in principle arrive the instant MQTT subscribes.
     bookpull_bind(rtc_lock, rtc_unlock);
 
+    net_airplane_init(); // power effect: one NVS read; net_airplane() is a RAM read from here on
+
     input_init(); // power effect: GPIO config + static queue alloc only
 
     if (!ui_init()) {
@@ -2263,8 +2265,22 @@ void modes_boot(void)
 
     net_set_msg_cb(on_incoming_message);
 
+    // v0.2 §5 (moved 5 Oct 2026, owner: modem last in boot): loc.c's RTC
+    // route-hint binding + accelerometer bring-up now run BEFORE the ~100 s
+    // modem attach so the keyboard, display, accelerometer and lock state are
+    // all ready first. accel_init() owns and installs its own I2C_NUM_1 bus
+    // (own pins, own rail; see accel.h) and fails open if the chip is absent.
+    // The GNSS configuration, which needs the modem, is loc_gnss_config()
+    // below, after net_init(). No paging-path effect.
+    loc_bind(&g_rtc.loc, &g_rtc.auth, rtc_lock, rtc_unlock, rtc_save, on_auth_epoch_wrap);
+    loc_init();
+
     watchdog_kick(WD_NET_INIT);
-    if (!net_init()) {
+    if (net_airplane()) {
+        // Power effect: IO45 (modem reset) held low; modem in reset for the whole boot.
+        ui_boot_status("airplane"); // one partial, same path as the connecting/registering updates
+        net_airplane_hold_modem();
+    } else if (!net_init()) {
         ESP_LOGI(TAG, "net_init() failed at boot; will retry from the wake loop (F1)");
         rtc_lock();
         g_rtc.attach_fail_cycles++;
@@ -2280,17 +2296,13 @@ void modes_boot(void)
         }
     }
 
-    // v0.2 §5 (docs/V02_DESIGN.md): loc.c's RTC route-hint binding + GNSS/
-    // accelerometer bring-up. accel_init() owns and installs its own I2C_NUM_1
-    // bus (own pins, own power rail from the battery — see accel.h's own
-    // module comment); no ordering requirement against ui_init(). Placed
-    // after net_init() only because net_gnss_config() needs the modem to
-    // exist; harmless, already-logged failure either way if
-    // net_init() itself failed above — location then simply always answers
-    // from cache/no_fix, this task's own fail-open rule. No paging-path
-    // effect either way.
-    loc_bind(&g_rtc.loc, &g_rtc.auth, rtc_lock, rtc_unlock, rtc_save, on_auth_epoch_wrap);
-    loc_init();
+    // v0.2 §5 (updated 5 Oct 2026, airplane task): the GNSS configuration needs
+    // the modem and runs here, after net_init(); everything else in loc/accel
+    // bring-up already ran before net_init() (see above). Skipped in airplane
+    // mode (no modem to configure).
+    if (!net_airplane()) {
+        loc_gnss_config();
+    }
 
     // Owner request, 2026-09-20: coverage.c's duty-cycle policy starts
     // inactive (registered, or not-yet-known-unregistered) — a cold boot is
@@ -2307,7 +2319,13 @@ void modes_boot(void)
     // plus the shared cross-task mutex, same pattern book_bind()/loc_bind()
     // already use.
     sms_bind(&g_rtc.auth, rtc_lock, rtc_unlock, rtc_save, on_auth_epoch_wrap);
-    sms_init();
+    if (net_airplane()) {
+        // sms_init() would issue AT traffic (net_sms_config()); with the modem
+        // held in reset SMS stays unavailable (s_available == false) all boot.
+        ESP_LOGI(TAG, "airplane mode: SMS init skipped");
+    } else {
+        sms_init();
+    }
 
     rtc_lock();
     g_rtc.mode = (uint8_t) PAGER_MODE_SLEEP; // firmware/README.md: boot in sleep mode
@@ -3326,7 +3344,8 @@ void modes_run(void)
             } else {
                 schedule_backoff(&backoff_index, &next_session_retry_us);
             }
-        } else if (!st.mqtt_connected) {
+        } else if (!st.mqtt_connected && !net_airplane()) {
+            // (airplane mode: no F3 retry/backoff, nothing to log per iteration)
             // v0.2 §4.4: skip entirely while a CA two-phase apply's own
             // scratch-slot reconnect trial owns the session on purpose —
             // see modes_set_ca_apply_suppress()'s own doc comment. Once it
@@ -3427,7 +3446,7 @@ void modes_run(void)
         // deliberate here too, and the 30-minute "no network" reset this
         // health check owns must not fire while the duty cycle is the one
         // keeping it dark on purpose.
-        if (!s_ca_apply_suppress && !s_coverage_owns_radio &&
+        if (!net_airplane() && !s_ca_apply_suppress && !s_coverage_owns_radio &&
             g_rtc.mode == (uint8_t) PAGER_MODE_SLEEP &&
             (wake_cycle_count % PAGER_CHECKCOMM_EVERY_N_WAKES) == 0) {
             run_modem_health_check();

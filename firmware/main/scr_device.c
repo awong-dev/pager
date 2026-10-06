@@ -66,6 +66,7 @@
 #include "lock.h" /* F6.5: passcode/auto-lock/senders rows, docs/DEVICE_PLAN.md §5.8 */
 #include "msg.h"  /* owner task 2026-09-20: msg_history_erase() on factory reset */
 #include "book.h" /* T3: book_get_bv() for the "session ... book v<n>" info line */
+#include "net.h"
 #include "disp.h" /* owner request: menu-driven display rotation, disp_get_flip()/
                    * disp_set_flip()/disp_full_refresh() — same setter the console's
                    * `flip on|off` (main.c) uses, so both paths stay consistent. */
@@ -80,6 +81,7 @@ typedef enum {
     MROW_TEXTSIZE,
     MROW_ROTATE, /* owner request: menu-driven 180-degree display rotation,
                   * same setter the console's `flip on|off` uses (disp.h) */
+    MROW_AIRPLANE, /* bench: NVS net/airplane, takes effect at next boot */
     MROW_PASSCODE,
     MROW_AUTOLOCK,
     MROW_CARRIER,
@@ -278,6 +280,11 @@ static void device_on_key(input_key_t key)
             disp_set_flip(!disp_get_flip());
             disp_full_refresh();
             break;
+        case MROW_AIRPLANE:
+            // Power effect: one NVS write; the modem is held in reset from the
+            // next boot on (net_set_airplane()'s own comment).
+            net_set_airplane(!net_airplane_stored());
+            break;
         case MROW_PASSCODE:
             s_pw_len = 0;
             s_pw_buf[0] = '\0';
@@ -431,6 +438,8 @@ static void device_render_normal(void)
              ui_text_size() == GFX_FONT_LARGE ? "large" : "normal");
     selectable[n++] = true;
     snprintf(lines[n], DEVICE_LINE_LEN, "Rotate display: %s", disp_get_flip() ? "on" : "off");
+    selectable[n++] = true;
+    snprintf(lines[n], DEVICE_LINE_LEN, "Airplane mode: %s (reboot)", net_airplane_stored() ? "on" : "off");
     selectable[n++] = true;
     snprintf(lines[n], DEVICE_LINE_LEN, "Passcode: %s", lock_is_set() ? "set" : "not set");
     selectable[n++] = true;

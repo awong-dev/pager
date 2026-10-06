@@ -1591,6 +1591,22 @@ static int cmd_flip(int argc, char **argv)
     return 1;
 }
 
+static int cmd_airplane(int argc, char **argv)
+{
+    if (argc == 2 && strcmp(argv[1], "status") == 0) {
+        printf("airplane: stored %s, this boot %s\n", net_airplane_stored() ? "on" : "off",
+               net_airplane() ? "on" : "off");
+        return 0;
+    }
+    if (argc == 2 && (strcmp(argv[1], "on") == 0 || strcmp(argv[1], "off") == 0)) {
+        net_set_airplane(strcmp(argv[1], "on") == 0); // power effect: one NVS write; applies at next boot
+        printf("airplane: %s (takes effect at the next boot)\n", net_airplane_stored() ? "on" : "off");
+        return 0;
+    }
+    printf("usage: airplane on|off|status\n");
+    return 1;
+}
+
 // docs/WIFI_TASKS.md W5: `wifi set|clear|on|off|status|scan`. Debug build
 // only -- phase 1's manual selection policy (docs/WIFI_DESIGN.md §2/§3:
 // "the console turns it on; nothing turns it on by itself") lives entirely
@@ -2125,6 +2141,14 @@ static void start_normal_console(void)
         .func = &cmd_flip,
     };
     ESP_ERROR_CHECK(esp_console_cmd_register(&flip_cmd));
+    const esp_console_cmd_t airplane_cmd = {
+        .command = "airplane",
+        .help = "airplane on|off|status -- NVS net/airplane: hold the modem in reset and skip all "
+                "network bring-up; takes effect at the next boot",
+        .hint = NULL,
+        .func = &cmd_airplane,
+    };
+    ESP_ERROR_CHECK(esp_console_cmd_register(&airplane_cmd));
 
     const esp_console_cmd_t wifi_cmd = {
         .command = "wifi",

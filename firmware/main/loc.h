@@ -607,6 +607,13 @@ void loc_bind(loc_rtc_t *rtc, auth_rtc_t *auth_rtc, loc_rtc_lock_fn lock, loc_rt
  * receive path" rule); nothing here can block boot. */
 void loc_init(void);
 
+/* GNSS receiver configuration (one AT command; needs the modem). Split out of
+ * loc_init() (5 Oct 2026) so loc_init() -- and with it accel_init() -- can run
+ * before net_init(). Call once from modes_boot() after net_init(); skipped in
+ * airplane mode. A failure is logged once and location then answers from
+ * cache/no_fix (the same fail-open rule loc_init() had). */
+void loc_gnss_config(void);
+
 /* `kind:"loc_req"` intercept (docs/PROTOCOL.md §3.2/§13, V02_DESIGN.md §5).
  * Called from modes.c's on_incoming_message(), in the same slot as
  * lock_ingest_cfg_cbor()/book_ingest_cbor() — after auth_verify(), before

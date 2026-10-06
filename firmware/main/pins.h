@@ -110,4 +110,11 @@
 // (input, no pull) unless that instrumentation is used.
 #define PAGER_PIN_WAKE0 46
 
+// MODEM_RESET (Walter-internal, active-low reset of the Sequans). Documented
+// exception to "never touch IO45": only net_airplane_hold_modem() (net.cpp)
+// drives it, to keep the modem in reset for the whole boot in airplane mode
+// (NVS net/airplane). The vendored walter-modem library drives the same line
+// itself in reset(); the two never run in one boot.
+#define PAGER_PIN_MODEM_RESET 45
+
 #endif // PINS_H

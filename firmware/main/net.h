@@ -67,6 +67,25 @@ typedef struct {
  * PENDING_HW) attach transient then settles to the idle-attached floor. */
 bool net_init(void);
 
+/* Airplane mode (owner, 5 Oct 2026; bench feature, not a shipping power mode).
+ * NVS "net"/"airplane" (u8, default 0). net_airplane_init() loads it once at
+ * boot (modes_boot()); net_airplane() is then a plain RAM read.
+ * net_set_airplane() writes NVS only -- it takes effect at the NEXT boot.
+ * When on, modes_boot() calls net_airplane_hold_modem() (drives IO45, the
+ * modem's active-low reset, low and holds it through light sleep) and never
+ * calls net_init(); every AT-issuing entry point in this header returns its
+ * "not available" result immediately (net_get_mqtt_status() reports not
+ * connected; net_modem_busy()/net_connect_in_flight()/net_publish_in_flight()/
+ * net_resub_hold() report false); net_sleep() still arms ext1 + timer wake
+ * and light-sleeps, skipping the RTS/flow-control steps. The Sequans in reset
+ * draws an unmeasured current. */
+void net_airplane_init(void);
+bool net_airplane(void);
+void net_set_airplane(bool on);
+bool net_airplane_stored(void); /* the NVS value (what the next boot will use), for the Device screen */
+void net_airplane_hold_modem(void);
+
+
 /* Boot progress seam (5 Oct 2026 "booting" splash). net.cpp calls this with
  * "connecting", "registering", "attached" or "no signal" from net_init()'s
  * bring-up, which runs on the CALLER's task (modes task) - never from URC/

@@ -1717,10 +1717,6 @@ void loc_init(void)
     loc_policy_init(&s_policy);
     s_unlock();
 
-    if (!net_gnss_config()) {
-        ESP_LOGI(TAG, "gnss config failed at init; location will keep answering from cache/no_fix "
-                      "(this task's own fail-open rule)");
-    }
     net_set_cell_change_cb(loc_on_cell_change);
     net_set_uplink_window_cb(loc_on_uplink_window); // LOCATION_TRACKING_DESIGN.md §4, task F2/F3
 
@@ -1739,6 +1735,15 @@ void loc_init(void)
                   "locmove=%us",
              (unsigned) loc_get_min_s(), (unsigned) loc_get_period_s(), LOC_BATTERY_FLOOR_MV,
              LOC_TRACK_DEFAULT_ENABLED ? "on" : "off", (unsigned) LOC_MOVE_GNSS_DEFAULT_S);
+}
+
+// Power effect: one AT command (net_gnss_config()), no RRC of its own.
+void loc_gnss_config(void)
+{
+    if (!net_gnss_config()) {
+        ESP_LOGI(TAG, "gnss config failed at init; location will keep answering from cache/no_fix "
+                      "(this task's own fail-open rule)");
+    }
 }
 
 bool loc_debug_run(uint32_t seconds)
