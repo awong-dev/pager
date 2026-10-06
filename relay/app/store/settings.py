@@ -43,6 +43,9 @@ class RetentionSettings(BaseModel):
     # or the web), since nothing here reuses `set_retention`'s
     # messages/locations PUT shape for it.
     alertsDays: int = 90
+    # docs/BATTERY_STATS_DESIGN.md B6: `devices/{id}/battery` samples, swept
+    # by `createdAt` like `locations`.
+    batteryDays: int = 90
 
 
 class MetaSettings(BaseModel):

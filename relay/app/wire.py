@@ -258,6 +258,11 @@ class StatusEnvelope(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
+    # docs/BATTERY_STATS_DESIGN.md §2 (key 68): the battery-stats sub-map.
+    # Deliberately a raw dict: `app/store/battery.py`'s `parse_bs` validates
+    # it on its own so a malformed `bs` drops alone, never the whole status.
+    bs: Any = None
+
     v: int = 1
     state: Literal["online", "offline"]
     mode: str | None = None

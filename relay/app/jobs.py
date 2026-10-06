@@ -452,6 +452,7 @@ class SweepResult:
     conversationsDeleted: int = 0
     gchatLinkCodesDeleted: int = 0
     alertsDeleted: int = 0
+    batteryDeleted: int = 0
 
 
 def sweep() -> SweepResult:
@@ -521,11 +522,18 @@ def sweep() -> SweepResult:
     alerts_cutoff = _cutoff(retention.alertsDays * 86400)
     alerts_deleted = _sweep_alerts(alerts_cutoff, batch_size)
 
+    # docs/BATTERY_STATS_DESIGN.md B6: `devices/{id}/battery` samples.
+    battery_deleted = _sweep_by_created_at(
+        lambda: db.collection_group("battery"),
+        _cutoff(retention.batteryDays * 86400),
+        batch_size,
+    )
+
     settings_store.mark_swept()
 
     logger.info(
         "sweep complete: messages=%d wireIds=%d locations=%d locWireIds=%d locReqs=%d "
-        "orphanedWireIds=%d conversations=%d gchatLinkCodes=%d alerts=%d",
+        "orphanedWireIds=%d conversations=%d gchatLinkCodes=%d alerts=%d battery=%d",
         messages_deleted,
         wire_ids_deleted,
         locations_deleted,
@@ -535,6 +543,7 @@ def sweep() -> SweepResult:
         conversations_deleted,
         gchat_link_codes_deleted,
         alerts_deleted,
+        battery_deleted,
     )
     return SweepResult(
         messagesDeleted=messages_deleted,
@@ -546,4 +555,5 @@ def sweep() -> SweepResult:
         conversationsDeleted=conversations_deleted,
         gchatLinkCodesDeleted=gchat_link_codes_deleted,
         alertsDeleted=alerts_deleted,
+        batteryDeleted=battery_deleted,
     )

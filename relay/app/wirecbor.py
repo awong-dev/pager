@@ -159,11 +159,19 @@ KEYMAP: dict[str, int] = {
     "ota_st": 65,
     "ota_pct": 66,
     "ota_err": 67,
+    # docs/BATTERY_STATS_DESIGN.md §2: `/status`'s battery-stats sub-map.
+    "bs": 68,
 }
 REVERSE_KEYMAP: dict[int, str] = {v: k for k, v in KEYMAP.items()}
 
 # Sub-map keys, PROTOCOL.md §10 "Sub-map keys".
 LOC_KEYMAP: dict[str, int] = {"lat": 0, "lon": 1, "acc": 2, "fix_ts": 3, "src": 4}
+# docs/BATTERY_STATS_DESIGN.md §2: `/status` `bs` sub-map. Arrays pass through.
+BS_KEYMAP: dict[str, int] = {
+    "sq": 0, "dt": 1, "sl": 2, "aw": 3, "ns": 4, "x1": 5,
+    "rl": 6, "rf": 7, "mvn": 8, "cn": 9, "md": 10, "re": 11,
+}  # fmt: skip
+_REVERSE_BS: dict[int, str] = {v: k for k, v in BS_KEYMAP.items()}
 CONTACT_KEYMAP: dict[str, int] = {"a": 0, "n": 1, "t": 2}
 REQUEST_KEYMAP: dict[str, int] = {"n": 0, "s": 1}
 LOCK_KEYMAP: dict[str, int] = {"clear": 0, "auto": 1}
@@ -247,6 +255,8 @@ def _ota_to_names(v: dict[Any, Any]) -> dict[str, Any]:
 
 
 def _value_to_int_keys(name: str, value: Any) -> Any:
+    if name == "bs" and isinstance(value, dict):
+        return {BS_KEYMAP[k]: v for k, v in value.items() if k in BS_KEYMAP}
     if name == "loc" and isinstance(value, dict):
         return {LOC_KEYMAP[k]: v for k, v in value.items()}
     if name == "cell" and isinstance(value, dict):
@@ -296,6 +306,8 @@ def _value_to_int_keys(name: str, value: Any) -> Any:
 
 
 def _value_to_names(name: str, value: Any) -> Any:
+    if name == "bs" and isinstance(value, dict):
+        return {_REVERSE_BS[k]: v for k, v in value.items() if k in _REVERSE_BS}
     if name == "loc" and isinstance(value, dict):
         return {_REVERSE_LOC[k]: v for k, v in value.items()}
     if name == "cell" and isinstance(value, dict):

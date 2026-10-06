@@ -1194,3 +1194,24 @@ def test_ota_status_keys_on_the_cbor_wire():
         "ota_st": "dl", "ota_pct": 12, "ota_err": "http",
     }
     assert wirecbor.decode(wirecbor.encode(status)) == status
+
+
+def test_status_bs_cbor_round_trip_and_unknown_subkey_dropped():
+    # docs/BATTERY_STATS_DESIGN.md §2: key 68, sub-map keys 0..11, arrays pass through.
+    assert wirecbor.KEYMAP["bs"] == 68
+    bs = {
+        "sq": 3, "dt": 3600, "sl": 3530, "aw": [60, 0, 0, 10, 0, 0], "ns": 180, "x1": 2,
+        "rl": 10, "rf": [0, 2, 0], "mvn": 3790, "cn": 1, "md": [0, 0, 0], "re": 13,
+    }
+    status = {
+        "v": 1, "state": "online", "mode": "sleep", "batt_mv": 3300, "session": "s_00000001",
+        "ts": 1_700_000_000, "bs": bs,
+    }
+    assert wirecbor.decode(wirecbor.encode(status)) == status
+    raw = wirecbor.translate_to_int(status)
+    assert raw[68][1] == 3600 and raw[68][3] == [60, 0, 0, 10, 0, 0]
+    raw[68][99] = 7  # a future sub-key
+    assert wirecbor.translate_to_names(raw)["bs"] == bs
+    # a bad `bs` never fails the whole status
+    env = StatusEnvelope.model_validate({**status, "bs": {"aw": "x"}})
+    assert env.state == "online"

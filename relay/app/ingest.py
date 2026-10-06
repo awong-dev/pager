@@ -37,6 +37,7 @@ from app.routing import Routing
 from app.store import alerts as alerts_store
 from app.store import allow as allow_store
 from app.store import backends as backends_store
+from app.store import battery as battery_store
 from app.store import contacts as contacts_store
 from app.store import device_secrets as device_secrets_store
 from app.store import devices as devices_store
@@ -804,6 +805,15 @@ class Ingest:
             otaPct=env.ota_pct,
             otaErr=env.ota_err,
         )
+
+        # docs/BATTERY_STATS_DESIGN.md B6: one time-series sample per online
+        # /status; a malformed `bs` is dropped alone, never the status.
+        if env.state == "online":
+            try:
+                bs = battery_store.parse_bs(env.bs, device_id) if env.bs is not None else None
+                battery_store.add_sample(device_id, env, resolved_ts, bs)
+            except Exception:
+                logger.exception("battery sample failed device=%s", device_id)
 
         # docs/OTA_DESIGN.md D5: the web's `otaJob` lives until the device
         # reports the job finished (`ok`/`fail`/`rb` for that target, or the
