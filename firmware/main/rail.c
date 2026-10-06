@@ -19,6 +19,13 @@
 static bool s_rail_on = false;
 static int64_t s_restored_us = 0;
 
+// rail_on_ms_total() (battstat): closed on-spans plus the open one. A spinlock
+// because rail_on()/rail_off() can run on more than one task (ui.c) and the
+// int64 pair is not atomic on the S3.
+static portMUX_TYPE s_on_mux = portMUX_INITIALIZER_UNLOCKED;
+static int64_t s_on_acc_us = 0;   // closed on-spans, since boot
+static int64_t s_on_since_us = 0; // start of the open span (valid while s_rail_on)
+
 // Round 9 (the "6s from tap to password: on a real sleep wake" defect):
 // universal settle delay between the gated rails actually coming up and
 // this module touching ANY downstream peripheral (display, gated by ENA;
@@ -123,7 +130,10 @@ void rail_init(void)
     // sleep exactly as reliably as an ON one.
     gpio_sleep_sel_dis((gpio_num_t) PAGER_PIN_3V3_EN);
     gpio_sleep_sel_dis((gpio_num_t) PAGER_PIN_DISP_VCC_EN);
+    portENTER_CRITICAL(&s_on_mux);
     s_rail_on = true;
+    s_on_since_us = esp_timer_get_time();
+    portEXIT_CRITICAL(&s_on_mux);
     s_restored_us = esp_timer_get_time(); // see rail.h: counts as a restore edge
 }
 
@@ -139,6 +149,7 @@ void rail_on(void)
     // below covers both the MIC5225's and the CardKB's own supply start-up.
     gpio_set_level(PAGER_PIN_DISP_VCC_EN, PAGER_DISP_VCC_EN_ON); // ENA on: panel
     gpio_set_level(PAGER_PIN_3V3_EN, 0); // active-low: CardKB supply on
+    int64_t on_edge_us = esp_timer_get_time();
     // Round 9: universal settle before touching ANYTHING downstream (see
     // s_settle_ms's own comment above) -- must come before ui_kb_bus_
     // restore() below, not after, so the I2C bus is not driven while the
@@ -151,7 +162,10 @@ void rail_on(void)
     // own -- the rail edge above is what powers the CardKB back up.
     ui_kb_bus_restore();
     rail_disp_bus_restore();
+    portENTER_CRITICAL(&s_on_mux);
     s_rail_on = true;
+    s_on_since_us = on_edge_us;
+    portEXIT_CRITICAL(&s_on_mux);
     s_restored_us = esp_timer_get_time();
 }
 
@@ -170,7 +184,19 @@ void rail_off(void)
     rail_disp_bus_release();
     gpio_set_level(PAGER_PIN_DISP_VCC_EN, PAGER_DISP_VCC_EN_OFF); // ENA off: panel unpowered
     gpio_set_level(PAGER_PIN_3V3_EN, 1); // active-low: CardKB supply off
+    portENTER_CRITICAL(&s_on_mux);
+    s_on_acc_us += esp_timer_get_time() - s_on_since_us;
     s_rail_on = false;
+    portEXIT_CRITICAL(&s_on_mux);
+}
+
+uint32_t rail_on_ms_total(void)
+{
+    portENTER_CRITICAL(&s_on_mux);
+    int64_t us = s_on_acc_us + (s_rail_on ? esp_timer_get_time() - s_on_since_us : 0);
+    portEXIT_CRITICAL(&s_on_mux);
+    int64_t ms = us / 1000;
+    return ms < 0 ? 0u : (ms > 0xFFFFFFFFLL ? 0xFFFFFFFFu : (uint32_t) ms);
 }
 
 bool rail_is_on(void) { return s_rail_on; }

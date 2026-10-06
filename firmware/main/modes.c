@@ -20,6 +20,7 @@
 #include "disp.h" // S12: disp_busy_timeout_count() for the sleeptest report; rail gate: disp_note_power_loss()
 #include "flightrec.h" // docs/SLEEP_PAGE_LOSS_BRIEF.md §6 item A; no-op outside a debug build's sleeptest window
 #include "pins.h" // PAGER_PIN_WAKE0, the sleeptest wake0_ms experiment (§6 item F)
+#include "battstat.h" // docs/BATTERY_STATS_DESIGN.md: time-in-state counters, /status key 68 `bs`
 #include "rail.h" // docs/ROADMAP.md rail gate (owner, 24 Sep 10:30 pm PDT): rail_on()/rail_off()
 
 // F6.2 (docs/DEVICE_PLAN.md §5.3): CardKB decode + button FSM (+BTN_STUCK)
@@ -719,6 +720,7 @@ static int refresh_batt_mv(void)
         batt_mv = (s_last_batt_mv != 0) ? s_last_batt_mv : PAGER_BATT_MV_UNKNOWN_PLACEHOLDER;
     } else {
         s_last_batt_mv = batt_mv;
+        battstat_note_mv(batt_mv); // window minimum for `bs.mvn`
     }
     return batt_mv;
 }
@@ -815,6 +817,11 @@ uint32_t modes_get_modem_resets(void) { return g_rtc.modem_resets; }
 // is set. No modem or sleep-state effect of its own beyond the
 // net_get_battery_mv()/net_get_rssi() AT round trips already documented at
 // their call sites (book_get_bv() is a plain RAM read, no NVS I/O).
+// The window snapshot the last build_status_cbor() encoded; publish_status_online() commits it (subtracts
+// it from the counters) only when the publish succeeds. Loop task only.
+static bs_snap_t s_bs_snap;
+static bool s_bs_have = false;
+
 static bool build_status_cbor(uint8_t *out, size_t cap, size_t *out_len, const char *state)
 {
     int64_t ts = approx_epoch();
@@ -876,6 +883,13 @@ static bool build_status_cbor(uint8_t *out, size_t cap, size_t *out_len, const c
     if (ost.have_job) {
         nfields += 3; // ota_t, ota_st, ota_pct
         nfields += have_ota_err ? 1 : 0;
+    }
+    // docs/BATTERY_STATS_DESIGN.md B5: key 68 `bs`, CBOR-only (this function only ever writes CBOR), once the
+    // window holds at least 1 s. Snapshot taken here, committed by publish_status_online() on success.
+    battstat_snapshot(&s_bs_snap);
+    s_bs_have = s_bs_snap.dt >= 1;
+    if (s_bs_have) {
+        nfields += 1;
     }
     if (signed_env) {
         nfields += 1; // v0.4 §3.7/§5.1: `bpull` — see its own cbor_w_uint() call below for the gate
@@ -947,6 +961,9 @@ static bool build_status_cbor(uint8_t *out, size_t cap, size_t *out_len, const c
     // (PROTOCOL.md §5.1), no modem or sleep-state effect of its own.
     const char *xport_str = (net_xport_active() == NET_XPORT_WIFI) ? "wifi" : "lte";
     cbor_w_tstr(&w, STK_XPORT, xport_str, strlen(xport_str));
+    if (s_bs_have) {
+        battstat_encode(&w, &s_bs_snap);
+    }
 
     // v0.4 §3.7/§5.1: "sends `bpull: 1` in every online `/status`" — gated on
     // `signed_env` (IDENT_FLAG_REQ_SIG) the same way book pull itself is
@@ -998,7 +1015,7 @@ static volatile int64_t s_status_publish_pending_since_us = 0;
 
 static void publish_status_online(void)
 {
-    uint8_t buf[384]; // 256 before the OTA fields (img + ota + ota_t/st/pct/err add up to ~75 B)
+    uint8_t buf[448] /* 7 Oct 2026: OTA fields (278 B max) + bs counters (121 B max) = 399 B; was 384 */; // 256 before the OTA fields (img + ota + ota_t/st/pct/err add up to ~75 B)
     size_t len = 0;
     if (!build_status_cbor(buf, sizeof(buf), &len, "online")) {
         ESP_LOGI(TAG, "status CBOR build failed (buffer too small or auth_sign failed)");
@@ -1012,8 +1029,12 @@ static void publish_status_online(void)
         g_rtc.status_pub_count++;
         g_rtc.last_status_epoch = approx_epoch();
         rtc_unlock();
-        ESP_LOGI(TAG, "published /status online (mode=%s)",
-                 g_rtc.mode == (uint8_t) PAGER_MODE_ACTIVE ? "active" : "sleep");
+        if (s_bs_have) {
+            battstat_commit(&s_bs_snap); // window carried: subtract it, sq++
+            s_bs_have = false;
+        }
+        ESP_LOGI(TAG, "published /status online (mode=%s, %u B)",
+                 g_rtc.mode == (uint8_t) PAGER_MODE_ACTIVE ? "active" : "sleep", (unsigned) len);
         ota_on_status_published(true); // rollback confirmation + end-of-job bookkeeping
     } else {
         ESP_LOGI(TAG, "publish /status online failed");
@@ -2241,6 +2262,9 @@ void modes_boot(void)
     ESP_LOGI(TAG, "pager_rtc_t size = %u bytes (of the 1184-byte budget left "
                   "after walter-modem's own ~7003 bytes, PROTOCOL.md §9.1)",
              (unsigned) sizeof(g_rtc));
+    battstat_init(); // RTC_NOINIT window: kept across software/panic/watchdog resets, zeroed after power-on
+    ESP_LOGI(TAG, "battstat_rtc_t size = %u bytes (RTC_NOINIT, outside pager_rtc_t)",
+             (unsigned) sizeof(battstat_rtc_t));
 
     msg_bind_rtc(&g_rtc.msg, rtc_lock, rtc_unlock, rtc_save);
     msg_init(was_valid);
@@ -2495,6 +2519,28 @@ static bool attentive_service(void)
     return attentive;
 }
 
+// docs/BATTERY_STATS_DESIGN.md B3: the highest-priority reason this loop iteration stayed awake, for the
+// awake-time attribution (fetch > modem > ui > hot > attn > timer). Pure reads, no AT traffic.
+static bs_cause_t loop_cause(bool attentive, bool btn_busy, bool btn_stuck, bool ui_awake)
+{
+    if (cafetch_in_progress()) {
+        return BS_FETCH;
+    }
+    if (net_modem_busy() || net_connect_in_flight() || net_publish_in_flight() || net_resub_hold()) {
+        return BS_MODEM;
+    }
+    if (ui_awake || btn_busy || btn_stuck) {
+        return BS_UI;
+    }
+    if (input_hot() || accel_shake_pending()) {
+        return BS_HOT;
+    }
+    if (attentive) {
+        return BS_ATTN;
+    }
+    return BS_TIMER;
+}
+
 void modes_run(void)
 {
     s_modes_run_task = xTaskGetCurrentTaskHandle();
@@ -2504,6 +2550,7 @@ void modes_run(void)
     watchdog_loop_begin();
     for (;;) {
         watchdog_kick(WD_LOOP_TOP);
+        battstat_tick(s_mqtt_link_counter, net_airplane() || s_coverage_owns_radio); // charge the previous iteration
         uint32_t interval_ms = (g_rtc.mode == (uint8_t) PAGER_MODE_ACTIVE)
                                     ? PAGER_WAKE_INTERVAL_ACTIVE_MS
                                     : PAGER_WAKE_INTERVAL_SLEEP_MS;
@@ -2631,6 +2678,7 @@ void modes_run(void)
         bool skip_sleep = btn_busy || btn_stuck || ui_awake || net_modem_busy() || net_connect_in_flight() ||
                            net_publish_in_flight() || bookpull_fetch_in_progress() || net_resub_hold() ||
                            accel_shake_pending() || input_hot() || ota_transfer_active();
+        battstat_raise(loop_cause(attentive, btn_busy, btn_stuck, ui_awake));
         // 5 Oct 2026 diagnostic (all builds; owner: the shake-branch release
         // never slept after boot, no console, USB alive only because it
         // never sleeps): once per 60 s while the loop has gone >= 60 s
@@ -2793,7 +2841,9 @@ void modes_run(void)
 #endif
             }
             watchdog_kick(WD_SLEEP_ENTER);
+            int64_t bs_t0 = esp_timer_get_time();
             net_sleep(interval_ms);
+            battstat_note_sleep(esp_timer_get_time() - bs_t0); // time inside light sleep, for `bs.sl`
             // Wake path (TASK_ui_round2.md Do #4, the lazy-rail rewrite —
             // supersedes the old unconditional rail_on() this comment used
             // to describe): the rail is NO LONGER brought up unconditionally
@@ -3625,6 +3675,7 @@ void modes_run(void)
         rtc_lock();
         rtc_save();
         rtc_unlock();
+        battstat_raise(loop_cause(attentive, input_button_busy(), input_button_stuck(), input_awake()));
 #ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
         ST_MARK(7);
         // S0 summary stat: this iteration's total awake work (sum of its own

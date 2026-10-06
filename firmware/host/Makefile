@@ -75,7 +75,7 @@ endif
 MAIN_SRC := ../main
 BUILD := build
 
-TESTS := test_cbor test_auth test_setup test_input test_msg test_lock test_loc test_cafetch test_catrust test_cfg test_sms test_carrier test_chat_layout test_home_list test_coverage test_net_connect_guard test_net_probe_guard test_resub_verdict test_publish_quiet test_accel_rate test_wifi_policy test_wificred test_bookpull test_clock test_disp_flip test_otapipe test_ota
+TESTS := test_cbor test_auth test_setup test_input test_msg test_lock test_loc test_cafetch test_catrust test_cfg test_sms test_carrier test_chat_layout test_home_list test_coverage test_net_connect_guard test_net_probe_guard test_resub_verdict test_publish_quiet test_accel_rate test_wifi_policy test_wificred test_bookpull test_clock test_disp_flip test_otapipe test_ota test_battstat
 TEST_BINS := $(TESTS:%=$(BUILD)/%)
 
 # ASSETS: tools/mkassets.py's default output location (docs/DEVICE_TASKS.md
@@ -488,3 +488,14 @@ $(BUILD)/test_disp_flip.o: test_disp_flip.c $(MAIN_SRC)/disp_flip.h | $(BUILD)
 
 $(BUILD)/test_disp_flip: $(BUILD)/disp_flip.o $(BUILD)/test_disp_flip.o
 	$(CC) $(CFLAGS) -o $@ $^
+
+# test_battstat: battstat.c (pure core, no ESP-IDF; its device wrappers are
+# under #ifdef ESP_PLATFORM) + cbor.c + test_battstat.c.
+$(BUILD)/battstat.o: $(MAIN_SRC)/battstat.c $(MAIN_SRC)/battstat.h $(MAIN_SRC)/cbor.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $(MAIN_SRC)/battstat.c
+
+$(BUILD)/test_battstat.o: test_battstat.c $(MAIN_SRC)/battstat.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ test_battstat.c
+
+$(BUILD)/test_battstat: $(BUILD)/battstat.o $(BUILD)/cbor.o $(BUILD)/test_battstat.o
+	$(CC) $(CFLAGS) -o $@ $(BUILD)/battstat.o $(BUILD)/cbor.o $(BUILD)/test_battstat.o

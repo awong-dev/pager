@@ -86,6 +86,10 @@ bool cbor_w_map_key(cbor_w_t *w, uint32_t key, uint32_t n);
  * cbor_w_map(w, m). */
 bool cbor_w_array(cbor_w_t *w, uint32_t key, uint32_t n);
 
+/* One bare unsigned int (major 0, shortest form, no key): an array item
+ * after cbor_w_array() (battstat's `bs` arrays, PROTOCOL.md §10 key 68). */
+bool cbor_w_uint_item(cbor_w_t *w, uint64_t u);
+
 /* Scalar key/value pairs. Each writes `key` (major 0, shortest form) then
  * the value. */
 bool cbor_w_uint(cbor_w_t *w, uint32_t key, uint64_t u);

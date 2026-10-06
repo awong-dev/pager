@@ -24,6 +24,7 @@
 #include <stdio.h>
 
 #include "accel.h"
+#include "battstat.h"
 #include "cafetch.h"
 #include "catrust.h"
 #include "mbedtls/sha256.h"
@@ -1691,6 +1692,24 @@ static int cmd_airplane(int argc, char **argv)
     return 1;
 }
 
+// docs/BATTERY_STATS_DESIGN.md §7: `battstat` prints the live window (seconds) with the dt vs sl+aw check and
+// the per-wake awake ms; `battstat reboot` prints it, then hard-resets to prove the RTC_NOINIT window survives.
+static int cmd_battstat(int argc, char **argv)
+{
+    if (argc > 2 || (argc == 2 && strcmp(argv[1], "reboot") != 0)) {
+        printf("usage: battstat [reboot]\n");
+        return 1;
+    }
+    char line[320];
+    battstat_format(line, sizeof(line));
+    printf("%s\n", line);
+    if (argc == 2) {
+        fflush(stdout);
+        watchdog_hard_reset(); // power effect: reboots the ESP32; the modem keeps its state
+    }
+    return 0;
+}
+
 // docs/WIFI_TASKS.md W5: `wifi set|clear|on|off|status|scan`. Debug build
 // only -- phase 1's manual selection policy (docs/WIFI_DESIGN.md §2/§3:
 // "the console turns it on; nothing turns it on by itself") lives entirely
@@ -2242,6 +2261,14 @@ static void start_normal_console(void)
         .func = &cmd_airplane,
     };
     ESP_ERROR_CHECK(esp_console_cmd_register(&airplane_cmd));
+    const esp_console_cmd_t battstat_cmd = {
+        .command = "battstat",
+        .help = "battstat [reboot] -- live battery-stats window (BATTERY_STATS_DESIGN.md): dt vs sl+aw and "
+                "per-wake awake ms; `reboot` hard-resets afterwards to check the window survives",
+        .hint = NULL,
+        .func = &cmd_battstat,
+    };
+    ESP_ERROR_CHECK(esp_console_cmd_register(&battstat_cmd));
 
     const esp_console_cmd_t wifi_cmd = {
         .command = "wifi",

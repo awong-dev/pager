@@ -470,6 +470,7 @@ void pager_mqtt_event_handler(WMMQTTEventType event, const WMMQTTEventData *data
         break;
 
     case WALTER_MODEM_MQTT_EVENT_MESSAGE:
+        net_note_radio_event(); // battstat `re`: an inbound message (RRC tail)
         // RTS interlock: net_sleep() runs on modes_run()'s task, which
         // is priority 1 against this task's priority 4, so it gets
         // scheduled every time this handler blocks (mqttReceive()'s AT
@@ -820,6 +821,7 @@ static void lte_service_session(void)
             ESP_LOGI(TAG, "liveness ping got no SUBACK in 30s: re-sending once (idle %llds) "
                           "before declaring the session dead",
                      (long long) ((now - s_last_uplink_us) / 1000000));
+            net_note_radio_event(); // battstat `re`: the retry re-SUBSCRIBE was sent
             s_resub_sent_us = now;
             lte_resub_hold_note_sent(now); // phaseBG: hold the loop awake for this retry's SUBACK too
             s_resub_second_try = true;
@@ -891,6 +893,7 @@ static void lte_service_session(void)
                  (long long) idle_s, resume_repair ? " (resume repair)" : "");
         return;
     }
+    net_note_radio_event(); // battstat `re`: the liveness re-SUBSCRIBE was sent
     s_resub_sent_us = now;
     lte_resub_hold_note_sent(now); // phaseBG: hold the loop awake for this send's SUBACK
     s_resub_wait = true;

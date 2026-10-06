@@ -23,6 +23,9 @@
 #include "net_probe_guard.h"
 #include "publish_quiet.h"
 #include "wifi_sta.h"
+extern "C" {
+#include "battstat.h" // battstat_raise(BS_MODEM) in the publish wrappers (BATTERY_STATS_DESIGN.md B3)
+}
 #include "flightrec.h" // docs/SLEEP_PAGE_LOSS_BRIEF.md §6 item A; no-op outside a debug build's sleeptest window
 
 #include "WalterModem.h"
@@ -1156,7 +1159,12 @@ extern "C" bool net_publish(const char *topic, char *buf, uint16_t len, uint8_t 
     if (net_airplane()) {
         return false;
     }
-    return s_xport_ops->publish(topic, buf, len, qos);
+    battstat_raise(BS_MODEM); // attribution only: this iteration's awake time is modem time
+    bool ok = s_xport_ops->publish(topic, buf, len, qos);
+    if (ok) {
+        net_note_radio_event();
+    }
+    return ok;
 }
 
 extern "C" bool net_publish_raw(const char *topic, uint8_t *buf, uint16_t len, uint8_t qos)
@@ -1164,7 +1172,12 @@ extern "C" bool net_publish_raw(const char *topic, uint8_t *buf, uint16_t len, u
     if (net_airplane()) {
         return false;
     }
-    return s_xport_ops->publish_raw(topic, buf, len, qos);
+    battstat_raise(BS_MODEM); // attribution only: this iteration's awake time is modem time
+    bool ok = s_xport_ops->publish_raw(topic, buf, len, qos);
+    if (ok) {
+        net_note_radio_event();
+    }
+    return ok;
 }
 
 extern "C" uint32_t net_publish_quiet_wait_ms(uint32_t max_wait_ms)
@@ -2501,6 +2514,18 @@ extern "C" void net_set_accel_wake(bool on)
 extern "C" void net_enable_accel_wake(void)
 {
     net_set_accel_wake(true);
+}
+
+static uint32_t s_radio_events = 0; // since boot; battstat `re`
+
+extern "C" uint32_t net_get_radio_events(void)
+{
+    return __atomic_load_n(&s_radio_events, __ATOMIC_RELAXED);
+}
+
+extern "C" void net_note_radio_event(void)
+{
+    __atomic_add_fetch(&s_radio_events, 1, __ATOMIC_RELAXED);
 }
 
 extern "C" uint32_t net_get_ext1_wakes(void)

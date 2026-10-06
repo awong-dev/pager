@@ -587,6 +587,22 @@ static void test_link_key_50_matches_relay_vector(void)
           "test_devauth.py's test_status_envelope_with_link_example_cbor_hex");
 }
 
+static void test_uint_item_in_array(void)
+{
+    /* {5: [0, 23, 24, 300]} -> a1 05 84 00 17 18 18 19 01 2c */
+    static const uint8_t want[] = {0xa1, 0x05, 0x84, 0x00, 0x17, 0x18, 0x18, 0x19, 0x01, 0x2c};
+    uint8_t buf[16];
+    cbor_w_t w;
+    cbor_w_init(&w, buf, sizeof(buf));
+    CHECK(cbor_w_map(&w, 1) && cbor_w_array(&w, 5, 4), "uint_item: headers");
+    CHECK(cbor_w_uint_item(&w, 0) && cbor_w_uint_item(&w, 23) && cbor_w_uint_item(&w, 24) &&
+              cbor_w_uint_item(&w, 300),
+          "uint_item: items");
+    CHECK(w.len == sizeof(want) && memcmp(buf, want, sizeof(want)) == 0, "uint_item: bytes differ");
+    cbor_w_init(&w, buf, 1);
+    CHECK(!cbor_w_uint_item(&w, 300) && w.err, "uint_item: overflow sets err");
+}
+
 int main(void)
 {
     test_overflow();
@@ -597,6 +613,7 @@ int main(void)
     test_unknown_key_51_tstr_skipped();
     test_tstr_failure_leaves_pos_unmoved();
     test_link_key_50_matches_relay_vector();
+    test_uint_item_in_array();
 
     vector_t vectors[MAX_VECTORS];
     int n = load_vectors(AUTHVECTORS_PATH, vectors, MAX_VECTORS);

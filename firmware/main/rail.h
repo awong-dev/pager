@@ -107,6 +107,11 @@ bool rail_is_on(void);
  */
 int64_t rail_restored_us(void);
 
+/* Milliseconds the rail has been on since boot (closed on-spans plus the open
+ * one; rail_init() counts as an on edge). Feeds battstat's `rl`. Saturates at
+ * UINT32_MAX. Power effect: none -- read-only. */
+uint32_t rail_on_ms_total(void);
+
 /* Round 9: the universal post-rail-on settle delay rail_on() waits before
  * touching any downstream peripheral (rail.c's own comment on s_settle_ms
  * has the full rationale/sourcing). Default 15ms; the setter exists so a

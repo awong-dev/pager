@@ -109,6 +109,11 @@ bool cbor_w_array(cbor_w_t *w, uint32_t key, uint32_t n)
     return put_head(w, MAJ_UINT, key) && put_head(w, MAJ_ARRAY, n);
 }
 
+bool cbor_w_uint_item(cbor_w_t *w, uint64_t u)
+{
+    return put_head(w, MAJ_UINT, u);
+}
+
 bool cbor_w_uint(cbor_w_t *w, uint32_t key, uint64_t u)
 {
     return put_head(w, MAJ_UINT, key) && put_head(w, MAJ_UINT, u);

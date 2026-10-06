@@ -1035,6 +1035,13 @@ void net_enable_accel_wake(void);
  * on). Power effect: none -- read-only counter. */
 uint32_t net_get_ext1_wakes(void);
 
+/* Radio events since boot: successful publishes, liveness re-SUBSCRIBEs sent
+ * and inbound MQTT messages (each costs an RRC tail). battstat's `re`
+ * (BATTERY_STATS_DESIGN.md). net_note_radio_event() is callable from any
+ * task. Power effect: none -- bookkeeping only. */
+uint32_t net_get_radio_events(void);
+void net_note_radio_event(void);
+
 /* ---------------------------------------------------------------------
  * SMS (docs/V02_DESIGN.md §6). main/sms.c is the only caller; it owns the
  * allow-list/audit/encoding policy and never calls WalterModem directly
