@@ -1,6 +1,6 @@
 "use client";
 
-/** `/devices/[id]` -- docs/V02_DESIGN.md §6 (device-direct SMS): a contacts
+/** `/devices/[id]` -- the battery card (docs/BATTERY_STATS_DESIGN.md B7) and docs/V02_DESIGN.md §6 (device-direct SMS): a contacts
  * editor and an audit log, reachable from `/admin/devices` (any device, via
  * the "SMS" button on each row) and from `/settings/devices` (an owner's
  * own). Authz is the relay's job (device owner or admin, 403 otherwise);
@@ -60,6 +60,7 @@ import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import AppShell from "@/components/AppShell";
 import DeviceTrustChip from "@/components/DeviceTrustChip";
 import RequireAuth from "@/components/RequireAuth";
+import BatteryCard from "@/components/BatteryCard";
 import WifiPanel from "@/components/WifiPanel";
 import { ApiError, api } from "@/lib/api";
 import { useDirectory } from "@/lib/directory";
@@ -231,6 +232,8 @@ function DeviceInner() {
       )}
 
       {id && id !== "_" && <WifiPanel deviceId={id} />}
+
+      {id && id !== "_" && <BatteryCard deviceId={id} />}
 
       <Card variant="outlined">
         <CardContent>

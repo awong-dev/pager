@@ -327,6 +327,7 @@ function DevicesInner() {
               <TableCell>Revoked</TableCell>
               <TableCell>CA trust</TableCell>
               <TableCell>Firmware</TableCell>
+              <TableCell>Battery</TableCell>
               <TableCell>Lock</TableCell>
               <TableCell />
             </TableRow>
@@ -382,6 +383,32 @@ function DevicesInner() {
                         Update firmware…
                       </Button>
                     </Stack>
+                  </TableCell>
+                  <TableCell>
+                    {d.status?.battMv == null ? (
+                      "–"
+                    ) : (
+                      <Link
+                        href={`/devices/${d.id}#battery`}
+                        style={{ color: "inherit" }}
+                      >
+                        <Typography
+                          component="span"
+                          variant="body2"
+                          color={
+                            d.status.battMv >= 4300
+                              ? "text.primary"
+                              : d.status.battMv < 3550
+                                ? "error"
+                                : d.status.battMv < 3700
+                                  ? "warning.main"
+                                  : "text.primary"
+                          }
+                        >
+                          {d.status.battMv >= 4300 ? "USB" : `${d.status.battMv} mV`}
+                        </Typography>
+                      </Link>
+                    )}
                   </TableCell>
                   <TableCell>
                     <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
