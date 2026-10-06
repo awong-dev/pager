@@ -74,6 +74,12 @@
 // of the same-day right-header rework; still active-high to the board's 3V,
 // still an RTC GPIO, still shares the ext1 wake with the LIS3DH's INT1.
 #define PAGER_PIN_BUTTON 8  // active-high to the board's 3V, ext1 shared with LIS3DH INT1
+// Owner decision 6 Oct 2026: the IO8 wake button is disabled entirely (the shake
+// replaces it; IO8 read pressed on every release build). IO8 stays listed but is
+// unused: no pad config, no ext1 wake bit, no polling. Set to 1 to bring it back.
+#ifndef PAGER_WAKE_BUTTON_ENABLED
+#define PAGER_WAKE_BUTTON_ENABLED 0
+#endif
 
 // Keyboard (CardKB, I2C addr 0x5F) on I2C_NUM_0, right header pins 25/24
 // (moved from pins 16/15 / IO5,IO4 on 3 Oct 2026, then back to 25/24 /

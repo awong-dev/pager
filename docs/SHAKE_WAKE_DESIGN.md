@@ -154,3 +154,14 @@ On the glass, owner checklist, debug build first and then release:
 8. Walk, then shake within 20 s of a motion edge: the hot window opens (key draws). This is the
    D7 fix.
 9. 1 h untouched soak (debug build): zero `intentional shake`, zero `rejected` lines.
+
+## Button retired, 6 Oct 2026
+
+Owner decision: the IO8 wake button is disabled entirely (`PAGER_WAKE_BUTTON_ENABLED 0` in
+`firmware/main/pins.h`). On every release build IO8 read pressed sooner or later (an RTC pad hold
+once, cause unknown the second time); BTN_STUCK then polled once per 20 s, withheld sleep and
+ignored shakes. IO8 is not configured, not polled and not in the ext1 mask; with no accelerometer
+either, `net_sleep()` arms the timer wake only. The shake (hot window + first key) covers the
+button's essential job; short press (open oldest unread / go home) and long press (go home) have
+keyboard equivalents (Enter on the Home list, Esc). The console `btn` simulation still works.
+Set the flag to 1 to restore the button.

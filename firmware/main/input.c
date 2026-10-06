@@ -77,9 +77,11 @@ typedef enum {
 } btn_state_t;
 
 static btn_state_t s_btn_state = BTN_IDLE;
+#if PAGER_WAKE_BUTTON_ENABLED
 static int64_t s_btn_t0_us = 0;           /* press start (debounce resolved) */
 static int64_t s_btn_held_t0_us = 0;      /* BTN_HELD entry, for the BTN_STUCK cutoff */
 static int64_t s_btn_debounce_start_us = 0;
+#endif
 
 static int64_t s_awake_until_us = 0;
 
@@ -118,6 +120,7 @@ static void push_event(input_event_t evt)
  * net_sleep() (see input_button_stuck()'s doc comment in input.h for why
  * that needs a net.cpp change outside this task's scope).
  */
+#if PAGER_WAKE_BUTTON_ENABLED
 static void button_fsm_step(int level, int64_t now_us)
 {
     switch (s_btn_state) {
@@ -173,6 +176,7 @@ static void button_fsm_step(int level, int64_t now_us)
         break;
     }
 }
+#endif /* PAGER_WAKE_BUTTON_ENABLED */
 
 void input_init(void)
 {
@@ -184,6 +188,7 @@ void input_init(void)
      * phantom press 200 ms after boot complete, BTN_STUCK 5 s later, CardKB polled
      * once per 20 s). A held pad also ignores gpio_config(), so release it FIRST.
      * net_sleep() (net.cpp) releases it again after every wake. */
+#if PAGER_WAKE_BUTTON_ENABLED
     rtc_gpio_hold_dis((gpio_num_t) PAGER_PIN_BUTTON);
 
     gpio_config_t cfg = {
@@ -194,6 +199,7 @@ void input_init(void)
         .intr_type = GPIO_INTR_DISABLE,
     };
     gpio_config(&cfg);
+#endif /* PAGER_WAKE_BUTTON_ENABLED: disabled = IO8 untouched */
 
     s_queue = xQueueCreateStatic(INPUT_QUEUE_DEPTH, sizeof(input_event_t), s_queue_storage,
                                   &s_queue_buf);
@@ -201,12 +207,18 @@ void input_init(void)
 
 void input_poll(void)
 {
+#if PAGER_WAKE_BUTTON_ENABLED
     int64_t now_us = esp_timer_get_time();
     button_fsm_step(gpio_get_level((gpio_num_t) PAGER_PIN_BUTTON), now_us);
+#endif
 }
 
 void input_note_button_wake(int64_t now_us)
 {
+#if !PAGER_WAKE_BUTTON_ENABLED
+    (void) now_us; /* button retired 6 Oct 2026 */
+    return;
+#else
     /* Merge into a press the FSM is already tracking (a held button across
      * consecutive ext1 wakes, or a press input_poll() already debounced
      * this same iteration before this got called) instead of seeding a
@@ -220,6 +232,7 @@ void input_note_button_wake(int64_t now_us)
     s_btn_debounce_start_us = 0;
     arm_awake_window(now_us);
     push_event((input_event_t) { .type = INPUT_EVT_BTN_DOWN });
+#endif
 }
 
 /* A shake from sleep only opens the short hot window and draws nothing, so
@@ -292,12 +305,12 @@ bool input_awake(void)
 
 bool input_button_busy(void)
 {
-    return s_btn_state == BTN_DOWN || s_btn_state == BTN_HELD;
+    return PAGER_WAKE_BUTTON_ENABLED && (s_btn_state == BTN_DOWN || s_btn_state == BTN_HELD);
 }
 
 bool input_button_stuck(void)
 {
-    return s_btn_state == BTN_STUCK;
+    return PAGER_WAKE_BUTTON_ENABLED && s_btn_state == BTN_STUCK;
 }
 
 #endif /* ESP_PLATFORM */

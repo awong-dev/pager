@@ -2766,7 +2766,8 @@ void modes_run(void)
                 // own comment) -- esp_sleep_get_ext1_wakeup_status()'s
                 // bitmask (button = IO8, motion = IO6) is what tells them
                 // apart; there is no more ESP_SLEEP_WAKEUP_EXT0.
-                // Rule (b), 5 Oct 2026: only the button bit is input (attentive
+                // Rule (b), 5 Oct 2026 (6 Oct 2026: ext1 = accelerometer only, the button is
+                // retired; the button branch below is dead): only the button bit is input (attentive
                 // window, FSM seed). A motion wake (LIS3DH bit only) is still
                 // an ext1 wake, so it gets the UI-first handling (short yield,
                 // no probe wait) so the shake classifier (accel_poll) starts
@@ -2776,9 +2777,13 @@ void modes_run(void)
                 // shake follows, the normal sleep branch's rail_off() turns it
                 // off again at the next sleep.
                 wake_is_ext1 = (wake_cause == ESP_SLEEP_WAKEUP_EXT1);
+#if PAGER_WAKE_BUTTON_ENABLED
                 bool wake_is_button =
                     wake_is_ext1 &&
                     (esp_sleep_get_ext1_wakeup_status() & (1ULL << PAGER_PIN_BUTTON));
+#else
+                const bool wake_is_button = false; // button retired 6 Oct 2026: ext1 = accelerometer only
+#endif
                 // 5 Oct 2026 ~5 am: NO rail_on() on a motion-only wake. Tried for
                 // an hour: handling the pager to press a key is itself a motion
                 // wake, the rail pulsed on for ~1 s (CardKB LED lit, 1.1 s boot

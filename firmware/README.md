@@ -22,7 +22,7 @@ nothing else in the firmware hardcodes a pin.
 | Adafruit eInk Breakout Friend, panel Orient Display AES128296A00-2.9ENRS (SSD1680-compatible, 296×128; replaced the GDEY029T94-FT01 on 4 Oct 2026; partial-waveform OTP unverified, see HARDWARE_TESTING.md) | E-paper display | SPI via the GPIO matrix, 4 MHz: SCK IO2, MISO IO42, MOSI IO41, ECS IO40, D/C IO39, RST IO13, BUSY IO11; SRCS IO38 held high (SRAM unused); SDCS not wired. ENA IO12 is the Friend's regulator enable (active-high, pulled up on the Friend): low = panel unpowered. Friend VIN from the power board's always-on "3V" rail, not Walter VIN or Walter 3V3-OUT. |
 | M5Stack CardKB | Keyboard | I2C_NUM_0 addr 0x5F, SDA IO10 / SCL IO9, polled. VCC from Walter's own switched 3V3-OUT (header pin 26, gated by IO0), so it switches with the attentive window independently of the display. |
 | Adafruit LIS3DH breakout | Motion wake | I2C_NUM_1 addr 0x18 (SDO/SA0 open), SDA IO5 / SCL IO4; INT1 → IO6 (push-pull, active-high, 3.3 V, ext1 wake, shared with the button). VIN from the power board's always-on "3V" rail (not gated by any Walter GPIO), so it stays alive through every rail_off() and every light sleep/reset. |
-| Push button | Wake / open reply | IO8 to the power board's always-on 3V (not GND), active high, RTC GPIO, ext1 wake shared with the LIS3DH's INT1 |
+| Push button (DISABLED 6 Oct 2026, `PAGER_WAKE_BUTTON_ENABLED 0`; the shake replaces it) | Wake / open reply | IO8 to the power board's always-on 3V (not GND), active high, RTC GPIO, ext1 wake shared with the LIS3DH's INT1 |
 | Adafruit 6092 (bq25185 + TLV62569) power board + 3.7 V 2500 mAh LiPo (Adafruit 328) | Power | Board "4.5V" (SYS) → Walter VIN; board always-on "3V" buck → Friend VIN + LIS3DH VIN + button |
 
 ### Walter header map
@@ -102,8 +102,8 @@ crosses the wire; this section covers the device-local behaviour the protocol do
 - **Power**: the device sleeps most of the day. In **sleep mode** the modem uses eDRX (target
   20.48 s cycle) and the ESP32 light-sleeps; delivery within ~30 s is acceptable. In **active
   mode** the modem stays connected and messages must show within 5 s.
-- **Modes**: boot in sleep mode. Enter active mode on an incoming message or a button press; leave
-  it after 10 minutes with no button or keyboard activity. The 10-minute timeout runs from mode
+- **Modes**: boot in sleep mode. Enter active mode on an incoming message or a shake plus a key (the IO8 button was retired 6 Oct 2026); leave
+  it after 10 minutes with no keyboard activity. The 10-minute timeout runs from mode
   *entry*, not from the last activity. The CardKB is polled every 100 ms, and only while the reply
   composer is open.
 - **Display refresh**: partial refresh for the message pane, with a full refresh every 20th

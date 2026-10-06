@@ -140,13 +140,13 @@ $(BUILD)/test_setup: $(BUILD)/setup.o $(BUILD)/cbor.o $(BUILD)/test_setup.o
 # for the ESP-IDF pieces it calls, + test_input.c (also built with
 # -DESP_PLATFORM so it sees the same input.h declarations input.c does).
 $(BUILD)/input.o: $(MAIN_SRC)/input.c $(MAIN_SRC)/input.h | $(BUILD)
-	$(CC) $(CFLAGS) -DESP_PLATFORM $(INCLUDES) $(IDF_STUB_INCLUDES) -c -o $@ $(MAIN_SRC)/input.c
+	$(CC) $(CFLAGS) -DESP_PLATFORM -DPAGER_WAKE_BUTTON_ENABLED=1 $(INCLUDES) $(IDF_STUB_INCLUDES) -c -o $@ $(MAIN_SRC)/input.c
 
 $(BUILD)/idf_stub.o: idf_stub.c | $(BUILD)
 	$(CC) $(CFLAGS) $(INCLUDES) $(IDF_STUB_INCLUDES) -c -o $@ idf_stub.c
 
 $(BUILD)/test_input.o: test_input.c $(MAIN_SRC)/input.h | $(BUILD)
-	$(CC) $(CFLAGS) -DESP_PLATFORM $(INCLUDES) $(IDF_STUB_INCLUDES) -c -o $@ test_input.c
+	$(CC) $(CFLAGS) -DESP_PLATFORM -DPAGER_WAKE_BUTTON_ENABLED=1 $(INCLUDES) $(IDF_STUB_INCLUDES) -c -o $@ test_input.c
 
 $(BUILD)/test_input: $(BUILD)/input.o $(BUILD)/idf_stub.o $(BUILD)/test_input.o
 	$(CC) $(CFLAGS) -o $@ $(BUILD)/input.o $(BUILD)/idf_stub.o $(BUILD)/test_input.o

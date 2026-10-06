@@ -1337,11 +1337,19 @@ extern "C" void net_sleep(uint32_t ms)
     // chip never answered WHO_AM_I (accel.c's own module comment: an
     // unwired/floating IO6 armed as ANY_HIGH would wake the ESP32 on every
     // light-sleep cycle for nothing).
-    uint64_t ext1_mask = 1ULL << PAGER_PIN_BUTTON;
+    // 6 Oct 2026: the IO8 button is retired (pins.h PAGER_WAKE_BUTTON_ENABLED); its
+    // bit is in the mask only when enabled, and with no accelerometer either there
+    // is no ext1 source at all (timer wake only).
+    uint64_t ext1_mask = 0;
+#if PAGER_WAKE_BUTTON_ENABLED
+    ext1_mask |= 1ULL << PAGER_PIN_BUTTON;
+#endif
     if (s_accel_wake_enabled) {
         ext1_mask |= 1ULL << PAGER_PIN_LIS3DH_INT1;
     }
-    esp_sleep_enable_ext1_wakeup(ext1_mask, ESP_EXT1_WAKEUP_ANY_HIGH);
+    if (ext1_mask != 0) {
+        esp_sleep_enable_ext1_wakeup(ext1_mask, ESP_EXT1_WAKEUP_ANY_HIGH);
+    }
     esp_sleep_enable_timer_wakeup((uint64_t) ms * 1000ULL);
 
     // Disable RTS (drive it high) so the modem is free to sleep, exactly as
@@ -1399,7 +1407,9 @@ extern "C" void net_sleep(uint32_t ms)
     // S3, never releases it -- while held, gpio_get_level(PAGER_PIN_BUTTON) is frozen
     // (read 1 with 0 V on the pin). Release it on every wake; input_init() (input.c)
     // releases a hold left over from a previous boot, since it survives resets.
+#if PAGER_WAKE_BUTTON_ENABLED
     rtc_gpio_hold_dis((gpio_num_t) PAGER_PIN_BUTTON);
+#endif
 
     // A1: count ext1 wakes actually caused by motion, before anything below
     // can touch the wakeup-cause register -- net_get_ext1_wakes() is A2's
