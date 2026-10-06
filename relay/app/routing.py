@@ -120,6 +120,7 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 from app import alerts as alerts_module
+from app import book
 from app import policy as policy_module
 from app.backends.base import Backend, DeliverResult
 from app.backends.registry import build_registry
@@ -312,8 +313,11 @@ class Routing:
             if allow_store.is_message_allowed(sender_uid, recipient_uid):
                 return None
             return "not_allowed"
-        has_edge_out = allow_store.is_message_allowed(sender_uid, recipient_uid)
-        has_edge_in = allow_store.is_message_allowed(recipient_uid, sender_uid)
+        # In-family persons count as approved (docs/ADDRESS_BOOK_DESIGN.md
+        # decision 2); `none` rules (policy `sms`, `any_sms`) still refuse.
+        in_family = book.same_family_persons(sender, recipient)
+        has_edge_out = in_family or allow_store.is_message_allowed(sender_uid, recipient_uid)
+        has_edge_in = in_family or allow_store.is_message_allowed(recipient_uid, sender_uid)
         return policy_module.check(sender, recipient, has_edge_out, has_edge_in)
 
     # ---- group fan-out (docs/GROUP_CHAT_DESIGN.md §3) ----

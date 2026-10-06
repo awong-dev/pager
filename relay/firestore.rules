@@ -55,6 +55,13 @@ service cloud.firestore {
       match /backends/{b} {
         allow read: if request.auth.uid == uid || isSuper();
       }
+
+      // Per-owner nicknames (docs/ADDRESS_BOOK_DESIGN.md decision 8); the
+      // relay is the only writer, the catch-all denies client writes.
+      match /book/{peer} {
+        allow read: if request.auth != null && (isSuper() || request.auth.uid == uid ||
+          isFamAdmin(resource.data.get('familyId', null)));
+      }
     }
 
     // A `list` against either collection is authorised by an *abstract*

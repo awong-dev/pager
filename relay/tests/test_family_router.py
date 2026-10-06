@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 from firebase_admin import auth as fb_auth
 
 from app.config import Settings
+from app.db.firestore import get_db
 from app.main import create_app
 from app.store import allow as allow_store
 from app.store import devices as devices_store
@@ -535,6 +536,11 @@ def test_approved_put_creates_externals_and_derives_capped_sms_contacts(
     admin_headers = _make_family_admin("fam20-admin", "fam20-admin", family.id)
     _make_member("fam20-kid", "fam20-kid", family.id)
     _make_pager_device("pgr-fam20-1", "fam20-kid", family.id)
+    # Numbers are listed on the pager only when the policy lets the kid text
+    # them (docs/ADDRESS_BOOK_DESIGN.md decision 2: sendable entries only).
+    get_db().collection("users").document("fam20-kid").update(
+        {"policy": {"out": "people_sms", "in": "people"}}
+    )
 
     numbers = [{"phone": f"+1206555010{i}", "name": f"n{i}"} for i in range(9)]
     resp = client.put(

@@ -13,14 +13,13 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
-from app import devcfg
+from app import book
 from app import policy as policy_module
 from app.auth import AuthedUser, principal_for, require_user
 from app.broker import BrokerClient
 from app.location import Location, NoLocatableDevice
 from app.routing import Routing
 from app.store import allow as allow_store
-from app.store import contacts as contacts_store
 from app.store import conversations as conversations_store
 from app.store import devices as devices_store
 from app.store import externals as externals_store
@@ -207,30 +206,12 @@ def mark_read(
 
 
 def _push_book_to_members(uids: list[str], broker: BrokerClient) -> None:
-    """`build/bench-logs/group-acceptance.md`'s "Gap found": a group
-    create/join/leave changes what `devcfg.build_book` computes for an
-    affected member's own device (a `t:"grp"` book contact,
-    docs/GROUP_CHAT_DESIGN.md §4, appears or disappears), but nothing
-    previously bumped `devices/{d}.bookVersion` or re-published the book, so
-    an already-online pager never learned about it -- only the next
-    contact-approval-driven push, or the device's own reported-`bv`-behind
-    check on its next online edge (`app/ingest.py`), would eventually deliver
-    it.
-
-    Same lookup (`devices_store.list_devices(owner_uid=uid)`, one user can in
-    principle own more than one device) and the same two-call idiom
-    (`contacts_store.bump_book_version` then `devcfg.push_book`) as
-    `app/routers/admin.py`'s `approve_contact`/`reject_contact` -- best-effort
-    and idempotent: a `uid` with no device is silently a no-op (the inner
-    loop never runs for them, so a web-only member never gets a spurious
-    push), and re-running this for a member whose book content didn't
-    actually change just bumps `bookVersion` and republishes the same
-    projection again, which a device's existing dedup-by-`id` already
-    tolerates (docs/PROTOCOL.md §4.1 rule 7)."""
-    for uid in uids:
-        for device in devices_store.list_devices(owner_uid=uid):
-            contacts_store.bump_book_version(device.id)
-            devcfg.push_book(device.id, broker)
+    """A group create/join/leave changes the members' derived books
+    (`build/bench-logs/group-acceptance.md`'s "Gap found"); bump and push
+    each affected owner's devices -- `app/book.py`'s `bump_and_push`
+    (docs/ADDRESS_BOOK_DESIGN.md decision 6), which de-duplicates by
+    device. A uid with no device is a no-op."""
+    book.bump_and_push(uids, broker, reason="group")
 
 
 def _create_missing_message_edges(member_uids: list[str]) -> None:

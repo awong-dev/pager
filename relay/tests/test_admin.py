@@ -798,7 +798,10 @@ def test_display_name_change_bumps_listing_owners(
         "/api/admin/allowlist",
         json={
             "entries": [
-                {"fromAlias": "owner-dn", "toAlias": "contact-dn", "message": True, "locate": False}
+                {"fromAlias": "owner-dn", "toAlias": "contact-dn", "message": True, "locate": False},
+                # reverse edge: default `people` policy needs both ends to
+                # approve before the entry is sendable (and so listed).
+                {"fromAlias": "contact-dn", "toAlias": "owner-dn", "message": True, "locate": False},
             ]
         },
         headers=admin_headers,

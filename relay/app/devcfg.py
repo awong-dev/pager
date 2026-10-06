@@ -88,7 +88,6 @@ from app.broker import BrokerClient
 from app.config import Settings
 from app.db.firestore import get_db
 from app.ids import new_message_id
-from app.store import allow as allow_store
 from app.store import backends as backends_store
 from app.store import contacts as contacts_store
 from app.store import conversations as conversations_store
@@ -224,25 +223,25 @@ def _group_contacts(owner_uid: str) -> list[dict[str, Any]]:
 
 
 def _approved_contacts(owner_uid: str) -> list[dict[str, Any]]:
-    """Every contact this owner's device book may list -- allowed users
-    (§3.2's `web`/`sms`/`chat` hint) then the owner's own groups (`t:"grp"`)
-    -- **uncapped and unordered** (§3.7's `c[]` order is `_ordered_contacts`'
-    job below, since `build_book` and `build_book_body` cap and order this
-    same set differently)."""
-    contacts: list[dict[str, Any]] = []
-    for uid in allow_store.allowed_recipients(owner_uid):
-        user = users_store.get_user(uid)
-        if user is None:
-            continue
-        contacts.append(
-            {
-                "a": user.alias,
-                "n": user.displayName[:_BOOK_NAME_MAX_CODEPOINTS],
-                "t": _contact_type_hint(uid),
-            }
-        )
-    contacts.extend(_group_contacts(owner_uid))
-    return contacts
+    """Every contact this owner's device book may list -- the sendable
+    entries of the derived address book (`app/book.py`'s `entries_for`:
+    same-family persons, the owner's message-edge peers, the owner's groups;
+    docs/ADDRESS_BOOK_DESIGN.md decision 1) -- **uncapped and unordered**
+    (§3.7's `c[]` order is `_ordered_contacts`' job below, since
+    `build_book` and `build_book_body` cap and order this same set
+    differently). `n` is the owner's nickname for the peer, else its
+    displayName."""
+    from app import book
+
+    return [
+        {
+            "a": e.alias,
+            "n": e.label[:_BOOK_NAME_MAX_CODEPOINTS],
+            "t": "grp" if e.kind == "group" else _contact_type_hint(e.uid),  # type: ignore[arg-type]
+        }
+        for e in book.entries_for(owner_uid)
+        if e.sendable
+    ]
 
 
 def _contact_sort_key(contact: dict[str, Any], default_alias: str | None) -> tuple[int, str, str]:

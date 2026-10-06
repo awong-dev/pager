@@ -41,7 +41,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from firebase_admin import auth as fb_auth
 from pydantic import BaseModel, ConfigDict, Field
 
-from app import apn_presets, ca_resolve, devcfg, devsetup
+from app import apn_presets, book, ca_resolve, devcfg, devsetup
 from app.auth import AuthedUser, principal_for, require_super, set_claims
 from app.backends.sms_twilio import normalize_e164
 from app.broker import BrokerClient
@@ -279,24 +279,26 @@ def _patch_user_impl(
     )
     if role is not None or family_id is not None:
         set_claims(uid, user.role, user.familyId)
-    # docs/CHAT_UI_DESIGN.md §1 / docs/PROTOCOL.md §3.7: "a `displayName`
-    # change of anyone the book lists" bumps and re-pushes the book of
-    # "every owner O with `is_message_allowed(O, uid)`" -- every user with
-    # an outgoing `message` edge *to* this uid, since that edge is exactly
-    # what makes `uid` appear in `O`'s book (`app/devcfg.py`'s
-    # `_approved_contacts`). Only fires on an actual change, and only when
-    # this request even carried `displayName` at all (patch semantics: an
-    # absent field never counts as "changed").
-    if display_name is not None and display_name != existing.displayName:
-        owner_uids = {e.fromUid for e in allow_store.list_edges() if e.toUid == uid and e.message}
-        for owner_uid in owner_uids:
-            for device in devices_store.list_devices(owner_uid=owner_uid):
-                contacts_store.bump_book_version(device.id)
-                devcfg.push_book(device.id, broker)
-        # docs/FAMILIES_DESIGN.md §3's trigger list: a displayName change
-        # rewrites `participants` (and `familyIds`) in every conversation
-        # this uid is a member of -- same trigger list as the book
-        # republish just above.
+    # docs/ADDRESS_BOOK_DESIGN.md decision 6 (extends docs/CHAT_UI_DESIGN.md
+    # §1 / docs/PROTOCOL.md §3.7's displayName trigger): a `displayName`,
+    # `disabled` or `familyId` change alters every book that lists this uid
+    # -- the edge holders' (`_approved_contacts`) and, since the book lists
+    # the whole family, every member of the old and the new family.
+    name_changed = display_name is not None and display_name != existing.displayName
+    disabled_changed = disabled is not None and disabled != existing.disabled
+    family_changed = family_id is not None and family_id != existing.familyId
+    if name_changed or disabled_changed or family_changed:
+        owners = (
+            book.edge_holders(uid)
+            | book.family_uids(existing.familyId)
+            | book.family_uids(user.familyId)
+            | {uid}
+        )
+        book.bump_and_push(owners, broker, reason="member_patch")
+    # docs/FAMILIES_DESIGN.md §3's trigger list: a displayName change
+    # rewrites `participants` (and `familyIds`) in every conversation
+    # this uid is a member of.
+    if name_changed:
         messages_store.rewrite_participants_for_user(uid)
     return user
 

@@ -21,7 +21,7 @@ from firebase_admin import auth as fb_auth
 from google.api_core.exceptions import AlreadyExists
 from pydantic import BaseModel, Field
 
-from app import devcfg
+from app import book, devcfg
 from app import policy as policy_module
 from app.auth import Principal, require_family_admin, set_claims
 from app.broker import BrokerClient
@@ -138,7 +138,11 @@ class CreateMemberRequest(BaseModel):
 
 
 @router.post("/members", dependencies=[Depends(require_family_write_rate_limit)])
-def create_member(req: CreateMemberRequest, scope: FamilyScope) -> User:
+def create_member(
+    req: CreateMemberRequest,
+    scope: FamilyScope,
+    broker: Annotated[BrokerClient, Depends(get_broker)],
+) -> User:
     """The same Auth-account-plus-registry-row flow as `POST
     /api/admin/users` (`app/routers/admin.py`'s `create_user`), with the
     scope family baked in rather than accepted as input."""
@@ -173,6 +177,9 @@ def create_member(req: CreateMemberRequest, scope: FamilyScope) -> User:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     set_claims(user.uid, user.role, user.familyId)
+    # docs/ADDRESS_BOOK_DESIGN.md decision 6: the book lists the whole
+    # family, so every member's book gains the newcomer.
+    book.bump_and_push(book.family_uids(family_id), broker, reason="member_create")
     return user
 
 
@@ -211,7 +218,8 @@ def patch_member(
             {"policy": {"out": req.policy.out, "in": req.policy.in_}}
         )
 
-    return admin_router._patch_user_impl(
+    policy_changed = req.policy is not None and req.policy != existing.policy
+    result = admin_router._patch_user_impl(
         uid,
         display_name=req.displayName,
         email=None,
@@ -221,6 +229,12 @@ def patch_member(
         disabled=req.disabled,
         broker=broker,
     )
+    if policy_changed:
+        # docs/ADDRESS_BOOK_DESIGN.md decision 6: a policy change flips
+        # `sendable` for entries in this member's book and in every
+        # sibling's book (the recipient's `in` rule).
+        book.bump_and_push(book.family_uids(family_id) | {uid}, broker, reason="policy")
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -612,7 +626,12 @@ class PatchContactRequest(BaseModel):
 
 
 @router.patch("/contacts/{uid}", dependencies=[Depends(require_family_write_rate_limit)])
-def patch_contact(uid: str, req: PatchContactRequest, scope: FamilyScope) -> ContactOut:
+def patch_contact(
+    uid: str,
+    req: PatchContactRequest,
+    scope: FamilyScope,
+    broker: Annotated[BrokerClient, Depends(get_broker)],
+) -> ContactOut:
     _, family_id = scope
     external = users_store.get_user(uid)
     if external is None or external.kind != "external":
@@ -628,6 +647,9 @@ def patch_contact(uid: str, req: PatchContactRequest, scope: FamilyScope) -> Con
             status_code=404, detail="no such contact approved by this family"
         )
     updated = users_store.update_user(uid, display_name=req.name)
+    # docs/ADDRESS_BOOK_DESIGN.md decision 6 (fixes the old gap: a rename
+    # bumped nothing): every owner with a message edge to this external.
+    book.bump_and_push(approvers | book.edge_holders(uid), broker, reason="external_rename")
     return ContactOut(
         uid=updated.uid,
         alias=updated.alias,

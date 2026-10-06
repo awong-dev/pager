@@ -1311,3 +1311,34 @@ def test_family_admin_query_by_own_familyIds_allowed_other_family_denied(two_pai
 
     denied_msgs = _run_query("", admin_token, _family_ids_query("messages", "famB"))
     assert denied_msgs.status_code == 403, denied_msgs.text
+
+
+def test_book_nick_readable_by_owner_and_family_admin_only_writes_denied(two_pairs):
+    """docs/ADDRESS_BOOK_DESIGN.md decision 8: `users/{o}/book/{p}` is read by
+    the owner, a family admin of the stamped `familyId`, or super -- not by
+    another member of the same family, not by another family's admin; no
+    client may write."""
+    _set_family("users", "u1", "famA")
+    _set_family("users", "u2", "famA")
+    get_db().collection("users").document("u1").collection("book").document("u2").set(
+        {"nick": "Bro", "familyId": "famA", "updatedBy": "u1"}
+    )
+    path = "users/u1/book/u2"
+
+    set_claims("u1", fam="famA")
+    owner_token = mint_id_token("u1")
+    assert _get(path, owner_token).status_code == 200
+
+    same_family_admin = _make_family_admin("admin-book-a", "adminbooka", "famA")
+    assert _get(path, same_family_admin).status_code == 200
+
+    other_family_admin = _make_family_admin("admin-book-b", "adminbookb", "famB")
+    assert _get(path, other_family_admin).status_code == 403
+
+    set_claims("u2", fam="famA")
+    sibling_token = mint_id_token("u2")
+    assert _get(path, sibling_token).status_code == 403
+
+    for token in (owner_token, same_family_admin, sibling_token):
+        assert _write(path, token, {"nick": "Hacked"}).status_code == 403
+        assert _write("users/u1/book/u3", token, {"nick": "New"}).status_code == 403
