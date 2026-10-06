@@ -28,6 +28,7 @@ import {
   createContext,
   useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useState,
 } from "react";
@@ -116,8 +117,13 @@ export function FamilyProvider({ children }: { children: ReactNode }) {
 
   const familyId = isSuper ? (selected ?? me?.familyId ?? null) : (me?.familyId ?? null);
 
-  // Keep the module-level mirror in sync for `familyQuery()`.
-  useEffect(() => {
+  // Keep the module-level mirror in sync for `familyQuery()`. Synced in a
+  // layout effect, not a passive one: children's mount effects (the first
+  // `/api/family/*` fetch) run before this provider's own passive effect,
+  // so a plain `useEffect` left a super's first call without `?family=`
+  // ("?family= or X-Family is required"). Layout effects all run before any
+  // passive effect in the same commit.
+  useLayoutEffect(() => {
     currentScope = { familyId, canSwitch: isSuper };
   }, [familyId, isSuper]);
 
