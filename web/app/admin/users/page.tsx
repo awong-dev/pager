@@ -4,6 +4,7 @@
  * email/phone, role); disable; delete. Against `/api/admin/users`. */
 
 import { collection, onSnapshot } from "firebase/firestore";
+import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import Alert from "@mui/material/Alert";
 import Button from "@mui/material/Button";
@@ -168,7 +169,7 @@ function AdminUsersInner() {
             <TableRow key={u.uid}>
               <TableCell>@{u.alias}</TableCell>
               <TableCell>{u.displayName}</TableCell>
-              <TableCell>{u.email ?? u.phone ?? "--"}</TableCell>
+              <TableCell>{u.email ?? (u.phone ? `${u.phone} (sign-in)` : "--")}</TableCell>
               <TableCell>{u.familyId ? (familyNameById.get(u.familyId) ?? u.familyId) : "--"}</TableCell>
               <TableCell>
                 <Chip
@@ -214,10 +215,15 @@ function AdminUsersInner() {
               fullWidth
             />
             <TextField
-              label="Phone (+1XXXXXXXXXX)"
+              label="Sign-in phone (+1XXXXXXXXXX)"
               value={form.phone}
               onChange={(e) => setForm({ ...form, phone: e.target.value })}
-              helperText="email or phone is required"
+              helperText={
+                <>
+                  For signing in only. To text a number from a pager, add it under{" "}
+                  <Link href="/family/contacts">Contacts</Link>. Email or phone is required.
+                </>
+              }
               fullWidth
             />
             <TextField

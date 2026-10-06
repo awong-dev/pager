@@ -12,20 +12,10 @@
  *   their `policy.out: open` but flagged for review. View opens the
  *   family-admin read-only monitor thread (`/chat/view/{convKey}`, task
  *   2.6); Approve adds the `allow` edge so future messages aren't flagged.
- * - `contact_request`: a pager's `contact_req`, the same decision
- *   `/admin/contacts` used to host (docs/DEVICE_PLAN.md §4.3) -- link to an
- *   existing family member or create a new one, moved here per task 4.4.
- *   Its "reject" (`/admin/contacts/{key}/reject`, a `{reason}` body) has no
- *   equivalent on the new generic `block` endpoint (`{}`, no reason) --
- *   Block is used instead, per this task's endpoint list.
- *
- * The old `/admin/contacts` also suggested a "link" target by scanning every
- * candidate's `users/{uid}/backends` for a verified `sms` backend matching
- * the request's phone (see that file's header comment) -- a family admin can
- * no longer read another member's `backends` subcollection under the v2
- * rules (docs/FAMILIES_TASKS.md 1.4: "stays self or super"), so that
- * auto-suggestion is dropped here; the admin picks from the family member
- * list themselves.
+ * - `contact_request`: a pager's `contact_req`. One-click Approve: an SMS
+ *   request creates an SMS contact for the owner, a link request adds the
+ *   owner->peer edge; approval never creates a person
+ *   (docs/CONTACT_REQ_DESIGN.md decision 2). Block is offered for SMS only.
  */
 
 import { useState } from "react";
@@ -35,16 +25,11 @@ import Button from "@mui/material/Button";
 import Card from "@mui/material/Card";
 import CardActions from "@mui/material/CardActions";
 import CardContent from "@mui/material/CardContent";
-import Checkbox from "@mui/material/Checkbox";
 import Chip from "@mui/material/Chip";
 import Dialog from "@mui/material/Dialog";
 import DialogActions from "@mui/material/DialogActions";
 import DialogContent from "@mui/material/DialogContent";
 import DialogTitle from "@mui/material/DialogTitle";
-import FormControlLabel from "@mui/material/FormControlLabel";
-import MenuItem from "@mui/material/MenuItem";
-import Radio from "@mui/material/Radio";
-import RadioGroup from "@mui/material/RadioGroup";
 import Stack from "@mui/material/Stack";
 import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
@@ -52,21 +37,14 @@ import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutlined";
 import PersonAddIcon from "@mui/icons-material/PersonAdd";
 import SmsIcon from "@mui/icons-material/Sms";
 
+import { formatPhoneDigits } from "@/components/NewChatDialog";
 import { ApiError, api } from "@/lib/api";
-import { useDirectory } from "@/lib/directory";
 import { familyQuery } from "@/lib/family-context";
 import type { AlertDoc } from "@/lib/types";
 
 export interface AlertRow extends AlertDoc {
   id: string;
 }
-
-// Same shape as `app/admin/contacts/page.tsx`'s `ApproveMode` (that page is
-// deleted in a later task, docs/FAMILIES_TASKS.md 5.x -- not imported from
-// there).
-type ApproveMode = "link" | "create";
-
-const ALIAS_RE = /^[a-z0-9][a-z0-9_-]{0,15}$/;
 
 function formatAge(ts: AlertDoc["ts"]): string {
   if (!ts) return "just now";
@@ -102,20 +80,12 @@ function kindLabel(kind: AlertDoc["kind"]): string {
 }
 
 export default function AlertCard({ alert }: { alert: AlertRow }) {
-  const { contacts } = useDirectory();
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
   // sms_unknown approve dialog.
   const [smsOpen, setSmsOpen] = useState(false);
   const [smsName, setSmsName] = useState("");
-
-  // contact_request approve dialog.
-  const [contactOpen, setContactOpen] = useState(false);
-  const [mode, setMode] = useState<ApproveMode>("create");
-  const [linkUid, setLinkUid] = useState("");
-  const [createAlias, setCreateAlias] = useState("");
-  const [locate, setLocate] = useState(false);
 
   const handled = alert.status !== "open";
 
@@ -125,7 +95,6 @@ export default function AlertCard({ alert }: { alert: AlertRow }) {
     try {
       await api.post(`/family/alerts/${alert.id}/${action}${familyQuery()}`, body);
       setSmsOpen(false);
-      setContactOpen(false);
     } catch (err) {
       setError(err instanceof ApiError ? String(err.detail ?? err.message) : `Failed to ${action}`);
     } finally {
@@ -139,17 +108,7 @@ export default function AlertCard({ alert }: { alert: AlertRow }) {
     setSmsOpen(true);
   }
 
-  function openContactApprove() {
-    setError(null);
-    setMode(alert.peerAlias ? "link" : "create");
-    setLinkUid(alert.peerAlias ? (contacts.find((c) => c.alias === alert.peerAlias)?.uid ?? "") : "");
-    setCreateAlias(alert.peerAlias ?? "");
-    setLocate(false);
-    setContactOpen(true);
-  }
-
-  const contactAlias = mode === "link" ? (contacts.find((c) => c.uid === linkUid)?.alias ?? "") : createAlias.trim();
-  const contactValid = mode === "link" ? linkUid.length > 0 : ALIAS_RE.test(createAlias.trim());
+  const isSms = alert.peerPhone != null;
 
   return (
     <Card variant="outlined">
@@ -198,16 +157,33 @@ export default function AlertCard({ alert }: { alert: AlertRow }) {
 
         {alert.kind === "contact_request" && (
           <>
-            <Typography variant="body1">New contact for @{alert.subjectAlias}</Typography>
-            {alert.preview && (
-              <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
-                {alert.preview}
-              </Typography>
-            )}
-            {alert.peerPhone && (
-              <Typography variant="body2" sx={{ mt: 0.5 }}>
-                Phone: {alert.peerPhone}
-              </Typography>
+            {isSms ? (
+              <>
+                <Typography variant="body1">SMS contact for @{alert.subjectAlias}</Typography>
+                <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+                  {alert.preview} · {formatPhoneDigits((alert.peerPhone ?? "").replace(/^\+/, ""))}
+                </Typography>
+                {alert.peerAlias && (
+                  <Typography variant="body2" color="text.secondary">
+                    already known as {alert.peerName ?? alert.peerAlias} (@{alert.peerAlias})
+                  </Typography>
+                )}
+                <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.5 }}>
+                  Approve: @{alert.subjectAlias}&apos;s pager can text this number.
+                </Typography>
+              </>
+            ) : (
+              <>
+                <Typography variant="body1">
+                  Link @{alert.subjectAlias} to @{alert.peerAlias} ({alert.peerName ?? "unknown"})
+                </Typography>
+                <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+                  asked as {alert.preview}
+                </Typography>
+                <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.5 }}>
+                  Approve: @{alert.subjectAlias} can message @{alert.peerAlias}.
+                </Typography>
+              </>
             )}
           </>
         )}
@@ -248,13 +224,15 @@ export default function AlertCard({ alert }: { alert: AlertRow }) {
             </>
           )}
           {alert.kind === "contact_request" && (
-            <Button size="small" variant="contained" onClick={openContactApprove} disabled={submitting}>
+            <Button size="small" variant="contained" onClick={() => void post("approve", {})} disabled={submitting}>
               Approve
             </Button>
           )}
-          <Button size="small" color="warning" onClick={() => void post("block", {})} disabled={submitting}>
-            Block
-          </Button>
+          {(alert.kind !== "contact_request" || isSms) && (
+            <Button size="small" color="warning" onClick={() => void post("block", {})} disabled={submitting}>
+              Block
+            </Button>
+          )}
           <Button size="small" onClick={() => void post("dismiss", {})} disabled={submitting}>
             Dismiss
           </Button>
@@ -286,70 +264,6 @@ export default function AlertCard({ alert }: { alert: AlertRow }) {
         </DialogActions>
       </Dialog>
 
-      <Dialog open={contactOpen} onClose={() => setContactOpen(false)} fullWidth maxWidth="xs">
-        <DialogTitle>Approve contact for @{alert.subjectAlias}</DialogTitle>
-        <DialogContent>
-          <Stack spacing={2} sx={{ mt: 1 }}>
-            {(alert.preview || alert.peerPhone) && (
-              <Typography variant="body2">
-                {alert.preview}
-                {alert.peerPhone && !alert.preview.includes(alert.peerPhone) ? ` ${alert.peerPhone}` : ""}
-              </Typography>
-            )}
-            <RadioGroup value={mode} onChange={(e) => setMode(e.target.value as ApproveMode)}>
-              <FormControlLabel value="link" control={<Radio />} label="Link to existing family member" />
-              {mode === "link" && (
-                <TextField
-                  select
-                  label="Existing member"
-                  value={linkUid}
-                  onChange={(e) => setLinkUid(e.target.value)}
-                  fullWidth
-                  size="small"
-                  sx={{ ml: 4, mb: 1, width: "calc(100% - 32px)" }}
-                >
-                  {contacts.map((c) => (
-                    <MenuItem key={c.uid} value={c.uid}>
-                      @{c.alias}
-                    </MenuItem>
-                  ))}
-                </TextField>
-              )}
-              <FormControlLabel value="create" control={<Radio />} label="Create new person" />
-              {mode === "create" && (
-                <TextField
-                  label="Alias"
-                  value={createAlias}
-                  onChange={(e) => setCreateAlias(e.target.value.toLowerCase())}
-                  helperText={
-                    createAlias.length === 0 || ALIAS_RE.test(createAlias.trim())
-                      ? " "
-                      : "lowercase letters/digits/-/_, starting with a letter or digit"
-                  }
-                  error={createAlias.length > 0 && !ALIAS_RE.test(createAlias.trim())}
-                  fullWidth
-                  size="small"
-                  sx={{ ml: 4, mb: 1, width: "calc(100% - 32px)" }}
-                />
-              )}
-            </RadioGroup>
-            <FormControlLabel
-              control={<Checkbox checked={locate} onChange={(e) => setLocate(e.target.checked)} />}
-              label="Also allow location requests"
-            />
-          </Stack>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setContactOpen(false)}>Cancel</Button>
-          <Button
-            variant="contained"
-            disabled={!contactValid || submitting}
-            onClick={() => void post("approve", { mode, alias: contactAlias || null, locate })}
-          >
-            Approve
-          </Button>
-        </DialogActions>
-      </Dialog>
     </Card>
   );
 }

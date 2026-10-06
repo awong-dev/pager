@@ -67,6 +67,7 @@ export interface AlertDoc {
   subjectAlias: string;
   peerUid: string | null;
   peerAlias: string | null;
+  peerName: string | null;
   peerPhone: string | null;
   preview: string;
   heldBody: string | null;
@@ -253,7 +254,7 @@ export interface ConversationDoc {
   // uid -- lets a DM/group row and NotificationWatcher (2.5) name a peer
   // without a directory lookup. Optional: written by 2.4, not yet present
   // on documents created before it lands.
-  participants?: Record<string, { alias: string; displayName: string; kind: UserKind }>;
+  participants?: Record<string, { alias: string; displayName: string; kind: UserKind; phone?: string | null }>;
   // docs/FAMILIES_TASKS.md 2.4: every family with a member in this
   // conversation, for the family-admin read-only view. Optional, same
   // reason as `participants` above.

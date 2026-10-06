@@ -8,7 +8,7 @@
 
 import { collection, onSnapshot, query, where } from "firebase/firestore";
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import Alert from "@mui/material/Alert";
 import Button from "@mui/material/Button";
 import Chip from "@mui/material/Chip";
@@ -35,7 +35,7 @@ import { ApiError, api } from "@/lib/api";
 import { familyQuery, useFamily } from "@/lib/family-context";
 import { getFirestoreDb } from "@/lib/firebase";
 import { inboundLabel, outboundLabel } from "@/lib/policy";
-import type { DeviceDoc, Role, UserDoc } from "@/lib/types";
+import type { DeviceDoc, FamilyDoc, Role, UserDoc } from "@/lib/types";
 
 interface MemberRow extends UserDoc {
   uid: string;
@@ -55,6 +55,49 @@ function FamilyPeopleInner() {
   const [createOpen, setCreateOpen] = useState(false);
   const [form, setForm] = useState(emptyForm);
   const [selected, setSelected] = useState<MemberDrawerMember | null>(null);
+  const [familyName, setFamilyName] = useState<string | null>(null);
+  const [renameOpen, setRenameOpen] = useState(false);
+  const [renameValue, setRenameValue] = useState("");
+  const [renameError, setRenameError] = useState<string | null>(null);
+
+  const loadFamily = useCallback(async () => {
+    try {
+      const fam = await api.get<FamilyDoc>(`/family${familyQuery()}`);
+      setFamilyName(fam.name);
+    } catch {
+      // Header just stays blank; the members table is unaffected.
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!familyId) return;
+    let live = true;
+    api
+      .get<FamilyDoc>(`/family${familyQuery()}`)
+      .then((fam) => {
+        if (live) setFamilyName(fam.name);
+      })
+      .catch(() => {
+        // Header stays blank; the members table is unaffected.
+      });
+    return () => {
+      live = false;
+    };
+  }, [familyId]);
+
+  async function saveRename() {
+    setRenameError(null);
+    try {
+      await api.patch(`/family${familyQuery()}`, { name: renameValue.trim() });
+      setRenameOpen(false);
+      await loadFamily();
+    } catch (err) {
+      setRenameError(err instanceof ApiError ? String(err.detail ?? err.message) : "Failed to rename family");
+    }
+  }
+
+  const renameTrimmed = renameValue.trim();
+  const renameValid = renameTrimmed.length >= 1 && [...renameTrimmed].length <= 40;
 
   useEffect(() => {
     if (!familyId) {
@@ -135,6 +178,20 @@ function FamilyPeopleInner() {
       </Stack>
       {error && <Alert severity="error">{error}</Alert>}
 
+      <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
+        <Typography variant="body1">Family: {familyName ?? "--"}</Typography>
+        <Button
+          size="small"
+          onClick={() => {
+            setRenameValue(familyName ?? "");
+            setRenameError(null);
+            setRenameOpen(true);
+          }}
+        >
+          Rename
+        </Button>
+      </Stack>
+
       <TableContainer sx={{ overflowX: "auto" }}>
         <Table size="small">
           <TableHead>
@@ -160,7 +217,7 @@ function FamilyPeopleInner() {
                     color={m.role === "admin" || m.role === "super" ? "primary" : "default"}
                   />
                 </TableCell>
-                <TableCell>{m.email ?? m.phone ?? "--"}</TableCell>
+                <TableCell>{m.email ?? (m.phone ? `${m.phone} (sign-in)` : "--")}</TableCell>
                 <TableCell>
                   <Stack direction="row" spacing={0.5} sx={{ flexWrap: "wrap" }}>
                     {(devicesByOwner.get(m.uid) ?? []).map((d) => (
@@ -214,9 +271,15 @@ function FamilyPeopleInner() {
               fullWidth
             />
             <TextField
-              label="Phone"
+              label="Sign-in phone (+1XXXXXXXXXX)"
               value={form.phone}
               onChange={(e) => setForm({ ...form, phone: e.target.value })}
+              helperText={
+                <>
+                  For signing in only. To text a number from a pager, add it under{" "}
+                  <Link href="/family/contacts">Contacts</Link>.
+                </>
+              }
               fullWidth
             />
             <TextField
@@ -235,6 +298,29 @@ function FamilyPeopleInner() {
           <Button onClick={() => setCreateOpen(false)}>Cancel</Button>
           <Button onClick={() => void createMember()} disabled={!formValid}>
             Create
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog open={renameOpen} onClose={() => setRenameOpen(false)} fullWidth maxWidth="xs">
+        <DialogTitle>Rename family</DialogTitle>
+        <DialogContent>
+          <Stack spacing={2} sx={{ mt: 1 }}>
+            <TextField
+              autoFocus
+              label="Family name"
+              value={renameValue}
+              onChange={(e) => setRenameValue(e.target.value)}
+              helperText="1-40 characters"
+              fullWidth
+            />
+            {renameError && <Alert severity="error">{renameError}</Alert>}
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setRenameOpen(false)}>Cancel</Button>
+          <Button onClick={() => void saveRename()} disabled={!renameValid}>
+            Save
           </Button>
         </DialogActions>
       </Dialog>
