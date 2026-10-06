@@ -3025,13 +3025,10 @@ void modes_run(void)
                 ui_dispatch_key(ievt.key); // routed to the top screen's on_key() (ui.c)
                 s_last_input_us = esp_timer_get_time(); // rail hold task: arm the attentive cadence
                 // 7 Oct 2026 (owner): partials ghost progressively while typing;
-                // force a full refresh on Enter and every 20th keystroke.
-                {
-                    static uint8_t s_keys_since_full = 0;
-                    if (ievt.key.type == INPUT_KEY_ENTER || ++s_keys_since_full >= 20) {
-                        s_keys_since_full = 0;
-                        disp_request_full();
-                    }
+                // force a full refresh on Enter (a mid-word full every 20 keys
+                // was tried and found awkward).
+                if (ievt.key.type == INPUT_KEY_ENTER) {
+                    disp_request_full();
                 }
                 break;
             }

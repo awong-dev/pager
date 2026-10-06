@@ -83,7 +83,7 @@ void disp_full_refresh(void);
 void disp_partial_refresh(void);
 
 /* The next refresh (partial path included) is a full one -- ghosting reset on
- * demand (modes.c: Enter and every 20th keystroke, owner 7 Oct 2026). */
+ * demand (modes.c: Enter, owner 7 Oct 2026). */
 void disp_request_full(void);
 
 /* Every 20th call does a disp_full_refresh() instead and resets the

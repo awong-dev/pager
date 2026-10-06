@@ -1307,7 +1307,7 @@ void disp_full_refresh(void)
 
 // 7 Oct 2026 (owner: the glass greys progressively while typing — "Albert
 // phone" was visibly degraded): the next refresh of any kind is a FULL one.
-// modes.c calls this on Enter and every 20th keystroke; disp_partial_refresh()
+// modes.c calls this on Enter; disp_partial_refresh()
 // below already upgrades on s_force_full.
 void disp_request_full(void)
 {
