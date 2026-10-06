@@ -36,34 +36,65 @@ export async function registerForPush(): Promise<string | null> {
   return token || null;
 }
 
+const SW_PATH = "/firebase-messaging-sw.js";
+
+/** Chrome for Android throws "Illegal constructor" on `new Notification()`;
+ * a service worker registration's `showNotification` works everywhere. The
+ * worker's `notificationclick` handler reads `data.url`. Falls back to the
+ * constructor only when no registration exists. */
+async function showNotification(
+  title: string,
+  options: NotificationOptions,
+  url: string
+): Promise<void> {
+  let registration: ServiceWorkerRegistration | undefined;
+  if ("serviceWorker" in navigator) {
+    registration = await navigator.serviceWorker.getRegistration(SW_PATH);
+  }
+  if (registration) {
+    await registration.showNotification(title, { ...options, data: { url } });
+    return;
+  }
+  const n = new Notification(title, options);
+  n.onclick = () => {
+    window.focus();
+    // Full navigation, not `useRouter()` -- this runs outside React.
+    window.location.href = url;
+  };
+}
+
 /** A same-device, no-server-round-trip check that permission + display
  * actually work -- docs/SERVER_PLAN.md §7.2's "test button". There is no
  * relay endpoint that sends a real push on demand (§5.1 has none), so this
- * is deliberately local-only; see web/README.md. */
-export function showLocalTestNotification(): void {
-  if (notificationPermission() !== "granted") return;
-  new Notification("Pager test notification", {
-    body: "If you can see this, browser notifications are working.",
-    icon: "/icons/icon-192.png",
-  });
+ * is deliberately local-only; see web/README.md. Rejects on failure. */
+export async function showLocalTestNotification(): Promise<void> {
+  if (notificationPermission() !== "granted") {
+    throw new Error("Notification permission is not granted.");
+  }
+  await showNotification(
+    "Pager test notification",
+    {
+      body: "If you can see this, browser notifications are working.",
+      icon: "/icons/icon-192.png",
+    },
+    "/chat"
+  );
 }
 
 /** Foreground rule, docs/SERVER_PLAN.md §7.6: show a Notification when the
  * tab isn't visible or the relevant thread isn't the one open. */
-export function showForegroundMessageNotification(alias: string, preview: string): void {
+export async function showForegroundMessageNotification(
+  alias: string,
+  preview: string
+): Promise<void> {
   if (notificationPermission() !== "granted") return;
-  const n = new Notification(`New message from @${alias}`, {
-    body: preview,
-    icon: "/icons/icon-192.png",
-    tag: `pager-thread-${alias}`,
-  });
-  n.onclick = () => {
-    window.focus();
-    // Full navigation, not `useRouter()` -- this callback runs outside
-    // React entirely (the browser Notifications API), the same reason
-    // `firebase-messaging-sw.js`'s `notificationclick` handler does a full
-    // navigation too.
-    // eslint-disable-next-line @next/next/no-location-assign-relative-destination
-    window.location.href = `/chat/${encodeURIComponent(alias)}`;
-  };
+  await showNotification(
+    `New message from @${alias}`,
+    {
+      body: preview,
+      icon: "/icons/icon-192.png",
+      tag: `pager-thread-${alias}`,
+    },
+    `/chat/${encodeURIComponent(alias)}`
+  );
 }
