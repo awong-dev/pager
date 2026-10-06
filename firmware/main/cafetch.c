@@ -97,6 +97,32 @@ void cafetch_parser_init(cafetch_parser_t *p)
     p->phase = CAFETCH_PHASE_STATUS_LINE;
 }
 
+void cafetch_parser_set_stream(cafetch_parser_t *p, cafetch_sink_fn sink, void *arg,
+                               size_t max_body, size_t range_start)
+{
+    p->sink = sink;
+    p->sink_arg = arg;
+    p->max_body = max_body;
+    p->range_start = range_start;
+}
+
+/* Stream mode: hands one contiguous run to the sink. False = parser now in ERROR. */
+static bool stream_emit(cafetch_parser_t *p, const uint8_t *data, size_t n)
+{
+    if (p->body_len + n > p->max_body) {
+        p->phase = CAFETCH_PHASE_ERROR;
+        p->err_oversize = true;
+        return false;
+    }
+    p->body_len += n;
+    if (!p->sink(p->sink_arg, data, n)) {
+        p->phase = CAFETCH_PHASE_ERROR;
+        p->err_sink = true;
+        return false;
+    }
+    return true;
+}
+
 static void set_error(cafetch_parser_t *p, bool oversize, bool malformed, bool non200)
 {
     p->phase = CAFETCH_PHASE_ERROR;
@@ -205,6 +231,28 @@ static void process_header_line(cafetch_parser_t *p)
         }
         p->have_content_length = true;
         p->content_length = n;
+    } else if (ascii_ieq_prefix(s, "content-range:")) {
+        const char *v = s + strlen("content-range:");
+        while (*v == ' ') {
+            v++;
+        }
+        if (ascii_ieq_prefix(v, "bytes ")) {
+            v += 6;
+            while (*v == ' ') {
+                v++;
+            }
+            if (*v >= '0' && *v <= '9') {
+                size_t n = 0;
+                while (*v >= '0' && *v <= '9') {
+                    n = n * 10 + (size_t) (*v - '0');
+                    v++;
+                }
+                if (*v == '-') {
+                    p->have_content_range = true;
+                    p->content_range_start = n;
+                }
+            }
+        }
     } else if (ascii_ieq_prefix(s, "transfer-encoding:")) {
         const char *v = s + strlen("transfer-encoding:");
         while (*v == ' ') {
@@ -221,14 +269,22 @@ static void process_header_line(cafetch_parser_t *p)
 
 static bool end_of_headers(cafetch_parser_t *p)
 {
-    if (p->status_code != 200) {
+    int want_status = (p->sink && p->range_start > 0) ? 206 : 200;
+    if (p->status_code != want_status) {
         /* Also covers redirects (3xx): "follow no redirects" (V02_DESIGN.md
-         * §4.4) is satisfied by requiring exactly 200 and nothing else. */
+         * §4.4) is satisfied by requiring exactly 200 and nothing else. In
+         * stream mode with a Range, a 200 means the server ignored it. */
         set_error(p, false, false, true);
         return false;
     }
+    if (want_status == 206 &&
+        (!p->have_content_range || p->content_range_start != p->range_start)) {
+        set_error(p, false, true, false);
+        return false;
+    }
+    size_t body_cap = p->sink ? p->max_body : CAFETCH_BODY_MAX;
     if (p->have_content_length) {
-        if (p->content_length > CAFETCH_BODY_MAX) {
+        if (p->content_length > body_cap) {
             set_error(p, true, false, false);
             return false;
         }
@@ -283,6 +339,20 @@ bool cafetch_parser_feed(cafetch_parser_t *p, const uint8_t *data, size_t len)
             break;
         }
         case CAFETCH_PHASE_BODY_LENGTH: {
+            if (p->sink) {
+                size_t run = p->content_length - p->body_len;
+                if (run > len - i) {
+                    run = len - i;
+                }
+                if (!stream_emit(p, data + i, run)) {
+                    return false;
+                }
+                i += run - 1;
+                if (p->body_len == p->content_length) {
+                    p->phase = CAFETCH_PHASE_DONE;
+                }
+                break;
+            }
             if (p->body_len >= CAFETCH_BODY_MAX) {
                 set_error(p, true, false, false);
                 return false;
@@ -294,6 +364,13 @@ bool cafetch_parser_feed(cafetch_parser_t *p, const uint8_t *data, size_t len)
             break;
         }
         case CAFETCH_PHASE_BODY_UNTIL_CLOSE: {
+            if (p->sink) {
+                if (!stream_emit(p, data + i, len - i)) {
+                    return false;
+                }
+                i = len - 1;
+                break;
+            }
             if (p->body_len >= CAFETCH_BODY_MAX) {
                 set_error(p, true, false, false);
                 return false;
@@ -336,7 +413,7 @@ bool cafetch_parser_feed(cafetch_parser_t *p, const uint8_t *data, size_t len)
                 if (n == 0) {
                     p->phase = CAFETCH_PHASE_CHUNK_TRAILER;
                 } else {
-                    if (p->body_len + n > CAFETCH_BODY_MAX) {
+                    if (p->body_len + n > (p->sink ? p->max_body : CAFETCH_BODY_MAX)) {
                         set_error(p, true, false, false);
                         return false;
                     }
@@ -347,6 +424,22 @@ bool cafetch_parser_feed(cafetch_parser_t *p, const uint8_t *data, size_t len)
             break;
         }
         case CAFETCH_PHASE_CHUNK_DATA: {
+            if (p->sink) {
+                size_t run = p->chunk_remaining;
+                if (run > len - i) {
+                    run = len - i;
+                }
+                if (!stream_emit(p, data + i, run)) {
+                    return false;
+                }
+                i += run - 1;
+                p->chunk_remaining -= run;
+                if (p->chunk_remaining == 0) {
+                    p->phase = CAFETCH_PHASE_CHUNK_CRLF;
+                    line_reset(p);
+                }
+                break;
+            }
             p->body[p->body_len++] = c;
             p->chunk_remaining--;
             if (p->chunk_remaining == 0) {
@@ -497,9 +590,14 @@ static const char *TAG = "cafetch";
 #define CAFETCH_TIMEOUT_US ((int64_t) 30 * 1000000) /* V02_DESIGN.md §4.4: "timeouts (30 s overall)" */
 #define CAFETCH_RECV_BUF 1500                       /* WalterSocket.cpp: <=1500 bytes per socketReceive() */
 
+#define CAFETCH_STREAM_IDLE_US ((int64_t) 30 * 1000000)   /* stream mode: no byte for 30 s */
+#define CAFETCH_STREAM_TOTAL_US ((int64_t) 900 * 1000000) /* stream mode: 900 s overall */
+
 static bool s_in_progress = false;
+static bool s_stream = false;
 static cafetch_parser_t s_parser;
-static int64_t s_deadline_us = 0;
+static int64_t s_deadline_us = 0;      /* overall */
+static int64_t s_idle_deadline_us = 0; /* stream mode only: reset on every received byte */
 static char s_host[CAFETCH_HOST_MAX];
 static char s_path[CAFETCH_PATH_MAX];
 
@@ -508,7 +606,14 @@ bool cafetch_in_progress(void)
     return s_in_progress;
 }
 
-bool cafetch_begin_ex(const char *url, const char *extra_hdrs)
+typedef struct {
+    cafetch_sink_fn sink;
+    void *arg;
+    size_t max_body;
+    size_t range_start;
+} stream_args_t;
+
+static bool begin_common(const char *url, const char *extra_hdrs, const stream_args_t *st)
 {
     if (s_in_progress) {
         ESP_LOGI(TAG, "cafetch_begin() called while a fetch is already in progress");
@@ -538,10 +643,39 @@ bool cafetch_begin_ex(const char *url, const char *extra_hdrs)
         return false;
     }
     cafetch_parser_init(&s_parser);
-    s_deadline_us = esp_timer_get_time() + CAFETCH_TIMEOUT_US;
+    int64_t now = esp_timer_get_time();
+    s_stream = (st != NULL);
+    if (st) {
+        cafetch_parser_set_stream(&s_parser, st->sink, st->arg, st->max_body, st->range_start);
+        s_deadline_us = now + CAFETCH_STREAM_TOTAL_US;
+        s_idle_deadline_us = now + CAFETCH_STREAM_IDLE_US;
+    } else {
+        s_deadline_us = now + CAFETCH_TIMEOUT_US;
+    }
     s_in_progress = true;
-    ESP_LOGI(TAG, "cafetch: GET %s HTTP/1.1 to %s:%u", s_path, s_host, (unsigned) port);
+    ESP_LOGI(TAG, "cafetch: GET %s HTTP/1.1 to %s:%u%s", s_path, s_host, (unsigned) port,
+             st ? (st->range_start ? " (stream, range)" : " (stream)") : "");
     return true;
+}
+
+bool cafetch_begin_ex(const char *url, const char *extra_hdrs)
+{
+    return begin_common(url, extra_hdrs, NULL);
+}
+
+bool cafetch_begin_stream(const char *url, size_t range_start, size_t max_body, cafetch_sink_fn sink,
+                          void *arg)
+{
+    if (!sink) {
+        return false;
+    }
+    char hdr[48];
+    hdr[0] = '\0';
+    if (range_start > 0) {
+        snprintf(hdr, sizeof(hdr), "Range: bytes=%lu-\r\n", (unsigned long) range_start);
+    }
+    stream_args_t st = { .sink = sink, .arg = arg, .max_body = max_body, .range_start = range_start };
+    return begin_common(url, hdr, &st);
 }
 
 bool cafetch_begin(const char *url)
@@ -560,8 +694,9 @@ cafetch_status_t cafetch_poll(int64_t now_us)
     if (s_parser.phase == CAFETCH_PHASE_ERROR) {
         return CAFETCH_FAILED;
     }
-    if (now_us >= s_deadline_us) {
-        ESP_LOGI(TAG, "cafetch: 30s overall timeout (%u body bytes received so far)",
+    if (now_us >= s_deadline_us || (s_stream && now_us >= s_idle_deadline_us)) {
+        ESP_LOGI(TAG, "cafetch: %s timeout (%u body bytes received so far)",
+                 s_stream ? (now_us >= s_deadline_us ? "900s overall" : "30s idle") : "30s overall",
                  (unsigned) s_parser.body_len);
         s_parser.phase = CAFETCH_PHASE_ERROR;
         s_parser.err_malformed = true;
@@ -571,11 +706,24 @@ cafetch_status_t cafetch_poll(int64_t now_us)
     static uint8_t buf[CAFETCH_RECV_BUF];
     uint16_t got_len = 0;
     bool closed = false;
+    bool short_read = false;
     // Power effect: none when nothing is pending; one AT round trip
     // (socketReceive(), <=1500 bytes) when a RING was pending — see
     // net_ca_fetch_poll()'s own doc comment.
-    if (!net_ca_fetch_poll(buf, sizeof(buf), &got_len, &closed)) {
+    if (!net_ca_fetch_poll(buf, sizeof(buf), &got_len, &closed, &short_read)) {
         return CAFETCH_PENDING;
+    }
+    if (got_len > 0 || short_read) {
+        s_idle_deadline_us = now_us + CAFETCH_STREAM_IDLE_US;
+    }
+    if (short_read && s_stream) {
+        // PATCHES.md 1.22/1.7: the modem announced more than the vendor parser delivered. In stream
+        // mode that byte is gone, so the read is NOT fed; the caller resumes with a Range request.
+        ESP_LOGI(TAG, "short read claimed>got (got=%u) after %u body bytes", (unsigned) got_len,
+                 (unsigned) s_parser.body_len);
+        s_parser.phase = CAFETCH_PHASE_ERROR;
+        s_parser.err_short = true;
+        return CAFETCH_FAILED;
     }
     if (closed) {
         cafetch_parser_closed(&s_parser);
@@ -587,13 +735,34 @@ cafetch_status_t cafetch_poll(int64_t now_us)
         return CAFETCH_OK;
     }
     if (s_parser.phase == CAFETCH_PHASE_ERROR) {
-        const char *why =
-            s_parser.err_oversize ? "oversize" : (s_parser.err_non200 ? "non-200" : "malformed");
+        const char *why = s_parser.err_sink ? "sink" :
+            (s_parser.err_oversize ? "oversize" : (s_parser.err_non200 ? "non-200" : "malformed"));
         ESP_LOGI(TAG, "cafetch: parse failed (%s), http_status=%d, %u body bytes so far", why,
                  s_parser.status_code, (unsigned) s_parser.body_len);
         return CAFETCH_FAILED;
     }
     return CAFETCH_PENDING;
+}
+
+void cafetch_fail_info(int *status, size_t *body_len, bool *transport, bool *short_read)
+{
+    if (short_read) {
+        *short_read = s_parser.err_short;
+    }
+    if (status) {
+        *status = s_parser.status_code;
+    }
+    if (body_len) {
+        *body_len = s_parser.body_len;
+    }
+    if (transport) {
+        /* A broken transfer (idle/overall timeout, short read, socket closed early, parse of a
+         * truncated body) as opposed to a server verdict (non-200/206, wrong Content-Range), a size
+         * violation or a sink refusal. Only the former is worth a Range resume. */
+        *transport = !s_parser.err_sink && !s_parser.err_oversize && !s_parser.err_non200 &&
+            (s_parser.err_short || s_parser.err_malformed) &&
+            (s_parser.status_code == 0 || s_parser.status_code == 200 || s_parser.status_code == 206);
+    }
 }
 
 bool cafetch_result(const uint8_t expected_sha[CAFETCH_SHA_LEN], char *pem_out, size_t pem_cap,

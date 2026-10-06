@@ -67,6 +67,7 @@
 #include "msg.h"  /* owner task 2026-09-20: msg_history_erase() on factory reset */
 #include "book.h" /* T3: book_get_bv() for the "session ... book v<n>" info line */
 #include "net.h"
+#include "ota.h" /* docs/OTA_DESIGN.md: the "Update:" line and the "Install now" row */
 #include "disp.h" /* owner request: menu-driven display rotation, disp_get_flip()/
                    * disp_set_flip()/disp_full_refresh() — same setter the console's
                    * `flip on|off` (main.c) uses, so both paths stay consistent. */
@@ -114,6 +115,13 @@ static char s_pw_buf[LOCK_PASSCODE_MAX + 1];
 static size_t s_pw_len = 0;
 static bool s_pw_allow_off = false;
 
+/* docs/OTA_DESIGN.md: while an update is `ready` the menu gets one extra first row, "Install now".
+ * 0 or 1; every menu index below is offset by it. */
+static int device_extra_rows(void)
+{
+    return ota_install_ready() ? 1 : 0;
+}
+
 static void device_on_event(ui_evt_t evt)
 {
     if (evt != UI_EVT_ENTER) {
@@ -126,8 +134,8 @@ static void device_on_event(ui_evt_t evt)
     if (s_sel < 0) {
         s_sel = 0;
     }
-    if (s_sel > MROW_COUNT - 1) {
-        s_sel = MROW_COUNT - 1;
+    if (s_sel > MROW_COUNT - 1 + device_extra_rows()) {
+        s_sel = MROW_COUNT - 1 + device_extra_rows();
     }
 }
 
@@ -259,12 +267,18 @@ static void device_on_key(input_key_t key)
         }
         break;
     case INPUT_KEY_DOWN:
-        if (s_sel < MROW_COUNT - 1) {
+        if (s_sel < MROW_COUNT - 1 + device_extra_rows()) {
             s_sel++;
         }
         break;
     case INPUT_KEY_ENTER:
-        switch ((device_row_t) s_sel) {
+        if (device_extra_rows() == 1 && s_sel == 0) {
+            // Power effect: none now; ota_service() reboots into the new image on its next call.
+            ota_install_now();
+            ui_show_toast("installing update");
+            break;
+        }
+        switch ((device_row_t) (s_sel - device_extra_rows())) {
         case MROW_RESYNC:
             ui_show_toast(modes_publish_status_now() ? "re-sync requested" : "not connected");
             break;
@@ -400,7 +414,7 @@ static void device_render_pw(void)
 // heap; single render task per README R5, so no reentrancy hazard) and
 // drawn with a simple scroll-into-view so the whole thing "scrolls"
 // (docs/DEVICE_PLAN.md §5.5: "Read-mostly, one screen, scrolls").
-#define DEVICE_MAX_LINES 17 /* +1 for the Reboot row, 6 Oct 2026 */
+#define DEVICE_MAX_LINES 19 /* +1 for the Reboot row (6 Oct 2026), +2 for the Update line and the Install-now row (OTA) */
 #define DEVICE_LINE_LEN 72
 // TASK_ui_round2.md Do #2: shared UI_ROW_H pitch (ui.h), not a flat 12px —
 // (UI_FOOTER_Y - (UI_BODY_TOP+2)) / UI_ROW_H == 93/16 == 5.8, floored to 5,
@@ -429,6 +443,14 @@ static void device_render_normal(void)
     snprintf(lines[n], DEVICE_LINE_LEN, "session %s  book v%u", modes_get_session_id(),
              (unsigned) book_get_bv());
     selectable[n++] = false;
+    {
+        ota_status_t os;
+        ota_get_status(&os);
+        char ut[40];
+        ota_ui_text(os.have_job ? os.state : OTA_ST_NONE, os.err, os.pct, ut, sizeof(ut));
+        snprintf(lines[n], DEVICE_LINE_LEN, "Update: %s", ut);
+        selectable[n++] = false;
+    }
     snprintf(lines[n], DEVICE_LINE_LEN, "counters memfull %u  drops %u  resets %u",
              (unsigned) modes_get_memfull_count(), (unsigned) modes_get_oversize_drop_count(),
              (unsigned) modes_get_modem_resets());
@@ -437,6 +459,13 @@ static void device_render_normal(void)
     selectable[n++] = false;
 
     int menu_start = n;
+    if (device_extra_rows() == 1) {
+        snprintf(lines[n], DEVICE_LINE_LEN, "Install update now");
+        selectable[n++] = true;
+    }
+    if (s_sel > MROW_COUNT - 1 + device_extra_rows()) {
+        s_sel = MROW_COUNT - 1 + device_extra_rows(); // the extra row went away under the cursor
+    }
     snprintf(lines[n], DEVICE_LINE_LEN, "Re-sync address book");
     selectable[n++] = true;
     snprintf(lines[n], DEVICE_LINE_LEN, "Text size: %s",

@@ -370,8 +370,195 @@ static void test_overlong_header_line_is_skipped(void)
     CHECK(p.phase == CAFETCH_PHASE_ERROR && p.err_malformed, "over-long status line must stay malformed");
 }
 
+/* ---------------------------------------------------------------------
+ * Stream mode (OTA): body bytes go to a sink, not body[].
+ * --------------------------------------------------------------------- */
+
+typedef struct {
+    uint8_t buf[8192];
+    size_t n;
+    int calls;
+    size_t fail_after; /* sink returns false once n would exceed this (0 = never) */
+} sink_t;
+
+static bool sink_fn(void *arg, const uint8_t *data, size_t len)
+{
+    sink_t *s = (sink_t *) arg;
+    if (len == 0) {
+        return false; /* never expected */
+    }
+    if (s->fail_after && s->n + len > s->fail_after) {
+        return false;
+    }
+    if (s->n + len > sizeof(s->buf)) {
+        return false;
+    }
+    memcpy(s->buf + s->n, data, len);
+    s->n += len;
+    s->calls++;
+    return true;
+}
+
+static void stream_body(uint8_t *out, size_t n)
+{
+    for (size_t i = 0; i < n; i++) {
+        out[i] = (uint8_t) (i * 7 + 3); /* includes 0x0a and 0x0d bytes */
+    }
+}
+
+static void test_stream_split_every_offset(void)
+{
+    uint8_t body[300];
+    stream_body(body, sizeof(body));
+    static uint8_t resp_len[600], resp_chunk[700];
+    int hl = snprintf((char *) resp_len, sizeof(resp_len),
+                      "HTTP/1.1 200 OK\r\nContent-Length: 300\r\n\r\n");
+    memcpy(resp_len + hl, body, sizeof(body));
+    size_t total_len = (size_t) hl + sizeof(body);
+
+    size_t cl = 0;
+    cl += (size_t) snprintf((char *) resp_chunk, sizeof(resp_chunk),
+                            "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n");
+    cl += (size_t) sprintf((char *) resp_chunk + cl, "64\r\n");
+    memcpy(resp_chunk + cl, body, 100);
+    cl += 100;
+    cl += (size_t) sprintf((char *) resp_chunk + cl, "\r\nc8\r\n");
+    memcpy(resp_chunk + cl, body + 100, 200);
+    cl += 200;
+    cl += (size_t) sprintf((char *) resp_chunk + cl, "\r\n0\r\n\r\n");
+
+    for (int mode = 0; mode < 2; mode++) {
+        const uint8_t *resp = mode ? resp_chunk : resp_len;
+        size_t total = mode ? cl : total_len;
+        for (size_t split = 1; split < total; split++) {
+            sink_t sk = { 0 };
+            cafetch_parser_t p;
+            cafetch_parser_init(&p);
+            cafetch_parser_set_stream(&p, sink_fn, &sk, 4096, 0);
+            bool ok = cafetch_parser_feed(&p, resp, split);
+            ok = ok && cafetch_parser_feed(&p, resp + split, total - split);
+            CHECK(ok && p.phase == CAFETCH_PHASE_DONE, "stream mode %d split %zu: phase=%d", mode, split,
+                  (int) p.phase);
+            CHECK(sk.n == 300 && memcmp(sk.buf, body, 300) == 0, "stream mode %d split %zu: bytes differ (n=%zu)",
+                  mode, split, sk.n);
+            CHECK(p.body_len == 300, "stream mode %d split %zu: body_len=%zu", mode, split, p.body_len);
+        }
+    }
+    /* Larger than CAFETCH_BODY_MAX is fine in stream mode (checked against max_body only). */
+    static uint8_t big[CAFETCH_BODY_MAX + 1000 + 64];
+    int h = snprintf((char *) big, sizeof(big), "HTTP/1.1 200 OK\r\nContent-Length: %d\r\n\r\n",
+                     CAFETCH_BODY_MAX + 1000);
+    memset(big + h, 0xA5, CAFETCH_BODY_MAX + 1000);
+    sink_t sk = { 0 };
+    cafetch_parser_t p;
+    cafetch_parser_init(&p);
+    cafetch_parser_set_stream(&p, sink_fn, &sk, 100000, 0);
+    CHECK(cafetch_parser_feed(&p, big, (size_t) h + CAFETCH_BODY_MAX + 1000) && p.phase == CAFETCH_PHASE_DONE,
+          "a body above CAFETCH_BODY_MAX must stream");
+    CHECK(sk.n == CAFETCH_BODY_MAX + 1000, "big stream byte count %zu", sk.n);
+
+    /* until-close body */
+    cafetch_parser_init(&p);
+    sk = (sink_t) { 0 };
+    cafetch_parser_set_stream(&p, sink_fn, &sk, 4096, 0);
+    const char *uc = "HTTP/1.1 200 OK\r\n\r\nabcdef";
+    cafetch_parser_feed(&p, (const uint8_t *) uc, strlen(uc));
+    CHECK(p.phase == CAFETCH_PHASE_BODY_UNTIL_CLOSE && sk.n == 6, "until-close stream pending");
+    cafetch_parser_closed(&p);
+    CHECK(p.phase == CAFETCH_PHASE_DONE, "until-close stream done");
+}
+
+static void test_stream_range(void)
+{
+    sink_t sk = { 0 };
+    cafetch_parser_t p;
+    const char *ok206 = "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 1000-1004/2000\r\n"
+                        "Content-Length: 5\r\n\r\nhello";
+    cafetch_parser_init(&p);
+    cafetch_parser_set_stream(&p, sink_fn, &sk, 4096, 1000);
+    CHECK(cafetch_parser_feed(&p, (const uint8_t *) ok206, strlen(ok206)) && p.phase == CAFETCH_PHASE_DONE &&
+              sk.n == 5 && memcmp(sk.buf, "hello", 5) == 0,
+          "206 with matching Content-Range must be accepted");
+
+    /* 206 though no range was requested */
+    sk = (sink_t) { 0 };
+    cafetch_parser_init(&p);
+    cafetch_parser_set_stream(&p, sink_fn, &sk, 4096, 0);
+    CHECK(!cafetch_parser_feed(&p, (const uint8_t *) ok206, strlen(ok206)) && p.phase == CAFETCH_PHASE_ERROR &&
+              p.err_non200 && sk.n == 0,
+          "206 with no range requested must fail");
+
+    /* 200 though a range was requested */
+    const char *r200 = "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello";
+    cafetch_parser_init(&p);
+    cafetch_parser_set_stream(&p, sink_fn, &sk, 4096, 1000);
+    CHECK(!cafetch_parser_feed(&p, (const uint8_t *) r200, strlen(r200)) && p.err_non200 && sk.n == 0,
+          "200 with a range requested must fail");
+
+    /* mismatched Content-Range */
+    const char *bad = "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 999-1004/2000\r\n"
+                      "Content-Length: 5\r\n\r\nhello";
+    cafetch_parser_init(&p);
+    cafetch_parser_set_stream(&p, sink_fn, &sk, 4096, 1000);
+    CHECK(!cafetch_parser_feed(&p, (const uint8_t *) bad, strlen(bad)) && p.err_malformed && sk.n == 0,
+          "mismatched Content-Range must be malformed");
+
+    /* missing Content-Range */
+    const char *none = "HTTP/1.1 206 Partial Content\r\nContent-Length: 5\r\n\r\nhello";
+    cafetch_parser_init(&p);
+    cafetch_parser_set_stream(&p, sink_fn, &sk, 4096, 1000);
+    CHECK(!cafetch_parser_feed(&p, (const uint8_t *) none, strlen(none)) && p.err_malformed,
+          "missing Content-Range must be malformed");
+}
+
+static void test_stream_limits(void)
+{
+    sink_t sk = { 0 };
+    cafetch_parser_t p;
+
+    /* declared Content-Length above max_body */
+    const char *cl = "HTTP/1.1 200 OK\r\nContent-Length: 11\r\n\r\nhello world";
+    cafetch_parser_init(&p);
+    cafetch_parser_set_stream(&p, sink_fn, &sk, 10, 0);
+    CHECK(!cafetch_parser_feed(&p, (const uint8_t *) cl, strlen(cl)) && p.err_oversize && sk.n == 0,
+          "Content-Length above max_body must be oversize");
+
+    /* running total above max_body (until-close) */
+    const char *uc = "HTTP/1.1 200 OK\r\n\r\nhello world";
+    cafetch_parser_init(&p);
+    cafetch_parser_set_stream(&p, sink_fn, &sk, 10, 0);
+    CHECK(!cafetch_parser_feed(&p, (const uint8_t *) uc, strlen(uc)) && p.err_oversize,
+          "running total above max_body must be oversize");
+
+    /* chunked: chunk larger than the remaining allowance */
+    const char *ck = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n6\r\nabcdef\r\n6\r\nghijkl\r\n0\r\n\r\n";
+    cafetch_parser_init(&p);
+    sk = (sink_t) { 0 };
+    cafetch_parser_set_stream(&p, sink_fn, &sk, 10, 0);
+    CHECK(!cafetch_parser_feed(&p, (const uint8_t *) ck, strlen(ck)) && p.err_oversize,
+          "chunked total above max_body must be oversize");
+
+    /* sink false */
+    const char *ok = "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello";
+    cafetch_parser_init(&p);
+    sk = (sink_t) { .fail_after = 3 };
+    cafetch_parser_set_stream(&p, sink_fn, &sk, 4096, 0);
+    CHECK(!cafetch_parser_feed(&p, (const uint8_t *) ok, strlen(ok)) && p.phase == CAFETCH_PHASE_ERROR &&
+              p.err_sink && !p.err_oversize && !p.err_malformed,
+          "a sink returning false must set err_sink");
+
+    /* no sink: Range logic and limits stay as before (206 rejected) */
+    const char *r206 = "HTTP/1.1 206 Partial Content\r\nContent-Length: 1\r\n\r\nx";
+    cafetch_parser_init(&p);
+    CHECK(!cafetch_parser_feed(&p, (const uint8_t *) r206, strlen(r206)) && p.err_non200,
+          "non-stream 206 stays non-200");
+}
+
 int main(void)
 {
+    test_stream_split_every_offset();
+    test_stream_range();
+    test_stream_limits();
     test_overlong_header_line_is_skipped();
     test_url_parse();
     test_build_request_hdrs();

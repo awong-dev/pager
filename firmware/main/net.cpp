@@ -2562,7 +2562,7 @@ extern "C" bool net_ca_fetch_send(const uint8_t *buf, uint16_t len)
     return WalterModem::socketSend(PAGER_CA_FETCH_SOCKET_ID, (uint8_t *) (uintptr_t) buf, len);
 }
 
-extern "C" bool net_ca_fetch_poll(uint8_t *buf, size_t cap, uint16_t *out_len, bool *out_closed)
+extern "C" bool net_ca_fetch_poll(uint8_t *buf, size_t cap, uint16_t *out_len, bool *out_closed, bool *out_short)
 {
     if (net_airplane()) {
         return false;
@@ -2572,6 +2572,9 @@ extern "C" bool net_ca_fetch_poll(uint8_t *buf, size_t cap, uint16_t *out_len, b
     }
     if (out_len) {
         *out_len = 0;
+    }
+    if (out_short) {
+        *out_short = false;
     }
 
     // Data first, close second. Found on hardware: with `Connection: close`
@@ -2586,6 +2589,9 @@ extern "C" bool net_ca_fetch_poll(uint8_t *buf, size_t cap, uint16_t *out_len, b
         uint16_t got = 0;
         if (WalterModem::socketReceive(PAGER_CA_FETCH_SOCKET_ID, buf, cap, &rsp)) {
             got = rsp.data.socketResponse.bytesReceived;
+            if (out_short && got < rsp.data.socketResponse.bytesClaimed) {
+                *out_short = true; // PATCHES.md 1.22
+            }
         } else if (!s_ca_fetch_closed) {
             ESP_LOGI(TAG, "cafetch: socketReceive() failed");
         }

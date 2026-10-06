@@ -75,7 +75,7 @@ endif
 MAIN_SRC := ../main
 BUILD := build
 
-TESTS := test_cbor test_auth test_setup test_input test_msg test_lock test_loc test_cafetch test_catrust test_cfg test_sms test_carrier test_chat_layout test_home_list test_coverage test_net_connect_guard test_net_probe_guard test_resub_verdict test_publish_quiet test_accel_rate test_wifi_policy test_wificred test_bookpull test_clock test_disp_flip
+TESTS := test_cbor test_auth test_setup test_input test_msg test_lock test_loc test_cafetch test_catrust test_cfg test_sms test_carrier test_chat_layout test_home_list test_coverage test_net_connect_guard test_net_probe_guard test_resub_verdict test_publish_quiet test_accel_rate test_wifi_policy test_wificred test_bookpull test_clock test_disp_flip test_otapipe test_ota
 TEST_BINS := $(TESTS:%=$(BUILD)/%)
 
 # ASSETS: tools/mkassets.py's default output location (docs/DEVICE_TASKS.md
@@ -215,6 +215,39 @@ $(BUILD)/catrust.o: $(MAIN_SRC)/catrust.c $(MAIN_SRC)/catrust.h $(MAIN_SRC)/cbor
 
 $(BUILD)/test_catrust.o: test_catrust.c $(MAIN_SRC)/catrust.h | $(BUILD)
 	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ test_catrust.c
+
+# test_otapipe: otapipe.c + the vendored detools (same defines as
+# components/detools/CMakeLists.txt) + the vendored miniz tinfl (the device uses the
+# ROM copy) + real mbedtls; -lz only creates synthetic inputs. Real-artifact cases
+# read $$OTA_FIXTURES / $$OTA_IMAGES and print SKIP when absent.
+DETOOLS_DEFS := -DDETOOLS_CONFIG_FILE_IO=0 -DDETOOLS_CONFIG_COMPRESSION_LZMA=0 -DDETOOLS_CONFIG_COMPRESSION_CRLE=0 -DDETOOLS_CONFIG_COMPRESSION_HEATSHRINK=0
+OTA_INCLUDES := -I../components/detools -Ithird_party/miniz
+
+$(BUILD)/detools.o: ../components/detools/detools.c ../components/detools/detools.h | $(BUILD)
+	$(CC) $(CFLAGS) $(DETOOLS_DEFS) -I../components/detools -c -o $@ ../components/detools/detools.c
+
+$(BUILD)/miniz_tinfl.o: third_party/miniz/miniz_tinfl.c | $(BUILD)
+	$(CC) $(CFLAGS) -Ithird_party/miniz -c -o $@ third_party/miniz/miniz_tinfl.c
+
+$(BUILD)/otapipe.o: $(MAIN_SRC)/otapipe.c $(MAIN_SRC)/otapipe.h | $(BUILD)
+	$(CC) $(CFLAGS) $(DETOOLS_DEFS) $(INCLUDES) $(OTA_INCLUDES) $(MBEDTLS_CFLAGS) -c -o $@ $(MAIN_SRC)/otapipe.c
+
+$(BUILD)/test_otapipe.o: test_otapipe.c $(MAIN_SRC)/otapipe.h | $(BUILD)
+	$(CC) $(CFLAGS) $(DETOOLS_DEFS) $(INCLUDES) $(OTA_INCLUDES) $(MBEDTLS_CFLAGS) -c -o $@ test_otapipe.c
+
+$(BUILD)/test_otapipe: $(BUILD)/otapipe.o $(BUILD)/detools.o $(BUILD)/miniz_tinfl.o $(BUILD)/test_otapipe.o
+	$(CC) $(CFLAGS) -o $@ $^ $(MBEDTLS_LIBS) -lz
+
+# test_ota: ota.c's pure section (cfg.ota decode, accept/reject, start/install gates,
+# budget/expiry, strings) + cbor.c. No mbedtls: ota.h only borrows cafetch.h's sizes.
+$(BUILD)/ota.o: $(MAIN_SRC)/ota.c $(MAIN_SRC)/ota.h $(MAIN_SRC)/cafetch.h $(MAIN_SRC)/cbor.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $(MAIN_SRC)/ota.c
+
+$(BUILD)/test_ota.o: test_ota.c $(MAIN_SRC)/ota.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ test_ota.c
+
+$(BUILD)/test_ota: $(BUILD)/ota.o $(BUILD)/cbor.o $(BUILD)/test_ota.o
+	$(CC) $(CFLAGS) -o $@ $^
 
 $(BUILD)/test_catrust: $(BUILD)/catrust.o $(BUILD)/cbor.o $(BUILD)/test_catrust.o
 	$(CC) $(CFLAGS) -o $@ $(BUILD)/catrust.o $(BUILD)/cbor.o $(BUILD)/test_catrust.o

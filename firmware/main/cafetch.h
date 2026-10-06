@@ -83,6 +83,9 @@ bool cafetch_build_request(const char *host, const char *path, char *out, size_t
  * Incremental HTTP/1.1 response parser.
  * --------------------------------------------------------------------- */
 
+/* Stream-mode body sink. Return false to abort the transfer. */
+typedef bool (*cafetch_sink_fn)(void *arg, const uint8_t *data, size_t len);
+
 typedef enum {
     CAFETCH_PHASE_STATUS_LINE = 0,
     CAFETCH_PHASE_HEADER_LINE,
@@ -118,9 +121,32 @@ typedef struct {
     bool err_oversize;   /* body (or a declared Content-Length) > CAFETCH_BODY_MAX */
     bool err_malformed;  /* could not parse the status line/headers/chunk framing */
     bool err_non200;     /* status line parsed fine but code != 200 (redirects included) */
+    bool err_sink;       /* stream mode: the sink returned false */
+    bool err_short;      /* stream mode (device): a socket read came back short (PATCHES.md 1.22) */
+
+    /* Stream mode (cafetch_parser_set_stream). With a sink set, body bytes go
+     * to the sink and never into body[]; body_len still counts them. */
+    cafetch_sink_fn sink;
+    void *sink_arg;
+    size_t max_body;     /* cap on body bytes of THIS response (not CAFETCH_BODY_MAX) */
+    size_t range_start;  /* >0: a 206 whose Content-Range starts here is required */
+    bool have_content_range;
+    size_t content_range_start;
 } cafetch_parser_t;
 
 void cafetch_parser_init(cafetch_parser_t *p);
+
+/* Switches the parser to stream mode. Call right after cafetch_parser_init().
+ * Body bytes of every body phase (length, until-close, chunk data) are handed
+ * to `sink` as contiguous runs (never zero-length); a false return aborts with
+ * err_sink. `max_body` bounds the body bytes of this response (a declared
+ * Content-Length above it, or a running total above it, is err_oversize).
+ * `range_start` > 0 means a Range request was made: only 206 is accepted (a
+ * 200 means the server ignored the Range -> error) and its `Content-Range:
+ * bytes N-...` must have N == range_start (else err_malformed). 0 means only
+ * 200 is accepted. With no sink set the parser behaves exactly as before. */
+void cafetch_parser_set_stream(cafetch_parser_t *p, cafetch_sink_fn sink, void *arg,
+                               size_t max_body, size_t range_start);
 
 /* Feeds `len` more bytes (may be zero — a no-op). Advances `p->phase` as far
  * as the data allows; safe to call repeatedly with arbitrarily small or
@@ -182,6 +208,24 @@ bool cafetch_validate_body(const uint8_t *body, size_t body_len, const uint8_t e
  * guard is shared by every caller (catrust.c's CA fetch, bookpull.c's book
  * fetch): only one of either kind runs at a time. */
 bool cafetch_begin_ex(const char *url, const char *extra_hdrs);
+
+/* Stream mode (docs/OTA_DESIGN.md section 3): like cafetch_begin_ex(), but the
+ * body goes to `sink` instead of the 4 KB buffer (see cafetch_parser_set_stream()
+ * for the sink/max_body/range rules; `max_body` bounds THIS response, so a
+ * resume passes what is still missing). `range_start` > 0 adds `Range:
+ * bytes=<N>-`. Timeouts: 30 s idle (reset on every received byte) and 900 s
+ * overall, instead of the 30 s overall. A socket read that comes back short
+ * (PATCHES.md 1.22) fails the fetch with the read NOT fed to the parser. The
+ * same single-flight guard applies. Power effect: one TLS handshake plus the
+ * RRC time, then the radio stays up for the transfer. */
+bool cafetch_begin_stream(const char *url, size_t range_start, size_t max_body, cafetch_sink_fn sink,
+                          void *arg);
+
+/* After CAFETCH_FAILED: the HTTP status, the body bytes delivered so far
+ * (stream mode: to the sink), and whether the failure was a broken transfer
+ * (worth a Range resume) rather than a server/sink/size verdict, and whether it
+ * was a short socket read (PATCHES.md 1.22). Any pointer may be NULL. */
+void cafetch_fail_info(int *status, size_t *body_len, bool *transport, bool *short_read);
 
 /* `cafetch_begin_ex(url, NULL)` — the CA fetch path's existing call shape,
  * unchanged. */

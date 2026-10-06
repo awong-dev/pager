@@ -3913,6 +3913,8 @@ void WalterModem::_processModemRSP(WalterModemCmd* cmd, WalterModemBuffer* buff)
     } else {
       cmd->rsp->data.socketResponse.bytesReceived = dataReceived;
     }
+    /* PAGER PATCH: (1.22) expose the modem's own claim so a caller can detect a short copy. */
+    cmd->rsp->data.socketResponse.bytesClaimed = dataReceived;
 
     goto after_processing_logic;
   }

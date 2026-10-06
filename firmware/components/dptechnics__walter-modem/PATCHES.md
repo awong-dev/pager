@@ -756,3 +756,15 @@ push/pop here could race a concurrent `tzset()`/`localtime_r()` call on another 
 
 **Power effect**: none -- replaces one libc call with an equivalent, branch-free integer
 computation; no AT traffic, no modem/sleep-state change.
+
+## 1.22 Socket receive reports the modem's claimed byte count (`src/WalterModem.h`, `src/WalterModem.cpp`)
+
+`WalterModemSocketResponse` gains `bytesClaimed`, set in the `+SQNSRECV` handler from the
+`dataReceived` value in the modem's own header, next to the 1.2 bound. `bytesReceived` is still the
+bytes actually copied, so `bytesReceived < bytesClaimed` is a short copy. Why: PATCHES 1.7 (the
+payload parser loses a final `\n` byte from a read), which on binary data hits about 1 read in 256
+(docs/OTA_DESIGN.md section 3). The OTA stream path (cafetch.c, stream mode) treats a short copy as a
+transport error and resumes with a Range request from the last good offset; the CA fetch ignores the
+field. (The task file called this entry 1.10; that number is already taken above.)
+
+**Power effect**: none -- one extra field store per receive; no AT traffic.

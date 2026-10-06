@@ -282,8 +282,53 @@ static void test_not_cfg_rejected(void)
     CHECK(!cfg_parse(buf, (uint16_t) w.len, false, &d), "a kind:\"msg\" envelope must not be accepted as cfg");
 }
 
+/* `ota`=4 (docs/OTA_DESIGN.md D5): a recognised span next to `wifi`, and the
+ * span must decode standalone. */
+static void test_ota_span(void)
+{
+    uint8_t buf[256];
+    cbor_w_t w;
+    cbor_w_init(&w, buf, sizeof(buf));
+    cbor_w_map(&w, 3);
+    cbor_w_tstr(&w, 1, "m_88888888", 10);
+    cbor_w_tstr(&w, 6, "cfg", 3);
+    cbor_w_map_key(&w, 38, 2);
+    cbor_w_map_key(&w, 3, 1); /* wifi: { en: true } */
+    cbor_w_bool(&w, 0, true);
+    cbor_w_map_key(&w, 4, 2); /* ota: { isz: 685168, cancel: true } (shape only) */
+    cbor_w_uint(&w, 1, 685168);
+    cbor_w_bool(&w, 8, true);
+    CHECK(!w.err, "test setup: encoding the ota fixture must not overflow");
+
+    cfg_dispatch_t d;
+    CHECK(cfg_parse(buf, (uint16_t) w.len, false, &d), "a cfg envelope with `ota` must be accepted");
+    CHECK(strcmp(d.id, "m_88888888") == 0, "id mismatch: %s", d.id);
+    CHECK(d.have_ota && d.have_wifi, "have_ota and have_wifi must both be true");
+    CHECK(!d.have_lock && !d.have_ca && !d.have_sms, "no other sub-map");
+
+    cbor_r_t r;
+    cbor_r_init(&r, buf + d.ota_off, d.ota_len);
+    uint32_t count, key;
+    uint64_t u;
+    CHECK(cbor_r_map(&r, &count) && count == 2, "captured ota span must decode as a 2-pair map");
+    CHECK(cbor_r_key(&r, &key) && key == 1 && cbor_r_uint(&r, &u) && u == 685168, "first ota pair");
+    /* the span ends exactly at the end of the ota map (wifi comes first, so it is the last bytes) */
+    CHECK(d.ota_off + d.ota_len == w.len, "ota span must end at the end of the buffer");
+
+    /* without ota: have_ota stays false */
+    cbor_w_init(&w, buf, sizeof(buf));
+    cbor_w_map(&w, 3);
+    cbor_w_tstr(&w, 1, "m_99999999", 10);
+    cbor_w_tstr(&w, 6, "cfg", 3);
+    cbor_w_map_key(&w, 38, 1);
+    cbor_w_map_key(&w, 3, 1);
+    cbor_w_bool(&w, 0, true);
+    CHECK(cfg_parse(buf, (uint16_t) w.len, false, &d) && !d.have_ota, "have_ota must be false when absent");
+}
+
 int main(void)
 {
+    test_ota_span();
     test_lock_only();
     test_ca_only();
     test_sms_only();

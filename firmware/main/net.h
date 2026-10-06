@@ -224,8 +224,12 @@ bool net_ca_fetch_send(const uint8_t *buf, uint16_t len);
  * since the last poll — call this every cafetch_poll() iteration (which
  * itself is called every catrust_service() iteration), like
  * net_gnss_poll_event(). Power effect: none when it returns false; one AT
- * round trip (socketReceive()) when it returns a RING. */
-bool net_ca_fetch_poll(uint8_t *buf, size_t cap, uint16_t *out_len, bool *out_closed);
+ * round trip (socketReceive()) when it returns a RING.
+ * `*out_short` (may be NULL) is true when the read delivered fewer bytes than
+ * the modem announced (`bytesReceived < bytesClaimed`, PATCHES.md 1.22: the
+ * vendor payload parser lost bytes, PATCHES.md 1.7); `buf`/`*out_len` still
+ * hold what was copied. */
+bool net_ca_fetch_poll(uint8_t *buf, size_t cap, uint16_t *out_len, bool *out_closed, bool *out_short);
 
 /* Tears down the cafetch socket (best-effort AT+SQNSH). Power effect: one AT
  * command, no RRC of its own. */

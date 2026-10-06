@@ -62,6 +62,8 @@
 // book.h's module comment) — it only needs the EXISTING g_rtc.auth binding,
 // wired via book_bind() in modes_boot().
 #include "book.h"
+#include "ota.h"       // docs/OTA_DESIGN.md: cfg.ota job, status fields, ota_service() below
+#include "cafetch.h"   // cafetch_in_progress() for the OTA start gate
 #include "bookpull.h" // v0.4 §3.7: bookpull_bind()/bookpull_service() below, alongside catrust's own
 
 // v0.2 §5 (docs/V02_DESIGN.md, docs/PROTOCOL.md §3.2/§13): loc.c's
@@ -99,6 +101,7 @@
 
 #include "driver/gpio.h" // PAGER_DEBUG_NO_LIGHT_SLEEP's sleeptest wake0_ms experiment (§6 item F) only
 #include "esp_attr.h"
+#include "esp_app_desc.h" // esp_app_get_description(): the `fw` status field
 #include "esp_log.h"
 #include "esp_random.h"
 #include "esp_rom_crc.h"
@@ -234,7 +237,21 @@ static int64_t s_probe_wait_total_us = 0, s_probe_wait_max_us = 0;
 #define PAGER_STATUS_HEARTBEAT_S 3600u         // §5.4(d)
 #define PAGER_CHECKCOMM_EVERY_N_WAKES 60u      // F4: ~5 min at T=5s
 #define PAGER_MODEM_RESET_MIN_INTERVAL_US ((int64_t) 10 * 60 * 1000000) // F4 rate limit
-#define PAGER_FW_VERSION "0.1.0"
+// docs/OTA_DESIGN.md section 5: `fw` is the app descriptor's version string (the project version /
+// git describe baked in by the build), truncated to 16 characters. Filled once, on first use.
+static const char *fw_version_str(void)
+{
+    static char s_fw[17];
+    if (s_fw[0] == '\0') {
+        const esp_app_desc_t *d = esp_app_get_description();
+        strncpy(s_fw, d ? d->version : "?", sizeof(s_fw) - 1);
+        s_fw[sizeof(s_fw) - 1] = '\0';
+        if (s_fw[0] == '\0') {
+            s_fw[0] = '?';
+        }
+    }
+    return s_fw;
+}
 
 // F6.2: the button FSM itself (short/long/BTN_STUCK, debounce, long-press
 // threshold) moved to input.c; this is only the outer loop's own polling
@@ -650,6 +667,14 @@ static void on_auth_epoch_wrap(void)
 // wdt-stage8, added 25 Sep 2026, pending server-architect review (docs/PROTOCOL.md §5.1/§10):
 // previous boot's stalled-command breadcrumb (watchdog_last_stall_cmd()), omitted when empty.
 #define STK_STALLCMD 59
+// docs/OTA_DESIGN.md section 5 (envelope keys 62-67): the running image id and the OTA job. Display only,
+// except `img` (the relay's delta-vs-full choice) and `ota` (the capability gate).
+#define STK_IMG 62     // 16 hex chars of the running image id; always present once ota_boot() ran
+#define STK_OTA 63     // 1 = cfg.ota supported and a rollback bootloader is confirmed
+#define STK_OTA_T 64   // 16 hex chars of the job target
+#define STK_OTA_ST 65  // wait/dl/ready/inst/ok/fail/rb
+#define STK_OTA_PCT 66 // 0-100
+#define STK_OTA_ERR 67 // short error code, omitted when none
 
 // PROTOCOL.md §5.1: batt_mv must be in [2000, 4500] when state:"online".
 #define PAGER_BATT_MV_MIN 2000
@@ -775,7 +800,7 @@ int modes_get_batt_mv(void) { return (s_last_batt_mv != 0) ? s_last_batt_mv : PA
 // is how a caller (loc.c's battery floor) tells the two apart instead of
 // trusting a coincidence between the placeholder and LOC_BATTERY_FLOOR_MV.
 bool modes_batt_mv_known(void) { return s_last_batt_mv != 0; }
-const char *modes_get_fw_version(void) { return PAGER_FW_VERSION; }
+const char *modes_get_fw_version(void) { return fw_version_str(); }
 const char *modes_get_session_id(void) { return g_rtc.session_id; }
 uint32_t modes_get_memfull_count(void) { return g_rtc.mqtt_memfull_count; }
 uint32_t modes_get_oversize_drop_count(void) { return g_rtc.oversize_drop_count; }
@@ -838,6 +863,20 @@ static bool build_status_cbor(uint8_t *out, size_t cap, size_t *out_len, const c
     if (have_stall_cmd) {
         nfields += 1; // wdt-stage8: STK_STALLCMD key 59, omitted when empty
     }
+    // docs/OTA_DESIGN.md section 5: img (when known), ota gate, and the job fields while a job exists.
+    ota_status_t ost;
+    ota_get_status(&ost);
+    bool have_ota_err = ost.have_job && ost.err != OTA_ERR_NONE;
+    if (ost.img[0] != '\0') {
+        nfields += 1;
+    }
+    if (ost.gate) {
+        nfields += 1;
+    }
+    if (ost.have_job) {
+        nfields += 3; // ota_t, ota_st, ota_pct
+        nfields += have_ota_err ? 1 : 0;
+    }
     if (signed_env) {
         nfields += 1; // v0.4 §3.7/§5.1: `bpull` — see its own cbor_w_uint() call below for the gate
         nfields += 2; // n (written below) + sig (appended by auth_sign())
@@ -853,7 +892,7 @@ static bool build_status_cbor(uint8_t *out, size_t cap, size_t *out_len, const c
     cbor_w_int(&w, STK_RSSI, rssi_dbm);
     cbor_w_tstr(&w, STK_SESSION, g_rtc.session_id, strlen(g_rtc.session_id));
     cbor_w_uint(&w, STK_TS, (uint64_t) ts);
-    cbor_w_tstr(&w, STK_FW, PAGER_FW_VERSION, strlen(PAGER_FW_VERSION));
+    cbor_w_tstr(&w, STK_FW, fw_version_str(), strlen(fw_version_str()));
     cbor_w_uint(&w, STK_BV, book_get_bv()); // §4.3: book version, F7.1
     cbor_w_uint(&w, STK_LOC_PERIOD_S, loc_get_period_s()); // v0.2 §5: always 0, periodic fixes parked
     cbor_w_uint(&w, STK_LOC_MIN_S, loc_get_min_s());        // v0.2 §5: the 10-minute trigger floor
@@ -880,6 +919,27 @@ static bool build_status_cbor(uint8_t *out, size_t cap, size_t *out_len, const c
     cbor_w_uint(&w, STK_ABN, (uint64_t) watchdog_abnormal_reset_count());
     if (have_stall_cmd) {
         cbor_w_tstr(&w, STK_STALLCMD, stall_cmd, strlen(stall_cmd)); // wdt-stage8, key 59
+    }
+
+    // docs/OTA_DESIGN.md section 5: plain reads of ota.c's RAM state, no AT round trip or NVS I/O.
+    if (ost.img[0] != '\0') {
+        cbor_w_tstr(&w, STK_IMG, ost.img, strlen(ost.img));
+    }
+    if (ost.gate) {
+        cbor_w_uint(&w, STK_OTA, 1);
+    }
+    if (ost.have_job) {
+        const char *ost_st = ota_state_str(ost.state);
+        cbor_w_tstr(&w, STK_OTA_T, ost.target, strlen(ost.target));
+        cbor_w_tstr(&w, STK_OTA_ST, ost_st, strlen(ost_st));
+        cbor_w_uint(&w, STK_OTA_PCT, ost.pct);
+        if (have_ota_err) {
+            const char *ost_err = ota_err_str(ost.err);
+            cbor_w_tstr(&w, STK_OTA_ERR, ost_err, strlen(ost_err));
+        }
+        if (ost.state == OTA_ST_OK || ost.state == OTA_ST_RB) {
+            ota_status_included();
+        }
     }
 
     // docs/WIFI_DESIGN.md §5.1/§6, docs/WIFI_TASKS.md W4 item 1: which
@@ -938,7 +998,7 @@ static volatile int64_t s_status_publish_pending_since_us = 0;
 
 static void publish_status_online(void)
 {
-    uint8_t buf[256];
+    uint8_t buf[384]; // 256 before the OTA fields (img + ota + ota_t/st/pct/err add up to ~75 B)
     size_t len = 0;
     if (!build_status_cbor(buf, sizeof(buf), &len, "online")) {
         ESP_LOGI(TAG, "status CBOR build failed (buffer too small or auth_sign failed)");
@@ -954,6 +1014,7 @@ static void publish_status_online(void)
         rtc_unlock();
         ESP_LOGI(TAG, "published /status online (mode=%s)",
                  g_rtc.mode == (uint8_t) PAGER_MODE_ACTIVE ? "active" : "sleep");
+        ota_on_status_published(true); // rollback confirmation + end-of-job bookkeeping
     } else {
         ESP_LOGI(TAG, "publish /status online failed");
     }
@@ -2246,6 +2307,9 @@ void modes_boot(void)
     // below: a nudge could in principle arrive the instant MQTT subscribes.
     bookpull_bind(rtc_lock, rtc_unlock);
 
+    // docs/OTA_DESIGN.md: same cross-task mutex for the cfg.ota handoff. No modem or sleep-state effect.
+    ota_bind(rtc_lock, rtc_unlock);
+
     net_airplane_init(); // power effect: one NVS read; net_airplane() is a RAM read from here on
 
     input_init(); // power effect: GPIO config + static queue alloc only
@@ -2262,6 +2326,11 @@ void modes_boot(void)
         ui_push(&g_scr_greeting);
         ui_render_boot(); // first frame; disp_init() primes the cadence counter to force a full refresh
     }
+
+    // docs/OTA_DESIGN.md D8: running image id (a flash SHA over the image, a few tens of ms, logged),
+    // rollback state and the previous boot's update outcome. After the first frame (UI first); no
+    // modem or sleep-state effect.
+    ota_boot();
 
     net_set_msg_cb(on_incoming_message);
 
@@ -2561,7 +2630,7 @@ void modes_run(void)
         // same shape as net_connect_in_flight()/net_publish_in_flight() above.
         bool skip_sleep = btn_busy || btn_stuck || ui_awake || net_modem_busy() || net_connect_in_flight() ||
                            net_publish_in_flight() || bookpull_fetch_in_progress() || net_resub_hold() ||
-                           accel_shake_pending() || input_hot();
+                           accel_shake_pending() || input_hot() || ota_transfer_active();
         // 5 Oct 2026 diagnostic (all builds; owner: the shake-branch release
         // never slept after boot, no console, USB alive only because it
         // never sleeps): once per 60 s while the loop has gone >= 60 s
@@ -3507,7 +3576,11 @@ void modes_run(void)
         ST_MARK(6);
 #endif
         watchdog_kick(WD_CATRUST);
-        catrust_service(&st);
+        // docs/OTA_DESIGN.md: a pending cfg.ca waits out an OTA download (its cafetch_begin() would
+        // fail on the shared single-flight guard and count as a failed apply).
+        if (!ota_transfer_active()) {
+            catrust_service(&st);
+        }
 
         // v0.4 §3.7: one step of the pending-nudge / book-fetch state
         // machine (a no-op read if nothing is pending or in flight) — same
@@ -3515,6 +3588,27 @@ void modes_run(void)
         // documents just above (and shares its single-flight cafetch.c
         // guard with).
         bookpull_service();
+
+        // docs/OTA_DESIGN.md: one step of the OTA job (a no-op read if there is none) -- drain, socket
+        // poll, start, verify or install. Power effect: one TLS socket while a download runs.
+        {
+            ota_env_t oe;
+            memset(&oe, 0, sizeof(oe));
+            oe.airplane = net_airplane();
+            oe.mqtt_usable = st.mqtt_connected;
+            oe.other_fetch = (cafetch_in_progress() && !ota_transfer_active()) || catrust_apply_in_progress();
+            oe.sleep_mode = g_rtc.mode == (uint8_t) PAGER_MODE_SLEEP;
+            oe.batt_mv = modes_get_batt_mv();
+            oe.rssi = (s_last_rssi_dbm != PAGER_RSSI_UNSET) ? s_last_rssi_dbm : 0;
+            int64_t age_ms = (esp_timer_get_time() - s_last_input_us) / 1000;
+            oe.input_age_ms = age_ms < 0 ? 0 : (age_ms > 0xFFFFFFF0LL ? 0xFFFFFFF0u : (uint32_t) age_ms);
+            oe.now_us = esp_timer_get_time();
+            oe.epoch = (uint32_t) approx_epoch();
+            ota_service(&oe);
+            if (ota_take_status_request() && st.mqtt_connected) {
+                publish_status_online(); // dl start, 50 %, ready, fail, rb
+            }
+        }
 
         maybe_publish_heartbeat();
 

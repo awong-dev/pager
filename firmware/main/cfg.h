@@ -3,7 +3,7 @@
  *
  * A single `cfg` push can now carry more than one sub-map (`lock`=0,
  * existing; `ca`=1; `sms`=2; `wifi`=3, docs/WIFI_DESIGN.md §4/docs/WIFI_TASKS.md
- * W3) in one envelope, and each sub-map has its own apply/ack timing (`lock`/
+ * W3; `ota`=4, docs/OTA_DESIGN.md D5) in one envelope, and each sub-map has its own apply/ack timing (`lock`/
  * `sms`/`wifi` all apply and ack immediately; `ca`'s two-phase apply,
  * catrust.c, may defer the ack for several modes_run() cycles or never ack
  * at all if the apply is rejected). That ruled out the old design, where
@@ -59,6 +59,11 @@ typedef struct {
      * `{en, nets}` sub-map. Dispatched to wificred_apply_cfg_submap(). */
     bool have_wifi;
     size_t wifi_off, wifi_len;
+
+    /* `ota`=4 (docs/OTA_DESIGN.md D5): the firmware-update job sub-map.
+     * Dispatched to ota_apply_cfg_submap(). */
+    bool have_ota;
+    size_t ota_off, ota_len;
 } cfg_dispatch_t;
 
 /* Decodes `buf`/`len` as a `/down` envelope already reduced to `count` map

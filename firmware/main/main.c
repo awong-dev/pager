@@ -24,7 +24,10 @@
 #include <stdio.h>
 
 #include "accel.h"
+#include "cafetch.h"
 #include "catrust.h"
+#include "mbedtls/sha256.h"
+#include "ota.h"
 #include "flightrec.h" // docs/SLEEP_PAGE_LOSS_BRIEF.md §6 item A; no-op stubs outside a debug build
 #include "ident.h"
 #include "watchdog.h"
@@ -1093,6 +1096,83 @@ static int cmd_cafetch(int argc, char **argv)
     return ok ? 0 : 1;
 }
 
+// docs/OTA_DESIGN.md section 7.2: `otafetch <url> <size>` -- streams the object through cafetch's body sink
+// into a sink that only hashes and counts (no flash writes), resuming with Range after a broken transfer
+// exactly like ota.c does. Prints bytes, elapsed_ms, B/s, short-read count, resumes, sha16 and
+// mqtt_survived. Blocks this console task (never modes_run()'s) for up to 900 s.
+typedef struct {
+    mbedtls_sha256_context sha;
+    size_t n;
+} otafetch_sink_t;
+
+static bool otafetch_sink(void *arg, const uint8_t *data, size_t len)
+{
+    otafetch_sink_t *s = (otafetch_sink_t *) arg;
+    mbedtls_sha256_update(&s->sha, data, len);
+    s->n += len;
+    return true;
+}
+
+static int cmd_otafetch(int argc, char **argv)
+{
+    if (argc != 3) {
+        printf("usage: otafetch <url> <size>\n");
+        return 1;
+    }
+    size_t total = (size_t) strtoul(argv[2], NULL, 10);
+    if (total == 0) {
+        printf("otafetch: size must be > 0\n");
+        return 1;
+    }
+    if (cafetch_in_progress() || ota_transfer_active()) {
+        printf("otafetch: a fetch is already in progress\n");
+        return 1;
+    }
+    net_mqtt_status_t before = { 0 }, after = { 0 };
+    net_get_mqtt_status(&before);
+    otafetch_sink_t s;
+    mbedtls_sha256_init(&s.sha);
+    mbedtls_sha256_starts(&s.sha, 0);
+    s.n = 0;
+    int shorts = 0, resumes = 0;
+    bool ok = false;
+    int64_t t0 = esp_timer_get_time();
+    for (;;) {
+        if (!cafetch_begin_stream(argv[1], s.n, total - s.n, otafetch_sink, &s)) {
+            break;
+        }
+        cafetch_status_t st;
+        while ((st = cafetch_poll(esp_timer_get_time())) == CAFETCH_PENDING) {
+            vTaskDelay(pdMS_TO_TICKS(20)); // FreeRTOS primitive, not a busy-wait
+        }
+        if (st == CAFETCH_OK) {
+            cafetch_end();
+            ok = (s.n == total);
+            break;
+        }
+        bool transport = false, was_short = false;
+        cafetch_fail_info(NULL, NULL, &transport, &was_short);
+        cafetch_end();
+        if (was_short) {
+            shorts++;
+        }
+        if (!transport || s.n >= total || ++resumes > 20) {
+            break;
+        }
+    }
+    uint32_t ms = (uint32_t) ((esp_timer_get_time() - t0) / 1000);
+    uint8_t h[32];
+    mbedtls_sha256_finish(&s.sha, h);
+    mbedtls_sha256_free(&s.sha);
+    net_get_mqtt_status(&after);
+    printf("otafetch: %s bytes=%u elapsed_ms=%u B/s=%u short=%d resumes=%d sha16=%02x%02x%02x%02x%02x%02x%02x%02x "
+           "mqtt_survived=%d\n",
+           ok ? "OK" : "FAILED", (unsigned) s.n, (unsigned) ms, (unsigned) (ms ? (uint64_t) s.n * 1000u / ms : 0),
+           shorts, resumes, h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7],
+           (int) (before.mqtt_connected && after.mqtt_connected));
+    return ok ? 0 : 1;
+}
+
 // v0.2 §6 (docs/V02_DESIGN.md, this task): `smstest <number> <text>` -- sends
 // one SMS bypassing the allow-list (an arbitrary number), via
 // sms_debug_send() (main/sms.c). Blocks this console task (never
@@ -2096,6 +2176,15 @@ static void start_normal_console(void)
         .func = &cmd_cafetch,
     };
     ESP_ERROR_CHECK(esp_console_cmd_register(&cafetch_cmd));
+
+    const esp_console_cmd_t otafetch_cmd = {
+        .command = "otafetch",
+        .help = "otafetch <url> <size> -- stream an OTA object into a hash+count sink (no flash writes): "
+                "bytes, B/s, short reads, resumes, sha16 (OTA_DESIGN.md section 7.2)",
+        .hint = NULL,
+        .func = &cmd_otafetch,
+    };
+    ESP_ERROR_CHECK(esp_console_cmd_register(&otafetch_cmd));
 
     const esp_console_cmd_t smstest_cmd = {
         .command = "smstest",
