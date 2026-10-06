@@ -204,6 +204,11 @@ export default function AlertCard({ alert }: { alert: AlertRow }) {
                 {alert.preview}
               </Typography>
             )}
+            {alert.peerPhone && (
+              <Typography variant="body2" sx={{ mt: 0.5 }}>
+                Phone: {alert.peerPhone}
+              </Typography>
+            )}
           </>
         )}
 
@@ -285,6 +290,12 @@ export default function AlertCard({ alert }: { alert: AlertRow }) {
         <DialogTitle>Approve contact for @{alert.subjectAlias}</DialogTitle>
         <DialogContent>
           <Stack spacing={2} sx={{ mt: 1 }}>
+            {(alert.preview || alert.peerPhone) && (
+              <Typography variant="body2">
+                {alert.preview}
+                {alert.peerPhone && !alert.preview.includes(alert.peerPhone) ? ` ${alert.peerPhone}` : ""}
+              </Typography>
+            )}
             <RadioGroup value={mode} onChange={(e) => setMode(e.target.value as ApproveMode)}>
               <FormControlLabel value="link" control={<Radio />} label="Link to existing family member" />
               {mode === "link" && (
