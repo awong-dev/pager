@@ -81,6 +81,28 @@ def _clean_emulators() -> Iterator[None]:
     yield
 
 
+@pytest.fixture(autouse=True)
+def _default_person_family(monkeypatch: pytest.MonkeyPatch) -> None:
+    """docs/CONTACT_REQ_DESIGN.md decision 3: `users_store.create_user`
+    refuses a person with no family. Most fixtures predate that and build
+    bare users; this gives each its own one-person family (so no implied
+    same-family approval) unless a test names one. The invariant itself is tested against the unwrapped function
+    (`users_store.create_user.__wrapped__`)."""
+    import functools
+
+    from app.store import users as users_store
+
+    original = users_store.create_user
+
+    @functools.wraps(original)
+    def _create_user(**kwargs):
+        if kwargs.get("kind", "person") == "person" and kwargs.get("family_id") is None:
+            kwargs["family_id"] = f"solo-{kwargs['uid']}"
+        return original(**kwargs)
+
+    monkeypatch.setattr(users_store, "create_user", _create_user)
+
+
 @pytest.fixture
 def broker() -> FakeBrokerClient:
     return FakeBrokerClient()

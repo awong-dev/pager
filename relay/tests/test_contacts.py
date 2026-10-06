@@ -26,7 +26,7 @@ from firebase_admin import auth as fb_auth
 from app import devauth
 from app.config import Settings
 from app.db.firestore import get_db
-from app.ingest import Ingest
+from app.ingest import Ingest, classify_ph
 from app.main import create_app
 from app.store import alerts as alerts_store
 from app.store import allow as allow_store
@@ -34,6 +34,7 @@ from app.store import backends as backends_store
 from app.store import contacts as contacts_store
 from app.store import device_secrets as device_secrets_store
 from app.store import devices as devices_store
+from app.store import externals as externals_store
 from app.store import families as families_store
 from app.store import users as users_store
 from tests.conftest import up_topic
@@ -142,8 +143,11 @@ def test_contact_req_with_phone_creates_pending_request():
 
 
 def test_contact_req_with_alias_reference_is_stored():
-    _make_user("student", "student")
-    _make_user("sibling", "sibling")
+    """An alias outside the family whose person has a `message` edge to the
+    owner is a pending link request (docs/CONTACT_REQ_DESIGN.md decision 1)."""
+    _make_user("student", "student", family_id="fam-a")
+    _make_user("sibling", "sibling", family_id="fam-b")
+    allow_store.set_edge("sibling", "student", message=True, locate=False)
     _make_pager_device("pgr-c-2", "student")
     ingest, _broker = _ingest()
 
@@ -151,6 +155,7 @@ def test_contact_req_with_alias_reference_is_stored():
 
     req = contacts_store.get_by_device_and_req("pgr-c-2", "u_c2")
     assert req is not None
+    assert req.status == "pending"
     assert req.alias == "sibling"
     assert req.phone is None
 
@@ -249,13 +254,18 @@ def test_contact_req_name_too_long_is_dropped_as_malformed():
     assert contacts_store.get_by_device_and_req("pgr-c-9", "u_c9") is None
 
 
-def test_contact_req_bad_ph_format_is_dropped_as_malformed():
+def test_contact_req_bad_ph_format_is_rejected_with_a_reply():
+    """A bad `ph` is answered, not silently malformed-dropped (decision 1)."""
     _make_user("student", "student")
     _make_pager_device("pgr-c-10", "student")
-    ingest, _broker = _ingest()
+    ingest, broker = _ingest()
 
     ingest.handle_up(up_topic("pgr-c-10"), contact_req_payload("u_c10", "Bad Phone", ph="+abc"))
-    assert contacts_store.get_by_device_and_req("pgr-c-10", "u_c10") is None
+    req = contacts_store.get_by_device_and_req("pgr-c-10", "u_c10")
+    assert req is not None and req.status == "rejected" and req.reason == "bad_number"
+    assert [json.loads(m.payload)["body"] for m in broker.published if b'"system"' in m.payload] == [
+        "Bad Phone: number must be 10 digits or start with +"
+    ]
 
 
 def test_hmac_signed_contact_req_is_verified_then_stored():
@@ -353,12 +363,17 @@ def test_approve_link_to_existing_verified_phone(client: TestClient):
     headers = _make_family_admin("cadmin1", "cadmin1", family.id)
     _make_user("student", "student", family_id=family.id)
     _make_pager_device("pgr-a-2", "student")
-    users_store.create_user(uid="grandma1", alias="grandma1", display_name="Grandma")
+    users_store.create_user(
+        uid="grandma1", alias="grandma1", display_name="Grandma", family_id="gma-fam"
+    )
     backend = backends_store.create_backend(
         "grandma1", kind="sms", config={"phone": "+15555550000"}
     )
     backends_store.update_backend("grandma1", backend.id, verified=True)
     backends_store.set_phone_index("+15555550000", "grandma1", backend.id)
+    # Grandma already has an edge to the student, with `locate`: approval
+    # must not rewrite it (decision 2).
+    allow_store.set_edge("grandma1", "student", message=True, locate=True)
 
     ingest, _broker = _ingest()
     ingest.handle_up(up_topic("pgr-a-2"), contact_req_payload("u_a2", "Grandma", ph="+15555550000"))
@@ -376,74 +391,92 @@ def test_approve_link_to_existing_verified_phone(client: TestClient):
     assert resp.json()["status"] == "handled"
 
     assert allow_store.is_message_allowed("student", "grandma1")
-    assert allow_store.is_message_allowed("grandma1", "student")
+    inbound = allow_store.get_edge("grandma1", "student")
+    assert inbound is not None and inbound.message and inbound.locate is True
     edge = allow_store.get_edge("student", "grandma1")
-    assert edge is not None and edge.locate is False
+    assert edge is not None and edge.message and edge.locate is False
 
     request = contacts_store.get_by_device_and_req("pgr-a-2", "u_a2")
     assert request is not None and request.status == "approved"
     assert _book_version("pgr-a-2") == 1
 
 
-def test_approve_create_creates_user_backend_and_edges(client: TestClient):
+def test_approve_sms_creates_one_family_contact_and_no_auth_user(client: TestClient):
     family = _make_family("Create1")
     headers = _make_family_admin("cadmin2", "cadmin2", family.id)
     _make_user("student", "student", family_id=family.id)
     _make_pager_device("pgr-a-3", "student")
     ingest, _broker = _ingest()
-    ingest.handle_up(up_topic("pgr-a-3"), contact_req_payload("u_a3", "Auntie", ph="+15556660000"))
+    ingest.handle_up(up_topic("pgr-a-3"), contact_req_payload("u_a3", "Auntie", ph="5556660000"))
+    assert contacts_store.get_by_device_and_req("pgr-a-3", "u_a3").phone == "+15556660000"
 
     alert = _open_contact_request_alert(family.id)
-    resp = client.post(
-        f"/api/family/alerts/{alert.id}/approve",
-        json={"mode": "create", "alias": "auntie"},
-        headers=headers,
-    )
+    auth_before = len(list(fb_auth.list_users().iterate_all()))
+    externals_before = [u for u in users_store.list_users() if u.kind == "external"]
+    assert externals_before == []
+
+    resp = client.post(f"/api/family/alerts/{alert.id}/approve", json={}, headers=headers)
     assert resp.status_code == 200, resp.text
     assert resp.json()["status"] == "handled"
 
-    new_uid = users_store.get_uid_for_alias("auntie")
-    assert new_uid is not None
-    user = users_store.get_user(new_uid)
-    assert user is not None and user.displayName == "Auntie"
+    externals = [u for u in users_store.list_users() if u.kind == "external"]
+    assert len(externals) == 1
+    ext = externals[0]
+    assert ext.displayName == "Auntie"
+    assert ext.phone == "+15556660000"
+    assert ext.ownerFamilyId == family.id and ext.familyId is None
+    assert (ext.uid, ext.alias) == externals_store.contact_ids(family.id, "+15556660000")
+    assert len(list(fb_auth.list_users().iterate_all())) == auth_before
+    # No person was created either.
+    assert users_store.get_uid_for_alias("auntie") is None
 
-    found = backends_store.get_by_phone("+15556660000")
-    assert found is not None
-    assert found[0] == new_uid
+    assert allow_store.is_message_allowed("student", ext.uid)
+    assert not allow_store.is_message_allowed(ext.uid, "student")
+    device = devices_store.get_device("pgr-a-3")
+    assert device is not None
+    assert [c.phone for c in device.smsContacts] == ["+15556660000"]
+    request = contacts_store.get_by_device_and_req("pgr-a-3", "u_a3")
+    assert request is not None and request.status == "approved"
+    assert _book_version("pgr-a-3") >= 1
 
-    assert allow_store.is_message_allowed("student", new_uid)
-    assert allow_store.is_message_allowed(new_uid, "student")
-    assert _book_version("pgr-a-3") == 1
 
-
-def test_approve_create_requires_alias_when_none_can_be_derived(client: TestClient):
+def test_approve_mode_create_is_refused(client: TestClient):
     family = _make_family("Create2")
     headers = _make_family_admin("cadmin3", "cadmin3", family.id)
     _make_user("student", "student", family_id=family.id)
     _make_pager_device("pgr-a-4", "student")
     ingest, _broker = _ingest()
-    ingest.handle_up(up_topic("pgr-a-4"), contact_req_payload("u_a4", "小明"))
+    ingest.handle_up(up_topic("pgr-a-4"), contact_req_payload("u_a4", "Kid", ph="2065550100"))
 
     alert = _open_contact_request_alert(family.id)
     resp = client.post(
         f"/api/family/alerts/{alert.id}/approve", json={"mode": "create"}, headers=headers
     )
     assert resp.status_code == 400
+    assert resp.json()["detail"] == "new people are added under Family > People"
+    request = contacts_store.get_by_device_and_req("pgr-a-4", "u_a4")
+    assert request is not None and request.status == "pending"
 
 
-def test_approve_link_without_a_match_is_400(client: TestClient):
+def test_approve_link_after_the_inbound_edge_is_gone_is_409(client: TestClient):
     family = _make_family("Link2")
     headers = _make_family_admin("cadmin4", "cadmin4", family.id)
     _make_user("student", "student", family_id=family.id)
+    _make_user("gma", "gma", family_id="gma-fam")
+    allow_store.set_edge("gma", "student", message=True, locate=False)
     _make_pager_device("pgr-a-5", "student")
     ingest, _broker = _ingest()
-    ingest.handle_up(up_topic("pgr-a-5"), contact_req_payload("u_a5", "Ghost", ph="+15550001234"))
-
+    ingest.handle_up(up_topic("pgr-a-5"), contact_req_payload("u_a5", "Gma", ph="gma"))
     alert = _open_contact_request_alert(family.id)
-    resp = client.post(
-        f"/api/family/alerts/{alert.id}/approve", json={"mode": "link"}, headers=headers
-    )
-    assert resp.status_code == 400
+    assert alert.peerAlias == "gma" and alert.peerUid == "gma"
+
+    allow_store.delete_edge("gma", "student")
+    resp = client.post(f"/api/family/alerts/{alert.id}/approve", json={}, headers=headers)
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["detail"] == "@gma no longer has an edge to @student"
+    request = contacts_store.get_by_device_and_req("pgr-a-5", "u_a5")
+    assert request is not None and request.status == "pending"
+    assert allow_store.get_edge("student", "gma") is None
 
 
 def test_block_contact_request_alert_adds_blocked_number_and_marks_handled(client: TestClient):
@@ -510,7 +543,10 @@ def test_approve_already_decided_is_conflict(client: TestClient):
     headers = _make_family_admin("cadmin7", "cadmin7", family.id)
     _make_user("student", "student", family_id=family.id)
     _make_pager_device("pgr-a-7", "student")
-    users_store.create_user(uid="grandma7", alias="grandma7", display_name="Grandma7")
+    users_store.create_user(
+        uid="grandma7", alias="grandma7", display_name="Grandma7", family_id="gma7-fam"
+    )
+    allow_store.set_edge("grandma7", "student", message=True, locate=False)
     backend = backends_store.create_backend(
         "grandma7", kind="sms", config={"phone": "+15558880000"}
     )
@@ -559,3 +595,187 @@ def test_create_user_backend_sets_verified_and_phone_index(
         .to_dict()
     )
     assert raw is not None and raw["adminVerified"] is True
+
+
+# ---------------------------------------------------------------------------
+# classify_ph + the decision-1 outcome table (docs/CONTACT_REQ_DESIGN.md)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("ph", "expected"),
+    [
+        ("2065550100", ("phone", "+12065550100")),
+        ("12065550100", ("phone", "+12065550100")),
+        ("+442071838750", ("phone", "+442071838750")),
+        ("+12065550100", ("phone", "+12065550100")),
+        ("+1206", ("bad", "+1206")),
+        ("5550100", ("bad", "5550100")),
+        ("123456789012", ("bad", "123456789012")),
+        ("grandma", ("alias", "grandma")),
+        ("Grandma", ("bad", "Grandma")),
+        ("+abc", ("bad", "+abc")),
+    ],
+)
+def test_classify_ph(ph: str, expected: tuple[str, str]):
+    assert classify_ph(ph) == expected
+
+
+def _system_bodies(broker: FakeBrokerClient) -> list[str]:
+    out = []
+    for m in broker.published:
+        d = json.loads(m.payload)
+        if d.get("from") == "system":
+            out.append(d["body"])
+    return out
+
+
+def _book_pushes(broker: FakeBrokerClient) -> int:
+    return sum(1 for m in broker.published if json.loads(m.payload).get("kind") == "book")
+
+
+def test_bare_eleven_digit_ph_is_a_pending_phone_request_with_one_alert():
+    family = _make_family("Cls1")
+    _make_user("student", "student", family_id=family.id)
+    _make_pager_device("pgr-k-1", "student")
+    ingest, broker = _ingest()
+
+    ingest.handle_up(up_topic("pgr-k-1"), contact_req_payload("u_k1", "Gma", ph="12065550100"))
+
+    req = contacts_store.get_by_device_and_req("pgr-k-1", "u_k1")
+    assert req is not None and req.status == "pending"
+    assert req.phone == "+12065550100" and req.alias is None
+    assert len(alerts_store.list_alerts(family.id, "all")) == 1
+    assert _system_bodies(broker) == []
+    # No person (or anything else) was created from the digits.
+    assert [u.uid for u in users_store.list_users()] == ["student"]
+
+
+def test_unknown_alias_is_rejected_no_contact_with_one_reply():
+    family = _make_family("Cls2")
+    _make_user("student", "student", family_id=family.id)
+    _make_pager_device("pgr-k-2", "student")
+    ingest, broker = _ingest()
+    bv = _book_version("pgr-k-2")
+
+    ingest.handle_up(up_topic("pgr-k-2"), contact_req_payload("u_k2", "X", ph="nobody"))
+
+    req = contacts_store.get_by_device_and_req("pgr-k-2", "u_k2")
+    assert req is not None
+    assert (req.status, req.reason, req.decidedBy) == ("rejected", "no_contact", "relay")
+    assert _system_bodies(broker) == ["X: no contact @nobody"]
+    assert _book_version("pgr-k-2") == bv + 1
+    assert _book_pushes(broker) == 1
+    assert alerts_store.list_alerts(family.id, "all") == []
+    assert users_store.get_uid_for_alias("nobody") is None
+    assert [u.uid for u in users_store.list_users()] == ["student"]
+
+
+def test_alias_without_an_inbound_edge_looks_the_same_as_unknown():
+    """One body for every alias failure: no probing which aliases exist."""
+    _make_user("student", "student", family_id="fam-a")
+    _make_user("stranger", "stranger", family_id="fam-b")
+    _make_pager_device("pgr-k-3", "student")
+    ingest, broker = _ingest()
+
+    ingest.handle_up(up_topic("pgr-k-3"), contact_req_payload("u_k3", "X", ph="stranger"))
+    ingest.handle_up(up_topic("pgr-k-3"), contact_req_payload("u_k3b", "X", ph="nobody"))
+    bodies = _system_bodies(broker)
+    assert bodies == ["X: no contact @stranger", "X: no contact @nobody"]
+
+
+def test_same_family_alias_is_already_in_your_book_with_no_row():
+    family = _make_family("Cls4")
+    _make_user("student", "student", family_id=family.id)
+    _make_user("sis", "sis", family_id=family.id)
+    _make_pager_device("pgr-k-4", "student")
+    ingest, broker = _ingest()
+
+    ingest.handle_up(up_topic("pgr-k-4"), contact_req_payload("u_k4", "X", ph="sis"))
+
+    assert contacts_store.get_by_device_and_req("pgr-k-4", "u_k4") is None
+    assert _system_bodies(broker) == ["X: already in your book"]
+    assert alerts_store.list_alerts(family.id, "all") == []
+
+
+def test_bad_number_and_blocked_number_are_rejected_with_their_bodies():
+    family = _make_family("Cls5")
+    families_store.add_blocked_number(family.id, "+12065550999")
+    _make_user("student", "student", family_id=family.id)
+    _make_pager_device("pgr-k-5", "student")
+    ingest, broker = _ingest()
+
+    ingest.handle_up(up_topic("pgr-k-5"), contact_req_payload("u_k5a", "Bad", ph="5550100"))
+    ingest.handle_up(up_topic("pgr-k-5"), contact_req_payload("u_k5b", "Blk", ph="2065550999"))
+
+    a = contacts_store.get_by_device_and_req("pgr-k-5", "u_k5a")
+    b = contacts_store.get_by_device_and_req("pgr-k-5", "u_k5b")
+    assert a is not None and (a.status, a.reason) == ("rejected", "bad_number")
+    assert b is not None and (b.status, b.reason) == ("rejected", "blocked")
+    assert _system_bodies(broker) == [
+        "Bad: number must be 10 digits or start with +",
+        "Blk: number not allowed",
+    ]
+    assert alerts_store.list_alerts(family.id, "all") == []
+
+
+def test_phone_already_a_family_contact_with_an_edge_is_in_your_book():
+    family = _make_family("Cls6")
+    _make_user("student", "student", family_id=family.id)
+    ext = externals_store.get_or_create(family.id, "+12065550123", "Gma")
+    allow_store.set_edge("student", ext.uid, message=True, locate=False)
+    _make_pager_device("pgr-k-6", "student")
+    ingest, broker = _ingest()
+
+    ingest.handle_up(up_topic("pgr-k-6"), contact_req_payload("u_k6", "Gma", ph="2065550123"))
+
+    assert contacts_store.get_by_device_and_req("pgr-k-6", "u_k6") is None
+    assert _system_bodies(broker) == ["Gma: already in your book"]
+
+
+def test_redelivered_contact_req_makes_no_second_row_alert_or_reply():
+    family = _make_family("Cls7")
+    _make_user("student", "student", family_id=family.id)
+    _make_pager_device("pgr-k-7", "student")
+    ingest, broker = _ingest()
+
+    ok = contact_req_payload("u_k7a", "Ok", ph="2065550101")
+    rej = contact_req_payload("u_k7b", "Rej", ph="nobody")
+    for payload in (ok, rej):
+        ingest.handle_up(up_topic("pgr-k-7"), payload)
+    published = len(broker.published)
+    bv = _book_version("pgr-k-7")
+    for payload in (ok, rej):
+        ingest.handle_up(up_topic("pgr-k-7"), payload)
+
+    assert len(broker.published) == published
+    assert _book_version("pgr-k-7") == bv
+    assert len(alerts_store.list_alerts(family.id, "all")) == 1
+    assert len(contacts_store.list_requests(device_id="pgr-k-7")) == 2
+
+
+def test_create_request_losing_the_create_race_raises_no_alert(monkeypatch):
+    """`create()` raising AlreadyExists (a concurrent delivery won) returns
+    the stored row and raises no alert of its own."""
+    family = _make_family("Cls8")
+    _make_user("student", "student", family_id=family.id)
+    _make_pager_device("pgr-k-8", "student")
+    first = contacts_store.create_request(
+        device_id="pgr-k-8", owner_uid="student", req_id="u_k8", name="A", phone="+12065550102"
+    )
+    assert first is not None
+    # Hide the row from the fast-path read so the write path is exercised.
+    real_get = contacts_store.get_request
+    calls = {"n": 0}
+
+    def fake_get(doc_key: str):
+        calls["n"] += 1
+        return None if calls["n"] == 1 else real_get(doc_key)
+
+    monkeypatch.setattr(contacts_store, "get_request", fake_get)
+    monkeypatch.setattr(contacts_store, "has_matching_pending_or_approved", lambda *a, **k: False)
+    again = contacts_store.create_request(
+        device_id="pgr-k-8", owner_uid="student", req_id="u_k8", name="A", phone="+12065550102"
+    )
+    assert again is not None and again.key == first.key
+    assert len(alerts_store.list_alerts(family.id, "all")) == 1

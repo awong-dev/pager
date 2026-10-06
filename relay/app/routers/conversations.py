@@ -92,9 +92,17 @@ def _resolve_message_alias(alias: str, sender_uid: str) -> str:
     except ValueError:
         return alias
     sender = users_store.get_user(sender_uid)
-    if sender is None or policy_module.rule(sender.policy.out, "external") != "any":
+    if sender is None or sender.familyId is None:
         return alias
-    external = externals_store.get_or_create(phone, phone)
+    # docs/CONTACT_REQ_DESIGN.md decision 7: the sender's family's own
+    # contact for this number, under any policy (digits no longer equal an
+    # alias, so an approved number would otherwise 404 under `people_sms`).
+    existing = externals_store.get_family_contact(sender.familyId, phone)
+    if existing is not None:
+        return existing.alias
+    if policy_module.rule(sender.policy.out, "external") != "any":
+        return alias
+    external = externals_store.get_or_create(sender.familyId, phone, phone)
     return external.alias
 
 

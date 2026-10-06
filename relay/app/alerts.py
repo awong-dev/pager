@@ -69,6 +69,7 @@ def _base_alert(kind: str) -> dict:
         "subjectAlias": None,
         "peerUid": None,
         "peerAlias": None,
+        "peerName": None,
         "peerPhone": None,
         "preview": "",
         "heldBody": None,
@@ -123,7 +124,15 @@ def new_conversation(sender: User, recipient: User, conv_key: str) -> str | None
     return create(sender.familyId, alert)
 
 
-def sms_unknown(family_id: str, phone: str, target_uid: str | None, body: str, held: bool) -> str:
+def sms_unknown(
+    family_id: str,
+    phone: str,
+    target_uid: str | None,
+    body: str,
+    held: bool,
+    *,
+    open_unheld: bool = False,
+) -> str:
     """docs/FAMILIES_DESIGN.md §4 Webhooks, §1 decision 10 -- used by
     `app/routers/webhooks.py`'s `_handle_unknown_sms`. `target_uid` is the
     family member the text is (or would be) addressed to, `None` when no
@@ -132,7 +141,11 @@ def sms_unknown(family_id: str, phone: str, target_uid: str | None, body: str, h
     exists (`app/store/externals.py`'s `get_or_create`, called by the
     webhook before this), so the peer is looked up here by phone rather than
     passed in -- keeps this function's signature to exactly the five
-    parameters docs/FAMILIES_TASKS.md 4.1 names."""
+    parameters docs/FAMILIES_TASKS.md 4.1 names.
+
+    `open_unheld=True` (device-direct `sms_log` from a number the family has
+    no contact for, docs/CONTACT_REQ_DESIGN.md decision 7): `status "open"`
+    with nothing held."""
     subject = users_store.get_user(target_uid) if target_uid is not None else None
     peer: User | None = None
     if not held:
@@ -141,17 +154,16 @@ def sms_unknown(family_id: str, phone: str, target_uid: str | None, body: str, h
         except ValueError:
             e164 = None
         if e164 is not None:
-            match = backends_store.get_by_phone(e164)
-            if match is not None:
-                peer = users_store.get_user(match[0])
+            peer = externals_store.get_family_contact(family_id, e164)
     alert = _base_alert("sms_unknown")
     alert.update(
         {
-            "status": "open" if held else "handled",
+            "status": "open" if (held or open_unheld) else "handled",
             "subjectUid": subject.uid if subject is not None else None,
             "subjectAlias": subject.alias if subject is not None else None,
             "peerUid": peer.uid if peer is not None else None,
             "peerAlias": peer.alias if peer is not None else None,
+            "peerName": peer.displayName if peer is not None else None,
             "peerPhone": phone,
             "preview": body[:PREVIEW_MAX_CHARS],
             "heldBody": body if held else None,
@@ -169,9 +181,6 @@ def contact_request(request: ContactRequest) -> str | None:
     owner = users_store.get_user(request.ownerUid)
     if owner is None or owner.familyId is None:
         return None
-    preview = request.name
-    if request.phone:
-        preview = f"{preview} ({request.phone})"
     alert = _base_alert("contact_request")
     alert.update(
         {
@@ -179,8 +188,18 @@ def contact_request(request: ContactRequest) -> str | None:
             "subjectUid": owner.uid,
             "subjectAlias": owner.alias,
             "peerPhone": request.phone,
-            "preview": preview[:PREVIEW_MAX_CHARS],
+            "preview": request.name[:PREVIEW_MAX_CHARS],
             "contactRequestKey": request.key,
         }
     )
+    # docs/CONTACT_REQ_DESIGN.md decision 2: say who the request resolves to.
+    peer: User | None = None
+    if request.phone:
+        match = backends_store.get_by_phone(request.phone)
+        if match is not None:
+            peer = users_store.get_user(match[0])
+    elif request.alias:
+        peer = users_store.get_user_by_alias(request.alias)
+    if peer is not None:
+        alert.update({"peerUid": peer.uid, "peerAlias": peer.alias, "peerName": peer.displayName})
     return create(owner.familyId, alert)

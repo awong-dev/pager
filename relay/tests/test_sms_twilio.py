@@ -27,6 +27,7 @@ from app.db.firestore import get_db
 from app.main import create_app
 from app.store import allow as allow_store
 from app.store import backends as backends_store
+from app.store import externals as externals_store
 from app.store import families as families_store
 from app.store import messages as messages_store
 from app.store import users as users_store
@@ -397,8 +398,8 @@ def test_webhook_unknown_sender_any_sms_member_is_delivered_and_alert_handled(
     )
     assert resp.status_code == 200
 
-    external_uid = users_store.get_uid_for_alias("19995551111")
-    assert external_uid is not None
+    external_uid, _alias = externals_store.contact_ids(family.id, "+19995551111")
+    assert users_store.get_user(external_uid) is not None
     convo = messages_store.list_thread(messages_store.conv_key(external_uid, "kid_any"))
     assert len(convo) == 1
     assert convo[0].body == "hi from a stranger"
@@ -481,3 +482,102 @@ def test_webhook_known_sender_people_sms_recipient_without_edge_sends_hint(
     assert messages_store.list_thread(messages_store.conv_key("admin_sender", "kid_psms")) == []
     assert len(sent) == 1
     assert sent[0][0] == "+15559990000"
+
+
+# ---------------------------------------------------------------------------
+# per-family SMS contacts -- docs/CONTACT_REQ_DESIGN.md decision 7
+# ---------------------------------------------------------------------------
+
+
+def test_two_families_keep_separate_contacts_for_one_number():
+    fam_a = families_store.create_family(name="A", created_by="s", sms_number="+15005550701")
+    fam_b = families_store.create_family(name="B", created_by="s", sms_number="+15005550702")
+    a = externals_store.get_or_create(fam_a.id, "+12065550100", "Grandma")
+    b = externals_store.get_or_create(fam_b.id, "206-555-0100", "Gran Jo")
+    assert a.uid != b.uid and a.alias != b.alias
+    assert (a.displayName, b.displayName) == ("Grandma", "Gran Jo")
+    assert externals_store.get_family_contact(fam_a.id, "+12065550100").uid == a.uid
+    assert externals_store.get_family_contact(fam_b.id, "+12065550100").uid == b.uid
+    assert [u.uid for u in externals_store.list_family_contacts(fam_a.id)] == [a.uid]
+
+    snap = get_db().collection("phoneIndex").document("+12065550100").get().to_dict()
+    assert snap == {"ext": {fam_a.id: a.uid, fam_b.id: b.uid}}
+    assert backends_store.get_by_phone("+12065550100") is None
+    assert backends_store.families_for_phone("+12065550100") == {fam_a.id: a.uid, fam_b.id: b.uid}
+
+
+def test_person_verifying_a_contact_number_keeps_ext_and_clearing_leaves_it():
+    fam = families_store.create_family(name="A", created_by="s")
+    ext = externals_store.get_or_create(fam.id, "+12065550100", "Grandma")
+    bid = _link_sms("gma_person", "gmaperson", "+12065550100")
+
+    raw = get_db().collection("phoneIndex").document("+12065550100").get().to_dict()
+    assert raw["ext"] == {fam.id: ext.uid}
+    assert (raw["uid"], raw["bid"]) == ("gma_person", bid)
+    assert backends_store.get_by_phone("+12065550100") == ("gma_person", bid)
+
+    backends_store.clear_phone_index("+12065550100")
+    raw = get_db().collection("phoneIndex").document("+12065550100").get().to_dict()
+    assert raw == {"ext": {fam.id: ext.uid}}
+    assert backends_store.get_by_phone("+12065550100") is None
+    # Clearing a number nobody holds is a no-op, not an error.
+    backends_store.clear_phone_index("+19995550000")
+
+
+def test_webhook_from_a_family_contact_routes_from_that_familys_contact(client: TestClient):
+    fam_a = families_store.create_family(name="A", created_by="s", sms_number="+15005550701")
+    fam_b = families_store.create_family(name="B", created_by="s", sms_number="+15005550702")
+    users_store.create_user(uid="kid_a", alias="kida", display_name="KidA", family_id=fam_a.id)
+    users_store.create_user(uid="kid_b", alias="kidb", display_name="KidB", family_id=fam_b.id)
+    _set_policy("kid_a", out="people_sms", in_="people_sms")
+    _set_policy("kid_b", out="people_sms", in_="people_sms")
+    a = externals_store.get_or_create(fam_a.id, "+12065550100", "Grandma")
+    b = externals_store.get_or_create(fam_b.id, "+12065550100", "Gran Jo")
+    for kid, ext in (("kid_a", a), ("kid_b", b)):
+        allow_store.set_edge(kid, ext.uid, message=True, locate=False)
+        allow_store.set_edge(ext.uid, kid, message=True, locate=False)
+
+    resp = _post(client, {"To": "+15005550701", "From": "+12065550100", "Body": "@kida hello"})
+    assert resp.status_code == 200
+    thread_a = messages_store.list_thread(messages_store.conv_key(a.uid, "kid_a"))
+    assert [m.body for m in thread_a] == ["hello"]
+    assert messages_store.list_thread(messages_store.conv_key(b.uid, "kid_b")) == []
+
+    resp = _post(client, {"To": "+15005550702", "From": "+12065550100", "Body": "@kidb yo"})
+    assert resp.status_code == 200
+    thread_b = messages_store.list_thread(messages_store.conv_key(b.uid, "kid_b"))
+    assert [m.body for m in thread_b] == ["yo"]
+    assert [m.senderUid for m in thread_b] == [b.uid]
+
+
+def test_webhook_on_the_shared_number_with_alias_uses_the_aliased_family_and_drops_ambiguity(
+    client: TestClient,
+):
+    fam = families_store.create_family(name="A", created_by="s")
+    users_store.create_user(uid="kid_s", alias="kids", display_name="Kid", family_id=fam.id)
+    _set_policy("kid_s", out="people_sms", in_="people_sms")
+    ext = externals_store.get_or_create(fam.id, "+12065550100", "Grandma")
+    allow_store.set_edge("kid_s", ext.uid, message=True, locate=False)
+    allow_store.set_edge(ext.uid, "kid_s", message=True, locate=False)
+
+    resp = _post(client, {"To": "+15005559999", "From": "+12065550100", "Body": "@kids hi there"})
+    assert resp.status_code == 200
+    first = messages_store.list_thread(messages_store.conv_key(ext.uid, "kid_s"))
+    assert [m.body for m in first] == ["hi there"]
+
+    # No `@alias`, shared number, exactly one holder: that family.
+    from app.routers import webhooks as webhooks_router
+
+    found = webhooks_router._find_family_contact("+15005559999", "+12065550100", "no alias")
+    assert found is not None and found[0] == ext.uid
+
+    # A second family also holds the number -> ambiguous without an alias:
+    # dropped (no new alert, no message).
+    fam_b = families_store.create_family(name="B", created_by="s")
+    externals_store.get_or_create(fam_b.id, "+12065550100", "Other")
+    before = len(messages_store.list_thread(messages_store.conv_key(ext.uid, "kid_s")))
+    resp = _post(client, {"To": "+15005559999", "From": "+12065550100", "Body": "again"})
+    assert resp.status_code == 200
+    after = len(messages_store.list_thread(messages_store.conv_key(ext.uid, "kid_s")))
+    assert after == before == 1
+    assert webhooks_router._find_family_contact("+15005559999", "+12065550100", "x") is None

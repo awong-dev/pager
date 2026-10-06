@@ -32,6 +32,7 @@ from app.store import contacts as contacts_store
 from app.store import conversations as conversations_store
 from app.store import device_secrets as device_secrets_store
 from app.store import devices as devices_store
+from app.store import externals as externals_store
 from app.store import families as families_store
 from app.store import users as users_store
 from tests.conftest import (
@@ -808,6 +809,11 @@ def test_approve_contact_publishes_book(
         uid="student20", alias="student20", display_name="student20", family_id=family.id
     )
     _make_pager_device("pgr-b-20", "student20")
+    # An SMS contact is sendable (so listed on the pager) only when the
+    # owner's outbound policy allows SMS.
+    get_db().collection("users").document("student20").update(
+        {"policy": {"out": "people_sms", "in": "people"}}
+    )
     ingest = Ingest(broker)
     ingest.handle_up(
         up_topic("pgr-b-20"),
@@ -831,7 +837,7 @@ def test_approve_contact_publishes_book(
     resp = client.post(
         f"/api/family/alerts/{alert.id}/approve",
         params={"family": family.id},
-        json={"mode": "create", "alias": "grandma20"},
+        json={},
         headers=admin_headers,
     )
     assert resp.status_code == 200, resp.text
@@ -841,7 +847,8 @@ def test_approve_contact_publishes_book(
     ]
     assert len(books) == 1
     assert books[0]["bv"] == 1
-    assert books[0]["c"] == [{"a": "grandma20", "n": "Grandma", "t": "sms"}]
+    _uid, alias = externals_store.contact_ids(family.id, "+15550009999")
+    assert books[0]["c"] == [{"a": alias, "n": "Grandma", "t": "sms"}]
 
 
 def test_block_contact_publishes_book(

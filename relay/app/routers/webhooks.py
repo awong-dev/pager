@@ -250,6 +250,45 @@ def _single_any_external_member(family: Family) -> User | None:
     return candidates[0] if len(candidates) == 1 else None
 
 
+def _sms_backend_id(uid: str) -> str | None:
+    for backend in backends_store.list_backends(uid):
+        if backend.kind == "sms":
+            return backend.id
+    return None
+
+
+def _find_family_contact(to_number: str, from_number: str, raw_body: str) -> tuple[str, str | None] | None:
+    """docs/CONTACT_REQ_DESIGN.md decision 7: an inbound text from a number
+    that is no person's verified number is attributed through the receiving
+    family -- `To`'s family, else the `@alias` target's family, else the one
+    family holding that number in `phoneIndex.ext`. `(contactUid, smsBid)`
+    of that family's contact for the number, or `None`."""
+    try:
+        e164 = externals_store.normalize_phone(from_number)
+    except ValueError:
+        return None
+    family_id: str | None = None
+    family = sms_twilio.resolve_family_for_to(to_number)
+    if family is not None:
+        family_id = family.id
+    else:
+        split = _split_alias_prefix(raw_body)
+        if split is not None:
+            candidate = users_store.get_user_by_alias(split[0])
+            if candidate is not None and candidate.kind == "person":
+                family_id = candidate.familyId
+        if family_id is None:
+            holders = backends_store.families_for_phone(e164)
+            if len(holders) == 1:
+                family_id = next(iter(holders))
+    if family_id is None:
+        return None
+    contact = externals_store.get_family_contact(family_id, e164)
+    if contact is None:
+        return None
+    return contact.uid, _sms_backend_id(contact.uid)
+
+
 def _handle_unknown_sms(request: Request, from_number: str, to_number: str, raw_body: str) -> None:
     """docs/FAMILIES_DESIGN.md §2 last paragraph, §4 Webhooks, §1 decision
     10: an inbound text from a number with no `phoneIndex` entry at all --
@@ -297,9 +336,8 @@ def _handle_unknown_sms(request: Request, from_number: str, to_number: str, raw_
 
     if policy_module.rule(target.policy.in_, "external") == "any":
         e164 = externals_store.normalize_phone(from_number)
-        external = externals_store.get_or_create(e164, e164)
-        ext_match = backends_store.get_by_phone(e164)
-        ext_bid = ext_match[1] if ext_match is not None else None
+        external = externals_store.get_or_create(family_id, e164, e164)
+        ext_bid = _sms_backend_id(external.uid)
         routing: Routing = request.app.state.routing
         routing.send(
             sender_uid=external.uid,
@@ -334,6 +372,10 @@ async def twilio_sms_webhook(request: Request) -> Response:
         return Response(status_code=200)
 
     match = backends_store.get_by_phone(from_number)
+    if match is None:
+        contact = _find_family_contact(params.get("To", ""), from_number, body)
+        if contact is not None:
+            match = (contact[0], contact[1] or "")
     if match is None:
         # No verified user (person or external) owns this number --
         # docs/FAMILIES_DESIGN.md §2 last paragraph / §4 Webhooks / §1

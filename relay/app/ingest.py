@@ -28,16 +28,23 @@ import re
 import time
 from typing import Any, Literal
 
+import phonenumbers
 from pydantic import BaseModel, ConfigDict, field_validator
 
-from app import devauth, devcfg, devsetup, location, wire
+from app import alerts, book, devauth, devcfg, devsetup, location, wire
 from app.broker import BrokerClient
 from app.routing import Routing
+from app.store import alerts as alerts_store
+from app.store import allow as allow_store
+from app.store import backends as backends_store
 from app.store import contacts as contacts_store
 from app.store import device_secrets as device_secrets_store
 from app.store import devices as devices_store
+from app.store import externals as externals_store
+from app.store import families as families_store
 from app.store import messages as messages_store
 from app.store import sms as sms_store
+from app.store import users as users_store
 from app.wire import (
     SYSTEM_ALIAS,
     LocEnvelope,
@@ -57,6 +64,26 @@ UNKNOWN_RECIPIENT_BODY = "unknown recipient"
 # pending cap (docs/PROTOCOL.md §3.2, docs/DEVICE_TASKS.md S4.1's exact
 # wording).
 TOO_MANY_PENDING_BODY = "too many pending requests"
+
+# docs/CONTACT_REQ_DESIGN.md decision 1: the `system` replies for a
+# `contact_req` the relay answers at ingest. `<name>` is the request's name.
+
+
+def bad_number_body(name: str) -> str:
+    return f"{name}: number must be 10 digits or start with +"
+
+
+def blocked_body(name: str) -> str:
+    return f"{name}: number not allowed"
+
+
+def in_book_body(name: str) -> str:
+    return f"{name}: already in your book"
+
+
+def no_contact_body(name: str, alias: str) -> str:
+    return f"{name}: no contact @{alias}"
+
 
 def record_bad_sig(device_id: str) -> None:
     """docs/PROTOCOL.md §14.4's "count as `sigFailures`" + "more than 20
@@ -84,6 +111,7 @@ def record_bad_sig(device_id: str) -> None:
 # docs/PROTOCOL.md §3.2/§3.1: `name` is 1-16 code points, <=48 UTF-8 bytes.
 _CONTACT_NAME_MAX_CODEPOINTS = 16
 _CONTACT_NAME_MAX_UTF8_BYTES = 48
+_CONTACT_PH_MAX_CHARS = 16
 # Same shape as app/backends/sms_twilio.py's `_E164_RE` (not imported from
 # there to avoid a private cross-module reference: `+` then 7-15 digits,
 # first digit 1-9).
@@ -100,16 +128,10 @@ class ContactReqEnvelope(BaseModel):
     *before* ever calling `UpEnvelope.model_validate`, so that rejection path
     is never reached for a `contact_req`.
 
-    **`ph` is overloaded** per docs/PROTOCOL.md §3.1's field table ("Phone
-    number `+…` or alias reference") -- flagged as a documentation
-    ambiguity in this task's report: §3.2's prose ("either `ph` (E.164 phone
-    number) or neither `ph` nor `body`... for an alias reference") does not
-    by itself explain how an alias reference would ever be carried on the
-    wire, since there is no separate `alias` key in either §3.1's field
-    table or §10's normative CBOR keymap. The field-table wording is taken
-    as authoritative here: a `ph` value starting with `+` is a phone number,
-    any other non-empty value is an alias reference -- distinguished by
-    `phone`/`alias` below.
+    **`ph` is overloaded** (docs/PROTOCOL.md §3.1: "Phone number `+...` or
+    alias reference"): the envelope only checks length and control
+    characters; `classify_ph` decides phone / alias / bad, and the handler
+    answers a bad one (docs/CONTACT_REQ_DESIGN.md decision 1).
     """
 
     model_config = ConfigDict(extra="ignore")
@@ -159,20 +181,43 @@ class ContactReqEnvelope(BaseModel):
     def _check_ph(cls, value: str | None) -> str | None:
         if value is None:
             return value
-        if value.startswith("+"):
-            if not _PHONE_E164_RE.match(value):
-                raise ValueError("contact_req ph is not a valid E.164 phone number")
-        elif not wire.is_valid_alias(value):
-            raise ValueError("contact_req ph is not a valid E.164 phone number or alias")
+        if not (1 <= len(value) <= _CONTACT_PH_MAX_CHARS):
+            raise ValueError("contact_req ph must be 1-16 characters")
+        if wire.CONTROL_CHAR_RE.search(value):
+            raise ValueError("contact_req ph contains control characters")
         return value
 
-    @property
-    def phone(self) -> str | None:
-        return self.ph if self.ph is not None and self.ph.startswith("+") else None
 
-    @property
-    def alias(self) -> str | None:
-        return self.ph if self.ph is not None and not self.ph.startswith("+") else None
+def classify_ph(ph: str) -> tuple[Literal["phone", "alias", "bad"], str]:
+    """docs/CONTACT_REQ_DESIGN.md decision 1. Digits are never an alias:
+    10 digits are `+1` and the digits, 11 starting with `1` are `+` and the
+    digits, `+digits` must be a possible E.164 number, any other digit
+    string is bad. Returns `(kind, normalized)`; `normalized` is the E.164
+    number, the alias, or `ph` itself for `bad`."""
+    if re.fullmatch(r"[0-9]{10}", ph):
+        return "phone", "+1" + ph
+    if re.fullmatch(r"1[0-9]{10}", ph):
+        return "phone", "+" + ph
+    if re.fullmatch(r"\+[0-9]+", ph):
+        if not _PHONE_E164_RE.match(ph):
+            return "bad", ph
+        try:
+            ok = phonenumbers.is_possible_number(phonenumbers.parse(ph, None))
+        except phonenumbers.NumberParseException:
+            ok = False
+        return ("phone", ph) if ok else ("bad", ph)
+    if ph.isascii() and ph.isdigit():
+        return "bad", ph
+    if wire.ALIAS_RE.match(ph):
+        return "alias", ph
+    return "bad", ph
+
+
+def _has_open_sms_unknown(family_id: str, e164: str) -> bool:
+    return any(
+        a.kind == "sms_unknown" and a.peerPhone == e164
+        for a in alerts_store.list_alerts(family_id, "open")
+    )
 
 
 def _device_id_from_topic(topic: str, expected_suffix: str) -> str | None:
@@ -376,21 +421,52 @@ class Ingest:
             wire.log_malformed(topic, payload, str(exc))
             return
 
+        if contacts_store.get_by_device_and_req(device_id, env.id) is not None:
+            logger.info("contact_req %s from device %s is a redelivery", env.id, device_id)
+            return
+        owner = users_store.get_user(device.ownerUid)
+        if owner is None:
+            logger.warning("contact_req %s: device %s has no owner user", env.id, device_id)
+            return
+
+        outcome, phone, alias = self._classify_contact_req(owner, env)
+        logger.info("contact_req outcome=%s device=%s req=%s", outcome, device_id, env.id)
+
+        if outcome == "in_book":
+            self._send_system_reply(device_id, in_book_body(env.name), cause_id=env.id)
+            return
+        if outcome in ("bad_number", "blocked", "no_contact"):
+            if outcome == "bad_number":
+                body = bad_number_body(env.name)
+            elif outcome == "blocked":
+                body = blocked_body(env.name)
+            else:
+                body = no_contact_body(env.name, alias or "")
+            contacts_store.create_rejected(
+                device_id=device_id,
+                owner_uid=device.ownerUid,
+                req_id=env.id,
+                name=env.name,
+                phone=phone,
+                alias=alias,
+                reason=outcome,
+            )
+            contacts_store.bump_book_version(device_id)
+            devcfg.push_book(device_id, self._broker)
+            self._send_system_reply(device_id, body, cause_id=env.id)
+            return
+
         try:
             request = contacts_store.create_request(
                 device_id=device_id,
                 owner_uid=device.ownerUid,
                 req_id=env.id,
                 name=env.name,
-                phone=env.phone,
-                alias=env.alias,
+                phone=phone,
+                alias=alias,
             )
         except contacts_store.TooManyPending:
-            logger.info(
-                "contact_req %s from device %s rejected: too many pending requests",
-                env.id,
-                device_id,
-            )
+            logger.info("contact_req outcome=cap device=%s req=%s", device_id, env.id)
             self._send_system_reply(device_id, TOO_MANY_PENDING_BODY, cause_id=env.id)
             return
 
@@ -400,14 +476,53 @@ class Ingest:
                 env.id,
                 device_id,
             )
-            return
 
-        logger.info(
-            "contact_req %s from device %s stored as pending (key=%s)",
-            env.id,
-            device_id,
-            request.key,
-        )
+    def _classify_contact_req(
+        self, owner: users_store.User, env: ContactReqEnvelope
+    ) -> tuple[str, str | None, str | None]:
+        """The decision-1 table, first match wins. Returns `(outcome, phone,
+        alias)`; outcome is `bad_number|blocked|in_book|no_contact|
+        pending_sms|pending_link`."""
+        if env.ph is None:
+            return "bad_number", None, None
+        kind, value = classify_ph(env.ph)
+        if kind == "bad":
+            return "bad_number", None, None
+
+        if kind == "phone":
+            family = (
+                families_store.get_family(owner.familyId) if owner.familyId is not None else None
+            )
+            if family is not None and value in family.blockedNumbers:
+                return "blocked", value, None
+            match = backends_store.get_by_phone(value)
+            if match is not None:
+                person = users_store.get_user(match[0])
+                if person is not None and book.edge_or_family(owner, person):
+                    return "in_book", value, None
+            if owner.familyId is not None:
+                contact = externals_store.get_family_contact(owner.familyId, value)
+                if contact is not None:
+                    edge = allow_store.get_edge(owner.uid, contact.uid)
+                    if edge is not None and edge.message:
+                        return "in_book", value, None
+            return "pending_sms", value, None
+
+        target = users_store.get_user_by_alias(value)
+        if target is not None:
+            if target.uid == owner.uid:
+                return "in_book", None, value
+            if book.edge_or_family(owner, target):
+                return "in_book", None, value
+            inbound = allow_store.get_edge(target.uid, owner.uid)
+            if (
+                target.kind == "person"
+                and not target.disabled
+                and inbound is not None
+                and inbound.message
+            ):
+                return "pending_link", None, value
+        return "no_contact", None, value
 
     def _handle_sms_log(
         self,
@@ -439,6 +554,21 @@ class Ingest:
             wire.log_malformed(topic, payload, str(exc))
             return
 
+        # docs/CONTACT_REQ_DESIGN.md decision 7: the device's family
+        # attributes the peer; the family's own contact for that number (or
+        # none).
+        owner = users_store.get_user(device.ownerUid)
+        e164: str | None = None
+        peer_uid: str | None = None
+        if owner is not None and owner.familyId is not None:
+            try:
+                e164 = externals_store.normalize_phone(env.peer)
+            except ValueError:
+                e164 = None
+            if e164 is not None:
+                contact = externals_store.get_family_contact(owner.familyId, e164)
+                peer_uid = contact.uid if contact is not None else None
+
         created = sms_store.create_log(
             device_id,
             env.id,
@@ -448,6 +578,7 @@ class Ingest:
             peer=env.peer,
             st=env.st,
             body=env.body,
+            peer_uid=peer_uid,
         )
         # §6: "Log one INFO line per entry" -- logged whether this call
         # created the row or found it already there (a broker webhook
@@ -464,6 +595,18 @@ class Ingest:
         )
         if env.st == "blocked":
             logger.warning("SECURITY sms-blocked device=%s peer=%s", device_id, env.peer)
+        if (
+            created
+            and env.dir == "in"
+            and owner is not None
+            and owner.familyId is not None
+            and e164 is not None
+            and peer_uid is None
+            and not _has_open_sms_unknown(owner.familyId, e164)
+        ):
+            alerts.sms_unknown(
+                owner.familyId, e164, owner.uid, env.body, held=False, open_unheld=True
+            )
 
     def _handle_ack(self, device_id: str, env: UpEnvelope) -> None:
         assert env.ack is not None and env.ack in ("shown", "read")

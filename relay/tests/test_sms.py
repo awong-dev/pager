@@ -633,3 +633,62 @@ def test_get_sms_log_limit_bounds_are_422(client: TestClient):
         "/api/devices/pgr-api-16/sms-log?limit=0", headers=auth_header("owner16")
     )
     assert resp2.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# peerUid + the open sms_unknown alert -- docs/CONTACT_REQ_DESIGN.md decision 7
+# ---------------------------------------------------------------------------
+
+
+def _family_alerts(family_id: str) -> list[dict]:
+    return [
+        snap.to_dict()
+        for snap in get_db().collection("families").document(family_id).collection("alerts").stream()
+    ]
+
+
+def test_sms_log_in_from_unknown_number_raises_one_open_alert_even_on_redelivery():
+    users_store.create_user(uid="kid", alias="kid", display_name="Kid", family_id="fam-sl")
+    _make_pager_device("pgr-s-20", "kid")
+    ingest, broker = _ingest_with_broker()
+    payload = sms_log_payload("s_00000020", peer="+12065550100", dir_="in", st="recv", body="hello")
+
+    ingest.handle_up(up_topic("pgr-s-20"), payload)
+    ingest.handle_up(up_topic("pgr-s-20"), payload)
+    # A second text from the same number (new log id): still one open alert.
+    ingest.handle_up(
+        up_topic("pgr-s-20"),
+        sms_log_payload("s_00000021", peer="+12065550100", dir_="in", st="recv", body="again"),
+    )
+
+    alerts = _family_alerts("fam-sl")
+    assert len(alerts) == 1
+    assert alerts[0]["kind"] == "sms_unknown" and alerts[0]["status"] == "open"
+    assert alerts[0]["peerPhone"] == "+12065550100"
+    assert alerts[0]["subjectUid"] == "kid"
+    assert alerts[0]["heldBody"] is None
+    assert [e.peerUid for e in sms_store.list_log("pgr-s-20")] == [None, None]
+    assert broker.published == []
+
+
+def test_sms_log_peer_uid_is_the_owner_familys_contact_and_raises_no_alert():
+    from app.store import externals as externals_store
+
+    users_store.create_user(uid="kid2", alias="kid2", display_name="Kid", family_id="fam-sl2")
+    users_store.create_user(uid="other", alias="other", display_name="O", family_id="fam-sl3")
+    mine = externals_store.get_or_create("fam-sl2", "+12065550100", "Grandma")
+    externals_store.get_or_create("fam-sl3", "+12065550100", "Not mine")
+    _make_pager_device("pgr-s-21", "kid2")
+    ingest, _broker = _ingest_with_broker()
+
+    ingest.handle_up(
+        up_topic("pgr-s-21"),
+        sms_log_payload("s_00000022", peer="2065550100", dir_="in", st="recv", body="hi"),
+    )
+    ingest.handle_up(
+        up_topic("pgr-s-21"),
+        sms_log_payload("s_00000023", peer="+12065550100", dir_="out", st="sent", body="yo"),
+    )
+
+    assert {e.peerUid for e in sms_store.list_log("pgr-s-21")} == {mine.uid}
+    assert _family_alerts("fam-sl2") == []

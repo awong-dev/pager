@@ -51,6 +51,7 @@ class SmsLogEntry(BaseModel):
     st: Status
     body: str = ""
     receivedAt: datetime | None = None
+    peerUid: str | None = None
 
 
 def _sms_log(device_id: str):
@@ -67,6 +68,7 @@ def create_log(
     peer: str,
     st: Status,
     body: str,
+    peer_uid: str | None = None,
 ) -> bool:
     """Writes `devices/{device_id}/smsLog/{log_id}`. Returns `True` if this
     call created the row, `False` if `log_id` was already stored (a no-op,
@@ -91,6 +93,7 @@ def create_log(
                 "peer": peer,
                 "st": st,
                 "body": body,
+                "peerUid": peer_uid,
                 "receivedAt": SERVER_TIMESTAMP,
             }
         )

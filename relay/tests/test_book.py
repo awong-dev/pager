@@ -357,7 +357,7 @@ def test_external_rename_bumps_each_approver(client: TestClient):
     _user("kid2", fam)
     _device("pgr-i1", "kid1", fam)
     _device("pgr-i2", "kid2", fam)
-    ext = externals_store.get_or_create("+12065550100", "Gran")
+    ext = externals_store.get_or_create(fam, "+12065550100", "Gran")
     for kid in ("kid1", "kid2"):
         allow_store.set_edge(kid, ext.uid, message=True, locate=False)
         _set_policy(kid, "people_sms", "people")

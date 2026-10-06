@@ -68,7 +68,8 @@ import uuid
 from datetime import datetime
 from typing import Literal
 
-from google.cloud.firestore import SERVER_TIMESTAMP
+from google.api_core.exceptions import NotFound
+from google.cloud.firestore import DELETE_FIELD, SERVER_TIMESTAMP
 from pydantic import BaseModel, ConfigDict
 
 from app.db.firestore import get_db
@@ -171,7 +172,10 @@ def set_phone_index(phone: str, uid: str, bid: str) -> None:
     """Called once an sms backend's phone is verified -- see this module's
     docstring for why this is written on *verify*, not on backend
     creation."""
-    _phone_index().document(phone).set({"uid": uid, "bid": bid})
+    # merge: the same doc may carry `ext` (per-family SMS contacts,
+    # docs/CONTACT_REQ_DESIGN.md decision 7), which a person's `{uid, bid}`
+    # must not clobber.
+    _phone_index().document(phone).set({"uid": uid, "bid": bid}, merge=True)
 
 
 def get_by_phone(phone: str) -> tuple[str, str] | None:
@@ -189,7 +193,22 @@ def get_by_phone(phone: str) -> tuple[str, str] | None:
 
 
 def clear_phone_index(phone: str) -> None:
-    _phone_index().document(phone).delete()
+    """Removes only the person's `uid`/`bid`; `ext` (per-family SMS
+    contacts) survives."""
+    try:
+        _phone_index().document(phone).update({"uid": DELETE_FIELD, "bid": DELETE_FIELD})
+    except NotFound:
+        pass
+
+
+def families_for_phone(phone: str) -> dict[str, str]:
+    """`{familyId: externalUid}` -- every family holding an SMS contact for
+    `phone` (docs/CONTACT_REQ_DESIGN.md decision 7)."""
+    snap = _phone_index().document(phone).get()
+    if not snap.exists:
+        return {}
+    ext = (snap.to_dict() or {}).get("ext") or {}
+    return {str(k): str(v) for k, v in ext.items()}
 
 
 def _sms_verify_codes():

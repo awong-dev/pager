@@ -77,13 +77,27 @@ def test_create_user_admin_defaults_to_open_any_policy():
     assert superuser.policy.in_ == "any"
 
 
-def test_create_user_family_id_defaults_to_none_for_existing_callers():
-    """No `family_id` given (every caller outside `app/routers/family.py`,
-    task 1.3) must not break -- `familyId` is simply `None`."""
-    user = users_store.create_user(
-        uid="no-family-uid", alias="nofamily", display_name="No Family"
-    )
-    assert user.familyId is None
+def test_create_user_person_without_family_is_refused():
+    """docs/CONTACT_REQ_DESIGN.md decision 3. (The unwrapped function: the
+    suite's conftest shim gives bare fixture users a family.)"""
+    strict = users_store.create_user.__wrapped__
+    with pytest.raises(ValueError, match="a person must have a familyId"):
+        strict(uid="no-family-uid", alias="nofamily", display_name="No Family", kind="person")
+    assert users_store.get_user("no-family-uid") is None
+    assert users_store.get_uid_for_alias("nofamily") is None
+
+
+def test_create_user_external_with_family_id_is_refused():
+    strict = users_store.create_user.__wrapped__
+    with pytest.raises(ValueError):
+        strict(
+            uid="x_bad",
+            alias="xbad",
+            display_name="x",
+            kind="external",
+            family_id="fam1",
+            owner_family_id="fam1",
+        )
 
 
 def test_create_user_external_kind():

@@ -37,6 +37,7 @@ class Alert(BaseModel):
     subjectAlias: str | None = None
     peerUid: str | None = None
     peerAlias: str | None = None
+    peerName: str | None = None
     peerPhone: str | None = None
     preview: str = ""
     heldBody: str | None = None

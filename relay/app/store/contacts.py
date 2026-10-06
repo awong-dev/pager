@@ -41,6 +41,7 @@ import logging
 from datetime import datetime
 from typing import Literal
 
+from google.api_core.exceptions import AlreadyExists
 from google.cloud.firestore import SERVER_TIMESTAMP, FieldFilter, Transaction
 from pydantic import BaseModel, ConfigDict
 
@@ -170,21 +171,26 @@ def create_request(
     if count_pending(device_id) >= MAX_PENDING_PER_DEVICE:
         raise TooManyPending(device_id)
 
-    _contact_requests().document(doc_key).set(
-        {
-            "deviceId": device_id,
-            "reqId": req_id,
-            "ownerUid": owner_uid,
-            "name": name,
-            "phone": phone,
-            "alias": alias,
-            "status": "pending",
-            "reason": None,
-            "createdAt": SERVER_TIMESTAMP,
-            "decidedAt": None,
-            "decidedBy": None,
-        }
-    )
+    try:
+        _contact_requests().document(doc_key).create(
+            {
+                "deviceId": device_id,
+                "reqId": req_id,
+                "ownerUid": owner_uid,
+                "name": name,
+                "phone": phone,
+                "alias": alias,
+                "status": "pending",
+                "reason": None,
+                "createdAt": SERVER_TIMESTAMP,
+                "decidedAt": None,
+                "decidedBy": None,
+            }
+        )
+    except AlreadyExists:
+        # A concurrent delivery of the same request won: only the winner
+        # raises the alert (docs/CONTACT_REQ_DESIGN.md decision 1).
+        return get_request(doc_key)
     fetched = get_request(doc_key)
     assert fetched is not None
 
@@ -198,6 +204,46 @@ def create_request(
     from app import alerts as alerts_module
 
     alerts_module.contact_request(fetched)
+    return fetched
+
+
+def create_rejected(
+    *,
+    device_id: str,
+    owner_uid: str,
+    req_id: str,
+    name: str,
+    phone: str | None = None,
+    alias: str | None = None,
+    reason: str,
+) -> ContactRequest:
+    """A request the relay rejected at ingest (docs/CONTACT_REQ_DESIGN.md
+    decision 1): `status:"rejected"`, `reason` a code, `decidedBy:"relay"`,
+    no alert. Idempotent on `req_id`."""
+    doc_key = key(device_id, req_id)
+    existing = get_request(doc_key)
+    if existing is not None:
+        return existing
+    try:
+        _contact_requests().document(doc_key).create(
+            {
+                "deviceId": device_id,
+                "reqId": req_id,
+                "ownerUid": owner_uid,
+                "name": name,
+                "phone": phone,
+                "alias": alias,
+                "status": "rejected",
+                "reason": reason,
+                "createdAt": SERVER_TIMESTAMP,
+                "decidedAt": SERVER_TIMESTAMP,
+                "decidedBy": "relay",
+            }
+        )
+    except AlreadyExists:
+        pass
+    fetched = get_request(doc_key)
+    assert fetched is not None
     return fetched
 
 

@@ -1416,10 +1416,11 @@ def scenario_setup_code() -> None:
 
 def scenario_address_book() -> None:
     """docs/DEVICE_TASKS.md S4.5: device `contact_req` for
-    `+15550001111 Grandma` -> admin approves with `mode="create"`,
-    `alias="grandma"` -> device receives the updated `/down` `book`, applies
-    it and acks `shown` -> device sends a `to:"grandma"` up message, which
-    fans out to grandma's admin-created `sms` backend and lands at the
+    `+15550001111 Grandma` -> admin approves in one click (docs/
+    CONTACT_REQ_DESIGN.md decision 2: that makes the family's SMS contact for
+    the number, never a person) -> device receives the updated `/down`
+    `book`, applies it and acks `shown` -> device sends a `to:<contact alias>`
+    up message, which fans out to the contact's `sms` backend and lands at the
     Twilio mock -> admin pushes `/down` `cfg` `lock.auto=2` -> device applies
     it and acks `shown`.
 
@@ -1471,12 +1472,26 @@ def scenario_address_book() -> None:
     assert alert["peerPhone"] == "+15550001111", alert
     print(f"address_book: contact_req landed as an open alert (id={alert['id']})")
 
-    approved = admin.family_approve_alert(family_id, alert["id"], mode="create", alias="grandma")
+    # An SMS contact is sendable (so listed on the pager) only when the
+    # student's outbound policy allows SMS.
+    patched = admin._http.patch(
+        f"{admin.api_url}/api/family/members/abstudent?family={family_id}",
+        json={"policy": {"out": "people_sms", "in": "people"}},
+        headers=admin._headers(),
+    )
+    assert patched.status_code == 200, patched.text
+
+    approved = admin.family_approve_alert(family_id, alert["id"])
     assert approved["status"] == "handled", approved
-    print("address_book: admin approved with mode=create, alias=grandma")
+    from app.store import externals as externals_store
+
+    _contact_uid, contact_alias = externals_store.contact_ids(family_id, "+15550001111")
+    print(f"address_book: admin approved in one click; SMS contact alias={contact_alias}")
 
     def _book_has_grandma() -> bool:
-        return device.book is not None and any(c.get("a") == "grandma" for c in device.book["c"])
+        return device.book is not None and any(
+            c.get("a") == contact_alias for c in device.book["c"]
+        )
 
     wait_until(
         _book_has_grandma,
@@ -1496,13 +1511,13 @@ def scenario_address_book() -> None:
     )
     print("address_book: device's book ack ('shown') landed at the relay")
 
-    up_id = device.publish_msg("hi grandma", to="grandma")
+    up_id = device.publish_msg("hi grandma", to=contact_alias)
     wait_until(
-        lambda: any(m.wireId == up_id for m in oracle.thread("abstudent", "grandma")),
+        lambda: any(m.wireId == up_id for m in oracle.thread("abstudent", contact_alias)),
         timeout=10,
-        description="device's to:grandma message to land in the abstudent<->grandma thread",
+        description="device's message to the SMS contact to land in the thread",
     )
-    print("address_book: to:grandma message landed in the abstudent<->grandma thread")
+    print("address_book: message to the SMS contact landed in the abstudent<->contact thread")
 
     def _sms_received() -> bool:
         sent = httpx.get(f"{TWILIO_MOCK_URL}/_sent", timeout=5.0)

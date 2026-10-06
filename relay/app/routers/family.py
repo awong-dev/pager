@@ -108,15 +108,39 @@ class FamilyOut(Family):
     deviceCount: int
 
 
-@router.get("")
-def get_family(scope: FamilyScope) -> FamilyOut:
-    _, family_id = scope
+def _family_out(family_id: str) -> FamilyOut:
     family = families_store.get_family(family_id)
     if family is None:
         raise HTTPException(status_code=404, detail="no such family")
     member_count = sum(1 for u in users_store.list_users() if u.familyId == family_id)
     device_count = sum(1 for d in devices_store.list_devices() if d.familyId == family_id)
     return FamilyOut(**family.model_dump(), memberCount=member_count, deviceCount=device_count)
+
+
+@router.get("")
+def get_family(scope: FamilyScope) -> FamilyOut:
+    _, family_id = scope
+    return _family_out(family_id)
+
+
+class PatchFamilyRequest(BaseModel):
+    name: str
+
+
+@router.patch("", dependencies=[Depends(require_family_write_rate_limit)])
+def patch_family(req: PatchFamilyRequest, scope: FamilyScope) -> FamilyOut:
+    """docs/CONTACT_REQ_DESIGN.md decision 6: a family admin renames their
+    own family. The name appears only on the web: no book bump, no push."""
+    _, family_id = scope
+    try:
+        name = families_store.validate_family_name(req.name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    try:
+        families_store.update_family(family_id, name=name)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="no such family") from exc
+    return _family_out(family_id)
 
 
 class MembersOut(BaseModel):
@@ -150,11 +174,22 @@ def create_member(
     if not req.email and not req.phone:
         raise HTTPException(status_code=400, detail="email or phone is required")
 
+    # Sign-in number only, never an SMS route (docs/CONTACT_REQ_DESIGN.md
+    # decision 5).
+    phone = req.phone
+    if phone:
+        try:
+            phone = externals_store.normalize_phone(phone)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400, detail="phone must be a number like +12065550100"
+            ) from exc
+
     kwargs: dict[str, object] = {}
     if req.email:
         kwargs["email"] = req.email
-    if req.phone:
-        kwargs["phone_number"] = req.phone
+    if phone:
+        kwargs["phone_number"] = phone
     try:
         auth_user = fb_auth.create_user(**kwargs)
     except fb_auth.EmailAlreadyExistsError as exc:
@@ -168,7 +203,7 @@ def create_member(
             alias=req.alias,
             display_name=req.displayName,
             email=req.email,
-            phone=req.phone,
+            phone=phone,
             role=req.role,
             family_id=family_id,
         )
@@ -457,15 +492,34 @@ def _truncate_sms_name(name: str) -> str:
     return truncated or "?"
 
 
-def _derive_sms_contacts(
-    resolved_numbers: list[tuple[str, ApprovedNumber, str]],
-) -> list[SmsContact]:
-    """docs/FAMILIES_DESIGN.md §1 decision 11: `devices.smsContacts` is a
-    projection of the member's approved numbers, not separately edited --
-    "the first 8 approved numbers by name" (docs/FAMILIES_TASKS.md 3.2)."""
-    ordered = sorted(resolved_numbers, key=lambda t: t[1].name.casefold())
-    capped = ordered[: devices_store.MAX_SMS_CONTACTS]
-    return [SmsContact(name=_truncate_sms_name(n.name), phone=phone) for _uid, n, phone in capped]
+def rederive_sms_contacts(owner_uid: str, broker: BrokerClient) -> None:
+    """docs/CONTACT_REQ_DESIGN.md decision 7: `devices.smsContacts` is a
+    projection of the owner's `message` edges to SMS contacts their own
+    family owns (`ownerFamilyId == owner.familyId`), by name, capped; pushed
+    to each of the owner's devices."""
+    owner = users_store.get_user(owner_uid)
+    if owner is None or owner.familyId is None:
+        return
+    contacts: list[User] = []
+    for edge in allow_store.list_edges():
+        if edge.fromUid != owner_uid or not edge.message:
+            continue
+        peer = users_store.get_user(edge.toUid)
+        if (
+            peer is not None
+            and peer.kind == "external"
+            and peer.ownerFamilyId == owner.familyId
+            and peer.phone
+        ):
+            contacts.append(peer)
+    contacts.sort(key=lambda u: _truncate_sms_name(u.displayName).casefold())
+    sms_contacts = [
+        SmsContact(name=_truncate_sms_name(u.displayName), phone=u.phone or "")
+        for u in contacts[: devices_store.MAX_SMS_CONTACTS]
+    ]
+    for device in devices_store.list_devices(owner_uid=owner_uid):
+        devices_store.set_sms_contacts(device.id, sms_contacts)
+        devcfg.push_sms_contacts(device.id, [c.model_dump() for c in sms_contacts], broker)
 
 
 @router.put("/members/{uid}/approved", dependencies=[Depends(require_family_write_rate_limit)])
@@ -501,7 +555,7 @@ def put_approved(
     resolved_numbers: list[tuple[str, ApprovedNumber, str]] = []
     for n in req.numbers:
         try:
-            external = externals_store.get_or_create(n.phone, n.name)
+            external = externals_store.get_or_create(member.familyId, n.phone, n.name)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         phone = externals_store.normalize_phone(n.phone)
@@ -525,10 +579,8 @@ def put_approved(
     for ext_uid, _n, _phone in resolved_numbers:
         allow_store.set_edge(uid, ext_uid, message=True, locate=False)
 
-    sms_contacts = _derive_sms_contacts(resolved_numbers)
+    rederive_sms_contacts(uid, broker)
     for device in devices_store.list_devices(owner_uid=uid):
-        devices_store.set_sms_contacts(device.id, sms_contacts)
-        devcfg.push_sms_contacts(device.id, [c.model_dump() for c in sms_contacts], broker)
         # The book's own `c[]` projects `allow_store.allowed_recipients`
         # (`app/devcfg.py`'s `_approved_contacts`), which just changed for
         # every device `uid` owns -- same bump-then-push pair `PUT
@@ -574,22 +626,18 @@ def list_contacts(scope: FamilyScope) -> list[ContactOut]:
     member_uids = _family_member_uids(family_id)
     approved_for: dict[str, set[str]] = {}
     for edge in allow_store.list_edges():
-        if not edge.message or edge.fromUid not in member_uids:
-            continue
-        peer = users_store.get_user(edge.toUid)
-        if peer is not None and peer.kind == "external":
+        if edge.message and edge.fromUid in member_uids:
             approved_for.setdefault(edge.toUid, set()).add(edge.fromUid)
 
     out = [
         ContactOut(
             uid=ext.uid,
             alias=ext.alias,
-            phone=_external_phone(ext.uid),
+            phone=ext.phone or _external_phone(ext.uid),
             displayName=ext.displayName,
-            approvedFor=sorted(approvers),
+            approvedFor=sorted(approved_for.get(ext.uid, set())),
         )
-        for ext_uid, approvers in approved_for.items()
-        if (ext := users_store.get_user(ext_uid)) is not None
+        for ext in externals_store.list_family_contacts(family_id)
     ]
     out.sort(key=lambda c: c.displayName.casefold())
     return out
@@ -608,8 +656,9 @@ def create_contact(req: CreateContactRequest, scope: FamilyScope) -> ContactOut:
     "POST creates one without edges." A family admin adds a number to the
     Contacts page before (or without ever) approving it for a specific
     member's `/approved` list."""
+    _, family_id = scope
     try:
-        external = externals_store.get_or_create(req.phone, req.name)
+        external = externals_store.get_or_create(family_id, req.phone, req.name)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return ContactOut(
@@ -634,7 +683,8 @@ def patch_contact(
 ) -> ContactOut:
     _, family_id = scope
     external = users_store.get_user(uid)
-    if external is None or external.kind != "external":
+    # docs/CONTACT_REQ_DESIGN.md decision 7: a contact belongs to one family.
+    if external is None or external.kind != "external" or external.ownerFamilyId != family_id:
         raise HTTPException(status_code=404, detail="no such contact")
     member_uids = _family_member_uids(family_id)
     approvers = {
@@ -642,18 +692,16 @@ def patch_contact(
         for edge in allow_store.list_edges()
         if edge.toUid == uid and edge.fromUid in member_uids and edge.message
     }
-    if not approvers:
-        raise HTTPException(
-            status_code=404, detail="no such contact approved by this family"
-        )
     updated = users_store.update_user(uid, display_name=req.name)
+    for approver in sorted(approvers):
+        rederive_sms_contacts(approver, broker)
     # docs/ADDRESS_BOOK_DESIGN.md decision 6 (fixes the old gap: a rename
     # bumped nothing): every owner with a message edge to this external.
     book.bump_and_push(approvers | book.edge_holders(uid), broker, reason="external_rename")
     return ContactOut(
         uid=updated.uid,
         alias=updated.alias,
-        phone=_external_phone(uid),
+        phone=updated.phone or _external_phone(uid),
         displayName=updated.displayName,
         approvedFor=sorted(approvers),
     )
@@ -693,11 +741,20 @@ class ApproveAlertRequest(BaseModel):
 
     name: str | None = None
     forAlias: str | None = None
+    # `contact_request` approval is one click (docs/CONTACT_REQ_DESIGN.md
+    # decision 2): `mode`/`alias` are ignored, except `mode:"create"`, which
+    # is refused -- approval never creates a person.
     mode: Literal["link", "create"] | None = None
     alias: str | None = None
 
 
-def _approve_sms_unknown(alert: Alert, req: ApproveAlertRequest, family_id: str, routing: Routing) -> None:
+def _approve_sms_unknown(
+    alert: Alert,
+    req: ApproveAlertRequest,
+    family_id: str,
+    routing: Routing,
+    broker: BrokerClient,
+) -> None:
     if not req.name:
         raise HTTPException(status_code=400, detail="name is required")
     if alert.peerPhone is None:
@@ -714,13 +771,18 @@ def _approve_sms_unknown(alert: Alert, req: ApproveAlertRequest, family_id: str,
     if target is None or target.familyId != family_id:
         raise HTTPException(status_code=403, detail="target is not a member of this family")
 
-    external = externals_store.get_or_create(alert.peerPhone, req.name)
+    try:
+        external = externals_store.get_or_create(family_id, alert.peerPhone, req.name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     allow_store.set_edge(target_uid, external.uid, message=True, locate=False)
     allow_store.recompute_locatable_by_for_owner(external.uid)
+    rederive_sms_contacts(target_uid, broker)
 
     if alert.heldBody:
-        ext_match = backends_store.get_by_phone(externals_store.normalize_phone(alert.peerPhone))
-        ext_bid = ext_match[1] if ext_match is not None else None
+        ext_bid = next(
+            (b.id for b in backends_store.list_backends(external.uid) if b.kind == "sms"), None
+        )
         routing.send(
             sender_uid=external.uid,
             recipient_alias=target.alias,
@@ -738,6 +800,78 @@ def _approve_new_conversation(alert: Alert) -> None:
     allow_store.recompute_locatable_by_for_owner(alert.peerUid)
 
 
+def _approve_contact_request(
+    alert: Alert, req: ApproveAlertRequest, principal_uid: str, broker: BrokerClient
+) -> None:
+    """docs/CONTACT_REQ_DESIGN.md decision 2: approving a pager's contact
+    request never creates a person. The target is resolved again now: an SMS
+    request whose number is a person's verified number is a link; any other
+    number becomes the owner's family SMS contact. A link writes only the
+    missing owner -> peer edge (never the peer's own edge to the owner)."""
+    if req.mode == "create":
+        raise HTTPException(status_code=400, detail="new people are added under Family > People")
+    if alert.contactRequestKey is None:
+        raise HTTPException(status_code=400, detail="alert has no linked contact request")
+    request = contacts_store.get_request(alert.contactRequestKey)
+    if request is None:
+        raise HTTPException(status_code=404, detail="no such contact request")
+    if request.status != "pending":
+        raise HTTPException(status_code=409, detail="contact request already decided")
+    owner = users_store.get_user(request.ownerUid)
+    if owner is None:
+        raise HTTPException(status_code=409, detail="the requesting user no longer exists")
+
+    peer: User | None = None
+    if request.phone is not None:
+        match = backends_store.get_by_phone(request.phone)
+        if match is not None:
+            peer = users_store.get_user(match[0])
+    elif request.alias is not None:
+        peer = users_store.get_user_by_alias(request.alias)
+    else:
+        raise HTTPException(status_code=409, detail="contact request has no number or alias")
+
+    if peer is None and request.phone is not None:
+        if owner.familyId is None:
+            raise HTTPException(status_code=409, detail="the requesting user has no family")
+        try:
+            contact = externals_store.get_or_create(owner.familyId, request.phone, request.name)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        allow_store.set_edge(owner.uid, contact.uid, message=True, locate=False)
+        rederive_sms_contacts(owner.uid, broker)
+    else:
+        if (
+            peer is None
+            or peer.kind != "person"
+            or peer.disabled
+            or not _may_link(owner, peer)
+        ):
+            who = f"@{peer.alias}" if peer is not None else f"@{request.alias}"
+            raise HTTPException(
+                status_code=409, detail=f"{who} no longer has an edge to @{owner.alias}"
+            )
+        existing = allow_store.get_edge(owner.uid, peer.uid)
+        if existing is None or not existing.message:
+            allow_store.set_edge(
+                owner.uid,
+                peer.uid,
+                message=True,
+                locate=existing.locate if existing is not None else False,
+            )
+
+    contacts_store.approve(alert.contactRequestKey, decided_by=principal_uid)
+    book.bump_and_push({owner.uid}, broker, reason="contact_approve")
+
+
+def _may_link(owner: User, peer: User) -> bool:
+    """Same family, or `peer` has a `message` edge to `owner`."""
+    if book.same_family_persons(owner, peer):
+        return True
+    inbound = allow_store.get_edge(peer.uid, owner.uid)
+    return inbound is not None and inbound.message
+
+
 @router.post("/alerts/{alert_id}/approve", dependencies=[Depends(require_family_write_rate_limit)])
 def approve_alert(
     alert_id: str,
@@ -750,20 +884,11 @@ def approve_alert(
     alert = _require_open_family_alert(alert_id, family_id)
 
     if alert.kind == "sms_unknown":
-        _approve_sms_unknown(alert, req, family_id, routing)
+        _approve_sms_unknown(alert, req, family_id, routing, broker)
     elif alert.kind == "new_conversation":
         _approve_new_conversation(alert)
     else:  # "contact_request"
-        if alert.contactRequestKey is None:
-            raise HTTPException(status_code=400, detail="alert has no linked contact request")
-        if req.mode is None:
-            raise HTTPException(status_code=400, detail="mode is required")
-        admin_router._approve_contact_impl(
-            alert.contactRequestKey,
-            admin_router.ContactApproveRequest(mode=req.mode, alias=req.alias),
-            decided_by=principal.uid,
-            broker=broker,
-        )
+        _approve_contact_request(alert, req, principal.uid, broker)
 
     return alerts_store.decide(family_id, alert_id, "handled", principal.uid)
 

@@ -18,6 +18,7 @@ from app.main import create_app
 from app.store import allow as allow_store
 from app.store import device_secrets as device_secrets_store
 from app.store import devices as devices_store
+from app.store import externals as externals_store
 from app.store import families as families_store
 from app.store import users as users_store
 from tests.fake_transport import FakeBrokerClient
@@ -93,10 +94,16 @@ def client(fake_emqx: FakeEmqxAdmin, broker: FakeBrokerClient) -> Iterator[TestC
 @pytest.fixture
 def admin_headers() -> dict[str, str]:
     auth_user = fb_auth.create_user(email="root-admin@example.com")
+    # The super sits in a family so `POST /api/admin/users` (which defaults
+    # `familyId` to the caller's) can create persons (CONTACT_REQ decision 3).
     users_store.create_user(
-        uid=auth_user.uid, alias="rootadmin", display_name="Root Admin", role="super"
+        uid=auth_user.uid,
+        alias="rootadmin",
+        display_name="Root Admin",
+        role="super",
+        family_id="default",
     )
-    fb_auth.set_custom_user_claims(auth_user.uid, {"role": "super", "fam": ""})
+    fb_auth.set_custom_user_claims(auth_user.uid, {"role": "super", "fam": "default"})
     return auth_header(auth_user.uid)
 
 
@@ -125,7 +132,7 @@ def test_create_user_creates_auth_and_firestore_and_alias(
     # docs/FAMILIES_DESIGN.md §1 decision 2: every created user (not just
     # admins) gets `{role, fam}` claims in sync with the doc.
     refreshed = fb_auth.get_user(data["uid"])
-    assert refreshed.custom_claims == {"role": "member", "fam": ""}
+    assert refreshed.custom_claims == {"role": "member", "fam": "default"}
 
 
 def test_create_user_requires_email_or_phone(client: TestClient, admin_headers: dict[str, str]):
@@ -179,7 +186,7 @@ def test_patch_user_updates_fields_and_admin_claim(
     # exactly -- no `admin` key -- `fam` empty since this legacy
     # `/api/admin/users` route (task 1.3 re-homes it) never sets a family.
     refreshed = fb_auth.get_user(created["uid"])
-    assert refreshed.custom_claims == {"role": "admin", "fam": ""}
+    assert refreshed.custom_claims == {"role": "admin", "fam": "default"}
 
 
 def test_patch_user_404_for_unknown_uid(client: TestClient, admin_headers: dict[str, str]):
@@ -595,23 +602,20 @@ def test_allowlist_locate_true_cross_family_is_400(
 def test_allowlist_locate_true_null_family_is_400(
     client: TestClient, admin_headers: dict[str, str]
 ):
-    """Same refusal when one (or both) end has no family at all."""
+    """Same refusal when one end has no family at all (an external: persons
+    always have one, CONTACT_REQ decision 3)."""
     client.post(
         "/api/admin/users",
         json={"alias": "nullmom", "displayName": "m", "email": "nullmom@example.com"},
         headers=admin_headers,
     )
-    client.post(
-        "/api/admin/users",
-        json={"alias": "nullkid", "displayName": "k", "email": "nullkid@example.com"},
-        headers=admin_headers,
-    )
+    external = externals_store.get_or_create("default", "+12065550177", "ext")
 
     resp = client.put(
         "/api/admin/allowlist",
         json={
             "entries": [
-                {"fromAlias": "nullmom", "toAlias": "nullkid", "message": True, "locate": True}
+                {"fromAlias": "nullmom", "toAlias": external.alias, "message": True, "locate": True}
             ]
         },
         headers=admin_headers,
@@ -1022,7 +1026,7 @@ def test_super_creates_a_family_and_moves_a_user(client: TestClient, admin_heade
         json={"alias": "movable", "displayName": "Movable", "email": "movable@example.com"},
         headers=admin_headers,
     ).json()
-    assert created["familyId"] is None
+    assert created["familyId"] == "default"
 
     resp = client.patch(
         f"/api/admin/users/{created['uid']}",
@@ -1049,7 +1053,7 @@ def test_patch_user_role_super_is_accepted(client: TestClient, admin_headers: di
     assert resp.status_code == 200, resp.text
     assert resp.json()["role"] == "super"
     refreshed = fb_auth.get_user(created["uid"])
-    assert refreshed.custom_claims == {"role": "super", "fam": ""}
+    assert refreshed.custom_claims == {"role": "super", "fam": "default"}
 
 
 def test_create_user_with_family_id(client: TestClient, admin_headers: dict[str, str]):
@@ -1172,3 +1176,60 @@ def test_list_devices_filters_by_family_query_param(client: TestClient, admin_he
     assert resp.status_code == 200, resp.text
     ids = {d["id"] for d in resp.json()}
     assert ids == {"pgr-filt-a"}
+
+
+# ---- docs/CONTACT_REQ_DESIGN.md decisions 3, 5, 6 ----
+
+
+def test_create_user_without_any_family_is_400_and_leaves_no_auth_user(
+    client: TestClient,
+):
+    # A super with no family of their own and no `familyId` in the body.
+    auth_user = fb_auth.create_user(email="nofam-super@example.com")
+    users_store.create_user(
+        uid=auth_user.uid, alias="nofamsuper", display_name="S", role="super", family_id="x"
+    )
+    fb_auth.set_custom_user_claims(auth_user.uid, {"role": "super", "fam": ""})
+
+    resp = client.post(
+        "/api/admin/users",
+        json={"alias": "orphan", "displayName": "O", "email": "orphan@example.com"},
+        headers=auth_header(auth_user.uid),
+    )
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["detail"] == "familyId is required"
+    with pytest.raises(fb_auth.UserNotFoundError):
+        fb_auth.get_user_by_email("orphan@example.com")
+    assert users_store.get_uid_for_alias("orphan") is None
+
+
+def test_create_user_normalises_phone_and_rejects_garbage(
+    client: TestClient, admin_headers: dict[str, str]
+):
+    resp = client.post(
+        "/api/admin/users",
+        json={"alias": "phoney", "displayName": "P", "phone": "2065550100"},
+        headers=admin_headers,
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["phone"] == "+12065550100"
+
+    resp = client.post(
+        "/api/admin/users",
+        json={"alias": "phoney2", "displayName": "P", "phone": "abc"},
+        headers=admin_headers,
+    )
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == "phone must be a number like +12065550100"
+
+
+def test_super_family_patch_validates_the_name(client: TestClient, admin_headers: dict[str, str]):
+    family = families_store.create_family(name="Orig", created_by="rootadmin")
+    ok = client.patch(f"/api/admin/families/{family.id}", json={"name": " New "}, headers=admin_headers)
+    assert ok.status_code == 200 and ok.json()["name"] == "New"
+    for bad in ("", "y" * 41, "a\tb"):
+        resp = client.patch(
+            f"/api/admin/families/{family.id}", json={"name": bad}, headers=admin_headers
+        )
+        assert resp.status_code == 400, bad
+    assert families_store.get_family(family.id).name == "New"

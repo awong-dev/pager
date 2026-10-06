@@ -22,6 +22,7 @@ from app.store import alerts as alerts_store
 from app.store import allow as allow_store
 from app.store import contacts as contacts_store
 from app.store import devices as devices_store
+from app.store import externals as externals_store
 from app.store import families as families_store
 from app.store import messages as messages_store
 from app.store import users as users_store
@@ -252,8 +253,8 @@ def test_approve_sms_unknown_creates_external_edge_and_delivers_held_body(
     assert resp.status_code == 200, resp.text
     assert resp.json()["status"] == "handled"
 
-    ext_uid = users_store.get_uid_for_alias("19995551234")
-    assert ext_uid is not None
+    ext_uid, _alias = externals_store.contact_ids(family.id, "+19995551234")
+    assert users_store.get_user(ext_uid) is not None
     assert allow_store.is_message_allowed("kid1", ext_uid)
 
     convo = messages_store.list_thread(messages_store.conv_key("kid1", ext_uid))
@@ -276,8 +277,8 @@ def test_approve_sms_unknown_with_no_subject_uses_for_alias(client: TestClient):
     )
     assert resp.status_code == 200, resp.text
 
-    ext_uid = users_store.get_uid_for_alias("19995554321")
-    assert ext_uid is not None
+    ext_uid, _alias = externals_store.contact_ids(family.id, "+19995554321")
+    assert users_store.get_user(ext_uid) is not None
     assert allow_store.is_message_allowed("kid2", ext_uid)
 
 
@@ -369,7 +370,9 @@ def test_contact_req_write_creates_alert_for_owner_family():
     assert len(list_alerts(family.id, "all")) == 1
 
 
-def test_approve_contact_request_alert_delegates_to_admin_approve_flow(client: TestClient):
+def test_approve_contact_request_alert_makes_a_family_sms_contact(client: TestClient):
+    """docs/CONTACT_REQ_DESIGN.md decision 2: approving never creates a
+    person; an unknown number becomes the owner's family SMS contact."""
     family = _make_family("ContactApprove")
     headers = _make_family_admin("admin6", "admin6", family.id)
     users_store.create_user(uid="owner2", alias="owner2", display_name="Owner2", family_id=family.id)
@@ -382,19 +385,25 @@ def test_approve_contact_request_alert_delegates_to_admin_approve_flow(client: T
     alerts = list_alerts(family.id, "all")
     assert len(alerts) == 1
     alert_id = alerts[0].id
+    assert alerts[0].peerPhone == "+15559990000"
+    assert alerts[0].preview == "New Pal"
 
     resp = client.post(
         f"/api/family/alerts/{alert_id}/approve",
         json={"mode": "create", "alias": "newpal"},
         headers=headers,
     )
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["detail"] == "new people are added under Family > People"
+
+    resp = client.post(f"/api/family/alerts/{alert_id}/approve", json={}, headers=headers)
     assert resp.status_code == 200, resp.text
     assert resp.json()["status"] == "handled"
 
-    new_uid = users_store.get_uid_for_alias("newpal")
-    assert new_uid is not None
-    assert allow_store.is_message_allowed("owner2", new_uid)
-    assert allow_store.is_message_allowed(new_uid, "owner2")
+    assert users_store.get_uid_for_alias("newpal") is None
+    ext_uid, _alias = externals_store.contact_ids(family.id, "+15559990000")
+    assert allow_store.is_message_allowed("owner2", ext_uid)
+    assert not allow_store.is_message_allowed(ext_uid, "owner2")
 
 
 # ---------------------------------------------------------------------------

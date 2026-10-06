@@ -172,7 +172,7 @@ def _meta_ref():
 
 def build_participants_and_family_ids(
     uids: list[str], *, transaction: Transaction | None = None
-) -> tuple[dict[str, dict[str, str]], list[str]]:
+) -> tuple[dict[str, dict[str, str | None]], list[str]]:
     """`participants`/`familyIds` (docs/FAMILIES_DESIGN.md §1 decisions 3-4,
     §3) for a set of member uids: `participants` maps each uid to its
     `{alias, displayName, kind}` snapshot, `familyIds` is the sorted unique
@@ -189,7 +189,7 @@ def build_participants_and_family_ids(
     happen -- every uid reaching here resolved from a real alias or member
     list) is skipped rather than raising."""
     users_ref = _users()
-    participants: dict[str, dict[str, str]] = {}
+    participants: dict[str, dict[str, str | None]] = {}
     family_ids: set[str] = set()
     for uid in uids:
         ref = users_ref.document(uid)
@@ -202,6 +202,10 @@ def build_participants_and_family_ids(
             "displayName": data.get("displayName", ""),
             "kind": data.get("kind", "person"),
         }
+        if data.get("kind") == "external":
+            # The web stops reading the phone out of the alias
+            # (docs/CONTACT_REQ_DESIGN.md decision 7).
+            participants[uid]["phone"] = data.get("phone")
         family_id = data.get("familyId")
         if family_id:
             family_ids.add(family_id)

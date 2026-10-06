@@ -42,7 +42,8 @@ def client() -> Iterator[TestClient]:
 
 def _make_user(uid: str, alias: str) -> dict[str, str]:
     fb_auth.create_user(uid=uid, email=f"{uid}@example.com")
-    users_store.create_user(uid=uid, alias=alias, display_name=alias)
+    users_store.create_user(uid=uid, alias=alias, display_name=alias, family_id="me-fam")
+    fb_auth.set_custom_user_claims(uid, {"role": "member", "fam": "me-fam"})
     return auth_header(uid)
 
 
@@ -58,7 +59,7 @@ def test_get_me_returns_user_and_role(client: TestClient):
     # member's claims (none yet -- `create_user` in this test module never
     # calls `set_claims`) already agree with the doc's defaults, so this is
     # not stale.
-    assert data["user"]["familyId"] is None
+    assert data["user"]["familyId"] == "me-fam"
     assert data["user"]["kind"] == "person"
     assert data["user"]["policy"] == {"out": "people", "in": "people"}
     assert data["user"]["notify"] == {"alerts": True}
@@ -70,8 +71,8 @@ def test_get_me_reports_claims_stale_when_doc_role_changed_and_reissues_claims(
 ):
     uid = "me-stale-1"
     fb_auth.create_user(uid=uid, email=f"{uid}@example.com")
-    users_store.create_user(uid=uid, alias=uid, display_name=uid)
-    fb_auth.set_custom_user_claims(uid, {"role": "member", "fam": ""})
+    users_store.create_user(uid=uid, alias=uid, display_name=uid, family_id="me-fam")
+    fb_auth.set_custom_user_claims(uid, {"role": "member", "fam": "me-fam"})
     # The doc's role changes (e.g. promoted to a family admin) without the
     # token's claims being reissued yet -- `/api/me` must notice the
     # mismatch and reissue `{role, fam}` server-side.
@@ -87,7 +88,7 @@ def test_get_me_reports_claims_stale_when_doc_role_changed_and_reissues_claims(
     # mints one, the same "force refresh" a real client does) already
     # agrees with the doc.
     refreshed = fb_auth.get_user(uid)
-    assert refreshed.custom_claims == {"role": "admin", "fam": ""}
+    assert refreshed.custom_claims == {"role": "admin", "fam": "me-fam"}
 
     resp2 = client.get("/api/me", headers=auth_header(uid))
     assert resp2.json()["claimsStale"] is False

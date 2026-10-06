@@ -72,6 +72,8 @@ class User(BaseModel):
     alias: str
     displayName: str
     email: str | None = None
+    # Sign-in number only, never an SMS route (docs/CONTACT_REQ_DESIGN.md
+    # decision 5).
     phone: str | None = None
     role: Role = "member"
     # docs/FAMILIES_DESIGN.md §1 decision 1: every user belongs to exactly
@@ -79,6 +81,9 @@ class User(BaseModel):
     # created before this field existed.
     familyId: str | None = None
     kind: Kind = "person"
+    # docs/CONTACT_REQ_DESIGN.md decision 7: an external belongs to exactly
+    # one family (`familyId` stays null so rules and `sameFam` are untouched).
+    ownerFamilyId: str | None = None
     policy: Policy = Field(default_factory=lambda: Policy.model_validate(_DEFAULT_MEMBER_POLICY))
     notify: Notify = Field(default_factory=Notify)
     disabled: bool = False
@@ -117,6 +122,7 @@ def create_user(
     role: Role = "member",
     family_id: str | None = None,
     kind: Kind = "person",
+    owner_family_id: str | None = None,
 ) -> User:
     """Creates `users/{uid}` and `aliases/{alias}` in one transaction --
     `aliases/{alias}` is created with `transaction.create`, which raises
@@ -129,6 +135,10 @@ def create_user(
     always the role's default (docs/FAMILIES_DESIGN.md §2), computed here
     from `role`."""
     _validate_alias(alias)
+    if kind == "person" and family_id is None:
+        raise ValueError("a person must have a familyId")
+    if kind == "external" and family_id is not None:
+        raise ValueError("an external must not have a familyId")
     db = get_db()
     user_ref = db.collection("users").document(uid)
     alias_ref = db.collection("aliases").document(alias)
@@ -145,6 +155,7 @@ def create_user(
                 "role": role,
                 "familyId": family_id,
                 "kind": kind,
+                "ownerFamilyId": owner_family_id,
                 "policy": _default_policy(role),
                 "notify": {"alerts": True},
                 "disabled": False,

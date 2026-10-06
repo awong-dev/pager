@@ -54,6 +54,7 @@ from app.store import backends as backends_store
 from app.store import contacts as contacts_store
 from app.store import device_secrets as device_secrets_store
 from app.store import devices as devices_store
+from app.store import externals as externals_store
 from app.store import families as families_store
 from app.store import messages as messages_store
 from app.store import rate_limits as rate_limits_store
@@ -61,11 +62,10 @@ from app.store import settings as settings_store
 from app.store import users as users_store
 from app.store.allow import AllowEdge, EdgeInput
 from app.store.backends import Backend
-from app.store.contacts import ContactRequest
 from app.store.devices import Device
 from app.store.families import Family
 from app.store.settings import RetentionSetting, RetentionSettings
-from app.store.users import ALIAS_RE, User
+from app.store.users import User
 
 router = APIRouter(prefix="/api/admin", dependencies=[Depends(require_super)])
 
@@ -188,14 +188,28 @@ def create_user(
     # of their own (a bootstrap/test-only edge case, not a real deployment
     # -- `app.bootstrap` always puts the super in `families/default`).
     family_id = req.familyId if req.familyId is not None else principal_for(authed).family_id
+    # docs/CONTACT_REQ_DESIGN.md decision 3: a person always has a family.
+    if family_id is None:
+        raise HTTPException(status_code=400, detail="familyId is required")
+
+    # Sign-in number only, never an SMS route (docs/CONTACT_REQ_DESIGN.md
+    # decision 5).
+    phone = req.phone
+    if phone:
+        try:
+            phone = externals_store.normalize_phone(phone)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400, detail="phone must be a number like +12065550100"
+            ) from exc
 
     kwargs: dict[str, object] = {}
     if req.uid:
         kwargs["uid"] = req.uid
     if req.email:
         kwargs["email"] = req.email
-    if req.phone:
-        kwargs["phone_number"] = req.phone
+    if phone:
+        kwargs["phone_number"] = phone
     try:
         auth_user = fb_auth.create_user(**kwargs)
     except fb_auth.EmailAlreadyExistsError as exc:
@@ -209,7 +223,7 @@ def create_user(
             alias=req.alias,
             display_name=req.displayName,
             email=req.email,
-            phone=req.phone,
+            phone=phone,
             role=req.role,
             family_id=family_id,
         )
@@ -820,122 +834,7 @@ def revoke_device(
 # ---------------------------------------------------------------------------
 
 
-class ContactApproveRequest(BaseModel):
-    mode: Literal["link", "create"]
-    alias: str | None = None
-
-
-def _slugify_name(name: str) -> str | None:
-    """docs/DEVICE_PLAN.md §4.3: "alias defaults to a slug of `name` when one
-    can be derived (a CJK name yields none, so the admin types the alias)."
-    A conservative subset of `ALIAS_RE` (`app/store/users.py`) -- lowercase
-    ASCII letters/digits only, truncated to 16 -- so the result never needs
-    a leading-character special case; `None` when nothing survives (e.g. an
-    all-CJK name), which the caller treats as "the admin must supply one"."""
-    slug = "".join(ch for ch in name.lower() if ch.isascii() and ch.isalnum())[:16]
-    return slug or None
-
-
-def _resolve_link_uid(request: ContactRequest, admin_alias: str | None) -> str | None:
-    """docs/DEVICE_PLAN.md §4.3's "link to existing user": a verified `sms`
-    backend's owner (via `phoneIndex`) takes priority over an alias match,
-    tried first against the request's own `alias` reference (§4.2's
-    "alias the student already knows") and then against the alias the admin
-    typed into the approval dialog."""
-    if request.phone is not None:
-        found = backends_store.get_by_phone(request.phone)
-        if found is not None:
-            return found[0]
-    for alias in (request.alias, admin_alias):
-        if alias:
-            uid = users_store.get_uid_for_alias(alias)
-            if uid is not None:
-                return uid
-    return None
-
-
-def _approve_contact_impl(
-    key: str,
-    req: ContactApproveRequest,
-    *,
-    decided_by: str,
-    broker: BrokerClient,
-) -> ContactRequest:
-    """The shared body `POST /api/family/alerts/{id}/approve`'s
-    `contact_request` case calls (docs/FAMILIES_TASKS.md 4.1: "reuse its
-    implementation"; the `POST` route under the old admin contacts prefix
-    this was originally factored out of was itself deleted by task 5.1).
-    Factored out so there is exactly one place that creates/links the
-    contact and writes the mutual `allow` edges -- `app/routers/family.py`'s
-    alert-approve route calls this after resolving the alert's
-    `contactRequestKey` to a `ContactRequest`, with no in-family check of its
-    own (the alert itself is already scoped to the caller's family via
-    `require_family_admin` and `families/{fam}/alerts/{id}`)."""
-    request = contacts_store.get_request(key)
-    if request is None:
-        raise HTTPException(status_code=404, detail="no such contact request")
-    if request.status != "pending":
-        raise HTTPException(status_code=409, detail="contact request already decided")
-
-    if req.mode == "link":
-        contact_uid = _resolve_link_uid(request, req.alias)
-        if contact_uid is None:
-            raise HTTPException(status_code=400, detail="no existing user found to link to")
-    else:
-        alias = req.alias or _slugify_name(request.name)
-        if not alias or not ALIAS_RE.match(alias):
-            raise HTTPException(
-                status_code=400,
-                detail="an alias is required to create a new user for this contact",
-            )
-        auth_user = fb_auth.create_user()
-        try:
-            new_user = users_store.create_user(
-                uid=auth_user.uid, alias=alias, display_name=request.name
-            )
-        except (users_store.AliasTaken, users_store.InvalidAlias) as exc:
-            # Same rollback `create_user` (the `/users` route above) already
-            # does: don't leave an orphaned, unregistered Auth account.
-            fb_auth.delete_user(auth_user.uid)
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        contact_uid = new_user.uid
-        if request.phone is not None:
-            _create_admin_asserted_backend(contact_uid, request.phone)
-
-    # §4.3 originally read "upsert two allow edges (owner -> contact
-    # `message`, contact -> owner `message`; `locate` is a separate
-    # checkbox, default off)" -- docs/FAMILIES_TASKS.md 3.2 addition (b)
-    # supersedes the checkbox: contact approval now always writes
-    # message-only edges, never `locate` (a linked/created contact may
-    # predate `familyId` entirely, or sit in a different family than the
-    # device owner's, so there is no safe default here left to honour).
-    owner_uid = request.ownerUid
-    allow_store.set_edge(owner_uid, contact_uid, message=True, locate=False)
-    allow_store.set_edge(contact_uid, owner_uid, message=True, locate=False)
-    # `set_edge` already recomputes `locatableBy` for each edge's `to_uid`
-    # (i.e. both directions here); called again explicitly per this task's
-    # `Do` steps, matching `POST /api/admin/devices`'s own belt-and-suspenders
-    # call after `set_edge`/`replace_all` (`allow_store.
-    # recompute_locatable_by_for_owner`'s docstring).
-    allow_store.recompute_locatable_by_for_owner(owner_uid)
-    allow_store.recompute_locatable_by_for_owner(contact_uid)
-
-    updated = contacts_store.approve(key, decided_by=decided_by)
-    contacts_store.bump_book_version(request.deviceId)
-    devcfg.push_book(request.deviceId, broker)
-    return updated
-
-
-# docs/FAMILIES_TASKS.md 5.1: this router's old `GET`/approve/reject routes
-# under the `/contacts` prefix are deleted -- `_approve_contact_impl` above
-# is now called only from `app/routers/family.py`'s
-# `POST /api/family/alerts/{id}/approve` (the `contact_request` case).
-# `contacts_store.reject` (the old reject flow this router's now-removed
-# reject route called) is left in `app/store/contacts.py` as dead code:
-# docs/FAMILIES_DESIGN.md §10 item 8 replaces "Reject-with-reason" with
-# Block/Dismiss on the alert (`app/routers/family.py`'s `block_alert`/
-# `dismiss_alert`), neither of which calls it -- `app/store/contacts.py` is
-# not in this task's `Files` list, so that module is left unedited.
+# Contact approval lives in routers/family.py, docs/CONTACT_REQ_DESIGN.md.
 
 
 # ---------------------------------------------------------------------------
@@ -1091,7 +990,13 @@ def create_family(
 
 @router.patch("/families/{fid}", dependencies=[Depends(require_admin_write_rate_limit)])
 def patch_family(fid: str, req: PatchFamilyRequest) -> Family:
+    name = req.name
+    if name is not None:
+        try:
+            name = families_store.validate_family_name(name)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
     try:
-        return families_store.update_family(fid, name=req.name, sms_number=req.smsNumber)
+        return families_store.update_family(fid, name=name, sms_number=req.smsNumber)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
