@@ -128,6 +128,57 @@ def test_same_family_members_listed_sendable_and_dm_delivered(
     assert len(result.messages) == 1
 
 
+def test_explicit_deny_edge_beats_family_implied_approval(
+    client: TestClient, broker: FakeBrokerClient
+):
+    fam = _family()
+    ha = _user("ana", fam)
+    hb = _user("ben", fam)
+    _set_policy("ana", "people", "people")
+    _set_policy("ben", "people", "people")
+    allow_store.set_edge("ana", "ben", message=False, locate=False)
+
+    # ana -> ben: her own deny.
+    ben = _aliases(client.get("/api/book", headers=ha).json())["ben"]
+    assert ben["sendable"] is False
+    assert ben["reason"] == "not_allowed"
+    result = Routing(broker).send(
+        sender_uid="ana",
+        recipient_alias="ben",
+        kind="text",
+        body="hi",
+        origin_backend_kind="webapp",
+    )
+    assert [r.reason for r in result.rejected] == ["not_allowed"]
+    assert result.messages == []
+
+    # ben -> ana: ana's `people` inbound rule needs ben on her approved list,
+    # and her deny removes him -- the book and the send check agree.
+    ana = _aliases(client.get("/api/book", headers=hb).json())["ana"]
+    assert (ana["sendable"], ana["reason"]) == (False, "not_allowed")
+
+    # Lifting the deny (edge removed) restores the family default.
+    allow_store.delete_edge("ana", "ben")
+    assert _aliases(client.get("/api/book", headers=ha).json())["ben"]["sendable"] is True
+
+
+def test_edge_or_family_deny_wins_but_other_policy_refusals_stay(client: TestClient):
+    from app import book
+    from app.store import users as users_store
+
+    fam = _family()
+    _user("ana", fam)
+    _user("ben", fam)
+    ana, ben = users_store.get_user("ana"), users_store.get_user("ben")
+    assert ana is not None and ben is not None
+    assert book.edge_or_family(ana, ben) is True  # no edge: family default
+    allow_store.set_edge("ana", "ben", message=False, locate=False)
+    assert book.edge_or_family(ana, ben) is False  # explicit deny
+    assert book.edge_or_family(ben, ana) is True  # one-way
+    allow_store.set_edge("ana", "ben", message=True, locate=False)
+    assert book.edge_or_family(ana, ben) is True
+
+
 # b ---------------------------------------------------------------------------
 
 

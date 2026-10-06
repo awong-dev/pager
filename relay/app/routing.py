@@ -315,9 +315,9 @@ class Routing:
             return "not_allowed"
         # In-family persons count as approved (docs/ADDRESS_BOOK_DESIGN.md
         # decision 2); `none` rules (policy `sms`, `any_sms`) still refuse.
-        in_family = book.same_family_persons(sender, recipient)
-        has_edge_out = in_family or allow_store.is_message_allowed(sender_uid, recipient_uid)
-        has_edge_in = in_family or allow_store.is_message_allowed(recipient_uid, sender_uid)
+        # An explicit `message: false` edge (a deny) beats that default.
+        has_edge_out = book.edge_or_family(sender, recipient)
+        has_edge_in = book.edge_or_family(recipient, sender)
         return policy_module.check(sender, recipient, has_edge_out, has_edge_in)
 
     # ---- group fan-out (docs/GROUP_CHAT_DESIGN.md §3) ----

@@ -62,6 +62,16 @@ def same_family_persons(a: User, b: User) -> bool:
     return a.kind == "person" and b.kind == "person" and a.familyId is not None and a.familyId == b.familyId
 
 
+def edge_or_family(sender: User, recipient: User) -> bool:
+    """`allow/{sender}_{recipient}.message`, with the same-family implied
+    approval applied only where no edge doc exists: an explicit edge with
+    `message: false` is a deny and wins over the family default."""
+    edge = allow_store.get_edge(sender.uid, recipient.uid)
+    if edge is not None:
+        return edge.message
+    return same_family_persons(sender, recipient)
+
+
 def validate_nick(raw: str) -> str:
     """Trim and check a nickname against the wire's `n` bounds; `ValueError`
     with a human message on violation (rejected, never truncated)."""
@@ -108,9 +118,13 @@ def entries_for(owner_uid: str) -> list[BookEntry]:
     if owner is None:
         return []
     nicks = _nicks(owner_uid)
-    edges = [e for e in allow_store.list_edges() if e.message]
+    all_edges = allow_store.list_edges()
+    edges = [e for e in all_edges if e.message]
     out_edges = {e.toUid for e in edges if e.fromUid == owner_uid}
     in_edges = {e.fromUid for e in edges if e.toUid == owner_uid}
+    # Explicit `message: false` edges: denies that beat the family default.
+    denied_out = {e.toUid for e in all_edges if e.fromUid == owner_uid and not e.message}
+    denied_in = {e.fromUid for e in all_edges if e.toUid == owner_uid and not e.message}
 
     peers: dict[str, tuple[User, bool]] = {}
     if owner.familyId is not None:
@@ -132,8 +146,9 @@ def entries_for(owner_uid: str) -> list[BookEntry]:
 
     entries: list[BookEntry] = []
     for uid, (user, in_family) in peers.items():
-        has_out = uid in out_edges or same_family_persons(owner, user)
-        has_in = uid in in_edges or same_family_persons(owner, user)
+        family = same_family_persons(owner, user)
+        has_out = uid in out_edges or (family and uid not in denied_out)
+        has_in = uid in in_edges or (family and uid not in denied_in)
         reason = policy_module.check(owner, user, has_out, has_in)
         entries.append(
             BookEntry(

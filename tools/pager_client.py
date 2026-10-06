@@ -1336,11 +1336,17 @@ class ServerClient:
 
     def admin_deny(self, from_alias: str, to_alias: str) -> None:
         entries = self._current_allowlist_entries()
+        # An explicit `message: false` edge, not an absent one: same-family
+        # persons are implicitly approved (docs/ADDRESS_BOOK_DESIGN.md
+        # decision 2) and only a stored deny beats that.
         entries = [
             e
             for e in entries
             if not (e["fromAlias"] == from_alias and e["toAlias"] == to_alias)
         ]
+        entries.append(
+            {"fromAlias": from_alias, "toAlias": to_alias, "message": False, "locate": False}
+        )
         resp = self.api_put("/api/admin/allowlist", {"entries": entries})
         if resp.status_code >= 400:
             raise RuntimeError(f"admin deny failed: {resp.status_code} {resp.text}")
