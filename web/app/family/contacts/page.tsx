@@ -42,10 +42,6 @@ interface ContactRow {
   approvedFor: string[];
 }
 
-interface ContactsResponse {
-  contacts: ContactRow[];
-}
-
 interface LinkedEdge {
   key: string;
   fromUid: string;
@@ -70,8 +66,9 @@ function FamilyContactsInner() {
   async function loadContacts() {
     setLoadError(null);
     try {
-      const resp = await api.get<ContactsResponse>(`/family/contacts${familyQuery()}`);
-      setContacts(resp.contacts);
+      // `GET /api/family/contacts` returns a bare list (relay/tests/test_family_router.py).
+      const resp = await api.get<ContactRow[]>(`/family/contacts${familyQuery()}`);
+      setContacts(Array.isArray(resp) ? resp : []);
     } catch (err) {
       setLoadError(
         err instanceof ApiError ? String(err.detail ?? err.message) : "Failed to load contacts"
@@ -198,7 +195,7 @@ function FamilyContactsInner() {
                 <TableCell>{c.phone}</TableCell>
                 <TableCell>
                   <Stack direction="row" spacing={0.5} sx={{ flexWrap: "wrap" }}>
-                    {c.approvedFor.map((uid) => (
+                    {(c.approvedFor ?? []).map((uid) => (
                       <Chip key={uid} size="small" label={labelFor(uid)} />
                     ))}
                   </Stack>
