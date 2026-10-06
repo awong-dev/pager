@@ -1343,13 +1343,29 @@ def test_push_ota_409_without_gate(
     assert broker.published == []
 
 
-def test_push_ota_409_already_running(ota_client: TestClient, admin_headers: dict[str, str]):
+def test_push_ota_409_already_running(
+    ota_client: TestClient, admin_headers: dict[str, str], broker: FakeBrokerClient
+):
     _ota_device(img=ID_NEW[:16])
     r = ota_client.post(
         "/api/admin/devices/pgr-ota-r/ota", json={"target": ID_NEW[:16]}, headers=admin_headers
     )
     assert r.status_code == 409
-    assert r.json()["detail"] == "already running"
+    assert r.json()["detail"] == "already running that build"
+    assert broker.published == []
+
+
+def test_push_ota_409_already_running_img_variants(
+    ota_client: TestClient, admin_headers: dict[str, str], broker: FakeBrokerClient
+):
+    for img in (ID_NEW[:16].upper(), ID_NEW, " " + ID_NEW[:16]):
+        _ota_device(img=img)
+        r = ota_client.post(
+            "/api/admin/devices/pgr-ota-r/ota", json={"target": ID_NEW[:16]}, headers=admin_headers
+        )
+        assert r.status_code == 409, img
+        assert r.json()["detail"] == "already running that build"
+    assert broker.published == []
 
 
 def test_push_ota_422_bad_body(ota_client: TestClient, admin_headers: dict[str, str]):

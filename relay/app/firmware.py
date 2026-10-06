@@ -177,7 +177,8 @@ def choose(index: FirmwareIndex, target_id16: str, device_img16: str | None) -> 
         raise KeyError(target_id16)
     if device_img16:
         for d in build.deltas:
-            if d.base[:16] == device_img16:
+            # A delta from the target to itself is never valid.
+            if d.base[:16] == device_img16 and d.base[:16] != build.id16:
                 return Choice("delta", build, d)
     return Choice("full", build, build.full)
 

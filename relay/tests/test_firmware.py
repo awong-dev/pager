@@ -187,6 +187,16 @@ def test_choose_delta_only_on_exact_base16_match():
         firmware.choose(idx, "0" * 16, None)
 
 
+def test_choose_never_picks_delta_with_base_equal_target():
+    raw = make_index()
+    build = raw["builds"][0]
+    assert build["id"][:16] == ID_NEW[:16]
+    build["deltas"].append({**build["deltas"][0], "base": build["id"]})
+    idx = firmware.FirmwareIndex.model_validate(raw)
+    c = firmware.choose(idx, ID_NEW[:16], ID_NEW[:16])
+    assert c.kind == "full"
+
+
 def test_estimate_bytes():
     assert firmware.estimate_bytes(338784) == int(338784 * 1.045) + 7168
     assert firmware.estimate_bytes(0) == 7168

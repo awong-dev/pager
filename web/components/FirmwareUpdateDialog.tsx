@@ -57,9 +57,12 @@ export default function FirmwareUpdateDialog({
     };
   }, [open, deviceId]);
 
-  const running = device?.status?.img ?? null;
+  // Same normalisation as the relay's 409 check: trim, lowercase, first 16 hex.
+  const running = device?.status?.img ? device.status.img.trim().toLowerCase().slice(0, 16) : null;
+  const runningBuild = builds.find((b) => b.id16.toLowerCase() === running);
   const capable = device?.status?.otaCap === 1;
   const chosen = builds.find((b) => b.id16 === selected);
+  const chosenIsRunning = !!chosen && chosen.id16.toLowerCase() === running;
   const hasJob = !!device?.otaJob;
 
   async function run(fn: () => Promise<unknown>) {
@@ -79,6 +82,15 @@ export default function FirmwareUpdateDialog({
     <Dialog open={open} onClose={busy ? undefined : onClose} fullWidth maxWidth="sm">
       <DialogTitle>Update firmware{device ? ` -- ${device.label}` : ""}</DialogTitle>
       <DialogContent>
+        <Typography variant="body2" sx={{ mb: 2 }}>
+          Running:{" "}
+          {runningBuild
+            ? `${runningBuild.version} `
+            : device?.status?.fw
+              ? `${device.status.fw} `
+              : ""}
+          <code>{running ?? "unknown"}</code>
+        </Typography>
         {!capable && (
           <Alert severity="warning" sx={{ mb: 2 }}>
             This pager&apos;s firmware or bootloader cannot take over-the-air updates yet (needs one
@@ -111,7 +123,7 @@ export default function FirmwareUpdateDialog({
         <FormControl fullWidth>
           <RadioGroup value={selected} onChange={(e) => setSelected(e.target.value)}>
             {builds.map((b) => {
-              const isRunning = running !== null && b.id16 === running;
+              const isRunning = running !== null && b.id16.toLowerCase() === running;
               return (
                 <FormControlLabel
                   key={b.id16}
@@ -149,7 +161,7 @@ export default function FirmwareUpdateDialog({
         </Button>
         <Button
           variant="contained"
-          disabled={busy || !capable || !chosen || !deviceId}
+          disabled={busy || !capable || !chosen || chosenIsRunning || !deviceId}
           onClick={() => deviceId && chosen && void run(() => pushOta(deviceId, chosen.id16))}
         >
           Send update

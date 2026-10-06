@@ -1018,8 +1018,10 @@ def push_ota(
         raise HTTPException(status_code=404, detail="no such firmware build")
     if dev.status.otaCap != 1:
         raise HTTPException(status_code=409, detail="device does not report ota:1")
-    if dev.status.img == req.target:
-        raise HTTPException(status_code=409, detail="already running")
+    target_build = index.find(req.target)
+    assert target_build is not None
+    if dev.status.img and dev.status.img.strip().lower()[:16] == target_build.id16:
+        raise HTTPException(status_code=409, detail="already running that build")
     choice = firmware.choose(index, req.target, dev.status.img)
     est = firmware.estimate_bytes(choice.obj.osz)
     ok = devcfg.push_ota(
