@@ -37,6 +37,7 @@ import Typography from "@mui/material/Typography";
 
 import AppShell from "@/components/AppShell";
 import DeviceTrustChip from "@/components/DeviceTrustChip";
+import FirmwareChip from "@/components/FirmwareChip";
 import RequireAuth from "@/components/RequireAuth";
 import { ApiError, api } from "@/lib/api";
 import { locBackoffLabel } from "@/lib/deviceTrust";
@@ -274,6 +275,7 @@ function FamilyDevicesInner() {
               <TableCell>Provisioned</TableCell>
               <TableCell>Revoked</TableCell>
               <TableCell>CA trust</TableCell>
+              <TableCell>Firmware</TableCell>
               <TableCell>Lock</TableCell>
               <TableCell />
             </TableRow>
@@ -322,6 +324,9 @@ function FamilyDevicesInner() {
                         </Button>
                       </Stack>
                     </Stack>
+                  </TableCell>
+                  <TableCell>
+                    <FirmwareChip status={d.status} />
                   </TableCell>
                   <TableCell>
                     <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>

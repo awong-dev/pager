@@ -120,6 +120,15 @@ export interface DeviceStatusDoc {
   // docs/V02_DESIGN.md §5 (location): seconds until the next GPS attempt is
   // allowed, 0 = now. Absent on older firmware.
   locBackoffS?: number | null;
+  // docs/OTA_DESIGN.md §5: running image short id (16 hex), the OTA gate
+  // (1 = firmware + rollback bootloader confirmed), and the job's progress.
+  // All absent on older firmware.
+  img?: string | null;
+  otaCap?: number | null;
+  otaTarget?: string | null;
+  otaState?: "wait" | "dl" | "ready" | "inst" | "ok" | "fail" | "rb" | null;
+  otaPct?: number | null;
+  otaErr?: string | null;
   // docs/V02_DESIGN.md §6 (device SMS): audit-queue entries dropped on the
   // pager before they could be uploaded. Absent on older firmware.
   smsLost?: number | null;
@@ -152,6 +161,18 @@ export interface DeviceDoc {
   // creation (relay task 1.1). Optional -- a device created before the
   // multi-family cutover has no such field on its Firestore doc.
   familyId?: string | null;
+  // docs/OTA_DESIGN.md: the pending OTA job the relay stored on push; null
+  // after cancel. Absent when OTA was never used on this device.
+  otaJob?: OtaJob | null;
+}
+
+export interface OtaJob {
+  target16: string;
+  kind: "full" | "delta";
+  osz: number;
+  estBytes: number;
+  by_uid: string;
+  at: number;
 }
 
 // ---- devices/{deviceId}/locations/{autoId} -- app/store/locations.py ----
