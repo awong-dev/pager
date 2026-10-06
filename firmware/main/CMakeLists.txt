@@ -11,3 +11,10 @@ if(DEFINED ENV{PAGER_DEBUG_NO_LIGHT_SLEEP})
     target_compile_definitions(${COMPONENT_LIB} PRIVATE PAGER_DEBUG_NO_LIGHT_SLEEP=1)
     message(WARNING "PAGER_DEBUG_NO_LIGHT_SLEEP is set: this build never light-sleeps")
 endif()
+
+# Bench only: `PAGER_OTA_TEST_ABORT=1 idf.py reconfigure build` makes app_main() abort()
+# right after the boot log, to prove the bootloader rolls an OTA image back. Never ship it.
+if(DEFINED ENV{PAGER_OTA_TEST_ABORT})
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE PAGER_OTA_TEST_ABORT=1)
+    message(WARNING "PAGER_OTA_TEST_ABORT is set: this build panics at boot on purpose")
+endif()

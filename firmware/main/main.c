@@ -2298,6 +2298,12 @@ static void start_normal_console(void)
 void app_main(void)
 {
     ESP_LOGI(TAG, "school_pager boot");
+#ifdef PAGER_OTA_TEST_ABORT
+    // Bench-only rollback test image: panic before anything could mark this slot valid.
+    ESP_LOGE(TAG, "PAGER_OTA_TEST_ABORT build: aborting on purpose so the bootloader rolls back");
+    vTaskDelay(pdMS_TO_TICKS(300));
+    abort();
+#endif
 
     // TASK_ui_round2.md Do #7: local time for every on-glass HH:MM (status
     // clock, Home/Chat rows) — hardcoded per owner 25 Sep 2026; a cfg field
