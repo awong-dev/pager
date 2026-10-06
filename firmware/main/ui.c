@@ -367,7 +367,9 @@ static void draw_status_bar(void)
     net_mqtt_status_t st;
     net_get_mqtt_status(&st);
     int mqtt_x = bars_x - GFX_ICON_W - UI_STATUS_ICON_GAP;
-    gfx_icon(mqtt_x, 0, st.mqtt_connected ? GFX_ICON_LINK_OK : GFX_ICON_LINK_X);
+    // 6 Oct 2026: airplane mode takes the link slot (there is no session to show).
+    gfx_icon(mqtt_x, 0, net_airplane() ? GFX_ICON_AIRPLANE
+                        : (st.mqtt_connected ? GFX_ICON_LINK_OK : GFX_ICON_LINK_X));
 
     // v0.2 §4.3: TLS trust-state padlock, leftmost of the right cluster —
     // closed while pinned, broken while broken, nothing at all while

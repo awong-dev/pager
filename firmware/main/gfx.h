@@ -144,6 +144,7 @@ typedef enum {
      * partition. */
     GFX_ICON_CRASH,
     GFX_ICON_SLEEP, /* sleeping face + z: in the normal sleep cadence */
+    GFX_ICON_AIRPLANE, /* plane silhouette: airplane mode (modem held in reset) */
     GFX_ICON_COUNT,
 } gfx_icon_t;
 #define GFX_ICON_W 12
