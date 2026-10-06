@@ -69,10 +69,10 @@ bool accel_edge_wanted(int64_t now_us, int64_t last_reported_us, int64_t refract
  * host-tested like accel_edge_wanted(). A "chain" is a run of accel_poll()
  * observations with LIS3DH generator 2 (IA2) set. Defaults for the cfg: */
 #define ACCEL_SHAKE_N           6
-#define ACCEL_SHAKE_GAP_MS      250
-#define ACCEL_SHAKE_SPAN_MS     400
+#define ACCEL_SHAKE_GAP_MS      500 /* bench 6 Oct 2026: a shake's events arrive 60-250 ms apart, the onset pause can exceed 250 */
+#define ACCEL_SHAKE_SPAN_MS     300 /* bench 6 Oct 2026: a fast six-sample burst spans ~260 ms */
 #define ACCEL_SHAKE_COOLDOWN_MS 3000
-#define ACCEL_SHAKE_HOLDOFF_MS  10000
+#define ACCEL_SHAKE_HOLDOFF_MS  0 /* bench 6 Oct 2026: a holdoff discarded the shake that followed a rejected onset; the n/span rule alone rejects taps and steps */
 
 typedef struct {
     uint8_t n_min;

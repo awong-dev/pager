@@ -131,7 +131,7 @@ static const char *TAG = "accel";
 // INT1_THS: 1 LSB = 32 mg at +-4 g. 0x08 = 256 mg, "walking/being carried".
 #define LIS3DH_INT1_THS_DEFAULT 0x08
 // INT2_THS: 0x24 * 32 mg = 1152 mg, above taps and walking, below a shake.
-#define LIS3DH_INT2_THS_DEFAULT 0x24
+#define LIS3DH_INT2_THS_DEFAULT 0x0C // 384 mg at +-4 g (bench 6 Oct 2026: 768 and 1152 mg saw too little of a normal hard shake; taps/steps are rejected by the chain, not the threshold)
 // DURATION 0 = no hardware debounce (firmware classifies, SHAKE_WAKE_DESIGN D3/D5).
 #define LIS3DH_INT1_DURATION_DEFAULT 0x00
 #define LIS3DH_INT2_DURATION_DEFAULT 0x00

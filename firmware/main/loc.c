@@ -1437,6 +1437,11 @@ static void finish_attempt(bool success)
 
 void loc_service(void)
 {
+    // 6 Oct 2026 (owner): airplane mode disables every location attempt -- no GNSS fix
+    // scheduling, no cell lookups, no /loc publishes -- not just the net-layer calls.
+    if (net_airplane()) {
+        return;
+    }
     // LOCATION_TRACKING_DESIGN.md task F3: the background tracker's own
     // scheduling is entirely independent of the GNSS attempt phase machine
     // below (it never blocks on it, and vice versa -- an attempt in

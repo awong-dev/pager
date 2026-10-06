@@ -6,6 +6,14 @@ motion wakes the chip over ext1 and feeds `loc_on_motion_event()` only: no atten
 rail, no keyboard. Inputs: brief
 `build/bench-logs/DESIGN_shake_wake_brief.md`. Task: `build/bench-logs/TASK_shake_wake.md`.
 
+
+> **Bench calibration, 6 Oct 2026 (supersedes the numbers below where they differ):** with the
+> LIS3DH's intermittent SDA/SCL lead repaired, the owner's hard shakes fired reliably only at
+> **THS2 = 384 mg (0x0C)**, chain **n = 6, gap = 500 ms, span = 300 ms, holdoff = 0**. 768 and
+> 1152 mg saw too little of a normal shake; a 250 ms gap broke the chain at the shake's onset; any
+> holdoff discarded the shake that followed a rejected onset. Taps and steps are rejected by the
+> n/span rule (a tap is n = 1-2 in 20 ms). Tap/step false-positive runs at 384 mg are still owed.
+
 ## Decisions
 
 **D1. Two LIS3DH interrupt generators, both routed to the one wired pin (INT1 to IO6).**

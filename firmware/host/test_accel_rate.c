@@ -146,9 +146,9 @@ static void test_shake_fires(void)
         accel_shake_verdict_t v = accel_shake_step(&s, &SHAKE_CFG, MS(t), t % 40 == 0);
         if (v == ACCEL_SHAKE_FIRED) {
             fired++;
-            CHECK(t == 400, "shake fires at t=400 ms, got %d", t);
-            CHECK(s.out_n == 11, "shake out_n=11, got %u", (unsigned) s.out_n);
-            CHECK(s.out_span_ms == 400, "shake out_span_ms=400, got %u", (unsigned) s.out_span_ms);
+            CHECK(t == 320, "shake fires at t=320 ms (span 300, events every 40 ms), got %d", t);
+            CHECK(s.out_n == 9, "shake out_n=9, got %u", (unsigned) s.out_n);
+            CHECK(s.out_span_ms == 320, "shake out_span_ms=320, got %u", (unsigned) s.out_span_ms);
         }
         if (v == ACCEL_SHAKE_REJECTED) {
             rejected++;
@@ -170,17 +170,22 @@ static void test_shake_one_jolt(void)
         }
         if (v == ACCEL_SHAKE_REJECTED) {
             rejected++;
-            CHECK(t == 340, "jolt rejected at t=340, got %d", t);
-            CHECK(s.out_n == 3, "jolt out_n=3, got %u", (unsigned) s.out_n);
+            if (rejected == 1) {
+                CHECK(t == 600, "jolt rejected at t=600 (80 ms + 500 ms gap, next 20 ms poll), got %d", t);
+                CHECK(s.out_n == 3, "jolt out_n=3, got %u", (unsigned) s.out_n);
+            } else {
+                CHECK(t == 1520, "lone t=1000 event rejected at t=1520, got %d", t);
+                CHECK(s.out_n == 1, "lone event out_n=1, got %u", (unsigned) s.out_n);
+            }
         }
         if (t == 1000) {
-            CHECK(v == ACCEL_SHAKE_IDLE, "ia2 at t=1000 is ignored during holdoff, got %d", (int) v);
+            CHECK(v == ACCEL_SHAKE_PENDING, "ia2 at t=1000 starts a new chain (holdoff is 0 since the 6 Oct calibration), got %d", (int) v);
         }
     }
     CHECK(fired == 0, "a jolt never fires, got %d", fired);
-    CHECK(rejected == 1, "exactly one REJECTED, got %d", rejected);
+    CHECK(rejected == 2, "two REJECTED (the jolt, then the lone t=1000 event), got %d", rejected);
     CHECK(accel_shake_step(&s, &SHAKE_CFG, MS(10360), true) == ACCEL_SHAKE_PENDING,
-          "ia2 at t=10360 (holdoff over) starts a chain");
+          "ia2 at t=10360 starts a chain");
 }
 
 static void test_shake_running(void)
@@ -207,8 +212,11 @@ static void test_shake_running(void)
             rejected++;
         }
     }
-    CHECK(fired == 0, "running never fires, got %d", fired);
-    CHECK(rejected >= 1, "running yields at least one REJECTED, got %d", rejected);
+    /* 6 Oct 2026 calibration (gap 500 ms, holdoff 0): impacts 333 ms apart DO chain up, so
+     * running fires once per 3 s cooldown. Known, accepted cost of a reliable shake (see
+     * docs/SHAKE_WAKE_DESIGN.md calibration note); revisit with the click engine if it bites. */
+    CHECK(fired >= 2, "running fires at least twice in 10 s with gap 500 (documented false positive), got %d", fired);
+    CHECK(rejected == 0, "running yields no REJECTED with gap 500, got %d", rejected);
 }
 
 static void test_shake_gap_boundary(void)
@@ -216,25 +224,25 @@ static void test_shake_gap_boundary(void)
     accel_shake_t s = { 0 };
     accel_shake_verdict_t v = ACCEL_SHAKE_IDLE;
     for (int i = 0; i < 6; i++) {
-        v = accel_shake_step(&s, &SHAKE_CFG, MS(i * 250), true);
+        v = accel_shake_step(&s, &SHAKE_CFG, MS(i * 500), true);
         if (i < 5) {
-            CHECK(v == ACCEL_SHAKE_PENDING, "250 ms spacing, call %d pending, got %d", i + 1, (int) v);
+            CHECK(v == ACCEL_SHAKE_PENDING, "500 ms spacing, call %d pending, got %d", i + 1, (int) v);
         }
     }
-    CHECK(v == ACCEL_SHAKE_FIRED, "250 ms spacing fires at the 6th call (t=1250), got %d", (int) v);
+    CHECK(v == ACCEL_SHAKE_FIRED, "500 ms spacing fires at the 6th call (t=2500), got %d", (int) v);
 
     accel_shake_t s2 = { 0 };
     int fired = 0;
     for (int i = 0; i < 6; i++) {
-        v = accel_shake_step(&s2, &SHAKE_CFG, (int64_t) i * 251000, true);
+        v = accel_shake_step(&s2, &SHAKE_CFG, (int64_t) i * 501000, true);
         if (v == ACCEL_SHAKE_FIRED) {
             fired++;
         }
         if (i == 1) {
-            CHECK(v == ACCEL_SHAKE_REJECTED, "251 ms spacing rejected at the 2nd call, got %d", (int) v);
+            CHECK(v == ACCEL_SHAKE_REJECTED, "501 ms spacing rejected at the 2nd call, got %d", (int) v);
         }
     }
-    CHECK(fired == 0, "251 ms spacing never fires, got %d", fired);
+    CHECK(fired == 0, "501 ms spacing never fires, got %d", fired);
 }
 
 static void test_shake_n_gate(void)
@@ -257,10 +265,10 @@ static void test_shake_span_gate(void)
         accel_shake_verdict_t v = accel_shake_step(&s, &SHAKE_CFG, MS(t), true);
         if (v == ACCEL_SHAKE_FIRED) {
             fired++;
-            CHECK(t == 400, "span gate: fires at t=400, got %d", t);
+            CHECK(t == 300, "span gate: fires at t=300 (6 Oct calibration), got %d", t);
         }
     }
-    CHECK(fired == 1, "span gate: one FIRED by t=400, got %d", fired);
+    CHECK(fired == 1, "span gate: one FIRED by t=400 (at t=300), got %d", fired);
 }
 
 static void test_shake_backwards_clock(void)
