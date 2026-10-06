@@ -39,6 +39,7 @@
 #include "loc.h"
 #include "lock.h" // round 4: `attn` debug console command reads lock_is_set()/lock_is_locked()
 #include "modes.h"
+#include "refreshpol.h"
 #include "net.h"
 #include "pins.h"
 #include "rail.h"
@@ -525,6 +526,37 @@ static int cmd_padfix(int argc, char **argv)
     gpio_config(&cfg);
     printf("padfix: hold_dis + rtc_gpio_deinit + gpio_config(input, pull-down) applied to IO8\n");
     return cmd_padinfo(argc, argv);
+}
+
+// Refresh policy tuning (refreshpol.h): `refresh [floor N|ceil N|idle S|gap MS|psmin N|status]`.
+// Knobs persist to NVS "disp" so they carry into the release build. Power effect: none.
+static int cmd_refresh(int argc, char **argv)
+{
+    refreshpol_t *p = refreshpol_global();
+    if (argc >= 3) {
+        int v = atoi(argv[2]);
+        if (v < 0) {
+            printf("refresh: value must be >= 0\n");
+            return 1;
+        }
+        if (strcmp(argv[1], "floor") == 0) p->floor = (uint32_t) v;
+        else if (strcmp(argv[1], "ceil") == 0) p->ceiling = (uint32_t) v;
+        else if (strcmp(argv[1], "idle") == 0) p->idle_s = (uint32_t) v;
+        else if (strcmp(argv[1], "gap") == 0) p->gap_ms = (uint32_t) v;
+        else if (strcmp(argv[1], "psmin") == 0) p->presleep_min = (uint32_t) v;
+        else {
+            printf("usage: refresh [floor N|ceil N|idle S|gap MS|psmin N|status]\n");
+            return 1;
+        }
+        refreshpol_save_nvs();
+    } else if (argc == 2 && strcmp(argv[1], "status") != 0) {
+        printf("usage: refresh [floor N|ceil N|idle S|gap MS|psmin N|status]\n");
+        return 1;
+    }
+    printf("refresh: dirty=%u floor=%u ceil=%u idle=%us gap=%ums psmin=%u\n", (unsigned) p->dirty,
+           (unsigned) p->floor, (unsigned) p->ceiling, (unsigned) p->idle_s, (unsigned) p->gap_ms,
+           (unsigned) p->presleep_min);
+    return 0;
 }
 
 static int cmd_gpio(int argc, char **argv)
@@ -2078,6 +2110,14 @@ static void start_normal_console(void)
         .func = &cmd_gpio,
     };
     ESP_ERROR_CHECK(esp_console_cmd_register(&gpio_cmd));
+
+    const esp_console_cmd_t refresh_cmd = {
+        .command = "refresh",
+        .help = "refresh [floor N|ceil N|idle S|gap MS|psmin N|status] -- full-refresh policy knobs (persist to NVS)",
+        .hint = NULL,
+        .func = &cmd_refresh,
+    };
+    ESP_ERROR_CHECK(esp_console_cmd_register(&refresh_cmd));
 
     const esp_console_cmd_t padinfo_cmd = {
         .command = "padinfo",

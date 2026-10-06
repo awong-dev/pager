@@ -75,7 +75,7 @@ endif
 MAIN_SRC := ../main
 BUILD := build
 
-TESTS := test_cbor test_auth test_setup test_input test_msg test_lock test_loc test_cafetch test_catrust test_cfg test_sms test_carrier test_chat_layout test_home_list test_coverage test_net_connect_guard test_net_probe_guard test_resub_verdict test_publish_quiet test_accel_rate test_wifi_policy test_wificred test_bookpull test_clock test_disp_flip test_otapipe test_ota test_battstat
+TESTS := test_cbor test_auth test_setup test_input test_msg test_lock test_loc test_cafetch test_catrust test_cfg test_sms test_carrier test_chat_layout test_home_list test_coverage test_net_connect_guard test_net_probe_guard test_resub_verdict test_publish_quiet test_accel_rate test_wifi_policy test_wificred test_bookpull test_clock test_disp_flip test_otapipe test_ota test_battstat test_refreshpol
 TEST_BINS := $(TESTS:%=$(BUILD)/%)
 
 # ASSETS: tools/mkassets.py's default output location (docs/DEVICE_TASKS.md
@@ -499,3 +499,13 @@ $(BUILD)/test_battstat.o: test_battstat.c $(MAIN_SRC)/battstat.h | $(BUILD)
 
 $(BUILD)/test_battstat: $(BUILD)/battstat.o $(BUILD)/cbor.o $(BUILD)/test_battstat.o
 	$(CC) $(CFLAGS) -o $@ $(BUILD)/battstat.o $(BUILD)/cbor.o $(BUILD)/test_battstat.o
+
+# test_refreshpol: refreshpol.c's pure core (device half under #ifdef ESP_PLATFORM).
+$(BUILD)/refreshpol.o: $(MAIN_SRC)/refreshpol.c $(MAIN_SRC)/refreshpol.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $(MAIN_SRC)/refreshpol.c
+
+$(BUILD)/test_refreshpol.o: test_refreshpol.c $(MAIN_SRC)/refreshpol.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ test_refreshpol.c
+
+$(BUILD)/test_refreshpol: $(BUILD)/refreshpol.o $(BUILD)/test_refreshpol.o
+	$(CC) $(CFLAGS) -o $@ $(BUILD)/refreshpol.o $(BUILD)/test_refreshpol.o

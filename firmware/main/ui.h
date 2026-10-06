@@ -354,7 +354,7 @@ void ui_render(void);
 void ui_debug_render_times(int64_t *paint_us, int64_t *refresh_us);
 #endif
 
-/* Same content-painting as ui_render(), but via disp_refresh_cadence() —
+/* Same content-painting as ui_render(), but via disp_partial_refresh() —
  * the one call site (besides ui_on_awake_lapse() below) allowed to consume
  * disp_init()'s "force a full refresh on the first call" priming
  * (disp.h), so the panel gets a clean baseline image on power-up instead
@@ -366,12 +366,20 @@ void ui_render_boot(void);
 /* Called from modes.c on the input_awake() true->false edge (the UI-awake
  * window lapsing). Does not repaint — the framebuffer already holds
  * whatever the most recent ui_render() call painted — it only lets the
- * 20-partial cadence counter decide partial vs. full and sends whichever
+ * refreshpol.h policy (dirty counter vs. FLOOR) decide partial vs. full and sends whichever
  * is due, so a due full refresh lands here (interaction just ended) rather
  * than mid-interaction or on the inbound-message path. Power effect:
  * ~0.3-0.8s (partial, the common case — usually a no-op besides, since
- * content did not change) or ~2-4s (full, every 20th), PENDING_HW. */
+ * content did not change) or ~2-4s (full, dirty >= FLOOR), PENDING_HW. */
 void ui_on_awake_lapse(void);
+
+/* Refresh policy (refreshpol.h) rules 3/4. ui_mark_transition(): the next
+ * ui_render() is a whole-screen change (screen switch, message sent). Called
+ * by ui.c's stack ops and scr_chat.c's send; no power effect. */
+void ui_mark_transition(void);
+/* The sleep-entry render (modes.c): like ui_render() but a full refresh if
+ * the policy's dirty count > 0. Power effect: ~3 s panel drive when full. */
+void ui_render_presleep(void);
 
 /* Routes one decoded key/nav event to the top screen's on_key(). Does not
  * render — the caller (modes.c) calls ui_render() once after draining every

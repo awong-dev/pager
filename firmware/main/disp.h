@@ -37,7 +37,7 @@ extern "C" {
  * the duration of init. Returns false if BUSY never deasserts (15s
  * timeout, one retry) — the caller MUST keep running headless in that case
  * (PROTOCOL.md: no pager function may be gated on the display). Forces a
- * full refresh on the first disp_refresh_cadence() call after a successful
+ * full refresh on the first disp_partial_refresh() call after a successful
  * init. */
 bool disp_init(void);
 
@@ -50,7 +50,7 @@ bool disp_init(void);
  * path only ever runs across a light sleep. Silently reloads both SSD1680
  * RAM planes from that shadow copy (no visible refresh — RAM writes alone
  * never move the glass) instead of forcing a full refresh, so the very next
- * disp_partial_refresh()/disp_refresh_cadence() call can do an ordinary,
+ * disp_partial_refresh()/disp_partial_refresh() call can do an ordinary,
  * correct partial of whatever actually changed — see disp.c's
  * restore_ram_planes_locked() for the full argument. Falls back to the old
  * force-a-full-refresh behaviour if the restore itself fails BUSY. Does NOT
@@ -71,7 +71,7 @@ bool disp_is_dead(void);
 /* Sends gfx.c's whole current framebuffer and marks the shadow plane
  * clean. Power effect: ~2-4s of panel refresh current (README M7/M14,
  * PENDING_HW) — the most expensive display operation; callers should
- * prefer disp_refresh_cadence()/disp_partial_refresh() and reserve this
+ * prefer disp_partial_refresh()/disp_partial_refresh() and reserve this
  * for init/composer-close per the pre-split ui.c's existing call sites. */
 void disp_full_refresh(void);
 
@@ -79,21 +79,12 @@ void disp_full_refresh(void);
  * changed row band (a no-op if nothing changed). Power effect: ~0.3-0.8s
  * of panel refresh current (README M7/M14, PENDING_HW), the "cheap"
  * refresh. Does not consume/reset the 20-partial cadence counter — see
- * disp_refresh_cadence(). */
+ * disp_partial_refresh(). */
 void disp_partial_refresh(void);
 
 /* The next refresh (partial path included) is a full one -- ghosting reset on
- * demand (modes.c: Enter, owner 7 Oct 2026). */
+ * demand (modes.c refreshpol idle/ceiling poll). */
 void disp_request_full(void);
-
-/* Every 20th call does a disp_full_refresh() instead and resets the
- * counter (firmware/README.md's explicit override of the component
- * author's "~10" suggestion); otherwise disp_partial_refresh(). This is
- * the entry point ui.c's normal render path uses; disp_full_refresh()/
- * disp_partial_refresh() above are for the two call sites (init,
- * composer-close/open) that must force one or the other regardless of the
- * counter. */
-void disp_refresh_cadence(void);
 
 /* Weak hook, called every ~10ms from inside disp_wait_busy_fb()'s BUSY-wait
  * loops (both the poll-until-low loop and the fixed-wait fallback path) for
@@ -183,7 +174,7 @@ uint32_t disp_busy_timeout_count(void);
 /* Bench instrumentation: counts of completed full refreshes, completed
  * partial refreshes, and (a subset of the full count) full refreshes that
  * were originally requested as a partial and upgraded, either by
- * s_force_full or by disp_refresh_cadence()'s own cadence threshold --
+ * s_force_full or by disp_partial_refresh()'s own cadence threshold --
  * so a bench window can attribute unexplained full refreshes (the 3.4s
  * panel event) instead of just counting them. Free-running; reset by
  * disp_reset_refresh_stats(). Any output pointer may be NULL. */

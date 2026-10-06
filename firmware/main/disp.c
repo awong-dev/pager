@@ -5,6 +5,7 @@
 #include "disp.h"
 #include "disp_flip.h"
 #include "gfx.h"
+#include "refreshpol.h" // dirty-partial counter + full-refresh policy (hooks below)
 #include "pins.h"
 #include "wf_partial_2in9.h"
 
@@ -26,7 +27,6 @@
 
 static const char *TAG = "disp";
 
-#define PAGER_UI_PARTIAL_FULL_EVERY 20 // firmware/README.md, explicit override of "~10"
 
 // S12 (docs/SLEEP_URC_DESIGN.md §8.3, docs/SLEEP_URC_TASKS.md S12): this is
 // the bound for the "BUSY line genuinely asserted, then never deasserted"
@@ -102,7 +102,7 @@ static uint32_t s_partial_count = 0;
 // s_cnt_full counts every completed full refresh, however it was reached;
 // s_cnt_forced_full is a subset of s_cnt_full, counting only the ones that
 // were originally requested as a partial and upgraded (s_force_full, or the
-// PAGER_UI_PARTIAL_FULL_EVERY cadence in disp_refresh_cadence());
+// refreshpol.c policy via disp_request_full());
 // s_cnt_partial counts only partials that actually reached the panel (never
 // a no-op diff, never one that aborted into a BUSY-timeout recovery).
 // Free-running; reset (with the ring below) by disp_reset_refresh_stats(),
@@ -118,7 +118,7 @@ static uint32_t s_cnt_forced_full = 0;
 // once full. kind: 'F' full (as directly requested), 'P' partial, 'U' a
 // partial request upgraded to a full. tag: which public entry point started
 // the call chain (1=disp_full_refresh, 2=disp_partial_refresh,
-// 3=disp_refresh_cadence, 0=other), OR 4 if this particular full refresh
+// 3=unused (was the cadence), 0=other), OR 4 if this particular full refresh
 // only completed via its own BUSY-timeout reset+re-init retry (see
 // full_refresh_locked()'s "recovered" local) -- that overrides the caller's
 // own tag, since "needed a mid-refresh recovery" is the more useful
@@ -166,12 +166,12 @@ static void disp_refresh_ring_push(char kind, uint8_t tag)
 static uint32_t s_busy_timeout_count = 0;
 
 // Handoff task D2: partial_refresh_locked()'s own BUSY-timeout recovery used
-// to set s_partial_count = PAGER_UI_PARTIAL_FULL_EVERY to force the next
+// to set s_partial_count to force the next
 // refresh full, but ui.c's render path calls disp_partial_refresh()
-// directly (never disp_refresh_cadence()), so that counter bump was silently
+// directly (never disp_partial_refresh()), so that counter bump was silently
 // never read. This flag is what disp_partial_refresh() actually honours;
 // set here (that recovery) and by disp_init()'s own priming below, cleared
-// once consumed. disp_refresh_cadence() is unchanged — it still decides full
+// once consumed. disp_partial_refresh() is unchanged — it still decides full
 // vs. partial from s_partial_count alone, exactly as before.
 static bool s_force_full = false;
 
@@ -699,7 +699,7 @@ static bool disp_pre_refresh_reset(const char *who)
 
 // tag: caller attribution for the refresh-stats ring (see s_refresh_ring's
 // own comment) — 1=disp_full_refresh, 2=disp_partial_refresh,
-// 3=disp_refresh_cadence, 0=other. upgraded: true if this full refresh was
+// 3=unused (was the cadence), 0=other. upgraded: true if this full refresh was
 // originally requested as a partial and upgraded (s_force_full or the
 // cadence threshold) — counted in s_cnt_forced_full in addition to
 // s_cnt_full, and ring-logged as kind 'U' instead of 'F'.
@@ -777,6 +777,7 @@ static void full_refresh_locked(uint8_t tag, bool upgraded)
         memcpy(s_fb_old[r], s_fb_snap[r], GFX_FB_ROW_BYTES);
     }
     s_partial_count = 0;
+    refreshpol_note_full(); // logs reason + dirty, resets the policy's dirty counter
     // Any completed full refresh satisfies a pending forced full, whether it
     // was set by disp_init() (first-render priming, above) or by the
     // BUSY-timeout recovery in partial_refresh_locked() (shadow-plane
@@ -934,10 +935,9 @@ static void partial_refresh_locked(uint8_t tag)
         }
         // Re-init invalidates the shadow plane's validity; force the next
         // caller onto a full refresh rather than risk desync.
-        // s_partial_count covers disp_refresh_cadence() callers;
+        // s_partial_count covers disp_partial_refresh() callers;
         // s_force_full covers disp_partial_refresh()'s direct callers, which
         // never read s_partial_count (see s_force_full's own comment).
-        s_partial_count = PAGER_UI_PARTIAL_FULL_EVERY;
         s_force_full = true;
         return;
     }
@@ -987,6 +987,7 @@ static void partial_refresh_locked(uint8_t tag)
     }
 
     s_partial_count++;
+    refreshpol_note_partial(); // policy dirty counter (rule 2)
 
     // Bench instrumentation (see s_cnt_partial/s_refresh_ring's own
     // comments): only reached once a partial has actually been issued to the
@@ -1250,7 +1251,6 @@ bool disp_init(void)
         }
     }
 
-    s_partial_count = PAGER_UI_PARTIAL_FULL_EVERY; // force a full refresh via disp_refresh_cadence()
     s_force_full = true; // ...and via disp_partial_refresh(), in case the first render call goes there directly
     ESP_LOGI(TAG, "display init OK");
     return true;
@@ -1261,7 +1261,7 @@ bool disp_is_dead(void) { return s_display_dead; }
 // Rail gate: see disp.h's own doc comment, and restore_ram_planes_locked()'s
 // own banner comment just above for the "why a partial is safe here at all"
 // argument. Deliberately does NOT touch s_partial_count -- the every-20th-
-// partial full-refresh cadence (disp_refresh_cadence()) keeps running
+// partial full-refresh cadence (disp_partial_refresh()) keeps running
 // exactly as it would have if the rail had never dropped; forcing it here
 // would just be a second, unrelated reason to go full, which the owner
 // asked to keep separate. Falls back to the old force-full behaviour only if
@@ -1292,7 +1292,6 @@ void disp_note_power_loss(void)
         ESP_LOGI(TAG, "disp: RAM planes restored after rail power loss - next refresh is a partial");
     } else {
         ESP_LOGI(TAG, "disp: RAM restore failed after rail power loss - forcing a full refresh");
-        s_partial_count = PAGER_UI_PARTIAL_FULL_EVERY;
         s_force_full = true;
     }
     disp_unlock();
@@ -1307,7 +1306,8 @@ void disp_full_refresh(void)
 
 // 7 Oct 2026 (owner: the glass greys progressively while typing — "Albert
 // phone" was visibly degraded): the next refresh of any kind is a FULL one.
-// modes.c calls this on Enter; disp_partial_refresh()
+// modes.c calls this from the refreshpol idle/ceiling poll (Enter no longer
+// does, 7 Oct 2026: every key is a partial); disp_partial_refresh()
 // below already upgrades on s_force_full.
 void disp_request_full(void)
 {
@@ -1323,23 +1323,12 @@ void disp_partial_refresh(void)
         // Honour a pending forced-full request (disp_init()'s priming, or
         // partial_refresh_locked()'s own BUSY-timeout recovery) — see
         // s_force_full's own comment. Consume it here: this is the only
-        // place a caller that bypasses disp_refresh_cadence() can be made to
+        // place a caller that bypasses disp_partial_refresh() can be made to
         // see it.
         s_force_full = false;
         full_refresh_locked(2, true); // tag 2, upgraded: refresh-stats attribution
     } else {
         partial_refresh_locked(2); // tag 2: refresh-stats attribution
-    }
-    disp_unlock();
-}
-
-void disp_refresh_cadence(void)
-{
-    disp_lock();
-    if (s_partial_count >= PAGER_UI_PARTIAL_FULL_EVERY) {
-        full_refresh_locked(3, true); // tag 3, upgraded: refresh-stats attribution
-    } else {
-        partial_refresh_locked(3); // tag 3: refresh-stats attribution
     }
     disp_unlock();
 }

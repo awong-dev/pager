@@ -772,6 +772,7 @@ static void try_send(void)
         if (sms_queue_send(&sms_target, body, body_len)) {
             msg_composer_reset();
             s_scroll = 0;
+            ui_mark_transition(); // send: whole-screen change (refreshpol rule 4)
         } else {
             ui_show_toast("SMS unavailable or send queue full");
         }
@@ -812,6 +813,7 @@ static void try_send(void)
             if (sms_queue_send(&peer_sms, body, body_len)) {
                 msg_composer_reset();
                 s_scroll = 0;
+                ui_mark_transition(); // send: whole-screen change (refreshpol rule 4)
             } else {
                 ui_show_toast("SMS unavailable or send queue full");
             }
@@ -838,6 +840,7 @@ static void try_send(void)
     if (msg_queue_reply(to, body, body_len)) {
         msg_composer_reset();
         s_scroll = 0; // auto-follow back to the newest (the reply itself)
+        ui_mark_transition(); // send: whole-screen change (refreshpol rule 4)
     } else {
         ui_show_toast("reply too long or send queue full");
     }

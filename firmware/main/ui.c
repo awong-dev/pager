@@ -17,6 +17,7 @@
 #include "modes.h"
 #include "net.h"
 #include "disp.h"
+#include "refreshpol.h"
 #include "gfx.h"
 #include "lock.h" /* F6.5: gates ui_on_button_short()/ui_on_button_long() below, docs/DEVICE_PLAN.md §5.8 */
 #include "catrust.h" /* v0.2 §4.3: TLS trust-state padlock in draw_status_bar() below */
@@ -44,8 +45,13 @@ static const char *TAG = "ui";
 static const ui_screen_t *s_stack[UI_STACK_DEPTH];
 static int s_depth = 0;
 
+static bool s_transition_pending = false;
+
+void ui_mark_transition(void) { s_transition_pending = true; }
+
 static void fire_enter(const ui_screen_t *scr)
 {
+    s_transition_pending = true; // every stack op is a whole-screen change (refreshpol rule 3)
     if (scr && scr->on_event) {
         scr->on_event(UI_EVT_ENTER);
     }
@@ -512,12 +518,31 @@ void ui_render(void)
     // ALWAYS does a partial (never consults/advances the 20-partial
     // cadence counter). ui_on_awake_lapse() below is the one place that
     // cadence counter is ever consulted outside of ui_init()'s own
-    // boot-time full refresh (modes_boot() calls disp_refresh_cadence()
+    // boot-time full refresh (modes_boot() calls disp_partial_refresh()
     // directly via paint_frame()+ui_render_boot(), not this function).
-    disp_partial_refresh(); // power effect: ~0.3-0.8s, PENDING_HW; no-op if nothing changed
+    // Refresh policy rule 4: above FLOOR a whole-screen transition is a full.
+    bool transition = s_transition_pending;
+    s_transition_pending = false;
+    if (transition && refreshpol_poll(true, false)) {
+        disp_full_refresh(); // power effect: ~2-4s full instead of a partial
+    } else {
+        disp_partial_refresh(); // power effect: ~0.3-0.8s, PENDING_HW; no-op if nothing changed
+    }
 #ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
     s_dbg_refresh_us = esp_timer_get_time() - dbg_t1; // ~0 when disp_partial_refresh() took its no-op path
 #endif
+}
+
+// Rule 5 (refreshpol.h): the sleep-entry frame is a full if anything is dirty.
+void ui_render_presleep(void)
+{
+    if (refreshpol_poll(false, true)) {
+        paint_frame();
+        s_transition_pending = false;
+        disp_full_refresh(); // power effect: ~2-4s full, once per sleep-stretch entry
+    } else {
+        ui_render();
+    }
 }
 
 // Called once, from modes_boot(), right after a successful ui_init() — the
@@ -528,7 +553,13 @@ void ui_render(void)
 void ui_render_boot(void)
 {
     paint_frame();
-    disp_refresh_cadence(); // power effect: ~2-4s (forced full on this first call), PENDING_HW
+    // disp_init() primes s_force_full, which disp_partial_refresh() honours (first frame is a
+    // full); otherwise partial unless the policy says dirty >= FLOOR (0 at boot).
+    if (refreshpol_poll(false, false)) {
+        disp_full_refresh();
+    } else {
+        disp_partial_refresh(); // power effect: ~2-4s (forced full on this first call), PENDING_HW
+    }
 }
 
 // Called from modes.c on the input_awake() true->false edge (the UI-awake
@@ -544,7 +575,14 @@ void ui_render_boot(void)
 void ui_on_awake_lapse(void)
 {
     paint_frame();
-    disp_refresh_cadence(); // power effect: ~0.3-0.8s partial, or ~2-4s full (every 20th), PENDING_HW
+    s_transition_pending = false;
+    // The lapse is an idle gap: the policy (refreshpol.h) decides, same dirty counter and FLOOR
+    // as everywhere else (the old hard-coded full-at-20 cadence is gone).
+    if (refreshpol_poll(false, false)) {
+        disp_full_refresh(); // power effect: ~2-4s full
+    } else {
+        disp_partial_refresh(); // power effect: ~0.3-0.8s partial, PENDING_HW
+    }
 }
 
 void ui_dispatch_key(input_key_t key)
@@ -655,6 +693,7 @@ bool ui_incoming(const char *from, bool was_asleep)
     // scr_chat_mark_visible_read() here — see this file's/ui.h's own
     // comment on why that ack stays `shown`, not `read`, on this path.
     bool was_greeting = (top == &g_scr_greeting);
+    bool switched = (top != &g_scr_chat); // greeting/other screen -> chat: whole-screen change
     if (top == &g_scr_greeting) {
         // Replace, not push: the greeting is a sleep splash, not somewhere
         // to come back to. Popping Chat should land on Home.
@@ -696,9 +735,12 @@ bool ui_incoming(const char *from, bool was_asleep)
         // supersedes the 20 Sep full-on-steal choice except for the
         // greeting.
         disp_full_refresh();
+    } else if (switched && refreshpol_poll(true, false)) {
+        disp_full_refresh(); // refreshpol rule 4: whole-screen change above FLOOR
     } else {
         disp_partial_refresh();
     }
+    s_transition_pending = false; // painted synchronously above
     return true;
 }
 

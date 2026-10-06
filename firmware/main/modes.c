@@ -21,6 +21,7 @@
 #include "flightrec.h" // docs/SLEEP_PAGE_LOSS_BRIEF.md §6 item A; no-op outside a debug build's sleeptest window
 #include "pins.h" // PAGER_PIN_WAKE0, the sleeptest wake0_ms experiment (§6 item F)
 #include "battstat.h" // docs/BATTERY_STATS_DESIGN.md: time-in-state counters, /status key 68 `bs`
+#include "refreshpol.h"
 #include "rail.h" // docs/ROADMAP.md rail gate (owner, 24 Sep 10:30 pm PDT): rail_on()/rail_off()
 
 // F6.2 (docs/DEVICE_PLAN.md §5.3): CardKB decode + button FSM (+BTN_STUCK)
@@ -2338,6 +2339,7 @@ void modes_boot(void)
 
     input_init(); // power effect: GPIO config + static queue alloc only
 
+    refreshpol_load_nvs(); // NVS "disp" floor/ceil/idle/gap overrides; no power effect
     if (!ui_init()) {
         ESP_LOGI(TAG, "display init failed; continuing headless (network/replies/acks unaffected)");
     } else {
@@ -2801,7 +2803,10 @@ void modes_run(void)
             if (!attentive && !s_sleep_shown) {
                 s_sleep_shown = true;
                 s_sleep_entry_ext1 = net_get_ext1_wakes();
-                ui_render();
+                // Refresh policy rule 5: full (not partial) if anything is dirty -- this
+                // is the frame that sits on the glass for hours. Power effect: ~3 s panel
+                // drive once per sleep-stretch entry when dirty > 0, else as before.
+                ui_render_presleep();
             }
 #ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
             int64_t st_t0 = esp_timer_get_time();
@@ -3141,14 +3146,12 @@ void modes_run(void)
                 s_last_input_us = esp_timer_get_time(); // rail hold task: arm the attentive cadence
                 break;
             case INPUT_EVT_KEY:
+                // Refresh policy (refreshpol.h): stamp the key BEFORE dispatch so
+                // a transition it causes sees "a key just arrived". Every key,
+                // Enter included, is a partial; no Enter -> full any more (7 Oct 2026).
+                refreshpol_note_key();
                 ui_dispatch_key(ievt.key); // routed to the top screen's on_key() (ui.c)
                 s_last_input_us = esp_timer_get_time(); // rail hold task: arm the attentive cadence
-                // 7 Oct 2026 (owner): partials ghost progressively while typing;
-                // force a full refresh on Enter (a mid-word full every 20 keys
-                // was tried and found awkward).
-                if (ievt.key.type == INPUT_KEY_ENTER) {
-                    disp_request_full();
-                }
                 break;
             }
         }
@@ -3233,6 +3236,13 @@ void modes_run(void)
         // of use and nothing otherwise.
         if (!render_now && ui_clock_due()) {
             render_now = true;
+        }
+        // Refresh policy rules 2 and 6 (refreshpol.h): idle gap above FLOOR,
+        // or CEILING at the next inter-key gap. Never mid-burst. The next
+        // ui_render() below does the full (disp_request_full upgrades it).
+        // Power effect: one ~3 s full refresh instead of a partial when true.
+        if (ui_awake_now && refreshpol_poll(false, false)) {
+            disp_request_full();
         }
         if (render_now) {
             // The screen stack's own render, reflecting whatever
