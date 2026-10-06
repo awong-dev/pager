@@ -120,6 +120,8 @@ export function reasonText(reason?: string | null): string {
       return "Blocked by this person's outgoing policy";
     case "policy_in":
       return "Blocked by their inbound policy";
+    case "sms_contact":
+      return "SMS contacts can only be texted from a pager";
     case "not_allowed":
       return "Not approved";
     default:

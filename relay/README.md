@@ -129,12 +129,11 @@ entirely).
 ### End-to-end test scenarios
 
 End-to-end integration tests (brings up the real Docker Compose stack —
-EMQX, the Firestore/Auth emulators, the relay, and a Twilio Messages API
-mock — configures EMQX's rule engine, and drives it end to end through
+EMQX, the Firestore/Auth emulators, and the relay — configures EMQX's rule engine, and drives it end to end through
 `tools/pager_client.py`'s combined device+server client):
 
 ```bash
-relay/.venv/bin/python tools/e2e_v2.py                                       # all 11 scenarios
+relay/.venv/bin/python tools/e2e_v2.py                                       # all 10 scenarios
 relay/.venv/bin/python tools/e2e_v2.py bootstrap text_roundtrip              # named scenarios
 relay/.venv/bin/python tools/e2e_v2.py --wire cbor                           # repeat in CBOR encoding
 ```
@@ -146,33 +145,20 @@ Scenarios available (see `tools/e2e_v2.py`'s module docstring for details):
 - **republish**: messages re-deliver on reconnect
 - **location_periodic**: periodic location publishing with TTL sync
 - **location_on_demand**: on-demand location requests with coalescing
-- **fanout**: multi-device and multi-backend message delivery
 - **retention**: per-device retention policy with sweep
 - **bytes**: data budget accounting and SIM constraints
 - **setup_code**: real admin-create → code → bootstrap → provisioned flow
 - **address_book**: device requests contact approval, book/cfg ingest and ack
 
-## Message backends (docs/SERVER_PLAN.md §6.4/§6.5)
+## Message backends (docs/SERVER_PLAN.md §6.5)
 
-`sms` (`app/backends/sms_twilio.py`) and `gchat` (`app/backends/gchat.py`)
-are both real adapters against outside services — everything in this repo
-(tests, `tools/e2e_v2.py`, this compose stack) exercises them against a
-mock (`tools/mocks/twilio_mock.py`) or a locally-signed test JWT, never a
-real Twilio/Google account. Two account-level chores block a real
-deployment from using them:
+`gchat` (`app/backends/gchat.py`)
+is a real adapter against an outside service — everything in this repo
+(tests, `tools/e2e_v2.py`, this compose stack) exercises it against a
+locally-signed test JWT, never a
+real Google account. One account-level chore blocks a real
+deployment from using it:
 
-- **Twilio** — a human needs to buy a phone number and
-  complete US A2P 10DLC (or toll-free) registration before real SMS can be
-  sent from this deployment. This is a manual, **days-long** review process
-  run by Twilio/the carriers, separate from any code here — it cannot be
-  scripted or done from this repo. Steps: sign up at twilio.com, buy a
-  number, register an A2P 10DLC brand + campaign (or apply for toll-free
-  verification, faster but still manual), then set `TWILIO_ACCOUNT_SID`,
-  `TWILIO_AUTH_TOKEN`, `TWILIO_FROM_NUMBER`, and `PUBLIC_BASE_URL` (so
-  `X-Twilio-Signature` verification matches the exact webhook URL configured
-  in the Twilio console) in the real deployment's environment/Secret
-  Manager, and point the Twilio console's inbound-SMS webhook at
-  `{PUBLIC_BASE_URL}/webhooks/twilio/sms`. None of this has been done.
 - **Google Chat** — docs/SERVER_PLAN.md §10 D4's prerequisite, still
   **unverified**: Google Chat apps can only be installed by accounts
   on **Google Workspace**, not consumer Gmail. If the deployment's Google
@@ -185,6 +171,8 @@ deployment from using them:
   account (already provisioned by `infra/`, ADC — no separate secret) the
   `chat.bot` scope / "Chat Bot" role so `spaces.messages.create` outbound
   sends work. None of this has been done either.
+
+The relay has no SMS backend (owner decision, 7 Oct 2026): the pager texts its own `cfg.sms` list.
 
 ## CLI Tools
 

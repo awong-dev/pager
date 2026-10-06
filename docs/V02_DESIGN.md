@@ -221,7 +221,7 @@ Owner decision (2026-09-20): the pager may send and receive SMS directly through
 **parent-managed allow-list of phone numbers**, as a delivery path that does not depend on the
 relay. This reverses `PROTOCOL.md` §7.3's "no device-side SMS path"; edit it.
 
-- **Who controls the list**: only the device's owner (or an admin), in the web app. The pager has
+- **Who controls the list**: only the device's owner (or an admin), through Family → Contacts and the member's approved list. The pager has
   no UI to add, edit or remove a number. Max 8 entries `{name ≤ 16 chars, phone E.164}`.
   Stored on `devices/{id}.smsContacts`; delivered as `/down` `cfg` with `cfg.sms = [{n, p}, …]`
   (whole list each time, newest-wins, acked `shown` on apply). The pager keeps it in NVS.
@@ -244,6 +244,10 @@ relay. This reverses `PROTOCOL.md` §7.3's "no device-side SMS path"; edit it.
   Firestore rules: readable by the device's owner and admins only.
 - **Web**: on the device's page, an *SMS contacts* editor and an *SMS log* table (time, direction,
   number/name, status, text), blocked entries highlighted.
+- **Owner decision 7 Oct 2026:** this is the only SMS path; the relay has no SMS backend. The list is
+  derived, not hand-edited: the member's approved Family → Contacts plus, for an `open`/`any_sms`
+  member, every family contact (max 8, by name). Contact names are unique per family because the
+  pager matches by name.
 - `UNVERIFIED`: SMS on the production SIM at all (a Google Fi data-only SIM may not carry SMS);
   the modem's `+CMTI` behaviour under eDRX; text-mode UCS-2 on this firmware. `smstest` exists to
   find out. Everything fails safe: an SMS that cannot be sent is a `FAILED` thread entry plus an

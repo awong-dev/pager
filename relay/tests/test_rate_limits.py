@@ -1,9 +1,9 @@
 """`app/store/rate_limits.py` and its call sites -- docs/SERVER_PLAN.md Phase
 rate limits: `POST
-/api/me/backends` (highest priority -- can trigger a real SMS send),
+/api/me/backends` (highest priority -- each call can trigger a start_link),
 `/api/admin/*` writes (coarser, defense-in-depth), and a per-IP cap on
-`/webhooks/twilio/sms`/`/webhooks/gchat` (defense-in-depth against a flood
-of forged-but-cheap-to-generate requests).
+`/webhooks/gchat` (defense-in-depth against a flood of
+forged-but-cheap-to-generate requests).
 """
 
 from __future__ import annotations
@@ -102,13 +102,13 @@ def test_backend_create_trips_429_after_the_configured_limit(client: TestClient)
     for i in range(2):
         resp = client.post(
             "/api/me/backends",
-            json={"kind": "sms", "config": {"phone": f"+1555000000{i}"}, "enabled": False},
+            json={"kind": "gchat", "config": {}, "enabled": False},
             headers=headers,
         )
         assert resp.status_code == 200, resp.text
     resp = client.post(
         "/api/me/backends",
-        json={"kind": "sms", "config": {"phone": "+15550000099"}, "enabled": False},
+        json={"kind": "gchat", "config": {}, "enabled": False},
         headers=headers,
     )
     assert resp.status_code == 429
@@ -120,14 +120,14 @@ def test_backend_create_rate_limit_is_per_user(client: TestClient):
     for i in range(2):
         resp = client.post(
             "/api/me/backends",
-            json={"kind": "sms", "config": {"phone": f"+1555000010{i}"}, "enabled": False},
+            json={"kind": "gchat", "config": {}, "enabled": False},
             headers=headers1,
         )
         assert resp.status_code == 200
     # A different user's own quota is untouched by the first user's calls.
     resp = client.post(
         "/api/me/backends",
-        json={"kind": "sms", "config": {"phone": "+15550000199"}, "enabled": False},
+        json={"kind": "gchat", "config": {}, "enabled": False},
         headers=headers2,
     )
     assert resp.status_code == 200
@@ -141,7 +141,7 @@ def test_backend_create_allows_again_after_the_window_resets(
     for i in range(2):
         resp = client.post(
             "/api/me/backends",
-            json={"kind": "sms", "config": {"phone": f"+1555000020{i}"}, "enabled": False},
+            json={"kind": "gchat", "config": {}, "enabled": False},
             headers=headers,
         )
         assert resp.status_code == 200
@@ -149,7 +149,7 @@ def test_backend_create_allows_again_after_the_window_resets(
     # 3rd call still succeeds rather than tripping.
     resp = client.post(
         "/api/me/backends",
-        json={"kind": "sms", "config": {"phone": "+15550000299"}, "enabled": False},
+        json={"kind": "gchat", "config": {}, "enabled": False},
         headers=headers,
     )
     assert resp.status_code == 200
@@ -212,7 +212,7 @@ def test_admin_write_limit_shared_across_routes_for_the_same_admin(
 
 
 # ---------------------------------------------------------------------------
-# Per-IP cap on /webhooks/twilio/sms and /webhooks/gchat
+# Per-IP cap on /webhooks/gchat
 # ---------------------------------------------------------------------------
 
 
@@ -244,19 +244,6 @@ def webhook_client() -> Iterator[TestClient]:
         yield c
 
 
-def test_twilio_webhook_ip_cap_trips_429_before_signature_check(webhook_client: TestClient):
-    # No TWILIO_AUTH_TOKEN configured -- every one of these would 401 on the
-    # signature check if it ever got that far. The point of this test is
-    # that the 3rd request from the same IP is rejected by the rate limiter
-    # (429), not the signature check (401), because the IP check runs first.
-    params = {"To": "+15005550006", "From": "+15551234567", "Body": "hi"}
-    for _ in range(2):
-        resp = webhook_client.post("/webhooks/twilio/sms", data=params)
-        assert resp.status_code == 401
-    resp = webhook_client.post("/webhooks/twilio/sms", data=params)
-    assert resp.status_code == 429
-
-
 def test_gchat_webhook_ip_cap_trips_429_before_jwt_check(webhook_client: TestClient):
     for _ in range(2):
         resp = webhook_client.post("/webhooks/gchat", json={"type": "MESSAGE"})
@@ -265,42 +252,32 @@ def test_gchat_webhook_ip_cap_trips_429_before_jwt_check(webhook_client: TestCli
     assert resp.status_code == 429
 
 
-def test_webhook_ip_cap_is_independent_per_endpoint_bucket(webhook_client: TestClient):
-    """`/webhooks/twilio/sms` and `/webhooks/gchat` are rate limited
-    independently (`webhook_ip:sms:...` vs `webhook_ip:gchat:...`) -- even
-    though `TestClient` always presents the same source IP, exhausting one
-    endpoint's budget must not affect the other's."""
-    params = {"To": "+15005550006", "From": "+15551234567", "Body": "hi"}
-    for _ in range(2):
-        resp = webhook_client.post("/webhooks/twilio/sms", data=params)
-        assert resp.status_code == 401
-    resp = webhook_client.post("/webhooks/twilio/sms", data=params)
-    assert resp.status_code == 429
-
-    # gchat's own budget is untouched.
-    resp = webhook_client.post("/webhooks/gchat", json={"type": "MESSAGE"})
-    assert resp.status_code == 401
-
-
 def test_webhook_ip_cap_keys_on_x_forwarded_for_not_the_proxy_peer(webhook_client: TestClient):
-    """Every real request reaches these routes
-    through Firebase Hosting -> Cloud Run, so `request.client.host` is one
-    shared Google front-end address; keying on it would let one flooder 429
-    all legitimate Twilio/Chat traffic. `_client_ip` keys on
-    `X-Forwarded-For`'s originating entry instead, so exhausting one source
-    IP's budget leaves another source IP's untouched."""
-    params = {"To": "+15005550006", "From": "+15551234567", "Body": "hi"}
+    """Every real request reaches this route through Firebase Hosting ->
+    Cloud Run, so `request.client.host` is one shared Google front-end
+    address; keying on it would let one flooder 429 all legitimate Chat
+    traffic. `_client_ip` keys on `X-Forwarded-For`'s originating entry
+    instead, so exhausting one source IP's budget leaves another source IP's
+    untouched."""
+    body = {"type": "MESSAGE"}
     for _ in range(2):
         resp = webhook_client.post(
-            "/webhooks/twilio/sms", data=params, headers={"X-Forwarded-For": "203.0.113.9, 10.0.0.1"}
+            "/webhooks/gchat", json=body, headers={"X-Forwarded-For": "203.0.113.9, 10.0.0.1"}
         )
         assert resp.status_code == 401
     resp = webhook_client.post(
-        "/webhooks/twilio/sms", data=params, headers={"X-Forwarded-For": "203.0.113.9, 10.0.0.1"}
+        "/webhooks/gchat", json=body, headers={"X-Forwarded-For": "203.0.113.9, 10.0.0.1"}
     )
     assert resp.status_code == 429
     # A different originating IP behind the same proxy still has its budget.
     resp = webhook_client.post(
-        "/webhooks/twilio/sms", data=params, headers={"X-Forwarded-For": "198.51.100.4, 10.0.0.1"}
+        "/webhooks/gchat", json=body, headers={"X-Forwarded-For": "198.51.100.4, 10.0.0.1"}
     )
     assert resp.status_code == 401
+
+
+def test_twilio_webhook_route_is_gone(webhook_client: TestClient):
+    resp = webhook_client.post(
+        "/webhooks/twilio/sms", data={"To": "+15005550006", "From": "+15551234567", "Body": "hi"}
+    )
+    assert resp.status_code == 404

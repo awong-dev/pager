@@ -20,8 +20,7 @@
 var.relay_service_url }`, this must be set to the Cloud Run service's own
 URL (`infra/modules/relay-service`'s `service_url` output), **not**
 `PUBLIC_BASE_URL` (the Hosting-fronted public domain `app/backends/
-sms_twilio.py`/`app/backends/gchat.py` use for Twilio/Chat console
-configuration) -- Cloud Scheduler's `http_target.uri` calls the Cloud Run
+gchat.py` uses for Chat console configuration) -- Cloud Scheduler's `http_target.uri` calls the Cloud Run
 URL directly, bypassing Hosting's rewrites entirely, so that is the origin
 its minted token's `aud` claim actually carries. `OIDC_ALLOWED_EMAILS` --
 comma-separated list of caller service-account emails; today that's

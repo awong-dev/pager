@@ -40,8 +40,6 @@ services:
         condition: service_healthy
       firebase:
         condition: service_healthy
-      twilio-mock:
-        condition: service_started
     # required: false -- CI's unit-test stage (.github/workflows/ci.yml)
     # runs `docker compose up -d firebase` / `down -v` against this same
     # file without ever starting `relay` and without relay/.env existing
@@ -67,16 +65,6 @@ services:
       FIREBASE_AUTH_EMULATOR_HOST: firebase:9099
       GOOGLE_CLOUD_PROJECT: demo-pager
       DEV_MODE: "1"
-      # app/notify/sms.py's TWILIO_BASE_URL override, pointed at the twilio-mock service on the
-      # compose network (see that service's own comment below). No
-      # PUBLIC_BASE_URL/TWILIO_AUTH_TOKEN/GCHAT_AUDIENCE here -- this compose
-      # stack exercises outbound sms only (tools/e2e_v2.py's `fanout`
-      # scenario); nothing in it POSTs to /webhooks/twilio/sms or
-      # /webhooks/gchat with a real signature/JWT, so those stay unset
-      # (fail-closed, per each module's own docstring) rather than
-      # configured with a value that would only be correct for a real
-      # deployment.
-      TWILIO_BASE_URL: http://twilio-mock:8010
       # Rate limits (app/store/rate_limits.py) default to
       # real, meaningfully-bounded production values (relay/.env.example) --
       # too tight for tools/e2e_v2.py's full 9-scenario run, which makes 30+
@@ -115,17 +103,6 @@ services:
       interval: 5s
       timeout: 5s
       retries: 30
-    networks:
-      - pager-net
-
-  # docs/SERVER_PLAN.md §6.4, §8 scenario 7: a Twilio-Messages-API-shaped
-  # test double, never a real dependency -- `app/notify/sms.py` points at it
-  # via TWILIO_BASE_URL. See tools/mocks/twilio_mock.py's module docstring.
-  twilio-mock:
-    build:
-      context: ../tools/mocks
-    ports:
-      - "8010:8010"
     networks:
       - pager-net
 

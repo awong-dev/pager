@@ -1251,17 +1251,13 @@ class ServerClient:
     def add_backend(self, kind: str, config: dict[str, Any], *, enabled: bool = True) -> dict[str, Any]:
         """`POST /api/me/backends` for the currently-logged-in user --
         docs/SERVER_PLAN.md §5.1. Used by `backend add` and by
-        `tools/e2e_v2.py`'s `fanout` scenario to give a user an `sms`
-        backend (`app/backends/sms_twilio.py`) without any admin
-        involvement, matching a real user configuring their own backends
-        (§7.4).
+        a user configuring their own backends (§7.4). Only `gchat` is a
+        valid kind: the relay has no `sms` backend (`kind='sms'` is a 422).
 
-        Note: for `kind='sms'`/`'gchat'` the
-        relay always creates the row `enabled=False` regardless of the
-        `enabled` argument here -- a link/verify-flow backend is not
-        trusted to receive real traffic until `verify_backend()` below
-        succeeds. Callers that need an immediately-usable sms backend (this
-        script's `fanout` scenario) must complete that flow themselves."""
+        Note: for `kind='gchat'` the relay always creates the row
+        `enabled=False` regardless of the `enabled` argument here -- a
+        link/verify-flow backend is not trusted to receive real traffic
+        until `verify_backend()` below succeeds."""
         resp = self.api_post("/api/me/backends", {"kind": kind, "config": config, "enabled": enabled})
         if resp.status_code >= 400:
             raise RuntimeError(f"add_backend failed: {resp.status_code} {resp.text}")
@@ -1270,7 +1266,7 @@ class ServerClient:
     def verify_backend(self, bid: str, code: str) -> dict[str, Any]:
         """`POST /api/me/backends/{id}/verify` for the currently-logged-in
         user -- completes the link/verify flow `add_backend` above starts
-        for `sms`/`gchat` kinds (docs/SERVER_PLAN.md §5.1)."""
+        for the `gchat` kind (docs/SERVER_PLAN.md §5.1)."""
         resp = self.api_post(f"/api/me/backends/{bid}/verify", {"code": code})
         if resp.status_code >= 400:
             raise RuntimeError(f"verify_backend failed: {resp.status_code} {resp.text}")
@@ -1466,21 +1462,39 @@ class ServerClient:
         uid: str,
         *,
         people: list[dict[str, Any]] | None = None,
-        numbers: list[dict[str, Any]] | None = None,
+        contacts: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """`PUT /api/family/members/{uid}/approved` -- docs/FAMILIES_DESIGN.md
         §1 decision 7/11: the member's own outgoing allow edges (`people`,
-        `[{alias, message, locate}]`) and approved SMS numbers (`numbers`,
-        `[{phone, name}]`), replace-all per call. Supersedes the old
-        `PUT /api/devices/{id}/sms-contacts` (docs/FAMILIES_TASKS.md 3.2)
-        for numbers -- `devices.smsContacts` is now a projection of a
-        member's approved numbers (the first 8 by name), not separately
-        editable; `sms_contacts_put` above is dead-lettered by the relay
-        for exactly this reason."""
-        body = {"people": people or [], "numbers": numbers or []}
+        `[{alias, message, locate}]`) and the family's SMS contacts they may
+        text (`contacts`, `[{uid, message}]`, picked from
+        `family_create_contact`'s results), replace-all per call. The route
+        never creates a contact. `devices.smsContacts` is a derived
+        projection of these edges (plus every family contact for an
+        outbound policy that allows any number; the first 8 by name), not
+        separately editable."""
+        body = {"people": people or [], "contacts": contacts or []}
         resp = self.api_put(f"/api/family/members/{uid}/approved?family={family}", body)
         if resp.status_code >= 400:
             raise RuntimeError(f"family put_approved failed: {resp.status_code} {resp.text}")
+        return resp.json()
+
+    def family_create_contact(self, family: str, phone: str, name: str) -> dict[str, Any]:
+        """`POST /api/family/contacts?family=` -- the family's SMS contact
+        for `phone` (idempotent per number; 409 if another contact already
+        has `name`)."""
+        resp = self.api_post(
+            f"/api/family/contacts?family={family}", {"phone": phone, "name": name}
+        )
+        if resp.status_code >= 400:
+            raise RuntimeError(f"family create_contact failed: {resp.status_code} {resp.text}")
+        return resp.json()
+
+    def family_delete_contact(self, family: str, uid: str) -> dict[str, Any]:
+        """`DELETE /api/family/contacts/{uid}?family=`."""
+        resp = self.api_delete(f"/api/family/contacts/{uid}?family={family}")
+        if resp.status_code >= 400:
+            raise RuntimeError(f"family delete_contact failed: {resp.status_code} {resp.text}")
         return resp.json()
 
     def admin_push_cfg(

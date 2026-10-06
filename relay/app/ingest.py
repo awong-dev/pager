@@ -36,7 +36,6 @@ from app.broker import BrokerClient
 from app.routing import Routing
 from app.store import alerts as alerts_store
 from app.store import allow as allow_store
-from app.store import backends as backends_store
 from app.store import battery as battery_store
 from app.store import contacts as contacts_store
 from app.store import device_secrets as device_secrets_store
@@ -113,9 +112,7 @@ def record_bad_sig(device_id: str) -> None:
 _CONTACT_NAME_MAX_CODEPOINTS = 16
 _CONTACT_NAME_MAX_UTF8_BYTES = 48
 _CONTACT_PH_MAX_CHARS = 16
-# Same shape as app/backends/sms_twilio.py's `_E164_RE` (not imported from
-# there to avoid a private cross-module reference: `+` then 7-15 digits,
-# first digit 1-9).
+# E.164 shape: `+` then 7-15 digits, first digit 1-9.
 _PHONE_E164_RE = re.compile(r"^\+[1-9]\d{6,14}$")
 
 
@@ -502,17 +499,15 @@ class Ingest:
             )
             if family is not None and value in family.blockedNumbers:
                 return "blocked", value, None
-            match = backends_store.get_by_phone(value)
-            if match is not None:
-                person = users_store.get_user(match[0])
-                if person is not None and book.edge_or_family(owner, person):
-                    return "in_book", value, None
+            # A phone is only ever an SMS contact (a person's sign-in phone is
+            # never a lookup key): in the book when the family's contact for
+            # it is on the owner's `cfg.sms` list.
             if owner.familyId is not None:
                 contact = externals_store.get_family_contact(owner.familyId, value)
-                if contact is not None:
-                    edge = allow_store.get_edge(owner.uid, contact.uid)
-                    if edge is not None and edge.message:
-                        return "in_book", value, None
+                if contact is not None and contact.uid in {
+                    u.uid for u in book.sms_contacts_for(owner)
+                }:
+                    return "in_book", value, None
             return "pending_sms", value, None
 
         target = users_store.get_user_by_alias(value)
@@ -611,9 +606,7 @@ class Ingest:
             and peer_uid is None
             and not _has_open_sms_unknown(owner.familyId, e164)
         ):
-            alerts.sms_unknown(
-                owner.familyId, e164, owner.uid, env.body, held=False, open_unheld=True
-            )
+            alerts.sms_unknown(owner.familyId, e164, owner.uid, env.body)
 
     def _handle_ack(self, device_id: str, env: UpEnvelope) -> None:
         assert env.ack is not None and env.ack in ("shown", "read")

@@ -6,7 +6,7 @@ Every alert this deployment ever writes goes through this module's `create`
 and tests) so the push (`app/backends/webapp.py`'s `push_alert`) can never be
 forgotten -- one call site, one guarantee. The three kind-specific helpers
 below (`new_conversation`, `sms_unknown`, `contact_request`) are the only
-callers `app/routing.py`, `app/routers/webhooks.py` and `app/store/
+callers `app/routing.py`, `app/ingest.py` and `app/store/
 contacts.py` need: each builds the §3 field shape for its own kind and hands
 it to `create`.
 
@@ -19,7 +19,7 @@ at startup when `PUSH_BACKEND=fcm` (for `build_registry`'s `webapp` backend);
 `set_fcm_client` below is the same client, handed to this module too, via
 one `app.alerts.set_fcm_client(fcm_client)` call added to that same startup
 block -- so every alert push in the whole app (routing's new_conversation,
-the Twilio webhook's sms_unknown, a device's contact_req) goes through the
+a device's sms_log `sms_unknown`, a device's contact_req) goes through the
 one real client, or the default `NullFCMClient` in dev/test."""
 
 from __future__ import annotations
@@ -27,8 +27,6 @@ from __future__ import annotations
 from app.backends.webapp import FCMClient, NullFCMClient
 from app.backends.webapp import push_alert as _push_alert
 from app.store import alerts as alerts_store
-from app.store import backends as backends_store
-from app.store import externals as externals_store
 from app.store import users as users_store
 from app.store.contacts import ContactRequest
 from app.store.users import User
@@ -100,12 +98,7 @@ def new_conversation(sender: User, recipient: User, conv_key: str) -> str | None
     only."""
     if sender.familyId is None:
         return None
-    peer_phone: str | None = None
-    if recipient.kind == "external":
-        for backend in backends_store.list_backends(recipient.uid):
-            if backend.kind == "sms":
-                peer_phone = backend.config.get("phone")
-                break
+    peer_phone = recipient.phone if recipient.kind == "external" else None
     alert = _base_alert("new_conversation")
     alert.update(
         {
@@ -124,49 +117,26 @@ def new_conversation(sender: User, recipient: User, conv_key: str) -> str | None
     return create(sender.familyId, alert)
 
 
-def sms_unknown(
-    family_id: str,
-    phone: str,
-    target_uid: str | None,
-    body: str,
-    held: bool,
-    *,
-    open_unheld: bool = False,
-) -> str:
-    """docs/FAMILIES_DESIGN.md §4 Webhooks, §1 decision 10 -- used by
-    `app/routers/webhooks.py`'s `_handle_unknown_sms`. `target_uid` is the
-    family member the text is (or would be) addressed to, `None` when no
-    single such member could be determined. When `held` is `False` (the
-    message was delivered), the external it was delivered *from* already
-    exists (`app/store/externals.py`'s `get_or_create`, called by the
-    webhook before this), so the peer is looked up here by phone rather than
-    passed in -- keeps this function's signature to exactly the five
-    parameters docs/FAMILIES_TASKS.md 4.1 names.
-
-    `open_unheld=True` (device-direct `sms_log` from a number the family has
-    no contact for, docs/CONTACT_REQ_DESIGN.md decision 7): `status "open"`
-    with nothing held."""
+def sms_unknown(family_id: str, phone: str, target_uid: str | None, body: str) -> str:
+    """docs/FAMILIES_DESIGN.md §4: an open alert for a text the pager
+    received (device-direct `sms_log`) from a number the family has no
+    contact for. `target_uid` is the family member whose pager got it, `None`
+    when none could be determined. Always `open` with no peer and nothing
+    held: approving it creates the contact, nothing is re-sent (the relay
+    sends no SMS)."""
     subject = users_store.get_user(target_uid) if target_uid is not None else None
-    peer: User | None = None
-    if not held:
-        try:
-            e164 = externals_store.normalize_phone(phone)
-        except ValueError:
-            e164 = None
-        if e164 is not None:
-            peer = externals_store.get_family_contact(family_id, e164)
     alert = _base_alert("sms_unknown")
     alert.update(
         {
-            "status": "open" if (held or open_unheld) else "handled",
+            "status": "open",
             "subjectUid": subject.uid if subject is not None else None,
             "subjectAlias": subject.alias if subject is not None else None,
-            "peerUid": peer.uid if peer is not None else None,
-            "peerAlias": peer.alias if peer is not None else None,
-            "peerName": peer.displayName if peer is not None else None,
+            "peerUid": None,
+            "peerAlias": None,
+            "peerName": None,
             "peerPhone": phone,
             "preview": body[:PREVIEW_MAX_CHARS],
-            "heldBody": body if held else None,
+            "heldBody": None,
         }
     )
     return create(family_id, alert)
@@ -193,12 +163,10 @@ def contact_request(request: ContactRequest) -> str | None:
         }
     )
     # docs/CONTACT_REQ_DESIGN.md decision 2: say who the request resolves to.
+    # A phone is only ever an SMS contact (`peerPhone`); an alias resolves to
+    # an in-system user.
     peer: User | None = None
-    if request.phone:
-        match = backends_store.get_by_phone(request.phone)
-        if match is not None:
-            peer = users_store.get_user(match[0])
-    elif request.alias:
+    if not request.phone and request.alias:
         peer = users_store.get_user_by_alias(request.alias)
     if peer is not None:
         alert.update({"peerUid": peer.uid, "peerAlias": peer.alias, "peerName": peer.displayName})

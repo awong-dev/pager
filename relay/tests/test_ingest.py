@@ -1089,3 +1089,82 @@ def test_status_bv_behind_renudges_same_id(monkeypatch):
     assert len(books2) == 1
     assert books2[0]["id"] == first_nudge["id"]
     assert "url" in books2[0]
+
+
+def test_up_message_to_external_alias_gets_one_unknown_recipient_reply():
+    """The relay never texts an SMS contact (the pager does, from `cfg.sms`):
+    an `up` addressed to one takes the §4.2 case-3 path -- one derived-id
+    `unknown recipient` reply, nothing stored, even with an explicit edge."""
+    from app.db.firestore import get_db
+    from app.store import externals as externals_store
+    from app.store import families as families_store
+
+    fam = families_store.create_family(name="F", created_by="root").id
+    users_store.create_user(uid="student", alias="student", display_name="student", family_id=fam)
+    ext = externals_store.get_or_create(fam, "+12065550100", "Grandma")
+    allow_store.set_edge("student", ext.uid, message=True, locate=False)
+    _make_pager_device("pgr-v2-ext", "student")
+    payload = json.dumps(
+        {
+            "v": 1,
+            "id": "u_ext1",
+            "ts": int(time.time()),
+            "from": "student",
+            "to": ext.alias,
+            "body": "hi",
+            "ack": None,
+        }
+    ).encode("utf-8")
+
+    ingest, broker = _ingest()
+    ingest.handle_up(up_topic("pgr-v2-ext"), payload)
+    ingest.handle_up(up_topic("pgr-v2-ext"), payload)  # at-least-once redelivery
+
+    sent = [json.loads(p.payload) for p in broker.published]
+    assert [m["body"] for m in sent] == ["unknown recipient", "unknown recipient"]
+    assert all(m["from"] == "system" for m in sent)
+    assert sent[0]["id"] == sent[1]["id"]
+    assert list(get_db().collection("messages").stream()) == []
+    assert messages_store.get_conversation(messages_store.conv_key("student", ext.uid)) is None
+
+
+def test_contact_req_for_contact_implied_by_open_policy_is_in_book():
+    from app.db.firestore import get_db
+    from app.store import contacts as contacts_store
+    from app.store import externals as externals_store
+    from app.store import families as families_store
+
+    fam = families_store.create_family(name="F", created_by="root").id
+    users_store.create_user(uid="student", alias="student", display_name="student", family_id=fam)
+    externals_store.get_or_create(fam, "+12065550123", "Gma")  # no edge at all
+    _make_pager_device("pgr-v2-imp", "student")
+    payload = json.dumps(
+        {
+            "v": 1,
+            "id": "u_imp1",
+            "ts": int(time.time()),
+            "kind": "contact_req",
+            "name": "Gma",
+            "ph": "2065550123",
+            "ack": None,
+        }
+    ).encode("utf-8")
+
+    # Under the default `people` policy the contact is not on the pager's
+    # list, so the request is pending.
+    ingest, broker = _ingest()
+    ingest.handle_up(up_topic("pgr-v2-imp"), payload)
+    row = contacts_store.get_by_device_and_req("pgr-v2-imp", "u_imp1")
+    assert row is not None and row.status == "pending"
+
+    # Under `open` the contact is implied: already in the book, no row.
+    get_db().collection("users").document("student").update(
+        {"policy": {"out": "open", "in": "any"}}
+    )
+    broker.clear()
+    ingest.handle_up(
+        up_topic("pgr-v2-imp"), payload.replace(b"u_imp1", b"u_imp2")
+    )
+    assert contacts_store.get_by_device_and_req("pgr-v2-imp", "u_imp2") is None
+    bodies = [json.loads(p.payload)["body"] for p in broker.published]
+    assert bodies == ["Gma: already in your book"]

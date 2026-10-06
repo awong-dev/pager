@@ -12,6 +12,7 @@ import pytest
 from fastapi.testclient import TestClient
 from firebase_admin import auth as fb_auth
 
+from app import book as book_module
 from app import devcfg
 from app.config import Settings
 from app.main import create_app
@@ -342,6 +343,154 @@ def test_create_device_picks_up_locatable_by_from_a_pre_existing_allow_edge(
 
     device = devices_store.get_device("pgr-5005")
     assert device.locatableBy == [mom_uid]
+
+
+def test_create_device_default_recipient_external_is_400(
+    client: TestClient, admin_headers: dict[str, str]
+):
+    family = families_store.create_family(name="DefExt", created_by="root")
+    users_store.create_user(
+        uid="def-owner", alias="defowner", display_name="Owner", family_id=family.id
+    )
+    ext = externals_store.get_or_create(family.id, "+12065550100", "Grandma")
+
+    resp = client.post(
+        "/api/admin/devices",
+        json={
+            "deviceId": "pgr-defext",
+            "ownerAlias": "defowner",
+            "label": "p",
+            "defaultToAlias": ext.alias,
+        },
+        headers=admin_headers,
+    )
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["detail"] == "the default recipient cannot be an SMS contact"
+    assert devices_store.get_device("pgr-defext") is None
+
+
+def test_create_device_seeds_cfg_sms_for_open_owner(
+    client: TestClient, admin_headers: dict[str, str]
+):
+    from app.db.firestore import get_db
+
+    family = families_store.create_family(name="SeedSms", created_by="root")
+    users_store.create_user(
+        uid="seed-open", alias="seedopen", display_name="Open", family_id=family.id
+    )
+    users_store.create_user(
+        uid="seed-people", alias="seedpeople", display_name="People", family_id=family.id
+    )
+    get_db().collection("users").document("seed-open").update(
+        {"policy": {"out": "open", "in": "any"}}
+    )
+    externals_store.get_or_create(family.id, "+12065550100", "Grandma")
+
+    for device_id, owner in (("pgr-seed-1", "seedopen"), ("pgr-seed-2", "seedpeople")):
+        resp = client.post(
+            "/api/admin/devices",
+            json={"deviceId": device_id, "ownerAlias": owner, "label": "p"},
+            headers=admin_headers,
+        )
+        assert resp.status_code == 200, resp.text
+
+    assert [(c.name, c.phone) for c in devices_store.get_device("pgr-seed-1").smsContacts] == [
+        ("Grandma", "+12065550100")
+    ]
+    assert devices_store.get_device("pgr-seed-2").smsContacts == []
+
+
+def test_patch_user_family_change_rederives_cfg_sms(
+    client: TestClient, admin_headers: dict[str, str]
+):
+    from app.db.firestore import get_db
+
+    fam_a = families_store.create_family(name="MoveA", created_by="root")
+    fam_b = families_store.create_family(name="MoveB", created_by="root")
+    created = client.post(
+        "/api/admin/users",
+        json={
+            "alias": "mover",
+            "displayName": "Mover",
+            "email": "mover@example.com",
+            "familyId": fam_a.id,
+        },
+        headers=admin_headers,
+    ).json()
+    get_db().collection("users").document(created["uid"]).update(
+        {"policy": {"out": "open", "in": "any"}}
+    )
+    devices_store.create_device(
+        device_id="pgr-mover",
+        owner_uid=created["uid"],
+        label="p",
+        mqtt_username="pgr-mover",
+        mqtt_password_hash="x",
+        auth_mode="password",
+        family_id=fam_a.id,
+    )
+    externals_store.get_or_create(fam_a.id, "+12065550100", "FromA")
+    externals_store.get_or_create(fam_b.id, "+12065550101", "FromB")
+    book_module.rederive_sms_contacts(created["uid"], FakeBrokerClient())
+    assert [c.name for c in devices_store.get_device("pgr-mover").smsContacts] == ["FromA"]
+
+    resp = client.patch(
+        f"/api/admin/users/{created['uid']}",
+        json={"familyId": fam_b.id},
+        headers=admin_headers,
+    )
+    assert resp.status_code == 200, resp.text
+    assert [c.name for c in devices_store.get_device("pgr-mover").smsContacts] == ["FromB"]
+
+
+def test_put_allowlist_rederives_touched_owners(
+    client: TestClient, admin_headers: dict[str, str]
+):
+    family = families_store.create_family(name="AllowSms", created_by="root")
+    users_store.create_user(
+        uid="al-kid", alias="alkid", display_name="Kid", family_id=family.id
+    )
+    devices_store.create_device(
+        device_id="pgr-al",
+        owner_uid="al-kid",
+        label="p",
+        mqtt_username="pgr-al",
+        mqtt_password_hash="x",
+        auth_mode="password",
+        family_id=family.id,
+    )
+    ext = externals_store.get_or_create(family.id, "+12065550100", "Grandma")
+    assert devices_store.get_device("pgr-al").smsContacts == []
+
+    resp = client.put(
+        "/api/admin/allowlist",
+        json={
+            "entries": [
+                {"fromAlias": "alkid", "toAlias": ext.alias, "message": True, "locate": False}
+            ]
+        },
+        headers=admin_headers,
+    )
+    assert resp.status_code == 200, resp.text
+    assert [c.phone for c in devices_store.get_device("pgr-al").smsContacts] == ["+12065550100"]
+
+    # Replacing the list with nothing removes it again (the old edge's owner
+    # is touched too).
+    resp = client.put("/api/admin/allowlist", json={"entries": []}, headers=admin_headers)
+    assert resp.status_code == 200, resp.text
+    assert devices_store.get_device("pgr-al").smsContacts == []
+
+
+def test_admin_create_user_backend_route_is_gone(
+    client: TestClient, admin_headers: dict[str, str]
+):
+    user = users_store.create_user(uid="nobackend", alias="nobackend", display_name="N")
+    resp = client.post(
+        f"/api/admin/users/{user.uid}/backends",
+        json={"kind": "sms", "phone": "+15559990000"},
+        headers=admin_headers,
+    )
+    assert resp.status_code in (404, 405), resp.text
 
 
 def test_create_device_copies_owner_family_id(
@@ -984,7 +1133,6 @@ def test_create_and_list_families(client: TestClient, admin_headers: dict[str, s
     assert resp.status_code == 200, resp.text
     created = resp.json()
     assert created["name"] == "The Ngs"
-    assert created["smsNumber"] is None
 
     resp2 = client.get("/api/admin/families", headers=admin_headers)
     assert resp2.status_code == 200, resp2.text
@@ -992,7 +1140,7 @@ def test_create_and_list_families(client: TestClient, admin_headers: dict[str, s
     assert "The Ngs" in names
 
 
-def test_patch_family_renames_and_sets_sms_number(client: TestClient, admin_headers: dict[str, str]):
+def test_patch_family_renames(client: TestClient, admin_headers: dict[str, str]):
     created = client.post(
         "/api/admin/families", json={"name": "Old"}, headers=admin_headers
     ).json()
@@ -1005,7 +1153,8 @@ def test_patch_family_renames_and_sets_sms_number(client: TestClient, admin_head
     assert resp.status_code == 200, resp.text
     data = resp.json()
     assert data["name"] == "New"
-    assert data["smsNumber"] == "+15551234567"
+    # The relay has no SMS number any more: a stale `smsNumber` is ignored.
+    assert "smsNumber" not in data
 
 
 def test_patch_family_missing_is_404(client: TestClient, admin_headers: dict[str, str]):

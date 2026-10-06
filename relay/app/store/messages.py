@@ -475,48 +475,6 @@ def list_pending_for_device(
     ]
 
 
-def list_recent_queued_by_kind(
-    kind: str, *, limit: int = 50, max_age_s: int = EXPIRY_SECONDS
-) -> list[Message]:
-    """Every message created within `max_age_s` (default 24h, the same bound
-    `list_pending_for_device` uses) with at least one `kind`-backend delivery
-    still `queued`, *oldest* `limit` candidates by `createdAt` (ascending --
-    the same "oldest first" ordering docs/SERVER_PLAN.md §5.8 item 1
-    specifies for the pager retry). Used by `app/jobs.py`'s `tick()` to retry
-    queued non-pager deliveries (today just `sms`).
-
-    Two caveats worth knowing before relying on this at higher volume:
-
-    - The `kind`/`queued` filter runs in Python *after* the `limit`, so a
-      deployment producing more than `limit` messages inside `max_age_s` can
-      leave newer queued deliveries unvisited until the older candidates
-      drain (they drain fast: `attempts` reaches `MAX_DELIVERY_ATTEMPTS` ->
-      `failed` within a few ticks). The real fix is an enqueue-at-send-time
-      Cloud Tasks retry, which needs no scan at all.
-    - Unlike `list_pending_for_device` (which queries the indexed
-      `pendingDeviceIds array-contains` field), there is no equivalent
-      indexed array field for "some backend of kind X is still queued" for a
-      generic, non-`pager` kind -- `pendingDeviceIds` is deliberately
-      device-id-keyed, per `app/routing.py`'s "device default" handling. So
-      this filters in Python over a bounded, already-indexed `createdAt` scan
-      (`messages(createdAt)`, the same index the retention sweep uses)
-      instead -- correct, and cheap at this project's household message
-      volume (§9.3), if not as tight as a purpose-built index."""
-    cutoff = datetime.fromtimestamp(time.time() - max_age_s, tz=UTC)
-    query = (
-        _messages()
-        .where(filter=FieldFilter("createdAt", ">", cutoff))
-        .order_by("createdAt")
-        .limit(limit)
-    )
-    out = []
-    for snap in query.stream():
-        msg = Message.model_validate({"id": snap.id, **(snap.to_dict() or {})})
-        if any(d.kind == kind and d.state == "queued" for d in msg.deliveries.values()):
-            out.append(msg)
-    return out
-
-
 def clear_pending_device(msg_id: str, device_id: str) -> None:
     """Removes `device_id` from `pendingDeviceIds` -- called once its pager
     delivery reaches a non-pending state (shown/read/failed), so the

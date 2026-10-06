@@ -42,6 +42,9 @@ function MemberProfileForm({
   const [displayName, setDisplayName] = useState(member.displayName);
   const [role, setRole] = useState<Role>(member.role);
   const [disabled, setDisabled] = useState(member.disabled);
+  // The saved outbound policy (not the unsaved radio), so the Approved hint
+  // matches what the relay applies.
+  const [savedOut, setSavedOut] = useState(member.policy.out);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -100,12 +103,12 @@ function MemberProfileForm({
       <Divider />
 
       <Typography variant="subtitle2">Policy</Typography>
-      <PolicyPicker uid={member.uid} policy={member.policy} />
+      <PolicyPicker uid={member.uid} policy={member.policy} onSaved={(p) => setSavedOut(p.out)} />
 
       <Divider />
 
       <Typography variant="subtitle2">Approved</Typography>
-      <ApprovedEditor uid={member.uid} familyId={member.familyId} />
+      <ApprovedEditor uid={member.uid} familyId={member.familyId} policyOut={savedOut} />
     </>
   );
 }

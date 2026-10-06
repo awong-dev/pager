@@ -2,10 +2,8 @@
 webhook must pick a recipient out of free text -- docs/SERVER_PLAN.md §6.4/
 §6.5, both worded identically: *"if the text starts with `@alias ` use it,
 else if the user has exactly one allowed peer use that, else reply with a
-usage hint"*. `app/backends/sms_twilio.py` and `app/backends/gchat.py` both
-call `resolve_reply()` so this one rule lives in one place, per this
-phase's brief ("factor that resolution logic into a shared helper both
-adapters call, don't duplicate it").
+usage hint"*. `app/backends/gchat.py` calls `resolve_reply()` so this one rule
+lives in one place.
 """
 
 from __future__ import annotations

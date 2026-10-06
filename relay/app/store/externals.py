@@ -7,10 +7,15 @@ An external belongs to exactly one family: `familyId` is null (rules,
 family, `phone` is the E.164 number and `displayName` is that family's name
 for it. Identity is `(fid, e164)`: `uid = "x_" + h[:16]`, `alias = "x" +
 h[:11]` with `h = sha256(f"{fid}|{e164}")`, so `get_or_create` is idempotent
-through `create_user`'s own transaction and lookups need no index. One `sms`
-backend `{phone}` (verified + `adminVerified`) is written, and
-`phoneIndex/{e164}.ext = {fid: uid}` (merge) is the reverse index the
-shared-number Twilio webhook uses. `phoneIndex.uid/bid` stays persons-only.
+through `create_user`'s own transaction and lookups need no index. No backend
+row and no reverse index: the relay never texts or receives for a contact; the
+pager texts it from `cfg.sms` (docs/V02_DESIGN.md §6).
+
+Names are unique per family (the pager matches contacts by name,
+`sms_find_by_name`): `contactNames/{fid}_{sha256(key)[:16]}` = `{uid, familyId}`
+is a server-only reservation written with `create()`; `name_key` is the
+truncated, casefolded name. `get_or_create`/`rename` reserve before they write
+and release on failure; `delete` frees the key.
 """
 
 from __future__ import annotations
@@ -18,18 +23,17 @@ from __future__ import annotations
 import hashlib
 
 import phonenumbers
+from google.api_core.exceptions import AlreadyExists
 
 from app.db.firestore import get_db
-from app.store import backends as backends_store
+from app.store import allow as allow_store
 from app.store import users as users_store
 from app.store.users import User
 
 # docs/FAMILIES_TASKS.md 3.2's "Rules for this run": `phonenumbers`,
 # default region "US" -- lets a bare 10-digit number (no country code) from
 # the approved-numbers editor or the "New chat" phone box resolve the same
-# way a US phone is normally typed, which `app/backends/sms_twilio.py`'s
-# digit-strip `normalize_e164` cannot do (it has no notion of a default
-# region, so a bare 10-digit US number comes out missing its `+1`).
+# way a US phone is normally typed.
 DEFAULT_REGION = "US"
 
 
@@ -42,7 +46,7 @@ def normalize_phone(phone: str, *, default_region: str = DEFAULT_REGION) -> str:
     throughout are "possible" but not "valid", and this module has no
     business rejecting them. Raises `ValueError` (never `phonenumbers`'
     own exception type) on anything that isn't a plausible phone number at
-    all, matching `sms_twilio.normalize_e164`'s own contract."""
+    all, never leaking `phonenumbers`' own exception."""
     try:
         parsed = phonenumbers.parse(phone, default_region)
     except phonenumbers.NumberParseException as exc:
@@ -73,17 +77,53 @@ def list_family_contacts(family_id: str) -> list[User]:
     ]
 
 
+class ContactNameTaken(ValueError):
+    """Another contact of the same family already uses this name."""
+
+
+def name_key(name: str) -> str:
+    from app.book import truncate_sms_name
+
+    return truncate_sms_name(name).casefold()
+
+
+def _name_ref(family_id: str, key: str):
+    digest = hashlib.sha256(key.encode()).hexdigest()[:16]
+    return get_db().collection("contactNames").document(f"{family_id}_{digest}")
+
+
+def _reserve(family_id: str, key: str, uid: str, name: str) -> None:
+    ref = _name_ref(family_id, key)
+    try:
+        ref.create({"uid": uid, "familyId": family_id})
+    except AlreadyExists:
+        holder = (ref.get().to_dict() or {}).get("uid")
+        if holder == uid:
+            return
+        raise ContactNameTaken(f'a contact named "{name}" already exists') from None
+
+
+def _release(family_id: str, key: str, uid: str) -> None:
+    ref = _name_ref(family_id, key)
+    snap = ref.get()
+    if snap.exists and (snap.to_dict() or {}).get("uid") == uid:
+        ref.delete()
+
+
 def get_or_create(family_id: str, phone: str, display_name: str) -> User:
     """Idempotent on `(family_id, phone)`; `display_name` is only used the
-    first time. `phone` is normalized first, so equivalent spellings resolve
-    to one contact. A different family holding the same number gets its own
-    user."""
+    first time (an existing contact keeps its name). `phone` is normalized
+    first, so equivalent spellings resolve to one contact. A different family
+    holding the same number gets its own user. Raises `ContactNameTaken` if
+    another contact of the family already has that name."""
     e164 = normalize_phone(phone)
     uid, alias = contact_ids(family_id, e164)
     existing = users_store.get_user(uid)
     if existing is not None:
         return existing
 
+    key = name_key(display_name)
+    _reserve(family_id, key, uid, display_name)
     try:
         users_store.create_user(
             uid=uid,
@@ -96,21 +136,57 @@ def get_or_create(family_id: str, phone: str, display_name: str) -> User:
         )
     except users_store.AliasTaken as exc:
         if users_store.get_uid_for_alias(alias) != uid:
+            _release(family_id, key, uid)
             raise ValueError("contact alias collision") from exc
         # A concurrent create of the same contact won the race.
         raced = users_store.get_user(uid)
         if raced is None:
+            _release(family_id, key, uid)
             raise ValueError("contact alias collision") from exc
         return raced
-    backend = backends_store.create_backend(uid, kind="sms", config={"phone": e164})
-    backends_store.update_backend(uid, backend.id, verified=True)
-    # `adminVerified` -- not modelled on `Backend`; written directly, same
-    # pattern `_create_admin_asserted_backend` uses.
-    get_db().collection("users").document(uid).collection("backends").document(backend.id).update(
-        {"adminVerified": True}
-    )
-    get_db().collection("phoneIndex").document(e164).set({"ext": {family_id: uid}}, merge=True)
+    except Exception:
+        _release(family_id, key, uid)
+        raise
 
     fetched = users_store.get_user(uid)
     assert fetched is not None
     return fetched
+
+
+def rename(family_id: str, uid: str, new_name: str) -> User:
+    """Renames the family's contact `uid`. Reserve-new, update, release-old: a
+    crash leaves both keys held by `uid`, freed by the next rename/delete.
+    Raises `ContactNameTaken`, `KeyError` for no such user."""
+    user = users_store.get_user(uid)
+    if user is None:
+        raise KeyError(f"no such user: {uid!r}")
+    old_key, new_key = name_key(user.displayName), name_key(new_name)
+    if old_key == new_key:
+        _reserve(family_id, new_key, uid, new_name)
+        return users_store.update_user(uid, display_name=new_name)
+    _reserve(family_id, new_key, uid, new_name)
+    try:
+        updated = users_store.update_user(uid, display_name=new_name)
+    except Exception:
+        _release(family_id, new_key, uid)
+        raise
+    _release(family_id, old_key, uid)
+    return updated
+
+
+def delete(family_id: str, uid: str) -> None:
+    """Removes the contact: every `allow` edge to/from it, its name
+    reservation, its backend and book docs, then the user and alias.
+    Messages stay as history."""
+    user = users_store.get_user(uid)
+    if user is None:
+        return
+    for edge in allow_store.list_edges():
+        if edge.fromUid == uid or edge.toUid == uid:
+            allow_store.delete_edge(edge.fromUid, edge.toUid)
+    _release(family_id, name_key(user.displayName), uid)
+    user_ref = get_db().collection("users").document(uid)
+    for sub in ("backends", "book"):
+        for snap in user_ref.collection(sub).stream():
+            snap.reference.delete()
+    users_store.delete_user(uid)

@@ -7,7 +7,9 @@ library** (one process plays the pager device *and* every human in the
 scenario), and runs the named scenarios below: bootstrap, text round-trip,
 allow-list and republish (1-4); location -- periodic fixes and read
 permission, on-demand `/locate` incl. coalescing/cached-answer/`no_fix`/
-derived-expiry (5-6); fan-out, retention and byte accounting (7-9).
+derived-expiry (5-6); retention and byte accounting (8-9). (Scenario 7,
+fan-out to an SMS backend, is gone with the relay's SMS backend: pager +
+webapp fan-out is covered by `text_roundtrip`.)
 
 Usage (needs the relay virtualenv -- imports `httpx`/`firebase-admin`):
     relay/.venv/bin/python tools/e2e_v2.py                 # all scenarios
@@ -41,7 +43,6 @@ from __future__ import annotations
 import argparse
 import logging
 import os
-import re
 import subprocess
 import sys
 import time
@@ -67,11 +68,6 @@ FIREBASE_PROJECT_ID = "demo-pager"
 BROKER_API_KEY = "dev-broker-api-key"
 BROKER_API_SECRET = "dev-broker-api-secret"
 WEBHOOK_KEY = "dev-webhook-key"
-# tools/mocks/twilio_mock.py, published on the host at the same
-# port docker-compose.yml maps it to (relay/docker-compose.yml's
-# `twilio-mock` service); the relay container itself reaches it at
-# http://twilio-mock:8010 (set as TWILIO_BASE_URL in that same file).
-TWILIO_MOCK_URL = "http://localhost:8010"
 # docs/PROTOCOL.md §13.4: 900s (15 min) in production. Shortened for this
 # whole compose run so `scenario_location_on_demand`'s derived-expiry
 # sub-case doesn't wait 15 real minutes -- 10s is comfortably longer than
@@ -268,14 +264,6 @@ def _emqx_reachable() -> bool:
         return False
 
 
-def _twilio_mock_reachable() -> bool:
-    try:
-        resp = httpx.get(f"{TWILIO_MOCK_URL}/healthz", timeout=3.0)
-        return resp.status_code == 200
-    except httpx.HTTPError:
-        return False
-
-
 def _auth_emulator_reachable() -> bool:
     # The compose healthcheck only probes Firestore's port (8080), and
     # `/healthz` only round-trips Firestore too -- neither guarantees the
@@ -301,9 +289,6 @@ def _auth_emulator_reachable() -> bool:
 def start_stack(*, build: bool) -> None:
     write_env_file()
     compose(*(["up", "-d", "--build"] if build else ["up", "-d"]))
-    wait_until(
-        _twilio_mock_reachable, timeout=60, interval=1, description="twilio-mock to become reachable"
-    )
     wait_until(_relay_reachable, timeout=120, interval=1, description="relay to become healthy")
     wait_until(
         _auth_emulator_reachable, timeout=60, interval=1, description="Auth emulator to become reachable"
@@ -322,7 +307,6 @@ def dump_logs() -> None:
         ("relay", "120"),
         ("emqx", "60"),
         ("firebase", "40"),
-        ("twilio-mock", "40"),
     ):
         print(f"\n--- docker compose logs {service} --tail {tail} ---")
         result = compose("logs", service, "--tail", tail, check=False, capture=True)
@@ -918,149 +902,6 @@ def scenario_location_on_demand() -> None:
     print("location_on_demand: a locate() after expiry starts a fresh loc_req, not a coalesce")
 
 
-def _sms_delivery_state(oracle: Oracle, msg_id: str) -> str | None:
-    msg = oracle.message(msg_id)
-    if msg is None:
-        return None
-    for d in msg.deliveries.values():
-        if d.kind == "sms":
-            return d.state
-    return None
-
-
-def scenario_fanout() -> None:
-    """docs/SERVER_PLAN.md §8 scenario 7: a user with both `webapp` (implicit)
-    and an `sms` backend enabled -> a message fans out to both; the mock
-    (`tools/mocks/twilio_mock.py`) records the sms send; a forced mock
-    failure drives the sms delivery through `/internal/tick`'s retry path
-    (`app/jobs.py`) to `'failed'` after the attempts cap.
-
-    **Origin-backend exclusion is exercised whitebox.** Driving it through
-    the real inbound SMS webhook would need a signed Twilio request this
-    suite has no credentials to produce. Per `app/routing.py`'s module
-    docstring, the self-loop guard §5.2 means
-    by "stops an SMS reply from being echoed back to the same phone" only
-    ever fires when the *resolved recipient equals the sender* (see
-    `relay/tests/test_routing.py`'s `test_origin_backend_id_scopes_self_loop_
-    exclusion_to_exact_backend`, which this sub-case mirrors at the
-    integration level) -- so this calls `app.routing.Routing.send()`
-    directly (whitebox, like `Oracle`) with a self-addressed allow edge and
-    `origin_backend_kind='sms'`/`origin_backend_id=<the user's own sms
-    backend id>`, standing in for what a real inbound SMS webhook resolving
-    a reply back to its own sender would pass, and confirms the
-    sms delivery is excluded while webapp (a different kind) still gets one.
-    """
-    oracle = Oracle()
-    admin = pager_client.ServerClient(RELAY_URL, AUTH_URL)
-    admin.login("admin")
-    admin.admin_user_add("fanoutparent", "FanoutParent", email="fanoutparent@example.com", phone=None)
-    admin.admin_user_add(
-        "fanoutstudent", "FanoutStudent", email="fanoutstudent@example.com", phone=None
-    )
-    admin.admin_set_allow("fanoutparent", "fanoutstudent", message=True, locate=True, one_way=False)
-
-    parent = pager_client.ServerClient(RELAY_URL, AUTH_URL)
-    parent.login("fanoutparent")
-    sms_backend = parent.add_backend("sms", {"phone": "+15551234567"})
-    assert sms_backend["enabled"] is False, sms_backend  # H2: not enabled until verified
-    # `start_link()` already texted a verify code through the twilio mock
-    # (`add_backend`'s call into `POST /api/me/backends` -- see that
-    # handler's docstring) -- pull it back out of the mock's `/_sent` log
-    # (H1: it is deliberately no longer readable off `sms_backend["config"]`)
-    # and complete the verify flow before this scenario can rely on the
-    # backend actually receiving anything.
-    verify_sms = httpx.get(f"{TWILIO_MOCK_URL}/_sent", timeout=5.0)
-    verify_sms.raise_for_status()
-    verify_code_match = None
-    for entry in reversed(verify_sms.json()):
-        if entry["to"] == "+15551234567" and "verification code" in entry["body"]:
-            verify_code_match = re.search(r"\d{6}", entry["body"])
-            break
-    assert verify_code_match is not None, verify_sms.json()
-    verified = parent.verify_backend(sms_backend["id"], verify_code_match.group(0))
-    assert verified["enabled"] is True and verified["verifiedAt"] is not None, verified
-
-    student = pager_client.ServerClient(RELAY_URL, AUTH_URL)
-    student.login("fanoutstudent")
-
-    # --- fan-out: webapp + sms both get deliveries ---
-    sent = student.say("fanoutparent", "hi from student")
-    msg_id = sent["id"]
-
-    def _both_delivered() -> bool:
-        msg = oracle.message(msg_id)
-        if msg is None:
-            return False
-        states = {d.kind: d.state for d in msg.deliveries.values()}
-        return states.get("webapp") == "sent" and states.get("sms") == "sent"
-
-    wait_until(
-        _both_delivered, timeout=15, description="webapp and sms deliveries to both reach 'sent'"
-    )
-    sent_sms = httpx.get(f"{TWILIO_MOCK_URL}/_sent", timeout=5.0)
-    sent_sms.raise_for_status()
-    assert any(
-        s["to"] == "+15551234567" and s["body"] == "hi from student" for s in sent_sms.json()
-    ), sent_sms.json()
-    print("fanout: message fanned out to both webapp and sms deliveries; mock recorded the sms send")
-
-    # --- origin-backend exclusion (documented simplification, see docstring above) ---
-    _use_relay_store()
-    from app.routing import Routing as _Routing
-    from tests.fake_transport import FakeBrokerClient as _FakeBroker
-
-    admin.admin_set_allow("fanoutparent", "fanoutparent", message=True, locate=True, one_way=True)
-    loop_routing = _Routing(_FakeBroker())
-    loop_result = loop_routing.send(
-        sender_uid=oracle.uid_for_alias("fanoutparent"),
-        recipient_alias="fanoutparent",
-        kind="text",
-        body="echo via sms",
-        origin_backend_kind="sms",
-        origin_backend_id=sms_backend["id"],
-    )
-    assert len(loop_result.messages) == 1, loop_result
-    loop_kinds = {d.kind for d in loop_result.messages[0].deliveries.values()}
-    assert "sms" not in loop_kinds, loop_kinds
-    assert "webapp" in loop_kinds, loop_kinds
-    print("fanout: sms origin backend excluded on a self-addressed reply; webapp still delivered")
-
-    # --- retry path: mock forced to fail every send until the attempts cap ---
-    fail_resp = httpx.post(f"{TWILIO_MOCK_URL}/_fail_next", json={"times": 10}, timeout=5.0)
-    fail_resp.raise_for_status()
-    sent2 = student.say("fanoutparent", "this sms keeps failing")
-    msg_id_2 = sent2["id"]
-
-    wait_until(
-        lambda: _sms_delivery_state(oracle, msg_id_2) == "queued",
-        timeout=10,
-        description="sms delivery to stay 'queued' after the mock's forced failure",
-    )
-    print("fanout: mock /_fail_next -> sms delivery stayed 'queued' (not 'failed' outright)")
-
-    # `MAX_DELIVERY_ATTEMPTS` (5, app/store/messages.py) -- the inline send
-    # above already counts as attempt 1, so up to 4 more tick()-driven
-    # retries reach the cap (same pattern relay/tests/test_jobs.py's
-    # `test_tick_gives_up_after_five_failed_attempts` uses for pager).
-    for _ in range(5):
-        if _sms_delivery_state(oracle, msg_id_2) == "failed":
-            break
-        tick_resp = admin.api_post("/internal/tick", {})
-        tick_resp.raise_for_status()
-    assert _sms_delivery_state(oracle, msg_id_2) == "failed", _sms_delivery_state(oracle, msg_id_2)
-    print("fanout: sms delivery retried via tick() and reached 'failed' after the attempts cap")
-
-    # The `times=10` armed above outlives `MAX_DELIVERY_ATTEMPTS` (5) worth of
-    # sends -- the mock's `fail_next` counter is process-global (not scoped to
-    # this scenario or this message), so any leftover count would silently
-    # fail the *next* scenario's first sms send instead of this one's. Drain
-    # it via the mock's own `/_reset` (also clears `_sent`, harmless here --
-    # every assertion above that reads `_sent` already ran).
-    reset_resp = httpx.post(f"{TWILIO_MOCK_URL}/_reset", timeout=5.0)
-    reset_resp.raise_for_status()
-    print("fanout: drained the mock's /_fail_next counter via /_reset so it can't leak into later scenarios")
-
-
 def scenario_retention() -> None:
     """docs/SERVER_PLAN.md §8 scenario 8 / §5.7.
 
@@ -1419,9 +1260,10 @@ def scenario_address_book() -> None:
     `+15550001111 Grandma` -> admin approves in one click (docs/
     CONTACT_REQ_DESIGN.md decision 2: that makes the family's SMS contact for
     the number, never a person) -> device receives the updated `/down`
-    `book`, applies it and acks `shown` -> device sends a `to:<contact alias>`
-    up message, which fans out to the contact's `sms` backend and lands at the
-    Twilio mock -> admin pushes `/down` `cfg` `lock.auto=2` -> device applies
+    `book` and acks `shown`; the contact is *not* in `c[]` -- it reaches the
+    pager only as `cfg.sms` (the relay sends no SMS) -> a device `up` message
+    `to:<contact alias>` gets exactly the `unknown recipient` system reply and
+    creates no thread -> admin pushes `/down` `cfg` `lock.auto=2` -> device applies
     it and acks `shown`.
 
     Runnable standalone (`tools/e2e_v2.py address_book`, per this task's own
@@ -1472,15 +1314,6 @@ def scenario_address_book() -> None:
     assert alert["peerPhone"] == "+15550001111", alert
     print(f"address_book: contact_req landed as an open alert (id={alert['id']})")
 
-    # An SMS contact is sendable (so listed on the pager) only when the
-    # student's outbound policy allows SMS.
-    patched = admin._http.patch(
-        f"{admin.api_url}/api/family/members/abstudent?family={family_id}",
-        json={"policy": {"out": "people_sms", "in": "people"}},
-        headers=admin._headers(),
-    )
-    assert patched.status_code == 200, patched.text
-
     approved = admin.family_approve_alert(family_id, alert["id"])
     assert approved["status"] == "handled", approved
     from app.store import externals as externals_store
@@ -1488,20 +1321,22 @@ def scenario_address_book() -> None:
     _contact_uid, contact_alias = externals_store.contact_ids(family_id, "+15550001111")
     print(f"address_book: admin approved in one click; SMS contact alias={contact_alias}")
 
-    def _book_has_grandma() -> bool:
-        return device.book is not None and any(
-            c.get("a") == contact_alias for c in device.book["c"]
-        )
-
+    # The contact reaches the pager as `cfg.sms`, never in the book's `c[]`.
     wait_until(
-        _book_has_grandma,
+        lambda: {"name": "Grandma", "phone": "+15550001111"} in device.sms_contacts,
         timeout=10,
-        description="device to receive and apply a book containing grandma",
+        description="device to receive and apply cfg.sms containing Grandma",
+    )
+    wait_until(
+        lambda: device.book is not None,
+        timeout=10,
+        description="device to receive and apply a book",
     )
     assert device.book is not None
+    assert contact_alias not in [c["a"] for c in device.book["c"]], device.book
     print(
-        f"address_book: device applied book bv={device.book['bv']} "
-        f"contacts={[c['a'] for c in device.book['c']]}"
+        f"address_book: device applied sms_contacts={device.sms_contacts}; book bv={device.book['bv']} "
+        f"contacts={[c['a'] for c in device.book['c']]} (no SMS contact in c[])"
     )
 
     wait_until(
@@ -1511,25 +1346,19 @@ def scenario_address_book() -> None:
     )
     print("address_book: device's book ack ('shown') landed at the relay")
 
-    up_id = device.publish_msg("hi grandma", to=contact_alias)
+    # The relay never texts a contact: an `up` to its alias takes the §4.2
+    # case-3 path (one `unknown recipient` system reply, nothing stored).
+    device.inbox.clear()
+    device.publish_msg("hi grandma", to=contact_alias)
     wait_until(
-        lambda: any(m.wireId == up_id for m in oracle.thread("abstudent", contact_alias)),
+        lambda: any(e.data.get("from") == "system" for e in device.inbox),
         timeout=10,
-        description="device's message to the SMS contact to land in the thread",
+        description="a system 'unknown recipient' reply for the SMS contact's alias",
     )
-    print("address_book: message to the SMS contact landed in the abstudent<->contact thread")
-
-    def _sms_received() -> bool:
-        sent = httpx.get(f"{TWILIO_MOCK_URL}/_sent", timeout=5.0)
-        sent.raise_for_status()
-        return any(
-            s["to"] == "+15550001111" and s["body"] == "hi grandma" for s in sent.json()
-        )
-
-    wait_until(
-        _sms_received, timeout=10, description="grandma's sms backend to receive the message via the Twilio mock"
-    )
-    print("address_book: the Twilio mock recorded the sms send to grandma's phone")
+    system_reply = next(e.data for e in device.inbox if e.data.get("from") == "system")
+    assert system_reply["body"] == "unknown recipient", system_reply
+    assert oracle.thread("abstudent", contact_alias) == [], "no relay message to an SMS contact"
+    print("address_book: message to the SMS contact -> 'unknown recipient', no thread written")
 
     admin.admin_push_cfg("pgr-e2e-book", auto=2)
     wait_until(
@@ -1549,10 +1378,9 @@ def scenario_address_book() -> None:
 
 
 def scenario_sms_log() -> None:
-    """docs/V02_DESIGN.md §6: admin approves an SMS number for the student
-    (`PUT /api/family/members/{uid}/approved`, docs/FAMILIES_DESIGN.md §1
-    decision 11 -- supersedes the old direct `PUT /api/devices/{id}/
-    sms-contacts`) -> the derived `devices.smsContacts` projection pushes
+    """docs/V02_DESIGN.md §6: admin creates the SMS contact Mom
+    (`POST /api/family/contacts`) and picks her for the student
+    (`PUT /api/family/members/{uid}/approved` with `contacts:[{uid}]`) -> the derived `devices.smsContacts` projection pushes
     `/down cfg.sms`, device applies it and acks `shown` -> device sends an
     SMS to the listed contact (`sms out`) and receives one from an unlisted
     number (`sms in`) -> both land in `devices/{id}/smsLog` with the right
@@ -1576,11 +1404,12 @@ def scenario_sms_log() -> None:
 
     mom_phone = "+15550002222"
     stranger_phone = "+15550003333"
+    mom = admin.family_create_contact(family_id, mom_phone, "Mom")
     pushed = admin.family_put_approved(
-        family_id, smsstudent["uid"], numbers=[{"phone": mom_phone, "name": "Mom"}]
+        family_id, smsstudent["uid"], contacts=[{"uid": mom["uid"]}]
     )
-    assert pushed["numbers"] == [{"phone": mom_phone, "name": "Mom"}], pushed
-    print("sms_log: admin approved numbers=[Mom]")
+    assert pushed["contacts"] == [{"uid": mom["uid"], "message": True}], pushed
+    print("sms_log: admin created contact Mom and approved it for the student")
 
     wait_until(
         lambda: any(c.get("phone") == mom_phone for c in device.sms_contacts),
@@ -1626,7 +1455,6 @@ SCENARIOS: dict[str, Callable[[], None]] = {
     "republish": scenario_republish,
     "location_periodic": scenario_location_periodic,
     "location_on_demand": scenario_location_on_demand,
-    "fanout": scenario_fanout,
     "retention": scenario_retention,
     "bytes": scenario_bytes,
     "address_book": scenario_address_book,

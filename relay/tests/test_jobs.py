@@ -1,8 +1,7 @@
 """`app.jobs.tick()`: retries pager deliveries still 'queued', at most 10 per
-device, oldest first -- docs/SERVER_PLAN.md §5.8 item 1 -- and retries
-non-pager (`sms`) deliveries still 'queued' (see `app/jobs.py`'s module
-docstring). Uses `app.tasks.InlineTaskQueue` so retries run synchronously and
-are observable immediately.
+device, oldest first -- docs/SERVER_PLAN.md §5.8 item 1. Uses
+`app.tasks.InlineTaskQueue` so retries run synchronously and are observable
+immediately.
 
 `app.jobs.sweep()` (docs/SERVER_PLAN.md §5.7) is covered further down:
 batching with a small `SWEEP_BATCH`, idempotency across two consecutive
@@ -24,7 +23,6 @@ import time as _time
 from datetime import UTC, datetime, timedelta
 
 from app import jobs
-from app.backends.sms_twilio import SmsTwilioBackend
 from app.db.firestore import get_db
 from app.routing import Routing
 from app.store import allow as allow_store
@@ -187,115 +185,6 @@ def test_tick_skips_revoked_devices():
     result = jobs.tick(routing, task_queue=InlineTaskQueue())
     assert result.devicesChecked == 0
     assert result.retriesAttempted == 0
-
-
-# ---------------------------------------------------------------------------
-# tick(): non-pager (sms) retry -- see app/jobs.py's module docstring
-# ---------------------------------------------------------------------------
-
-
-def test_tick_retries_queued_sms_delivery(monkeypatch):
-    """No TWILIO_BASE_URL configured -> SmsTwilioBackend.deliver() leaves the
-    delivery 'queued' (not 'failed' -- see that module's docstring) on the
-    inline send; tick() must find and retry it via `Routing.redeliver`, the
-    same way it retries a queued pager delivery via `redeliver_pager`."""
-    monkeypatch.delenv("TWILIO_BASE_URL", raising=False)
-    _make_user("mom", "mom")
-    _make_user("student", "student")
-    allow_store.set_edge("mom", "student", message=True, locate=True)
-    allow_store.set_edge("student", "mom", message=True, locate=True)
-    backends_store.create_backend(
-        "student", kind="sms", config={"phone": "+15551234567"}, enabled=True
-    )
-
-    routing = Routing(FakeBrokerClient())
-    result = routing.send(
-        sender_uid="mom",
-        recipient_alias="student",
-        kind="text",
-        body="hi",
-        origin_backend_kind="webapp",
-    )
-    msg = result.messages[0]
-    sms_bid = next(bid for bid, d in msg.deliveries.items() if d.kind == "sms")
-    assert messages_store.get_message(msg.id).deliveries[sms_bid].state == "queued"
-
-    tick_result = jobs.tick(routing, task_queue=InlineTaskQueue())
-    assert tick_result.nonPagerRetriesAttempted == 1
-    # Still queued (no TWILIO_BASE_URL) -- but attempts advanced, proving
-    # tick() actually re-invoked deliver() rather than skipping it.
-    refreshed = messages_store.get_message(msg.id)
-    assert refreshed.deliveries[sms_bid].state == "queued"
-    assert refreshed.deliveries[sms_bid].attempts == 2
-
-
-def test_tick_caps_non_pager_retries_dispatched_per_call(monkeypatch):
-    """A single `tick()` call must not *dispatch*
-    more than `jobs.NON_PAGER_RETRY_DISPATCH_LIMIT` (10) non-pager retries,
-    even when more than that many are queued and scan-eligible -- mirrors
-    §5.8's existing "at most 10 per device" pager cap, for the same reason
-    (bound worst-case tick duration: `NON_PAGER_RETRY_SCAN_LIMIT` (50) *
-    `app/notify/sms.py`'s `REQUEST_TIMEOUT_S` (5s) could otherwise approach ~250s, close
-    to Cloud Run's default 300s request timeout, if the broker and the
-    Twilio mock were both down at once)."""
-    monkeypatch.delenv("TWILIO_BASE_URL", raising=False)
-    _make_user("mom3", "mom3")
-    _make_user("student3", "student3")
-    allow_store.set_edge("mom3", "student3", message=True, locate=True)
-    allow_store.set_edge("student3", "mom3", message=True, locate=True)
-    backends_store.create_backend(
-        "student3", kind="sms", config={"phone": "+15550001111"}, enabled=True
-    )
-
-    routing = Routing(FakeBrokerClient())
-    for i in range(20):
-        routing.send(
-            sender_uid="mom3",
-            recipient_alias="student3",
-            kind="text",
-            body=f"msg {i}",
-            origin_backend_kind="webapp",
-        )
-
-    tick_result = jobs.tick(routing, task_queue=InlineTaskQueue())
-    # Exactly the cap, not "at most" -- 20 were queued and scan-eligible
-    # (well within NON_PAGER_RETRY_SCAN_LIMIT=50), so if the cap weren't
-    # enforced this would be 20.
-    assert tick_result.nonPagerRetriesAttempted == 10
-    assert tick_result.nonPagerRetriesAttempted == jobs.NON_PAGER_RETRY_DISPATCH_LIMIT
-
-
-def test_tick_does_not_retry_sent_sms_delivery(monkeypatch):
-    monkeypatch.setenv("TWILIO_BASE_URL", "http://sms-mock.invalid")
-    _make_user("mom2", "mom2")
-    _make_user("student2", "student2")
-    allow_store.set_edge("mom2", "student2", message=True, locate=True)
-    allow_store.set_edge("student2", "mom2", message=True, locate=True)
-    backends_store.create_backend(
-        "student2", kind="sms", config={"phone": "+15550000000"}, enabled=True
-    )
-
-    class _FakeSmsBackend(SmsTwilioBackend):
-        def deliver(self, msg, delivery, backend):  # type: ignore[override]
-            messages_store.mark_delivery_sent_if_queued(msg.id, backend.id)
-            from app.backends.base import DeliverResult
-
-            return DeliverResult(ok=True, state="sent")
-
-    routing = Routing(FakeBrokerClient(), registry={"sms": _FakeSmsBackend()})
-    result = routing.send(
-        sender_uid="mom2",
-        recipient_alias="student2",
-        kind="text",
-        body="hi",
-        origin_backend_kind="webapp",
-    )
-    msg = result.messages[0]
-    sms_bid = next(bid for bid, d in msg.deliveries.items() if d.kind == "sms")
-    assert messages_store.get_message(msg.id).deliveries[sms_bid].state == "sent"
-
-    tick_result = jobs.tick(routing, task_queue=InlineTaskQueue())
-    assert tick_result.nonPagerRetriesAttempted == 0
 
 
 # ---------------------------------------------------------------------------

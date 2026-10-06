@@ -350,7 +350,11 @@ def test_create_member_bumps_every_family_device(client: TestClient, broker: Fak
 # i ---------------------------------------------------------------------------
 
 
-def test_external_rename_bumps_each_approver(client: TestClient):
+def test_external_rename_rederives_cfg_sms_without_a_book_bump(
+    client: TestClient, broker: FakeBrokerClient
+):
+    """A contact is never in `c[]` (it reaches the pager as `cfg.sms`), so a
+    rename re-derives `cfg.sms` for its holders and bumps no book."""
     fam = _family()
     h = _user("mom", fam, role="admin")
     _user("kid1", fam)
@@ -365,8 +369,159 @@ def test_external_rename_bumps_each_approver(client: TestClient):
 
     resp = client.patch(f"/api/family/contacts/{ext.uid}", json={"name": "Grandma"}, headers=h)
     assert resp.status_code == 200, resp.text
-    assert (_bv("pgr-i1"), _bv("pgr-i2")) == (b1 + 1, b2 + 1)
-    assert "Grandma" in [c["n"] for c in devcfg.build_book_body("pgr-i1")["c"]]
+    assert (_bv("pgr-i1"), _bv("pgr-i2")) == (b1, b2)
+    for device_id in ("pgr-i1", "pgr-i2"):
+        assert [c.name for c in devices_store.get_device(device_id).smsContacts] == ["Grandma"]
+        assert ext.alias not in [c["a"] for c in devcfg.build_book_body(device_id)["c"]]
+
+
+# sms_contacts_for -----------------------------------------------------------
+
+
+def _contact(fam: str, i: int, name: str):
+    return externals_store.get_or_create(fam, f"+1206555{i:04d}", name)
+
+
+def _sms_names(uid: str) -> list[str]:
+    owner = users_store.get_user(uid)
+    assert owner is not None
+    return [u.displayName for u in book_module.sms_contacts_for(owner)]
+
+
+def test_sms_contacts_for_open_member_includes_every_family_contact():
+    fam = _family()
+    _user("kid", fam, auth=False)
+    _set_policy("kid", "open", "any")
+    _contact(fam, 1, "Bob")
+    _contact(fam, 2, "Alice")
+    assert _sms_names("kid") == ["Alice", "Bob"]
+
+
+def test_sms_contacts_for_any_sms_member_includes_every_family_contact():
+    fam = _family()
+    _user("kid", fam, auth=False)
+    _set_policy("kid", "any_sms", "people")
+    _contact(fam, 1, "Bob")
+    assert _sms_names("kid") == ["Bob"]
+
+
+def test_sms_contacts_for_people_member_includes_only_edge_contacts():
+    fam = _family()
+    _user("kid", fam, auth=False)  # default policy: people/people
+    bob = _contact(fam, 1, "Bob")
+    _contact(fam, 2, "Alice")
+    assert _sms_names("kid") == []
+    allow_store.set_edge("kid", bob.uid, message=True, locate=False)
+    assert _sms_names("kid") == ["Bob"]
+
+
+@pytest.mark.parametrize("out", ["people_sms", "sms"])
+def test_sms_contacts_for_people_sms_and_sms_members_require_edges(out: str):
+    fam = _family()
+    _user("kid", fam, auth=False)
+    _set_policy("kid", out, "people")
+    bob = _contact(fam, 1, "Bob")
+    _contact(fam, 2, "Alice")
+    assert _sms_names("kid") == []
+    allow_store.set_edge("kid", bob.uid, message=True, locate=False)
+    assert _sms_names("kid") == ["Bob"]
+
+
+def test_sms_contacts_for_explicit_deny_beats_open_policy():
+    fam = _family()
+    _user("kid", fam, auth=False)
+    _set_policy("kid", "open", "any")
+    bob = _contact(fam, 1, "Bob")
+    _contact(fam, 2, "Alice")
+    allow_store.set_edge("kid", bob.uid, message=False, locate=False)
+    assert _sms_names("kid") == ["Alice"]
+
+
+def test_sms_contacts_for_never_includes_other_family_contacts():
+    fam, other = _family("A"), _family("B")
+    _user("kid", fam, auth=False)
+    _set_policy("kid", "open", "any")
+    theirs = _contact(other, 1, "Theirs")
+    mine = _contact(fam, 2, "Mine")
+    allow_store.set_edge("kid", theirs.uid, message=True, locate=False)
+    assert _sms_names("kid") == ["Mine"]
+    assert mine.uid != theirs.uid
+
+
+def test_sms_contacts_for_is_empty_for_a_disabled_or_non_person_owner():
+    fam = _family()
+    _user("kid", fam, auth=False)
+    _set_policy("kid", "open", "any")
+    ext = _contact(fam, 1, "Bob")
+    users_store.update_user("kid", disabled=True)
+    assert _sms_names("kid") == []
+    assert book_module.sms_contacts_for(ext) == []
+
+
+def test_sms_contacts_for_sorted_by_truncated_name_casefold():
+    fam = _family()
+    _user("kid", fam, auth=False)
+    _set_policy("kid", "open", "any")
+    _contact(fam, 1, "charlie")
+    _contact(fam, 2, "Bob")
+    _contact(fam, 3, "alice")
+    assert _sms_names("kid") == ["alice", "Bob", "charlie"]
+    # Names equal after truncation (not creatable through the API) tie-break
+    # by uid.
+    for uid in ("x_b", "x_a"):
+        users_store.create_user(
+            uid=uid,
+            alias=uid.replace("_", ""),
+            display_name="ZZZ sixteen chars A" if uid == "x_a" else "ZZZ sixteen chars B",
+            phone="+12065559999" if uid == "x_a" else "+12065559998",
+            kind="external",
+            owner_family_id=fam,
+        )
+    owner = users_store.get_user("kid")
+    assert [u.uid for u in book_module.sms_contacts_for(owner)][-2:] == ["x_a", "x_b"]
+
+
+def test_external_entry_comes_from_sms_contacts_for_and_is_sendable_with_phone(
+    client: TestClient,
+):
+    fam, other = _family("A"), _family("B")
+    h = _user("kid", fam)  # people: only an explicit edge lists a contact
+    bob = _contact(fam, 1, "Bob")
+    _contact(fam, 2, "Unlisted")
+    theirs = _contact(other, 3, "Theirs")
+    allow_store.set_edge("kid", bob.uid, message=True, locate=False)
+    allow_store.set_edge("kid", theirs.uid, message=True, locate=False)  # a stale cross-family edge
+
+    entries = book_module.entries_for("kid")
+    externals = [e for e in entries if e.kind == "external"]
+    assert [e.uid for e in externals] == [bob.uid]
+    (entry,) = externals
+    assert entry.phone == "+12065550001"
+    assert entry.sendable is True and entry.reason is None and entry.inFamily is False
+    assert entry.onPager is True
+
+    body = client.get("/api/book", headers=h).json()
+    assert _aliases(body)[bob.alias]["phone"] == "+12065550001"
+    assert theirs.alias not in _aliases(body)
+
+
+def test_open_member_book_lists_family_contacts_sendable_with_phone_and_on_pager_cap(
+    client: TestClient,
+):
+    fam = _family()
+    h = _user("kid", fam)
+    _set_policy("kid", "open", "people")
+    _device("pgr-open", "kid", fam)
+    for i in range(10):
+        _contact(fam, i, f"c{i}")
+
+    body = client.get("/api/book", headers=h).json()
+    externals = sorted((e for e in body["entries"] if e["kind"] == "external"), key=lambda e: e["label"])
+    assert [e["label"] for e in externals] == [f"c{i}" for i in range(10)]
+    assert all(e["sendable"] and e["phone"] and e["reason"] is None for e in externals)
+    assert [e["onPager"] for e in externals] == [True] * 8 + [False] * 2
+    # And none of them is in the pager's `c[]`.
+    assert devcfg.build_book_body("pgr-open")["c"] == []
 
 
 # j ---------------------------------------------------------------------------

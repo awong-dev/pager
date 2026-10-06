@@ -41,44 +41,10 @@ resource "google_secret_manager_secret" "webhook_key" {
   }
 }
 
-# --- Twilio (SMS backend, docs/SERVER_PLAN.md §6.4) --------------------
-# All three names are read by relay/app/notify/sms.py. TWILIO_AUTH_TOKEN is
-# both the HTTP Basic auth password for outbound Messages API calls and the
-# HMAC key relay/app/backends/sms_twilio.py validates inbound
-# `X-Twilio-Signature` headers against.
-resource "google_secret_manager_secret" "twilio_account_sid" {
-  project   = var.project_id
-  secret_id = "TWILIO_ACCOUNT_SID" # relay/app/notify/sms.py account_sid()
-  labels    = var.labels
-  replication {
-    auto {}
-  }
-}
-
-resource "google_secret_manager_secret" "twilio_auth_token" {
-  project = var.project_id
-  # relay/app/notify/sms.py auth_token(); also the HMAC key for
-  # relay/app/backends/sms_twilio.py's inbound signature check.
-  secret_id = "TWILIO_AUTH_TOKEN"
-  labels    = var.labels
-  replication {
-    auto {}
-  }
-}
-
-resource "google_secret_manager_secret" "twilio_from_number" {
-  project   = var.project_id
-  secret_id = "TWILIO_FROM_NUMBER" # relay/app/notify/sms.py from_number()
-  labels    = var.labels
-  replication {
-    auto {}
-  }
-}
-
 # --- Cell-tower location fallback (docs/PROTOCOL.md §13.2, this task) --
 # CELL_GEO_PROVIDER itself is not a secret (plain env var, relay-service
 # module) -- only the third-party API key needs a Secret Manager container.
-# Optional like the Twilio secrets above: a deployment with
+# Optional: a deployment with
 # CELL_GEO_PROVIDER=none (the default) never reads this at all.
 resource "google_secret_manager_secret" "cell_geo_api_key" {
   project   = var.project_id

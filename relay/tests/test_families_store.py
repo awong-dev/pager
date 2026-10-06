@@ -12,7 +12,6 @@ def test_create_and_get_family_assigns_id_when_not_given():
     family = families_store.create_family(name="Home", created_by="root-uid")
     assert family.id
     assert family.name == "Home"
-    assert family.smsNumber is None
     assert family.blockedNumbers == []
     assert family.createdBy == "root-uid"
 
@@ -38,11 +37,10 @@ def test_list_families():
     assert {"List A", "List B"} <= names
 
 
-def test_update_family_name_and_sms_number():
+def test_update_family_name():
     family = families_store.create_family(name="Old Name", created_by="root-uid")
-    updated = families_store.update_family(family.id, name="New Name", sms_number="+15550001111")
+    updated = families_store.update_family(family.id, name="New Name")
     assert updated.name == "New Name"
-    assert updated.smsNumber == "+15550001111"
 
 
 def test_update_family_missing_raises():

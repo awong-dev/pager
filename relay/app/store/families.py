@@ -23,7 +23,6 @@ class Family(BaseModel):
 
     id: str
     name: str
-    smsNumber: str | None = None
     blockedNumbers: list[str] = []
     createdAt: datetime | None = None
     createdBy: str | None = None
@@ -54,7 +53,6 @@ def create_family(
     name: str,
     created_by: str,
     family_id: str | None = None,
-    sms_number: str | None = None,
 ) -> Family:
     """Creates `families/{fid}`. `family_id` pins a specific id (the
     bootstrap's `default` family, tests, re-runs); omitted, Firestore
@@ -63,7 +61,6 @@ def create_family(
     ref.set(
         {
             "name": name,
-            "smsNumber": sms_number,
             "blockedNumbers": [],
             "createdAt": SERVER_TIMESTAMP,
             "createdBy": created_by,
@@ -88,16 +85,12 @@ def list_families() -> list[Family]:
     ]
 
 
-def update_family(
-    family_id: str, *, name: str | None = None, sms_number: str | None = None
-) -> Family:
-    """Patch-semantics update of `name`/`smsNumber` (`blockedNumbers` is
+def update_family(family_id: str, *, name: str | None = None) -> Family:
+    """Patch-semantics update of `name` (`blockedNumbers` is
     mutated elsewhere, by the webhook's block action, not through here)."""
     updates: dict[str, object] = {}
     if name is not None:
         updates["name"] = name
-    if sms_number is not None:
-        updates["smsNumber"] = sms_number
     ref = _families().document(family_id)
     if updates:
         try:

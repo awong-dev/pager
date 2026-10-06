@@ -21,7 +21,7 @@ else `ALIAS_RE` → alias; else bad. Outcomes, first match wins (R = row `status
 |---|---|---|
 | bad | R `bad_number` | `<name>: number must be 10 digits or start with +` |
 | phone in the family's `blockedNumbers` | R `blocked` | `<name>: number not allowed` |
-| phone = a same-family person's verified number, or the family's SMS contact (decision 7) the owner already has an edge to | no row | `<name>: already in your book` |
+| phone = the family's SMS contact for that number, and it is on the owner's pager list (approved or implied, decision 7) | no row | `<name>: already in your book` |
 | alias = owner, same-family person, or an existing owner→peer `message` edge | no row | same |
 | alias of a non-disabled person outside the family with a `message` edge **to** the owner | pending **link** + alert | — |
 | any other alias (unknown, external, group, disabled, no inbound edge) | R `no_contact` | `<name>: no contact @<alias>` |
@@ -38,9 +38,9 @@ Block/Dismiss is already visible as `p[]` `s:"no"`; a reason is only sent when t
 `mode:"create"` → 400 `new people are added under Family > People`. The logic moves into
 `family.py` (`admin._approve_contact_impl`, `ContactApproveRequest`, `_resolve_link_uid`,
 `_slugify_name` deleted). At approve time the target is resolved again:
-- **SMS:** a verified person number (`backends.get_by_phone`) → link rule. Otherwise
-  `externals.get_or_create(owner.familyId, phone, request.name)` (decision 7), owner→contact
-  `message`, `rederive_sms_contacts(owner)`, push `cfg.sms`.
+- **SMS:** *(7 Oct 2026: there are no verified person numbers; a phone always becomes an SMS contact.)*  
+  The name must be unique in the family (409 keeps the request pending; `name` in the approve body overrides), then "→
+  `rederive_family_sms_contacts`".
 - **Link:** peer still a non-disabled person, same family or with `message` edge peer→owner, else
   409 `@x no longer has an edge to @owner` (request stays pending). Write **only** the missing
   owner→peer edge (`message`, no `locate`); never rewrite the peer's edge *(today's code
@@ -63,13 +63,11 @@ subcollections, `aliases`, `users`, Auth user, the approved `contactRequests` ro
 attach to `default`: nobody can sign in as them, and the intent (an SMS contact) is one new request.
 
 **4. Delivery chips say where it went.** pager: waiting for pager / sent to pager / on pager / read
-on pager. webapp: waiting / sent to app / shown in app / read in app. sms: SMS queued / sent by
-SMS. gchat: sent to Google Chat / read in Google Chat. failed → "<where> failed"; expired →
-"expired"; fulfilled → "location received". Time suffix unchanged.
+on pager. webapp: waiting / sent to app / shown in app / read in app. gchat: sent to Google Chat / read in Google Chat. failed → "<where> failed"; expired →
+"expired"; fulfilled → "location received". Time suffix unchanged. *(7 Oct 2026: no sms deliveries exist.)*
 
 **5. A person's phone is a sign-in number, never an SMS route.** `users.phone` is the Firebase Auth
-`phone_number` `/login` uses. Option (a) would turn a credential into a paid texting route with no
-consent step; a person who wants SMS has the self-verified `sms` backend. People
+`phone_number` `/login` uses. The relay has no SMS backend at all (7 Oct 2026). People
 (`web/app/family/people`) and Users (`web/app/admin/users`) label it "Sign-in phone", helper
 "For signing in only. To text a number from a pager, add it under Contacts." (link);
 `POST /api/family/members` and `POST /api/admin/users` normalise it (`normalize_phone`, 400 on
@@ -83,31 +81,10 @@ appears only on the web: the super switcher (`AppShell`) and the admin Users/Dev
 header on `/family/people` re-fetches `GET /api/family` after saving. Nothing else holds the name:
 there is no book bump, no `cfg`, nothing in `/status`, and no pager impact.
 
-**7. An SMS contact belongs to one family; the number is not a key.** An external is
-`users/{uid}`, `kind:"external"`, `familyId: null` (rules, `sameFam`, `locate` checks unchanged),
-**`ownerFamilyId: fid`**, `phone: e164`, `displayName` = that family's name for it. Identity is
-`(fid, e164)`: `uid = "x_" + h[:16]`, `alias = "x" + h[:11]`, `h = sha256(f"{fid}|{e164}").hex()`.
-Deterministic ids make `get_or_create(fid, phone, name)` idempotent through `create_user`'s own
-transaction, and lookups (`get_family_contact(fid, e164)`) need no index. The reverse index
-`phoneIndex/{e164}.ext = {fid: uid}` (merge write) exists only for the shared-number webhook.
-A verified person keeps `{uid, bid}` on the same doc: `set_phone_index` becomes `merge=True`, and
-`clear_phone_index` deletes only `uid`/`bid`, so the two shapes cannot clobber each other.
-`get_by_phone` returns persons only. Alias collision (40-bit hash) → `AliasTaken` → 400.
-- **Inbound Twilio:** person match → as today. Else family = `resolve_family_for_to(To)`, or the
-  `@alias` target's family; that family's contact exists → route from it. Otherwise the existing
-  `_handle_unknown_sms` path for that family only (its `any`-policy branch creates the family's
-  contact). Shared number with no `@alias`: if exactly one family in `phoneIndex.ext` → use it, else drop.
-- **Device-direct `sms_log`:** the device's family attributes it. The row gains `peerUid` = that
-  family's contact (or null). An `in` row from a number with no contact raises an **open**
-  `sms_unknown` alert for that family (subject = owner, nothing held, at most one open per
-  number). Approve creates the contact and edge, then re-derives the owner's SMS contacts.
-- **`devices.smsContacts`** = one helper, `rederive_sms_contacts(owner)`: the owner's `message`
-  edges to externals with `ownerFamilyId == owner.familyId`, `{name: displayName, phone}`, by
-  name, cap 8, then `set_sms_contacts` + `push_sms_contacts` for each device. It is called from
-  `put_approved`, SMS approval (decision 2), `sms_unknown` approval, contact rename and delete.
-  Contacts page = externals with `ownerFamilyId == fid`; rename and delete are refused for any other family.
+**7. Names are unique per family (7 Oct 2026).** There is no reverse index and no backend row. **Names are unique per family**, keyed by the pager's truncated, case-folded name and reserved in `contactNames` with `create()`. The pager matches SMS peers by name (`sms_find_by_name`), so two "Grandma"s would be ambiguous. POST/PATCH contacts → 409, and re-adding the same number returns the existing contact under its old name.
+- **`devices.smsContacts`** = `book.sms_contacts_for(owner)[:8]`: the family's contacts the owner has a `message` edge to, plus — when `policy.rule(owner.policy.out, "external") == "any"` (`open`, `any_sms`) — every other family contact, minus explicit `message:false` denies; sorted by name. `rederive_family_sms_contacts` runs on contact create/rename/delete, `/approved` PUT, contact-request and `sms_unknown` approval. `rederive_sms_contacts(owner)` runs on that owner's policy change, family change and device creation, and on admin allow-list replace. The approved list picks existing contacts by uid (`PUT …/approved {contacts:[{uid,message}]}`); it never creates or renames one. Contacts page = externals with `ownerFamilyId == fid`, showing explicit (`approvedFor`) and implied (`impliedFor`) holders, with Add / Rename / Delete.
 - **Callers changed:** `routers/family.py` (put_approved, create/patch contact, sms_unknown approve),
-  `routers/conversations.py` (start by number → sender's family), `routers/webhooks.py`, `alerts.py`
+  `routers/conversations.py` (start by number → sender's family), `alerts.py`
   (`sms_unknown` peer lookup), `ingest._handle_sms_log`.
 - **Migration:** none. Prod has zero externals and zero `phoneIndex` entries, so this is a clean
   cut, and the old global `get_or_create(phone, name)` is deleted. **Rules:** no change; `phoneIndex`

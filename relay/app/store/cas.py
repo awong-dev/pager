@@ -17,7 +17,7 @@ has no `match` block giving a client direct Firestore read access either --
 the one and only public read path is the HTTP route above, which can apply
 its own cache headers and 404-vs-200 semantics; a raw Firestore read would
 bypass both. `relay/tests/test_rules.py` pins the resulting default-deny
-(same posture as `deviceSecrets`/`phoneIndex`).
+(same posture as `deviceSecrets`).
 """
 
 from __future__ import annotations

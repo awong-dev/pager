@@ -2,9 +2,8 @@
 fields), §6 "Alert creation"; docs/FAMILIES_TASKS.md 3.3/4.1.
 
 `create` is the low-level Firestore write (task 3.3's own "in this task
-write the alert doc directly with the §3 fields" -- the Twilio webhook still
-calls it, now indirectly through `app/alerts.py`'s `sms_unknown`, which also
-pushes). `list_alerts`/`decide` (task 4.1) back `GET /api/family/alerts` and
+write the alert doc directly with the §3 fields" -- reached through
+`app/alerts.py`, which also pushes). `list_alerts`/`decide` (task 4.1) back `GET /api/family/alerts` and
 the three `POST /api/family/alerts/{id}/{approve|block|dismiss}` routes in
 `app/routers/family.py`. Named `list_alerts`, not `list` (docs/
 FAMILIES_TASKS.md 4.1's shorthand), to match every other store module's own
@@ -81,9 +80,7 @@ def list_alerts(family_id: str, status: Literal["open", "all"] = "open") -> list
     """`status="open"` (the default, and `GET /api/family/alerts`'s own
     default) -- only `status == 'open'` docs; `"all"` -- every alert
     regardless of status. Newest first (`ts` descending, sorted in Python
-    rather than via a composite Firestore index -- household/family scale,
-    same choice `app/store/messages.py`'s `list_recent_queued_by_kind`
-    documents for a similar bounded scan)."""
+    rather than via a composite Firestore index -- household/family scale)."""
     query = _alerts(family_id)
     if status == "open":
         query = query.where(filter=FieldFilter("status", "==", "open"))

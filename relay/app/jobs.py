@@ -7,19 +7,6 @@ docs/SERVER_PLAN.md §5.7, §5.8.
    2xx) -- at most 10 per device, oldest first, the same cap/ordering as the
    online-edge republish (both come from `messages_store.
    list_pending_for_device`).
-1b. Retry *non-pager* backend deliveries still `queued` -- today just `sms`.
-   §5.8 item 1 as written only names pager retries (the only backend that
-   existed when it was written), but §5.2's general rule ("Any failure ...
-   enqueues a retry ... max 5 -> failed") is not scoped to any one kind.
-   `messages_store.list_recent_queued_by_kind` scans recently-created
-   messages (bounded, same `createdAt` index the pager query already uses)
-   for a still-`queued` delivery of a given kind, and `Routing.redeliver`
-   (the generic sibling of `redeliver_pager`, which stays for its
-   device-id-keyed fast path) re-invokes that one backend's `deliver()`.
-   This is the only retry path an sms delivery has: sms deliveries carry no
-   device id and never populate `pendingDeviceIds`. A per-adapter Cloud
-   Tasks enqueue-at-send-time (rather than this scan-on-tick fallback)
-   remains the better long-term shape -- see `app/tasks.py`'s docstring.
 2. Clear `locReqs/{d}` documents older than `app.location.loc_req_ttl_s()`
    (PROTOCOL.md §13.4) -- `app.location.clear_stale_loc_reqs`.
 
@@ -146,28 +133,11 @@ from app.tasks import TaskQueue, build_task_queue
 
 logger = logging.getLogger("relay.jobs")
 
-# docs/SERVER_PLAN.md §5.8: "at most 10 per device" for pager retries.
-NON_PAGER_RETRY_KINDS: tuple[str, ...] = ("sms",)
-NON_PAGER_RETRY_SCAN_LIMIT = 50
-# Mirrors §5.8 item 1's own "at most 10 per device" pager-retry cap -- caps
-# how many non-pager retries `tick()` actually *dispatches* (not scans;
-# `NON_PAGER_RETRY_SCAN_LIMIT` above still bounds the read) per call, so a
-# tick with both the broker and Twilio down can't approach Cloud Run's
-# request timeout by inline-running up to `NON_PAGER_RETRY_SCAN_LIMIT` *
-# `sms_twilio.REQUEST_TIMEOUT_S` (~250s) worth of blocking HTTP calls. Same
-# order of magnitude, same reasoning as §5.8's
-# existing cap; a straggler beyond the cap is just retried on the *next*
-# tick, 5 minutes later -- no different from today's pager cap already
-# working that way.
-NON_PAGER_RETRY_DISPATCH_LIMIT = 10
-
-
 @dataclass(frozen=True, slots=True)
 class TickResult:
     devicesChecked: int
     retriesAttempted: int
     locReqsCleared: int = 0
-    nonPagerRetriesAttempted: int = 0
 
 
 def tick(routing: Routing, *, task_queue: TaskQueue | None = None) -> TickResult:
@@ -197,31 +167,12 @@ def tick(routing: Routing, *, task_queue: TaskQueue | None = None) -> TickResult
                 name=f"pager-retry:{msg.id}:{device.id}",
             )
 
-    non_pager_retries_attempted = 0
-    for kind in NON_PAGER_RETRY_KINDS:
-        if non_pager_retries_attempted >= NON_PAGER_RETRY_DISPATCH_LIMIT:
-            break
-        for msg in messages_store.list_recent_queued_by_kind(kind, limit=NON_PAGER_RETRY_SCAN_LIMIT):
-            if non_pager_retries_attempted >= NON_PAGER_RETRY_DISPATCH_LIMIT:
-                break
-            for bid, delivery in msg.deliveries.items():
-                if delivery.kind != kind or delivery.state != "queued":
-                    continue
-                if non_pager_retries_attempted >= NON_PAGER_RETRY_DISPATCH_LIMIT:
-                    break
-                non_pager_retries_attempted += 1
-                task_queue.enqueue(
-                    lambda msg=msg, bid=bid: routing.redeliver(msg, bid),
-                    name=f"{kind}-retry:{msg.id}:{bid}",
-                )
-
     loc_reqs_cleared = location.clear_stale_loc_reqs()
 
     return TickResult(
         devicesChecked=devices_checked,
         retriesAttempted=retries_attempted,
         locReqsCleared=loc_reqs_cleared,
-        nonPagerRetriesAttempted=non_pager_retries_attempted,
     )
 
 
@@ -363,9 +314,7 @@ def _sweep_alerts(cutoff: datetime, batch_size: int) -> int:
     Unlike `_sweep_by_created_at`'s callers, this can't push the `status`
     filter into the Firestore query itself alongside the `ts` range without
     a composite index (`ts` range + `status` equality/`in`, two different
-    fields) this project has no purpose-built index for -- same choice `app/
-    store/messages.py`'s `list_recent_queued_by_kind` documents for a
-    similar case -- so it queries by the single-field `ts` range alone
+    fields) this project has no purpose-built index for, so it queries by the single-field `ts` range alone
     (automatically indexed) and filters `status` in Python. Paginates with an
     explicit `start_after` cursor rather than `_sweep_by_created_at`'s
     "requery the same window" loop: an old, still-`open` alert is never

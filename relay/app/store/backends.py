@@ -5,22 +5,17 @@ is adapter-specific (§6.1's `config_schema` per kind) and is stored as a
 plain dict here -- validating it against a specific backend's schema is that
 backend module's job, not the store's.
 
-Three small top-level lookup collections,
-none named in §3's schema table, exist so the sms/gchat inbound webhooks
-(`app/routers/webhooks.py`, docs/SERVER_PLAN.md §6.4/§6.5) can map "a phone
-number that just texted us" / "a Chat space that just messaged us" / "a
-link code someone just typed into Chat" back to `(uid, bid)` with a single
-Firestore `get()` rather than a collection-group scan (Firestore's
+Two small top-level lookup collections, neither named in §3's schema table,
+exist so the gchat inbound webhook (`app/routers/webhooks.py`,
+docs/SERVER_PLAN.md §6.5) can map "a link code someone just typed into
+Chat" / "a Chat space that just messaged us" back to `(uid, bid)` with a
+single Firestore `get()` rather than a collection-group scan (Firestore's
 automatic single-field indexing does not cover `COLLECTION_GROUP`-scoped
 queries on a *nested* `config.*` field without an explicit
-`firestore.indexes.json` entry -- these three collections sidestep that
-entirely, the same "the doc id is the uniqueness/lookup key" trick
-`aliases/{alias}` already uses in §3):
+`firestore.indexes.json` entry -- these collections sidestep that entirely,
+the same "the doc id is the uniqueness/lookup key" trick `aliases/{alias}`
+already uses in §3):
 
-- `phoneIndex/{e164Phone}` -> `{uid, bid}` -- written once an sms backend's
-  phone is verified (`app/routers/me.py`'s verify route), *not* at creation
-  time, so an unverified/never-completed phone claim can never be used to
-  steal another user's inbound texts.
 - `gchatLinkCodes/{code}` -> `{uid, bid, expiresAt}` -- written by
   `GChatBackend.start_link()`, popped (read-then-delete, single use) by the
   inbound `/link CODE` handler.
@@ -35,46 +30,26 @@ entirely, the same "the doc id is the uniqueness/lookup key" trick
   the *sender* is pinned at link time and re-checked on every subsequent
   message, `app/routers/webhooks.py`'s `/webhooks/gchat`).
 
-A fourth top-level lookup collection has the
-same posture as the three above (no `firestore.rules` `match` block ->
-default-deny client read):
-
-- `smsVerifyCodes/{bid}` -> `{codeHash, expiresAt}` -- written by
-  `SmsTwilioBackend.start_link()`, checked by `complete_link()`. Deliberately
-  **not** `backend.config` (which is client-readable by the backend's own
-  owner, `firestore.rules`' `users/{uid}/backends/{b}` rule) -- a phone
-  number's real owner is exactly the person a claimant of that number needs
-  to be verified *against*, so the code must live somewhere the claimant
-  cannot read it back out of Firestore themselves. `codeHash`, not the raw
-  code, so even a rules regression that started exposing this collection
-  would not hand out a usable code directly (a 6-digit code is still
-  brute-forceable offline from a hash if an attacker can enumerate this
-  collection -- the no-`match`-block default-deny posture is the real
-  control; hashing is defense in depth, not a substitute for it). This is
-  *not* the same situation as `gchatLinkCodes`/`linkCode` above/`config.
-  linkCode`, which are deliberately owner-readable: the Chat link code is
-  shown *to the user being linked* so they can type it into a Chat DM they
-  already control, whereas an sms verify code must never be readable by the
-  person whose ownership of the phone is in question.
-
-This is additive to §3's table, not a contradiction of it -- the plan
-specifies the *behaviour* ("map `From` -> user by verified phone",
-"stores the DM `space` name") but not the index mechanism.
+Retired kinds: a `kind:"sms"` row left over from the removed relay SMS
+backend is skipped by `get_backend`/`list_backends` (it must never 500 a
+read).
 """
 
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import datetime
-from typing import Literal
+from typing import Literal, get_args
 
-from google.api_core.exceptions import NotFound
-from google.cloud.firestore import DELETE_FIELD, SERVER_TIMESTAMP
+from google.cloud.firestore import SERVER_TIMESTAMP
 from pydantic import BaseModel, ConfigDict
 
 from app.db.firestore import get_db
 
-BackendKind = Literal["pager", "webapp", "sms", "gchat"]
+logger = logging.getLogger(__name__)
+
+BackendKind = Literal["pager", "webapp", "gchat"]
 
 
 class Backend(BaseModel):
@@ -109,18 +84,30 @@ def create_backend(
     return fetched
 
 
+def _live_kind(uid: str, bid: str, data: dict) -> bool:
+    if data.get("kind") in get_args(BackendKind):
+        return True
+    logger.warning("skipping backend %s/%s of retired kind %r", uid, bid, data.get("kind"))
+    return False
+
+
 def get_backend(uid: str, bid: str) -> Backend | None:
     snap = _backends(uid).document(bid).get()
     if not snap.exists:
         return None
-    return Backend.model_validate({"id": bid, **(snap.to_dict() or {})})
+    data = snap.to_dict() or {}
+    if not _live_kind(uid, bid, data):
+        return None
+    return Backend.model_validate({"id": bid, **data})
 
 
 def list_backends(uid: str) -> list[Backend]:
-    return [
-        Backend.model_validate({"id": snap.id, **(snap.to_dict() or {})})
-        for snap in _backends(uid).stream()
-    ]
+    out: list[Backend] = []
+    for snap in _backends(uid).stream():
+        data = snap.to_dict() or {}
+        if _live_kind(uid, snap.id, data):
+            out.append(Backend.model_validate({"id": snap.id, **data}))
+    return out
 
 
 def update_backend(
@@ -133,11 +120,7 @@ def update_backend(
 ) -> Backend:
     """`verified`: `None` (default) leaves `verifiedAt` untouched, `True`
     sets it to now, `False` **explicitly clears it back to `None`** -- not
-    just "no-op", unlike `config`/`enabled`'s `None`-means-skip convention.
-    Needed by `app/routers/me.py`'s `PATCH /api/me/backends/{bid}` (H3): a
-    backend whose `config.phone` is being changed away from its previously-
-    verified number must lose `verifiedAt`, or a re-pointed sms backend stays
-    "verified" for a number it was never checked against."""
+    just "no-op", unlike `config`/`enabled`'s `None`-means-skip convention."""
     updates: dict[str, object] = {}
     if config is not None:
         updates["config"] = config
@@ -162,84 +145,6 @@ def delete_backend(uid: str, bid: str) -> None:
 # ---------------------------------------------------------------------------
 # lookup collections -- see this module's docstring
 # ---------------------------------------------------------------------------
-
-
-def _phone_index():
-    return get_db().collection("phoneIndex")
-
-
-def set_phone_index(phone: str, uid: str, bid: str) -> None:
-    """Called once an sms backend's phone is verified -- see this module's
-    docstring for why this is written on *verify*, not on backend
-    creation."""
-    # merge: the same doc may carry `ext` (per-family SMS contacts,
-    # docs/CONTACT_REQ_DESIGN.md decision 7), which a person's `{uid, bid}`
-    # must not clobber.
-    _phone_index().document(phone).set({"uid": uid, "bid": bid}, merge=True)
-
-
-def get_by_phone(phone: str) -> tuple[str, str] | None:
-    """`(uid, bid)` of the sms backend whose verified phone is `phone`, or
-    `None` -- `app/routers/webhooks.py`'s inbound Twilio webhook uses this
-    to map `From` to a user (docs/SERVER_PLAN.md §6.4)."""
-    snap = _phone_index().document(phone).get()
-    if not snap.exists:
-        return None
-    data = snap.to_dict() or {}
-    uid, bid = data.get("uid"), data.get("bid")
-    if not uid or not bid:
-        return None
-    return uid, bid
-
-
-def clear_phone_index(phone: str) -> None:
-    """Removes only the person's `uid`/`bid`; `ext` (per-family SMS
-    contacts) survives."""
-    try:
-        _phone_index().document(phone).update({"uid": DELETE_FIELD, "bid": DELETE_FIELD})
-    except NotFound:
-        pass
-
-
-def families_for_phone(phone: str) -> dict[str, str]:
-    """`{familyId: externalUid}` -- every family holding an SMS contact for
-    `phone` (docs/CONTACT_REQ_DESIGN.md decision 7)."""
-    snap = _phone_index().document(phone).get()
-    if not snap.exists:
-        return {}
-    ext = (snap.to_dict() or {}).get("ext") or {}
-    return {str(k): str(v) for k, v in ext.items()}
-
-
-def _sms_verify_codes():
-    return get_db().collection("smsVerifyCodes")
-
-
-def set_sms_verify_code(bid: str, code_hash: str, expires_at: int) -> None:
-    """Called by `SmsTwilioBackend.start_link()` -- see this module's
-    docstring for why this is a server-only top-level collection rather than
-    `backend.config` (H1: `config` is owner-readable, which would let the
-    person being challenged read their own verification code straight out
-    of Firestore)."""
-    _sms_verify_codes().document(bid).set({"codeHash": code_hash, "expiresAt": expires_at})
-
-
-def get_sms_verify_code(bid: str) -> tuple[str, int] | None:
-    """`(codeHash, expiresAt)` for backend `bid`'s pending sms verification,
-    or `None` if none is pending -- `SmsTwilioBackend.complete_link()`'s
-    proof check reads from here, never from `backend.config`."""
-    snap = _sms_verify_codes().document(bid).get()
-    if not snap.exists:
-        return None
-    data = snap.to_dict() or {}
-    code_hash, expires_at = data.get("codeHash"), data.get("expiresAt")
-    if not code_hash or expires_at is None:
-        return None
-    return code_hash, expires_at
-
-
-def clear_sms_verify_code(bid: str) -> None:
-    _sms_verify_codes().document(bid).delete()
 
 
 def _gchat_link_codes():

@@ -147,19 +147,48 @@ def test_build_book_unregistered_device_raises():
         devcfg.build_book("no-such-device")
 
 
-def test_build_book_contact_type_hint_sms_over_web():
-    _make_user("student3", "student3")
-    _make_user("grandma3", "grandma3", "Grandma")
-    backend = backends_store.create_backend(
-        "grandma3", kind="sms", config={"phone": "+15550001111"}
+def test_build_book_never_lists_an_external():
+    """An SMS contact reaches the pager only as `cfg.sms`, never in `c[]` --
+    even with an explicit (message) edge to it."""
+    family = families_store.create_family(name="BookExt", created_by="root")
+    users_store.create_user(
+        uid="student3", alias="student3", display_name="student3", family_id=family.id
     )
-    backends_store.update_backend("grandma3", backend.id, verified=True)
+    users_store.create_user(
+        uid="mom3", alias="mom3", display_name="Mom", family_id=family.id
+    )
+    ext = externals_store.get_or_create(family.id, "+15550001111", "Grandma")
     _make_pager_device("pgr-b-3", "student3")
-    _approve("student3", "grandma3")
+    _approve("student3", ext.uid)
+    allow_store.set_edge("student3", "mom3", message=True, locate=False)
 
     obj = devcfg.build_book("pgr-b-3")
 
-    assert obj["c"] == [{"a": "grandma3", "n": "Grandma", "t": "sms"}]
+    assert [c["a"] for c in obj["c"]] == ["mom3"]
+    assert ext.alias not in [c["a"] for c in obj["c"]]
+    assert all(c["t"] != "sms" for c in obj["c"])
+
+    allow_store.delete_edge("student3", "mom3")
+    users_store.update_user("mom3", disabled=True)
+    only_ext = devcfg.build_book("pgr-b-3")
+    assert only_ext["c"] == []
+
+
+def test_build_book_excludes_implied_externals_from_c():
+    family = families_store.create_family(name="BookImplied", created_by="root")
+    users_store.create_user(
+        uid="student3i", alias="student3i", display_name="student3i", family_id=family.id
+    )
+    get_db().collection("users").document("student3i").update(
+        {"policy": {"out": "open", "in": "any"}}
+    )
+    ext = externals_store.get_or_create(family.id, "+15550001112", "Grandma")
+    _make_pager_device("pgr-b-3i", "student3i")
+
+    obj = devcfg.build_book("pgr-b-3i")
+
+    assert obj["c"] == []
+    assert ext.alias not in [c["a"] for c in obj["c"]]
 
 
 def test_build_book_caps_approved_contacts_at_ten():
@@ -809,11 +838,6 @@ def test_approve_contact_publishes_book(
         uid="student20", alias="student20", display_name="student20", family_id=family.id
     )
     _make_pager_device("pgr-b-20", "student20")
-    # An SMS contact is sendable (so listed on the pager) only when the
-    # owner's outbound policy allows SMS.
-    get_db().collection("users").document("student20").update(
-        {"policy": {"out": "people_sms", "in": "people"}}
-    )
     ingest = Ingest(broker)
     ingest.handle_up(
         up_topic("pgr-b-20"),
@@ -848,7 +872,17 @@ def test_approve_contact_publishes_book(
     assert len(books) == 1
     assert books[0]["bv"] == 1
     _uid, alias = externals_store.contact_ids(family.id, "+15550009999")
-    assert books[0]["c"] == [{"a": alias, "n": "Grandma", "t": "sms"}]
+    # An SMS contact is never in `c[]`: it reaches the pager as `cfg.sms`.
+    assert books[0]["c"] == []
+    assert alias not in [c["a"] for c in books[0]["c"]]
+    cfgs = [
+        json.loads(p.payload)
+        for p in broker.published
+        if json.loads(p.payload).get("kind") == "cfg"
+    ]
+    assert [c["cfg"] for c in cfgs if "sms" in c["cfg"]] == [
+        {"sms": [{"n": "Grandma", "p": "+15550009999"}]}
+    ]
 
 
 def test_block_contact_publishes_book(

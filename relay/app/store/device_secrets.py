@@ -2,7 +2,7 @@
 
 Server-only: this collection has no `firestore.rules` `match` block, so it
 is default-deny for every client read and write -- `relay/tests/test_rules.py`
-pins that, the same pattern it already uses for `phoneIndex`. The MQTT
+pins that, the same pattern it uses for the other server-only collections. The MQTT
 password hash belongs here rather than on `devices/{d}` because the owner's
 own browser can read that document (`docs/DEVICE_PLAN.md` §2.6): the two
 secrets that let someone impersonate a device -- the HMAC key that

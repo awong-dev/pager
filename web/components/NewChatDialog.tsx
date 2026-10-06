@@ -3,10 +3,10 @@
 /** `/chat`'s "New chat" dialog -- docs/ADDRESS_BOOK_DESIGN.md decision 12:
  * a search-as-you-type select over the signed-in user's own address book
  * (`GET /api/book`), grouped Family / People / Numbers / Groups. Family
- * admins may also type an unknown @alias or number (freeSolo); anyone whose
- * policy lets them text any number gets a live "Text +1 555 123 4567"
- * suggestion when the typed text parses as a phone number. Selecting or submitting an option only navigates to
- * `/chat/{alias}` (or `/chat/{digits}` for a number) -- the conversation
+ * admins may also type an unknown @alias (freeSolo). Phone numbers are not
+ * chat targets: the relay sends no SMS; the pager texts its SMS list
+ * (docs/V02_DESIGN.md §6). Selecting or submitting an option only navigates
+ * to `/chat/{alias}` -- the conversation
  * itself is created by that thread's first send (docs/FAMILIES_TASKS.md
  * 3.5), never by this dialog.
  */
@@ -78,15 +78,18 @@ interface NewChatDialogProps {
 
 export default function NewChatDialog({ open, onClose }: NewChatDialogProps) {
   const router = useRouter();
-  const { me, isFamilyAdmin } = useAuth();
+  const { isFamilyAdmin } = useAuth();
   const { data } = useBook();
   const [inputValue, setInputValue] = useState("");
   const [value, setValue] = useState<ChatOption | string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
   const entries = useMemo(() => data?.entries ?? [], [data]);
   const options = useMemo<ChatOption[]>(() => {
     const rows: ChatOption[] = [];
     for (const e of entries) {
+      // SMS contacts are texted from the pager, never chat targets.
+      if (e.kind === "external") continue;
       if (!e.sendable && !isFamilyAdmin) continue;
       rows.push({
         alias: e.alias,
@@ -104,27 +107,12 @@ export default function NewChatDialog({ open, onClose }: NewChatDialogProps) {
     return rows;
   }, [entries, isFamilyAdmin]);
 
-  const mayTextAny = isFamilyAdmin || me?.policy.out === "open" || me?.policy.out === "any_sms";
-  const phoneOption = useMemo<ChatOption | null>(() => {
-    const digits = parsePhoneDigits(inputValue);
-    if (!digits || !mayTextAny) return null;
-    if (options.some((o) => o.phone && parsePhoneDigits(o.phone) === digits)) return null;
-    return {
-      alias: digits,
-      label: `Text ${formatPhoneDigits(digits)}`,
-      group: "Numbers",
-      displayName: "",
-      phone: digits,
-      disabled: false,
-    };
-  }, [inputValue, mayTextAny, options]);
-
-  const allOptions = useMemo(() => (phoneOption ? [...options, phoneOption] : options), [options, phoneOption]);
   const bookEmpty = data !== null && !entries.some((e) => e.sendable);
 
   function reset() {
     setInputValue("");
     setValue(null);
+    setNotice(null);
   }
 
   function handleClose() {
@@ -143,8 +131,11 @@ export default function NewChatDialog({ open, onClose }: NewChatDialogProps) {
   function handleSubmit(text: string) {
     const trimmed = text.trim();
     if (!trimmed) return;
-    const digits = parsePhoneDigits(trimmed);
-    go(digits ?? trimmed.replace(/^@/, ""));
+    if (parsePhoneDigits(trimmed) !== null) {
+      setNotice("Numbers are texted from the pager. Add one under Family → Contacts.");
+      return;
+    }
+    go(trimmed.replace(/^@/, ""));
   }
 
   function open_() {
@@ -168,7 +159,7 @@ export default function NewChatDialog({ open, onClose }: NewChatDialogProps) {
           freeSolo={isFamilyAdmin}
           autoHighlight
           openOnFocus
-          options={allOptions}
+          options={options}
           value={value}
           groupBy={(o) => o.group}
           getOptionLabel={(o) => (typeof o === "string" ? o : o.label)}
@@ -178,29 +169,31 @@ export default function NewChatDialog({ open, onClose }: NewChatDialogProps) {
           }
           noOptionsText="No one in your address book matches"
           inputValue={inputValue}
-          onInputChange={(_, v) => setInputValue(v)}
+          onInputChange={(_, v) => {
+            setInputValue(v);
+            setNotice(null);
+          }}
           onChange={(_, v) => {
             setValue(v);
             if (!v) return;
             if (typeof v === "string") handleSubmit(v);
             else go(v.alias);
           }}
-          filterOptions={(opts, state) => {
-            const kept = filter(
-              opts.filter((o) => o !== phoneOption),
-              state
-            );
-            return phoneOption ? [...kept, phoneOption] : kept;
-          }}
+          filterOptions={filter}
           renderInput={(params) => (
             <TextField
               {...params}
               autoFocus
               margin="dense"
-              label={isFamilyAdmin ? "Name, @alias or phone number" : "Search your address book"}
+              label={isFamilyAdmin ? "Name or @alias" : "Search your address book"}
             />
           )}
         />
+        {notice && (
+          <Alert severity="info" sx={{ mt: 1 }}>
+            {notice}
+          </Alert>
+        )}
       </DialogContent>
       <DialogActions>
         <Button onClick={handleClose}>Cancel</Button>

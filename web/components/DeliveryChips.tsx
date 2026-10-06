@@ -31,14 +31,12 @@ function stateTimeMs(delivery: DeliveryDoc, state: DeliveryState): number | null
 const WHERE: Record<string, string> = {
   pager: "pager",
   webapp: "app",
-  sms: "SMS",
   gchat: "Google Chat",
 };
 
 const LABELS: Record<string, Partial<Record<DeliveryState, string>>> = {
   pager: { queued: "waiting for pager", sent: "sent to pager", shown: "on pager", read: "read on pager" },
   webapp: { queued: "waiting", sent: "sent to app", shown: "shown in app", read: "read in app" },
-  sms: { queued: "SMS queued", sent: "sent by SMS", shown: "sent by SMS", read: "sent by SMS" },
   gchat: { queued: "waiting", sent: "sent to Google Chat", shown: "sent to Google Chat", read: "read in Google Chat" },
 };
 

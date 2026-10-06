@@ -20,7 +20,6 @@ from app.store import allow as allow_store
 from app.store import devices as devices_store
 from app.store import externals as externals_store
 from app.store import families as families_store
-from app.store import messages as messages_store
 from app.store import users as users_store
 from tests.fake_transport import FakeBrokerClient
 from tests.firebase_test_utils import auth_header
@@ -129,6 +128,34 @@ def _make_super(uid: str, alias: str) -> dict[str, str]:
     users_store.create_user(uid=uid, alias=alias, display_name=alias, role="super")
     fb_auth.set_custom_user_claims(uid, {"role": "super", "fam": ""})
     return auth_header(uid)
+
+
+def _create_contact(client: TestClient, headers: dict[str, str], phone: str, name: str) -> dict:
+    resp = client.post(
+        "/api/family/contacts", json={"phone": phone, "name": name}, headers=headers
+    )
+    assert resp.status_code == 201, resp.text
+    return resp.json()
+
+
+def _set_policy(uid: str, out: str, in_: str = "people") -> None:
+    get_db().collection("users").document(uid).update({"policy": {"out": out, "in": in_}})
+
+
+def _sms_pushes(broker: FakeBrokerClient, device_id: str) -> list[dict]:
+    """Every `cfg.sms` push published to `device_id`, oldest first."""
+    decoded = [json.loads(m.payload) for m in broker.published if m.topic == f"pager/{device_id}/down"]
+    return [d for d in decoded if d["kind"] == "cfg" and "sms" in d["cfg"]]
+
+
+def _put_contacts(
+    client: TestClient, headers: dict[str, str], member: str, contacts: list[dict]
+):
+    return client.put(
+        f"/api/family/members/{member}/approved",
+        json={"people": [], "contacts": contacts},
+        headers=headers,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -520,6 +547,13 @@ def test_externals_get_or_create_is_idempotent_by_phone():
     assert a.phone == "+15552223333"
     assert a.kind == "external"
     assert a.displayName == "Pizza Place"
+    # No sms backend and no phoneIndex doc: the relay never texts a contact.
+    kinds = [
+        snap.to_dict()["kind"]
+        for snap in get_db().collection("users").document(a.uid).collection("backends").stream()
+    ]
+    assert kinds == ["webapp"]
+    assert list(get_db().collection("phoneIndex").stream()) == []
 
 
 def test_externals_get_or_create_default_region_us():
@@ -532,78 +566,60 @@ def test_externals_get_or_create_default_region_us():
 # ---------------------------------------------------------------------------
 
 
-def test_approved_put_creates_externals_and_derives_capped_sms_contacts(
+def test_approved_put_contacts_derives_capped_sms_contacts(
     client: TestClient, broker: FakeBrokerClient
 ):
     family = _make_family("Approved1")
     admin_headers = _make_family_admin("fam20-admin", "fam20-admin", family.id)
     _make_member("fam20-kid", "fam20-kid", family.id)
     _make_pager_device("pgr-fam20-1", "fam20-kid", family.id)
-    # Numbers are listed on the pager only when the policy lets the kid text
-    # them (docs/ADDRESS_BOOK_DESIGN.md decision 2: sendable entries only).
-    get_db().collection("users").document("fam20-kid").update(
-        {"policy": {"out": "people_sms", "in": "people"}}
-    )
+    _set_policy("fam20-kid", "people_sms")
 
-    numbers = [{"phone": f"+1206555010{i}", "name": f"n{i}"} for i in range(9)]
-    resp = client.put(
-        "/api/family/members/fam20-kid/approved",
-        json={"people": [], "numbers": numbers},
-        headers=admin_headers,
-    )
+    contacts = [
+        _create_contact(client, admin_headers, f"+1206555010{i}", f"n{i}") for i in range(9)
+    ]
+    # `people_sms` implies nothing: the pager lists only what is picked.
+    assert devices_store.get_device("pgr-fam20-1").smsContacts == []
+
+    resp = _put_contacts(client, admin_headers, "fam20-kid", [{"uid": c["uid"]} for c in contacts])
     assert resp.status_code == 200, resp.text
-    assert len(resp.json()["numbers"]) == 9
+    assert len(resp.json()["contacts"]) == 9
 
     device = devices_store.get_device("pgr-fam20-1")
     assert len(device.smsContacts) == 8
     names = [c.name for c in device.smsContacts]
     assert names == sorted(names)
 
-    for n in numbers:
-        ext = externals_store.get_or_create(family.id, n["phone"], n["name"])
-        assert allow_store.is_message_allowed("fam20-kid", ext.uid)
+    for c in contacts:
+        assert allow_store.is_message_allowed("fam20-kid", c["uid"])
 
-    decoded = [json.loads(m.payload) for m in broker.published]
-    sms_pushes = [d for d in decoded if d["kind"] == "cfg" and "sms" in d["cfg"]]
+    sms_pushes = _sms_pushes(broker, "pgr-fam20-1")
     assert sms_pushes, "no cfg.sms push found"
     assert len(sms_pushes[-1]["cfg"]["sms"]) == 8
 
-    book_pushes = [d for d in decoded if d["kind"] == "book"]
-    assert book_pushes, "no book push found"
-    contact_types = {c["t"] for c in book_pushes[-1]["c"]}
-    assert "sms" in contact_types
+    # A contact never reaches `c[]`.
+    decoded = [json.loads(m.payload) for m in broker.published]
+    for book_push in (d for d in decoded if d["kind"] == "book"):
+        assert not any(c["t"] == "sms" for c in book_push["c"])
 
 
-def test_approved_put_removing_a_number_removes_edge_and_device_contact(
+def test_approved_put_removing_a_contact_removes_edge_and_device_contact(
     client: TestClient, broker: FakeBrokerClient
 ):
     family = _make_family("Approved2")
     admin_headers = _make_family_admin("fam21-admin", "fam21-admin", family.id)
     _make_member("fam21-kid", "fam21-kid", family.id)
     _make_pager_device("pgr-fam21-1", "fam21-kid", family.id)
+    mom = _create_contact(client, admin_headers, "+12065550100", "Mom")
+    dad = _create_contact(client, admin_headers, "+12065550101", "Dad")
 
-    resp = client.put(
-        "/api/family/members/fam21-kid/approved",
-        json={
-            "people": [],
-            "numbers": [
-                {"phone": "+12065550100", "name": "Mom"},
-                {"phone": "+12065550101", "name": "Dad"},
-            ],
-        },
-        headers=admin_headers,
-    )
+    resp = _put_contacts(client, admin_headers, "fam21-kid", [{"uid": mom["uid"]}, {"uid": dad["uid"]}])
     assert resp.status_code == 200, resp.text
-    dad = externals_store.get_or_create(family.id, "+12065550101", "Dad")
-    assert allow_store.get_edge("fam21-kid", dad.uid) is not None
+    assert allow_store.get_edge("fam21-kid", dad["uid"]) is not None
 
-    resp = client.put(
-        "/api/family/members/fam21-kid/approved",
-        json={"people": [], "numbers": [{"phone": "+12065550100", "name": "Mom"}]},
-        headers=admin_headers,
-    )
+    resp = _put_contacts(client, admin_headers, "fam21-kid", [{"uid": mom["uid"]}])
     assert resp.status_code == 200, resp.text
-    assert allow_store.get_edge("fam21-kid", dad.uid) is None
+    assert allow_store.get_edge("fam21-kid", dad["uid"]) is None
 
     device = devices_store.get_device("pgr-fam21-1")
     assert [c.phone for c in device.smsContacts] == ["+12065550100"]
@@ -620,13 +636,121 @@ def test_approved_put_locate_refused_cross_family(client: TestClient):
         "/api/family/members/fam22-kid-a/approved",
         json={
             "people": [{"alias": "fam22-kid-b", "message": True, "locate": True}],
-            "numbers": [],
+            "contacts": [],
         },
         headers=admin_a,
     )
     assert resp.status_code == 400, resp.text
     assert "locate_cross_family" in resp.text
     assert allow_store.get_edge("fam22-kid-a", "fam22-kid-b") is None
+
+
+def test_put_approved_contacts_unknown_uid_is_404_and_writes_nothing(client: TestClient):
+    family = _make_family("AppU")
+    admin = _make_family_admin("fam22u-admin", "fam22u-admin", family.id)
+    _make_member("fam22u-kid", "fam22u-kid", family.id)
+    mom = _create_contact(client, admin, "+12065550100", "Mom")
+
+    resp = _put_contacts(
+        client, admin, "fam22u-kid", [{"uid": mom["uid"]}, {"uid": "x_does_not_exist"}]
+    )
+    assert resp.status_code == 404, resp.text
+    assert resp.json()["detail"] == "no such contact: x_does_not_exist"
+    # Validation happens before any write: not even the valid one landed.
+    assert allow_store.get_edge("fam22u-kid", mom["uid"]) is None
+
+
+def test_put_approved_contacts_other_family_uid_is_404(client: TestClient):
+    fam_a = _make_family("AppOA")
+    fam_b = _make_family("AppOB")
+    admin_a = _make_family_admin("fam22o-admin-a", "fam22o-admin-a", fam_a.id)
+    admin_b = _make_family_admin("fam22o-admin-b", "fam22o-admin-b", fam_b.id)
+    _make_member("fam22o-kid-a", "fam22o-kid-a", fam_a.id)
+    theirs = _create_contact(client, admin_b, "+12065550100", "Theirs")
+
+    resp = _put_contacts(client, admin_a, "fam22o-kid-a", [{"uid": theirs["uid"]}])
+    assert resp.status_code == 404, resp.text
+    assert allow_store.get_edge("fam22o-kid-a", theirs["uid"]) is None
+    # A person's uid is not a contact either.
+    resp = _put_contacts(client, admin_a, "fam22o-kid-a", [{"uid": "fam22o-admin-a"}])
+    assert resp.status_code == 404, resp.text
+
+
+def test_put_approved_numbers_field_is_422(client: TestClient):
+    family = _make_family("AppN")
+    admin = _make_family_admin("fam22n-admin", "fam22n-admin", family.id)
+    _make_member("fam22n-kid", "fam22n-kid", family.id)
+
+    resp = client.put(
+        "/api/family/members/fam22n-kid/approved",
+        json={"people": [], "numbers": [{"phone": "+12065550100", "name": "Mom"}]},
+        headers=admin,
+    )
+    assert resp.status_code == 422, resp.text
+    assert externals_store.list_family_contacts(family.id) == []
+
+
+def test_put_approved_never_creates_an_external(client: TestClient):
+    family = _make_family("AppNC")
+    admin = _make_family_admin("fam22c-admin", "fam22c-admin", family.id)
+    _make_member("fam22c-kid", "fam22c-kid", family.id)
+    mom = _create_contact(client, admin, "+12065550100", "Mom")
+
+    resp = _put_contacts(client, admin, "fam22c-kid", [{"uid": mom["uid"]}])
+    assert resp.status_code == 200, resp.text
+    assert [u.uid for u in externals_store.list_family_contacts(family.id)] == [mom["uid"]]
+    assert resp.json()["contacts"] == [{"uid": mom["uid"], "message": True}]
+
+
+def test_put_approved_contact_denied_writes_message_false_and_hides_implied(
+    client: TestClient, broker: FakeBrokerClient
+):
+    family = _make_family("AppD")
+    admin = _make_family_admin("fam22d-admin", "fam22d-admin", family.id)
+    _make_member("fam22d-kid", "fam22d-kid", family.id)
+    _make_pager_device("pgr-fam22d", "fam22d-kid", family.id)
+    _set_policy("fam22d-kid", "open")
+    mom = _create_contact(client, admin, "+12065550100", "Mom")
+    assert [c.phone for c in devices_store.get_device("pgr-fam22d").smsContacts] == ["+12065550100"]
+
+    resp = _put_contacts(client, admin, "fam22d-kid", [{"uid": mom["uid"], "message": False}])
+    assert resp.status_code == 200, resp.text
+    edge = allow_store.get_edge("fam22d-kid", mom["uid"])
+    assert edge is not None and edge.message is False
+    assert devices_store.get_device("pgr-fam22d").smsContacts == []
+    assert _sms_pushes(broker, "pgr-fam22d")[-1]["cfg"]["sms"] == []
+
+    listed = {c["uid"]: c for c in client.get("/api/family/contacts", headers=admin).json()}
+    assert "fam22d-kid" not in listed[mom["uid"]]["impliedFor"]
+    assert "fam22d-kid" not in listed[mom["uid"]]["approvedFor"]
+
+
+def test_get_approved_returns_people_and_contacts(client: TestClient):
+    family = _make_family("AppG")
+    admin = _make_family_admin("fam22g-admin", "fam22g-admin", family.id)
+    _make_member("fam22g-kid", "fam22g-kid", family.id)
+    _make_member("fam22g-sib", "fam22g-sib", family.id)
+    mom = _create_contact(client, admin, "+12065550100", "Mom")
+    _create_contact(client, admin, "+12065550101", "Unpicked")
+    resp = client.put(
+        "/api/family/members/fam22g-kid/approved",
+        json={
+            "people": [{"alias": "fam22g-sib", "message": True, "locate": False}],
+            "contacts": [{"uid": mom["uid"]}],
+        },
+        headers=admin,
+    )
+    assert resp.status_code == 200, resp.text
+
+    resp = client.get("/api/family/members/fam22g-kid/approved", headers=admin)
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {
+        "people": [{"alias": "fam22g-sib", "message": True, "locate": False}],
+        "contacts": [{"uid": mom["uid"], "message": True}],
+    }
+
+    resp = client.get("/api/family/members/nobody/approved", headers=admin)
+    assert resp.status_code == 404
 
 
 # ---------------------------------------------------------------------------
@@ -644,16 +768,10 @@ def test_family_contacts_lists_only_family_externals_create_and_rename(
     admin_b = _make_family_admin("fam23-admin-b", "fam23-admin-b", family_b.id)
     _make_member("fam23-kid-b", "fam23-kid-b", family_b.id)
 
-    client.put(
-        "/api/family/members/fam23-kid-a/approved",
-        json={"people": [], "numbers": [{"phone": "+12065550200", "name": "Grandma"}]},
-        headers=admin_a,
-    )
-    client.put(
-        "/api/family/members/fam23-kid-b/approved",
-        json={"people": [], "numbers": [{"phone": "+12065550300", "name": "Uncle"}]},
-        headers=admin_b,
-    )
+    grandma = _create_contact(client, admin_a, "+12065550200", "Grandma")
+    uncle = _create_contact(client, admin_b, "+12065550300", "Uncle")
+    assert _put_contacts(client, admin_a, "fam23-kid-a", [{"uid": grandma["uid"]}]).status_code == 200
+    assert _put_contacts(client, admin_b, "fam23-kid-b", [{"uid": uncle["uid"]}]).status_code == 200
 
     resp = client.get("/api/family/contacts", headers=admin_a)
     assert resp.status_code == 200, resp.text
@@ -667,6 +785,7 @@ def test_family_contacts_lists_only_family_externals_create_and_rename(
     assert resp.status_code == 201, resp.text
     pizza_uid = resp.json()["uid"]
     assert resp.json()["approvedFor"] == []
+    assert resp.json()["phone"] == "+12065550400"
 
     resp = client.get("/api/family/contacts", headers=admin_a)
     # docs/CONTACT_REQ_DESIGN.md decision 7: the list is the family's own
@@ -685,13 +804,254 @@ def test_family_contacts_lists_only_family_externals_create_and_rename(
     )
     assert resp.status_code == 404, resp.text
 
-    grandma = externals_store.get_or_create(family_a.id, "+12065550200", "Grandma")
     resp = client.patch(
-        f"/api/family/contacts/{grandma.uid}", json={"name": "Grandma W."}, headers=admin_a
+        f"/api/family/contacts/{grandma['uid']}", json={"name": "Grandma W."}, headers=admin_a
     )
     assert resp.status_code == 200, resp.text
     assert resp.json()["displayName"] == "Grandma W."
     assert resp.json()["approvedFor"] == ["fam23-kid-a"]
+
+
+def test_create_contact_pushes_cfg_sms_to_open_members_only(
+    client: TestClient, broker: FakeBrokerClient
+):
+    family = _make_family("ImpOpen")
+    admin = _make_family_admin("fam23a-admin", "fam23a-admin", family.id)  # policy open
+    _make_member("fam23a-kid", "fam23a-kid", family.id)  # policy people
+    _make_pager_device("pgr-fam23a-admin", "fam23a-admin", family.id)
+    _make_pager_device("pgr-fam23a-kid", "fam23a-kid", family.id)
+
+    _create_contact(client, admin, "+12065550100", "Grandma")
+
+    assert [c.phone for c in devices_store.get_device("pgr-fam23a-admin").smsContacts] == [
+        "+12065550100"
+    ]
+    assert devices_store.get_device("pgr-fam23a-kid").smsContacts == []
+    assert _sms_pushes(broker, "pgr-fam23a-admin")[-1]["cfg"]["sms"] == [
+        {"n": "Grandma", "p": "+12065550100"}
+    ]
+    assert _sms_pushes(broker, "pgr-fam23a-kid")[-1]["cfg"]["sms"] == []
+
+
+def test_create_contact_duplicate_name_is_409(client: TestClient):
+    family = _make_family("Dup")
+    admin = _make_family_admin("fam23b-admin", "fam23b-admin", family.id)
+    _create_contact(client, admin, "+12065550100", "Grandma")
+
+    resp = client.post(
+        "/api/family/contacts", json={"phone": "+12065550101", "name": "Grandma"}, headers=admin
+    )
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["detail"] == 'a contact named "Grandma" already exists'
+    assert externals_store.get_family_contact(family.id, "+12065550101") is None
+    assert len(externals_store.list_family_contacts(family.id)) == 1
+    # Another family may use the same name.
+    other = _make_family("DupOther")
+    other_admin = _make_family_admin("fam23b-other", "fam23b-other", other.id)
+    _create_contact(client, other_admin, "+12065550102", "Grandma")
+
+
+def test_create_contact_name_collision_after_truncation_and_case_is_409(client: TestClient):
+    family = _make_family("Trunc")
+    admin = _make_family_admin("fam23c-admin", "fam23c-admin", family.id)
+    # The pager shows 16 code points and matches by name: these two are the
+    # same name on the device.
+    _create_contact(client, admin, "+12065550100", "Grandma Josephine Smith")
+    resp = client.post(
+        "/api/family/contacts",
+        json={"phone": "+12065550101", "name": "GRANDMA JOSEPHINE Jones"},
+        headers=admin,
+    )
+    assert resp.status_code == 409, resp.text
+    assert len(externals_store.list_family_contacts(family.id)) == 1
+
+
+def test_create_contact_same_number_twice_is_idempotent_and_keeps_name(client: TestClient):
+    family = _make_family("Idem")
+    admin = _make_family_admin("fam23d-admin", "fam23d-admin", family.id)
+    first = _create_contact(client, admin, "+12065550100", "Grandma")
+    resp = client.post(
+        "/api/family/contacts", json={"phone": "206-555-0100", "name": "Nana"}, headers=admin
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["uid"] == first["uid"]
+    assert resp.json()["displayName"] == "Grandma"
+    assert len(externals_store.list_family_contacts(family.id)) == 1
+    # The unused name was not reserved by the idempotent call.
+    _create_contact(client, admin, "+12065550101", "Nana")
+
+
+def test_rename_contact_to_taken_name_is_409(client: TestClient):
+    family = _make_family("RenTaken")
+    admin = _make_family_admin("fam23e-admin", "fam23e-admin", family.id)
+    _create_contact(client, admin, "+12065550100", "Grandma")
+    pizza = _create_contact(client, admin, "+12065550101", "Pizza")
+
+    resp = client.patch(
+        f"/api/family/contacts/{pizza['uid']}", json={"name": "grandma"}, headers=admin
+    )
+    assert resp.status_code == 409, resp.text
+    assert users_store.get_user(pizza["uid"]).displayName == "Pizza"
+    # Case-only change of its own name is fine.
+    resp = client.patch(
+        f"/api/family/contacts/{pizza['uid']}", json={"name": "PIZZA"}, headers=admin
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["displayName"] == "PIZZA"
+
+
+def test_rename_contact_frees_old_name_for_reuse(client: TestClient):
+    family = _make_family("RenFree")
+    admin = _make_family_admin("fam23f-admin", "fam23f-admin", family.id)
+    gma = _create_contact(client, admin, "+12065550100", "Grandma")
+    resp = client.patch(
+        f"/api/family/contacts/{gma['uid']}", json={"name": "Nana"}, headers=admin
+    )
+    assert resp.status_code == 200, resp.text
+    _create_contact(client, admin, "+12065550101", "Grandma")
+
+
+def test_rename_contact_repushes_cfg_sms_to_explicit_and_implied_holders(
+    client: TestClient, broker: FakeBrokerClient
+):
+    family = _make_family("RenPush")
+    admin = _make_family_admin("fam23g-admin", "fam23g-admin", family.id)  # implied (open)
+    _make_member("fam23g-kid", "fam23g-kid", family.id)  # explicit
+    _make_member("fam23g-sib", "fam23g-sib", family.id)  # neither
+    for owner in ("admin", "kid", "sib"):
+        _make_pager_device(f"pgr-fam23g-{owner}", f"fam23g-{owner}", family.id)
+    gma = _create_contact(client, admin, "+12065550100", "Grandma")
+    assert _put_contacts(client, admin, "fam23g-kid", [{"uid": gma["uid"]}]).status_code == 200
+    broker.clear()
+
+    resp = client.patch(
+        f"/api/family/contacts/{gma['uid']}", json={"name": "Nana"}, headers=admin
+    )
+    assert resp.status_code == 200, resp.text
+    assert [c.name for c in devices_store.get_device("pgr-fam23g-admin").smsContacts] == ["Nana"]
+    assert [c.name for c in devices_store.get_device("pgr-fam23g-kid").smsContacts] == ["Nana"]
+    assert devices_store.get_device("pgr-fam23g-sib").smsContacts == []
+    assert _sms_pushes(broker, "pgr-fam23g-admin")[-1]["cfg"]["sms"][0]["n"] == "Nana"
+    assert _sms_pushes(broker, "pgr-fam23g-kid")[-1]["cfg"]["sms"][0]["n"] == "Nana"
+
+
+def test_delete_contact_removes_edges_frees_name_and_rederives(
+    client: TestClient, broker: FakeBrokerClient
+):
+    family = _make_family("Del")
+    admin = _make_family_admin("fam23h-admin", "fam23h-admin", family.id)
+    _make_member("fam23h-kid", "fam23h-kid", family.id)
+    _make_pager_device("pgr-fam23h-kid", "fam23h-kid", family.id)
+    _make_pager_device("pgr-fam23h-admin", "fam23h-admin", family.id)
+    gma = _create_contact(client, admin, "+12065550100", "Grandma")
+    assert _put_contacts(client, admin, "fam23h-kid", [{"uid": gma["uid"]}]).status_code == 200
+    assert len(devices_store.get_device("pgr-fam23h-kid").smsContacts) == 1
+    assert len(devices_store.get_device("pgr-fam23h-admin").smsContacts) == 1
+
+    resp = client.delete(f"/api/family/contacts/{gma['uid']}", headers=admin)
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"ok": True}
+
+    assert users_store.get_user(gma["uid"]) is None
+    assert users_store.get_uid_for_alias(gma["alias"]) is None
+    assert allow_store.get_edge("fam23h-kid", gma["uid"]) is None
+    assert client.get("/api/family/contacts", headers=admin).json() == []
+    assert devices_store.get_device("pgr-fam23h-kid").smsContacts == []
+    assert devices_store.get_device("pgr-fam23h-admin").smsContacts == []
+    assert _sms_pushes(broker, "pgr-fam23h-kid")[-1]["cfg"]["sms"] == []
+    # The name is free again.
+    _create_contact(client, admin, "+12065550101", "Grandma")
+
+    resp = client.delete(f"/api/family/contacts/{gma['uid']}", headers=admin)
+    assert resp.status_code == 404
+
+
+def test_delete_contact_of_other_family_is_404(client: TestClient):
+    fam_a = _make_family("DelA")
+    fam_b = _make_family("DelB")
+    admin_a = _make_family_admin("fam23i-admin-a", "fam23i-admin-a", fam_a.id)
+    admin_b = _make_family_admin("fam23i-admin-b", "fam23i-admin-b", fam_b.id)
+    gma = _create_contact(client, admin_a, "+12065550100", "Grandma")
+
+    resp = client.delete(f"/api/family/contacts/{gma['uid']}", headers=admin_b)
+    assert resp.status_code == 404, resp.text
+    assert users_store.get_user(gma["uid"]) is not None
+    # A person is not a contact.
+    resp = client.delete("/api/family/contacts/fam23i-admin-a", headers=admin_a)
+    assert resp.status_code == 404, resp.text
+
+
+def test_list_contacts_reports_implied_for_open_members(client: TestClient):
+    family = _make_family("ImpList")
+    admin = _make_family_admin("fam23j-admin", "fam23j-admin", family.id)  # open
+    _make_member("fam23j-kid", "fam23j-kid", family.id)  # people
+    _make_member("fam23j-open", "fam23j-open", family.id)
+    _make_member("fam23j-denied", "fam23j-denied", family.id)
+    _make_member("fam23j-anysms", "fam23j-anysms", family.id)
+    _set_policy("fam23j-open", "open")
+    _set_policy("fam23j-denied", "open")
+    _set_policy("fam23j-anysms", "any_sms")
+    gma = _create_contact(client, admin, "+12065550100", "Grandma")
+    allow_store.set_edge("fam23j-denied", gma["uid"], message=False, locate=False)
+    assert _put_contacts(client, admin, "fam23j-kid", [{"uid": gma["uid"]}]).status_code == 200
+
+    (listed,) = client.get("/api/family/contacts", headers=admin).json()
+    assert listed["approvedFor"] == ["fam23j-kid"]
+    assert listed["impliedFor"] == ["fam23j-admin", "fam23j-anysms", "fam23j-open"]
+
+
+def test_policy_change_to_open_adds_family_contacts_to_cfg_sms(
+    client: TestClient, broker: FakeBrokerClient
+):
+    family = _make_family("PolOpen")
+    admin = _make_family_admin("fam23k-admin", "fam23k-admin", family.id)
+    _make_member("fam23k-kid", "fam23k-kid", family.id)
+    _make_pager_device("pgr-fam23k", "fam23k-kid", family.id)
+    _create_contact(client, admin, "+12065550100", "Grandma")
+    assert devices_store.get_device("pgr-fam23k").smsContacts == []
+
+    resp = client.patch(
+        "/api/family/members/fam23k-kid",
+        json={"policy": {"out": "open", "in": "people"}},
+        headers=admin,
+    )
+    assert resp.status_code == 200, resp.text
+    assert [c.name for c in devices_store.get_device("pgr-fam23k").smsContacts] == ["Grandma"]
+    assert _sms_pushes(broker, "pgr-fam23k")[-1]["cfg"]["sms"] == [
+        {"n": "Grandma", "p": "+12065550100"}
+    ]
+
+
+def test_policy_change_to_people_drops_implied_contacts_keeps_edges(client: TestClient):
+    family = _make_family("PolPeople")
+    admin = _make_family_admin("fam23l-admin", "fam23l-admin", family.id)
+    _make_member("fam23l-kid", "fam23l-kid", family.id)
+    _make_pager_device("pgr-fam23l", "fam23l-kid", family.id)
+    _set_policy("fam23l-kid", "open")
+    picked = _create_contact(client, admin, "+12065550100", "Aunt")
+    _create_contact(client, admin, "+12065550101", "Bob")
+    assert _put_contacts(client, admin, "fam23l-kid", [{"uid": picked["uid"]}]).status_code == 200
+    assert [c.name for c in devices_store.get_device("pgr-fam23l").smsContacts] == ["Aunt", "Bob"]
+
+    resp = client.patch(
+        "/api/family/members/fam23l-kid",
+        json={"policy": {"out": "people", "in": "people"}},
+        headers=admin,
+    )
+    assert resp.status_code == 200, resp.text
+    assert [c.name for c in devices_store.get_device("pgr-fam23l").smsContacts] == ["Aunt"]
+    assert allow_store.is_message_allowed("fam23l-kid", picked["uid"])
+
+
+def test_implied_cfg_sms_caps_at_eight_name_sorted(client: TestClient):
+    family = _make_family("ImpCap")
+    admin = _make_family_admin("fam23m-admin", "fam23m-admin", family.id)
+    _make_pager_device("pgr-fam23m", "fam23m-admin", family.id)
+    for i in reversed(range(10)):
+        _create_contact(client, admin, f"+1206555010{i}", f"c{i}")
+
+    names = [c.name for c in devices_store.get_device("pgr-fam23m").smsContacts]
+    assert names == [f"c{i}" for i in range(8)]
 
 
 # ---------------------------------------------------------------------------
@@ -700,7 +1060,7 @@ def test_family_contacts_lists_only_family_externals_create_and_rename(
 # ---------------------------------------------------------------------------
 
 
-def test_send_message_to_phone_number_creates_external_under_any_number_policy(
+def test_send_message_to_unknown_phone_number_is_404_and_creates_nothing(
     client: TestClient,
 ):
     family = _make_family("Msg1")
@@ -708,7 +1068,7 @@ def test_send_message_to_phone_number_creates_external_under_any_number_policy(
     member_headers = _make_member("fam24-kid", "fam24-kid", family.id)
     resp = client.patch(
         "/api/family/members/fam24-kid",
-        json={"policy": {"out": "any_sms", "in": "people"}},
+        json={"policy": {"out": "open", "in": "people"}},
         headers=admin_headers,
     )
     assert resp.status_code == 200, resp.text
@@ -718,13 +1078,9 @@ def test_send_message_to_phone_number_creates_external_under_any_number_policy(
         json={"body": "hi"},
         headers=member_headers,
     )
-    assert resp.status_code == 201, resp.text
-    msg = messages_store.get_message(resp.json()["id"])
-    assert msg is not None
-    ext = users_store.get_user(msg.recipientUid)
-    assert ext is not None and ext.kind == "external"
-    assert ext.phone == "+12065550500"
-    assert ext.ownerFamilyId == family.id
+    assert resp.status_code == 404, resp.text
+    assert externals_store.list_family_contacts(family.id) == []
+    assert externals_store.get_family_contact(family.id, "+12065550500") is None
 
 
 def test_send_message_to_unapproved_phone_number_is_404_without_any_number_policy(
@@ -823,11 +1179,8 @@ def test_two_families_approving_one_number_get_their_own_names_and_sms_contacts(
         (admin_a, "fam33-kid-a", "Grandma"),
         (admin_b, "fam33-kid-b", "Gran Jo"),
     ):
-        resp = client.put(
-            f"/api/family/members/{kid}/approved",
-            json={"people": [], "numbers": [{"phone": "+12065550100", "name": name}]},
-            headers=headers,
-        )
+        contact = _create_contact(client, headers, "+12065550100", name)
+        resp = _put_contacts(client, headers, kid, [{"uid": contact["uid"]}])
         assert resp.status_code == 200, resp.text
 
     contacts_a = client.get("/api/family/contacts", headers=admin_a).json()
@@ -851,6 +1204,25 @@ def test_two_families_approving_one_number_get_their_own_names_and_sms_contacts(
     assert [c.name for c in devices_store.get_device("pgr-fam33-b").smsContacts] == ["Gran Jo"]
 
 
+def test_two_families_keep_separate_contacts_for_one_number():
+    fam_a = families_store.create_family(name="A", created_by="s")
+    fam_b = families_store.create_family(name="B", created_by="s")
+    a = externals_store.get_or_create(fam_a.id, "+12065550100", "Grandma")
+    b = externals_store.get_or_create(fam_b.id, "206-555-0100", "Gran Jo")
+    assert a.uid != b.uid and a.alias != b.alias
+    assert (a.displayName, b.displayName) == ("Grandma", "Gran Jo")
+    assert (a.phone, b.phone) == ("+12065550100", "+12065550100")
+    assert externals_store.get_family_contact(fam_a.id, "+12065550100").uid == a.uid
+    assert externals_store.get_family_contact(fam_b.id, "+12065550100").uid == b.uid
+    assert [u.uid for u in externals_store.list_family_contacts(fam_a.id)] == [a.uid]
+
+    db = get_db()
+    for uid in (a.uid, b.uid):
+        kinds = [s.to_dict()["kind"] for s in db.collection("users").document(uid).collection("backends").stream()]
+        assert "sms" not in kinds
+    assert list(db.collection("phoneIndex").stream()) == []
+
+
 def test_approve_open_sms_unknown_alert_creates_the_contact_and_rederives(client: TestClient):
     from app import alerts as alerts_module
 
@@ -858,9 +1230,7 @@ def test_approve_open_sms_unknown_alert_creates_the_contact_and_rederives(client
     admin = _make_family_admin("fam34-admin", "fam34-admin", family.id)
     _make_member("fam34-kid", "fam34-kid", family.id)
     _make_pager_device("pgr-fam34", "fam34-kid", family.id)
-    alert_id = alerts_module.sms_unknown(
-        family.id, "+12065550100", "fam34-kid", "hello", held=False, open_unheld=True
-    )
+    alert_id = alerts_module.sms_unknown(family.id, "+12065550100", "fam34-kid", "hello")
 
     resp = client.post(
         f"/api/family/alerts/{alert_id}/approve", json={"name": "Auntie"}, headers=admin
@@ -872,7 +1242,7 @@ def test_approve_open_sms_unknown_alert_creates_the_contact_and_rederives(client
     assert [c.phone for c in devices_store.get_device("pgr-fam34").smsContacts] == ["+12065550100"]
 
 
-def test_start_chat_by_number_finds_the_familys_existing_contact_under_any_policy(
+def test_start_chat_by_number_finds_the_familys_existing_contact_is_403_sms_contact(
     client: TestClient,
 ):
     family = _make_family("Start")
@@ -888,10 +1258,32 @@ def test_start_chat_by_number_finds_the_familys_existing_contact_under_any_polic
     assert resp.status_code == 200, resp.text
 
     resp = client.post("/api/conversations/+12065550100/messages", json={"body": "hi"}, headers=kid)
-    assert resp.status_code == 201, resp.text
-    msg = messages_store.get_message(resp.json()["id"])
-    assert msg is not None and msg.recipientUid == ext.uid
+    assert resp.status_code == 403, resp.text
+    assert resp.json()["detail"]["reason"] == "sms_contact"
+    assert resp.json()["detail"]["message"] == "SMS contacts can only be texted from a pager."
+    assert list(get_db().collection("messages").stream()) == []
+    assert list(get_db().collection("conversations").stream()) == []
 
-    # An unknown number under people_sms is still a 404.
+    # An unknown number is still a 404.
     resp = client.post("/api/conversations/+12065550999/messages", json={"body": "hi"}, headers=kid)
     assert resp.status_code == 404, resp.text
+
+
+def test_create_group_with_external_member_is_400(client: TestClient):
+    family = _make_family("GrpExt")
+    admin = _make_family_admin("fam36-admin", "fam36-admin", family.id)
+    _make_member("fam36-kid", "fam36-kid", family.id)
+    ext = externals_store.get_or_create(family.id, "+12065550100", "Grandma")
+
+    resp = client.post(
+        "/api/family/groups",
+        json={
+            "name": "G",
+            "alias": "fam36grp",
+            "memberUids": ["fam36-admin", "fam36-kid", ext.uid],
+        },
+        headers=admin,
+    )
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["detail"] == "an SMS contact cannot join a group"
+    assert users_store.get_uid_for_alias("fam36grp") is None

@@ -23,10 +23,9 @@
 - **Inbound webhook**: Google-issued JWT verification lives here
   (`verify_chat_bearer_token`) as a pure, unit-testable function; dispatch
   (reading the event body, `/link` vs. ordinary message, calling
-  `routing.send()`) lives in `app/routers/webhooks.py`, matching how
-  `sms_twilio.py`/`app/routers/webhooks.py` split the same concerns for
-  Twilio. `@alias`/single-peer resolution is `app/backends/resolve.py`'s
-  `resolve_reply()`, shared with `sms_twilio.py`.
+  `routing.send()`) lives in `app/routers/webhooks.py`, matching the
+  adapter/router split. `@alias`/single-peer resolution is
+  `app/backends/resolve.py`'s `resolve_reply()`.
 
 **Unverified prerequisite**: Chat apps are documented to require the
 installing Google account to be on Google Workspace, not consumer Gmail.
@@ -76,7 +75,7 @@ LOC_PREVIEW = "location"
 def gchat_audience() -> str:
     """The Chat app's project-number audience -- read fresh from the
     environment on every call, the same per-call `os.environ.get(...)`
-    pattern `app/notify/sms.py` uses for Twilio's credentials. Empty in
+    pattern this project's other env-driven settings use. Empty in
     dev/test (no real Chat app configured); `verify_chat_bearer_token`
     treats a blank audience as "never verifies" (fail closed)."""
     return os.environ.get("GCHAT_AUDIENCE", "")

@@ -66,21 +66,9 @@ variable "broker_ca_pem_file" {
 }
 
 variable "public_base_url" {
-  description = "docs/V02_DESIGN.md §4.4 / infra/modules/relay-service/variables.tf's public_base_url: this deployment's own public HTTPS origin (already used by app/tasks.py, app/backends/sms_twilio.py; now also the base of the CA-pointer URL a bootstrap bundle hands a device). Cloud Run v2's own computed URL cannot be referenced from inside the same apply that creates the service (a genuine cyclic reference), so this has no default derived from module.relay_service.service_url -- set it by hand after the service exists. Empty (the default) leaves it unset; production's value is `https://pager-relay-2ix4jtetvq-uw.a.run.app` (infra/README.md)."
+  description = "docs/V02_DESIGN.md §4.4 / infra/modules/relay-service/variables.tf's public_base_url: this deployment's own public HTTPS origin (already used by app/tasks.py; also the base of the CA-pointer URL a bootstrap bundle hands a device). Cloud Run v2's own computed URL cannot be referenced from inside the same apply that creates the service (a genuine cyclic reference), so this has no default derived from module.relay_service.service_url -- set it by hand after the service exists. Empty (the default) leaves it unset; production's value is `https://pager-relay-2ix4jtetvq-uw.a.run.app` (infra/README.md)."
   type        = string
   default     = ""
-}
-
-variable "twilio_base_url" {
-  description = "Leave empty in a real deployment -- see infra/modules/relay-service/variables.tf's comment. Only meaningful pointed at a Twilio-mock-shaped staging endpoint."
-  type        = string
-  default     = ""
-}
-
-variable "enable_sms_secrets" {
-  description = "Wire TWILIO_* secret-sourced env vars into the relay service. Leave false until infra/README.md's secret-value step has been done for the three Twilio secrets -- Cloud Run refuses to create a revision that references a secret with zero versions (see relay-service/main.tf's comment)."
-  type        = bool
-  default     = false
 }
 
 # --- Cell-tower location fallback (docs/PROTOCOL.md §13.2, this task) ----
@@ -91,7 +79,7 @@ variable "cell_geo_provider" {
 }
 
 variable "enable_cell_geo_secret" {
-  description = "Wire CELL_GEO_API_KEY into the relay service. Leave false (and cell_geo_provider at \"none\") until a real Google Geolocation API (or OpenCelliD) key exists in Secret Manager -- see infra/README.md's runbook step. Same zero-versions-refuses-a-revision constraint as enable_sms_secrets."
+  description = "Wire CELL_GEO_API_KEY into the relay service. Leave false (and cell_geo_provider at \"none\") until a real Google Geolocation API (or OpenCelliD) key exists in Secret Manager -- see infra/README.md's runbook step. Cloud Run refuses to create a revision that references a secret with zero versions."
   type        = bool
   default     = false
 }

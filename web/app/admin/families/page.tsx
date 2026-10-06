@@ -36,7 +36,6 @@ import RequireAuth from "@/components/RequireAuth";
 import { useFamily } from "@/lib/family-context";
 import { ApiError, api } from "@/lib/api";
 import { getFirestoreDb } from "@/lib/firebase";
-import { PHONE_E164_EXAMPLE, isValidPhone } from "@/lib/smsContacts";
 import type { DeviceDoc, FamilyDoc, Role, UserDoc } from "@/lib/types";
 
 interface FamilyRow extends FamilyDoc {
@@ -79,7 +78,6 @@ function AdminFamiliesInner() {
 
   const [detailId, setDetailId] = useState<string | null>(null);
   const [detailName, setDetailName] = useState("");
-  const [detailSms, setDetailSms] = useState("");
   const [savingDetail, setSavingDetail] = useState(false);
   const [moveTarget, setMoveTarget] = useState<UserRow | null>(null);
 
@@ -109,13 +107,10 @@ function AdminFamiliesInner() {
   }, []);
 
   const detail = families.find((f) => f.id === detailId) ?? null;
-  const detailSmsTrimmed = detailSms.trim();
-  const detailSmsValid = detailSmsTrimmed.length === 0 || isValidPhone(detailSmsTrimmed);
 
   function openDetail(f: FamilyRow) {
     setDetailId(f.id);
     setDetailName(f.name);
-    setDetailSms(f.smsNumber ?? "");
     setMoveTarget(null);
     setError(null);
   }
@@ -150,14 +145,11 @@ function AdminFamiliesInner() {
   }
 
   async function saveDetail() {
-    if (!detail || !detailSmsValid) return;
+    if (!detail) return;
     setSavingDetail(true);
     setError(null);
     try {
-      await api.patch(`/admin/families/${detail.id}`, {
-        name: detailName,
-        smsNumber: detailSmsTrimmed || null,
-      });
+      await api.patch(`/admin/families/${detail.id}`, { name: detailName });
     } catch (err) {
       setError(err instanceof ApiError ? String(err.detail ?? err.message) : "Failed to update family");
     } finally {
@@ -229,7 +221,6 @@ function AdminFamiliesInner() {
         <TableHead>
           <TableRow>
             <TableCell>Name</TableCell>
-            <TableCell>SMS number</TableCell>
             <TableCell>Admins</TableCell>
             <TableCell>Members</TableCell>
             <TableCell>Devices</TableCell>
@@ -241,7 +232,6 @@ function AdminFamiliesInner() {
           {families.map((f) => (
             <TableRow key={f.id} hover sx={{ cursor: "pointer" }} onClick={() => openDetail(f)}>
               <TableCell>{f.name}</TableCell>
-              <TableCell>{f.smsNumber ?? "--"}</TableCell>
               <TableCell>
                 <Stack direction="row" spacing={0.5} sx={{ flexWrap: "wrap" }}>
                   {(countsByFamily.admins.get(f.id) ?? []).map((a) => (
@@ -332,23 +322,11 @@ function AdminFamiliesInner() {
                   onChange={(e) => setDetailName(e.target.value)}
                   fullWidth
                 />
-                <TextField
-                  label="SMS number"
-                  value={detailSms}
-                  onChange={(e) => setDetailSms(e.target.value)}
-                  error={!detailSmsValid}
-                  helperText={
-                    detailSmsValid
-                      ? "Inbound texts to this number are routed to this family. Leave empty to use the shared number."
-                      : `Must be E.164, e.g. ${PHONE_E164_EXAMPLE}.`
-                  }
-                  fullWidth
-                />
                 <Stack direction="row" spacing={1}>
                   <Button
                     variant="contained"
                     onClick={() => void saveDetail()}
-                    disabled={savingDetail || !detailSmsValid}
+                    disabled={savingDetail}
                   >
                     Save
                   </Button>

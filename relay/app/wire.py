@@ -826,11 +826,9 @@ class LocEnvelope(BaseModel):
 
 # docs/V02_DESIGN.md §6/§7: `peer` is always a real phone number (never an
 # alias reference the way `contact_req`'s overloaded `ph` can be, §4.2) --
-# same E.164 shape as `app/ingest.py`'s private `_PHONE_E164_RE` and
-# `app/backends/sms_twilio.py`'s `_E164_RE`, duplicated rather than imported
-# across modules for the same reason those two don't share one either (a
-# private regex is not a public contract worth coupling two unrelated
-# modules to).
+# same E.164 shape as `app/ingest.py`'s private `_PHONE_E164_RE`,
+# duplicated rather than imported across modules (a private regex is not a
+# public contract worth coupling two unrelated modules to).
 _SMS_PEER_RE = re.compile(r"^\+[1-9]\d{6,14}$")
 SMS_LOG_DIR_VALUES = ("out", "in")
 SMS_LOG_ST_VALUES = ("sent", "failed", "recv", "blocked")

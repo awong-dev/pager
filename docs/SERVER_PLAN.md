@@ -54,12 +54,12 @@
  ┌──────────────── Cloud Run relay — request-driven, min instances 0 ───────────────────────┐
  │ FastAPI  ── /api/*          (send, locate, backends, admin — every WRITE goes through here) │
  │          ── /webhooks/mqtt  (broker rule engine → HTTP: /up, /status, /loc)                 │
- │          ── /webhooks/*     (Twilio SMS, Google Chat)                                       │
+ │          ── /webhooks/*     (Google Chat)                                                   │
  │          ── /internal/*     (Cloud Scheduler tick + weekly sweep, Cloud Tasks retries)      │
  │ Routing engine ──► deliveries ──► Backend adapters:                                         │
  │   (allow-list, fan-out)            pager  ── broker REST publish ──► Broker ─MQTT─► Device  │
  │                                    webapp (Firestore write + FCM push)                      │
- │                                    sms (Twilio REST), gchat (Chat API), email/slack… later  │
+ │                                    gchat (Chat API), email/slack… later                     │
  └───────────────────────────┬────────────────────────────────────────────────────────────────┘
                              │ firebase-admin (service account, ADC)
                      ┌───────▼────────┐          ┌───────────────────────────────┐
@@ -116,7 +116,7 @@ need no lookups, and **transactions** for anything monotonic or unique. **Multi-
 adds `familyId` to users, devices, and collections, with visibility scoped by family.
 
 ```
-families/{fid}                 {name, smsNumber|null, blockedNumbers: [], createdAt, createdBy}
+families/{fid}                 {name, blockedNumbers: [], createdAt, createdBy}
 families/{fid}/alerts/{id}     {kind: 'new_conversation'|'sms_unknown'|'contact_request',
                                 status: 'open'|'handled'|'dismissed', ts, subjectUid, subjectAlias,
                                 peerUid|null, peerAlias|null, peerPhone|null, preview (≤120),
@@ -238,40 +238,20 @@ settings/meta                  {schemaVersion: 2, lastSweepAt, seqCounter}
   1 day — cells do not move, the provider APIs (`app/cellgeo.py`) bill per call, and the cache is
   what keeps cell-based locations working through a provider outage. **Privacy**: a cache entry (and
   the provider lookup that fills it) carries only the cell identity, never anything about the
-  pager's owner. Server-only, same default-deny posture as `cas`/`phoneIndex` below — no `match`
+  pager's owner. Server-only, same default-deny posture as `cas` — no `match`
   block in `firestore.rules`, nothing here is ever read directly by a client (unlike `locations`,
   the web app never queries `cells`). `relay/tests/test_rules.py` pins it. No retention sweep
   needed (unlike `locations`/`messages`): the 30-day/1-day TTLs above are enforced at read time by
   `app/store/cells.py`'s own `get_cached`, the same "derived, not swept" pattern `PROTOCOL.md` §4's
   `expired` state uses.
-- **Three inbound-lookup collections, additive to this table:**
-  `phoneIndex/{e164Phone}` → `{uid, bid}`, `gchatSpaces/{spaceId}` → `{uid, bid}`, and
-  `gchatLinkCodes/{code}` → `{uid, bid, expiresAt}`. §6.4/§6.5 specify the *behaviour* ("map
-  `From` → user by verified phone", "stores the DM `space` name") but not the mechanism; a
-  `config.phone` / `config.space` lookup would need a `COLLECTION_GROUP`-scoped index on a nested
-  field, so these use the same "the doc id *is* the lookup key" trick as `aliases/{alias}`. Accepted
-  as-is; three rules they must keep. (a) **Write on verify, never on create** — `phoneIndex` is
-  written by `POST /api/me/backends/{id}/verify` only, so an unverified phone claim can never
-  capture another user's inbound texts. (b) **The index is derived state and must be torn down with
-  its source** — deleting an sms backend, or `PATCH`ing its `config.phone`, has to
-  `clear_phone_index(oldPhone)` and clear `verifiedAt`, or a stale row keeps attributing inbound
-  SMS to a `bid` that no longer exists. (c) **`phoneIndex` doc ids are normalised E.164**
-  (`+15551234567`), matching what Twilio puts in `From`; a raw user-typed string both misses the
-  lookup and can contain a `/`, which is not a legal Firestore document id. None of the three is
-  client-readable: `firestore.rules` has no `match` block for them (default-deny read) and the
-  `match /{document=**} { allow write: if false }` catch-all denies writes, which is the intended
-  posture — no rule edit needed, but `relay/tests/test_rules.py` should pin it so a future
-  broadened rule cannot expose them. Nothing device-visible; `PROTOCOL.md` is unaffected.
-- **A fourth collection, `smsVerifyCodes/{bid}` → `{codeHash, expiresAt}`, because rule (a)
-  alone is not enough.** Storing the SMS verification code in
-  `users/{uid}/backends/{bid}.config` would put it somewhere a user can read for their own uid —
-  so a user claiming a phone number they don't control could read the code straight out of
-  Firestore and verify it without ever receiving the SMS.
-  `smsVerifyCodes` holds the (hashed) code server-side instead, with the same default-deny
-  posture as the other three lookup collections. This is *not* the same situation as
-  `gchatLinkCodes`, which is correctly owner-readable (the user reads their own code to type it
-  into the Chat DM) — only inbound *verification* material needs this extra collection. Also:
-  `gchatSpaces` gained a `senderName` field (the identity of whoever sent the `/link` message),
+- **Two inbound-lookup collections:** `gchatSpaces/{spaceId}` → `{uid, bid, senderName}` and
+  `gchatLinkCodes/{code}` → `{uid, bid, expiresAt}` — the doc id is the lookup key, as for `aliases/{alias}`.
+  Relay-only, no `match` block (default-deny), pinned in `relay/tests/test_rules.py`. *(`phoneIndex` and
+  `smsVerifyCodes` were removed with the SMS backend, owner decision 7 Oct 2026.)*
+- **`contactNames/{fid}_{h16}` → `{uid, familyId}`** reserves a family SMS contact's name key
+  (`truncate_sms_name(name).casefold()`, `h16` = first 16 hex of its SHA-256) with `create()`, so two contacts in one
+  family can never share the name the pager matches on. Relay-only, default-deny, pinned in
+  `test_rules.py`.
   checked on every subsequent inbound message in that space so a group/shared space can't let a
   second person send as the originally-linked user.
 - Indexes: `messages(convKey, seq)`, `messages(pendingDeviceIds array-contains, createdAt)`,
@@ -395,8 +375,8 @@ a request within 60 s of a fulfilled one is answered from `locations` with `cach
 touching the device at all.
 
 ### 4.7 Budget lines
-PROTOCOL.md §7.2/§7.3 carry a `/loc` line, and §11 of this document tracks the GNSS power cost. The SIM's SMS budget line stays at "0 used": the SMS *backend* is server-side Twilio,
-never the modem.
+PROTOCOL.md §7.2/§7.3 carry a `/loc` line, and §11 of this document tracks the GNSS power cost. The relay has no SMS backend (removed 7 Oct
+2026); the modem's own allow-listed SMS is budgeted in PROTOCOL.md §7.3.
 
 ### 4.8 The relay is not an MQTT client
 The relay's *role* is what PROTOCOL.md describes, but its *transport* is the broker's rule engine
@@ -441,7 +421,7 @@ relay/app/
   ingest.py          what mqtt_gateway.py was: /up acks + replies, /status (+ online-edge
                      re-publish), /loc — called by the webhook router, unit-tested with fake payloads
   routing.py         allow-list check, recipient resolution, fan-out → deliveries → adapters
-  backends/          base.py (Protocol), pager.py, webapp.py, sms_twilio.py, gchat.py, registry.py
+  backends/          base.py (Protocol), pager.py, webapp.py, gchat.py, registry.py
   auth.py            verify Firebase ID token → user; require_user / require_admin (custom claim)
   location.py        loc_req lifecycle, coalescing, cached answers; cell-tower fallback resolution
                      (this task, §13.2) when a /loc answer has no GNSS fix
@@ -452,9 +432,8 @@ relay/app/
   tasks.py           Cloud Tasks enqueue (prod) / inline thread (dev) for delivery retries
   routers/           me.py, conversations.py, admin.py, devices.py (GET /api/devices, owner/admin
                      sms-contacts + sms-log — v0.2 §6), ca.py (public GET /ca/{sha}.pem — v0.2 §4.4),
-                     webhooks.py (mqtt, twilio, gchat),
+                     webhooks.py (mqtt, gchat),
                      internal.py (tick, sweep, task handler — OIDC-authenticated), dev.py, legacy.py
-  notify/            sms.py (Twilio) — used by the sms backend and its link flow
 ```
 Deliberately absent: `mqtt_transport.py` (paho), a background thread, the reconnect/backoff
 logic and `RELAY_KEEPALIVE_S`. `fake_transport.py` becomes a fake `BrokerClient` that records
@@ -470,7 +449,7 @@ requires `require_family_admin` (family admin or super with `?family=`); `/api/a
 GET  /api/me                                           → {user, role, familyId, kind, policy, notify, claimsStale}
 GET  /api/directory                                    → {entries: [{uid, alias, displayName, kind, familyId, role}]}
 POST/PATCH/DELETE /api/me/backends[/{id}]              → user's own backends
-POST /api/me/backends/{id}/verify {code}               → phone / gchat link verification
+POST /api/me/backends/{id}/verify {code}               → gchat link verification
 POST /api/me/push-tokens {token} / DELETE …/{token}    → FCM registration tokens
 PATCH /api/me {notify}                                 → toggle alerts notifications
 POST /api/conversations/{alias}/messages {body}        → 201 {id}; alias can be E.164 phone number
@@ -479,23 +458,24 @@ POST /api/conversations/{alias}/locate                 → 202 {request_id}
 GET  /api/family                                       → family doc, member/device counts (family admin)
 GET/POST /api/family/members                           → list; create {alias, displayName, email|phone, role}
 PATCH /api/family/members/{uid}                        → displayName, role, disabled, policy{out,in}
-PUT  /api/family/members/{uid}/approved                → {people:[{alias,message,locate}], numbers:[phone…]}
+PUT  /api/family/members/{uid}/approved                → {people:[{alias,message,locate}], contacts:[{uid,message}]}
 GET/POST/PATCH /api/family/contacts                    → externals {uid, alias, phone, displayName, approvedFor:[uid…]}
 GET/POST /api/family/devices, /{id}/rotate, /revoke, /cfg, /ca, DELETE /{id}  → device CRUD (family admin)
 POST /api/family/groups                                → {name, alias, memberUids} (family admin)
 GET /api/family/alerts?status=open|all                 → list alerts
 POST /api/family/alerts/{id}/{approve|block|dismiss}  → act on alert
 GET/POST /api/admin/families                           → list; create (super)
-PATCH /api/admin/families/{fid}                        → name, smsNumber (super)
+PATCH /api/admin/families/{fid}                        → name (super)
 PATCH /api/admin/users/{uid}                           → familyId, role: super (super)
 GET  /api/admin/users, /api/admin/devices              → with ?family= filter (super)
 PUT  /api/admin/allowlist?family=                      → replace-all edges, in-family or cross-family (super)
 PUT  /api/devices/{id}/sms-contacts                    → 405; managed from /family/members/{uid}/approved
+DELETE /api/family/contacts/{uid}                      → delete a family SMS contact, its edges and name; re-derive cfg.sms
+GET /api/family/members/{uid}/approved                 → `{people, contacts:[{uid,message}]}`
 GET  /ca/{sha256hex}.pem                               → public, no auth, immutable; 404 for an unknown hash
 GET  /api/devices                                      → caller's own devices: [{id, label, status}]
 GET  /api/devices/{id}/sms-log?limit=&before=          → {entries: [{id, ts, smsTs, dir, peer, name, st, body}]}
 POST /webhooks/mqtt                                    → broker rule engine; shared-secret header
-POST /webhooks/twilio/sms                              → Twilio signature-validated, family resolution from To
 POST /webhooks/gchat                                   → Google-issued JWT-validated
 POST /internal/tick, /internal/sweep, /internal/task   → Cloud Scheduler / Cloud Tasks; OIDC token
 GET  /healthz                                          → 200 + firestore reachable + broker API reachable
@@ -572,10 +552,9 @@ new conversations). Approved-numbers PUT derives `devices.smsContacts` and pushe
 
 **Superadmin** (`/api/admin/*`) manages families, all users across families, all devices, the
 allow-list (cross-family edges only), and retention settings. Locations readable everywhere but
-`/locate` requires an edge or family-admin status. SMS contact approval in `create` mode still
-creates a Firebase Auth user and `sms` backend (existing path); externals by alias are created
-on the fly by approved-numbers PUT or when a message to a phone number is sent by an `any_sms`
-member.
+`/locate` requires an edge or family-admin status. SMS contacts (externals) are created only on
+Family → Contacts or by approving a pager contact request or an `sms_unknown` alert; nothing
+creates one on send.
 
 ### 5.6 Location (`location.py`)
 - `/loc` ingest (via webhook): validate (`LocEnvelope`), dedup on `wireId`, add to
@@ -639,7 +618,7 @@ design does not depend on it.
 - The broker is a fake `BrokerClient` in unit tests (records publishes; tests post webhook
   payloads straight to `ingest`). The real EMQX rule-engine path is covered by `e2e_v2.py` against
   the compose stack.
-- HTTP adapters (Twilio, Chat) are tested against recorded request/response fixtures with the
+- HTTP adapters (Chat) are tested against recorded request/response fixtures with the
   signature checks exercised for real; FCM sends go through a stub `messaging` client; Cloud
   Tasks runs in inline mode.
 - Coverage called out for `backend-dev.md`: webhook auth, allow-list denial, fan-out to N
@@ -680,16 +659,11 @@ sender alias, body preview). Delivery goes `read` when the browser reports the t
 (`POST …/messages/{id}/read`), so the sender sees "read" for the web too. Every user gets an
 implicit `webapp` backend at creation.
 
-### 6.4 `sms` — Twilio
-Outbound: Messages API, `From` = the deployment's one Twilio number. Link flow: user enters phone
-→ `start_link` sends a code → `complete_link`. Inbound webhook: validate `X-Twilio-Signature`;
-map `From` → user by verified phone; resolve recipient with the rule *if the text starts with
-`@alias ` use it, else if the user has exactly one allowed peer use that, else reply with a usage
-hint by SMS*. Body limit 160 code points applies before `routing.send()`, so a long SMS is
-rejected with a hint, never truncated. **Costs and chores to flag** (§10 D3): number rental, per-
-segment fees, and US A2P 10DLC / toll-free verification, which can take days and is a manual
-registration outside Terraform. (This number is for the *SMS backend*; login-code SMS is sent by
-Firebase Auth and does not need it.)
+### 6.4 `sms` — SMS contacts
+*Removed 7 Oct 2026 (owner decision): the relay neither sends nor receives SMS. The only SMS path
+is the pager's own modem to its `cfg.sms` list (V02_DESIGN.md §6, PROTOCOL.md §3.6). An SMS
+contact is never a relay recipient: a DM to one is refused with reason `sms_contact`, and a pager
+gets §4.2 case 3's `unknown recipient`.*
 
 ### 6.5 `gchat` — Google Chat app
 Outbound: `spaces.messages.create` with the relay's service account (Chat API enabled by
@@ -742,7 +716,7 @@ consumer Gmail this backend is dead on arrival and Email (§6.6) should take its
 /family/contacts       external contacts (name, number, approved-for member chips), rename, add; linked families
 /family/alerts         inbox of SMS unknowns, new conversations, contact requests; approve/block/dismiss; badge
 /location              device map (own, edge-granted, family devices for admins), "Locate now" enabled for scoped set
-/settings/backends     list + add (SMS phone verify, Google Chat link code, Email later) + enable toggles
+/settings/backends     list + add (Google Chat link code, Email later) + enable toggles
 /settings/notifications  enable browser notifications → registers FCM token; Family alerts toggle for admins
 /admin/families        table (name, SMS number, admins, members, devices, created); create family, edit, move users
 /admin/users           table; create (alias, name, email/phone, role, family); disable; delete; Family column + filter
@@ -840,7 +814,7 @@ admin settings retention messages=4w locations=10d
 
 **`tools/e2e_v2.py`** imports the client as a library, brings up `relay/docker-compose.yml`
 (EMQX OSS with the rule + webhook configured by `tools/emqx_setup.py`, Firebase emulators, relay
-with `DEV_MODE=1`, Twilio mock), and runs named scenarios:
+with `DEV_MODE=1`), and runs named scenarios:
 1. `bootstrap`: admin sign-in, create parent + student, connect them, create device (broker
    credential pushed via EMQX's REST API).
 2. `text_roundtrip`: parent → student via API → pager receives → `shown`/`read` chips update;

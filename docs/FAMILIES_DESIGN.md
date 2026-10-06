@@ -1,5 +1,10 @@
 # Multi-family web UI and tenancy design (30 Sep 2026)
 
+> **7 Oct 2026 (owner decision):** the relay has no SMS backend. Twilio, per-family
+> `smsNumber`, `phoneIndex`, held/delivered inbound SMS and "text any number" are gone; an external is reached only by
+> the pager's own SMS (`cfg.sms`). Members whose `policy.out` is `open`/`any_sms` get every family contact on their
+> pager automatically. See `build/bench-logs/DESIGN_no_relay_sms.md` and CONTACT_REQ_DESIGN.md decision 7.
+
 **Status:** implemented overnight 30 Sep → 1 Oct 2026 per `docs/FAMILIES_TASKS.md`; see §10 for where
 the build deviated from this text.
 
@@ -72,12 +77,9 @@ Where this document differs from them, this document wins. Nothing here changes
    share a family; `devices.locatableBy` is therefore always in-family. Family admins may read and
    request location for every device in their family. Super may **read** stored fixes everywhere
    but does not get `/locate` by role (keeps the spirit of the 27 Sep decision; flagged in §9).
-6. **An SMS number is an "external" user.** `users/{uid}` with `kind: 'external'`, `familyId:
-   null`, no Firebase Auth account, alias = the E.164 digits (`15551234567`; matches the alias
-   regex and fits the 16-char book field), `displayName` = the name an admin gave it, one `sms`
-   backend, one `phoneIndex` entry. This reuses routing, edges, the device book (`t:"sms"`),
-   `cfg.sms` and contact approval unchanged. Externals are global (one per number) because
-   inbound SMS must resolve the sender before it knows the family.
+6. **An SMS number is an "external" user.** `users/{uid}` with `kind: 'external'`, `familyId`,
+   no Firebase Auth account, alias = `uid`, `displayName` = the name an admin gave it, `phone` on the user doc,
+   no backend row. It reaches the pager only through `cfg.sms` *(7 Oct 2026: no relay SMS)*.
 7. **Conversation policy lives on the member, is enforced in `routing.send`, and layers on top of
    the allow-list.** "Approved people" and "approved numbers" *are* the member's outgoing `allow`
    edges (to users and to externals respectively). A policy that says *any* bypasses the edge
@@ -93,14 +95,13 @@ Where this document differs from them, this document wins. Nothing here changes
    (a member on the `open` outbound policy started talking to someone they have no edge to) and
    *unrecognised SMS* (held, with approve/block actions). Pager `contactRequests` are shown in the
    same inbox. Every family admin's push tokens receive a `kind: "alert"` FCM message.
-10. **Per-family Twilio number, recommended.** Inbound `To` then identifies the family, which is
-    what makes "unrecognised sender" attributable to a family's admins. `families.smsNumber` with
-    fallback to `TWILIO_FROM_NUMBER`. See §9 for the shared-number alternative.
+10. **Superseded 7 Oct 2026 (no relay SMS).**
 11. **The pager's modem SMS path is a projection, not a second policy.** `devices.smsContacts`
     becomes derived (the member's approved numbers, capped at 8, editable only through the member's
     approved-numbers list). `any_sms` cannot be honoured on the device today because the firmware
     shows only listed numbers; the relay-side audit log still records blocked texts. Firmware
-    follow-up, not in this plan.
+    follow-up, not in this plan. *(7 Oct 2026: plus every family contact when the member's numbers rule is `any`, minus explicit
+    denies — CONTACT_REQ decision 7.)*
 
 ## 2. Policies
 
@@ -139,10 +140,12 @@ alert, under `any`/`any_sms` it is **delivered and alerted**. Location requests 
 Defaults are applied at user creation from role (`member` → `people`/`people`, `admin`/`super` →
 `open`/`any`) and by the migration for existing users.
 
+*(7 Oct 2026: the numbers column now only decides whether every family contact is implied on the member's pager (`any`) or only approved ones; the relay carries no SMS, so inbound "held/delivered" no longer applies.)*
+
 ## 3. Data model changes
 
 ```
-families/{fid}                 {name, smsNumber|null, createdAt, createdBy}
+families/{fid}                 {name, createdAt, createdBy}
 families/{fid}/alerts/{id}     {kind: 'new_conversation'|'sms_unknown'|'contact_request',
                                 status: 'open'|'handled'|'dismissed', ts, subjectUid, subjectAlias,
                                 peerUid|null, peerAlias|null, peerPhone|null, preview (≤120),
@@ -155,7 +158,7 @@ allow/{from}_{to}              + familyIds [fromFam?, toFam?]       (for family-
 conversations/{k}              + familyIds [..], participants: {uid: {alias, displayName, kind}}
 messages/{id}                  + familyIds [..]
 contactRequests/{key}          + familyId
-phoneIndex/{e164}              unchanged; externals get an entry like any sms backend
+contactNames/{fid}_{h16}       {uid, familyId} — unique contact name per family (7 Oct 2026)
 ```
 
 `participants` is written when the conversation doc is created and refreshed on group join/leave
@@ -224,25 +227,21 @@ externals), for members whose rules-visible set is narrower than what they talk 
 | `GET/POST/PATCH /api/family/contacts` | externals used by this family (`{phone, name}`); PATCH renames |
 | `GET/POST /api/family/devices`, `/{id}/rotate-credentials`, `/revoke`, `/cfg`, `/ca`, `DELETE` | today's admin device handlers with an in-family check |
 | `POST /api/family/groups` | today's group create, members restricted to own family and edge peers |
-| `GET /api/family/alerts`, `POST /api/family/alerts/{id}/{approve\|block\|dismiss}` | approve = create external if needed + edges + route the held body; block = mark and add to `families.blockedNumbers` |
+| `GET /api/family/alerts`, `POST /api/family/alerts/{id}/{approve\|block\|dismiss}` | approve = create external if needed + edges; block = mark and add to `families.blockedNumbers` |
 | `GET /api/family/conversations` | optional; the web reads Firestore directly by `familyIds` |
 
 **`/api/admin/*`** (super only): `GET/POST /api/admin/families`, `PATCH /api/admin/families/{fid}`
-(`name`, `smsNumber`), `PATCH /api/admin/users/{uid}` gains `familyId` and `role: super`,
+(`name`), `PATCH /api/admin/users/{uid}` gains `familyId` and `role: super`,
 `GET /api/admin/users|devices` gain `?family=`, `PUT /api/admin/allowlist` stays replace-all but
 accepts `?family=` to replace only edges touching that family, and is the only writer of
 cross-family edges. `/api/admin/contacts/*` moves to `/api/family/alerts/*`.
 
-**Conversations**: `POST /api/conversations/{alias}/messages` accepts an E.164 number in place of
-the alias (normalised to the external alias; the external is created on the fly only if the
-sender's outbound policy admits any number). 403 bodies carry `reason ∈ {policy_out, policy_in,
-not_allowed, not_member}` and a message the UI shows verbatim. `POST /api/conversations` (group
+**Conversations**: An E.164 number resolves only to the sender's family contact, which is refused (`sms_contact`, 403) — the relay sends no SMS (7 Oct 2026). 403 bodies carry `reason ∈ {policy_out, policy_in,
+not_allowed, not_member, sms_contact}` and a message the UI shows verbatim. `POST /api/conversations` (group
 create) moves to `/api/family/groups`; join (`POST …/members`) requires the joiner to be a family
 admin of the group creator's family and no longer writes `locate` edges.
 
-**Webhooks**: `POST /webhooks/twilio/sms` resolves the family from `To`; an unknown `From` becomes
-an `sms_unknown` alert (held or delivered per §2) instead of a silent drop; `@alias` selection
-stays; a blocked number is dropped silently.
+**Webhooks**: none for SMS (removed 7 Oct 2026).
 
 ## 5. Web UI
 
@@ -351,7 +350,7 @@ Unchanged, except `/settings/notifications` gains a per-user toggle "Family aler
 
 - **Alert creation** (`relay/app/alerts.py`, new): `new_conversation` when `routing.send` creates
   a `conversations` doc for a DM whose sender has `out: open` and no `message` edge to the
-  recipient; `sms_unknown` from the Twilio webhook (§4); `contact_request` when a pager
+  recipient; `sms_unknown` from a device `sms_log` of an unlisted number; `contact_request` when a pager
   `contact_req` is stored (wraps today's `contactRequests` write).
 - **Push**: `backends/webapp.py` gains `push_alert(family_id, alert)` sending `{kind: "alert",
   alertKind, id, title, body, url: "/family/alerts"}` to every token of every admin of that
@@ -376,7 +375,7 @@ straight to the claim-only predicates in §3.
 | **1 Tenancy core** | families, roles/claims, `familyId` everywhere, rules v2, bootstrap, `/api/family/*`, `/api/admin/families`, `GET /api/directory`; web: `FamilyProvider`, role-aware nav, switcher, `/admin/families`, `/family/people` (profile only), `/family/devices`, directory rewrite | admins get scoped pages; no messaging behaviour changes |
 | **2 Visibility** | `familyIds` on conversations/messages, `participants`, rules for admin reads, Family tab, `/chat/view/[key]`, location scoping, `locate` edge in-family check | admins can monitor; `uid:xxxx` gone; cross-family location closed |
 | **3 Policies and numbers** | `policy` field + routing gate, approved people/numbers editor, externals by digits alias, `NewChatDialog` with phone input, `smsContacts` derived, 403 reasons in the thread | policies work end to end; start a chat by number |
-| **4 Alerts** | alerts collection + push + SW arm, Twilio webhook family resolution and hold/deliver, `/family/alerts` with contact requests merged, `new_conversation` alert, per-family `smsNumber` | admins are notified and can act |
+| **4 Alerts** | alerts collection + push + SW arm, `/family/alerts` with contact requests merged, `new_conversation` alert | admins are notified and can act |
 | **5 Cleanup** | delete `/admin/contacts` and `require_admin`, `SERVER_PLAN.md` §3/§5.1/§7 and `web/README.md` checklist updated, `ROADMAP.md` entries | none |
 
 Phases 1 and 2 are sequential. Phase 3's relay work can start after phase 1; its web work after
@@ -385,14 +384,10 @@ older, member list) ride along with phase 2.
 
 ## 9. Flagged for the owner
 
-1. **Per-family Twilio number (decision 10).** Without it, an unrecognised inbound SMS to the
-   shared number cannot be attributed to a family unless it carries `@alias`; the fallback would be
-   a super-only alert. Cost is about one dollar per family per month.
+1. **Moot 7 Oct 2026 (no relay SMS).**
 2. **`any_sms` outbound is read literally** as "numbers only, no people". If the intent was
    "approved people plus any number", the code is `people_anysms` and the table in §2 gains a row.
-3. **Super and `/locate`.** The 27 Sep decision said admin rights add nothing to locate. This
-   design gives *family* admins locate on their own devices (the request says they control their
-   devices) and gives super read-only fixes. Say if super should also be able to request a fix.
+3. **Moot (CONTACT_REQ decision 2; no sms backend).**
 4. **Cross-family edges are super-only in v1.** A family-admin-to-family-admin request/accept flow
    is the natural follow-up.
 5. **Externals are global**, one per number, with one display name. A per-family nickname is a

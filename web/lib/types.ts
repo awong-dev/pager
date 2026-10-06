@@ -46,7 +46,6 @@ export interface UserDoc {
 // ---- families/{fid} -- app/store/families.py ----
 export interface FamilyDoc {
   name: string;
-  smsNumber: string | null;
   blockedNumbers: string[];
   createdAt: Timestamp | null;
   createdBy: string;
@@ -70,7 +69,7 @@ export interface AlertDoc {
   peerName: string | null;
   peerPhone: string | null;
   preview: string;
-  heldBody: string | null;
+  heldBody?: string | null;
   convKey: string | null;
   contactRequestKey: string | null;
   decidedAt: Timestamp | null;
@@ -78,7 +77,7 @@ export interface AlertDoc {
 }
 
 // ---- users/{uid}/backends/{bid} -- app/store/backends.py ----
-export type BackendKind = "pager" | "webapp" | "sms" | "gchat";
+export type BackendKind = "pager" | "webapp" | "gchat";
 
 export interface BackendDoc {
   kind: BackendKind;

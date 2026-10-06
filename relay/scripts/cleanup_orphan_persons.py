@@ -15,7 +15,7 @@ touched). Run from `relay/`:
 
 Per orphan, `--apply` deletes: `allow` edges in both directions
 (recomputing `locatableBy` for the former peers), `users/{u}/backends/*` and
-`users/{u}/book/*` (and their `phoneIndex` uid/bid), the `aliases` doc and
+`users/{u}/book/*`, the `aliases` doc and
 `users` doc, the Firebase Auth user, the approved `contactRequests` rows that
 produced it and their `contact_request` alerts. Messages stay as history.
 
@@ -79,9 +79,10 @@ def build_plan(user: users_store.User) -> Plan:
     plan = Plan(user=user)
     plan.edges = [e for e in allow_store.list_edges() if uid in (e.fromUid, e.toUid)]
     plan.backends = backends_store.list_backends(uid)
-    plan.phones = sorted(
-        {b.config["phone"] for b in plan.backends if b.kind == "sms" and b.config.get("phone")}
-    )
+    # An orphan made the old way (a phone `contact_req` linked to a person)
+    # carries that number as its sign-in `phone`; its approved requests match
+    # on it. (The retired sms backend rows are no longer readable.)
+    plan.phones = [user.phone] if user.phone else []
 
     alerts_by_family: dict[str, list[alerts_store.Alert]] = {
         f.id: alerts_store.list_alerts(f.id, "all") for f in families_store.list_families()
@@ -134,10 +135,6 @@ def apply_plan(plan: Plan) -> set[str]:
     for peer in plan.former_peers:
         allow_store.recompute_locatable_by_for_owner(peer)
 
-    for b in plan.backends:
-        phone = b.config.get("phone") if b.kind == "sms" else None
-        if phone and backends_store.get_by_phone(phone) == (uid, b.id):
-            backends_store.clear_phone_index(phone)
     _delete_subcollection(uid, "backends")
     _delete_subcollection(uid, "book")
 

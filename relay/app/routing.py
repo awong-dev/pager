@@ -8,7 +8,7 @@ send(sender, recipient_alias | None, kind, body, origin_backend, wire_id=None):
      if present), increment seqCounter, create messages/{id} with a 'queued' delivery per enabled
      backend (excluding origin_backend) and pendingDeviceIds, update conversations/{convKey}
   4. deliver inline, in-request: pager -> broker REST publish (-> 'sent' on 2xx); webapp -> FCM;
-     sms/gchat -> provider call. Any failure leaves the delivery 'queued'/'failed' ...
+     gchat -> provider call. Any failure leaves the delivery 'queued'/'failed' ...
 ```
 
 Two deliberate, minimal shapes not spelled out by that shorthand signature:
@@ -143,7 +143,14 @@ logger = logging.getLogger("relay.routing")
 # policy names the other's `kind` outright refused); `not_allowed` covers
 # both the pre-3.1 bare-edge-missing case and an `'approved'`-rule pair
 # missing that approval (`app.policy.check`'s docstring).
-RejectReason = Literal["unknown_alias", "not_allowed", "not_member", "policy_out", "policy_in"]
+#
+# `sms_contact`: the recipient (or sender) is an SMS contact (`kind ==
+# 'external'`). The relay neither texts nor receives for a contact -- the
+# pager texts it from `cfg.sms` -- so a relay DM to one is refused before the
+# policy gate and nothing is written.
+RejectReason = Literal[
+    "unknown_alias", "not_allowed", "not_member", "policy_out", "policy_in", "sms_contact"
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -161,6 +168,11 @@ class SendResult:
     @property
     def ok(self) -> bool:
         return bool(self.messages) and not self.rejected
+
+
+def _is_external(uid: str) -> bool:
+    user = users_store.get_user(uid)
+    return user is not None and user.kind == "external"
 
 
 class Routing:
@@ -208,6 +220,19 @@ class Routing:
 
         created: list[Message] = []
         for recipient_uid in candidates:
+            if self._sms_contact_reject(sender_uid, recipient_uid):
+                logger.warning(
+                    "SECURITY sender %s addressed sms contact %s (alias=%r)",
+                    sender_uid,
+                    recipient_uid,
+                    recipient_alias,
+                )
+                rejected.append(
+                    RejectedRecipient(
+                        alias=recipient_alias, uid=recipient_uid, reason="sms_contact"
+                    )
+                )
+                continue
             reason = self._policy_reject_reason(sender_uid, recipient_uid)
             if reason is not None:
                 logger.warning(
@@ -293,7 +318,16 @@ class Routing:
                 default_uid = device.defaultToUid
         if default_uid is not None:
             return [default_uid], []
-        return allow_store.allowed_recipients(sender_uid), []
+        broadcast = [
+            uid for uid in allow_store.allowed_recipients(sender_uid) if not _is_external(uid)
+        ]
+        return broadcast, []
+
+    # ---- SMS contacts are never relay recipients ----
+
+    def _sms_contact_reject(self, sender_uid: str, recipient_uid: str) -> bool:
+        """True when either party is an SMS contact (`kind == 'external'`)."""
+        return _is_external(sender_uid) or _is_external(recipient_uid)
 
     # ---- policy gate (docs/FAMILIES_DESIGN.md §2, §1 decision 7) ----
 
@@ -360,7 +394,13 @@ class Routing:
 
         created: list[Message] = []
         rejected: list[RejectedRecipient] = []
+        sender_is_external = _is_external(sender_uid)
         for recipient_uid in sorted(uid for uid in group.uids if uid != sender_uid):
+            # An SMS contact never takes part in a relay group (create/add
+            # refuse one); a stale member is skipped quietly.
+            if sender_is_external or _is_external(recipient_uid):
+                logger.debug("skipping sms contact in group %s fan-out", group.convKey)
+                continue
             reason = self._policy_reject_reason(sender_uid, recipient_uid)
             if reason is not None:
                 logger.warning(
@@ -416,30 +456,6 @@ class Routing:
         # failing pager delivery retried only through this path (tick,
         # online-edge) would never reach `failed` and would be retried
         # forever.
-        self._deliver_one(msg, bid, delivery, backend_row)
-        return True
-
-    def redeliver(self, msg: Message, bid: str) -> bool:
-        """Generic re-invocation of *any* backend's `deliver()` for delivery
-        `bid` on `msg` -- `redeliver_pager`'s non-device-keyed sibling, so
-        `/internal/tick`'s retry of queued non-pager deliveries
-        (`app/jobs.py`, docs/SERVER_PLAN.md §5.2's general "any failure ...
-        enqueues a retry" rule, applied to more than just `pager`) has
-        something to call that doesn't need a device id the way
-        `redeliver_pager` does. `redeliver_pager` stays as its
-        own method rather than being rewritten in terms of this one: it is
-        the hot, already-tested online-edge/`/locate` path, and its extra
-        device-id lookup has no equivalent for a kind like `sms` that never
-        populates `pendingDeviceIds`. Returns False if the delivery or its
-        backend row is gone."""
-        delivery = msg.deliveries.get(bid)
-        if delivery is None:
-            return False
-        backend_row = backends_store.get_backend(msg.recipientUid, bid)
-        if backend_row is None:
-            return False
-        if self._registry.get(backend_row.kind) is None:
-            return False
         self._deliver_one(msg, bid, delivery, backend_row)
         return True
 

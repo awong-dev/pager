@@ -106,9 +106,8 @@ def _make_member(uid: str, alias: str, family_id: str, role: str = "member") -> 
 
 
 def _set_policy(uid: str, *, out: str, in_: str) -> None:
-    """Whitebox: direct Firestore write of `users/{uid}.policy` -- same
-    convention `tests/test_sms_twilio.py`'s own `_set_policy` uses (`app/
-    store/users.py`'s `update_user` has no `policy` parameter)."""
+    """Whitebox: direct Firestore write of `users/{uid}.policy` (`app/store/
+    users.py`'s `update_user` has no `policy` parameter)."""
     get_db().collection("users").document(uid).update({"policy": {"out": out, "in": in_}})
 
 
@@ -237,15 +236,19 @@ def test_send_with_an_existing_edge_writes_no_alert_even_if_open(routing: Routin
 # ---------------------------------------------------------------------------
 
 
-def test_approve_sms_unknown_creates_external_edge_and_delivers_held_body(
+def test_approve_sms_unknown_creates_external_edge_and_rederives_sms_contacts(
     client: TestClient,
 ):
     family = _make_family("Approve")
     headers = _make_family_admin("admin1", "admin1", family.id)
     _make_member("kid1", "kid1", family.id)
     _set_policy("kid1", out="people", in_="people_sms")
+    _make_pager_device("pgr-kid1", "kid1")
 
-    alert_id = alerts_module.sms_unknown(family.id, "+19995551234", "kid1", "hi there", held=True)
+    alert_id = alerts_module.sms_unknown(family.id, "+19995551234", "kid1", "hi there")
+    alert = alerts_store.get(family.id, alert_id)
+    assert alert is not None and alert.status == "open" and alert.heldBody is None
+    assert alert.peerUid is None and alert.peerPhone == "+19995551234"
 
     resp = client.post(
         f"/api/family/alerts/{alert_id}/approve", json={"name": "Aunt Sue"}, headers=headers
@@ -257,9 +260,47 @@ def test_approve_sms_unknown_creates_external_edge_and_delivers_held_body(
     assert users_store.get_user(ext_uid) is not None
     assert allow_store.is_message_allowed("kid1", ext_uid)
 
-    convo = messages_store.list_thread(messages_store.conv_key("kid1", ext_uid))
-    assert len(convo) == 1
-    assert convo[0].body == "hi there"
+    # The relay sends nothing: no message was created for that pair.
+    assert messages_store.list_thread(messages_store.conv_key("kid1", ext_uid)) == []
+    assert list(get_db().collection("messages").stream()) == []
+    device = devices_store.get_device("pgr-kid1")
+    assert [(c.name, c.phone) for c in device.smsContacts] == [("Aunt Sue", "+19995551234")]
+
+
+def test_approve_sms_unknown_rederives_whole_family(client: TestClient):
+    family = _make_family("WholeFam")
+    headers = _make_family_admin("admin1b", "admin1b", family.id)
+    _make_member("kid1b", "kid1b", family.id)
+    _make_member("sib1b", "sib1b", family.id)
+    _set_policy("sib1b", out="open", in_="people")
+    _make_pager_device("pgr-kid1b", "kid1b")
+    _make_pager_device("pgr-sib1b", "sib1b")
+
+    alert_id = alerts_module.sms_unknown(family.id, "+19995551235", "kid1b", "hello")
+    resp = client.post(
+        f"/api/family/alerts/{alert_id}/approve", json={"name": "Aunt Sue"}, headers=headers
+    )
+    assert resp.status_code == 200, resp.text
+
+    assert [c.name for c in devices_store.get_device("pgr-kid1b").smsContacts] == ["Aunt Sue"]
+    # The open sibling holds it by implied approval, with no edge.
+    assert [c.name for c in devices_store.get_device("pgr-sib1b").smsContacts] == ["Aunt Sue"]
+
+
+def test_approve_sms_unknown_taken_name_is_409(client: TestClient):
+    family = _make_family("TakenUnk")
+    headers = _make_family_admin("admin1c", "admin1c", family.id)
+    _make_member("kid1c", "kid1c", family.id)
+    externals_store.get_or_create(family.id, "+19995551111", "Aunt Sue")
+    alert_id = alerts_module.sms_unknown(family.id, "+19995551236", "kid1c", "hello")
+
+    resp = client.post(
+        f"/api/family/alerts/{alert_id}/approve", json={"name": "aunt sue"}, headers=headers
+    )
+    assert resp.status_code == 409, resp.text
+    alert = alerts_store.get(family.id, alert_id)
+    assert alert is not None and alert.status == "open"
+    assert externals_store.get_family_contact(family.id, "+19995551236") is None
 
 
 def test_approve_sms_unknown_with_no_subject_uses_for_alias(client: TestClient):
@@ -268,7 +309,7 @@ def test_approve_sms_unknown_with_no_subject_uses_for_alias(client: TestClient):
     _make_member("kid2", "kid2", family.id)
     _set_policy("kid2", out="people", in_="people_sms")
 
-    alert_id = alerts_module.sms_unknown(family.id, "+19995554321", None, "who is this?", held=True)
+    alert_id = alerts_module.sms_unknown(family.id, "+19995554321", None, "who is this?")
 
     resp = client.post(
         f"/api/family/alerts/{alert_id}/approve",
@@ -316,7 +357,7 @@ def test_block_adds_number_to_family_and_marks_handled(client: TestClient):
     family = _make_family("Block")
     headers = _make_family_admin("admin4", "admin4", family.id)
 
-    alert_id = alerts_module.sms_unknown(family.id, "+19995559999", None, "spam", held=True)
+    alert_id = alerts_module.sms_unknown(family.id, "+19995559999", None, "spam")
 
     resp = client.post(f"/api/family/alerts/{alert_id}/block", json={}, headers=headers)
     assert resp.status_code == 200, resp.text
@@ -335,7 +376,7 @@ def test_block_adds_number_to_family_and_marks_handled(client: TestClient):
 def test_dismiss_marks_alert_dismissed(client: TestClient):
     family = _make_family("Dismiss")
     headers = _make_family_admin("admin5", "admin5", family.id)
-    alert_id = alerts_module.sms_unknown(family.id, "+19995551111", None, "hi", held=True)
+    alert_id = alerts_module.sms_unknown(family.id, "+19995551111", None, "hi")
 
     resp = client.post(f"/api/family/alerts/{alert_id}/dismiss", json={}, headers=headers)
     assert resp.status_code == 200, resp.text
@@ -404,6 +445,15 @@ def test_approve_contact_request_alert_makes_a_family_sms_contact(client: TestCl
     ext_uid, _alias = externals_store.contact_ids(family.id, "+15559990000")
     assert allow_store.is_message_allowed("owner2", ext_uid)
     assert not allow_store.is_message_allowed(ext_uid, "owner2")
+    # A contact is a user with a phone and no sms backend (the relay never
+    # texts it).
+    ext = users_store.get_user(ext_uid)
+    assert ext is not None and ext.phone == "+15559990000"
+    raw_kinds = [
+        snap.to_dict()["kind"]
+        for snap in get_db().collection("users").document(ext_uid).collection("backends").stream()
+    ]
+    assert raw_kinds == ["webapp"]
 
 
 # ---------------------------------------------------------------------------

@@ -22,10 +22,9 @@ from app.wire import CellInfo
 
 # docs/V02_DESIGN.md §6: `phone` is a real number, never an alias reference
 # (unlike `contact_req`'s overloaded `ph`, §4.2) -- same E.164 shape
-# duplicated across `app/wire.py`'s `_SMS_PEER_RE`, `app/ingest.py`'s
-# `_PHONE_E164_RE` and `app/backends/sms_twilio.py`'s `_E164_RE`, for the
-# same "not a public contract worth cross-module coupling" reason none of
-# those import from each other either.
+# duplicated across `app/wire.py`'s `_SMS_PEER_RE` and `app/ingest.py`'s
+# `_PHONE_E164_RE`, for the same "not a public contract worth cross-module
+# coupling" reason neither imports from the other.
 _SMS_PHONE_RE = re.compile(r"^\+[1-9]\d{6,14}$")
 _CONTROL_CHAR_RE = re.compile(r"[\x00-\x1f\x7f]")
 SMS_CONTACT_NAME_MAX_CODEPOINTS = 16

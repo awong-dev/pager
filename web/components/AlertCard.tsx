@@ -5,9 +5,10 @@
  * relay endpoints (`POST /api/family/alerts/{id}/{approve|block|dismiss}`,
  * docs/FAMILIES_TASKS.md 4.4):
  *
- * - `sms_unknown`: an SMS from a number with no `allow` edge, held pending a
- *   decision. Approve (name + which member it's for) releases the held text
- *   and creates the contact; Block/Dismiss never release it.
+ * - `sms_unknown`: a text the pager received from a number not on its SMS
+ *   list (blocked on the device). Approve (name) creates the contact and adds
+ *   it to that member's pager SMS list; Block adds the number to the
+ *   family's blocked list.
  * - `new_conversation`: a member's out-of-policy DM, created anyway per
  *   their `policy.out: open` but flagged for review. View opens the
  *   family-admin read-only monitor thread (`/chat/view/{convKey}`, task
@@ -87,6 +88,11 @@ export default function AlertCard({ alert }: { alert: AlertRow }) {
   const [smsOpen, setSmsOpen] = useState(false);
   const [smsName, setSmsName] = useState("");
 
+  // 409 name collision on a contact_request approve: ask for another name.
+  const [nameOpen, setNameOpen] = useState(false);
+  const [nameValue, setNameValue] = useState("");
+  const [nameConflict, setNameConflict] = useState<string | null>(null);
+
   const handled = alert.status !== "open";
 
   async function post(action: "approve" | "block" | "dismiss", body: unknown) {
@@ -95,8 +101,23 @@ export default function AlertCard({ alert }: { alert: AlertRow }) {
     try {
       await api.post(`/family/alerts/${alert.id}/${action}${familyQuery()}`, body);
       setSmsOpen(false);
+      setNameOpen(false);
+      setNameConflict(null);
     } catch (err) {
-      setError(err instanceof ApiError ? String(err.detail ?? err.message) : `Failed to ${action}`);
+      const detail = err instanceof ApiError ? String(err.detail ?? err.message) : `Failed to ${action}`;
+      if (err instanceof ApiError && err.status === 409 && action === "approve") {
+        if (alert.kind === "contact_request") {
+          setNameConflict(detail);
+          setNameValue((body as { name?: string }).name ?? alert.preview);
+          setNameOpen(true);
+        } else if (alert.kind === "sms_unknown") {
+          setNameConflict(detail);
+        } else {
+          setError(detail);
+        }
+      } else {
+        setError(detail);
+      }
     } finally {
       setSubmitting(false);
     }
@@ -105,6 +126,7 @@ export default function AlertCard({ alert }: { alert: AlertRow }) {
   function openSmsApprove() {
     setError(null);
     setSmsName("");
+    setNameConflict(null);
     setSmsOpen(true);
   }
 
@@ -242,6 +264,11 @@ export default function AlertCard({ alert }: { alert: AlertRow }) {
       <Dialog open={smsOpen} onClose={() => setSmsOpen(false)} fullWidth maxWidth="xs">
         <DialogTitle>Approve {alert.peerPhone ?? "number"}</DialogTitle>
         <DialogContent>
+          {nameConflict && smsOpen && (
+            <Alert severity="warning" sx={{ mb: 1 }}>
+              {nameConflict}
+            </Alert>
+          )}
           <TextField
             autoFocus
             label="Name"
@@ -249,7 +276,7 @@ export default function AlertCard({ alert }: { alert: AlertRow }) {
             onChange={(e) => setSmsName(e.target.value)}
             fullWidth
             sx={{ mt: 1 }}
-            helperText={`Approved for @${alert.subjectAlias}; releases the held text.`}
+            helperText={`Adds it to @${alert.subjectAlias}'s pager SMS list.`}
           />
         </DialogContent>
         <DialogActions>
@@ -264,6 +291,35 @@ export default function AlertCard({ alert }: { alert: AlertRow }) {
         </DialogActions>
       </Dialog>
 
+      <Dialog open={nameOpen} onClose={() => setNameOpen(false)} fullWidth maxWidth="xs">
+        <DialogTitle>Choose another name</DialogTitle>
+        <DialogContent>
+          {nameConflict && (
+            <Alert severity="warning" sx={{ mb: 1 }}>
+              {nameConflict}
+            </Alert>
+          )}
+          <TextField
+            autoFocus
+            label="Name"
+            value={nameValue}
+            onChange={(e) => setNameValue(e.target.value)}
+            fullWidth
+            sx={{ mt: 1 }}
+            helperText="Must be unique in the family; the pager shows the first 16 characters."
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setNameOpen(false)}>Cancel</Button>
+          <Button
+            variant="contained"
+            disabled={submitting || nameValue.trim().length === 0}
+            onClick={() => void post("approve", { name: nameValue.trim() })}
+          >
+            Approve
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Card>
   );
 }

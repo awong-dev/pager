@@ -19,15 +19,15 @@ Swallowing those would silently lose an up-message with no republish path
 (§4.2 has no up-message republish rule), so we let it become a 500 instead
 and rely on the broker's rule engine to retry the webhook.
 
-`POST /webhooks/twilio/sms` and
-`POST /webhooks/gchat`, docs/SERVER_PLAN.md §6.4/§6.5. Same
-router-owns-auth-and-dispatch shape as `/webhooks/mqtt` above: each
-endpoint validates its own provider-specific signature/token first (a
-failure there is a 401, matching the webhook-key check's "auth failure, not
-a malformed payload" carve-out) and then dispatches into
-`app/backends/sms_twilio.py` / `app/backends/gchat.py` for the pure,
+`POST /webhooks/gchat`, docs/SERVER_PLAN.md §6.5. Same
+router-owns-auth-and-dispatch shape as `/webhooks/mqtt` above: it validates
+its own provider-specific bearer JWT first (a failure there is a 401,
+matching the webhook-key check's "auth failure, not a malformed payload"
+carve-out) and then dispatches into `app/backends/gchat.py` for the pure,
 unit-tested verification logic, and `app/backends/resolve.py`'s
-`resolve_reply()` for the shared `@alias`/single-peer recipient rule.
+`resolve_reply()` for the shared `@alias`/single-peer recipient rule. The
+relay has no SMS webhook: it neither sends nor receives SMS (the pager texts
+from `cfg.sms`).
 
 Two things the gchat handler does for security: it rejects linking a non-DM
 space (`space.type != "DM"`) outright, and it pins the linking message's
@@ -35,22 +35,17 @@ space (`space.type != "DM"`) outright, and it pins the linking message's
 `set_gchat_space`) so every later message in that space is checked against
 it before being treated as coming from the linked user -- without this, any
 member of a linked space (not just its original 1:1 DM partner) could send
-as the linked user. Separately, the "unlinked number" info log below
-redacts to the last 4 digits (`_redact_phone`) rather than logging a full
-E.164 phone number.
+as the linked user.
 
-There is also a cheap **per-IP** rate limit on
-`POST /webhooks/twilio/sms` and `POST /webhooks/gchat`, checked first, before
-any signature/JWT verification or body parsing -- both endpoints are already
-gated by a real signature/JWT check (Twilio's `X-Twilio-Signature`, Google's
-Chat bearer JWT), so this is defense-in-depth against a flood of
-forged-but-cheap-to-generate requests (constructing an invalid signature/JWT
-costs an attacker nothing), not the primary control. Same
-`app/store/rate_limits.py` fixed-window counter `POST /api/me/backends`/
-`/api/admin/*` use, keyed `"webhook_ip:{sms|gchat}:{ip}"`. `RATE_LIMIT_
-WEBHOOK_IP_LIMIT` calls per `RATE_LIMIT_WEBHOOK_IP_WINDOW_S` seconds
-(defaults: 30 per minute) -- read fresh from the environment on every call,
-same as this module's other per-call env lookups.
+There is also a cheap **per-IP** rate limit on `POST /webhooks/gchat`,
+checked first, before any JWT verification or body parsing -- the endpoint is
+already gated by a real JWT check (Google's Chat bearer JWT), so this is
+defense-in-depth against a flood of forged-but-cheap-to-generate requests,
+not the primary control. Same `app/store/rate_limits.py` fixed-window counter
+`POST /api/me/backends`/`/api/admin/*` use, keyed `"webhook_ip:gchat:{ip}"`.
+`RATE_LIMIT_WEBHOOK_IP_LIMIT` calls per `RATE_LIMIT_WEBHOOK_IP_WINDOW_S`
+seconds (defaults: 30 per minute) -- read fresh from the environment on
+every call, same as this module's other per-call env lookups.
 """
 
 from __future__ import annotations
@@ -64,22 +59,13 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from google.api_core.exceptions import GoogleAPICallError
 from starlette.concurrency import run_in_threadpool
 
-from app import alerts as alerts_module
-from app import policy as policy_module
 from app.backends import gchat as gchat_backend
-from app.backends import sms_twilio
 from app.backends.resolve import USAGE_HINT, resolve_reply
 from app.broker import BrokerClient
 from app.ingest import Ingest
-from app.notify import sms as sms_client
 from app.routing import Routing
 from app.store import backends as backends_store
-from app.store import externals as externals_store
 from app.store import rate_limits as rate_limits_store
-from app.store import users as users_store
-from app.store.families import Family
-from app.store.users import User
-from app.wire import is_valid_alias
 
 logger = logging.getLogger("relay.webhooks")
 
@@ -98,12 +84,12 @@ def _webhook_ip_rate_limit() -> tuple[int, int]:
 
 
 def _client_ip(request: Request) -> str:
-    """The per-IP key must be the *original* caller's IP, not the TCP peer. Every real request to these two endpoints
-    arrives Twilio/Google -> Firebase Hosting (`web/firebase.json`'s
+    """The per-IP key must be the *original* caller's IP, not the TCP peer. Every real request to the gchat endpoint
+    arrives Google -> Firebase Hosting (`web/firebase.json`'s
     `/webhooks/**` rewrite) -> Cloud Run, so `request.client.host` is
     Google's own front-end address, identical for every caller: keying on it
-    collapses all inbound SMS/Chat traffic into a single shared bucket, and
-    an unauthenticated flooder could then 429 real Twilio/Chat deliveries
+    collapses all inbound Chat traffic into a single shared bucket, and
+    an unauthenticated flooder could then 429 real Chat deliveries
     for everyone (uvicorn only trusts `X-Forwarded-For` from
     `forwarded_allow_ips`, which defaults to 127.0.0.1 and does not match
     Cloud Run's proxy, so it never populates `request.client` from it).
@@ -203,213 +189,8 @@ async def mqtt_webhook(request: Request) -> Response:
     return Response(status_code=200)
 
 
-# ---------------------------------------------------------------------------
-# POST /webhooks/twilio/sms -- docs/SERVER_PLAN.md §6.4
-# ---------------------------------------------------------------------------
-
-
 def _reject_hint(reason: str) -> str:
     return "unknown recipient" if reason == "unknown_alias" else "not allowed to message that recipient"
-
-
-def _redact_phone(phone: str) -> str:
-    """L4: last-4-digits only -- this is a log line for an *unrecognised*
-    number (no user to attribute it to), so the full E.164 number has no
-    operational value here and is PII best not left sitting in logs."""
-    return f"...{phone[-4:]}" if len(phone) >= 4 else "..."
-
-
-def _split_alias_prefix(text: str) -> tuple[str, str] | None:
-    """Same `@alias body` shape `app/backends/resolve.py`'s `resolve_reply`
-    parses, for a sender with no `uid` yet (an unrecognised number has none
-    to call `resolve_reply` with). `None` means `text` does not start with a
-    valid `@alias ` prefix."""
-    text = text.strip()
-    if not text.startswith("@"):
-        return None
-    parts = text[1:].split(None, 1)
-    if len(parts) != 2:
-        return None
-    alias, rest = parts[0].lower(), parts[1].strip()
-    if not is_valid_alias(alias) or not rest:
-        return None
-    return alias, rest
-
-
-def _single_any_external_member(family: Family) -> User | None:
-    """docs/FAMILIES_TASKS.md 3.3: "the single family member whose inbound
-    rule for externals is `any`" -- `None` if there is zero or more than
-    one such member (ambiguous, same "no target" treatment as zero)."""
-    candidates = [
-        u
-        for u in users_store.list_users()
-        if u.familyId == family.id
-        and u.kind == "person"
-        and policy_module.rule(u.policy.in_, "external") == "any"
-    ]
-    return candidates[0] if len(candidates) == 1 else None
-
-
-def _sms_backend_id(uid: str) -> str | None:
-    for backend in backends_store.list_backends(uid):
-        if backend.kind == "sms":
-            return backend.id
-    return None
-
-
-def _find_family_contact(to_number: str, from_number: str, raw_body: str) -> tuple[str, str | None] | None:
-    """docs/CONTACT_REQ_DESIGN.md decision 7: an inbound text from a number
-    that is no person's verified number is attributed through the receiving
-    family -- `To`'s family, else the `@alias` target's family, else the one
-    family holding that number in `phoneIndex.ext`. `(contactUid, smsBid)`
-    of that family's contact for the number, or `None`."""
-    try:
-        e164 = externals_store.normalize_phone(from_number)
-    except ValueError:
-        return None
-    family_id: str | None = None
-    family = sms_twilio.resolve_family_for_to(to_number)
-    if family is not None:
-        family_id = family.id
-    else:
-        split = _split_alias_prefix(raw_body)
-        if split is not None:
-            candidate = users_store.get_user_by_alias(split[0])
-            if candidate is not None and candidate.kind == "person":
-                family_id = candidate.familyId
-        if family_id is None:
-            holders = backends_store.families_for_phone(e164)
-            if len(holders) == 1:
-                family_id = next(iter(holders))
-    if family_id is None:
-        return None
-    contact = externals_store.get_family_contact(family_id, e164)
-    if contact is None:
-        return None
-    return contact.uid, _sms_backend_id(contact.uid)
-
-
-def _handle_unknown_sms(request: Request, from_number: str, to_number: str, raw_body: str) -> None:
-    """docs/FAMILIES_DESIGN.md §2 last paragraph, §4 Webhooks, §1 decision
-    10: an inbound text from a number with no `phoneIndex` entry at all --
-    never linked to any user (verified or external). Resolved to a family
-    via `To`, then delivered-and-alerted, held-and-alerted, or dropped
-    exactly as docs/FAMILIES_TASKS.md 3.3 spells out."""
-    family = sms_twilio.resolve_family_for_to(to_number)
-    if family is not None and from_number in family.blockedNumbers:
-        logger.info(
-            "sms webhook from blocked number %s dropped (family=%s)",
-            _redact_phone(from_number),
-            family.id,
-        )
-        return
-
-    split = _split_alias_prefix(raw_body)
-    target: User | None = None
-    if split is not None:
-        alias, effective_body = split
-        candidate = users_store.get_user_by_alias(alias)
-        if candidate is not None and candidate.kind == "person":
-            target = candidate
-    else:
-        effective_body = raw_body.strip()
-        if family is not None:
-            target = _single_any_external_member(family)
-
-    if target is None:
-        if family is None:
-            logger.info(
-                "sms webhook from unrecognised number %s dropped (no family, no @alias)",
-                _redact_phone(from_number),
-            )
-            return
-        alerts_module.sms_unknown(family.id, from_number, None, effective_body, held=True)
-        return
-
-    family_id = family.id if family is not None else target.familyId
-    if family_id is None:
-        # Defensive: a `kind == 'person'` target with no family is stale
-        # data, never true in normal operation (every person belongs to a
-        # family) -- nothing to attribute an alert to.
-        logger.warning("sms webhook target %s has no familyId, dropping", target.uid)
-        return
-
-    if policy_module.rule(target.policy.in_, "external") == "any":
-        e164 = externals_store.normalize_phone(from_number)
-        external = externals_store.get_or_create(family_id, e164, e164)
-        ext_bid = _sms_backend_id(external.uid)
-        routing: Routing = request.app.state.routing
-        routing.send(
-            sender_uid=external.uid,
-            recipient_alias=target.alias,
-            kind="text",
-            body=effective_body,
-            origin_backend_kind="sms",
-            origin_backend_id=ext_bid,
-        )
-        alerts_module.sms_unknown(family_id, from_number, target.uid, effective_body, held=False)
-    else:
-        alerts_module.sms_unknown(family_id, from_number, target.uid, effective_body, held=True)
-
-
-@router.post("/webhooks/twilio/sms")
-async def twilio_sms_webhook(request: Request) -> Response:
-    _check_webhook_ip_rate_limit(request, "sms")
-    form = await request.form()
-    # Twilio's params are single-valued (To/From/Body/...); last-value-wins
-    # is a no-op for this webhook's real shape but keeps the type a plain
-    # `dict[str, str]`, what `verify_twilio_signature` expects.
-    params: dict[str, str] = {k: str(v) for k, v in form.items()}
-    signature = request.headers.get("X-Twilio-Signature")
-    url = sms_twilio.twilio_webhook_url()
-    if not sms_twilio.verify_twilio_signature(url, params, signature, sms_client.auth_token()):
-        raise HTTPException(status_code=401, detail="invalid Twilio signature")
-
-    from_number = params.get("From")
-    body = (params.get("Body") or "").strip()
-    if not from_number:
-        logger.warning("twilio webhook with no From field dropped")
-        return Response(status_code=200)
-
-    match = backends_store.get_by_phone(from_number)
-    if match is None:
-        contact = _find_family_contact(params.get("To", ""), from_number, body)
-        if contact is not None:
-            match = (contact[0], contact[1] or "")
-    if match is None:
-        # No verified user (person or external) owns this number --
-        # docs/FAMILIES_DESIGN.md §2 last paragraph / §4 Webhooks / §1
-        # decision 10: resolve a family from `To` and hold-or-deliver per
-        # the target member's inbound rule, rather than the old
-        # unconditional drop.
-        _handle_unknown_sms(request, from_number, params.get("To", ""), body)
-        return Response(status_code=200)
-    uid, bid = match
-
-    if len(body) > sms_twilio.SMS_BODY_MAX_CODEPOINTS:
-        # §6.4: rejected with a usage hint, never truncated -- checked
-        # here in the inbound-webhook handler, before any `routing.send()`
-        # call, rather than in `deliver()`.
-        sms_client.send_sms(from_number, sms_twilio.too_long_hint(len(body)))
-        return Response(status_code=200)
-
-    resolved = resolve_reply(uid, body)
-    if resolved is None:
-        sms_client.send_sms(from_number, USAGE_HINT)
-        return Response(status_code=200)
-
-    routing: Routing = request.app.state.routing
-    result = routing.send(
-        sender_uid=uid,
-        recipient_alias=resolved.recipient_alias,
-        kind="text",
-        body=resolved.body,
-        origin_backend_kind="sms",
-        origin_backend_id=bid,
-    )
-    if result.rejected:
-        sms_client.send_sms(from_number, _reject_hint(result.rejected[0].reason))
-    return Response(status_code=200)
 
 
 # ---------------------------------------------------------------------------

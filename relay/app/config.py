@@ -77,8 +77,7 @@ class Settings:
     # pytest and local dev never need real Firebase Cloud Messaging
     # credentials. Any other value is treated as "null" rather than raising,
     # matching this module's fail-safe-not-fail-closed defaults for optional
-    # integrations (see `TWILIO_BASE_URL`/`GCHAT_AUDIENCE` in
-    # relay/.env.example).
+    # integrations (see `GCHAT_AUDIENCE` in relay/.env.example).
     push_backend: str = "null"
     # docs/OTA_DESIGN.md D3/D10: the public OTA firmware bucket. `fw_index_url`
     # is `fw/index.json` (written by tools/fwpub.py), `fw_bucket_base` the

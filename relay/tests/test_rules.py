@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import os
 import time
-from urllib.parse import quote
 
 import httpx
 import pytest
@@ -130,7 +129,7 @@ def _make_family_admin(uid: str, alias: str, fam: str) -> str:
 
 def _create_family(family_id: str, name: str = "Fam") -> None:
     get_db().collection("families").document(family_id).set(
-        {"name": name, "smsNumber": None, "blockedNumbers": [], "createdBy": "system"}
+        {"name": name, "blockedNumbers": [], "createdBy": "system"}
     )
 
 
@@ -564,32 +563,11 @@ def test_clients_cannot_write_anything(two_pairs):
 
 
 # ---------------------------------------------------------------------------
-# Default-deny on the four server-only
-# inbound-lookup collections -- docs/SERVER_PLAN.md §3 ("None of the three
-# is client-readable: firestore.rules has no match block for them
-# (default-deny read) ... relay/tests/test_rules.py should pin it so a future
-# broadened rule cannot expose them", plus smsVerifyCodes). Pinned here, even
-# for the backend's own owner: the whole point of `smsVerifyCodes` and of
-# `phoneIndex`'s write-on-verify-only rule is that the person a claim
-# is being verified *against* must not be able to read the verification
-# material or the routing index straight out of Firestore).
+# Default-deny on the server-only lookup collections -- docs/SERVER_PLAN.md §3
+# ("None of these is client-readable: firestore.rules has no match block for
+# them (default-deny read) ... relay/tests/test_rules.py should pin it so a
+# future broadened rule cannot expose them").
 # ---------------------------------------------------------------------------
-
-
-def test_phone_index_is_default_deny(two_pairs):
-    phone = "+15550001111"
-    backends_store.set_phone_index(phone, "u1", "bid1")
-    doc_id = quote(phone, safe="")
-
-    owner_token = mint_id_token("u1")
-    resp = _get(f"phoneIndex/{doc_id}", owner_token)
-    assert resp.status_code == 403
-
-    resp_unauth = _get(f"phoneIndex/{doc_id}", None)
-    assert resp_unauth.status_code == 403
-
-    resp_write = _write(f"phoneIndex/{doc_id}", owner_token, {"uid": "u3", "bid": "bidx"})
-    assert resp_write.status_code == 403
 
 
 def test_gchat_spaces_is_default_deny(two_pairs):
@@ -620,13 +598,34 @@ def test_gchat_link_codes_is_default_deny(two_pairs):
     assert resp_write.status_code == 403
 
 
+def test_contact_names_is_default_deny(two_pairs):
+    """`contactNames/{fid}_{hash}` (the per-family unique-name reservation
+    behind SMS contacts, `app/store/externals.py`) is relay-only: no client
+    -- not even a member of the owning family -- may read or write it."""
+    from app.store import externals as externals_store
+
+    ext = externals_store.get_or_create("fam-rules", "+15550001111", "Grandma")
+    doc_id = externals_store._name_ref("fam-rules", externals_store.name_key("Grandma")).id
+
+    owner_token = mint_id_token("u1")
+    resp = _get(f"contactNames/{doc_id}", owner_token)
+    assert resp.status_code == 403
+    assert ext.uid  # the reservation exists because the contact was created
+
+    resp_unauth = _get(f"contactNames/{doc_id}", None)
+    assert resp_unauth.status_code == 403
+
+    resp_write = _write(f"contactNames/{doc_id}", owner_token, {"uid": "hacked"})
+    assert resp_write.status_code == 403
+
+
 def test_device_secrets_is_default_deny(two_pairs):
     """`deviceSecrets/{d}` (docs/DEVICE_PLAN.md §2.6) holds the device's HMAC
     key and MQTT password hash -- unreadable by the device's own owner (whose
     browser can read `devices/{d}` itself) and unreadable by an admin client
     (whose elevated `request.auth.token.admin` claim reaches `devices/{d}`
     and `users/{uid}` but must not reach this collection either), the same
-    default-deny-with-no-`match`-block posture `phoneIndex` above pins."""
+    default-deny-with-no-`match`-block posture the other server-only collections pin."""
     devices_store.create_device(
         device_id="pgr-secret-rules-1",
         owner_uid="u1",
@@ -664,7 +663,7 @@ def test_cas_is_default_deny(two_pairs):
     but there is deliberately no client Firestore read path for it either:
     the one public read is `GET /ca/{sha256hex}.pem` (`app/routers/ca.py`),
     which can apply its own cache headers and 404 semantics. Same default-
-    deny-with-no-`match`-block posture `phoneIndex`/`deviceSecrets` above
+    deny-with-no-`match`-block posture `deviceSecrets` above
     pin -- unreadable by an ordinary registered user and by an admin alike."""
     sha_hex = "ab" * 32
     cas_store.remember(sha_hex, "-----BEGIN CERTIFICATE-----\nfake\n-----END CERTIFICATE-----\n")
@@ -692,8 +691,8 @@ def test_cells_is_default_deny(two_pairs):
     the cell-tower geolocation cache. Nothing in it is useful to a client
     directly (the web app reads resolved fixes through
     `devices/{d}/locations`, not this collection), so it gets the same
-    default-deny-with-no-`match`-block posture as `cas`/`deviceSecrets`/
-    `phoneIndex` -- unreadable by an ordinary registered user and by an
+    default-deny-with-no-`match`-block posture as `cas`/`deviceSecrets`
+    -- unreadable by an ordinary registered user and by an
     admin alike."""
     cells_store.remember_resolved(
         "310", "410", 12345, 87654321, lat=1.0, lon=2.0, acc_m=1000, provider="google"
@@ -778,24 +777,6 @@ def test_contact_request_readable_by_owner_and_family_admin_not_a_third_party(tw
 
     resp_unauth = _get(f"contactRequests/{doc_key}", None)
     assert resp_unauth.status_code == 403
-
-
-def test_sms_verify_codes_is_default_deny(two_pairs):
-    backends_store.set_sms_verify_code("bid1", "somehash", int(time.time()) + 600)
-
-    # u1 is not even the backend's real owner here -- irrelevant to this
-    # rule (the *claimant* being verified must never be able to read this
-    # collection at all, regardless of whose backend it names), but
-    # exercised here as the "even the backend's own owner" case.
-    owner_token = mint_id_token("u1")
-    resp = _get("smsVerifyCodes/bid1", owner_token)
-    assert resp.status_code == 403
-
-    resp_unauth = _get("smsVerifyCodes/bid1", None)
-    assert resp_unauth.status_code == 403
-
-    resp_write = _write("smsVerifyCodes/bid1", owner_token, {"codeHash": "hacked"})
-    assert resp_write.status_code == 403
 
 
 def test_sms_log_readable_by_owner_and_family_admin_not_a_third_party(two_pairs):

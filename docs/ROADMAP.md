@@ -118,8 +118,8 @@ From `docs/HARDWARE_TESTING.md` "Not yet seen working," in order:
 ### Decisions waiting on the owner
 
 **Multi-family (per `docs/FAMILIES_DESIGN.md` §9)**
-- **Per-family Twilio number** (decision 10): without it, unrecognised inbound SMS cannot be attributed to a
-  family unless it carries `@alias`; fallback is super-only alert. Cost ≈ $1/month per family.
+- ~~**Per-family Twilio number** (decision 10): without it, unrecognised inbound SMS cannot be attributed to a
+  family unless it carries `@alias`; fallback is super-only alert. Cost ≈ $1/month per family.~~ *(moot: no relay SMS, 7 Oct 2026)*
 - **`any_sms` outbound** (decision 2): read literally as "numbers only, no people", or "approved people plus
   any number" (`people_anysms` table row)?
 - **Super and `/locate`** (decision 3): super reads locations everywhere; should super also request a fix via

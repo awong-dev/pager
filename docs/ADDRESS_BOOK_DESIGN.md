@@ -25,19 +25,19 @@ default; the pager checks for a book sync periodically. Tasks: `build/bench-logs
 1. **The book is derived, not stored.** Entries = same-family persons (not self, not disabled) ∪ the
    owner's outgoing message-edge peers (cross-family people, externals) ∪ the owner's groups. One
    function, `app/book.py` `entries_for(owner_uid)`, feeds the pager (`devcfg`), `GET /api/book` and
-   New chat. *(two lists that must agree will drift; the pager and the web must show the same people.)*
+   New chat. *(two lists that must agree will drift; the pager and the web must show the same people.)* *(7 Oct 2026: externals come from `book.sms_contacts_for(owner)` — the same list `cfg.sms` is cut from — and are listed with `phone`, sendable, `onPager` for the first 8. They never enter the pager's `c[]`: the pager texts them from `cfg.sms`, so the relay emits no `t:"sms"`.)* 
 2. **Same-family persons count as approved.** In `routing` the `approved` people rule passes on an
    edge **or** both ends being persons with the same non-null `familyId`. `none` rules (policy `sms`,
    `any_sms`) still refuse. *(an entry the owner asked to be listed by default but cannot message is
    worse than no entry; family members are the trusted set every policy preset was written to
    restrict outsiders, not siblings.)* Supersedes the "people" column reading in FAMILIES_DESIGN §2;
    flag to the owner. Each entry carries `sendable` = `policy.check(...) is None`; the pager and
-   New chat list only sendable entries, the Address book page lists all and says why.
+   New chat list only sendable entries, the Address book page lists all and says why. *(The same family-default-plus-deny rule now applies to SMS contacts for members whose outbound numbers rule is `any`: every family contact is implied, and an explicit `message:false` edge removes one — owner 7 Oct 2026.)*
 3. **Only the nickname is stored.** `users/{ownerUid}/book/{peerUid}` = `{nick, familyId (owner's,
    copied for the rules), updatedAt, updatedBy}`; a missing doc means "no nickname". People and
    externals only; a group is named by its group name. The pager's `n` = `nick or displayName`.
    *(membership is policy and edges, already edited in People → Approved; a second list of who is in
-   the book would be a second allow-list.)* Adding a number stays in People → Approved (admin).
+   the book would be a second allow-list.)* Numbers are added on Family → Contacts; People → Approved picks from them (7 Oct 2026).
 4. **Nickname bounds = the wire's `n`:** trimmed, 1–16 code points, ≤ 48 UTF-8 bytes, no control
    characters; violations are 422 (rejected, not truncated, because a person is typing it).
    A device-local nickname (§5.5, ≤12 cp) still wins on that pager.
@@ -80,11 +80,10 @@ default; the pager checks for a book sync periodically. Tasks: `build/bench-logs
     legacy (non-`bpull`) device keeps its 10.
 12. **Web:** `/settings/book` "Address book" for every role (Settings menu); admins/super get a
     member picker (family persons) above the list and a link to People for approvals. New chat
-    becomes a select over `GET /api/book` sendable entries: `freeSolo={isFamilyAdmin}`, `groupBy`
-    Family / People / Numbers / Groups, `getOptionLabel={o => typeof o === 'string' ? o : o.label}`,
-    `filterOptions={createFilterOptions({stringify: o => `${o.label} ${o.displayName} ${o.alias}
-    ${o.phone ?? ''}`})}` plus the synthetic "Text +1 …" option only when the user may text any
-    number (`policy.out` ∈ {open, any_sms}) or is an admin; `isOptionEqualToValue` by alias.
+    becomes a select over `GET /api/book` sendable non-external entries: `freeSolo={isFamilyAdmin}`, `groupBy`
+    Family / People / Groups, `getOptionLabel={o => typeof o === 'string' ? o : o.label}`,
+    `filterOptions={createFilterOptions({stringify: o => `${o.label} ${o.displayName} ${o.alias}`})}` 
+    with no phone option — SMS contacts are not chat targets (7 Oct 2026); `isOptionEqualToValue` by alias.
 
 ## Failure modes and recovery
 | failure | effect | recovery |

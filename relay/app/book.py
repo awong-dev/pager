@@ -22,11 +22,11 @@ from google.cloud.firestore import Transaction
 from app import policy as policy_module
 from app.db.firestore import get_db, run_transaction
 from app.store import allow as allow_store
-from app.store import backends as backends_store
 from app.store import contacts as contacts_store
 from app.store import conversations as conversations_store
 from app.store import devices as devices_store
 from app.store import users as users_store
+from app.store.devices import SmsContact
 from app.store.users import User
 
 if TYPE_CHECKING:
@@ -50,6 +50,9 @@ class BookEntry:
     inFamily: bool
     sendable: bool
     reason: str | None
+    # externals only: whether this contact is within the pager's `cfg.sms`
+    # cap (the first `devices_store.MAX_SMS_CONTACTS` by name).
+    onPager: bool | None = None
 
     @property
     def label(self) -> str:
@@ -102,11 +105,86 @@ def _nicks(owner_uid: str) -> dict[str, str]:
     return out
 
 
-def _sms_phone(uid: str) -> str | None:
-    for backend in backends_store.list_backends(uid):
-        if backend.kind == "sms":
-            return backend.config.get("phone")
-    return None
+def truncate_sms_name(name: str) -> str:
+    """`app/store/devices.py`'s `SmsContact.name` caps (16 code points, 24
+    UTF-8 bytes) -- a contact's name comes from an admin-typed string with
+    no such cap, so this truncates rather than 500ing/422ing on a perfectly
+    normal display name the pager just can't show in full (same "truncate,
+    don't reject" convention `app/devcfg.py`'s book projection already uses
+    for `displayName`)."""
+    truncated = name[: devices_store.SMS_CONTACT_NAME_MAX_CODEPOINTS]
+    while len(truncated.encode("utf-8")) > devices_store.SMS_CONTACT_NAME_MAX_UTF8_BYTES:
+        truncated = truncated[:-1]
+    return truncated or "?"
+
+
+def sms_contacts_for(owner: User) -> list[User]:
+    """The SMS contacts `owner` may text from their pager (docs/V02_DESIGN.md
+    §6's `cfg.sms`), uncapped and sorted by the name the pager shows.
+
+    `[]` unless `owner` is an enabled person with a family. Candidates are
+    that family's enabled externals that have a phone. A candidate is
+    included when `allow/{owner}_{x}.message` is true (explicit approval),
+    or when the owner's outbound policy allows any number
+    (`policy.rule(out, "external") == "any"`) and no explicit
+    `allow/{owner}_{x}` carries `message: false` -- the same "family default,
+    explicit deny wins" as `edge_or_family`. The one source for `cfg.sms`,
+    `devices.smsContacts`, the address book's external rows and the ingest
+    in-book check, so they cannot drift."""
+    if owner.kind != "person" or owner.disabled or owner.familyId is None:
+        return []
+    explicit = {e.toUid: e.message for e in allow_store.list_edges() if e.fromUid == owner.uid}
+    implied = policy_module.rule(owner.policy.out, "external") == "any"
+    out = [
+        u
+        for u in users_store.list_users()
+        if u.kind == "external"
+        and u.ownerFamilyId == owner.familyId
+        and u.phone
+        and not u.disabled
+        and (explicit.get(u.uid) is True or (implied and explicit.get(u.uid) is not False))
+    ]
+    out.sort(key=lambda u: (truncate_sms_name(u.displayName).casefold(), u.uid))
+    return out
+
+
+def rederive_sms_contacts(owner_uid: str, broker: BrokerClient) -> None:
+    """`devices.smsContacts` is `sms_contacts_for(owner)` capped at
+    `MAX_SMS_CONTACTS`, written to and pushed (`cfg.sms`) to each of the
+    owner's devices. Derived and idempotent; a stale concurrent write is
+    repaired by the next trigger."""
+    from app import devcfg
+
+    owner = users_store.get_user(owner_uid)
+    if owner is None or owner.familyId is None:
+        return
+    contacts = sms_contacts_for(owner)[: devices_store.MAX_SMS_CONTACTS]
+    sms_contacts = [
+        SmsContact(name=truncate_sms_name(u.displayName), phone=u.phone or "") for u in contacts
+    ]
+    devices = devices_store.list_devices(owner_uid=owner_uid)
+    for device in devices:
+        devices_store.set_sms_contacts(device.id, sms_contacts)
+        devcfg.push_sms_contacts(device.id, [c.model_dump() for c in sms_contacts], broker)
+    implied = sum(
+        1
+        for u in contacts
+        if (e := allow_store.get_edge(owner_uid, u.uid)) is None or not e.message
+    )
+    logger.info(
+        "sms_contacts rederived owner=%s n=%d implied=%d devices=%d",
+        owner_uid,
+        len(contacts),
+        implied,
+        len(devices),
+    )
+
+
+def rederive_family_sms_contacts(family_id: str, broker: BrokerClient) -> None:
+    """`rederive_sms_contacts` for every person of `family_id`."""
+    for user in users_store.list_users():
+        if user.kind == "person" and user.familyId == family_id:
+            rederive_sms_contacts(user.uid, broker)
 
 
 def entries_for(owner_uid: str) -> list[BookEntry]:
@@ -126,6 +204,7 @@ def entries_for(owner_uid: str) -> list[BookEntry]:
     denied_out = {e.toUid for e in all_edges if e.fromUid == owner_uid and not e.message}
     denied_in = {e.fromUid for e in all_edges if e.toUid == owner_uid and not e.message}
 
+    sms_contacts = sms_contacts_for(owner)
     peers: dict[str, tuple[User, bool]] = {}
     if owner.familyId is not None:
         for user in users_store.list_users():
@@ -140,7 +219,7 @@ def entries_for(owner_uid: str) -> list[BookEntry]:
         if uid == owner_uid or uid in peers:
             continue
         user = users_store.get_user(uid)
-        if user is None or user.disabled:
+        if user is None or user.disabled or user.kind == "external":
             continue
         peers[uid] = (user, same_family_persons(owner, user))
 
@@ -154,13 +233,31 @@ def entries_for(owner_uid: str) -> list[BookEntry]:
             BookEntry(
                 uid=uid,
                 alias=user.alias,
-                kind="external" if user.kind == "external" else "person",
+                kind="person",
                 displayName=user.displayName,
                 nick=nicks.get(uid),
-                phone=_sms_phone(uid) if user.kind == "external" else None,
+                phone=None,
                 inFamily=in_family,
                 sendable=reason is None,
                 reason=reason,
+            )
+        )
+    # Externals come only from `sms_contacts_for` (the list `cfg.sms` is cut
+    # from): the relay never texts them, so they are always `sendable` as far
+    # as the pager's own SMS path goes.
+    for index, contact in enumerate(sms_contacts):
+        entries.append(
+            BookEntry(
+                uid=contact.uid,
+                alias=contact.alias,
+                kind="external",
+                displayName=contact.displayName,
+                nick=nicks.get(contact.uid),
+                phone=contact.phone,
+                inFamily=False,
+                sendable=True,
+                reason=None,
+                onPager=index < devices_store.MAX_SMS_CONTACTS,
             )
         )
     for conv in conversations_store.list_groups_for_member(owner_uid):

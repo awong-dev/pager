@@ -96,7 +96,9 @@ def _view(owner_uid: str) -> BookOut:
             inFamily=e.inFamily,
             sendable=e.sendable,
             reason=e.reason,
-            onPager=e.sendable and e.alias in on_pager,
+            onPager=bool(e.onPager)
+            if e.kind == "external"
+            else (e.sendable and e.alias in on_pager),
         )
         for e in entries
     ]

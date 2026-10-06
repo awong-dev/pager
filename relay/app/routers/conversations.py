@@ -14,7 +14,6 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 from app import book
-from app import policy as policy_module
 from app.auth import AuthedUser, principal_for, require_user
 from app.broker import BrokerClient
 from app.location import Location, NoLocatableDevice
@@ -49,6 +48,7 @@ class SendMessageResponse(BaseModel):
 _POLICY_REJECT_MESSAGES = {
     "policy_out": "Your family admin has limited who you can message.",
     "not_allowed": "You are not on each other's approved lists.",
+    "sms_contact": "SMS contacts can only be texted from a pager.",
 }
 
 
@@ -69,20 +69,15 @@ def get_broker(request: Request) -> BrokerClient:
 
 
 def _resolve_message_alias(alias: str, sender_uid: str) -> str:
-    """docs/FAMILIES_DESIGN.md §4 / docs/FAMILIES_TASKS.md 3.2: "an alias
-    that parses as a phone number ... resolves to the external alias; the
-    external is created on the fly only when the sender's outbound rule for
-    externals is `any`, otherwise 404 `unknown_alias`."
+    """A phone-shaped alias resolves only to the sender's family's existing
+    SMS contact (which routing then refuses with `sms_contact`); nothing is
+    created.
 
     An `alias` that already resolves to a real user or an existing group is
-    returned unchanged (covers a repeat send to an already-created
-    external, whose alias *is* the phone's digits, without re-deriving
-    anything). Only a value that resolves to nothing is tried as a phone
-    number; if it isn't one, or the sender's outbound rule for externals
-    (`app.policy.rule(sender.policy.out, "external")`) isn't `any`, `alias`
-    is returned unchanged too -- `routing.send`'s own existing
-    `unknown_alias` 404 fires exactly as it would for any other made-up
-    alias, with no special case needed here for the rejection path."""
+    returned unchanged. Only a value that resolves to nothing is tried as a
+    phone number; if it isn't one, or the sender's family has no contact for
+    it, `alias` is returned unchanged too -- `routing.send`'s own
+    `unknown_alias` 404 fires exactly as for any other made-up alias."""
     if users_store.get_uid_for_alias(alias) is not None:
         return alias
     if conversations_store.get_by_alias(alias) is not None:
@@ -95,15 +90,11 @@ def _resolve_message_alias(alias: str, sender_uid: str) -> str:
     if sender is None or sender.familyId is None:
         return alias
     # docs/CONTACT_REQ_DESIGN.md decision 7: the sender's family's own
-    # contact for this number, under any policy (digits no longer equal an
-    # alias, so an approved number would otherwise 404 under `people_sms`).
+    # contact for this number (digits no longer equal an alias).
     existing = externals_store.get_family_contact(sender.familyId, phone)
     if existing is not None:
         return existing.alias
-    if policy_module.rule(sender.policy.out, "external") != "any":
-        return alias
-    external = externals_store.get_or_create(sender.familyId, phone, phone)
-    return external.alias
+    return alias
 
 
 @router.post("/{alias}/messages", status_code=201)
@@ -284,8 +275,11 @@ def add_group_member(
             status_code=403,
             detail="only a family admin of the group creator's family may add members",
         )
-    if users_store.get_user(req.uid) is None:
+    new_member = users_store.get_user(req.uid)
+    if new_member is None:
         raise HTTPException(status_code=404, detail=f"no such user: {req.uid!r}")
+    if new_member.kind == "external":
+        raise HTTPException(status_code=400, detail="an SMS contact cannot join a group")
 
     updated = conversations_store.add_member(group.convKey, req.uid)
     # docs/FAMILIES_DESIGN.md §1 decision 9: `message` edges only, never

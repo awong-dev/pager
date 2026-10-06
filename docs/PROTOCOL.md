@@ -137,7 +137,7 @@ Base envelope:
 | `name` | string | `contact_req` only | ≤16 code points, ≤48 UTF-8 bytes | Contact display name (§4.2). *(v0.4: also the group's display name on `/up` `grp_req`, §3.8, same bounds — one name rule for both requests.)* |
 | `ph` | string | `contact_req` only | E.164 or absent | Phone number `+…` or alias reference (§4.2). |
 | `d` | string | `book` only | same regex as `from` | Default recipient alias (§4.3). |
-| `c` | array of objects | `book` only | ≤10 contacts | Approved contacts; each has `a` (alias), `n` (name ≤16 cp), `t` (type: `web`/`sms`/`chat`/`grp`, the last for a group conversation) (§4.3). |
+| `c` | array of objects | `book` only | ≤10 contacts | Approved contacts; each has `a` (alias), `n` (name ≤16 cp), `t` (type: `web`/`sms`/`chat`/`grp`, the last for a group conversation) (§4.3). *(7 Oct 2026: the relay never lists an SMS contact in `c[]` or emits `t:"sms"`; SMS contacts reach the pager only as `cfg.sms`, §3.6. A device still accepts `sms` as a type — the relay sends no SMS, owner decision.)* |
 | `p` | array of objects | `book` only | ≤4 pending requests | Pending `contact_req`; each has `n` (name), `s` (status: `pend`/`no`) (§4.3). |
 | `more` | bool | `book` only | — | Reserved for chunking if the cap moves (§4.3). |
 | `cfg` | object | `/down` `cfg` kind only | — | Configuration map carrying `lock` (object with `clear` bool and `auto` int minutes; a dangling cross-reference to "§5.8" for its full shape predates this table's current section numbering and is flagged, not fixed, here), `ca` (v0.2, §4.4), `sms` (v0.2, §3.6 — the SMS contact allow-list) and `wifi` (`docs/WIFI_DESIGN.md` §4/§6, §10 below — the WiFi enable flag and up to two credential pairs). |
@@ -441,7 +441,7 @@ the web app, can.
   `book`/`contact_req`'s 48-byte name cap) exists purely so 8 maximal entries always fit under the
   640-byte envelope limit in *both* wire encodings — see the byte arithmetic in the relay
   implementation task's report; a future revision that widens the name cap back to 48 bytes would
-  first have to either shrink the entry cap or move to CBOR-only delivery for this one kind.
+  first have to either shrink the entry cap or move to CBOR-only delivery for this one kind. *(the relay derives the list: the member's approved contacts plus, when their outbound policy allows any number, every family contact; names are unique per family because the pager matches by name; owner 7 Oct 2026.)*
 - **Sending.** A message to an SMS contact goes out through the modem's own `smsSend()`, never
   through `/down`/`/up` at all — the relay is not in this path.
 - **Receiving.** An inbound SMS from a listed number is inserted into the on-device thread and
@@ -683,7 +683,7 @@ is never trusted to know who it may talk to).**
 The allow-list decision is made by the relay **and** re-stated in the data store's own access
 rules; neither alone is the enforcement point. Case 3's `system` reply is the single exception to
 §3.4's "never auto-reply on MQTT". *(also §3.2's `contact_req` rejection and `too many
-pending requests` replies — same shape, one per offending `id`.)*
+pending requests` replies — same shape, one per offending `id`.)* *(an alias naming an SMS contact is never a relay recipient and takes case 3 — the pager texts SMS contacts itself, §3.6; the relay sends no SMS, owner 7 Oct 2026.)*
 
 ---
 
@@ -1038,6 +1038,8 @@ never touches this SIM, this modem or this budget, and a message delivered to a 
 is still delivered to the *device* by MQTT exactly as specified above — it is a wholly different
 path from the direct-SMS one above, sharing nothing but three letters. `docs/SERVER_PLAN.md` §6.4
 covers it; nothing in this section applies to it.
+
+*(superseded 7 Oct 2026: the relay has no SMS backend and neither sends nor receives SMS; the modem path above is the only SMS path — owner decision.)*
 
 ### 7.4 Measurement — validating the model
 

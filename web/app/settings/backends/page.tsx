@@ -1,15 +1,14 @@
 "use client";
 
 /** `/settings/backends` -- docs/SERVER_PLAN.md §7.2: list + add backends
- * (SMS phone verify, Google Chat link code) + enable toggles. Reads the
+ * (Google Chat link code) + enable toggles. Reads the
  * list from `users/{uid}/backends` directly (Firestore, always allowed for
  * one's own uid); every write goes through `/api/me/backends*`
  * (`relay/app/routers/me.py`).
  *
- * An `sms` or `gchat` backend is created disabled and unverified; creating
- * it triggers the adapter's `start_link()` (an SMS with a code, or a Google
- * Chat link code), and the Verify dialog below posts the code back to
- * `POST /api/me/backends/{id}/verify`, which enables the row on success.
+ * A `gchat` backend is created disabled and unverified; creating it
+ * triggers the adapter's `start_link()` (a Google Chat link code). The relay
+ * has no SMS backend: the pager texts its own SMS list.
  */
 
 import {
@@ -23,14 +22,9 @@ import Button from "@mui/material/Button";
 import Card from "@mui/material/Card";
 import CardContent from "@mui/material/CardContent";
 import Chip from "@mui/material/Chip";
-import Dialog from "@mui/material/Dialog";
-import DialogActions from "@mui/material/DialogActions";
-import DialogContent from "@mui/material/DialogContent";
-import DialogTitle from "@mui/material/DialogTitle";
 import IconButton from "@mui/material/IconButton";
 import Stack from "@mui/material/Stack";
 import Switch from "@mui/material/Switch";
-import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
 import DeleteIcon from "@mui/icons-material/Delete";
 
@@ -46,7 +40,6 @@ interface BackendRow extends BackendDoc {
 }
 
 function configSummary(b: BackendRow): string {
-  if (b.kind === "sms") return typeof b.config.phone === "string" ? b.config.phone : "(no phone)";
   if (b.kind === "gchat") return typeof b.config.space === "string" ? b.config.space : "not linked";
   if (b.kind === "pager") return typeof b.config.deviceId === "string" ? b.config.deviceId : "";
   return "";
@@ -56,11 +49,6 @@ function BackendsInner() {
   const { me } = useAuth();
   const [backends, setBackends] = useState<BackendRow[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [addSmsOpen, setAddSmsOpen] = useState(false);
-  const [phone, setPhone] = useState("");
-  const [verifyBackendId, setVerifyBackendId] = useState<string | null>(null);
-  const [code, setCode] = useState("");
-  const [verifyError, setVerifyError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!me) return;
@@ -91,42 +79,12 @@ function BackendsInner() {
     }
   }
 
-  async function addSms() {
-    setError(null);
-    try {
-      const created = await api.post<BackendRow>("/me/backends", {
-        kind: "sms",
-        config: { phone },
-        enabled: true,
-      });
-      setAddSmsOpen(false);
-      setPhone("");
-      setVerifyBackendId(created.id);
-    } catch (err) {
-      setError(err instanceof ApiError ? String(err.detail ?? err.message) : "Failed to add SMS backend");
-    }
-  }
-
   async function addGchat() {
     setError(null);
     try {
       await api.post<BackendRow>("/me/backends", { kind: "gchat", config: {}, enabled: true });
     } catch (err) {
       setError(err instanceof ApiError ? String(err.detail ?? err.message) : "Failed to add Google Chat backend");
-    }
-  }
-
-  async function submitVerify() {
-    if (!verifyBackendId) return;
-    setVerifyError(null);
-    try {
-      await api.post(`/me/backends/${verifyBackendId}/verify`, { code });
-      setVerifyBackendId(null);
-      setCode("");
-    } catch (err) {
-      setVerifyError(
-        err instanceof ApiError ? String(err.detail ?? err.message) : "Verification failed"
-      );
     }
   }
 
@@ -158,62 +116,14 @@ function BackendsInner() {
       </Stack>
 
       <Stack direction="row" spacing={2}>
-        <Button variant="outlined" onClick={() => setAddSmsOpen(true)}>
-          Add SMS
-        </Button>
         <Button variant="outlined" onClick={() => void addGchat()}>
           Add Google Chat
         </Button>
       </Stack>
 
-      <Dialog open={addSmsOpen} onClose={() => setAddSmsOpen(false)}>
-        <DialogTitle>Add SMS backend</DialogTitle>
-        <DialogContent>
-          <TextField
-            autoFocus
-            margin="dense"
-            label="Phone (+1XXXXXXXXXX)"
-            fullWidth
-            value={phone}
-            onChange={(e) => setPhone(e.target.value)}
-          />
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setAddSmsOpen(false)}>Cancel</Button>
-          <Button onClick={() => void addSms()} disabled={!phone.trim()}>
-            Add
-          </Button>
-        </DialogActions>
-      </Dialog>
-
-      <Dialog open={verifyBackendId !== null} onClose={() => setVerifyBackendId(null)}>
-        <DialogTitle>Verify SMS number</DialogTitle>
-        <DialogContent>
-          <Typography variant="body2" sx={{ mb: 2 }}>
-            Enter the code sent to your phone.
-          </Typography>
-          {verifyError && <Alert severity="warning" sx={{ mb: 2 }}>{verifyError}</Alert>}
-          <TextField
-            autoFocus
-            margin="dense"
-            label="Code"
-            fullWidth
-            value={code}
-            onChange={(e) => setCode(e.target.value)}
-          />
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setVerifyBackendId(null)}>Close</Button>
-          <Button onClick={() => void submitVerify()} disabled={!code.trim()}>
-            Verify
-          </Button>
-        </DialogActions>
-      </Dialog>
-
       <Box>
         <Alert severity="info">
-          SMS and Google Chat backends stay disabled until you verify them. Adding one sends a
-          code; enter it with Verify to enable delivery.
+          Google Chat backends stay disabled until linked.
         </Alert>
       </Box>
     </Stack>

@@ -192,18 +192,14 @@ def _default_alias(device: devices_store.Device) -> str | None:
 
 
 def _contact_type_hint(uid: str) -> str:
-    """docs/PROTOCOL.md §3.1: `c[].t` is "hint for an icon (`web`/`sms`/
-    `chat`)". A contact is a `users/{uid}` with zero or more backends
-    (`app/store/backends.py`); every user also has an implicit `webapp`
-    backend (`users_store.create_user`'s own docstring), so `web` is the
-    fallback. `sms`/`gchat` take priority over the implicit `webapp` one
-    when present and enabled -- those are the backends a contact was
-    actually *added* through (docs/DEVICE_PLAN.md §4.3's "create" flow adds
-    an `sms` backend for a phone-based contact), so they are the more
-    useful icon to show than "web", which every contact technically has."""
+    """docs/PROTOCOL.md §3.1: `c[].t` is "hint for an icon". A contact is a
+    `users/{uid}` with zero or more backends (`app/store/backends.py`); every
+    user also has an implicit `webapp` backend (`users_store.create_user`'s
+    own docstring), so `web` is the fallback. An enabled `gchat` backend takes
+    priority over it (`chat`). There is no `t:"sms"`: an SMS contact is
+    `kind == 'external'`, never reaches `c[]` (it reaches the pager only as
+    `cfg.sms`), and the relay has no SMS backend."""
     kinds = {b.kind for b in backends_store.list_backends(uid) if b.enabled}
-    if "sms" in kinds:
-        return "sms"
     if "gchat" in kinds:
         return "chat"
     return "web"
@@ -244,7 +240,7 @@ def _approved_contacts(owner_uid: str) -> list[dict[str, Any]]:
             "t": "grp" if e.kind == "group" else _contact_type_hint(e.uid),  # type: ignore[arg-type]
         }
         for e in book.entries_for(owner_uid)
-        if e.sendable
+        if e.sendable and e.kind != "external"
     ]
 
 

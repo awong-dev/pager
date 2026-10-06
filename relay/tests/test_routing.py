@@ -11,11 +11,15 @@ import json
 import pytest
 
 from app.backends.registry import build_registry
+from app.db.firestore import get_db
 from app.routing import RejectedRecipient, Routing
+from app.store import alerts as alerts_store
 from app.store import allow as allow_store
 from app.store import backends as backends_store
 from app.store import conversations as conversations_store
 from app.store import devices as devices_store
+from app.store import externals as externals_store
+from app.store import families as families_store
 from app.store import messages as messages_store
 from app.store import push_tokens as push_tokens_store
 from app.store import users as users_store
@@ -569,6 +573,92 @@ def test_group_send_missing_allow_edge_drops_only_that_recipient(routing: Routin
     assert result.rejected[0].uid == "gmem8"
     assert result.rejected[0].reason == "not_allowed"
     assert any("SECURITY" in rec.message for rec in caplog.records)
+
+
+# ---- SMS contacts are never relay recipients ----
+
+
+def _make_contact(family_id: str, phone: str = "+12065550100", name: str = "Grandma"):
+    return externals_store.get_or_create(family_id, phone, name)
+
+
+def test_dm_to_external_is_rejected_sms_contact_and_writes_nothing(
+    routing: Routing, caplog
+):
+    fam = families_store.create_family(name="F", created_by="root").id
+    _make_user("alice", "alice", family_id=fam)
+    # `open` would otherwise raise a new-conversation alert on a first DM.
+    get_db().collection("users").document("alice").update(
+        {"policy": {"out": "open", "in": "any"}}
+    )
+    ext = _make_contact(fam)
+    # Even an explicit approval edge cannot make the relay text a contact.
+    allow_store.set_edge("alice", ext.uid, message=True, locate=False)
+
+    with caplog.at_level("WARNING", logger="relay.routing"):
+        result = routing.send(
+            sender_uid="alice",
+            recipient_alias=ext.alias,
+            kind="text",
+            body="hi",
+            origin_backend_kind="webapp",
+        )
+
+    assert result.messages == []
+    assert result.rejected == [
+        RejectedRecipient(alias=ext.alias, uid=ext.uid, reason="sms_contact")
+    ]
+    assert list(get_db().collection("messages").stream()) == []
+    assert list(get_db().collection("conversations").stream()) == []
+    assert alerts_store.list_alerts(fam, "all") == []
+    assert any("addressed sms contact" in rec.message for rec in caplog.records)
+
+
+def test_broadcast_skips_externals(routing: Routing):
+    fam = families_store.create_family(name="F", created_by="root").id
+    _make_user("alice", "alice", family_id=fam)
+    _make_user("bob", "bob", family_id=fam)
+    ext = _make_contact(fam)
+    allow_store.set_edge("alice", "bob", message=True, locate=False)
+    allow_store.set_edge("bob", "alice", message=True, locate=False)
+    allow_store.set_edge("alice", ext.uid, message=True, locate=False)
+
+    result = routing.send(
+        sender_uid="alice",
+        recipient_alias=None,
+        kind="text",
+        body="hi all",
+        origin_backend_kind="webapp",
+    )
+
+    assert {m.recipientUid for m in result.messages} == {"bob"}
+    assert result.rejected == []
+
+
+def test_group_fanout_skips_external_member(routing: Routing):
+    fam = families_store.create_family(name="F", created_by="root").id
+    _make_user("alice", "alice", family_id=fam)
+    _make_user("bob", "bob", family_id=fam)
+    ext = _make_contact(fam)
+    allow_store.set_edge("alice", "bob", message=True, locate=False)
+    allow_store.set_edge("bob", "alice", message=True, locate=False)
+    allow_store.set_edge("alice", ext.uid, message=True, locate=False)
+    # A stale membership (create/add refuse an external, but old data may
+    # carry one).
+    conversations_store.create_group(
+        name="Fam", alias="fam-ext", member_uids=["alice", "bob", ext.uid], created_by="alice"
+    )
+
+    result = routing.send(
+        sender_uid="alice",
+        recipient_alias="fam-ext",
+        kind="text",
+        body="hi",
+        origin_backend_kind="webapp",
+    )
+
+    assert {m.recipientUid for m in result.messages} == {"bob"}
+    assert result.rejected == []
 
 
 # ---- push payload for a group send (docs/GROUP_CHAT_DESIGN.md §6), task G4 ----

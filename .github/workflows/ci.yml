@@ -1,7 +1,7 @@
 name: CI
 
 # docs/SERVER_PLAN.md §8: the full server stack (Firestore + Auth
-# emulators, EMQX's rule engine, a Twilio Messages API mock, the relay
+# emulators, EMQX's rule engine, the relay
 # itself, DEV_MODE=1) -- tools/e2e_v2.py brings up and tears down
 # relay/docker-compose.yml itself (build, health-wait, EMQX rule-engine
 # provisioning via tools/emqx_setup.py), so this workflow just installs the
@@ -75,7 +75,7 @@ jobs:
       # ubuntu-latest ships Docker and the Compose v2 plugin already;
       # nothing else to set up. tools/e2e_v2.py brings up
       # relay/docker-compose.yml itself (relay, EMQX, the Firestore/Auth
-      # emulators, and the Twilio mock), configures EMQX's rule engine, runs
+      # emulators), configures EMQX's rule engine, runs
       # all 9 docs/SERVER_PLAN.md §8 scenarios, and tears it down (down -v)
       # on both success and failure, so no manual cleanup step is needed
       # here.

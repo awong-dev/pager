@@ -43,7 +43,6 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app import apn_presets, book, ca_resolve, devcfg, devsetup, firmware
 from app.auth import AuthedUser, principal_for, require_super, set_claims
-from app.backends.sms_twilio import normalize_e164
 from app.broker import BrokerClient
 from app.config import Settings
 from app.db.firestore import get_db
@@ -61,7 +60,6 @@ from app.store import rate_limits as rate_limits_store
 from app.store import settings as settings_store
 from app.store import users as users_store
 from app.store.allow import AllowEdge, EdgeInput
-from app.store.backends import Backend
 from app.store.devices import Device
 from app.store.families import Family
 from app.store.settings import RetentionSetting, RetentionSettings
@@ -309,6 +307,9 @@ def _patch_user_impl(
             | {uid}
         )
         book.bump_and_push(owners, broker, reason="member_patch")
+    if family_changed:
+        # The owner's family contacts (and so their `cfg.sms`) changed.
+        book.rederive_sms_contacts(uid, broker)
     # docs/FAMILIES_DESIGN.md §3's trigger list: a displayName change
     # rewrites `participants` (and `familyIds`) in every conversation
     # this uid is a member of.
@@ -343,47 +344,6 @@ def delete_user(uid: str) -> dict[str, bool]:
     except fb_auth.UserNotFoundError:
         pass
     return {"ok": True}
-
-
-class CreateBackendRequest(BaseModel):
-    kind: Literal["sms"]
-    phone: str
-
-
-def _create_admin_asserted_backend(uid: str, phone: str) -> Backend:
-    """Shared by `POST /api/admin/users/{uid}/backends` and the `create`
-    approval path below (docs/DEVICE_PLAN.md §4.3): an `sms` backend
-    asserted verified by an admin rather than by the usual code-verification
-    flow (`app/routers/me.py`'s `POST /api/me/backends/{id}/verify`) --
-    `verifiedAt` set and `phoneIndex` written immediately, same as a real
-    verification, plus `adminVerified: true` recording *how* it got that
-    way. `Backend` (`app/store/backends.py`) does not model `adminVerified`
-    -- that module is outside this task's (S4.1) `Files` list -- so it is
-    written directly on the Firestore doc here (dropped on read by
-    `Backend.model_validate`'s `extra='ignore'` until backends.py adds the
-    field)."""
-    normalized = normalize_e164(phone)
-    backend = backends_store.create_backend(uid, kind="sms", config={"phone": normalized})
-    backends_store.update_backend(uid, backend.id, verified=True)
-    backends_store.set_phone_index(normalized, uid, backend.id)
-    get_db().collection("users").document(uid).collection("backends").document(backend.id).update(
-        {"adminVerified": True}
-    )
-    fetched = backends_store.get_backend(uid, backend.id)
-    assert fetched is not None
-    return fetched
-
-
-@router.post(
-    "/users/{uid}/backends", dependencies=[Depends(require_admin_write_rate_limit)]
-)
-def create_user_backend(uid: str, req: CreateBackendRequest) -> Backend:
-    if users_store.get_user(uid) is None:
-        raise HTTPException(status_code=404, detail="no such user")
-    try:
-        return _create_admin_asserted_backend(uid, req.phone)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -452,7 +412,8 @@ def put_allowlist(
     # the diff is against the pre-request state, not against `edges` (which
     # may omit an owner's untouched rows entirely under replace-all
     # semantics).
-    old_message_sets = _message_sets_by_owner(allow_store.list_edges())
+    old_edges = allow_store.list_edges()
+    old_message_sets = _message_sets_by_owner(old_edges)
     try:
         result = allow_store.replace_all(edges, family_id=family)
     except allow_store.LocateCrossFamily as exc:
@@ -470,6 +431,10 @@ def put_allowlist(
         for device in devices_store.list_devices(owner_uid=owner_uid):
             contacts_store.bump_book_version(device.id)
             devcfg.push_book(device.id, broker)
+    # `cfg.sms` is an edge projection (plus implied contacts): re-derive it
+    # for every owner whose outgoing edges were touched.
+    for owner_uid in sorted({e.fromUid for e in old_edges} | {e.fromUid for e in result}):
+        book.rederive_sms_contacts(owner_uid, broker)
     return result
 
 
@@ -584,6 +549,12 @@ def _create_device_impl(
     owner_uid = _resolve_uid(req.ownerAlias)
     owner = users_store.get_user(owner_uid)
     default_to_uid = _resolve_uid(req.defaultToAlias) if req.defaultToAlias else None
+    if default_to_uid is not None:
+        default_to = users_store.get_user(default_to_uid)
+        if default_to is not None and default_to.kind == "external":
+            raise HTTPException(
+                status_code=400, detail="the default recipient cannot be an SMS contact"
+            )
     try:
         apn = apn_presets.validate_apn(req.apn)
     except ValueError as exc:
@@ -639,6 +610,8 @@ def _create_device_impl(
     # device creation.
     contacts_store.bump_book_version(req.deviceId)
     devcfg.push_book(req.deviceId, broker)
+    # Seed the new device's `cfg.sms` (implied contacts for an open owner).
+    book.rederive_sms_contacts(owner_uid, broker)
 
     # docs/DEVICE_PLAN.md §3.2 step 2: push the device's real broker
     # credential + ACL before handing out a setup code that will eventually
@@ -1061,7 +1034,7 @@ def get_settings() -> RetentionSettings:
 
 # ---------------------------------------------------------------------------
 # families -- docs/FAMILIES_DESIGN.md §4. Super-only: creating a family and
-# renaming one/setting its SMS number. Everything scoped *to* a family (the
+# renaming one. Everything scoped *to* a family (the
 # member/device/group CRUD) lives in `app/routers/family.py`, reachable by a
 # family's own `admin` too via `require_family_admin`.
 # ---------------------------------------------------------------------------
@@ -1073,7 +1046,6 @@ class CreateFamilyRequest(BaseModel):
 
 class PatchFamilyRequest(BaseModel):
     name: str | None = None
-    smsNumber: str | None = None
 
 
 @router.get("/families")
@@ -1097,6 +1069,6 @@ def patch_family(fid: str, req: PatchFamilyRequest) -> Family:
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
     try:
-        return families_store.update_family(fid, name=name, sms_number=req.smsNumber)
+        return families_store.update_family(fid, name=name)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

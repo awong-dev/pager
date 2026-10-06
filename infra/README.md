@@ -106,10 +106,13 @@ convenient, but make sure the values end up identical on both sides. Generate a 
 yourself (e.g. `openssl rand -hex 32`) — it just needs to match what you configure into the EMQX
 rule engine's HTTP action header in step 10.
 
-`TWILIO_ACCOUNT_SID`/`TWILIO_AUTH_TOKEN`/`TWILIO_FROM_NUMBER` are only needed if you are enabling
-the SMS backend, which needs a real Twilio account and a registered number (see `relay/README.md`).
-Leave `enable_sms_secrets = false` in `terraform.tfvars` until you have real values for all three
-— Cloud Run refuses to create a revision that references a secret with zero versions.
+The relay sends and receives no SMS (owner decision,
+7 Oct 2026): there are no Twilio secrets. The pager texts its own allow-list through its modem
+(`docs/V02_DESIGN.md` §6).
+
+**Removing Twilio (7 Oct 2026):** the next `terraform apply` destroys the three `TWILIO_*` Secret
+Manager secrets (and any versions in them). Deploy the relay without Twilio first, then apply. Also
+delete the `enable_sms_secrets`/`twilio_base_url` lines from your local `terraform.tfvars` if present.
 
 **`CELL_GEO_API_KEY`** (docs/PROTOCOL.md §13.2 — cell-tower location fallback) is only needed if
 you are enabling `CELL_GEO_PROVIDER=google` (or `opencellid`); leave `enable_cell_geo_secret =
@@ -453,8 +456,7 @@ only with a number" language, before spending any money on `min_instance_count =
 ## Cost summary (recap of `docs/SERVER_PLAN.md` §9.3 — verify against current pricing)
 
 Everything in this tree is designed to be **$0/month** except: (a) Secret Manager/Artifact
-Registry/logging past a few active versions/pruned tags (`$0-$1`), (b) Twilio, only if the SMS
-backend is enabled (`~$1 + usage`), and (c) `broker-gce`'s external IPv4 address if that fallback
+Registry/logging past a few active versions/pruned tags (`$0-$1`), and (b) `broker-gce`'s external IPv4 address if that fallback
 is ever turned on (`≈ $0-4/mo`, called out in that module's own comments) — everything else
 (Cloud Run at `min_instance_count = 0`, Firestore/Auth/FCM/Hosting within their no-cost
 allowances, Cloud Scheduler's 2 free jobs, Cloud Tasks) is designed to stay at exactly $0 at this

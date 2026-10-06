@@ -25,7 +25,7 @@ def _bv(device_id: str) -> int:
 
 def _seed() -> tuple[str, str]:
     """A family with a kid + pager, and an orphan person made the old way
-    (Auth user, family-less user, sms backend, mutual edges, an approved
+    (Auth user, family-less user with a phone, mutual edges, an approved
     request and its alert). Returns `(familyId, orphanUid)`."""
     family = families_store.create_family(name="F", created_by="root")
     users_store.create_user(uid="kid", alias="kid", display_name="Kid", family_id=family.id)
@@ -41,9 +41,7 @@ def _seed() -> tuple[str, str]:
     uid = auth_user.uid
     users_store.create_user(uid=uid, alias="aphone1", display_name="Aunt", family_id=family.id)
     get_db().collection("users").document(uid).update({"familyId": None})  # the orphan state
-    backend = backends_store.create_backend(uid, kind="sms", config={"phone": PHONE})
-    backends_store.update_backend(uid, backend.id, verified=True)
-    backends_store.set_phone_index(PHONE, uid, backend.id)
+    users_store.update_user(uid, phone=PHONE)
     get_db().collection("users").document(uid).collection("book").document("kid").set({"nick": "x"})
     allow_store.set_edge("kid", uid, message=True, locate=False)
     allow_store.set_edge(uid, "kid", message=True, locate=False)
@@ -66,7 +64,6 @@ def _snapshot() -> dict[str, int]:
         "aliases": len(list(db.collection("aliases").stream())),
         "allow": len(list(db.collection("allow").stream())),
         "requests": len(list(db.collection("contactRequests").stream())),
-        "phoneIndex": len(list(db.collection("phoneIndex").stream())),
     }
 
 
@@ -109,7 +106,6 @@ def test_apply_deletes_the_orphan_and_its_traces(capsys: pytest.CaptureFixture[s
     assert allow_store.get_edge("kid", uid) is None
     assert allow_store.get_edge(uid, "kid") is None
     assert backends_store.list_backends(uid) == []
-    assert backends_store.get_by_phone(PHONE) is None
     assert list(get_db().collection("users").document(uid).collection("book").stream()) == []
     # The approved request and its alert are gone; the unrelated ones stay.
     assert contacts_store.get_by_device_and_req("pgr-o1", "u_o1") is None

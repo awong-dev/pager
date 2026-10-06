@@ -1,6 +1,6 @@
 "use client";
 
-/** Two five-way radio pickers (Outbound/Inbound) for a member's conversation
+/** Two radio pickers (Outbound/Inbound) for a member's conversation
  * policy -- docs/FAMILIES_DESIGN.md §2, §5.4 People section 2. Lives in
  * `MemberDrawer`'s *Policy* section; owns its own Save so it can be used
  * standalone from the drawer's Profile form (docs/FAMILIES_TASKS.md 3.4).
@@ -29,7 +29,7 @@ export default function PolicyPicker({
 }: {
   uid: string;
   policy: PolicyDoc;
-  onSaved?: () => void;
+  onSaved?: (policy: PolicyDoc) => void;
 }) {
   const [out, setOut] = useState(policy.out);
   const [inbound, setInbound] = useState(policy.in);
@@ -43,7 +43,7 @@ export default function PolicyPicker({
       await api.patch(`/family/members/${uid}${familyQuery()}`, {
         policy: { out, in: inbound },
       });
-      onSaved?.();
+      onSaved?.({ ...policy, out, in: inbound });
     } catch (err) {
       setError(err instanceof ApiError ? String(err.detail ?? err.message) : "Failed to save policy");
     } finally {
@@ -58,7 +58,7 @@ export default function PolicyPicker({
       <FormControl>
         <FormLabel>Outbound</FormLabel>
         <RadioGroup value={out} onChange={(e) => setOut(e.target.value)}>
-          {OUTBOUND_POLICIES.map((o) => (
+          {OUTBOUND_POLICIES.filter((o) => !o.hidden || o.code === out).map((o) => (
             <FormControlLabel
               key={o.code}
               value={o.code}
@@ -79,7 +79,7 @@ export default function PolicyPicker({
       <FormControl>
         <FormLabel>Inbound</FormLabel>
         <RadioGroup value={inbound} onChange={(e) => setInbound(e.target.value)}>
-          {INBOUND_POLICIES.map((o) => (
+          {INBOUND_POLICIES.filter((o) => !o.hidden || o.code === inbound).map((o) => (
             <FormControlLabel
               key={o.code}
               value={o.code}
@@ -96,6 +96,11 @@ export default function PolicyPicker({
           ))}
         </RadioGroup>
       </FormControl>
+
+      <Typography variant="body2" color="text.secondary">
+        Contacts: Open puts every family contact on the member&apos;s pager; otherwise only the contacts
+        approved for them (Approved → Contacts). The relay itself never sends SMS.
+      </Typography>
 
       <Button variant="contained" onClick={() => void save()} disabled={busy} sx={{ alignSelf: "flex-start" }}>
         Save policy

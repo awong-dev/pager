@@ -31,7 +31,7 @@ charge and about a megabyte of data a month.
 ## Addressing
 
 People are addressed by **alias**. A pager is not an addressee: it is one of its owner's
-*delivery backends*, alongside the web app, SMS (Twilio) and Google Chat. A message to a user fans
+*delivery backends*, alongside the web app and Google Chat; the pager also texts a parent-managed SMS list through its own modem. A message to a user fans
 out to every enabled backend they have. An **allow-list** decides who may message, and separately
 who may locate, whom; the relay enforces it, never the pager.
 

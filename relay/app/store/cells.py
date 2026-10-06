@@ -14,8 +14,8 @@ provider outage.
 Server-only: nothing in this collection is useful to a client directly (the
 web app reads resolved fixes through `devices/{d}/locations`, not this
 collection), so `relay/firestore.rules` gives it no `match` block at all --
-same default-deny-with-no-match-block posture as `cas`/`deviceSecrets`/
-`phoneIndex` (`relay/tests/test_rules.py` pins it, same as those three).
+same default-deny-with-no-match-block posture as `cas`/`deviceSecrets`
+(`relay/tests/test_rules.py` pins it, same as those).
 """
 
 from __future__ import annotations
