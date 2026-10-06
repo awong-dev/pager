@@ -82,6 +82,8 @@ typedef enum {
     MROW_ROTATE, /* owner request: menu-driven 180-degree display rotation,
                   * same setter the console's `flip on|off` uses (disp.h) */
     MROW_AIRPLANE, /* bench: NVS net/airplane, takes effect at next boot */
+    MROW_REBOOT,   /* owner, 6 Oct 2026: with the IO8 button retired this is the only way to
+                    * restart a pager short of pulling power (airplane mode needs a reboot) */
     MROW_PASSCODE,
     MROW_AUTOLOCK,
     MROW_CARRIER,
@@ -285,6 +287,9 @@ static void device_on_key(input_key_t key)
             // next boot on (net_set_airplane()'s own comment).
             net_set_airplane(!net_airplane_stored());
             break;
+        case MROW_REBOOT:
+            esp_restart(); // never returns; NVS writes above are already committed
+            break;
         case MROW_PASSCODE:
             s_pw_len = 0;
             s_pw_buf[0] = '\0';
@@ -395,7 +400,7 @@ static void device_render_pw(void)
 // heap; single render task per README R5, so no reentrancy hazard) and
 // drawn with a simple scroll-into-view so the whole thing "scrolls"
 // (docs/DEVICE_PLAN.md §5.5: "Read-mostly, one screen, scrolls").
-#define DEVICE_MAX_LINES 16
+#define DEVICE_MAX_LINES 17 /* +1 for the Reboot row, 6 Oct 2026 */
 #define DEVICE_LINE_LEN 72
 // TASK_ui_round2.md Do #2: shared UI_ROW_H pitch (ui.h), not a flat 12px —
 // (UI_FOOTER_Y - (UI_BODY_TOP+2)) / UI_ROW_H == 93/16 == 5.8, floored to 5,
@@ -440,6 +445,8 @@ static void device_render_normal(void)
     snprintf(lines[n], DEVICE_LINE_LEN, "Rotate display: %s", disp_get_flip() ? "on" : "off");
     selectable[n++] = true;
     snprintf(lines[n], DEVICE_LINE_LEN, "Airplane mode: %s (reboot)", net_airplane_stored() ? "on" : "off");
+    selectable[n++] = true;
+    snprintf(lines[n], DEVICE_LINE_LEN, "Reboot");
     selectable[n++] = true;
     snprintf(lines[n], DEVICE_LINE_LEN, "Passcode: %s", lock_is_set() ? "set" : "not set");
     selectable[n++] = true;
