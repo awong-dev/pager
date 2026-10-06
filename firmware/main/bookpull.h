@@ -97,6 +97,14 @@ typedef enum {
  * verification failure" are grouped identically by §14.7's own prose. */
 bookpull_http_outcome_t bookpull_classify_http(int http_status);
 
+#define BOOKPULL_SELF_RETRY_MAX 3 /* failed attempts per nudge arrival before waiting for the
+                                   * relay (next nudge / online edge / hourly heartbeat re-nudge) */
+/* True if the nudge behind a just-finished attempt should be requeued. `failures` counts
+ * failed attempts for this arrival INCLUDING the one just finished. RETRY_NOW (409) is always
+ * requeued (it is the one immediate retry §14.7 allows and is not counted); DROP never is;
+ * RETRY_LATER and APPLY (= verify/apply failed) only while failures < BOOKPULL_SELF_RETRY_MAX. */
+bool bookpull_should_requeue(bookpull_http_outcome_t outcome, uint8_t failures);
+
 #ifdef ESP_PLATFORM
 /* ---------------------------------------------------------------------
  * Device wiring — one fetch in flight at a time (module-static state),
@@ -136,7 +144,8 @@ void bookpull_on_nudge(const char *id, uint32_t bv, const char *url);
  * the next iteration). Power effect: none when idle; while fetching, the
  * same per-step cost cafetch_poll() itself already documents (none when
  * nothing is pending on the socket, one bounded AT round trip when a RING
- * was). */
+ * was). A failed fetch retries itself at most BOOKPULL_SELF_RETRY_MAX times per nudge
+ * arrival (>=60 s apart), then waits for the relay to re-nudge. */
 void bookpull_service(void);
 
 /* A thin passthrough to cafetch_in_progress() (cafetch.h) — declared here so

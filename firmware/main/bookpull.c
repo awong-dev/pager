@@ -74,6 +74,20 @@ bookpull_http_outcome_t bookpull_classify_http(int http_status)
     }
 }
 
+bool bookpull_should_requeue(bookpull_http_outcome_t outcome, uint8_t failures)
+{
+    switch (outcome) {
+    case BOOKPULL_HTTP_RETRY_NOW:
+        return true;
+    case BOOKPULL_HTTP_DROP:
+        return false;
+    case BOOKPULL_HTTP_APPLY:
+    case BOOKPULL_HTTP_RETRY_LATER:
+    default:
+        return failures < BOOKPULL_SELF_RETRY_MAX;
+    }
+}
+
 /* ======================================================================
  * Device wiring — needs book.h, auth.h, cafetch.h, msg.h, net.h, esp_timer,
  * FreeRTOS's absence-of-busy-wait discipline only (no direct FreeRTOS API
@@ -137,6 +151,7 @@ static int64_t s_fetch_started_us = 0;
 static bool s_fetch_mqtt_before = false; // net_get_mqtt_status() taken at start_fetch() time —
                                          // the "before" half of the UNVERIFIED second-socket
                                          // log line, cafetch.h's own module comment.
+static uint8_t s_fail_count = 0; // failed attempts since the last nudge arrival (saturates at 255)
 static bool s_retry_409_once = false; // §14.7: "409 -> retry once, immediately, with a fresh n"
 static int64_t s_last_attempt_us = 0; // 0 = never attempted this boot
 
@@ -163,6 +178,7 @@ void bookpull_on_nudge(const char *id, uint32_t bv, const char *url)
     // this).
     s_lock();
     s_pending_present = true;
+    s_fail_count = 0; // a re-published nudge (same id) is a fresh arrival
     s_pending_bv = bv;
     strncpy(s_pending_id, id ? id : "", sizeof(s_pending_id) - 1);
     s_pending_id[sizeof(s_pending_id) - 1] = '\0';
@@ -354,23 +370,26 @@ static void finish_attempt(int http_status, size_t body_len)
              (int) mqtt_after.mqtt_connected);
 
     if (applied) {
+        s_fail_count = 0;
         msg_mark_shown(s_fetch_id);
     } else {
-        switch (outcome) {
-        case BOOKPULL_HTTP_APPLY: // verify/apply failed above -- §14.7 "keep pending, retry later"
-        case BOOKPULL_HTTP_RETRY_LATER:
-            requeue_pending(s_fetch_id, s_fetch_bv, s_fetch_url);
-            break;
-        case BOOKPULL_HTTP_RETRY_NOW:
-            s_retry_409_once = true;
-            requeue_pending(s_fetch_id, s_fetch_bv, s_fetch_url);
-            break;
-        case BOOKPULL_HTTP_DROP:
-            // §14.7: "log and count, no retry until the next nudge" — counted
-            // by the ESP_LOGI line above already; nothing else to do, the
-            // nudge stays dropped (not requeued) unless a fresh one arrives.
-            break;
+        bool counted = (outcome == BOOKPULL_HTTP_APPLY || outcome == BOOKPULL_HTTP_RETRY_LATER);
+        if (counted && s_fail_count < 255) {
+            s_fail_count++;
         }
+        if (bookpull_should_requeue(outcome, s_fail_count)) {
+            if (outcome == BOOKPULL_HTTP_RETRY_NOW) {
+                s_retry_409_once = true; // §14.7: "409 -> retry once, immediately, with a fresh n"
+            }
+            requeue_pending(s_fetch_id, s_fetch_bv, s_fetch_url);
+        } else if (counted) {
+            ESP_LOGI(TAG,
+                     "book fetch: giving up on bv=%u after %u failures - waiting for the relay to "
+                     "re-nudge (next /status carries bv)",
+                     (unsigned) s_fetch_bv, (unsigned) s_fail_count);
+        }
+        // DROP: §14.7 "log and count, no retry until the next nudge" -- counted by the
+        // log line above; the nudge stays dropped unless a fresh one arrives.
     }
 
     s_phase = BOOKPULL_IDLE;

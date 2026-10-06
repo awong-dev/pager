@@ -193,6 +193,26 @@ static void test_request_build(void)
  * §14.7 "Device on failure" table — bookpull_classify_http().
  * --------------------------------------------------------------------- */
 
+static void test_should_requeue(void)
+{
+    uint8_t f;
+    for (f = 1; f <= 2; f++) {
+        CHECK(bookpull_should_requeue(BOOKPULL_HTTP_RETRY_LATER, f), "RETRY_LATER failures<3 -> requeue");
+        CHECK(bookpull_should_requeue(BOOKPULL_HTTP_APPLY, f), "APPLY (verify failed) failures<3 -> requeue");
+    }
+    uint8_t big[] = { 3, 4, 255 };
+    for (int i = 0; i < 3; i++) {
+        CHECK(!bookpull_should_requeue(BOOKPULL_HTTP_RETRY_LATER, big[i]), "RETRY_LATER failures>=3 -> give up");
+        CHECK(!bookpull_should_requeue(BOOKPULL_HTTP_APPLY, big[i]), "APPLY failures>=3 -> give up");
+    }
+    uint8_t any[] = { 0, 3, 255 };
+    for (int i = 0; i < 3; i++) {
+        CHECK(bookpull_should_requeue(BOOKPULL_HTTP_RETRY_NOW, any[i]), "RETRY_NOW always requeued");
+    }
+    CHECK(!bookpull_should_requeue(BOOKPULL_HTTP_DROP, 0), "DROP failures=0 -> no");
+    CHECK(!bookpull_should_requeue(BOOKPULL_HTTP_DROP, 1), "DROP failures=1 -> no");
+}
+
 static void test_classify_http(void)
 {
     CHECK(bookpull_classify_http(200) == BOOKPULL_HTTP_APPLY, "200 -> APPLY");
@@ -413,6 +433,7 @@ int main(void)
     test_rule1();
     test_request_build();
     test_classify_http();
+    test_should_requeue();
     test_response_valid_applies();
     test_response_wrong_n_rejected();
     test_response_bad_tag_rejected();
