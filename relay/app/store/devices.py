@@ -130,6 +130,14 @@ class DeviceStatus(BaseModel):
     # (`app/wire.py`'s `StatusEnvelope._check_bpull` drops any other value
     # back to `None` before it reaches here).
     bpull: int | None = None
+    # docs/OTA_DESIGN.md §5: display-only except `img` (the relay's delta
+    # choice) and `otaCap` (the push gate, only ever `1`).
+    img: str | None = None
+    otaCap: int | None = None
+    otaTarget: str | None = None
+    otaState: str | None = None
+    otaPct: int | None = None
+    otaErr: str | None = None
     updatedAt: datetime | None = None
     # docs/DEVICE_PLAN.md §2.6: set once `sigFailures` crosses
     # AUTH_ALARM_THRESHOLD inside AUTH_ALARM_WINDOW_S; cleared on key
@@ -191,6 +199,21 @@ class PendingPush(BaseModel):
     acked: bool
 
 
+class OtaJob(BaseModel):
+    """docs/OTA_DESIGN.md D5/D10: the OTA job a super admin pushed to this
+    device, as the web shows it. Cleared (`None`) on cancel and when the
+    device reports the job finished (`ok`/`fail`/`rb`)."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    target16: str
+    kind: Literal["full", "delta"]
+    osz: int
+    estBytes: int
+    by_uid: str
+    at: datetime | None = None
+
+
 class Device(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -210,6 +233,9 @@ class Device(BaseModel):
     # applied/acked (`devices/{d}.pendingCfgSms` tracks that, same shape as
     # `pendingBook`/`pendingCfg`/`pendingCfgCa`).
     smsContacts: list[SmsContact] = []
+    # docs/OTA_DESIGN.md: the pending OTA job (see `OtaJob`); `None` when no
+    # job is outstanding.
+    otaJob: OtaJob | None = None
     # Carrier APN baked into this device's setup codes and bundles
     # (app/apn_presets.py). None = carrier default.
     apn: str | None = None

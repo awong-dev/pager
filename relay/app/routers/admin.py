@@ -41,7 +41,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from firebase_admin import auth as fb_auth
 from pydantic import BaseModel, ConfigDict, Field
 
-from app import apn_presets, book, ca_resolve, devcfg, devsetup
+from app import apn_presets, book, ca_resolve, devcfg, devsetup, firmware
 from app.auth import AuthedUser, principal_for, require_super, set_claims
 from app.backends.sms_twilio import normalize_e164
 from app.broker import BrokerClient
@@ -937,6 +937,104 @@ def push_ca(
     settings: Annotated[Settings, Depends(get_app_settings)],
 ) -> dict[str, bool]:
     return _push_ca_impl(device_id, req, broker, settings)
+
+
+# ---------------------------------------------------------------------------
+# OTA firmware (docs/OTA_DESIGN.md D10, §5) -- super only (router-level gate)
+# ---------------------------------------------------------------------------
+
+
+class OtaRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    target: str | None = Field(default=None, pattern=r"^[0-9a-f]{16}$")
+    cancel: bool | None = None
+
+
+def _load_firmware_index(settings: Settings) -> firmware.FirmwareIndex:
+    try:
+        return firmware.load_index(settings)
+    except firmware.FirmwareNotConfigured:
+        raise HTTPException(status_code=503, detail="OTA not configured") from None
+    except firmware.FirmwareIndexUnavailable:
+        raise HTTPException(status_code=502, detail="firmware index unavailable") from None
+
+
+@router.get("/firmware")
+def list_firmware(
+    settings: Annotated[Settings, Depends(get_app_settings)],
+    device: str | None = Query(default=None),
+) -> dict[str, list[dict[str, object]]]:
+    """Published builds, newest first, each with the object this device would
+    get (`kind`/`osz`/`estBytes` from `firmware.choose` against the device's
+    reported `img`; full when no device or no `img`)."""
+    index = _load_firmware_index(settings)
+    img: str | None = None
+    if device is not None:
+        dev = devices_store.get_device(device)
+        if dev is None:
+            raise HTTPException(status_code=404, detail="no such device")
+        img = dev.status.img
+    builds: list[dict[str, object]] = []
+    for b in sorted(index.builds, key=lambda b: b.published, reverse=True):
+        c = firmware.choose(index, b.id16, img)
+        builds.append(
+            {
+                "id16": b.id16,
+                "version": b.version,
+                "size": b.size,
+                "published": b.published,
+                "kind": c.kind,
+                "osz": c.obj.osz,
+                "estBytes": firmware.estimate_bytes(c.obj.osz),
+            }
+        )
+    return {"builds": builds}
+
+
+@router.post("/devices/{device_id}/ota", dependencies=[Depends(require_admin_write_rate_limit)])
+def push_ota(
+    device_id: str,
+    req: OtaRequest,
+    authed: Annotated[AuthedUser, Depends(require_super)],
+    broker: Annotated[BrokerClient, Depends(get_broker)],
+    settings: Annotated[Settings, Depends(get_app_settings)],
+) -> dict[str, object]:
+    """`{"target": "<16 hex>"}` pushes `cfg.ota` for that build (delta when
+    the device's `img` matches a delta base, else full); `{"cancel": true}`
+    pushes `cfg.ota = {cancel: true}`."""
+    if (req.target is None) == (not req.cancel):
+        raise HTTPException(status_code=422, detail="send exactly one of target or cancel")
+    dev = devices_store.get_device(device_id)
+    if dev is None:
+        raise HTTPException(status_code=404, detail="no such device")
+    if not (settings.fw_index_url and settings.fw_bucket_base):
+        raise HTTPException(status_code=503, detail="OTA not configured")
+    if req.cancel:
+        return {"ok": devcfg.cancel_ota(device_id, broker)}
+    assert req.target is not None
+    index = _load_firmware_index(settings)
+    if index.find(req.target) is None:
+        raise HTTPException(status_code=404, detail="no such firmware build")
+    if dev.status.otaCap != 1:
+        raise HTTPException(status_code=409, detail="device does not report ota:1")
+    if dev.status.img == req.target:
+        raise HTTPException(status_code=409, detail="already running")
+    choice = firmware.choose(index, req.target, dev.status.img)
+    est = firmware.estimate_bytes(choice.obj.osz)
+    ok = devcfg.push_ota(
+        device_id,
+        firmware.build_cfg_ota(choice, settings),
+        broker,
+        job={
+            "target16": req.target,
+            "kind": choice.kind,
+            "osz": choice.obj.osz,
+            "estBytes": est,
+            "by_uid": authed.uid,
+        },
+    )
+    return {"ok": ok, "kind": choice.kind, "osz": choice.obj.osz, "estBytes": est}
 
 
 # ---------------------------------------------------------------------------

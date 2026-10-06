@@ -1176,3 +1176,21 @@ def test_loc_envelope_cell_null_is_absent():
     obj["cell"] = None
     env = LocEnvelope.model_validate(obj)
     assert env.cell is None
+
+
+def test_ota_status_keys_on_the_cbor_wire():
+    """docs/OTA_DESIGN.md §5: envelope keys 62-67 and cfg.ota = 4."""
+    assert [wirecbor.KEYMAP[k] for k in ("img", "ota", "ota_t", "ota_st", "ota_pct", "ota_err")] == [
+        62, 63, 64, 65, 66, 67,
+    ]
+    assert wirecbor.CFG_KEYMAP["ota"] == 4
+    assert wirecbor.OTA_KEYMAP == {
+        "img": 0, "isz": 1, "url": 2, "osz": 3, "osha": 4,
+        "fmt": 5, "base": 6, "psz": 7, "cancel": 8,
+    }
+    status = {
+        "v": 1, "state": "online", "mode": "sleep", "batt_mv": 3300, "session": "s_00000001",
+        "ts": 1_700_000_000, "img": "0123456789abcdef", "ota": 1, "ota_t": "fedcba9876543210",
+        "ota_st": "dl", "ota_pct": 12, "ota_err": "http",
+    }
+    assert wirecbor.decode(wirecbor.encode(status)) == status

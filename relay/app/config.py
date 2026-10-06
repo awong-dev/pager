@@ -80,6 +80,12 @@ class Settings:
     # integrations (see `TWILIO_BASE_URL`/`GCHAT_AUDIENCE` in
     # relay/.env.example).
     push_backend: str = "null"
+    # docs/OTA_DESIGN.md D3/D10: the public OTA firmware bucket. `fw_index_url`
+    # is `fw/index.json` (written by tools/fwpub.py), `fw_bucket_base` the
+    # bucket's public base URL with a trailing slash (object paths in the
+    # index are appended to it). Either unset = every OTA route answers 503.
+    fw_index_url: str | None = None
+    fw_bucket_base: str | None = None
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -103,4 +109,6 @@ class Settings:
             broker_ca_pem=os.environ.get("BROKER_CA_PEM") or None,
             public_base_url=(os.environ.get("PUBLIC_BASE_URL") or "").rstrip("/") or None,
             push_backend=os.environ.get("PUSH_BACKEND", "null").strip().lower(),
+            fw_index_url=(os.environ.get("FW_INDEX_URL") or "").strip() or None,
+            fw_bucket_base=(os.environ.get("FW_BUCKET_BASE") or "").strip() or None,
         )

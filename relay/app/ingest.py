@@ -238,6 +238,12 @@ def _bid_from_boot_up_topic(topic: str) -> str | None:
     return parts[2]
 
 
+def _ota_job_finished(target16: str, env: StatusEnvelope) -> bool:
+    if env.img == target16:
+        return True
+    return env.ota_st in ("ok", "fail", "rb") and env.ota_t in (None, target16)
+
+
 class Ingest:
     """Owns the relay's reaction to device traffic. Called by the webhook
     router once per inbound event.
@@ -791,7 +797,19 @@ class Ingest:
             abn=env.abn,
             bpull=env.bpull,
             stallcmd=env.stallcmd,
+            img=env.img,
+            otaCap=env.ota,
+            otaTarget=env.ota_t,
+            otaState=env.ota_st,
+            otaPct=env.ota_pct,
+            otaErr=env.ota_err,
         )
+
+        # docs/OTA_DESIGN.md D5: the web's `otaJob` lives until the device
+        # reports the job finished (`ok`/`fail`/`rb` for that target, or the
+        # new image running).
+        if device.otaJob is not None and _ota_job_finished(device.otaJob.target16, env):
+            devcfg.clear_ota_job(device_id)
 
         # docs/V02_DESIGN.md §4.3: "on a transition
         # into `broken`, log a security event." `previous_status.tls` is

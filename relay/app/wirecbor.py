@@ -149,6 +149,16 @@ KEYMAP: dict[str, int] = {
     # `stallcmd=59`.
     "why": 60,
     "loc_move_s": 61,
+    # docs/OTA_DESIGN.md §5: `/status`'s OTA fields (img = running image id
+    # short form, ota = capability gate, ota_t/ota_st/ota_pct/ota_err = job
+    # target/state/percent/error code). Next free integers after
+    # `loc_move_s=61`.
+    "img": 62,
+    "ota": 63,
+    "ota_t": 64,
+    "ota_st": 65,
+    "ota_pct": 66,
+    "ota_err": 67,
 }
 REVERSE_KEYMAP: dict[int, str] = {v: k for k, v in KEYMAP.items()}
 
@@ -168,7 +178,24 @@ SMS_CONTACT_KEYMAP: dict[str, int] = {"n": 0, "p": 1}
 # PROTOCOL.md §10's own `cfg` sub-map allocation (see module docstring):
 # `lock=0`, `ca=1`, `sms=2`, `wifi=3` (docs/WIFI_DESIGN.md §4/§6,
 # docs/WIFI_TASKS.md W7).
-CFG_KEYMAP: dict[str, int] = {"lock": 0, "ca": 1, "sms": 2, "wifi": 3}
+CFG_KEYMAP: dict[str, int] = {"lock": 0, "ca": 1, "sms": 2, "wifi": 3, "ota": 4}
+# docs/OTA_DESIGN.md §5: `cfg.ota`. `img`/`osha`/`base` are 64-hex digests in
+# the JSON-shaped dict and 32-byte bstr on the CBOR wire; `fmt` is
+# "full"/"delta" in JSON and 0/1 in CBOR.
+OTA_KEYMAP: dict[str, int] = {
+    "img": 0,
+    "isz": 1,
+    "url": 2,
+    "osz": 3,
+    "osha": 4,
+    "fmt": 5,
+    "base": 6,
+    "psz": 7,
+    "cancel": 8,
+}
+_OTA_HASH_KEYS = ("img", "osha", "base")
+_OTA_FMT_TO_INT: dict[str, int] = {"full": 0, "delta": 1}
+_OTA_FMT_FROM_INT: dict[int, str] = {v: k for k, v in _OTA_FMT_TO_INT.items()}
 # docs/WIFI_DESIGN.md §4/§6, docs/PROTOCOL.md §10 (this task): `cfg.wifi =
 # {en, nets}`. `en` toggles WiFi on/off; `nets` (absent = "leave stored
 # networks alone, apply en only") is an array of at most two
@@ -189,8 +216,34 @@ _REVERSE_CA = {v: k for k, v in CA_KEYMAP.items()}
 _REVERSE_SMS_CONTACT = {v: k for k, v in SMS_CONTACT_KEYMAP.items()}
 _REVERSE_CFG = {v: k for k, v in CFG_KEYMAP.items()}
 _REVERSE_CELL = {v: k for k, v in CELL_KEYMAP.items()}
+_REVERSE_OTA = {v: k for k, v in OTA_KEYMAP.items()}
 _REVERSE_WIFI = {v: k for k, v in WIFI_KEYMAP.items()}
 _REVERSE_WIFI_NET = {v: k for k, v in WIFI_NET_KEYMAP.items()}
+
+
+def _ota_to_int(v: dict[str, Any]) -> dict[int, Any]:
+    out: dict[int, Any] = {}
+    for k, val in v.items():
+        if k in _OTA_HASH_KEYS and isinstance(val, str):
+            val = bytes.fromhex(val)
+        elif k == "fmt" and isinstance(val, str):
+            val = _OTA_FMT_TO_INT[val]
+        out[OTA_KEYMAP[k]] = val
+    return out
+
+
+def _ota_to_names(v: dict[Any, Any]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for k, val in v.items():
+        name = _REVERSE_OTA.get(k)
+        if name is None:
+            continue
+        if name in _OTA_HASH_KEYS and isinstance(val, bytes):
+            val = val.hex()
+        elif name == "fmt" and isinstance(val, int):
+            val = _OTA_FMT_FROM_INT.get(val, val)
+        out[name] = val
+    return out
 
 
 def _value_to_int_keys(name: str, value: Any) -> Any:
@@ -218,6 +271,8 @@ def _value_to_int_keys(name: str, value: Any) -> Any:
                 out[CFG_KEYMAP["sms"]] = [
                     {SMS_CONTACT_KEYMAP[sk]: sv for sk, sv in item.items()} for item in v
                 ]
+            elif k == "ota" and isinstance(v, dict):
+                out[CFG_KEYMAP["ota"]] = _ota_to_int(v)
             elif k == "wifi" and isinstance(v, dict):
                 # docs/WIFI_DESIGN.md §4/§6: `cfg.wifi = {en, nets}` -- `nets`
                 # (a list of `{s, p}` entries) is only translated if present,
@@ -264,6 +319,8 @@ def _value_to_names(name: str, value: Any) -> Any:
                 out["sms"] = [
                     {_REVERSE_SMS_CONTACT[sk]: sv for sk, sv in item.items()} for item in v
                 ]
+            elif k == CFG_KEYMAP["ota"] and isinstance(v, dict):
+                out["ota"] = _ota_to_names(v)
             elif k == CFG_KEYMAP["wifi"] and isinstance(v, dict):
                 wifi_out: dict[str, Any] = {}
                 for wk, wv in v.items():

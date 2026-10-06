@@ -16,7 +16,14 @@ import re
 import time
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
 
 from app import wirecbor
 
@@ -223,6 +230,28 @@ class UpEnvelope(BaseModel):
         return self.ack is not None
 
 
+OTA_STATES = frozenset({"wait", "dl", "ready", "inst", "ok", "fail", "rb"})
+_HEX16_RE = re.compile(r"[0-9a-f]{16}")
+_OTA_ERR_RE = re.compile(r"[a-z]{1,8}")
+
+
+def _ota_field_ok(name: str | None, value: object) -> bool:
+    """docs/OTA_DESIGN.md §5's per-field rules for `/status`'s OTA fields."""
+    if value is None:
+        return True
+    if name in ("img", "ota_t"):
+        return isinstance(value, str) and _HEX16_RE.fullmatch(value) is not None
+    if name == "ota_st":
+        return isinstance(value, str) and value in OTA_STATES
+    if name == "ota_err":
+        return isinstance(value, str) and _OTA_ERR_RE.fullmatch(value) is not None
+    if name == "ota_pct":
+        return isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 100
+    if name == "ota":
+        return isinstance(value, int) and not isinstance(value, bool) and value == 1
+    return False
+
+
 class StatusEnvelope(BaseModel):
     """A payload received on `pager/{device_id}/status` (device publish or
     broker-generated LWT), per §5.1/§5.2."""
@@ -298,9 +327,24 @@ class StatusEnvelope(BaseModel):
     # `loc_backoff_s` above -- the relay stores whatever the device reports
     # and never writes it back (the device owns its own duty cycle).
     loc_move_s: int | None = None
+    # docs/OTA_DESIGN.md §5 (envelope keys 62-67), all optional and
+    # display-only except `img`/`ota` (the relay's delta choice and the push
+    # gate). A malformed value drops just that field to `None` (like `bpull`)
+    # rather than bouncing the whole `/status`: see `_drop_bad_ota_field`.
+    img: str | None = None
+    ota: int | None = None
+    ota_t: str | None = None
+    ota_st: str | None = None
+    ota_pct: int | None = None
+    ota_err: str | None = None
     # §14.2: present on every signed envelope; absent on the unsigned LWT
     # exception (§14.6) and on an unsigned (`authMode: "password"`) device.
     n: int | None = None
+
+    @field_validator("img", "ota", "ota_t", "ota_st", "ota_pct", "ota_err", mode="before")
+    @classmethod
+    def _drop_bad_ota_field(cls, value: object, info: ValidationInfo) -> object:
+        return value if _ota_field_ok(info.field_name, value) else None
 
     @field_validator("loc_period_s", "loc_min_s", "loc_backoff_s", "loc_move_s")
     @classmethod

@@ -1233,3 +1233,167 @@ def test_super_family_patch_validates_the_name(client: TestClient, admin_headers
         )
         assert resp.status_code == 400, bad
     assert families_store.get_family(family.id).name == "New"
+
+
+# ---- OTA firmware routes (docs/OTA_DESIGN.md D10, §5) ----
+
+
+from tests.test_firmware import (
+    BASE_URL,
+    ID_NEW,
+    ID_OLD,
+    INDEX_URL,
+    index_server,  # noqa: F401 -- fixture
+)
+
+
+@pytest.fixture
+def ota_client(
+    fake_emqx: FakeEmqxAdmin, broker: FakeBrokerClient, index_server: dict  # noqa: F811
+) -> Iterator[TestClient]:
+    settings = make_settings(fw_index_url=INDEX_URL, fw_bucket_base=BASE_URL)
+    app = create_app(settings=settings, broker_client=broker)
+    app.state.emqx_admin = fake_emqx
+    with TestClient(app) as c:
+        yield c
+
+
+def _ota_device(device_id: str = "pgr-ota-r", *, img: str | None = None, cap: int | None = 1) -> None:
+    devices_store.create_device(
+        device_id=device_id,
+        owner_uid="owner-ota",
+        label="d",
+        mqtt_username=device_id,
+        mqtt_password_hash="x",
+        auth_mode="password",
+    )
+    fields: dict = {"state": "online", "img": img, "otaCap": cap}
+    devices_store.update_status(device_id, **fields)
+
+
+def test_ota_routes_503_when_not_configured(client: TestClient, admin_headers: dict[str, str]):
+    _ota_device()
+    assert client.get("/api/admin/firmware", headers=admin_headers).status_code == 503
+    r = client.post(
+        "/api/admin/devices/pgr-ota-r/ota", json={"target": ID_NEW[:16]}, headers=admin_headers
+    )
+    assert r.status_code == 503
+    assert r.json()["detail"] == "OTA not configured"
+
+
+def test_ota_routes_502_when_index_unreachable(
+    ota_client: TestClient, admin_headers: dict[str, str], index_server: dict  # noqa: F811
+):
+    _ota_device()
+    index_server["status"] = 503
+    assert ota_client.get("/api/admin/firmware", headers=admin_headers).status_code == 502
+    r = ota_client.post(
+        "/api/admin/devices/pgr-ota-r/ota", json={"target": ID_NEW[:16]}, headers=admin_headers
+    )
+    assert r.status_code == 502
+
+
+def test_ota_routes_require_super(ota_client: TestClient):
+    assert ota_client.get("/api/admin/firmware").status_code in (401, 403)
+
+
+def test_list_firmware_newest_first_with_delta_for_matching_device(
+    ota_client: TestClient, admin_headers: dict[str, str]
+):
+    _ota_device(img=ID_OLD[:16])
+    builds = ota_client.get(
+        "/api/admin/firmware?device=pgr-ota-r", headers=admin_headers
+    ).json()["builds"]
+    assert [b["id16"] for b in builds] == [ID_NEW[:16], ID_OLD[:16]]
+    assert builds[0] == {
+        "id16": ID_NEW[:16], "version": "beta-57-gdeadbee", "size": 685168,
+        "published": 1_790_000_000, "kind": "delta", "osz": 42513,
+        "estBytes": int(42513 * 1.045) + 7168,
+    }
+    assert builds[1]["kind"] == "full"
+    # no device parameter: everything is full
+    plain = ota_client.get("/api/admin/firmware", headers=admin_headers).json()["builds"]
+    assert {b["kind"] for b in plain} == {"full"}
+    assert ota_client.get(
+        "/api/admin/firmware?device=nope", headers=admin_headers
+    ).status_code == 404
+
+
+def test_push_ota_404s(ota_client: TestClient, admin_headers: dict[str, str]):
+    _ota_device()
+    r = ota_client.post(
+        "/api/admin/devices/nope/ota", json={"target": ID_NEW[:16]}, headers=admin_headers
+    )
+    assert r.status_code == 404
+    r = ota_client.post(
+        "/api/admin/devices/pgr-ota-r/ota", json={"target": "0" * 16}, headers=admin_headers
+    )
+    assert r.status_code == 404
+
+
+def test_push_ota_409_without_gate(
+    ota_client: TestClient, admin_headers: dict[str, str], broker: FakeBrokerClient
+):
+    _ota_device(cap=None)
+    r = ota_client.post(
+        "/api/admin/devices/pgr-ota-r/ota", json={"target": ID_NEW[:16]}, headers=admin_headers
+    )
+    assert r.status_code == 409
+    assert r.json()["detail"] == "device does not report ota:1"
+    assert broker.published == []
+
+
+def test_push_ota_409_already_running(ota_client: TestClient, admin_headers: dict[str, str]):
+    _ota_device(img=ID_NEW[:16])
+    r = ota_client.post(
+        "/api/admin/devices/pgr-ota-r/ota", json={"target": ID_NEW[:16]}, headers=admin_headers
+    )
+    assert r.status_code == 409
+    assert r.json()["detail"] == "already running"
+
+
+def test_push_ota_422_bad_body(ota_client: TestClient, admin_headers: dict[str, str]):
+    _ota_device()
+    for body in ({}, {"target": "xyz"}, {"target": ID_NEW[:16], "cancel": True}, {"cancel": False}):
+        r = ota_client.post("/api/admin/devices/pgr-ota-r/ota", json=body, headers=admin_headers)
+        assert r.status_code == 422, body
+
+
+def test_push_ota_delta_when_img_matches_base(
+    ota_client: TestClient, admin_headers: dict[str, str], broker: FakeBrokerClient
+):
+    _ota_device(img=ID_OLD[:16])
+    r = ota_client.post(
+        "/api/admin/devices/pgr-ota-r/ota", json={"target": ID_NEW[:16]}, headers=admin_headers
+    )
+    assert r.status_code == 200, r.text
+    assert r.json() == {
+        "ok": True, "kind": "delta", "osz": 42513, "estBytes": int(42513 * 1.045) + 7168,
+    }
+    sent = json.loads(broker.published[-1].payload)
+    ota = sent["cfg"]["ota"]
+    assert ota["fmt"] == "delta" and ota["base"] == ID_OLD and ota["psz"] == 686466
+    assert ota["url"] == BASE_URL + f"fw/{ID_NEW[:16]}/from-{ID_OLD[:16]}.dz"
+    job = devices_store.get_device("pgr-ota-r").otaJob
+    assert job.target16 == ID_NEW[:16] and job.kind == "delta" and job.osz == 42513
+    assert job.estBytes == r.json()["estBytes"] and job.by_uid and job.at is not None
+
+
+def test_push_ota_full_otherwise_then_cancel(
+    ota_client: TestClient, admin_headers: dict[str, str], broker: FakeBrokerClient
+):
+    _ota_device(img="9" * 16)
+    r = ota_client.post(
+        "/api/admin/devices/pgr-ota-r/ota", json={"target": ID_NEW[:16]}, headers=admin_headers
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["kind"] == "full" and r.json()["osz"] == 338784
+    assert json.loads(broker.published[-1].payload)["cfg"]["ota"]["fmt"] == "full"
+    assert devices_store.get_device("pgr-ota-r").otaJob is not None
+
+    r = ota_client.post(
+        "/api/admin/devices/pgr-ota-r/ota", json={"cancel": True}, headers=admin_headers
+    )
+    assert r.status_code == 200 and r.json() == {"ok": True}
+    assert json.loads(broker.published[-1].payload)["cfg"] == {"ota": {"cancel": True}}
+    assert devices_store.get_device("pgr-ota-r").otaJob is None
