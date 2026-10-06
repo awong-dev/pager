@@ -96,6 +96,19 @@ variable "enable_cell_geo_secret" {
   default     = false
 }
 
+# --- Firmware OTA bucket (docs/OTA_DESIGN.md) -----------------------------
+variable "fw_bucket_name" {
+  description = "Public firmware bucket name. Empty = \"<project_id>-pager-fw\"."
+  type        = string
+  default     = ""
+}
+
+variable "fw_publishers" {
+  description = "IAM members allowed to upload firmware with tools/fwpub.py, e.g. [\"user:you@example.com\"]. Gets roles/storage.objectAdmin on the firmware bucket."
+  type        = list(string)
+  default     = []
+}
+
 variable "tick_schedule" {
   type    = string
   default = "*/5 * * * *"

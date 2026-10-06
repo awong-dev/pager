@@ -439,6 +439,17 @@ only with a number" language, before spending any money on `min_instance_count =
 
 ---
 
+## 16. Firmware OTA bucket (`docs/OTA_DESIGN.md`)
+
+1. In `envs/prod/terraform.tfvars` set `fw_publishers = ["user:<your google account>"]` (optionally `fw_bucket_name`; default `<project_id>-pager-fw`).
+2. `terraform apply` (human step): creates the public-read bucket, grants you `objectAdmin`, and sets `FW_BUCKET_BASE`/`FW_INDEX_URL` on the relay. Apply after the relay code that reads them is deployed; an unrecognised env var is harmless.
+3. `gcloud auth login`, then `python tools/fwpub.py probe --bucket <name>`: uploads `fw/probe-4k.bin` and prints its sha256, for bench experiment 1 (OTA_DESIGN.md §7).
+4. Publish each release build: `python tools/fwpub.py publish build/images/<x>-release-app.bin --bucket <name> [--base <older.bin>]...` (needs `pip install detools`; `--dry-run --out DIR` previews without gcloud).
+5. Check `terraform output fw_index_url` serves the index with `curl`.
+6. Cost: about 0.56 MB per release, inside the always-free 5 GiB; no resource here is billable at this scale.
+
+---
+
 ## Cost summary (recap of `docs/SERVER_PLAN.md` §9.3 — verify against current pricing)
 
 Everything in this tree is designed to be **$0/month** except: (a) Secret Manager/Artifact

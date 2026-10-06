@@ -30,3 +30,8 @@ output "scheduler_service_account_email" {
 output "broker_gce_external_ip" {
   value = var.use_broker_gce ? module.broker_gce[0].external_ip : null
 }
+
+output "fw_index_url" {
+  description = "Firmware index the relay reads (FW_INDEX_URL); tools/fwpub.py maintains it."
+  value       = module.fw_bucket.index_url
+}

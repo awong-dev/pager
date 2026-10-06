@@ -57,6 +57,17 @@ module "secrets" {
   project_id = var.project_id
 }
 
+# --- Public firmware bucket for OTA (docs/OTA_DESIGN.md) -------------------
+module "fw_bucket" {
+  source = "../../modules/fw-bucket"
+
+  project_id  = var.project_id
+  region      = var.region
+  bucket_name = var.fw_bucket_name == "" ? "${var.project_id}-pager-fw" : var.fw_bucket_name
+  publishers  = var.fw_publishers
+  labels      = var.labels
+}
+
 # --- Cloud Run relay service + one-off jobs --------------------------------
 module "relay_service" {
   source = "../../modules/relay-service"
@@ -70,6 +81,10 @@ module "relay_service" {
   broker_host     = var.broker_host
   broker_ca_pem   = var.broker_ca_pem_file == "" ? "" : file("${path.module}/${var.broker_ca_pem_file}")
   public_base_url = var.public_base_url
+
+  # docs/OTA_DESIGN.md D3: public objects, so the relay needs no IAM.
+  fw_bucket_base = module.fw_bucket.public_base
+  fw_index_url   = module.fw_bucket.index_url
 
   broker_api_key_secret_id    = module.secrets.secret_ids.broker_api_key
   broker_api_secret_secret_id = module.secrets.secret_ids.broker_api_secret

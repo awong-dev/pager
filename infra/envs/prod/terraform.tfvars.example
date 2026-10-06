@@ -47,6 +47,11 @@ broker_host = "<your-deployment>.emqxsl.com"
 # broker_domain          = ""      # required if use_broker_gce = true
 # letsencrypt_email      = ""      # required if use_broker_gce = true
 
+# Firmware OTA bucket (docs/OTA_DESIGN.md). fw_publishers lists who may upload
+# with tools/fwpub.py; fw_bucket_name defaults to "<project_id>-pager-fw".
+# fw_bucket_name = ""
+fw_publishers = ["user:you@example.com"]
+
 # PUSH_BACKEND is not a tfvars knob here -- this env's main.tf passes
 # push_backend = "fcm" to the relay-service module unconditionally (docs/
 # V03_PLAN.md §3a, task 3a.3). See infra/README.md step 9 for the

@@ -51,6 +51,18 @@ variable "public_base_url" {
   default     = ""
 }
 
+variable "fw_bucket_base" {
+  description = "app/config.py's FW_BUCKET_BASE: public base URL of the OTA firmware bucket (docs/OTA_DESIGN.md D3), trailing slash. Empty = unset."
+  type        = string
+  default     = ""
+}
+
+variable "fw_index_url" {
+  description = "app/config.py's FW_INDEX_URL: URL of fw/index.json in the firmware bucket. Empty = unset."
+  type        = string
+  default     = ""
+}
+
 # --- Secret Manager wiring ------------------------------------------
 # These come from infra/modules/secrets' outputs. Cloud Run v2 refuses to
 # create a revision that references a secret with zero versions, so

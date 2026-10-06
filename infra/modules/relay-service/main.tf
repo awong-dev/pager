@@ -153,6 +153,22 @@ resource "google_cloud_run_v2_service" "relay" {
           value = env.value
         }
       }
+      # docs/OTA_DESIGN.md D3: firmware bucket (public objects, no IAM). Only
+      # set when configured; unset makes the relay's OTA routes return 503.
+      dynamic "env" {
+        for_each = var.fw_bucket_base == "" ? [] : [var.fw_bucket_base]
+        content {
+          name  = "FW_BUCKET_BASE"
+          value = env.value
+        }
+      }
+      dynamic "env" {
+        for_each = var.fw_index_url == "" ? [] : [var.fw_index_url]
+        content {
+          name  = "FW_INDEX_URL"
+          value = env.value
+        }
+      }
       env {
         name  = "TASKS_MODE"
         value = var.tasks_mode
