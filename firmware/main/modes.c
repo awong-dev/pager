@@ -2544,6 +2544,32 @@ void modes_run(void)
         bool skip_sleep = btn_busy || btn_stuck || ui_awake || net_modem_busy() || net_connect_in_flight() ||
                            net_publish_in_flight() || bookpull_fetch_in_progress() || net_resub_hold() ||
                            accel_shake_pending() || input_hot();
+        // 5 Oct 2026 diagnostic (all builds; owner: the shake-branch release
+        // never slept after boot, no console, USB alive only because it
+        // never sleeps): once per 60 s while the loop has gone >= 60 s
+        // without sleeping and no input window is open, name every term
+        // that is holding it awake. One ESP_LOGI, no other effect.
+        {
+            static int64_t s_awake_since_us = 0;
+            static int64_t s_awake_log_us = 0;
+            int64_t now_us = esp_timer_get_time();
+            if (!skip_sleep) {
+                s_awake_since_us = 0;
+            } else if (s_awake_since_us == 0) {
+                s_awake_since_us = now_us;
+            } else if (now_us - s_awake_since_us >= 60000000LL && now_us - s_awake_log_us >= 60000000LL &&
+                       !ui_awake && !input_hot() && !btn_busy) {
+                s_awake_log_us = now_us;
+                ESP_LOGI(TAG,
+                         "awake %llu s without sleeping: stuck=%d modem_busy=%d connect=%d publish=%d "
+                         "fetch=%d resub=%d shake=%d attentive=%d status_pending=%d",
+                         (unsigned long long) ((now_us - s_awake_since_us) / 1000000),
+                         (int) btn_stuck, (int) net_modem_busy(), (int) net_connect_in_flight(),
+                         (int) net_publish_in_flight(), (int) bookpull_fetch_in_progress(),
+                         (int) net_resub_hold(), (int) accel_shake_pending(), (int) attentive,
+                         (int) s_status_publish_pending);
+            }
+        }
         // pump_blocked keys ONLY on net_modem_busy() (the UART/RTS interlock
         // against the MQTT event handler, see the comment above on
         // net_modem_busy()) -- NOT on btn_busy/btn_stuck/ui_awake, and NOT on
