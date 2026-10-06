@@ -215,11 +215,16 @@ static bool reg_write(uint8_t reg, uint8_t val)
                                       pdMS_TO_TICKS(50)) == ESP_OK;
 }
 
+static esp_err_t s_last_err = ESP_OK; // 5 Oct 2026: last I2C read result, for acceltest's triage
+
 static bool reg_read(uint8_t reg, uint8_t *out)
 {
-    return i2c_master_write_read_device(I2C_NUM_1, PAGER_I2C_ADDR_LIS3DH, &reg, 1, out, 1,
-                                        pdMS_TO_TICKS(50)) == ESP_OK;
+    s_last_err = i2c_master_write_read_device(I2C_NUM_1, PAGER_I2C_ADDR_LIS3DH, &reg, 1, out, 1,
+                                              pdMS_TO_TICKS(50));
+    return s_last_err == ESP_OK;
 }
+
+esp_err_t accel_debug_last_err(void) { return s_last_err; }
 
 // A2: multi-byte read with the LIS3DH's auto-increment bit (0x80) set on
 // the register address, e.g. OUT_X_L..OUT_Z_H in one transaction.
@@ -281,9 +286,9 @@ bool accel_init(void)
         // is not a paging-path dependency, so there is nothing to recover
         // into and nothing worth a retry loop for.
         ESP_LOGI(TAG,
-                 "LIS3DH not found at 0x%02x (WHO_AM_I read 0x%02x) - motion trigger disabled; "
+                 "LIS3DH not found at 0x%02x (WHO_AM_I read 0x%02x, i2c %s) - motion trigger disabled; "
                  "this is the expected/likely case if the accelerometer is not wired yet",
-                 (unsigned) PAGER_I2C_ADDR_LIS3DH, (unsigned) who);
+                 (unsigned) PAGER_I2C_ADDR_LIS3DH, (unsigned) who, esp_err_to_name(s_last_err));
         s_present = false;
         return false;
     }

@@ -27,6 +27,9 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#ifdef ESP_PLATFORM
+#include "esp_err.h"
+#endif
 
 #ifdef __cplusplus
 extern "C" {
@@ -235,6 +238,12 @@ bool accel_debug_set_cfg(uint8_t ctrl1, uint8_t ctrl4);
  * Takes effect on the next accel_poll() call; does not require the chip
  * to be present. Power effect: none by itself. */
 void accel_debug_set_refractory_s(uint32_t seconds);
+
+#ifdef ESP_PLATFORM
+/* 5 Oct 2026: esp_err_t of the most recent LIS3DH I2C read (ESP_OK, ESP_FAIL = NACK/no
+ * device, ESP_ERR_TIMEOUT = bus held) -- the console's wire-vs-wedge triage. */
+esp_err_t accel_debug_last_err(void);
+#endif
 
 #ifdef __cplusplus
 }

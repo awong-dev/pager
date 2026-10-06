@@ -808,8 +808,12 @@ static int cmd_key(int argc, char **argv)
 static int cmd_i2cscan(int argc, char **argv)
 {
     bool swap = (argc >= 2) && (strcmp(argv[1], "swap") == 0);
-    int sda = swap ? PAGER_PIN_KB_SCL : PAGER_PIN_KB_SDA;
-    int scl = swap ? PAGER_PIN_KB_SDA : PAGER_PIN_KB_SCL;
+    // 5 Oct 2026: `i2cscan accel` scans the LIS3DH's own bus (I2C_NUM_1,
+    // accel.c installs the driver at boot) -- wire vs. wedged-chip triage.
+    bool accel = (argc >= 2) && (strcmp(argv[1], "accel") == 0);
+    i2c_port_t port = accel ? I2C_NUM_1 : I2C_NUM_0;
+    int sda = accel ? PAGER_PIN_ACCEL_SDA : (swap ? PAGER_PIN_KB_SCL : PAGER_PIN_KB_SDA);
+    int scl = accel ? PAGER_PIN_ACCEL_SCL : (swap ? PAGER_PIN_KB_SDA : PAGER_PIN_KB_SCL);
     if (swap) {
         i2c_driver_delete(I2C_NUM_0);
         i2c_config_t conf = {
@@ -829,7 +833,7 @@ static int cmd_i2cscan(int argc, char **argv)
         i2c_master_start(cmd);
         i2c_master_write_byte(cmd, (uint8_t) ((a << 1) | I2C_MASTER_WRITE), true);
         i2c_master_stop(cmd);
-        esp_err_t err = i2c_master_cmd_begin(I2C_NUM_0, cmd, pdMS_TO_TICKS(20));
+        esp_err_t err = i2c_master_cmd_begin(port, cmd, pdMS_TO_TICKS(20));
         i2c_cmd_link_delete(cmd);
         if (err == ESP_OK) {
             printf("i2cscan: device at 0x%02x%s\n", a,
@@ -1153,7 +1157,7 @@ static int cmd_acceltest(int argc, char **argv)
 
     if (argc == 1) {
         if (!present) {
-            printf("acceltest: not present\n");
+            printf("acceltest: not present (WHO_AM_I read: %s)\n", esp_err_to_name(accel_debug_last_err()));
             return 1;
         }
         printf("acceltest: present=1 WHO_AM_I=0x%02x\n", (unsigned) st.who_am_i);
@@ -1193,7 +1197,7 @@ static int cmd_acceltest(int argc, char **argv)
             return 1;
         }
         if (!present) {
-            printf("acceltest: not present\n");
+            printf("acceltest: not present (WHO_AM_I read: %s)\n", esp_err_to_name(accel_debug_last_err()));
             return 1;
         }
         uint32_t period_ms = accel_debug_sample_period_ms();
