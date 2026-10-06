@@ -290,6 +290,9 @@ incognito window) to act as two different people at once where noted.
 25. **Alerts page and badge** (4.4): a device `sms_log` `in` from an unlisted number (Python test pager
     `sms in <phone> <text>`) raises one `sms_unknown` card; Approve with a name creates the contact and puts it on that
     member's pager; Block adds the number to the family's blocked list; a `contact_req` card approves into an SMS
-    contact or a link.
+    contact or a link. On the device page, the SMS log card (Refresh button) lists every text newest first; a
+    malformed audit upload (bad `sms_log` payload from the pager) shows a red "malformed" chip, its reason in italics,
+    "—" for unknown fields, and a "raw" toggle revealing the hex. A chat with an SMS contact interleaves the pager's modem texts for that number as bubbles (out = right, in = left,
+    "modem" chip, status, malformed rows with reason/raw); Refresh or window focus reloads them.
 
 `npm run build && npx tsc --noEmit && npm run lint` should all be clean.

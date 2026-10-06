@@ -95,6 +95,60 @@ function formatLogTs(epochS: number): string {
   });
 }
 
+function LogRow({ e }: { e: SmsLogEntry }) {
+  const [showRaw, setShowRaw] = useState(false);
+  const bad = e.malformed === true;
+  return (
+    <TableRow
+      sx={{
+        bgcolor: bad
+          ? "warning.light"
+          : e.st === "blocked"
+            ? "warning.light"
+            : e.st === "failed"
+              ? "error.light"
+              : undefined,
+      }}
+    >
+      <TableCell>{formatLogTs(e.smsTs || e.ts)}</TableCell>
+      <TableCell>{e.dir ? dirArrow(e.dir) : "—"}</TableCell>
+      <TableCell>{e.name ?? e.peer ?? "—"}</TableCell>
+      <TableCell>
+        {bad && <Chip size="small" label="malformed" color="error" sx={{ mr: 0.5 }} />}
+        {e.st ? <Chip size="small" label={e.st} color={statusColor(e.st)} /> : !bad && "—"}
+      </TableCell>
+      <TableCell sx={{ maxWidth: 240, wordBreak: "break-word" }}>
+        {bad ? (
+          <>
+            <Typography component="span" variant="body2" sx={{ fontStyle: "italic" }}>
+              {e.reason ?? "—"}
+            </Typography>
+            {e.rawHex && (
+              <>
+                {" "}
+                <Button size="small" sx={{ minWidth: 0, p: 0, textTransform: "none" }} onClick={() => setShowRaw((v) => !v)}>
+                  raw
+                </Button>
+                {showRaw && (
+                  <Typography
+                    component="div"
+                    variant="caption"
+                    sx={{ fontFamily: "monospace", wordBreak: "break-all" }}
+                  >
+                    {e.rawHex}
+                  </Typography>
+                )}
+              </>
+            )}
+          </>
+        ) : (
+          (e.body ?? "—")
+        )}
+      </TableCell>
+    </TableRow>
+  );
+}
+
 function DeviceInner() {
   const id = useDeviceId();
   const router = useRouter();
@@ -284,9 +338,14 @@ function DeviceInner() {
 
       <Card variant="outlined">
         <CardContent>
-          <Typography variant="h6" gutterBottom>
-            SMS log
-          </Typography>
+          <Stack direction="row" sx={{ alignItems: "center", mb: 1 }}>
+            <Typography variant="h6" sx={{ flexGrow: 1 }}>
+              SMS log
+            </Typography>
+            <Button size="small" onClick={() => void fetchLog(undefined)}>
+              Refresh
+            </Button>
+          </Stack>
           {logError && (
             <Alert severity="error" sx={{ mb: 2 }}>
               {logError}
@@ -311,25 +370,7 @@ function DeviceInner() {
                 </TableHead>
                 <TableBody>
                   {log.map((e) => (
-                    <TableRow
-                      key={e.id}
-                      sx={{
-                        bgcolor:
-                          e.st === "blocked"
-                            ? "warning.light"
-                            : e.st === "failed"
-                              ? "error.light"
-                              : undefined,
-                      }}
-                    >
-                      <TableCell>{formatLogTs(e.smsTs || e.ts)}</TableCell>
-                      <TableCell>{dirArrow(e.dir)}</TableCell>
-                      <TableCell>{e.name ?? e.peer}</TableCell>
-                      <TableCell>
-                        <Chip size="small" label={e.st} color={statusColor(e.st)} />
-                      </TableCell>
-                      <TableCell sx={{ maxWidth: 240, wordBreak: "break-word" }}>{e.body}</TableCell>
-                    </TableRow>
+                    <LogRow key={e.id} e={e} />
                   ))}
                 </TableBody>
               </Table>

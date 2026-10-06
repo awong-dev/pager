@@ -45,13 +45,20 @@ class SmsLogEntry(BaseModel):
 
     id: str
     ts: int
-    smsTs: int
-    dir: Direction
-    peer: str
-    st: Status
-    body: str = ""
+    smsTs: int = 0
+    # Normal rows always carry these; a `malformed` row carries whatever
+    # best-effort extraction found (possibly nothing -> None).
+    dir: Direction | None = None
+    peer: str | None = None
+    st: Status | None = None
+    body: str | None = ""
     receivedAt: datetime | None = None
     peerUid: str | None = None
+    # Audit-trail rows for an sms_log upload that could not be stored
+    # normally (see `create_malformed`). Old rows lack the field -> False.
+    malformed: bool = False
+    reason: str | None = None
+    rawHex: str | None = None
 
 
 def _sms_log(device_id: str):
@@ -95,6 +102,45 @@ def create_log(
                 "body": body,
                 "peerUid": peer_uid,
                 "receivedAt": SERVER_TIMESTAMP,
+            }
+        )
+        return True
+    except AlreadyExists:
+        return False
+
+
+def create_malformed(
+    device_id: str,
+    log_id: str,
+    *,
+    ts: int,
+    reason: str,
+    raw_hex: str,
+    peer: str | None,
+    dir_: str | None,
+    st: str | None,
+    msg_id: str | None,
+) -> bool:
+    """Audit-trail row for a signature-verified `sms_log` upload that did
+    not decode or failed field validation. `log_id` is deterministic
+    (`bad_` + sha256 prefix) so a device retry is a no-op. `msg_id` is the
+    envelope's own `s_xxxxxxxx` if one could be recovered. Returns True if
+    this call created the row."""
+    try:
+        _sms_log(device_id).document(log_id).create(
+            {
+                "ts": ts,
+                "smsTs": 0,
+                "dir": dir_,
+                "peer": peer,
+                "st": st,
+                "body": None,
+                "peerUid": None,
+                "receivedAt": SERVER_TIMESTAMP,
+                "malformed": True,
+                "reason": reason,
+                "rawHex": raw_hex,
+                "msgId": msg_id,
             }
         )
         return True

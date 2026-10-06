@@ -243,11 +243,16 @@ class SmsLogEntryOut(BaseModel):
     id: str
     ts: int
     smsTs: int
-    dir: str
-    peer: str
+    dir: str | None
+    peer: str | None
     name: str | None
-    st: str
-    body: str
+    st: str | None
+    body: str | None
+    # True for an audit-trail row of an sms_log upload that could not be
+    # stored normally; `reason`/`rawHex` explain it. Old rows -> False.
+    malformed: bool = False
+    reason: str | None = None
+    rawHex: str | None = None
 
 
 class SmsLogResponse(BaseModel):
@@ -280,6 +285,9 @@ def get_sms_log(
                 name=contacts_by_phone.get(e.peer),
                 st=e.st,
                 body=e.body,
+                malformed=e.malformed,
+                reason=e.reason,
+                rawHex=e.rawHex,
             )
             for e in entries
         ]

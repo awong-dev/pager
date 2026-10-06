@@ -253,6 +253,8 @@ relay. This reverses `PROTOCOL.md` §7.3's "no device-side SMS path"; edit it.
   find out. Everything fails safe: an SMS that cannot be sent is a `FAILED` thread entry plus an
   `sms_log` with `st:"failed"`.
 
+**Malformed uploads leave a trail.** If a signature-verified `sms_log` from a registered, non-revoked device cannot be stored normally (the envelope does not decode, or a field such as `peer`/`dir`/`st`/`id`/`body` is invalid), the relay still writes `smsLog/bad_<sha256(unsigned)[:12]>` (deterministic, so a retry does not duplicate) with `malformed:true`, `reason`, `ts` (relay receive time), `rawHex` (unsigned bytes, capped at 512) and best-effort `peer`/`dir`/`st`/`msgId` pulled from the raw bytes; `body` is null. For undecodable payloads this applies only when the bytes contain `sms_log`. `GET /api/devices/{id}/sms-log` returns these rows with `malformed:true` and `reason`/`rawHex` (normal rows: `malformed:false`); `dir`/`peer`/`st`/`body` may be null on a flagged row.
+
 ## 7. Wire additions (the only place new keys are allocated)
 
 Envelope keys:

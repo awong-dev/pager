@@ -242,6 +242,31 @@ def _ota_job_finished(target16: str, env: StatusEnvelope) -> bool:
     return env.ota_st in ("ok", "fail", "rb") and env.ota_t in (None, target16)
 
 
+_E164_RAW = re.compile(rb"\+[1-9]\d{6,14}")
+_MSG_ID_RAW = re.compile(rb"s_[0-9a-f]{8}")
+# JSON `"dir":"out"` or CBOR key 45 (0x18 0x2d) + text(3|2).
+_DIR_RAW = re.compile(rb'(?:"dir"\s*:\s*"|\x18\x2d[\x62\x63])(out|in)')
+# JSON `"st":"sent"` or CBOR key 46 (0x18 0x2e) + text header.
+_ST_RAW = re.compile(rb'(?:"st"\s*:\s*"|\x18\x2e[\x64-\x67])(sent|failed|recv|blocked)')
+
+
+def _extract_sms_fields(raw: bytes) -> dict[str, str | None]:
+    """Best-effort pulls from an unparseable sms_log envelope's raw bytes."""
+
+    def first(rx: re.Pattern[bytes]) -> str | None:
+        m = rx.search(raw)
+        if m is None:
+            return None
+        return (m.group(1) if rx.groups else m.group(0)).decode("ascii")
+
+    return {
+        "peer": first(_E164_RAW),
+        "dir": first(_DIR_RAW),
+        "st": first(_ST_RAW),
+        "id": first(_MSG_ID_RAW),
+    }
+
+
 class Ingest:
     """Owns the relay's reaction to device traffic. Called by the webhook
     router once per inbound event.
@@ -339,6 +364,10 @@ class Ingest:
         decoded = wire.decode_envelope_bytes(unsigned)
         if decoded is None:
             wire.log_malformed(topic, payload, "signed payload did not decode")
+            # Audit trail: an undecodable-but-signed sms_log still leaves a
+            # flagged row (docs/V02_DESIGN.md §6/§7).
+            if b"sms_log" in unsigned and device is not None and device.revokedAt is None:
+                self._store_malformed_sms(device_id, unsigned, "signed payload did not decode")
             return None
         data, encoding = decoded
         n = data.get("n")
@@ -526,6 +555,33 @@ class Ingest:
                 return "pending_link", None, value
         return "no_contact", None, value
 
+    def _store_malformed_sms(self, device_id: str, raw: bytes, reason: str) -> None:
+        """Best-effort flagged `smsLog` row for an sms_log upload we could
+        not store normally. Never raises into the ingest path."""
+        try:
+            fields = _extract_sms_fields(raw)
+            log_id = "bad_" + hashlib.sha256(raw).hexdigest()[:12]
+            created = sms_store.create_malformed(
+                device_id,
+                log_id,
+                ts=int(time.time()),
+                reason=reason[:200],
+                raw_hex=raw[:512].hex(),
+                peer=fields["peer"],
+                dir_=fields["dir"],
+                st=fields["st"],
+                msg_id=fields["id"],
+            )
+            logger.info(
+                "sms_log malformed device=%s log=%s reason=%s%s",
+                device_id,
+                log_id,
+                reason,
+                "" if created else " (duplicate, already stored)",
+            )
+        except Exception:  # audit is best-effort
+            logger.exception("could not store malformed sms_log for device=%s", device_id)
+
     def _handle_sms_log(
         self,
         device_id: str,
@@ -554,6 +610,17 @@ class Ingest:
             env = SmsLogEnvelope.model_validate(data)
         except Exception as exc:  # noqa: BLE001 -- pydantic.ValidationError, narrowly caught above
             wire.log_malformed(topic, payload, str(exc))
+            raw = payload
+            if device.authMode == "hmac":
+                secret = self._get_secret(device_id)
+                if secret is not None:
+                    ok, unsigned = devauth.verify(secret.hmacKey, topic, payload)
+                    if ok:
+                        raw = unsigned
+            reason = "invalid fields: " + ", ".join(
+                sorted({str(e["loc"][0]) for e in getattr(exc, "errors", list)() if e["loc"]})
+            )
+            self._store_malformed_sms(device_id, raw, reason.rstrip(": "))
             return
 
         # docs/CONTACT_REQ_DESIGN.md decision 7: the device's family

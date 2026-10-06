@@ -25,6 +25,8 @@ import Typography from "@mui/material/Typography";
 import LocationOnIcon from "@mui/icons-material/LocationOn";
 
 import DeliveryChips from "@/components/DeliveryChips";
+import SmsLogBubble from "@/components/SmsLogBubble";
+import type { SmsLogEntry } from "@/lib/smsContacts";
 import { formatClock, isLocReqExpired } from "@/lib/time";
 import type { MessageDoc } from "@/lib/types";
 
@@ -164,6 +166,8 @@ export interface MessageListProps {
   onScroll: (event: UIEvent<HTMLDivElement>) => void;
   showNewMessagesChip: boolean;
   onJumpToBottom: () => void;
+  /** Pager-modem SMS audit rows to interleave by time (SMS-contact threads). */
+  modemRows?: SmsLogEntry[];
 }
 
 export default function MessageList({
@@ -177,7 +181,12 @@ export default function MessageList({
   onScroll,
   showNewMessagesChip,
   onJumpToBottom,
+  modemRows,
 }: MessageListProps) {
+  const items = [
+    ...messages.map((m) => ({ ts: m.ts ?? 0, m, e: null as SmsLogEntry | null })),
+    ...(modemRows ?? []).map((e) => ({ ts: e.smsTs || e.ts, m: null as MessageRow | null, e })),
+  ].sort((a, b) => a.ts - b.ts);
   return (
     // `position: relative` lives on this wrapper, not the scrolling Box
     // below -- an absolutely positioned child of the scroll container
@@ -195,7 +204,8 @@ export default function MessageList({
             </Button>
           </Stack>
         )}
-        {messages.map((m) => {
+        {items.map(({ m, e }) => {
+          if (!m) return <SmsLogBubble key={`sms-${e!.id}`} entry={e!} />;
           const mine = m.senderUid === meUid && !isFromPager(m);
           if (m.kind === "loc_req") {
             return <LocReqRow key={m.id} message={m} mine={mine} alias={locationAlias} />;

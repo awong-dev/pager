@@ -10,6 +10,7 @@ FastAPI app so auth/validation are exercised too.
 
 from __future__ import annotations
 
+import base64
 import json
 import time
 from collections.abc import Iterator
@@ -211,6 +212,12 @@ def test_sms_log_from_revoked_device_dropped():
     assert sms_store.list_log("pgr-s-6") == []
 
 
+def _sign_raw_json(key: bytes, topic: str, p: bytes) -> bytes:
+    """Sign arbitrary (even unparseable) bytes P ending in `}` per §14.3."""
+    b64 = base64.urlsafe_b64encode(devauth.tag(key, topic, p)).rstrip(b"=")
+    return p[:-1] + b',"sig":"' + b64 + b'"}'
+
+
 @pytest.mark.parametrize(
     "kwargs",
     [
@@ -220,13 +227,51 @@ def test_sms_log_from_revoked_device_dropped():
         {"body": "x" * 161},
     ],
 )
-def test_sms_log_malformed_is_dropped(kwargs: dict[str, str]):
+def test_sms_log_malformed_is_stored_flagged(kwargs: dict[str, str]):
     _make_user("student", "student")
     _make_pager_device("pgr-s-7", "student")
     ingest, _broker = _ingest_with_broker()
 
     ingest.handle_up(up_topic("pgr-s-7"), sms_log_payload("s_00000008", **kwargs))
-    assert sms_store.list_log("pgr-s-7") == []
+    entries = sms_store.list_log("pgr-s-7")
+    assert len(entries) == 1
+    e = entries[0]
+    assert e.malformed is True
+    assert e.id.startswith("bad_")
+    assert e.reason is not None and e.reason.startswith("invalid fields")
+    assert e.body is None
+    assert e.rawHex is not None and b"sms_log" in bytes.fromhex(e.rawHex)
+
+
+def test_hmac_undecodable_signed_sms_log_is_flagged_and_idempotent():
+    _make_user("student", "student")
+    key = _make_hmac_pager_device("pgr-s-bad1", "student")
+    ingest, _broker = _ingest_with_broker()
+    topic = up_topic("pgr-s-bad1")
+    junk = b'{"kind":"sms_log","id":"s_0a1b2c3d","peer":"+12065550100","dir":"in","st":"recv",,}'
+    payload = _sign_raw_json(key, topic, junk)
+    ingest.handle_up(topic, payload)
+    ingest.handle_up(topic, payload)
+
+    entries = sms_store.list_log("pgr-s-bad1")
+    assert len(entries) == 1
+    e = entries[0]
+    assert e.malformed is True
+    assert e.peer == "+12065550100"
+    assert e.dir == "in"
+    assert e.st == "recv"
+    assert e.reason == "signed payload did not decode"
+    assert e.rawHex == junk.hex()
+
+
+def test_hmac_undecodable_signed_non_sms_is_not_logged():
+    _make_user("student", "student")
+    key = _make_hmac_pager_device("pgr-s-bad2", "student")
+    ingest, _broker = _ingest_with_broker()
+    topic = up_topic("pgr-s-bad2")
+    payload = _sign_raw_json(key, topic, b'{"kind":"status",,}')
+    ingest.handle_up(topic, payload)
+    assert sms_store.list_log("pgr-s-bad2") == []
 
 
 def test_hmac_signed_sms_log_is_verified_then_stored():
@@ -576,6 +621,43 @@ def test_put_sms_contacts_is_405_for_an_unauthenticated_caller(client: TestClien
     assert resp.status_code == 401
 
 
+def test_get_sms_log_lists_malformed_rows_flagged(client: TestClient):
+    _make_user("owner40", "owner40")
+    _make_pager_device("pgr-api-40", "owner40")
+    now = int(time.time())
+    sms_store.create_log(
+        "pgr-api-40", "s_ok", ts=now, sms_ts=now, dir_="out", peer="+12065550100", st="sent", body="hi"
+    )
+    sms_store.create_malformed(
+        "pgr-api-40",
+        "bad_abc",
+        ts=now + 1,
+        reason="signed payload did not decode",
+        raw_hex="ff",
+        peer="+12065550100",
+        dir_=None,
+        st=None,
+        msg_id=None,
+    )
+    resp = client.get("/api/devices/pgr-api-40/sms-log", headers=auth_header("owner40"))
+    assert resp.status_code == 200, resp.text
+    rows = resp.json()["entries"]
+    assert rows[0] == {
+        "id": "bad_abc",
+        "ts": now + 1,
+        "smsTs": 0,
+        "dir": None,
+        "peer": "+12065550100",
+        "name": None,
+        "st": None,
+        "body": None,
+        "malformed": True,
+        "reason": "signed payload did not decode",
+        "rawHex": "ff",
+    }
+    assert rows[1]["malformed"] is False and rows[1]["reason"] is None
+
+
 def test_get_sms_log_resolves_name_and_orders_newest_first(client: TestClient):
     _make_user("owner13", "owner13")
     _make_pager_device("pgr-api-13", "owner13")
@@ -690,5 +772,8 @@ def test_sms_log_peer_uid_is_the_owner_familys_contact_and_raises_no_alert():
         sms_log_payload("s_00000023", peer="+12065550100", dir_="out", st="sent", body="yo"),
     )
 
-    assert {e.peerUid for e in sms_store.list_log("pgr-s-21")} == {mine.uid}
+    rows = sms_store.list_log("pgr-s-21")
+    # The non-E.164 upload is kept only as a flagged audit row (no peerUid).
+    assert sum(1 for e in rows if e.malformed) == 1
+    assert {e.peerUid for e in rows if not e.malformed} == {mine.uid}
     assert _family_alerts("fam-sl2") == []
