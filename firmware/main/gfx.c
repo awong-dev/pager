@@ -598,22 +598,20 @@ static void icon_crash(int x, int y)
 // mouth) with a tiny "z" at the upper right, drawn from code like the others.
 static void icon_sleep(int x, int y)
 {
-    static const char *const face[10] = {
-        "..XXXXXX..", ".X......X.", "X........X", "X........X", "X.XX..XX.X",
-        "X........X", "X...XX...X", "X........X", ".X......X.", "..XXXXXX..",
+    // 6 Oct 2026 (owner: "add 💤"): a big Z with a small z at its upper right,
+    // the sleep glyph, replacing the earlier sleeping face. 12x12.
+    static const char *const zz[12] = {
+        "........zzzz", ".........zz.", "........zzzz", "............",
+        "..ZZZZZZZ...", "......ZZ....", ".....ZZ.....", "....ZZ......",
+        "...ZZ.......", "..ZZZZZZZ...", "............", "............",
     };
-    for (int r = 0; r < 10; r++) {
-        for (int c = 0; c < 10; c++) {
-            if (face[r][c] == 'X') {
-                gfx_set_pixel(x + c, y + 2 + r, true);
+    for (int r = 0; r < 12; r++) {
+        for (int c = 0; c < 12; c++) {
+            if (zz[r][c] != '.') {
+                gfx_set_pixel(x + c, y + r, true);
             }
         }
     }
-    for (int i = 0; i < 3; i++) {
-        gfx_set_pixel(x + 9 + i, y, true);     // z top
-        gfx_set_pixel(x + 9 + i, y + 2, true); // z bottom
-    }
-    gfx_set_pixel(x + 10, y + 1, true); // z diagonal
 }
 
 // 6 Oct 2026 (owner: "show an airplane in the status indicator in airplane
