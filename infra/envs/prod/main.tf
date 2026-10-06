@@ -69,13 +69,30 @@ module "fw_bucket" {
 }
 
 # --- Cloud Run relay service + one-off jobs --------------------------------
+# CI owns the relay image. When var.relay_image is empty (the default, e.g. a
+# local apply), resolve the image the live service is serving so the apply is a
+# no-op on the image. Requires the service to already exist: the first apply
+# must pass -var relay_image=... explicitly (count = 0 then, no lookup).
+# Incident 7 Oct 2026: a tfvars `relay_image = ...:latest` rolled prod back to a
+# weeks-old image; do not set relay_image in terraform.tfvars.
+data "google_cloud_run_v2_service" "current_relay" {
+  count    = var.relay_image == "" ? 1 : 0
+  project  = var.project_id
+  location = var.region
+  name     = var.relay_service_name
+}
+
+locals {
+  relay_image = var.relay_image != "" ? var.relay_image : data.google_cloud_run_v2_service.current_relay[0].template[0].containers[0].image
+}
+
 module "relay_service" {
   source = "../../modules/relay-service"
 
   project_id   = var.project_id
   region       = var.region
   service_name = var.relay_service_name
-  image        = var.relay_image
+  image        = local.relay_image
 
   broker_api_url  = var.broker_api_url
   broker_host     = var.broker_host

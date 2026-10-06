@@ -9,12 +9,11 @@ region      = "us-central1"
 github_org  = "my-github-org"
 github_repo = "pager"
 
-# Artifact Registry image CI will override this per deploy, but a value is
-# still required for a bare `terraform apply` (e.g. the first manual apply,
-# before CI exists) -- point it at a real pushed tag, or a placeholder that
-# will 404 until one exists (Cloud Run job/service creation succeeds either
-# way; only serving traffic needs a real image).
-relay_image = "us-central1-docker.pkg.dev/my-pager-project/pager/relay:latest"
+# relay_image: deliberately NOT set here. CI owns the relay image
+# (`-var relay_image=<repo>:<sha>` in .github/workflows/deploy.yml); when unset,
+# a local apply keeps whatever Cloud Run currently serves. Only the very first
+# apply passes it on the command line (infra/README.md step 8). Setting it in
+# terraform.tfvars to a moving tag like :latest rolled prod back (7 Oct 2026).
 
 # EMQX Cloud Serverless's REST API base URL, from its console after signup
 # (docs/SERVER_PLAN.md §9.4; infra/README.md's runbook step covers this).

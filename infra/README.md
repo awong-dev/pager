@@ -155,6 +155,17 @@ docker push <REGION>-docker.pkg.dev/<PROJECT_ID>/pager/relay:bootstrap
 terraform apply -var relay_image=<REGION>-docker.pkg.dev/<PROJECT_ID>/pager/relay:bootstrap
 ```
 
+(The explicit `-var relay_image=...` is required only here, because the service does not exist
+yet; with it empty, `envs/prod/main.tf` looks the running image up from the existing service via
+`data.google_cloud_run_v2_service`, which fails if the service is absent.)
+
+**Local apply never changes the relay image; CI owns it.** Leave `relay_image` out of
+`terraform.tfvars`. Without it, a local `terraform apply` keeps whatever image Cloud Run is
+currently serving; only the Deploy workflow's `-var relay_image=<repo>:<sha>` rolls it forward.
+Incident, 7 Oct 2026: a local `terraform.tfvars` line `relay_image = ".../relay:latest"` pointed
+at a weeks-old image (nobody retags `latest`), the apply rolled Cloud Run back and sign-in 500ed
+until the Deploy workflow was rerun.
+
 This creates the Cloud Run service + the `bootstrap` job + their service
 account and IAM roles, the Cloud Scheduler `tick`/`sweep` jobs + their OIDC caller identity, and
 the Cloud Tasks queue. Check the `relay_service_url` output — `GET <that URL>/healthz` should

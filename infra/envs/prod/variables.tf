@@ -45,8 +45,9 @@ variable "relay_service_name" {
 }
 
 variable "relay_image" {
-  description = "Full Artifact Registry image URI. CI (.github/workflows/deploy.yml) overrides this per deploy with `-var relay_image=...`."
+  description = "Full Artifact Registry image URI. CI (.github/workflows/deploy.yml) passes `-var relay_image=<repo>:<sha>` per deploy. Empty (the default) = keep whatever the existing Cloud Run service is serving (read via data source in main.tf), so a local apply never changes the image. The very first apply (service does not exist yet) MUST pass this explicitly -- infra/README.md step 8."
   type        = string
+  default     = ""
 }
 
 variable "broker_api_url" {
