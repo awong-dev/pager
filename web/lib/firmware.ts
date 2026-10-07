@@ -1,5 +1,7 @@
 /** Pure helpers for the OTA firmware UI -- docs/OTA_DESIGN.md §4, §5. */
 
+import { useEffect, useState } from "react";
+
 import { api } from "@/lib/api";
 import type { DeviceStatusDoc } from "@/lib/types";
 
@@ -54,11 +56,32 @@ export function formatBytes(n: number): string {
   return `${n} B`;
 }
 
-export async function listBuilds(deviceId: string): Promise<FirmwareBuild[]> {
+export async function listBuilds(deviceId?: string): Promise<FirmwareBuild[]> {
   const r = await api.get<{ builds: FirmwareBuild[] }>(
-    `/admin/firmware?device=${encodeURIComponent(deviceId)}`
+    deviceId ? `/admin/firmware?device=${encodeURIComponent(deviceId)}` : "/admin/firmware"
   );
   return r.builds;
+}
+
+/** Newest published build (the API lists newest first); fetched once when
+ *  `enabled` (the endpoint is super-only). Undefined until loaded or on error. */
+export function useNewestBuild(enabled: boolean): FirmwareBuild | undefined {
+  const [newest, setNewest] = useState<FirmwareBuild | undefined>(undefined);
+  useEffect(() => {
+    if (!enabled) return;
+    let cancelled = false;
+    listBuilds()
+      .then((b) => {
+        if (!cancelled) setNewest(b[0]);
+      })
+      .catch(() => {
+        // Chip falls back to the job-state label without a newest build.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [enabled]);
+  return newest;
 }
 
 export function pushOta(deviceId: string, target16: string): Promise<OtaPushResult> {

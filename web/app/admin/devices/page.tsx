@@ -59,6 +59,7 @@ import { locBackoffLabel } from "@/lib/deviceTrust";
 import { useDirectory } from "@/lib/directory";
 import { useFamily } from "@/lib/family-context";
 import { getFirestoreDb } from "@/lib/firebase";
+import { useNewestBuild } from "@/lib/firmware";
 import type { DeviceDoc, UserDoc } from "@/lib/types";
 
 import SetupCodePanel, { type SetupCodeResult } from "./SetupCodePanel";
@@ -129,6 +130,7 @@ function DevicesInner() {
   const [setupResult, setSetupResult] = useState<SetupCodeResult | null>(null);
   const [caConfirm, setCaConfirm] = useState<CaConfirmState | null>(null);
   const [fwDeviceId, setFwDeviceId] = useState<string | null>(null);
+  const newestBuild = useNewestBuild(true);
   const [caBusy, setCaBusy] = useState(false);
   const [caError, setCaError] = useState<string | null>(null);
   const [caSuccess, setCaSuccess] = useState<string | null>(null);
@@ -378,7 +380,7 @@ function DevicesInner() {
                   </TableCell>
                   <TableCell>
                     <Stack spacing={0.5} sx={{ alignItems: "flex-start" }}>
-                      <FirmwareChip status={d.status} />
+                      <FirmwareChip status={d.status} newest={newestBuild} />
                       <Button size="small" onClick={() => setFwDeviceId(d.id)}>
                         Update firmware…
                       </Button>

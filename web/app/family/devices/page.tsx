@@ -38,8 +38,11 @@ import Typography from "@mui/material/Typography";
 import AppShell from "@/components/AppShell";
 import DeviceTrustChip from "@/components/DeviceTrustChip";
 import FirmwareChip from "@/components/FirmwareChip";
+import FirmwareUpdateDialog from "@/components/FirmwareUpdateDialog";
 import RequireAuth from "@/components/RequireAuth";
 import { ApiError, api } from "@/lib/api";
+import { useAuth } from "@/lib/auth-context";
+import { useNewestBuild } from "@/lib/firmware";
 import { locBackoffLabel } from "@/lib/deviceTrust";
 import { useDirectory } from "@/lib/directory";
 import { familyQuery, useFamily } from "@/lib/family-context";
@@ -103,6 +106,9 @@ interface DeviceSetupResponse {
 function FamilyDevicesInner() {
   const { byUid, contacts } = useDirectory();
   const { familyId } = useFamily();
+  const { isSuper } = useAuth();
+  const newestBuild = useNewestBuild(isSuper);
+  const [fwDeviceId, setFwDeviceId] = useState<string | null>(null);
   const [devices, setDevices] = useState<DeviceRow[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
@@ -327,7 +333,14 @@ function FamilyDevicesInner() {
                     </Stack>
                   </TableCell>
                   <TableCell>
-                    <FirmwareChip status={d.status} />
+                    <Stack spacing={0.5} sx={{ alignItems: "flex-start" }}>
+                      <FirmwareChip status={d.status} newest={newestBuild} />
+                      {isSuper && (
+                        <Button size="small" onClick={() => setFwDeviceId(d.id)}>
+                          Update firmware…
+                        </Button>
+                      )}
+                    </Stack>
                   </TableCell>
                   <TableCell>
                     {d.status?.battMv == null ? (
@@ -501,6 +514,14 @@ function FamilyDevicesInner() {
           </Button>
         </DialogActions>
       </Dialog>
+
+      {fwDeviceId !== null && (
+        <FirmwareUpdateDialog
+          device={devices.find((x) => x.id === fwDeviceId) ?? null}
+          open
+          onClose={() => setFwDeviceId(null)}
+        />
+      )}
 
       <Snackbar
         open={caSuccess !== null}

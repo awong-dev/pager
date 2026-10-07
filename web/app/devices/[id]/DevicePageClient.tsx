@@ -59,10 +59,14 @@ import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 
 import AppShell from "@/components/AppShell";
 import DeviceTrustChip from "@/components/DeviceTrustChip";
+import FirmwareChip from "@/components/FirmwareChip";
+import FirmwareUpdateDialog from "@/components/FirmwareUpdateDialog";
 import RequireAuth from "@/components/RequireAuth";
 import BatteryCard from "@/components/BatteryCard";
 import WifiPanel from "@/components/WifiPanel";
 import { ApiError, api } from "@/lib/api";
+import { useAuth } from "@/lib/auth-context";
+import { useNewestBuild } from "@/lib/firmware";
 import { useDirectory } from "@/lib/directory";
 import { xportChipInfo } from "@/lib/deviceTrust";
 import { getFirestoreDb } from "@/lib/firebase";
@@ -153,6 +157,9 @@ function DeviceInner() {
   const id = useDeviceId();
   const router = useRouter();
   const [device, setDevice] = useState<(DeviceDoc & { id: string }) | null>(null);
+  const { isSuper } = useAuth();
+  const newestBuild = useNewestBuild(isSuper);
+  const [fwOpen, setFwOpen] = useState(false);
   const [deviceError, setDeviceError] = useState<string | null>(null);
 
   const [contacts, setContacts] = useState<SmsContact[] | null>(null);
@@ -277,6 +284,18 @@ function DeviceInner() {
       </Stack>
 
       {deviceError && <Alert severity="warning">{deviceError}</Alert>}
+
+      {device && (
+        <Stack direction="row" spacing={1} sx={{ alignItems: "flex-start" }}>
+          <FirmwareChip status={device.status} newest={newestBuild} />
+          {isSuper && (
+            <Button size="small" onClick={() => setFwOpen(true)}>
+              Update firmware…
+            </Button>
+          )}
+        </Stack>
+      )}
+      {fwOpen && <FirmwareUpdateDialog device={device} open onClose={() => setFwOpen(false)} />}
 
       {smsLost > 0 && (
         <Alert severity="warning">
