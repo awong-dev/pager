@@ -1495,6 +1495,7 @@ static const char *DISPTEST_USAGE =
     "disptest again <0|1>         -- set the partial-write-again A/B flag\n"
     "disptest lut [0|1]           -- show/set (persisted) the host-written partial LUT A/B flag (0x32 "
     "WF_PARTIAL_2IN9 + 0x22=0xCF vs. today's 0x22=0xFF)\n"
+    "disptest tp0a [N]            -- show/set (persisted, 1..31) host LUT group-0 phase-A frames (default 7)\n"
     "disptest bars                -- paint the baseline pattern and FULL refresh\n"
     "disptest step <n>            -- invert the 8px screen column at x=n*8 (full height), then "
     "ONE partial refresh; n must be 0..(GFX_SCREEN_W/8 - 1)\n"
@@ -1569,6 +1570,20 @@ static int cmd_disptest(int argc, char **argv)
         }
         disp_set_partial_lut(strcmp(argv[2], "1") == 0);
         printf("disptest: lut=%d\n", (int) disp_get_partial_lut());
+        return 0;
+    }
+    if (strcmp(argv[1], "tp0a") == 0) {
+        if (argc == 2) {
+            printf("disptest: tp0a=%u\n", (unsigned) disp_get_lut_tp0a());
+            return 0;
+        }
+        char *end = NULL;
+        long v = argc == 3 ? strtol(argv[2], &end, 10) : 0;
+        if (argc != 3 || *end != '\0' || v < 1 || v > 31 || !disp_set_lut_tp0a((uint8_t) v)) {
+            printf("usage: disptest tp0a [1..31]\n");
+            return 1;
+        }
+        printf("disptest: tp0a=%u\n", (unsigned) disp_get_lut_tp0a());
         return 0;
     }
     if (strcmp(argv[1], "bars") == 0) {

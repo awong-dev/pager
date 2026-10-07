@@ -155,6 +155,16 @@ bool disp_partial_write_again(void);
 void disp_set_partial_lut(bool on);
 bool disp_get_partial_lut(void);
 
+/* Host partial LUT group-0 phase-A length (TP0A, LUT byte 60) in frames.
+ * Default PAGER_LUT_TP0A (7; the reference table has 10). NVS "disp"/"tp0a" u8
+ * 1..31, applied each time the LUT is written. Setter returns false if out of
+ * range. Power effect: fewer frames = shorter partial; one NVS write on set. */
+#ifndef PAGER_LUT_TP0A
+#define PAGER_LUT_TP0A 7
+#endif
+uint8_t disp_get_lut_tp0a(void);
+bool disp_set_lut_tp0a(uint8_t n);
+
 /* Number of native rows where gfx.c's framebuffer differs from the shadow
  * plane, i.e. what the next partial refresh would send. 0 right after any
  * successful refresh. Bench diagnostic. */

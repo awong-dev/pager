@@ -238,6 +238,47 @@ static void disp_load_lut(void)
 
 bool disp_get_partial_lut(void) { return s_partial_use_lut; }
 
+// TP0A = byte 60 of the 153-byte LUT: 5 VS LUTs x 12 bytes = 60, then group 0's
+// row (TP0A, TP0B, SR0AB, TP0C, TP0D, SR0CD, RP0), so TP0A is its first byte.
+// Frames of group 0 phase A (the changed-pixel drive). Table value is 10; default
+// PAGER_LUT_TP0A (7), NVS "disp"/"tp0a" u8 1..31 overrides, applied when the LUT is
+// written. Power effect: shorter drive = shorter refresh; NVS write on set only.
+#define DISP_LUT_TP0A_IDX 60
+#define DISP_NVS_KEY_TP0A "tp0a"
+static uint8_t s_lut_tp0a = PAGER_LUT_TP0A;
+
+static void disp_load_tp0a(void)
+{
+    nvs_handle_t h;
+    if (nvs_open("disp", NVS_READONLY, &h) != ESP_OK) {
+        return;
+    }
+    uint8_t v = 0;
+    if (nvs_get_u8(h, DISP_NVS_KEY_TP0A, &v) == ESP_OK && v >= 1 && v <= 31) {
+        s_lut_tp0a = v;
+    }
+    nvs_close(h);
+}
+
+uint8_t disp_get_lut_tp0a(void) { return s_lut_tp0a; }
+
+bool disp_set_lut_tp0a(uint8_t n)
+{
+    if (n < 1 || n > 31) {
+        return false;
+    }
+    s_lut_tp0a = n;
+    nvs_handle_t h;
+    if (nvs_open("disp", NVS_READWRITE, &h) != ESP_OK) {
+        ESP_LOGI(TAG, "disp tp0a NVS open failed; not persisted this boot");
+        return true;
+    }
+    nvs_set_u8(h, DISP_NVS_KEY_TP0A, n);
+    nvs_commit(h);
+    nvs_close(h);
+    return true;
+}
+
 // Owner request: persistent 180-degree display rotation so the pager can be
 // read upside down. NVS namespace/key follow ui.c's text-size setting
 // (load-once-at-init static cache, console-driven setter that re-persists) —
@@ -942,7 +983,10 @@ static void partial_refresh_locked(uint8_t tag)
     // previously loaded LUT, so there is nothing to skip on repeat calls.
     if (s_partial_use_lut) {
         disp_send_cmd(0x32);
-        disp_send_data_chunked(WF_PARTIAL_2IN9, WF_PARTIAL_2IN9_LUT_LEN);
+        uint8_t lut[WF_PARTIAL_2IN9_LUT_LEN];
+        memcpy(lut, WF_PARTIAL_2IN9, sizeof lut);
+        lut[DISP_LUT_TP0A_IDX] = s_lut_tp0a;
+        disp_send_data_chunked(lut, sizeof lut);
         disp_send_cmd(0x22);
         disp_send_data1(0xCF); // load LUT from host write (vs. 0xFF = OTP/MCU default)
         ESP_LOGI(TAG, "partial: lut mode (host-written WF_PARTIAL_2IN9, 0x22=0xCF)");
@@ -1250,6 +1294,7 @@ bool disp_init(void)
         s_mutex = xSemaphoreCreateMutex();
     }
     disp_load_lut(); // partial waveform mode (NVS disp/lut, default 1)
+    disp_load_tp0a(); // host LUT TP0A override (NVS disp/tp0a, default PAGER_LUT_TP0A)
     disp_load_flip(); // owner's persisted 180-degree-rotation setting, before the first frame
     disp_gpio_init();
     if (!s_spi_ready) {
