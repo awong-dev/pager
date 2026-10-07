@@ -203,9 +203,38 @@ static bool s_partial_write_again = true;
 // Not NVS-persisted -- this is a bench A/B, not an owner-visible setting
 // (`disptest lut 0|1`, main.c). Power effect: +154 SPI bytes (1 cmd + 153
 // data) per partial when on; negligible next to the refresh itself.
-static bool s_partial_use_lut = false;
+// Default ON (7 Oct 2026, owner: OTP partial greys the whole panel by the 6th
+// keystroke; the host LUT holds unchanged black). Persisted in NVS namespace
+// "disp" key "lut" (u8, absent -> 1), loaded in disp_init(); `disptest lut 0|1`
+// sets and persists it. Power effect of the setter: one NVS write, none otherwise.
+#define DISP_NVS_KEY_LUT "lut"
+static bool s_partial_use_lut = true;
 
-void disp_set_partial_lut(bool on) { s_partial_use_lut = on; }
+void disp_set_partial_lut(bool on)
+{
+    s_partial_use_lut = on;
+    nvs_handle_t h;
+    if (nvs_open("disp", NVS_READWRITE, &h) != ESP_OK) {
+        ESP_LOGI(TAG, "disp lut NVS open failed; not persisted this boot");
+        return;
+    }
+    nvs_set_u8(h, DISP_NVS_KEY_LUT, (uint8_t) on);
+    nvs_commit(h);
+    nvs_close(h);
+}
+
+static void disp_load_lut(void)
+{
+    nvs_handle_t h;
+    if (nvs_open("disp", NVS_READONLY, &h) != ESP_OK) {
+        return; // never set; stays default true
+    }
+    uint8_t v = 1;
+    if (nvs_get_u8(h, DISP_NVS_KEY_LUT, &v) == ESP_OK) {
+        s_partial_use_lut = (v != 0);
+    }
+    nvs_close(h);
+}
 
 bool disp_get_partial_lut(void) { return s_partial_use_lut; }
 
@@ -1220,6 +1249,7 @@ bool disp_init(void)
     if (s_mutex == NULL) {
         s_mutex = xSemaphoreCreateMutex();
     }
+    disp_load_lut(); // partial waveform mode (NVS disp/lut, default 1)
     disp_load_flip(); // owner's persisted 180-degree-rotation setting, before the first frame
     disp_gpio_init();
     if (!s_spi_ready) {
