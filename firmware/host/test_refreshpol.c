@@ -29,7 +29,13 @@ int main(void)
 
     /* defaults */
     refreshpol_init(&p);
-    CHECK(p.floor == 20 && p.ceiling == 60 && p.idle_s == 6 && p.gap_ms == 1500 && p.presleep_min == 6, "defaults");
+    CHECK(p.floor == PAGER_REFRESH_FLOOR && p.ceiling == PAGER_REFRESH_CEILING &&
+              p.idle_s == PAGER_REFRESH_IDLE_S && p.gap_ms == PAGER_REFRESH_GAP_MS &&
+              p.presleep_min == PAGER_REFRESH_PRESLEEP_MIN,
+          "defaults");
+    /* The rules below are exercised with pinned knobs so the shipped defaults can be retuned
+     * on the glass (owner, 7 Oct 2026) without rewriting every expectation. */
+    p.floor = 20; p.ceiling = 60; p.idle_s = 6; p.gap_ms = 1500; p.presleep_min = 6;
 
     /* no full below FLOOR, however idle, nor on transition */
     partials(&p, 19, T0);
@@ -45,6 +51,7 @@ int main(void)
 
     /* no full mid-burst, even above ceiling */
     refreshpol_init(&p);
+    p.floor = 20; p.ceiling = 60; p.idle_s = 6; p.gap_ms = 1500; p.presleep_min = 6;
     partials(&p, 100, T0);
     refreshpol_on_key(&p, T0);
     CHECK(!refreshpol_want_full(&p, T0 + 1499 * MS, false, false), "mid-burst above ceiling");
@@ -56,23 +63,26 @@ int main(void)
 
     /* between floor and ceiling the gap alone does not trigger */
     refreshpol_init(&p);
+    p.floor = 20; p.ceiling = 60; p.idle_s = 6; p.gap_ms = 1500; p.presleep_min = 6;
     partials(&p, 59, T0);
     refreshpol_on_key(&p, T0);
     CHECK(!refreshpol_want_full(&p, T0 + 2 * S, false, false), "floor<dirty<ceiling at 2 s");
 
     /* transition above FLOOR (key just pressed: exempt from burst guard) */
     refreshpol_init(&p);
+    p.floor = 20; p.ceiling = 60; p.idle_s = 6; p.gap_ms = 1500; p.presleep_min = 6;
     partials(&p, 20, T0);
     refreshpol_on_key(&p, T0);
     CHECK(refreshpol_want_full(&p, T0 + 10 * MS, true, false), "transition at floor");
     CHECK(p.reason == REFRESHPOL_REASON_TRANSITION, "reason transition");
     refreshpol_init(&p);
+    p.floor = 20; p.ceiling = 60; p.idle_s = 6; p.gap_ms = 1500; p.presleep_min = 6;
     partials(&p, 19, T0);
     CHECK(!refreshpol_want_full(&p, T0, true, false), "transition at floor-1");
 
     /* pre-sleep: below PRESLEEP_MIN no, at it yes, dirty==0 no; even mid-burst */
     refreshpol_init(&p);
-    CHECK(p.presleep_min == 6, "presleep default");
+    p.floor = 20; p.ceiling = 60; p.idle_s = 6; p.gap_ms = 1500; p.presleep_min = 6;
     CHECK(!refreshpol_want_full(&p, T0, false, true), "presleep dirty 0");
     partials(&p, 5, T0);
     refreshpol_on_key(&p, T0);
@@ -88,6 +98,7 @@ int main(void)
 
     /* reset after full */
     refreshpol_init(&p);
+    p.floor = 20; p.ceiling = 60; p.idle_s = 6; p.gap_ms = 1500; p.presleep_min = 6;
     partials(&p, 70, T0);
     refreshpol_on_full(&p);
     CHECK(p.dirty == 0, "dirty reset");
@@ -97,6 +108,7 @@ int main(void)
 
     /* no key ever seen, dirty>=floor: idle rule applies */
     refreshpol_init(&p);
+    p.floor = 20; p.ceiling = 60; p.idle_s = 6; p.gap_ms = 1500; p.presleep_min = 6;
     partials(&p, 20, T0);
     CHECK(refreshpol_want_full(&p, T0, false, false), "no key ever");
 
