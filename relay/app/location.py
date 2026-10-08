@@ -136,9 +136,11 @@ DWELL_MAX_AGE_S = 24 * 60 * 60
 # be exhausted on a slow/loaded emulator: `run_transaction` then re-raises
 # the client library's own `ValueError("Failed to commit transaction in N
 # attempts.")`, chaining the losing `Aborted` as `__cause__`. A loser here is
-# not a bug -- Firestore's ABORTED semantics guarantee some *other*
-# transaction touching the same doc already committed by the time ours
-# failed to -- so the right outcome is the same one the `AlreadyExists` path
+# not a bug. Aborts (emulator lock timeouts included) do not prove another
+# transaction has already committed: on a CPU-starved emulator the eventual
+# winner can itself still be retrying when the losers give up, and the doc
+# was observed appearing only several re-reads (seconds) later. So the right
+# outcome is the same one the `AlreadyExists` path
 # below already produces: join the winner's request rather than surface an
 # error to the caller. Unlike `AlreadyExists`, this cannot safely retry the
 # *whole* claim transaction (that is the operation that just exhausted every
@@ -146,10 +148,11 @@ DWELL_MAX_AGE_S = 24 * 60 * 60
 # bounded number of plain (non-transactional) re-reads of `req_ref`, joining
 # the winner's `requesterUids` via `ArrayUnion` -- a native atomic field
 # transform that needs no transaction of its own -- as soon as the winner's
-# doc is visible.
-CONTENTION_REREAD_ATTEMPTS = 5
+# doc is visible. Budget: 10 reads, full-jitter delay caps 0.05..1.0 s, so a
+# few seconds expected and ~5.5 s worst case, bounded.
+CONTENTION_REREAD_ATTEMPTS = 10
 CONTENTION_REREAD_BASE_DELAY_S = 0.05
-CONTENTION_REREAD_MAX_DELAY_S = 0.5
+CONTENTION_REREAD_MAX_DELAY_S = 1.0
 
 
 def loc_req_ttl_s() -> int:
