@@ -144,7 +144,10 @@ Dark Star (AT&T) SIMs.
   wake cycle; Enter opens the chat, a typed reply publishes within 50 ms of Enter. The bench cable
   had SDA on IO9 and SCL on IO8 at the time; the 3 Oct rewiring moved it to SDA IO5 / SCL IO4, and
   the 5 Oct rewiring moved it again to SDA IO10 / SCL IO9 (`pins.h`). `i2cscan [swap]` finds the keyboard; `wake` and
-  `key <text>` drive the UI from the console.
+  `key <text>` drive the UI from the console. Two things found on 8 Oct 2026: Enter has to reach
+  the console as `key \\n` (two backslashes; esp_console strips one, so a single `\n` feeds
+  nothing and the composer silently keeps its text), and the input event queue is 8 deep, so a
+  `key` burst longer than 8 keystrokes loses its tail. Keep each `key` argument to 8 characters.
 - Display partial-refresh two-plane fix (22 Sep): the SSD1680 controller's two image planes must
   be kept equal after every differential update. Pre-fix (`disptest again 0` + `bars` + `seq 2 12
   1500`): garbled bands in odd/even pattern, never settling. Post-fix (`disptest again 1` + `bars` +

@@ -227,6 +227,27 @@ stays up. The unit is fully erased, so every step starts with a full flash
   covered by step B–D running the same image with `bearer direct`, plus host tests for
   `carrier_effective()`.
 
+**Results, 8 Oct 2026 (bench unit, debug then release image, `bearer direct`):**
+- **B.** `setup <code>` → `AT+CGAUTH=1,1,"sora","sora"` after `AT+CGDCONT`, registered roaming
+  (`+CEREG: 5`) on 310410 (AT&T, LTE-M) in about 17 s, bootstrap MQTTS to EMQX usable 4 s later,
+  CA fetch 2.6 s, `SETUP done` 26 s after the command. After the reboot the normal session was
+  usable 32 s after boot (release build: 25 s). eDRX **granted** while roaming:
+  `+CEDRXRDP: 4,"0010","0010","0001"` (20.48 s cycle, 2.56 s PTW). RSSI `+CSQ: 22..24`
+  (about -69..-65 dBm). Production: `sora1` online, CA trust "Server verified", Carrier chip
+  "Soracom" (`/status` key 70 end to end).
+- **C.** Two web→pager pages arrived 1..6 s after Send, each with `shown` published within 1 s
+  and "read on pager" in the web; two console-typed replies reached the web chat ("sent to app")
+  within seconds. (Console note: Enter is `key \\n` on the wire, bursts ≤ 8 keys; see
+  HARDWARE_TESTING.md.)
+- **D.** Release image (718,368 B) flashed over the debug one (app + otadata); boot banner showed
+  carrier Soracom / PAP, `boot complete, entering sleep mode` at 19.8 s, session usable at 24.6 s,
+  `/status online (mode=sleep)`; port closed. One-hour relay-side watch (15:42-16:42 PDT):
+  pages at +10 and +40 min both "on pager" within a minute of Send (delivered into eDRX
+  sleep), battery samples every ~25 min at 3700 mV, device page after the hour online with
+  sleeps 152, reconnects 2 (the two deliberate reboots), ext1 wakes 0.
+- **E.** Not run: the Soracom console is signed out on the bench Mac and no API key is present,
+  so Beam is not configured for the SIM's group (§5 is the owner's step).
+
 Definition of done: steps A–D pass on the bench unit; relay tests, web lint/tsc/build, host tests
 and both firmware builds pass; the Beam step E is either passed or left with the exact owner
 action written in `.overnight-handoff.md`. Commit and push to main (owner's standing rule for
