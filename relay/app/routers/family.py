@@ -460,13 +460,16 @@ def create_group(
 #
 # "Approved people" and "approved contacts" *are* the member's own outgoing
 # `allow` edges (decision 7) -- this endpoint is the single writer of that
-# outgoing set, one direction only (`uid` -> peer/contact). It does not
-# touch the peer's own outgoing edge back to `uid`: if the peer's own
-# inbound policy needs an edge too, the peer (or their family admin) grants
-# it through their own `/approved` PUT, same as any other policy-gated pair
-# (`app/policy.py`'s `check`). Contacts are *picked* (by uid) from the
-# family's SMS contacts (`/api/family/contacts`); this route never creates
-# one.
+# outgoing set AND its full replacement: whatever the PUT does not list,
+# people and contacts alike, loses its edge (8 Oct 2026 owner report: the
+# web only sends checked people, so keeping unlisted person edges meant
+# unchecking one never stuck). One direction only (`uid` -> peer/contact):
+# it does not touch the peer's own outgoing edge back to `uid`: if the
+# peer's own inbound policy needs an edge too, the peer (or their family
+# admin) grants it through their own `/approved` PUT, same as any other
+# policy-gated pair (`app/policy.py`'s `check`). Contacts are *picked* (by
+# uid) from the family's SMS contacts (`/api/family/contacts`); this route
+# never creates one.
 # ---------------------------------------------------------------------------
 
 
@@ -502,10 +505,9 @@ def _require_family_member(uid: str, family_id: str) -> User:
     return member
 
 
-@router.get("/members/{uid}/approved")
-def get_approved(uid: str, scope: FamilyScope) -> ApprovedOut:
-    _, family_id = scope
-    _require_family_member(uid, family_id)
+def _approved_out(uid: str, family_id: str) -> ApprovedOut:
+    """The member's outgoing edges as the web lists them (shared by GET and
+    the PUT response so the two can never disagree)."""
     people: list[ApprovedPerson] = []
     contacts: list[ApprovedContact] = []
     for edge in allow_store.list_edges():
@@ -524,6 +526,13 @@ def get_approved(uid: str, scope: FamilyScope) -> ApprovedOut:
     people.sort(key=lambda p: p.alias)
     contacts.sort(key=lambda c: c.uid)
     return ApprovedOut(people=people, contacts=contacts)
+
+
+@router.get("/members/{uid}/approved")
+def get_approved(uid: str, scope: FamilyScope) -> ApprovedOut:
+    _, family_id = scope
+    _require_family_member(uid, family_id)
+    return _approved_out(uid, family_id)
 
 
 @router.put("/members/{uid}/approved", dependencies=[Depends(require_family_write_rate_limit)])
@@ -564,23 +573,34 @@ def put_approved(
 
     for peer_uid, p in resolved_people:
         allow_store.set_edge(uid, peer_uid, message=p.message, locate=p.locate)
+    people_changed = bool(resolved_people)
 
-    # Contacts left unlisted lose their explicit edge: only among `uid`'s own
-    # outgoing edges to `kind == 'external'` peers -- a person edge not
-    # present in `req.people` is left alone (see the comment above).
+    # Full replacement: any outgoing edge of `uid` not listed is deleted,
+    # person or external (see the comment above). One scan, one `get_user`
+    # per peer.
+    kept_people_uids = {peer_uid for peer_uid, _ in resolved_people}
     kept_contact_uids = {c.uid for c in req.contacts}
+    peers: dict[str, User | None] = {}
     for edge in allow_store.list_edges():
         if edge.fromUid != uid:
             continue
-        peer = users_store.get_user(edge.toUid)
-        if peer is not None and peer.kind == "external" and edge.toUid not in kept_contact_uids:
+        if edge.toUid not in peers:
+            peers[edge.toUid] = users_store.get_user(edge.toUid)
+        peer = peers[edge.toUid]
+        if peer is None:
+            continue
+        if peer.kind == "external":
+            if edge.toUid not in kept_contact_uids:
+                allow_store.delete_edge(uid, edge.toUid)
+        elif edge.toUid not in kept_people_uids:
             allow_store.delete_edge(uid, edge.toUid)
+            people_changed = True
 
     for c in req.contacts:
         allow_store.set_edge(uid, c.uid, message=c.message, locate=False)
 
     rederive_family_sms_contacts(family_id, broker)
-    if resolved_people:
+    if people_changed:
         # The book's own `c[]` projects the member's people edges
         # (`app/devcfg.py`'s `_approved_contacts`; externals never reach it),
         # which just changed for every device `uid` owns -- same
@@ -589,10 +609,7 @@ def put_approved(
             contacts_store.bump_book_version(device.id)
             devcfg.push_book(device.id, broker)
 
-    return ApprovedOut(
-        people=[p for _, p in resolved_people],
-        contacts=list(req.contacts),
-    )
+    return _approved_out(uid, family_id)
 
 
 # ---------------------------------------------------------------------------

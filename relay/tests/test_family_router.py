@@ -13,6 +13,7 @@ import pytest
 from fastapi.testclient import TestClient
 from firebase_admin import auth as fb_auth
 
+from app import devcfg
 from app.config import Settings
 from app.db.firestore import get_db
 from app.main import create_app
@@ -751,6 +752,115 @@ def test_get_approved_returns_people_and_contacts(client: TestClient):
 
     resp = client.get("/api/family/members/nobody/approved", headers=admin)
     assert resp.status_code == 404
+
+
+def _put_people(client: TestClient, headers: dict[str, str], member: str, people: list[dict]):
+    return client.put(
+        f"/api/family/members/{member}/approved",
+        json={"people": people, "contacts": []},
+        headers=headers,
+    )
+
+
+def _person(alias: str, locate: bool = False) -> dict:
+    return {"alias": alias, "message": True, "locate": locate}
+
+
+def _get_approved(client: TestClient, headers: dict[str, str], member: str) -> dict:
+    resp = client.get(f"/api/family/members/{member}/approved", headers=headers)
+    assert resp.status_code == 200, resp.text
+    return resp.json()
+
+
+def test_approved_put_unlisted_person_edge_is_removed(client: TestClient):
+    family = _make_family("AppR1")
+    admin = _make_family_admin("fam23-admin", "fam23-admin", family.id)
+    _make_member("fam23-kid", "fam23-kid", family.id)
+    _make_member("fam23-sib1", "fam23-sib1", family.id)
+    _make_member("fam23-sib2", "fam23-sib2", family.id)
+
+    resp = _put_people(
+        client, admin, "fam23-kid", [_person("fam23-sib1"), _person("fam23-sib2")]
+    )
+    assert resp.status_code == 200, resp.text
+    assert allow_store.get_edge("fam23-kid", "fam23-sib2") is not None
+
+    resp = _put_people(client, admin, "fam23-kid", [_person("fam23-sib1")])
+    assert resp.status_code == 200, resp.text
+    assert [p["alias"] for p in _get_approved(client, admin, "fam23-kid")["people"]] == [
+        "fam23-sib1"
+    ]
+    assert allow_store.get_edge("fam23-kid", "fam23-sib2") is None
+
+
+def test_approved_put_check_one_uncheck_other_in_one_save(client: TestClient):
+    family = _make_family("AppR2")
+    admin = _make_family_admin("fam24-admin", "fam24-admin", family.id)
+    _make_member("fam24-kid", "fam24-kid", family.id)
+    _make_member("fam24-sib1", "fam24-sib1", family.id)
+    _make_member("fam24-sib2", "fam24-sib2", family.id)
+    assert _put_people(client, admin, "fam24-kid", [_person("fam24-sib1")]).status_code == 200
+
+    resp = _put_people(client, admin, "fam24-kid", [_person("fam24-sib2")])
+    assert resp.status_code == 200, resp.text
+    assert [p["alias"] for p in resp.json()["people"]] == ["fam24-sib2"]
+    assert resp.json() == _get_approved(client, admin, "fam24-kid")
+    assert allow_store.get_edge("fam24-kid", "fam24-sib1") is None
+
+
+def test_approved_put_removing_person_bumps_book(
+    client: TestClient, broker: FakeBrokerClient
+):
+    family = _make_family("AppR3")
+    admin = _make_family_admin("fam25-admin", "fam25-admin", family.id)
+    _make_member("fam25-kid", "fam25-kid", family.id)
+    _make_member("fam25-sib", "fam25-sib", family.id)
+    _make_pager_device("pgr-fam25-1", "fam25-kid", family.id)
+    assert _put_people(client, admin, "fam25-kid", [_person("fam25-sib")]).status_code == 200
+
+    before = devcfg.get_book_version("pgr-fam25-1")
+    broker.published.clear()
+    resp = _put_people(client, admin, "fam25-kid", [])
+    assert resp.status_code == 200, resp.text
+    assert devcfg.get_book_version("pgr-fam25-1") == before + 1
+    pushes = [json.loads(m.payload) for m in broker.published]
+    assert any(d["kind"] == "book" for d in pushes)
+
+
+def test_approved_put_leaves_peer_reverse_edge_alone(client: TestClient):
+    family = _make_family("AppR4")
+    admin = _make_family_admin("fam26-admin", "fam26-admin", family.id)
+    _make_member("fam26-kid", "fam26-kid", family.id)
+    _make_member("fam26-sib1", "fam26-sib1", family.id)
+    allow_store.set_edge("fam26-sib1", "fam26-kid", message=True, locate=False)
+    assert _put_people(client, admin, "fam26-kid", [_person("fam26-sib1")]).status_code == 200
+
+    resp = _put_people(client, admin, "fam26-kid", [])
+    assert resp.status_code == 200, resp.text
+    assert allow_store.get_edge("fam26-kid", "fam26-sib1") is None
+    assert allow_store.get_edge("fam26-sib1", "fam26-kid") is not None
+
+
+def test_approved_put_cross_family_person_edge_kept_if_listed_else_deleted(
+    client: TestClient,
+):
+    fam_a = _make_family("AppR5A")
+    fam_b = _make_family("AppR5B")
+    admin_a = _make_family_admin("fam27-admin-a", "fam27-admin-a", fam_a.id)
+    _make_member("fam27-kid-a", "fam27-kid-a", fam_a.id)
+    _make_member("fam27-kid-b", "fam27-kid-b", fam_b.id)
+    allow_store.set_edge("fam27-kid-a", "fam27-kid-b", message=True, locate=False)
+
+    resp = _put_people(client, admin_a, "fam27-kid-a", [_person("fam27-kid-b")])
+    assert resp.status_code == 200, resp.text
+    assert allow_store.get_edge("fam27-kid-a", "fam27-kid-b") is not None
+    assert [p["alias"] for p in _get_approved(client, admin_a, "fam27-kid-a")["people"]] == [
+        "fam27-kid-b"
+    ]
+
+    resp = _put_people(client, admin_a, "fam27-kid-a", [])
+    assert resp.status_code == 200, resp.text
+    assert allow_store.get_edge("fam27-kid-a", "fam27-kid-b") is None
 
 
 # ---------------------------------------------------------------------------
