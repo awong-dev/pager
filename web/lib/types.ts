@@ -119,6 +119,8 @@ export interface DeviceStatusDoc {
   // docs/V02_DESIGN.md §5 (location): seconds until the next GPS attempt is
   // allowed, 0 = now. Absent on older firmware.
   locBackoffS?: number | null;
+  // docs/GNSS_DISABLE_DESIGN.md D4: 1 = GNSS enabled, 0 = disabled by cfg.
+  gnss?: number | null;
   // docs/OTA_DESIGN.md §5: running image short id (16 hex), the OTA gate
   // (1 = firmware + rollback bootloader confirmed), and the job's progress.
   // All absent on older firmware.

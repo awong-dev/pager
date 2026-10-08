@@ -850,6 +850,7 @@ class Ingest:
             caFp=env.ca_fp,
             locBackoffS=env.loc_backoff_s,
             locMoveS=env.loc_move_s,
+            gnss=env.gnss,
             smsLost=env.sms_lost,
             link=env.link,
             xport=env.xport,

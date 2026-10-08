@@ -17,6 +17,7 @@
 #define CFG_KEY_SMS 2
 #define CFG_KEY_WIFI 3
 #define CFG_KEY_OTA 4
+#define CFG_KEY_LOC 5 /* docs/GNSS_DISABLE_DESIGN.md D1 */
 
 /* Records the current position as the start of a value, skips it (recursing
  * through nested maps/arrays as needed), and reports the [start,len) span —
@@ -73,6 +74,12 @@ static bool parse_cfg_submap(cbor_r_t *r, cfg_dispatch_t *out)
                 return false;
             }
             out->have_ota = true;
+            break;
+        case CFG_KEY_LOC:
+            if (!skip_capture(r, &out->loc_off, &out->loc_len)) {
+                return false;
+            }
+            out->have_loc = true;
             break;
         default:
             /* "unknown cfg keys must be skipped, not treated as malformed"
@@ -154,6 +161,7 @@ bool cfg_parse(const uint8_t *buf, uint16_t len, bool sig_pair_present, cfg_disp
 #include "catrust.h"
 #include "ident.h"
 #include "lock.h"
+#include "loc.h"
 #include "msg.h"
 #include "ota.h"
 #include "sms.h"
@@ -189,6 +197,12 @@ bool cfg_ingest_cbor(const uint8_t *buf, uint16_t len)
         /* docs/OTA_DESIGN.md D5: acks `shown` on acceptance or rejection; the
          * download itself is driven from ota_service() in modes_run(). */
         ota_apply_cfg_submap(buf + d.ota_off, (uint16_t) d.ota_len, d.id);
+    }
+    if (d.have_loc) {
+        /* docs/GNSS_DISABLE_DESIGN.md D1: applies + acks `shown` immediately
+         * (see loc_apply_cfg_submap()'s own doc comment) -- same timing as
+         * `cfg.wifi`. */
+        loc_apply_cfg_submap(buf + d.loc_off, (uint16_t) d.loc_len, d.id);
     }
 
     return true;

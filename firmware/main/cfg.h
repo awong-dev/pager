@@ -3,7 +3,7 @@
  *
  * A single `cfg` push can now carry more than one sub-map (`lock`=0,
  * existing; `ca`=1; `sms`=2; `wifi`=3, docs/WIFI_DESIGN.md §4/docs/WIFI_TASKS.md
- * W3; `ota`=4, docs/OTA_DESIGN.md D5) in one envelope, and each sub-map has its own apply/ack timing (`lock`/
+ * W3; `ota`=4, docs/OTA_DESIGN.md D5; `loc`=5, docs/GNSS_DISABLE_DESIGN.md D1) in one envelope, and each sub-map has its own apply/ack timing (`lock`/
  * `sms`/`wifi` all apply and ack immediately; `ca`'s two-phase apply,
  * catrust.c, may defer the ack for several modes_run() cycles or never ack
  * at all if the apply is rejected). That ruled out the old design, where
@@ -64,6 +64,11 @@ typedef struct {
      * Dispatched to ota_apply_cfg_submap(). */
     bool have_ota;
     size_t ota_off, ota_len;
+
+    /* `loc`=5 (docs/GNSS_DISABLE_DESIGN.md D1): the location `{gnss}` sub-map.
+     * Dispatched to loc_apply_cfg_submap(). */
+    bool have_loc;
+    size_t loc_off, loc_len;
 } cfg_dispatch_t;
 
 /* Decodes `buf`/`len` as a `/down` envelope already reduced to `count` map
@@ -98,7 +103,8 @@ bool cfg_parse(const uint8_t *buf, uint16_t len, bool sig_pair_present, cfg_disp
  * catrust_service(), modes_run()'s own task, never from this MQTT-event-task
  * call). `sms`'s span goes to sms_apply_cfg_submap() and `wifi`'s span
  * (docs/WIFI_TASKS.md W3) goes to wificred_apply_cfg_submap() — both apply +
- * ack `shown` immediately, same timing as `lock`. No modem or sleep-state
+ * ack `shown` immediately, same timing as `lock`; so does `loc`'s span
+ * (docs/GNSS_DISABLE_DESIGN.md D1), to loc_apply_cfg_submap(). No modem or sleep-state
  * effect of its own beyond whatever lock.c's/catrust.c's/sms.c's/
  * wificred.c's own handlers already document. */
 bool cfg_ingest_cbor(const uint8_t *buf, uint16_t len);

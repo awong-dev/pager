@@ -99,6 +99,8 @@ class DeviceStatus(BaseModel):
     # tracking is on, seconds, 0/absent = off. Display/diagnosis only, same
     # as `locBackoffS` above.
     locMoveS: int | None = None
+    # docs/GNSS_DISABLE_DESIGN.md D4: last `/status` `gnss` (0/1).
+    gnss: int | None = None
     # docs/V02_DESIGN.md §6/§7 (device SMS): audit-queue drop counter.
     smsLost: int | None = None
     # docs/V02_DESIGN.md §9.5/§7 (this task): MQTT-session generation within
@@ -278,6 +280,10 @@ class Device(BaseModel):
     pendingCfgCa: PendingPush | None = None
     pendingCfgSms: PendingPush | None = None
     pendingCfgWifi: PendingPush | None = None
+    pendingCfgLoc: PendingPush | None = None
+    # docs/GNSS_DISABLE_DESIGN.md D2: desired GNSS state, pushed as
+    # `cfg.loc.gnss`. Not a secret; default enabled.
+    gnss_enabled: bool = True
 
 
 def _devices():
@@ -376,6 +382,18 @@ def set_sms_contacts(device_id: str, contacts: list[SmsContact]) -> None:
     _devices().document(device_id).set(
         {"smsContacts": [c.model_dump() for c in contacts]}, merge=True
     )
+
+
+def get_gnss_enabled(device_id: str) -> bool:
+    """docs/GNSS_DISABLE_DESIGN.md D2: `True` when absent or device unknown."""
+    snap = _devices().document(device_id).get()
+    if not snap.exists:
+        return True
+    return bool((snap.to_dict() or {}).get("gnss_enabled", True))
+
+
+def set_gnss_enabled(device_id: str, enabled: bool) -> None:
+    _devices().document(device_id).set({"gnss_enabled": enabled}, merge=True)
 
 
 def set_apn(device_id: str, apn: str | None) -> None:

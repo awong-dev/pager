@@ -1065,6 +1065,23 @@ static int cmd_gnsstest(int argc, char **argv)
 // report scheduler, GNSS-while-moving schedule), so it can be A/B'd on one
 // flash. Bare `loctrack` prints the current setting. RAM-only, no modem/
 // sleep-state effect of its own (loc_set_track_enabled()'s own doc comment).
+// docs/GNSS_DISABLE_DESIGN.md D7: `gnss [on|off]` -- bare form prints, with an
+// argument persists loc/gnss to NVS (one NVS write, no modem effect).
+static int cmd_gnss(int argc, char **argv)
+{
+    if (argc == 2 && (strcmp(argv[1], "on") == 0 || strcmp(argv[1], "off") == 0)) {
+        if (!loc_set_gnss_enabled(strcmp(argv[1], "on") == 0)) {
+            printf("gnss: NVS write failed\n");
+            return 1;
+        }
+    } else if (argc != 1) {
+        printf("usage: gnss [on|off]\n");
+        return 1;
+    }
+    printf("gnss: %s\n", loc_gnss_enabled() ? "on" : "off");
+    return 0;
+}
+
 static int cmd_loctrack(int argc, char **argv)
 {
     if (argc == 1) {
@@ -2229,6 +2246,15 @@ static void start_normal_console(void)
         .func = &cmd_loctrack,
     };
     ESP_ERROR_CHECK(esp_console_cmd_register(&loctrack_cmd));
+
+    const esp_console_cmd_t gnss_cmd = {
+        .command = "gnss",
+        .help = "gnss [on|off] -- persist the cfg.loc.gnss flag (docs/GNSS_DISABLE_DESIGN.md); "
+                "bare form prints it",
+        .hint = NULL,
+        .func = &cmd_gnss,
+    };
+    ESP_ERROR_CHECK(esp_console_cmd_register(&gnss_cmd));
 
     const esp_console_cmd_t locmove_cmd = {
         .command = "locmove",

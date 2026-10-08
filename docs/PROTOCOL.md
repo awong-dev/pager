@@ -140,7 +140,7 @@ Base envelope:
 | `c` | array of objects | `book` only | ≤10 contacts | Approved contacts; each has `a` (alias), `n` (name ≤16 cp), `t` (type: `web`/`sms`/`chat`/`grp`, the last for a group conversation) (§4.3). *(7 Oct 2026: the relay never lists an SMS contact in `c[]` or emits `t:"sms"`; SMS contacts reach the pager only as `cfg.sms`, §3.6. A device still accepts `sms` as a type — the relay sends no SMS, owner decision.)* |
 | `p` | array of objects | `book` only | ≤4 pending requests | Pending `contact_req`; each has `n` (name), `s` (status: `pend`/`no`) (§4.3). |
 | `more` | bool | `book` only | — | Reserved for chunking if the cap moves (§4.3). |
-| `cfg` | object | `/down` `cfg` kind only | — | Configuration map carrying `lock` (object with `clear` bool and `auto` int minutes; a dangling cross-reference to "§5.8" for its full shape predates this table's current section numbering and is flagged, not fixed, here), `ca` (v0.2, §4.4), `sms` (v0.2, §3.6 — the SMS contact allow-list) and `wifi` (`docs/WIFI_DESIGN.md` §4/§6, §10 below — the WiFi enable flag and up to two credential pairs). |
+| `cfg` | object | `/down` `cfg` kind only | — | Configuration map carrying `lock` (object with `clear` bool and `auto` int minutes; a dangling cross-reference to "§5.8" for its full shape predates this table's current section numbering and is flagged, not fixed, here), `ca` (v0.2, §4.4), `sms` (v0.2, §3.6 — the SMS contact allow-list) and `wifi` (`docs/WIFI_DESIGN.md` §4/§6, §10 below — the WiFi enable flag and up to two credential pairs). *(GNSS disable, 8 Oct 2026: also `loc`, §3.2 `cfg.loc`, §10 — `{gnss}`, the GNSS enable flag.)* |
 | `peer` | string | `sms_log` only | E.164 | The other party's phone number (§3.6). |
 | `dir` | string | `sms_log` only | `out` \| `in` | Direction of the SMS this entry audits (§3.6). |
 | `st` | string | `sms_log` only | `sent` \| `failed` \| `recv` \| `blocked` | Outcome of the SMS this entry audits (§3.6). |
@@ -186,6 +186,7 @@ Additional rules:
 | Group request (device → relay, v0.4) | `/up` | `{"v":1,"id":"u_…","ts":…,"kind":"grp_req","name":"Cousins","m":["mom","ben"],"ack":null,"n":…,"sig":"…"}` — ≤380 bytes signed JSON, ≤250 signed CBOR; no `from`/`to`/`body` | Asks the relay to create a group with the owner as creator (§3.8); deduped on `id`, 1 per minute per device; no reply on the wire. *(owner decision 1 of `docs/CHAT_UI_DESIGN.md`.)* |
 | Config (relay → device) | `/down` | `{"v":1,"id":"m_…","ts":…,"kind":"cfg","cfg":{"lock":{"clear":true,"auto":5}},"ack":null,"n":…,"sig":"…"}` | Not a thread entry; carries device settings; acked `shown` on apply (§5.8); only newest re-published. |
 | Config, OTA job (relay → device) | `/down` | `{"v":1,"id":"m_…","ts":…,"kind":"cfg","cfg":{"ota":{"img":"<64 hex>","isz":685168,"url":"https://storage.googleapis.com/<bucket>/fw/<id16>/full.z","osz":338784,"osha":"<64 hex>","fmt":"full"}},"ack":null,"n":…,"sig":"…"}` — ≤523 bytes signed JSON, ≤296 signed CBOR with the default bucket name (§3.3) | A `cfg` carrying `ota` (below). Sent only to a device whose last online `/status` carried `ota:1`; acked `shown` on acceptance **or** rejection; progress travels in `/status` (§5.1), not in acks. *(OTA firmware update, `docs/OTA_DESIGN.md` D5.)* |
+| Config, GNSS disable (relay → device) | `/down` | `{"v":1,"id":"m_…","ts":…,"kind":"cfg","cfg":{"loc":{"gnss":false}},"ack":null,"n":…,"sig":"…"}` — ≤141 bytes signed JSON | A `cfg` carrying `loc` (below). Applied and acked `shown` at once, like `wifi`; the device's resulting state travels in `/status` `gnss` (§5.1). *(GNSS disable, `docs/GNSS_DISABLE_DESIGN.md` D1.)* |
 | Ack (device → relay) | `/up` | `{"v":1,"id":"m_7f3a","ts":…,"ack":"shown"}` — **51 bytes**; no `from`, no `body` | — |
 | Up message (device reply) | `/up` | `{"v":1,"id":"u_91c0","ts":…,"from":"student","body":"ok coming","ack":null}` — **84 bytes** | Thread entry, routed to default recipient. |
 | Up message, addressed | `/up` | `{"v":1,"id":"u_91c0","ts":…,"from":"student","to":"mom","body":"ok coming","ack":null}` — **95 bytes** | Thread entry, routed to named recipient. |
@@ -292,6 +293,18 @@ holding either a job or a cancel:
   `ota_err` (§5.1). A newer `cfg.ota` replaces the stored job. In airplane mode the job stays
   parked and costs nothing. Newest only and re-published on an online edge like any `cfg`.
 
+**`cfg.loc` (relay → device, GNSS disable).** *(a module with a damaged GNSS antenna must be able
+to stop powering the receiver while location keeps working from the serving cell;
+`docs/GNSS_DISABLE_DESIGN.md` D1, D3.)* A sixth `cfg` member, CFG key 5 (§10), a map `{gnss}`:
+- `gnss` (bool): `false` stops the device from ever powering its GNSS receiver; `true` re-enables
+  it. Absent means no change, so `{}` is a legal no-op. Unknown sub-keys are ignored.
+- Device: persist the flag, then ack `shown` immediately, like `lock` and `wifi`. While it is
+  `false`, every location attempt (on-demand `loc_req` or scheduled) skips GNSS and sends a cell
+  report (§13.2), and the scheduled GNSS-while-moving attempt never starts; `loc_move_s` (§5.1) is
+  still reported as configured. A device that has never received `cfg.loc` behaves as `gnss:true`.
+- Relay: newest only and re-published on an online edge like any `cfg`. The device's current
+  value is reported back as `/status` `gnss` (§5.1).
+
 ### 3.3 Envelope size limit
 
 **Hard limit: 640 bytes** for the `pager/{device_id}/…` namespace, unchanged. Any payload larger than
@@ -388,6 +401,11 @@ window's typical counters and 399 with every counter at 2³²−1. The JSON form
 bytes, over the limit, so **`bs` is CBOR-only: a device that encodes `/status` as JSON MUST omit
 `bs`** *(the firmware emits `/status` only in CBOR, so this costs nothing today and keeps the
 JSON form legal)*.
+
+*(GNSS disable, 8 Oct 2026, stated so the worst case stays a number in this section.)* A maximal
+`/down` `cfg.loc` (`id` 16, `n` at its maximum) is **141 bytes** signed JSON. `/status` `gnss`
+(key 69, §5.1) adds 9 bytes JSON / 3 CBOR, so the every-field online `/status` becomes 568 / 281
+bytes (402 CBOR with `bs` at its maximum); the headroom figures above stand.
 
 ### 3.4 Malformed payload handling
 
@@ -730,6 +748,7 @@ broker-generated LWT.
 | `ota_pct` | int | no | 0…100 | *(OTA)* Download progress. **Display only.** |
 | `ota_err` | string | no | 1–8 lowercase letters | *(OTA)* Why the job failed or was rejected: `base`, `hash`, `osha`, `http`, `budget`, `flash`, `nobl`, `pv`, `size`, `expired`. A relay accepts any code in the range, since the list can grow. **Display only.** |
 | `bs` | map | no | sub-map below | *(battery stats, `docs/BATTERY_STATS_DESIGN.md` B5: the board has no fuel gauge, so drain is modelled from time spent in each state.)* The battery-stats window, in every online `/status` once the window holds ≥ 1 s. CBOR only (§3.3). **Display and modelling only.** |
+| `gnss` | int | no | `0` \| `1` | *(GNSS disable, `docs/GNSS_DISABLE_DESIGN.md` D4: shows whether a `cfg.loc` push took effect.)* `1` when the device may power its GNSS receiver, `0` when `cfg.loc` (§3.2) has disabled it. Present in every `/status` from firmware that supports `cfg.loc`; absent means firmware that predates the field, which the relay treats as unknown. **Display only.** |
 
 *(`loc_period_s`, `loc_min_s`, `tls`, `ca_fp`, `loc_backoff_s`, `sms_lost`, `xport`, `rst`, `stage`,
 `abn`, `stallcmd` and `loc_move_s` — twelve fields — are **display and diagnosis only**; the relay stores the reported
@@ -738,6 +757,11 @@ traded is GNSS power on its battery (§12 item 8), which the server cannot see. 
 server-settable would need a `/cfg` topic, which §11 still only reserves. `link` is the one
 exception: the relay does not merely display it, it compares it against the stored value to decide
 whether to re-publish unacked `/down` messages, exactly as it already does for `session` — §5.3.)*
+*(8 Oct 2026: `gnss` is the one server-set location control, because it is an on/off
+hardware-fitness switch for a damaged or unwanted antenna rather than duty-cycle tuning.)* It is
+carried by `kind:"cfg"` (`cfg.loc`, §3.2) like every other device setting, so the `/cfg` topic
+remark above applies to the location tuning fields only. `gnss` is in addition to the twelve fields
+above and is likewise **display only** in `/status`: it reports the state the device applied.
 They are optional, so
 a `/status` without them remains valid, and a relay MUST treat their absence as "unknown", not as `0`.
 **Compatibility (§0):** every field in this table added since the first release — these six
@@ -1548,6 +1572,7 @@ Devices emit CBOR (§3) with this integer keymap. The relay accepts both JSON (t
 | 66 | `ota_pct` | uint, 0…100 | `/status` (OTA, §5.1 — download progress, optional) |
 | 67 | `ota_err` | tstr, ≤8 B | `/status` (OTA, §5.1 — failure or rejection code, optional) |
 | 68 | `bs` | map | `/status` (battery stats, `docs/BATTERY_STATS_DESIGN.md`; optional, CBOR only, §3.3) |
+| 69 | `gnss` | uint 0/1 | `/status` (GNSS disable, §5.1 — `cfg.loc` effective state, optional; `docs/GNSS_DISABLE_DESIGN.md` D4) |
 
 *(A relay-side task that added `rst`/`stage`/`abn` was briefed with key 52 for `rst`; by the time
 it landed, 52 was already `xport`, both here and in the shipped relay code. Kept `xport=52` as the
@@ -1581,6 +1606,11 @@ book parser.)*
 `1` delta), `base=6` (bstr(32), delta only), `psz=7` (uint, delta only), `cancel=8` (bool; a map
 with `cancel` needs no other key). Unknown sub-keys are ignored. *(listed apart from the `cfg`
 line above so that line's existing allocation reads unchanged.)*
+
+`loc=5` (map inside `/down` `cfg`, `docs/GNSS_DISABLE_DESIGN.md` D1, §3.2): `gnss=0` (bool; absent
+means no change). Unknown sub-keys are ignored. *(listed apart, like `ota=4`, so the `cfg` line's
+existing allocation reads unchanged; this is `cfg`'s own namespace, distinct from key 8 `loc` in
+the `/loc` envelope.)*
 
 `bs` map (inside `/status`, key 68 above, §5.1): `sq=0, dt=1, sl=2, aw=3` (array of 6 uint)`,
 ns=4, x1=5, rl=6, rf=7` (array of 3 uint)`, mvn=8, cn=9, md=10` (array of 3 uint)`, re=11`. Unknown

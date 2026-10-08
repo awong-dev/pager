@@ -746,6 +746,39 @@ bool loc_build_cbor(uint8_t *out, size_t cap, size_t *out_len, bool signed_env, 
     return true;
 }
 
+#define LOC_CFGK_GNSS 0 /* cfg.loc map key, docs/GNSS_DISABLE_DESIGN.md D1 */
+
+bool loc_parse_cfg_submap(const uint8_t *buf, uint16_t len, loc_cfg_t *out)
+{
+    memset(out, 0, sizeof(*out));
+
+    cbor_r_t r;
+    cbor_r_init(&r, buf, len);
+    uint32_t count;
+    if (!cbor_r_map(&r, &count)) {
+        return false;
+    }
+    loc_cfg_t tmp = {0};
+    for (uint32_t i = 0; i < count; i++) {
+        uint32_t key;
+        if (!cbor_r_key(&r, &key)) {
+            return false;
+        }
+        if (key == LOC_CFGK_GNSS) {
+            bool v;
+            if (!cbor_r_bool(&r, &v)) {
+                return false;
+            }
+            tmp.gnss = v;
+            tmp.have_gnss = true;
+        } else if (!cbor_r_skip(&r)) {
+            return false; /* unknown keys are skipped, never malformed */
+        }
+    }
+    *out = tmp;
+    return true;
+}
+
 bool loc_parse_req_cbor(const uint8_t *buf, uint16_t len, bool sig_pair_present, char *out_id,
                         size_t out_id_cap)
 {
@@ -810,6 +843,7 @@ bool loc_parse_req_cbor(const uint8_t *buf, uint16_t len, bool sig_pair_present,
 #include "accel.h"
 #include "ident.h"
 #include "modes.h"
+#include "msg.h"
 #include "net.h"
 
 #include <stdio.h>
@@ -817,6 +851,7 @@ bool loc_parse_req_cbor(const uint8_t *buf, uint16_t len, bool sig_pair_present,
 #include "esp_log.h"
 #include "esp_random.h"
 #include "esp_timer.h"
+#include "nvs.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -1459,7 +1494,9 @@ void loc_service(void)
         int64_t now_us = esp_timer_get_time();
         s_lock();
         bool track_on = s_track_enabled;
-        uint32_t move_s = s_move_gnss_s;
+        // docs/GNSS_DISABLE_DESIGN.md D3: GNSS disabled by cfg -> treated as
+        // move_gnss_s == 0, so loc_track_gnss_due() is never consulted.
+        uint32_t move_s = loc_gnss_enabled() ? s_move_gnss_s : 0;
         bool busy = s_policy.attempt_in_progress;
         bool due = track_on && !busy && loc_track_gnss_due(&s_track, now_us, move_s);
         bool cap_reached = due && loc_track_gnss_cap_reached(&s_track, now_us);
@@ -1490,6 +1527,13 @@ void loc_service(void)
     }
 
     case LOC_PH_ASSIST_CHECK: {
+        // docs/GNSS_DISABLE_DESIGN.md D3: GNSS disabled by cfg -- short-circuit
+        // before any net_gnss_*() call, via the usual "GNSS failed" path.
+        if (!loc_gnss_enabled()) {
+            ESP_LOGI(TAG, "gnss disabled by cfg; sending a cell report and stopping");
+            finish_attempt(false);
+            break;
+        }
         // Mandatory refresh (LOCATION_TRACKING_DESIGN.md §1/§2.2, this
         // task): due if EITHER the modem's own gnssGetAssistanceStatus()
         // (net_gnss_assistance_due()) says so, OR loc_track_t's own
@@ -1716,8 +1760,56 @@ static void loc_on_uplink_window(void)
 // Init / debug hook.
 // ---------------------------------------------------------------------------
 
+// docs/GNSS_DISABLE_DESIGN.md D2: RAM cache of NVS loc/gnss; absent = enabled.
+static volatile bool s_gnss_enabled = true;
+
+bool loc_gnss_enabled(void) { return s_gnss_enabled; }
+
+// Power effect: one NVS write only; no modem/RRC effect (a later attempt just skips GNSS).
+bool loc_set_gnss_enabled(bool enabled)
+{
+    nvs_handle_t h;
+    if (nvs_open("loc", NVS_READWRITE, &h) != ESP_OK) {
+        return false;
+    }
+    bool ok = nvs_set_u8(h, "gnss", enabled ? 1 : 0) == ESP_OK && nvs_commit(h) == ESP_OK;
+    nvs_close(h);
+    if (ok) {
+        s_gnss_enabled = enabled;
+        ESP_LOGI(TAG, "gnss enabled -> %d", (int) enabled);
+    }
+    return ok;
+}
+
+// Power effect: one NVS write at most (loc_set_gnss_enabled()); no modem effect.
+void loc_apply_cfg_submap(const uint8_t *buf, uint16_t len, const char *id)
+{
+    loc_cfg_t cfg;
+    if (!loc_parse_cfg_submap(buf, len, &cfg)) {
+        ESP_LOGI(TAG, "malformed cfg.loc sub-map dropped (id=%s)", id ? id : "");
+        return;
+    }
+    if (cfg.have_gnss && !loc_set_gnss_enabled(cfg.gnss)) {
+        ESP_LOGI(TAG, "cfg.loc: NVS write failed, not acked (id=%s)", id ? id : "");
+        return;
+    }
+    ESP_LOGI(TAG, "cfg.loc applied: gnss=%s (id=%s)",
+             cfg.have_gnss ? (cfg.gnss ? "on" : "off") : "unchanged", id ? id : "");
+    if (id && id[0] != '\0') {
+        msg_mark_shown(id); // D1: apply-and-ack-`shown` immediately, like cfg.wifi
+    }
+}
+
 void loc_init(void)
 {
+    nvs_handle_t gh;
+    uint8_t gv = 1;
+    if (nvs_open("loc", NVS_READONLY, &gh) == ESP_OK) {
+        nvs_get_u8(gh, "gnss", &gv); // missing -> stays 1 (enabled)
+        nvs_close(gh);
+    }
+    s_gnss_enabled = (gv != 0);
+
     s_lock();
     loc_policy_init(&s_policy);
     s_unlock();
@@ -1737,9 +1829,10 @@ void loc_init(void)
     s_unlock();
 
     ESP_LOGI(TAG, "location ready: loc_min_s=%u loc_period_s=%u battery_floor=%dmV loctrack=%s "
-                  "locmove=%us",
+                  "locmove=%us gnss=%s",
              (unsigned) loc_get_min_s(), (unsigned) loc_get_period_s(), LOC_BATTERY_FLOOR_MV,
-             LOC_TRACK_DEFAULT_ENABLED ? "on" : "off", (unsigned) LOC_MOVE_GNSS_DEFAULT_S);
+             LOC_TRACK_DEFAULT_ENABLED ? "on" : "off", (unsigned) LOC_MOVE_GNSS_DEFAULT_S,
+             s_gnss_enabled ? "on" : "off");
 }
 
 // Power effect: one AT command (net_gnss_config()), no RRC of its own.

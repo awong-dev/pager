@@ -64,6 +64,7 @@ import FirmwareUpdateDialog from "@/components/FirmwareUpdateDialog";
 import RequireAuth from "@/components/RequireAuth";
 import BatteryCard from "@/components/BatteryCard";
 import WifiPanel from "@/components/WifiPanel";
+import GnssPanel from "@/components/GnssPanel";
 import { ApiError, api } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { useNewestBuild } from "@/lib/firmware";
@@ -305,6 +306,8 @@ function DeviceInner() {
       )}
 
       {id && id !== "_" && <WifiPanel deviceId={id} />}
+
+      {id && id !== "_" && <GnssPanel deviceId={id} />}
 
       {id && id !== "_" && <BatteryCard deviceId={id} />}
 

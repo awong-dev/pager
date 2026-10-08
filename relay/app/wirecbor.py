@@ -161,6 +161,8 @@ KEYMAP: dict[str, int] = {
     "ota_err": 67,
     # docs/BATTERY_STATS_DESIGN.md §2: `/status`'s battery-stats sub-map.
     "bs": 68,
+    # docs/GNSS_DISABLE_DESIGN.md D4: `/status`'s GNSS-enabled flag (uint 0/1).
+    "gnss": 69,
 }
 REVERSE_KEYMAP: dict[int, str] = {v: k for k, v in KEYMAP.items()}
 
@@ -186,7 +188,7 @@ SMS_CONTACT_KEYMAP: dict[str, int] = {"n": 0, "p": 1}
 # PROTOCOL.md §10's own `cfg` sub-map allocation (see module docstring):
 # `lock=0`, `ca=1`, `sms=2`, `wifi=3` (docs/WIFI_DESIGN.md §4/§6,
 # docs/WIFI_TASKS.md W7).
-CFG_KEYMAP: dict[str, int] = {"lock": 0, "ca": 1, "sms": 2, "wifi": 3, "ota": 4}
+CFG_KEYMAP: dict[str, int] = {"lock": 0, "ca": 1, "sms": 2, "wifi": 3, "ota": 4, "loc": 5}
 # docs/OTA_DESIGN.md §5: `cfg.ota`. `img`/`osha`/`base` are 64-hex digests in
 # the JSON-shaped dict and 32-byte bstr on the CBOR wire; `fmt` is
 # "full"/"delta" in JSON and 0/1 in CBOR.
@@ -225,6 +227,9 @@ _REVERSE_SMS_CONTACT = {v: k for k, v in SMS_CONTACT_KEYMAP.items()}
 _REVERSE_CFG = {v: k for k, v in CFG_KEYMAP.items()}
 _REVERSE_CELL = {v: k for k, v in CELL_KEYMAP.items()}
 _REVERSE_OTA = {v: k for k, v in OTA_KEYMAP.items()}
+# docs/GNSS_DISABLE_DESIGN.md D1: `cfg.loc = {gnss}`, `gnss` is a bool.
+CFG_LOC_KEYMAP: dict[str, int] = {"gnss": 0}
+_REVERSE_CFG_LOC = {v: k for k, v in CFG_LOC_KEYMAP.items()}
 _REVERSE_WIFI = {v: k for k, v in WIFI_KEYMAP.items()}
 _REVERSE_WIFI_NET = {v: k for k, v in WIFI_NET_KEYMAP.items()}
 
@@ -296,6 +301,8 @@ def _value_to_int_keys(name: str, value: Any) -> Any:
                         {WIFI_NET_KEYMAP[nk]: nv for nk, nv in item.items()} for item in v["nets"]
                     ]
                 out[CFG_KEYMAP["wifi"]] = wifi_out
+            elif k == "loc" and isinstance(v, dict):
+                out[CFG_KEYMAP["loc"]] = {CFG_LOC_KEYMAP[lk]: lv for lk, lv in v.items()}
             else:
                 # §3.2: "Unknown members of cfg are ignored" -- a future
                 # member this module does not know a numeric key for yet
@@ -343,6 +350,9 @@ def _value_to_names(name: str, value: Any) -> Any:
                     elif wk in _REVERSE_WIFI:
                         wifi_out[_REVERSE_WIFI[wk]] = wv
                 out["wifi"] = wifi_out
+            elif k == CFG_KEYMAP["loc"] and isinstance(v, dict):
+                # Unknown sub-keys are ignored (GNSS_DISABLE_DESIGN.md D1).
+                out["loc"] = {_REVERSE_CFG_LOC[lk]: lv for lk, lv in v.items() if lk in _REVERSE_CFG_LOC}
             else:
                 out[_REVERSE_CFG.get(k, k)] = v
         return out

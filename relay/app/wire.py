@@ -332,6 +332,10 @@ class StatusEnvelope(BaseModel):
     # `loc_backoff_s` above -- the relay stores whatever the device reports
     # and never writes it back (the device owns its own duty cycle).
     loc_move_s: int | None = None
+    # docs/GNSS_DISABLE_DESIGN.md D4: 1 = GNSS enabled, 0 = disabled by
+    # `cfg.loc.gnss`. Display only; absent = firmware predating the field.
+    # Any value other than 0/1 is dropped to `None` (like `bpull`).
+    gnss: int | None = None
     # docs/OTA_DESIGN.md §5 (envelope keys 62-67), all optional and
     # display-only except `img`/`ota` (the relay's delta choice and the push
     # gate). A malformed value drops just that field to `None` (like `bpull`)
@@ -392,6 +396,11 @@ class StatusEnvelope(BaseModel):
         if value is not None and not (0 <= value <= 65535):
             raise ValueError("abn out of range")
         return value
+
+    @field_validator("gnss")
+    @classmethod
+    def _check_gnss(cls, value: int | None) -> int | None:
+        return value if value in (0, 1) else None
 
     @field_validator("bpull")
     @classmethod

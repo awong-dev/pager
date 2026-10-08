@@ -574,6 +574,18 @@ void loc_track_gnss_attempt_done(loc_track_t *t, bool success);
  * wait phase). */
 uint32_t loc_web_gnss_budget_s(uint32_t base_budget_s, uint32_t assist_elapsed_s);
 
+/* `cfg.loc` sub-map (docs/GNSS_DISABLE_DESIGN.md D1): `{gnss: bool}` under
+ * CBOR key 0. `buf`/`len` are the raw CBOR bytes of the sub-map value itself
+ * (cfg.h's cfg_dispatch_t.loc_off/loc_len span). `gnss` absent leaves
+ * `have_gnss` false (no change); unknown keys are skipped; a non-map or a
+ * non-bool `gnss` rejects the whole push (returns false). Pure, host-tested. */
+typedef struct {
+    bool have_gnss;
+    bool gnss;
+} loc_cfg_t;
+
+bool loc_parse_cfg_submap(const uint8_t *buf, uint16_t len, loc_cfg_t *out);
+
 #ifdef ESP_PLATFORM
 /* ---------------------------------------------------------------------
  * Device wiring — needs ESP-IDF (RTC struct, NVS-free but esp_timer/
@@ -606,6 +618,20 @@ void loc_bind(loc_rtc_t *rtc, auth_rtc_t *auth_rtc, loc_rtc_lock_fn lock, loc_rt
  * always answers from cache/`no_fix` (this task's own "must not break the
  * receive path" rule); nothing here can block boot. */
 void loc_init(void);
+
+/* docs/GNSS_DISABLE_DESIGN.md D2/D3: per-device "never power the GNSS
+ * receiver" flag. Persisted in NVS namespace "loc", key "gnss" (u8); absent =
+ * enabled; RAM-cached, loaded in loc_init(). While false, loc.c never calls
+ * any net_gnss_*() function (every attempt short-circuits to a cell report).
+ * loc_set_gnss_enabled(): one NVS write, no modem effect; false on NVS error. */
+bool loc_gnss_enabled(void);
+bool loc_set_gnss_enabled(bool enabled);
+
+/* `cfg.loc` apply (docs/GNSS_DISABLE_DESIGN.md D1), called from cfg.c on
+ * modes_run()'s MQTT-event path: parses, applies `gnss` if present, and acks
+ * `shown` immediately on success -- same timing as wificred_apply_cfg_submap().
+ * A malformed sub-map is dropped without an ack. One NVS write at most. */
+void loc_apply_cfg_submap(const uint8_t *buf, uint16_t len, const char *id);
 
 /* GNSS receiver configuration (one AT command; needs the modem). Split out of
  * loc_init() (5 Oct 2026) so loc_init() -- and with it accel_init() -- can run

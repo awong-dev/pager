@@ -153,6 +153,8 @@ _PENDING_CFG_SMS_FIELD = "pendingCfgSms"
 # pending slot for the same reason -- independent of `cfg.lock`/`cfg.ca`/
 # `cfg.sms`.
 _PENDING_CFG_WIFI_FIELD = "pendingCfgWifi"
+# docs/GNSS_DISABLE_DESIGN.md D5: `cfg.loc` has its own pending slot too.
+_PENDING_CFG_LOC_FIELD = "pendingCfgLoc"
 # docs/OTA_DESIGN.md D5/§5: `cfg.ota` (job or cancel) has its own slot for the
 # same reason; a newer push (including a cancel) replaces the older one.
 _PENDING_CFG_OTA_FIELD = "pendingCfgOta"
@@ -165,6 +167,7 @@ _ALL_PENDING_FIELDS = (
     _PENDING_CFG_CA_FIELD,
     _PENDING_CFG_SMS_FIELD,
     _PENDING_CFG_WIFI_FIELD,
+    _PENDING_CFG_LOC_FIELD,
     _PENDING_CFG_OTA_FIELD,
 )
 
@@ -741,6 +744,34 @@ def wifi_pending(device_id: str) -> bool:
     if not snap.exists:
         return False
     pending = (snap.to_dict() or {}).get(_PENDING_CFG_WIFI_FIELD)
+    return isinstance(pending, dict) and not pending.get("acked", False)
+
+
+def push_loc(device_id: str, *, gnss: bool, broker: BrokerClient) -> bool:
+    """docs/GNSS_DISABLE_DESIGN.md D1/D5: `/down cfg.loc = {gnss}`, under its
+    own pending slot (`_PENDING_CFG_LOC_FIELD`)."""
+    if devices_store.get_device(device_id) is None:
+        logger.warning("push_loc: no such device %s", device_id)
+        return False
+    obj: dict[str, Any] = {
+        "v": 1,
+        "id": new_message_id(),
+        "ts": int(time.time()),
+        "kind": "cfg",
+        "cfg": {"loc": {"gnss": gnss}},
+        "ack": None,
+    }
+    _assert_within_envelope_limit(obj)
+    _set_pending(device_id, _PENDING_CFG_LOC_FIELD, obj)
+    return broker.publish_down(device_id, obj)
+
+
+def loc_pending(device_id: str) -> bool:
+    """True iff this device has a pushed `cfg.loc` not yet acked `shown`."""
+    snap = _devices().document(device_id).get()
+    if not snap.exists:
+        return False
+    pending = (snap.to_dict() or {}).get(_PENDING_CFG_LOC_FIELD)
     return isinstance(pending, dict) and not pending.get("acked", False)
 
 

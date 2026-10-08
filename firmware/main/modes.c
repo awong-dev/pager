@@ -645,6 +645,7 @@ static void on_auth_epoch_wrap(void)
 #define STK_LOC_PERIOD_S 27
 #define STK_LOC_MIN_S 28
 #define STK_LOC_BACKOFF_S 43 // v0.2 §7
+#define STK_GNSS 69 // docs/GNSS_DISABLE_DESIGN.md D4: cfg.loc.gnss as applied (0/1)
 #define STK_LOC_MOVE_S 61 // LOCATION_TRACKING_DESIGN.md §5 P3, this task: the `locmove` runtime
                           // tunable (0 = GNSS-while-moving off)
 #define STK_TLS 39           // v0.2 §4.3/§7: "unpinned"/"pinned"/"broken"
@@ -860,7 +861,7 @@ static bool build_status_cbor(uint8_t *out, size_t cap, size_t *out_len, const c
     // trip of their own beyond what batt_mv/rssi above already cost).
     // LOCATION_TRACKING_DESIGN.md §5 P3: +1 for loc_move_s (key 61), same
     // "plain read" cost class.
-    uint32_t nfields = 9 + 3 + 1 + 1 + 1 + 1 + 1 + 3; // + tls, + sms_lost, + link, + xport,
+    uint32_t nfields = 9 + 3 + 1 + 1 + 1 + 1 + 1 + 3 + 1; // + gnss (key 69, GNSS_DISABLE_DESIGN.md D4), + tls, + sms_lost, + link, + xport,
                                           // + loc_move_s, + rst/stage/abn;
                                           // v,state,mode,batt_mv,rssi,
                                           // session,ts,fw,bv,loc_period_s,loc_min_s,loc_backoff_s,
@@ -913,6 +914,7 @@ static bool build_status_cbor(uint8_t *out, size_t cap, size_t *out_len, const c
     cbor_w_uint(&w, STK_LOC_MIN_S, loc_get_min_s());        // v0.2 §5: the 10-minute trigger floor
     cbor_w_uint(&w, STK_LOC_BACKOFF_S, loc_get_backoff_remaining_s()); // v0.2 §7 key 43
     cbor_w_uint(&w, STK_LOC_MOVE_S, loc_get_move_gnss_s()); // LOCATION_TRACKING_DESIGN.md §5 P3 key 61
+    cbor_w_uint(&w, STK_GNSS, loc_gnss_enabled() ? 1 : 0); // docs/GNSS_DISABLE_DESIGN.md D4 key 69
     cbor_w_tstr(&w, STK_TLS, tls_str, strlen(tls_str));                // v0.2 §4.3
     if (have_ca_fp) {
         cbor_w_tstr(&w, STK_CA_FP, ca_fp, strlen(ca_fp));              // v0.2 §4.3

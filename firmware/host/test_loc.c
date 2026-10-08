@@ -960,8 +960,48 @@ static void test_loc_build_cbor_why_vs_reference(void)
           got_len, want_len);
 }
 
+/* docs/GNSS_DISABLE_DESIGN.md D1: cfg.loc sub-map parser. */
+static void test_parse_cfg_submap(void)
+{
+    uint8_t buf[64];
+    cbor_w_t w;
+    loc_cfg_t c;
+
+    cbor_w_init(&w, buf, sizeof(buf));
+    cbor_w_map(&w, 1);
+    cbor_w_bool(&w, 0, false);
+    CHECK(loc_parse_cfg_submap(buf, (uint16_t) w.len, &c) && c.have_gnss && !c.gnss, "{0:false}");
+
+    cbor_w_init(&w, buf, sizeof(buf));
+    cbor_w_map(&w, 1);
+    cbor_w_bool(&w, 0, true);
+    CHECK(loc_parse_cfg_submap(buf, (uint16_t) w.len, &c) && c.have_gnss && c.gnss, "{0:true}");
+
+    cbor_w_init(&w, buf, sizeof(buf));
+    cbor_w_map(&w, 0);
+    CHECK(loc_parse_cfg_submap(buf, (uint16_t) w.len, &c) && !c.have_gnss, "{} -> have_gnss false");
+
+    cbor_w_init(&w, buf, sizeof(buf));
+    cbor_w_map(&w, 3);
+    cbor_w_uint(&w, 7, 42);
+    cbor_w_bool(&w, 0, false);
+    cbor_w_tstr(&w, 9, "x", 1);
+    CHECK(loc_parse_cfg_submap(buf, (uint16_t) w.len, &c) && c.have_gnss && !c.gnss,
+          "unknown keys are ignored");
+
+    cbor_w_init(&w, buf, sizeof(buf));
+    cbor_w_uint(&w, 0, 1); /* a bare uint, not a map */
+    CHECK(!loc_parse_cfg_submap(buf, (uint16_t) w.len, &c), "non-map rejected");
+
+    cbor_w_init(&w, buf, sizeof(buf));
+    cbor_w_map(&w, 1);
+    cbor_w_uint(&w, 0, 1); /* gnss must be a bool */
+    CHECK(!loc_parse_cfg_submap(buf, (uint16_t) w.len, &c), "non-bool gnss rejected");
+}
+
 int main(void)
 {
+    test_parse_cfg_submap();
     test_backoff_sequence();
     test_reset_by_success_and_backoff_growth();
     test_reset_by_trigger_respects_attempt_floor();

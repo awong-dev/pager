@@ -326,8 +326,53 @@ static void test_ota_span(void)
     CHECK(cfg_parse(buf, (uint16_t) w.len, false, &d) && !d.have_ota, "have_ota must be false when absent");
 }
 
+/* `loc`=5 (docs/GNSS_DISABLE_DESIGN.md D1): a recognised span next to `wifi`
+ * that decodes standalone, and have_loc stays false when absent. */
+static void test_loc_span(void)
+{
+    uint8_t buf[256];
+    cbor_w_t w;
+    cbor_w_init(&w, buf, sizeof(buf));
+    cbor_w_map(&w, 3);
+    cbor_w_tstr(&w, 1, "m_77777777", 10);
+    cbor_w_tstr(&w, 6, "cfg", 3);
+    cbor_w_map_key(&w, 38, 2);
+    cbor_w_map_key(&w, 3, 1); /* wifi: { en: true } */
+    cbor_w_bool(&w, 0, true);
+    cbor_w_map_key(&w, 5, 1); /* loc: { gnss: false } */
+    cbor_w_bool(&w, 0, false);
+    CHECK(!w.err, "test setup: encoding the loc fixture must not overflow");
+
+    cfg_dispatch_t d;
+    CHECK(cfg_parse(buf, (uint16_t) w.len, false, &d), "a cfg envelope with `loc` must be accepted");
+    CHECK(strcmp(d.id, "m_77777777") == 0, "id mismatch: %s", d.id);
+    CHECK(d.have_loc && d.have_wifi, "have_loc and have_wifi must both be true");
+    CHECK(!d.have_lock && !d.have_ca && !d.have_sms && !d.have_ota, "no other sub-map");
+
+    cbor_r_t r;
+    cbor_r_init(&r, buf + d.loc_off, d.loc_len);
+    uint32_t count, key;
+    bool b = true;
+    CHECK(cbor_r_map(&r, &count) && count == 1, "captured loc span must decode as a 1-pair map");
+    CHECK(cbor_r_key(&r, &key) && key == 0 && cbor_r_bool(&r, &b) && !b, "loc.gnss must be false");
+    CHECK(d.loc_off + d.loc_len == w.len, "loc span must end at the end of the buffer");
+    CHECK(d.wifi_off + d.wifi_len + 1 == d.loc_off, "wifi span must be intact and precede loc (1 key byte between)");
+
+    /* without loc: have_loc stays false */
+    cbor_w_init(&w, buf, sizeof(buf));
+    cbor_w_map(&w, 3);
+    cbor_w_tstr(&w, 1, "m_66666666", 10);
+    cbor_w_tstr(&w, 6, "cfg", 3);
+    cbor_w_map_key(&w, 38, 1);
+    cbor_w_map_key(&w, 3, 1);
+    cbor_w_bool(&w, 0, true);
+    CHECK(cfg_parse(buf, (uint16_t) w.len, false, &d) && !d.have_loc && d.have_wifi,
+          "have_loc must be false when absent");
+}
+
 int main(void)
 {
+    test_loc_span();
     test_ota_span();
     test_lock_only();
     test_ca_only();
