@@ -778,6 +778,22 @@ const char *net_get_device_id(void);
  * effect: modem leaves reset, one AT round trip, no RRC. */
 bool net_check_sim(void);
 
+/* docs/SORACOM_DESIGN.md 3.3: Soracom Beam's plain-MQTT entry point. */
+#define PAGER_BEAM_HOST "beam.soracom.io"
+#define PAGER_BEAM_PORT 1883
+
+/* True when the LTE session reaches the broker through Beam (plain MQTT, TLS
+ * profile 0). Resolved once per attach from carrier_effective() + the NVS
+ * override and cached in RAM; never re-reads the SIM. false until the first
+ * attach has resolved it. */
+bool net_bearer_beam(void);
+/* Label of the carrier preset in force from the last attach ("" if none). */
+const char *net_carrier_label(void);
+
+/* IMSI, EF_GID1 (hex) and ICCID as the firmware reads them, for the `carrier`
+ * console. GID1/ICCID are "" when the SIM has none. Needs the modem begun. */
+bool net_sim_identity(char *imsi, size_t imsi_cap, char *gid1_hex, size_t gid_cap, char *iccid, size_t iccid_cap);
+
 #ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
 /* TEMPORARY diagnostic (main.c's `nettest` console command), debug build
  * only (PAGER_DEBUG_NO_LIGHT_SLEEP) -- docs/ROADMAP.md's "temporary

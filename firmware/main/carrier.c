@@ -4,13 +4,19 @@
 #include <string.h>
 
 static const carrier_preset_t k_presets[] = {
-    { "Automatic", "", NULL, "" },
-    { "Carrier default", "", NULL, "" },
+    { "Automatic", "", NULL, "", CARRIER_BEARER_DIRECT, CARRIER_AUTH_NONE, NULL, NULL, true, NULL },
+    { "Carrier default", "", NULL, "", CARRIER_BEARER_DIRECT, CARRIER_AUTH_NONE, NULL, NULL, true, NULL },
     // https://www.usmobile.com/help/docs/troubleshooting-and-setup/apn-settings-android-dark-star
     // ("MCC 310, MNC 410, or 280 if 410 fails to save; MVNO type GID, value 20FF").
     // Bench SIM 2026-09-20: EF_GID1 = 20FF, network reports mnc410.mcc310;
     // TLS MQTT in 5 s and the requested eDRX granted with this APN, neither with a blank one.
-    { "US Mobile Dark Star", "ereseller", "310410 310280", "20FF" },
+    { "US Mobile Dark Star", "ereseller", "310410 310280", "20FF", CARRIER_BEARER_DIRECT, CARRIER_AUTH_NONE, NULL, NULL, true, NULL },
+    // Soracom Air for Cellular (global SIM): APN soracom.io, user/pass sora/sora (owner, 8 Oct 2026),
+    // MQTT through Soracom Beam. Bench SIM 8 Oct 2026: IMSI 311588112011642 (home PLMN 311-588),
+    // EF_GID1 = FFFF (blank), ICCID 8942310023000016420. Second rule: Soracom's ICCID issuer prefix
+    // 8942310 is shared across its plans, so a SIM with another IMSI still detects.
+    { "Soracom", "soracom.io", "311588", "", CARRIER_BEARER_BEAM, CARRIER_AUTH_PAP, "sora", "sora", false,
+      "8942310" },
 };
 
 size_t carrier_preset_count(void) { return sizeof(k_presets) / sizeof(k_presets[0]); }
@@ -85,16 +91,39 @@ static bool plmn_listed(const char *plmns, const char *imsi)
     return false;
 }
 
-const carrier_preset_t *carrier_detect(const char *imsi, const char *gid1_hex)
+static bool iccid_listed(const char *prefixes, const char *iccid)
 {
-    if (!imsi || strlen(imsi) < 6) {
-        return NULL;
+    const char *p = prefixes;
+    while (p && *p) {
+        while (*p == ' ') {
+            p++;
+        }
+        const char *e = p;
+        while (*e && *e != ' ') {
+            e++;
+        }
+        size_t n = (size_t) (e - p);
+        if (n >= 5 && strncmp(p, iccid, n) == 0) {
+            return true;
+        }
+        p = e;
     }
+    return false;
+}
+
+const carrier_preset_t *carrier_detect(const char *imsi, const char *gid1_hex, const char *iccid)
+{
     if (!gid1_hex) {
         gid1_hex = "";
     }
     for (size_t i = 2; i < carrier_preset_count(); i++) {
         const carrier_preset_t *p = &k_presets[i];
+        if (iccid && iccid[0] && iccid_listed(p->iccid_prefixes, iccid)) {
+            return p;
+        }
+        if (!imsi || strlen(imsi) < 6) {
+            continue;
+        }
         if (!p->plmns || !p->plmns[0] || !plmn_listed(p->plmns, imsi)) {
             continue;
         }
@@ -114,6 +143,42 @@ const carrier_preset_t *carrier_detect(const char *imsi, const char *gid1_hex)
         }
     }
     return NULL;
+}
+
+const carrier_preset_t *carrier_resolve(bool fixed, const char *fixed_apn, const char *imsi, const char *gid1_hex,
+                                        const char *iccid, const char *typed_apn)
+{
+    if (typed_apn && typed_apn[0]) {
+        const carrier_preset_t *d = carrier_detect(imsi, gid1_hex, iccid);
+        return (d && strcmp(d->apn, typed_apn) == 0) ? d : NULL;
+    }
+    if (fixed) {
+        int i = carrier_preset_index_for(fixed_apn);
+        return (i >= 0) ? &k_presets[i] : NULL;
+    }
+    return carrier_detect(imsi, gid1_hex, iccid);
+}
+
+carrier_bearer_t carrier_bearer_resolve(const carrier_preset_t *p, carrier_bearer_ovr_t ovr)
+{
+    carrier_bearer_t natural = p ? p->bearer : CARRIER_BEARER_DIRECT;
+    if (ovr == CARRIER_BEARER_OVR_DIRECT) {
+        return CARRIER_BEARER_DIRECT;
+    }
+    if (ovr == CARRIER_BEARER_OVR_BEAM) {
+        return natural == CARRIER_BEARER_BEAM ? CARRIER_BEARER_BEAM : CARRIER_BEARER_DIRECT;
+    }
+    return natural;
+}
+
+const char *carrier_auth_name(carrier_auth_t a)
+{
+    return a == CARRIER_AUTH_PAP ? "PAP" : (a == CARRIER_AUTH_CHAP ? "CHAP" : "none");
+}
+
+const char *carrier_bearer_ovr_name(carrier_bearer_ovr_t o)
+{
+    return o == CARRIER_BEARER_OVR_DIRECT ? "direct" : (o == CARRIER_BEARER_OVR_BEAM ? "beam" : "auto");
 }
 
 #ifdef ESP_PLATFORM
@@ -211,6 +276,72 @@ bool carrier_select_preset(size_t i)
         return false;
     }
     return persist(i == CARRIER_PRESET_AUTO ? CARRIER_MODE_AUTO : CARRIER_MODE_FIXED, p->apn);
+}
+
+const carrier_preset_t *carrier_effective(const char *imsi, const char *gid1_hex, const char *iccid, const char *typed_apn)
+{
+    return carrier_resolve(carrier_get_mode() == CARRIER_MODE_FIXED, carrier_get_apn(), imsi, gid1_hex, iccid, typed_apn);
+}
+
+carrier_bearer_ovr_t carrier_bearer_override_get(void)
+{
+    nvs_handle_t h;
+    uint8_t v = 0;
+    if (nvs_open("carrier", NVS_READONLY, &h) != ESP_OK) {
+        return CARRIER_BEARER_OVR_AUTO;
+    }
+    if (nvs_get_u8(h, "bearer", &v) != ESP_OK || v > (uint8_t) CARRIER_BEARER_OVR_BEAM) {
+        v = 0;
+    }
+    nvs_close(h);
+    return (carrier_bearer_ovr_t) v;
+}
+
+// Power effect: one NVS write/erase, nothing touches the modem; read at the next attach.
+bool carrier_bearer_override_set(carrier_bearer_ovr_t o)
+{
+    nvs_handle_t h;
+    if (nvs_open("carrier", NVS_READWRITE, &h) != ESP_OK) {
+        return false;
+    }
+    esp_err_t e = (o == CARRIER_BEARER_OVR_AUTO) ? nvs_erase_key(h, "bearer") : nvs_set_u8(h, "bearer", (uint8_t) o);
+    if (e == ESP_ERR_NVS_NOT_FOUND) {
+        e = ESP_OK;
+    }
+    bool ok = e == ESP_OK && nvs_commit(h) == ESP_OK;
+    nvs_close(h);
+    if (ok) {
+        ESP_LOGI(TAG, "bearer override: %s; used from the next attach", carrier_bearer_ovr_name(o));
+    }
+    return ok;
+}
+
+bool carrier_auth_flag_get(void)
+{
+    nvs_handle_t h;
+    uint8_t v = 0;
+    if (nvs_open("carrier", NVS_READONLY, &h) != ESP_OK) {
+        return false;
+    }
+    if (nvs_get_u8(h, "auth", &v) != ESP_OK) {
+        v = 0;
+    }
+    nvs_close(h);
+    return v == 1;
+}
+
+// Power effect: one NVS write/erase, no modem access.
+void carrier_auth_flag_set(bool on)
+{
+    nvs_handle_t h;
+    if (nvs_open("carrier", NVS_READWRITE, &h) != ESP_OK) {
+        return;
+    }
+    esp_err_t e = on ? nvs_set_u8(h, "auth", 1) : nvs_erase_key(h, "auth");
+    if (e == ESP_OK || e == ESP_ERR_NVS_NOT_FOUND) {
+        nvs_commit(h);
+    }
+    nvs_close(h);
 }
 
 void carrier_note_detected(const char *label)

@@ -1,6 +1,7 @@
 # Evaluation: Soracom as the LTE provider, with Beam or Funk (2026-09-20)
 
-Status: **evaluation only, nothing decided or built.** Prices are Soracom's published "Global"
+Status: superseded for the Beam shape by [SORACOM_DESIGN.md](SORACOM_DESIGN.md) (decided 8 Oct 2026).
+Status as of 20 Sep 2026: **evaluation only, nothing decided or built.** Prices are Soracom's published "Global"
 USD list prices read on 2026-09-20 from <https://developers.soracom.io/en/docs/reference/fees/>;
 re-check before buying. Traffic figures are this project's own, `PROTOCOL.md` §7.
 

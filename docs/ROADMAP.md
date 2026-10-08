@@ -134,8 +134,9 @@ From `docs/HARDWARE_TESTING.md` "Not yet seen working," in order:
 - **CardKB bootloader reflash** (1.1 s key-loss issue; ISP header reflash without bootloader needed if selected).
 - **Modem ring indicator (RI) wiring** (simplifies UART-woken host; if routed to GPIO, phase 2 becomes
   "wake on RI, one `AT` to flush" with no byte loss — decide before S9 implementation).
-- **Soracom** (`docs/SORACOM_EVAL.md`). If adopted, pager TLS/CA unneeded on those SIMs; texting ordinary
-  phone number impossible.
+- **Soracom Beam bearer** (`docs/SORACOM_DESIGN.md`, decided 8 Oct 2026; the eval is `docs/SORACOM_EVAL.md`).
+  Precondition before trusting the Beam bearer with real page bodies: AEAD bodies (see Ideas on hold).
+  Beam can read bodies today. The broker-free UDP design remains the long-term option (eval, step 3).
 - **Send the three vendor bug reports** (`docs/VENDOR_BUG_REPORTS.md`).
 - **eDRX vs delivery deadline** (S14): test with eDRX 10.24 s vs 20.48 s; impacts latency estimate and power
   cost trade-off (`docs/PROTOCOL.md` §8.2-8.3).
@@ -174,4 +175,4 @@ and complete the feature.
   counter it saw. Only needed if a pager loses flash but keeps its identity, which cannot happen today
   (`docs/DEVICE_PLAN.md` §2.5).
 - **Encrypting message bodies** under the device key (`docs/DEVICE_PLAN.md` §2.2, option E). Would hide
-  pages and positions from broker and path. A precondition for Soracom.
+  pages and positions from broker and path. A precondition for trusting the Soracom Beam bearer with real data.

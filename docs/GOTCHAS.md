@@ -70,7 +70,8 @@ UNVERIFIED: the per-ping energy, the carrier's true idle timeout (and the larges
 
 ## The modem's MQTT client and TLS
 
-- **A TLS profile that names no CA slot makes the MQTT client send plaintext.** With
+- **A TLS profile that names no CA slot makes the MQTT client send plaintext.** (This is about the
+  direct path. On the Beam bearer profile 0 is deliberate; see the next section.) With
   `AT+SQNSPCFG=2,2,"",0,,,,` the modem sends an unencrypted MQTT CONNECT, password included, to
   port 8883. The broker waits for a handshake, the modem for a CONNACK, and no event ever fires.
   The generic socket layer does TLS with the same profile, so socket tests do not show it.
@@ -86,6 +87,24 @@ UNVERIFIED: the per-ping energy, the carrier's true idle timeout (and the larges
   modem.
 - Right after attach `AT+CCLK?` can still answer `70/01/01`, which the library reads as 2070. The
   firmware accepts only 2024-2069, retries, and falls back to `ts: 0`.
+
+## The Soracom Beam bearer: profile 0 is plaintext on purpose
+
+**Symptom:** a capture of the pager's MQTT session on port 1883 shows the CONNECT and its password
+in clear text.
+
+**Cause:** the Beam bearer uses `mqttConfig(dev_id, dev_id, pw, 0)`, so the modem sends plain MQTT to
+`beam.soracom.io:1883` and Beam opens the TLS leg to EMQX. The hazard in the TLS section above is
+about the direct path, where profile 2 must name slot 12; that path is unchanged. **Do not add a CA
+slot to profile 0 to "fix" the plaintext.** The forced `beam` override is refused on any carrier
+that is not a Beam preset, because `beam.soracom.io` resolves to carrier-grade NAT space on other
+networks and the password would go to whatever answers there.
+
+**`setPDPAuthParams()` does nothing unless the context's auth was set.** It returns OK early while the
+context's stored `auth_proto` is NONE, which is its starting value, so nothing is sent. The firmware
+sends `AT+CGAUTH=1,1,"user","pass"` raw after `definePDPContext`, before the attach. The modem is
+expected to keep `+CGAUTH` across resets, so a `carrier/auth` flag makes a later non-Soracom boot
+send `AT+CGAUTH=1,0` once. Not yet verified on the bench.
 
 ## The vendored modem library
 

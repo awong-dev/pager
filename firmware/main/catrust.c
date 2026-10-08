@@ -336,6 +336,17 @@ void catrust_apply_cfg_submap(const uint8_t *buf, uint16_t len, const char *id)
         return;
     }
 
+    if (net_bearer_beam()) {
+        // SORACOM_DESIGN 3.3: the trial reconnect would "validate" a CA over a plaintext hop that
+        // never uses it and commit it. Refused: acked `shown` so the relay stops re-publishing
+        // (the protocol has no failure ack), nothing fetched or stored.
+        ESP_LOGI(TAG, "cfg.ca refused on the Beam bearer (TLS is terminated by Beam), id=%s", id ? id : "");
+        if (id && id[0] != '\0') {
+            msg_mark_shown(id);
+        }
+        return;
+    }
+
     s_lock();
     s_pending_present = true;
     s_pending_unpin = cfg.unpin;

@@ -23,7 +23,9 @@ Other:
 
 | Document | Scope |
 |---|---|
-| [SORACOM_EVAL.md](SORACOM_EVAL.md) | Evaluation of Soracom as the carrier, including a design with no MQTT broker. Undecided |
+| [SORACOM_EVAL.md](SORACOM_EVAL.md) | Evaluation; superseded by SORACOM_DESIGN.md for the Beam shape |
+| [SORACOM_DESIGN.md](SORACOM_DESIGN.md) | Soracom bearer: plain MQTT through Beam, chosen by the inserted SIM. Decided 8 Oct 2026 |
+| [SORACOM_TASKS.md](SORACOM_TASKS.md) | Execution tasks for SORACOM_DESIGN.md |
 | [VENDOR_BUG_REPORTS.md](VENDOR_BUG_REPORTS.md) | Bug reports drafted for Sequans and DPTechnics. Not yet sent |
 | [history/](history/) | The task lists the first build was executed from. Code comments such as "DEVICE_TASKS.md F3.5" refer to `history/DEVICE_TASKS.md`. Not maintained |
 

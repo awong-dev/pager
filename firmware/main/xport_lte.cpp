@@ -608,7 +608,11 @@ static bool lte_session_up(void)
         return false;
     }
     s_disconnect_edge = false;
-    if (!WalterModem::mqttConnect(ident_get_host(), ident_get_port(), PAGER_MQTT_KEEPALIVE_S)) {
+    // Beam bearer (SORACOM_DESIGN 3.3): fixed entry point, the bundle's host/port are not used.
+    const bool beam = net_bearer_beam();
+    const char *conn_host = beam ? PAGER_BEAM_HOST : ident_get_host();
+    const uint16_t conn_port = beam ? (uint16_t) PAGER_BEAM_PORT : (uint16_t) ident_get_port();
+    if (!WalterModem::mqttConnect(conn_host, conn_port, PAGER_MQTT_KEEPALIVE_S)) {
         ESP_LOGI(TAG, "mqttConnect() call could not be queued");
         // If the modem has lost its client configuration (it answers +CME
         // ERROR), the next attempt redoes it. Cheap, and it is the state that
@@ -617,7 +621,7 @@ static bool lte_session_up(void)
         net_connect_guard_note_fail(&s_connect_guard); // v0.2 M3: 3 in a row -> modem recover
         return false;
     }
-    ESP_LOGI(TAG, "MQTT connect issued to %s:%u", ident_get_host(), (unsigned) ident_get_port());
+    ESP_LOGI(TAG, "MQTT connect issued to %s:%u%s", conn_host, (unsigned) conn_port, beam ? " (beam, plain)" : "");
     // v0.2 M1: arms the 30s "no CONNECTED/SUBSCRIBED seen" bound
     // (net_service_session() below) and, per net_connect_guard_issued()'s own
     // contract, resets the M3 fail streak -- the modem accepted CONFIG/CONNECT

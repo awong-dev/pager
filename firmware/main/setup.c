@@ -775,7 +775,11 @@ bool setup_run(const char *code)
     // by decode_and_validate_bundle(); "prefer the pointer" when an inline
     // `ca` was ALSO present just falls out of overwriting id->ca/id->ca_len
     // below with the fetched PEM.
-    if (ca_ptr.have_ptr) {
+    if (ca_ptr.have_ptr && net_bearer_beam()) {
+        // SORACOM_DESIGN 3.3: TLS is terminated by Beam, so a CA pointer is meaningless here and
+        // ident has no field to keep it; the identity is stored unpinned.
+        ESP_LOGI(TAG, "SETUP CA fetch skipped: Beam bearer terminates TLS (ca_url dropped)");
+    } else if (ca_ptr.have_ptr) {
         static char fetched_pem[CAFETCH_PEM_MAX];
         size_t fetched_len = 0;
         int http_status = 0;

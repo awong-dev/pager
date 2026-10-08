@@ -116,6 +116,25 @@ crosses the wire; this section covers the device-local behaviour the protocol do
 - The managed `walter-modem` component is never patched in place. Anything the vendor API cannot
   express is either worked around in our own code or documented as a limitation.
 
+## Carrier and bearer
+
+The SIM picks a carrier preset (`firmware/main/carrier.c`, `carrier_effective()`), by IMSI prefix,
+ICCID prefix or EF_GID1. A preset gives the APN, PDP credentials, the bearer and whether modem SMS
+may be sent.
+
+- **US Mobile Dark Star** and the other existing presets: bearer `direct`, no PDP auth.
+- **Soracom** (`soracom.io`): matched by IMSI prefix `311588` or ICCID prefix `8942310`. PAP user
+  `sora`, password `sora`, sent as `AT+CGAUTH=1,1,"sora","sora"` after `definePDPContext`. Bearer
+  `beam`; modem SMS is refused.
+- **`direct`**: TLS from the modem to the bundle's host and port, as before.
+- **`beam`**: plain MQTT to `beam.soracom.io:1883`; Soracom Beam opens the TLS leg to EMQX. The
+  bundle's host, port and CA URL are ignored, `/status` reports `tls: "proxy"`, and CA pushes are
+  refused. See `docs/SORACOM_DESIGN.md` §3.
+
+Console: `bearer [auto|direct|beam]` (NVS `carrier/bearer`) overrides the bearer for A/B tests. The
+override is read at boot. `carrier` shows what was detected and what is in force. Gotchas are in
+`docs/GOTCHAS.md`.
+
 ## Dependencies
 
 - ESP-IDF 5.x

@@ -13,6 +13,9 @@ charge and about a megabyte of data a month.
   Hosting)          Firestore)  ◀──rule engine webhook──┘                           e-paper)
 ```
 
+The pager leg is MQTT over TLS from the modem, or on a Soracom SIM plain MQTT via Soracom Beam, which
+opens the TLS leg to the broker (`docs/SORACOM_DESIGN.md`).
+
 - **Pager** (`firmware/`): a DPTechnics Walter board (ESP32-S3 plus a Sequans GM02SP LTE-M/GNSS
   modem), a 296×128 e-paper display, a keyboard and a button. ESP-IDF, C with one C++ file
   (`net.cpp`) wrapping the vendor's modem library, which is vendored and patched in

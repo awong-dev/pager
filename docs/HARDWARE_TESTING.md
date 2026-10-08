@@ -28,20 +28,22 @@ esptool.py --chip esp32s3 erase_region 0x9000 0x6000          # wipe settings ->
 
 ## Console commands
 
-Setup mode has `setup` and `carrier`. The debug build has all of these, in any mode.
+Setup mode has `setup`, `carrier` and `bearer`; on the debug build it also has `nettest`, `mqtttest`
+and `at`. Outside Setup mode the debug build has all of these.
 
 | Command | Does |
 |---|---|
 | `setup <code>` | Provision from a setup code |
-| `carrier` / `carrier <n>` / `carrier custom <apn>` | Show or set the APN choice. 0 = automatic |
+| `carrier` / `carrier <n>` / `carrier custom <apn>` | Show or set the APN choice. 0 = automatic. Prints `sim: imsi=… gid1=… iccid=…`, `bearer:`, `pdp auth:` and `detected:` |
+| `bearer [auto\|direct\|beam]` | Override the bearer (NVS `carrier/bearer`), read at boot. `beam` is honoured only when the preset in force is a Beam carrier (Soracom). `auto` clears the override |
 | `nettest <host> <port> [udp\|tls\|<bytes>]` | Debug build only. Socket-layer probe. With a byte count: a padded HTTP GET, then waits for a reply. Re-attaches first, which disturbs a live session |
-| `mqtttest <host> <port> [ca\|noneca\|emptyca]` | Debug build only. Points the modem's own MQTT client at any host. `emptyca` deletes the certificate in slot 12 first |
+| `mqtttest <host> <port> [ca\|noneca\|emptyca\|plain]` | Debug build only. Points the modem's own MQTT client at any host. `emptyca` deletes the certificate in slot 12 first. `plain` uses TLS profile 0, the Beam shape (plaintext). Other modes are not meaningful while the bearer is `beam` |
 | `cafetch <https url> <sha256 hex>` | The CA fetch over a second TLS socket, without applying it. Reports whether the MQTT session survived |
 | `gnsstest <seconds>` | One location attempt, bypassing the backoff and the battery floor |
 | `smstest <number> <text>`, `smslist` | Send one SMS bypassing the allow-list; show the list and the audit queue |
 | `sleeptest <minutes> [yield_ms] [interval_ms]` | Light-sleep window with optional overrides; records pages, session loss, timing; saves to NVS then resets. `sleeptest` alone prints the saved report. `yield_ms` is `0` or 30..10000, `interval_ms` is `0` or 200..60000; `0` (or omitting the argument) keeps the build default, so `sleeptest 6 0 0` and `sleeptest 6` are the same run |
 | `coverage` | Debug the no-coverage radio duty cycle (deregister with `at AT+COPS=2`, recover with `at AT+COPS=0`) |
-| `at <command>` | One raw AT command; the reply shows in the trace |
+| `at <command>` | One raw AT command; the reply shows in the trace. Accepts `at +CIMI` or `at AT+CIMI`. Setup mode has it on the debug build only |
 | `acceltest [samples <n>\|ths <0-127>\|dur <0-127>\|refr <seconds>]` | LIS3DH register/sample dump and runtime tuning (A2); re-probes WHO_AM_I every call, so wiring the chip needs no reboot. `acceltest` alone prints registers, THS in mg, the refractory setting, edges reported and ext1 wake count |
 | `flip on\|off\|status` | Persist and apply a 180-degree display rotation (NVS `disp_flip`) so the pager can be read upside down; `on`/`off` force one full refresh immediately |
 

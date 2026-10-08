@@ -645,6 +645,7 @@ static void on_auth_epoch_wrap(void)
 #define STK_LOC_PERIOD_S 27
 #define STK_LOC_MIN_S 28
 #define STK_LOC_BACKOFF_S 43 // v0.2 §7
+#define STK_CAR 70 // docs/SORACOM_DESIGN.md 3.4: carrier preset label (<= 24 B)
 #define STK_GNSS 69 // docs/GNSS_DISABLE_DESIGN.md D4: cfg.loc.gnss as applied (0/1)
 #define STK_LOC_MOVE_S 61 // LOCATION_TRACKING_DESIGN.md §5 P3, this task: the `locmove` runtime
                           // tunable (0 = GNSS-while-moving off)
@@ -845,9 +846,15 @@ static bool build_status_cbor(uint8_t *out, size_t cap, size_t *out_len, const c
     // when unpinned". Both are plain reads of already-resident state (ident's
     // cached ca_len/ca_hash and catrust.c's own RAM-cached broken flag), no
     // AT round trip or NVS I/O of their own.
-    const char *tls_str = catrust_state_name(catrust_get_state());
+    // SORACOM_DESIGN 3.4: on the LTE xport over the Beam bearer TLS ends at Beam ("proxy").
+    const bool via_beam = net_xport_active() != NET_XPORT_WIFI && net_bearer_beam();
+    const char *tls_str = via_beam ? "proxy" : catrust_state_name(catrust_get_state());
     char ca_fp[17];
-    bool have_ca_fp = catrust_get_ca_fp(ca_fp);
+    bool have_ca_fp = !via_beam && catrust_get_ca_fp(ca_fp);
+    // key 70 `car`: preset label, <= 24 printable ASCII, absent when no preset is in force.
+    char car[25];
+    snprintf(car, sizeof(car), "%s", net_carrier_label());
+    const bool have_car = car[0] != '\0';
 
     // wdt-stage8 (docs/PROTOCOL.md §5.1/§10 key 59, pending server-architect
     // review): previous boot's stalled-command breadcrumb, "" when there was
@@ -868,6 +875,9 @@ static bool build_status_cbor(uint8_t *out, size_t cap, size_t *out_len, const c
                                           // tls,sms_lost,link,xport,loc_move_s,rst,stage,abn
     if (have_ca_fp) {
         nfields += 1;
+    }
+    if (have_car) {
+        nfields += 1; // key 70 car
     }
     if (have_stall_cmd) {
         nfields += 1; // wdt-stage8: STK_STALLCMD key 59, omitted when empty
@@ -964,6 +974,9 @@ static bool build_status_cbor(uint8_t *out, size_t cap, size_t *out_len, const c
     // (PROTOCOL.md §5.1), no modem or sleep-state effect of its own.
     const char *xport_str = (net_xport_active() == NET_XPORT_WIFI) ? "wifi" : "lte";
     cbor_w_tstr(&w, STK_XPORT, xport_str, strlen(xport_str));
+    if (have_car) {
+        cbor_w_tstr(&w, STK_CAR, car, strlen(car));
+    }
     if (s_bs_have) {
         battstat_encode(&w, &s_bs_snap);
     }

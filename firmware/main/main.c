@@ -144,7 +144,7 @@ static int cmd_mqtttest(int argc, char **argv)
 {
     esp_log_level_set("WalterModem", ESP_LOG_DEBUG); // raw AT TX:/RX: trace
     if (argc < 3 || argc > 4) {
-        printf("usage: mqtttest <host> <port> [ca|noneca|emptyca]\n");
+        printf("usage: mqtttest <host> <port> [ca|noneca|emptyca|plain]\n");
         return 1;
     }
     long port = strtol(argv[2], NULL, 10);
@@ -156,6 +156,7 @@ static int cmd_mqtttest(int argc, char **argv)
     if (argc == 4 && strcmp(argv[3], "ca") == 0) tls_mode = 1;
     if (argc == 4 && strcmp(argv[3], "noneca") == 0) tls_mode = 2;
     if (argc == 4 && strcmp(argv[3], "emptyca") == 0) tls_mode = 3;
+    if (argc == 4 && strcmp(argv[3], "plain") == 0) tls_mode = 4;
     bool ok = net_check_mqtt(argv[1], (uint16_t) port, tls_mode);
     printf("mqtttest: %s\n", ok ? "CONNECTED" : "NOT CONNECTED (see log above)");
     // RCA_SLEEP_PUBLISH.md §3 instrumentation: a natural place to glance at
@@ -256,6 +257,9 @@ static int cmd_at(int argc, char **argv)
     }
     char line[160];
     size_t n = 0;
+    if (argv[1][0] == '+') { // `at +CIMI` and `at AT+CIMI` both work
+        n += (size_t) snprintf(line, sizeof(line), "AT");
+    }
     for (int i = 1; i < argc && n + 1 < sizeof(line); i++) {
         n += (size_t) snprintf(line + n, sizeof(line) - n, "%s%s", (i > 1) ? " " : "", argv[i]);
     }
@@ -771,6 +775,16 @@ static int cmd_kbtime(int argc, char **argv)
 static int cmd_carrier(int argc, char **argv)
 {
     if (argc == 1) {
+        // SIM identity as the firmware reads it, then the preset it resolves to.
+        char imsi[20], gid1[40], iccid[24];
+        bool have = net_sim_identity(imsi, sizeof(imsi), gid1, sizeof(gid1), iccid, sizeof(iccid));
+        printf("sim: imsi=%s gid1=%s iccid=%s\n", have && imsi[0] ? imsi : "-", gid1[0] ? gid1 : "-",
+               iccid[0] ? iccid : "-");
+        const carrier_preset_t *inforce = carrier_effective(imsi, gid1, iccid, NULL);
+        carrier_bearer_ovr_t ovr = carrier_bearer_override_get();
+        printf("bearer: %s -> %s\n", carrier_bearer_ovr_name(ovr),
+               carrier_bearer_resolve(inforce, ovr) == CARRIER_BEARER_BEAM ? "beam" : "direct");
+        printf("pdp auth: %s\n", carrier_auth_name(inforce ? inforce->auth_proto : CARRIER_AUTH_NONE));
         bool is_auto = carrier_get_mode() == CARRIER_MODE_AUTO;
         int cur = is_auto ? CARRIER_PRESET_AUTO
                           : (carrier_get_apn()[0] == '\0' ? CARRIER_PRESET_BLANK
@@ -783,8 +797,9 @@ static int cmd_carrier(int argc, char **argv)
         if (cur < 0) {
             printf(" *    custom                 %s\n", carrier_get_apn());
         }
-        if (is_auto && carrier_last_detected()[0]) {
-            printf("detected: %s\n", carrier_last_detected());
+        {
+            const carrier_preset_t *d = carrier_detect(imsi, gid1, iccid);
+            printf("detected: %s\n", d ? d->label : "(none)");
         }
         printf("carrier <n> | carrier custom <apn>\n");
         return 0;
@@ -803,6 +818,34 @@ static int cmd_carrier(int argc, char **argv)
     }
     printf("carrier: %s. Used from the next attach: run `setup <code>` now, or restart.\n",
            carrier_get_label());
+    return 0;
+}
+
+// `bearer [auto|direct|beam]` -- NVS override of the carrier's MQTT bearer
+// (carrier.h); read once at the next attach. Bare `bearer` shows it.
+static int cmd_bearer(int argc, char **argv)
+{
+    if (argc == 2) {
+        carrier_bearer_ovr_t o = CARRIER_BEARER_OVR_AUTO;
+        if (strcmp(argv[1], "direct") == 0) {
+            o = CARRIER_BEARER_OVR_DIRECT;
+        } else if (strcmp(argv[1], "beam") == 0) {
+            o = CARRIER_BEARER_OVR_BEAM;
+        } else if (strcmp(argv[1], "auto") != 0) {
+            printf("usage: bearer [auto|direct|beam]\n");
+            return 1;
+        }
+        if (!carrier_bearer_override_set(o)) {
+            printf("bearer: NVS write failed\n");
+            return 1;
+        }
+    } else if (argc != 1) {
+        printf("usage: bearer [auto|direct|beam]\n");
+        return 1;
+    }
+    printf("bearer override: %s (beam is honoured only when the carrier in force is a Beam preset); "
+           "used from the next attach\n",
+           carrier_bearer_ovr_name(carrier_bearer_override_get()));
     return 0;
 }
 
@@ -931,6 +974,13 @@ static void register_carrier_cmd(void)
         .func = &cmd_carrier,
     };
     ESP_ERROR_CHECK(esp_console_cmd_register(&carrier_cmd));
+    const esp_console_cmd_t bearer_cmd = {
+        .command = "bearer",
+        .help = "bearer [auto|direct|beam] -- override how MQTT reaches the broker (see `carrier`)",
+        .hint = NULL,
+        .func = &cmd_bearer,
+    };
+    ESP_ERROR_CHECK(esp_console_cmd_register(&bearer_cmd));
 }
 
 // No modem/radio access of its own; starts the USB-serial REPL task that
@@ -994,6 +1044,15 @@ static void start_setup_console(void)
         .func = &cmd_mqtttest,
     };
     ESP_ERROR_CHECK(esp_console_cmd_register(&mqtttest_cmd));
+
+    // Bench: read the SIM on an unprovisioned unit (same handler as the normal-mode console).
+    const esp_console_cmd_t at_cmd = {
+        .command = "at",
+        .help = "at <command> -- send one raw AT command; the reply shows in the AT trace",
+        .hint = NULL,
+        .func = &cmd_at,
+    };
+    ESP_ERROR_CHECK(esp_console_cmd_register(&at_cmd));
 #endif
 
     ESP_ERROR_CHECK(esp_console_start_repl(repl));

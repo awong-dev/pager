@@ -555,10 +555,16 @@ static void ensure_ca_slot_populated(void)
 // and, as net_check_sim() found, may need a moment after CFUN=4.
 // Power effect: a handful of AT round trips, no RRC. Runs once per attach and
 // only in automatic mode.
-static bool read_sim_identity(char *imsi, size_t imsi_cap, char *gid1_hex, size_t gid_cap)
+// `iccid` (nullable) is read once via AT+SQNCCID, a plain SIM file read, no
+// RF; "" if the modem does not answer. Only the `carrier` console asks for it.
+static bool read_sim_identity(char *imsi, size_t imsi_cap, char *gid1_hex, size_t gid_cap, char *iccid = nullptr,
+                              size_t iccid_cap = 0)
 {
     imsi[0] = '\0';
     gid1_hex[0] = '\0';
+    if (iccid && iccid_cap) {
+        iccid[0] = '\0';
+    }
     for (int attempt = 0; attempt < 6 && imsi[0] == '\0'; attempt++) {
         WalterModemRsp rsp = {};
         if (WalterModem::getSIMCardIMSI(&rsp) && rsp.data.imsi[0] != '\0') {
@@ -587,7 +593,69 @@ static bool read_sim_identity(char *imsi, size_t imsi_cap, char *gid1_hex, size_
             break;
         }
     }
+    if (iccid && iccid_cap) {
+        WalterModemRsp rsp = {};
+        if (WalterModem::getSIMCardID(&rsp) && rsp.data.simCardID.iccid[0] != '\0') {
+            snprintf(iccid, iccid_cap, "%s", rsp.data.simCardID.iccid);
+        }
+    }
     return true;
+}
+
+// Console `carrier`: the SIM identity as the firmware reads it. The modem
+// must already be begun (Setup greeting's net_check_sim(), or net_init()).
+// Power effect: a few AT round trips, no RRC.
+extern "C" bool net_sim_identity(char *imsi, size_t imsi_cap, char *gid1_hex, size_t gid_cap, char *iccid,
+                                 size_t iccid_cap)
+{
+    if (net_airplane()) {
+        imsi[0] = gid1_hex[0] = iccid[0] = '\0';
+        return false;
+    }
+    return read_sim_identity(imsi, imsi_cap, gid1_hex, gid_cap, iccid, iccid_cap);
+}
+
+// The preset in force from the last effective_apn() (NULL = none: direct, no
+// PDP auth, SMS allowed). F2/F3 read it; the bearer override is applied by
+// carrier_bearer_resolve() at the point of use.
+static const carrier_preset_t *s_carrier = nullptr;
+static carrier_bearer_t s_bearer = CARRIER_BEARER_DIRECT; // resolved once per attach in effective_apn()
+
+extern "C" bool net_bearer_beam(void) { return s_bearer == CARRIER_BEARER_BEAM; }
+extern "C" const char *net_carrier_label(void) { return s_carrier ? s_carrier->label : ""; }
+
+// docs/SORACOM_DESIGN.md 3.2. The library's setPDPAuthParams() never emits
+// (it returns early while the stored auth_proto is NONE), so write AT+CGAUTH
+// raw. Must run after definePDPContext() and before setOpState(FULL).
+// The modem keeps +CGAUTH across resets: NVS carrier/auth records that this
+// pager wrote credentials, so a carrier without any clears them once.
+// Power effect: one AT round trip at NO_RF, no RRC.
+static void apply_pdp_auth(void)
+{
+    static bool s_logged = false;
+    const carrier_preset_t *p = s_carrier;
+    char cmd[96];
+    if (p && p->auth_proto != CARRIER_AUTH_NONE) {
+        snprintf(cmd, sizeof(cmd), "AT+CGAUTH=%d,%d,\"%s\",\"%s\"", (int) PAGER_PDP_CTX_ID, (int) p->auth_proto,
+                 p->auth_user, p->auth_pass);
+        if (WalterModem::sendCmd(cmd)) {
+            carrier_auth_flag_set(true);
+            if (!s_logged) {
+                ESP_LOGI(TAG, "pdp auth: %s user=%s", carrier_auth_name(p->auth_proto), p->auth_user);
+                s_logged = true;
+            }
+        } else {
+            ESP_LOGI(TAG, "pdp auth: AT+CGAUTH rejected - attaching without credentials");
+        }
+    } else if (carrier_auth_flag_get()) {
+        snprintf(cmd, sizeof(cmd), "AT+CGAUTH=%d,0", (int) PAGER_PDP_CTX_ID);
+        if (WalterModem::sendCmd(cmd)) {
+            carrier_auth_flag_set(false);
+            ESP_LOGI(TAG, "pdp auth: stale credentials cleared");
+        } else {
+            ESP_LOGI(TAG, "pdp auth: clearing stale credentials failed - will retry next attach");
+        }
+    }
 }
 
 // Which APN to attach with. See carrier.h for the precedence and why a blank
@@ -598,33 +666,47 @@ static const char *effective_apn(const char *typed, const char *stored)
     static char s_detected_apn[CARRIER_APN_MAX];
     const char *apn = nullptr;
     const char *why = "network's choice (blank)";
-    if (typed && typed[0] != '\0') {
-        apn = typed;
-        why = "typed with the setup code";
-    } else if (carrier_get_mode() == CARRIER_MODE_FIXED) {
-        apn = carrier_get_apn()[0] ? carrier_get_apn() : nullptr;
-        why = carrier_get_label();
-    } else {
-        char imsi[20], gid1[40];
-        const carrier_preset_t *p = nullptr;
-        if (read_sim_identity(imsi, sizeof(imsi), gid1, sizeof(gid1))) {
-            p = carrier_detect(imsi, gid1);
-            ESP_LOGI(TAG, "SIM: network %.6s, GID1 %s -> %s", imsi, gid1[0] ? gid1 : "(none)",
-                     p ? p->label : "not in the carrier table");
+    // The SIM is read unless the person's fixed choice settles everything
+    // (a typed APN still needs it: typing the preset's own APN keeps its auth/bearer).
+    bool fixed = carrier_get_mode() == CARRIER_MODE_FIXED;
+    bool typed_set = typed && typed[0] != '\0';
+    char imsi[20] = "", gid1[40] = "", iccid[24] = "";
+    bool have_sim = false;
+    if (typed_set || !fixed) {
+        have_sim = read_sim_identity(imsi, sizeof(imsi), gid1, sizeof(gid1), iccid, sizeof(iccid));
+        if (have_sim) {
+            const carrier_preset_t *d = carrier_detect(imsi, gid1, iccid);
+            ESP_LOGI(TAG, "SIM: network %.6s, GID1 %s, ICCID %.7s -> %s", imsi, gid1[0] ? gid1 : "(none)", iccid,
+                     d ? d->label : "not in the carrier table");
+            if (!fixed) {
+                carrier_note_detected(d ? d->label : "");
+            }
         } else {
             ESP_LOGI(TAG, "SIM identity could not be read; no automatic APN");
-        }
-        carrier_note_detected(p ? p->label : "");
-        if (p) {
-            snprintf(s_detected_apn, sizeof(s_detected_apn), "%s", p->apn);
-            apn = s_detected_apn[0] ? s_detected_apn : nullptr;
-            why = "detected from the SIM";
-        } else if (stored && stored[0] != '\0') {
-            apn = stored;
-            why = "from the setup bundle";
+            if (!fixed) {
+                carrier_note_detected("");
+            }
         }
     }
-    ESP_LOGI(TAG, "APN: '%s' (%s)", apn ? apn : "", why);
+    const carrier_preset_t *p = carrier_effective(imsi, gid1, iccid, typed);
+    s_carrier = p;
+    if (typed_set) {
+        apn = typed;
+        why = "typed with the setup code";
+    } else if (fixed) {
+        apn = carrier_get_apn()[0] ? carrier_get_apn() : nullptr;
+        why = carrier_get_label();
+    } else if (p) {
+        snprintf(s_detected_apn, sizeof(s_detected_apn), "%s", p->apn);
+        apn = s_detected_apn[0] ? s_detected_apn : nullptr;
+        why = "detected from the SIM";
+    } else if (stored && stored[0] != '\0') {
+        apn = stored;
+        why = "from the setup bundle";
+    }
+    s_bearer = carrier_bearer_resolve(p, carrier_bearer_override_get());
+    ESP_LOGI(TAG, "APN: '%s' (%s); carrier %s, bearer %s", apn ? apn : "", why, p ? p->label : "(none)",
+             s_bearer == CARRIER_BEARER_BEAM ? "beam" : "direct");
     return apn;
 }
 
@@ -725,6 +807,7 @@ static bool net_bringup(int attach_wait_s)
         ESP_LOGI(TAG, "definePDPContext() failed");
         return false;
     }
+    apply_pdp_auth(); // still NO_RF; the attach below must find the credentials in place
 
     // Power effect: this is the setting that makes sleep-mode paging cheap;
     // see PROTOCOL.md §8.4 for the (PENDING_HW) current budget it buys.
@@ -792,7 +875,8 @@ static bool net_bringup(int attach_wait_s)
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
     note_registration(attached);
-    net_boot_progress_hook(attached ? "attached" : "no signal");
+    net_boot_progress_hook(attached ? (s_bearer == CARRIER_BEARER_BEAM ? "attached via Beam" : "attached")
+                                    : "no signal");
     if (!attached) {
         ESP_LOGI(TAG, "no network after %d s; the radio stays on and the session will be set up "
                       "when coverage appears",
@@ -887,40 +971,48 @@ bool configure_session(void)
     // (PROTOCOL.md section 2.4), and a broker that changes its root CA can no longer
     // brick the pager. Either way the CA slot MUST be named in the profile --
     // see net_tls_profile_bootstrap() for the plaintext-fallback finding.
-    const bool pin_ca = ident_get_ca_len() > 0;
-    if (pin_ca) {
-        const uint8_t *ca_hash = ident_get_ca_hash();
-        if (!s_ca_written || memcmp(s_ca_written_hash, ca_hash, IDENT_CA_HASH_LEN) != 0) {
-            if (!WalterModem::tlsWriteCredential(false, PAGER_TLS_CA_SLOT, ident_get_ca())) {
-                ESP_LOGI(TAG, "tlsWriteCredential() failed");
-                return false;
-            }
-            memcpy(s_ca_written_hash, ca_hash, IDENT_CA_HASH_LEN);
-            s_ca_written = true;
-            ESP_LOGI(TAG, "CA written to modem slot %u (hash changed)", (unsigned) PAGER_TLS_CA_SLOT);
-        } else {
-            ESP_LOGD(TAG, "CA unchanged, skipping NVRAM write to slot %u", (unsigned) PAGER_TLS_CA_SLOT);
-        }
+    // docs/SORACOM_DESIGN.md 3.3: on the Beam bearer the modem speaks plain MQTT to Soracom's
+    // entry point (profile 0 below): no CA slot, no TLS profile. Direct path unchanged in the else.
+    // GOTCHAS "a TLS profile naming no CA sends plaintext" is why profile 0 is deliberate here.
+    const bool beam = net_bearer_beam();
+    if (beam) {
+        ESP_LOGI(TAG, "bearer beam: no TLS profile, MQTT to %s:%u plain", PAGER_BEAM_HOST, (unsigned) PAGER_BEAM_PORT);
     } else {
-        // v0.2 bug fix #4 (§2.4): no CA pinned -- this is exactly the
-        // VALIDATION_NONE branch below, so make sure slot PAGER_TLS_CA_SLOT
-        // is not left empty (UNVERIFIED what the MQTT engine does then).
-        ensure_ca_slot_populated();
+        const bool pin_ca = ident_get_ca_len() > 0;
+        if (pin_ca) {
+            const uint8_t *ca_hash = ident_get_ca_hash();
+            if (!s_ca_written || memcmp(s_ca_written_hash, ca_hash, IDENT_CA_HASH_LEN) != 0) {
+                if (!WalterModem::tlsWriteCredential(false, PAGER_TLS_CA_SLOT, ident_get_ca())) {
+                    ESP_LOGI(TAG, "tlsWriteCredential() failed");
+                    return false;
+                }
+                memcpy(s_ca_written_hash, ca_hash, IDENT_CA_HASH_LEN);
+                s_ca_written = true;
+                ESP_LOGI(TAG, "CA written to modem slot %u (hash changed)", (unsigned) PAGER_TLS_CA_SLOT);
+            } else {
+                ESP_LOGD(TAG, "CA unchanged, skipping NVRAM write to slot %u", (unsigned) PAGER_TLS_CA_SLOT);
+            }
+        } else {
+            // v0.2 bug fix #4 (§2.4): no CA pinned -- this is exactly the
+            // VALIDATION_NONE branch below, so make sure slot PAGER_TLS_CA_SLOT
+            // is not left empty (UNVERIFIED what the MQTT engine does then).
+            ensure_ca_slot_populated();
+        }
+        if (!WalterModem::tlsConfigProfile(PAGER_TLS_PROFILE_ID,
+                                           pin_ca ? WALTER_MODEM_TLS_VALIDATION_CA
+                                                  : WALTER_MODEM_TLS_VALIDATION_NONE,
+                                           WALTER_MODEM_TLS_VERSION_12, PAGER_TLS_CA_SLOT)) {
+            ESP_LOGI(TAG, "tlsConfigProfile() failed");
+            return false;
+        }
+        ESP_LOGI(TAG, "TLS profile %d: %s", PAGER_TLS_PROFILE_ID,
+                 pin_ca ? "CA pinned (VALIDATION_CA)" : "no CA pinned (VALIDATION_NONE)");
     }
-    if (!WalterModem::tlsConfigProfile(PAGER_TLS_PROFILE_ID,
-                                       pin_ca ? WALTER_MODEM_TLS_VALIDATION_CA
-                                              : WALTER_MODEM_TLS_VALIDATION_NONE,
-                                       WALTER_MODEM_TLS_VERSION_12, PAGER_TLS_CA_SLOT)) {
-        ESP_LOGI(TAG, "tlsConfigProfile() failed");
-        return false;
-    }
-    ESP_LOGI(TAG, "TLS profile %d: %s", PAGER_TLS_PROFILE_ID,
-             pin_ca ? "CA pinned (VALIDATION_CA)" : "no CA pinned (VALIDATION_NONE)");
 
     snprintf(s_down_topic, sizeof(s_down_topic), "pager/%s/down", ident_get_dev_id());
 
     if (!WalterModem::mqttConfig(ident_get_dev_id(), ident_get_dev_id(), ident_get_mqtt_pw(),
-                                 PAGER_TLS_PROFILE_ID)) {
+                                 beam ? 0 : PAGER_TLS_PROFILE_ID)) {
         ESP_LOGI(TAG, "mqttConfig() failed");
         return false;
     }
@@ -933,6 +1025,9 @@ extern "C" bool net_tls_profile_bootstrap(void)
 {
     if (net_airplane()) {
         return false;
+    }
+    if (net_bearer_beam()) {
+        return true; // Beam bearer: plain MQTT, no TLS profile (SORACOM_DESIGN 3.3)
     }
     // DEVICE_PLAN.md §3.2 step 3: the one-time bootstrap MQTT hop
     // (setup.c, F3.5) trusts no CA - the bundle is authenticated and
@@ -1012,6 +1107,7 @@ extern "C" bool net_bootstrap_attach(const char *apn)
         ESP_LOGI(TAG, "definePDPContext() failed (bootstrap)");
         return false;
     }
+    apply_pdp_auth(); // still NO_RF, before setOpState(FULL)
 
     if (!WalterModem::setOpState(WALTER_MODEM_OPSTATE_FULL)) {
         ESP_LOGI(TAG, "setOpState(FULL) failed (bootstrap)");
@@ -1061,8 +1157,19 @@ extern "C" bool net_bootstrap_attach(const char *apn)
     return true;
 }
 
+static bool bootstrap_connect(const char *client_id, const char *password, const char *host, uint16_t port,
+                              const char *down_topic, bool beam, bool plain);
+
 extern "C" bool net_bootstrap_connect(const char *client_id, const char *password, const char *host,
                                       uint16_t port, const char *down_topic)
+{
+    return bootstrap_connect(client_id, password, host, port, down_topic, net_bearer_beam(), false);
+}
+
+// beam: Beam bearer (host/port replaced by Beam's). plain: profile 0 to the given host/port
+// (mqtttest's independent probe of the Beam-shaped hop).
+static bool bootstrap_connect(const char *client_id, const char *password, const char *host, uint16_t port,
+                              const char *down_topic, bool beam, bool plain)
 {
     // Points the shared down-topic buffer at the bootstrap topic so the
     // existing CONNECTED-event auto-resubscribe (pager_mqtt_event_handler
@@ -1071,8 +1178,14 @@ extern "C" bool net_bootstrap_connect(const char *client_id, const char *passwor
     // safe here (bootstrap and production never coexist in one power cycle).
     snprintf(s_down_topic, sizeof(s_down_topic), "%s", down_topic);
 
+    if (beam) {
+        ESP_LOGI(TAG, "bootstrap via Beam: ignoring the code's host %s:%u, plain MQTT to %s:%u", host,
+                 (unsigned) port, PAGER_BEAM_HOST, (unsigned) PAGER_BEAM_PORT);
+        host = PAGER_BEAM_HOST;
+        port = PAGER_BEAM_PORT;
+    }
     if (!WalterModem::mqttConfig(client_id, client_id, password,
-                                 PAGER_TLS_BOOTSTRAP_PROFILE_ID)) {
+                                 (beam || plain) ? 0 : PAGER_TLS_BOOTSTRAP_PROFILE_ID)) {
         ESP_LOGI(TAG, "mqttConfig() failed (bootstrap)");
         return false;
     }
@@ -2216,10 +2329,11 @@ extern "C" bool net_check_mqtt(const char *host, uint16_t port, int tls_mode)
         ESP_LOGI(TAG, "mqtttest: attach failed");
         return false;
     }
-    if (!net_tls_profile_bootstrap()) {
+    const bool plain = tls_mode == 4; // `plain`: profile 0, no TLS (the Beam-shaped hop)
+    if (!plain && !net_tls_profile_bootstrap()) {
         return false;
     }
-    // tls_mode: 0 = bootstrap profile as-is (VALIDATION_NONE, no CA slot),
+    // tls_mode: 4 = plain MQTT (profile 0), none of the TLS set-up below runs; 0 = bootstrap profile as-is (VALIDATION_NONE, no CA slot),
     // 1 = VALIDATION_CA + CA slot, 2 = VALIDATION_NONE + CA slot, 3 = mode 2
     // after first deleting the cert in that slot (factory-fresh case). Mode 2
     // separates "validation level 0" from "no CA slot named" as the thing
@@ -2255,7 +2369,7 @@ extern "C" bool net_check_mqtt(const char *host, uint16_t port, int tls_mode)
             return false;
         }
     }
-    if (!net_bootstrap_connect("pager-sni-test", "x", host, port, "pager/sni-test/down")) {
+    if (!bootstrap_connect("pager-sni-test", "x", host, port, "pager/sni-test/down", false, plain)) {
         return false;
     }
 
@@ -2690,6 +2804,14 @@ extern "C" bool net_sms_config(net_sms_config_result_t *out)
 extern "C" bool net_sms_send(const char *number, const char *text, bool use_ucs2)
 {
     if (net_airplane()) {
+        return false;
+    }
+    if (s_carrier && !s_carrier->sms_mo) {
+        static bool s_logged = false;
+        if (!s_logged) {
+            ESP_LOGI(TAG, "modem SMS send skipped: %s SIMs cannot send SMS to phones", s_carrier->label);
+            s_logged = true;
+        }
         return false;
     }
     WalterModemRsp rsp = {};
