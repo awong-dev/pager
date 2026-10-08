@@ -1215,3 +1215,24 @@ def test_status_bs_cbor_round_trip_and_unknown_subkey_dropped():
     # a bad `bs` never fails the whole status
     env = StatusEnvelope.model_validate({**status, "bs": {"aw": "x"}})
     assert env.state == "online"
+
+
+def test_status_accepts_tls_proxy():
+    assert StatusEnvelope.model_validate(_online_status(tls="proxy")).tls == "proxy"
+
+
+def test_status_car_accepts_up_to_24_and_drops_the_rest():
+    assert StatusEnvelope.model_validate(_online_status(car="Soracom")).car == "Soracom"
+    assert StatusEnvelope.model_validate(_online_status(car="x" * 24)).car == "x" * 24
+    assert StatusEnvelope.model_validate(_online_status(car="x" * 25)).car is None
+    assert StatusEnvelope.model_validate(_online_status()).car is None
+
+
+def test_status_car_is_key_70_on_the_cbor_wire():
+    from app import wirecbor
+
+    assert wirecbor.KEYMAP["car"] == 70
+    names = wirecbor.translate_to_names({70: "Soracom", 39: "proxy"})
+    assert names == {"car": "Soracom", "tls": "proxy"}
+    env = StatusEnvelope.model_validate(_online_status(**names))
+    assert (env.car, env.tls) == ("Soracom", "proxy")

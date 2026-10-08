@@ -281,6 +281,7 @@ function DeviceInner() {
           {device?.label ?? id} <Typography component="span" variant="body2" color="text.secondary">({id})</Typography>
         </Typography>
         <DeviceTrustChip tls={device?.status?.tls} caFp={device?.status?.caFp} />
+        {device?.status?.car && <Chip size="small" variant="outlined" label={device.status.car} />}
         {xportChip && <Chip size="small" label={xportChip.label} color={xportChip.color} />}
       </Stack>
 
@@ -316,6 +317,11 @@ function DeviceInner() {
           <Typography variant="h6" gutterBottom>
             SMS contacts
           </Typography>
+          {device?.status?.tls === "proxy" && (
+            <Typography variant="body2" sx={{ mb: 1 }}>
+              Device SMS unavailable on this carrier; relay SMS still works
+            </Typography>
+          )}
           <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
             The pager can text only these numbers, and only they can text it. Every text in either
             direction is recorded below. Managed from People &rarr; @{ownerAlias ?? "..."} &rarr;

@@ -104,7 +104,7 @@ export interface AllowEdgeDoc {
 }
 
 // ---- devices/{deviceId} -- app/store/devices.py ----
-export type TlsState = "unpinned" | "pinned" | "broken";
+export type TlsState = "unpinned" | "pinned" | "broken" | "proxy";
 
 export interface DeviceStatusDoc {
   state: string | null;
@@ -142,6 +142,8 @@ export interface DeviceStatusDoc {
   // session, display/diagnosis only. Absent on firmware built before W7/W8
   // (older firmware never sends `xport`) -- render nothing, not "undefined".
   xport?: "lte" | "wifi" | null;
+  // docs/SORACOM_DESIGN.md §4: carrier label (e.g. "Soracom"). Absent on older firmware.
+  car?: string | null;
   // docs/LOCATION_TRACKING_DESIGN.md §5 R7 -- `app/store/devices.py`'s
   // `LastCell`: the serving cell from the most recent `/loc` report that
   // carried one, recorded whether or not that report's position was

@@ -407,6 +407,11 @@ JSON form legal)*.
 (key 69, §5.1) adds 9 bytes JSON / 3 CBOR, so the every-field online `/status` becomes 568 / 281
 bytes (402 CBOR with `bs` at its maximum); the headroom figures above stand.
 
+*(Soracom bearer, 8 Oct 2026, stated so the worst case stays a number in this section.)* `/status`
+`car` (key 70, §5.1) at 24 characters adds 33 bytes JSON (57 if every character were escaped) / 28
+CBOR, so the every-field online `/status` becomes 625 / 309 bytes (430 CBOR with `bs` at its
+maximum); `tls:"proxy"` is shorter than `unpinned`, so it adds nothing. Still under 640.
+
 ### 3.4 Malformed payload handling
 
 A payload is malformed if it is >640 bytes, not valid UTF-8, not a JSON or CBOR object, missing
@@ -729,7 +734,7 @@ broker-generated LWT.
 | `bv` | int | no | 0…2³²-1 | Book version (§4.3). Reported so the relay can detect a factory reset or a lost book message and re-publish. |
 | `loc_period_s` | int | no | 0…86400 | The periodic `/loc` interval **the device has chosen** (§13); `0` = periodic location off. *(location tracking, 26 Sep 2026, §13.3 item 9: for a device sending `why`-tagged reports it is the **maximum gap** between unsolicited `/loc` while its session is usable, 3600 when tracking is on; reports may come sooner.)* |
 | `loc_min_s` | int | no | 0…86400 | The device's own minimum gap between on-demand fixes (§13.3); default 120. v0.2 firmware, which uses the growing backoff of §13.3's amendment, reports **600**: the floor it keeps since its last attempt even after a backoff reset. |
-| `tls` | string | no | `unpinned` \| `pinned` \| `broken` | *(v0.2, `V02_DESIGN.md` §4.1)* CA trust state: `unpinned` (no CA in the identity, validation off, by choice, not a fault), `pinned` (CA set, last connect validated), `broken` (CA set, last validated connect failed, running with validation off as a reachability fallback — §13.3's "pages still arrive" rule applies here too). Absent means firmware older than v0.2. |
+| `tls` | string | no | `unpinned` \| `pinned` \| `broken` \| `proxy` | *(v0.2, `V02_DESIGN.md` §4.1)* CA trust state: `unpinned` (no CA in the identity, validation off, by choice, not a fault), `pinned` (CA set, last connect validated), `broken` (CA set, last validated connect failed, running with validation off as a reachability fallback — §13.3's "pages still arrive" rule applies here too). Absent means firmware older than v0.2. `proxy` *(Soracom bearer, `docs/SORACOM_DESIGN.md` §3.4: the pager holds no TLS session on the Beam bearer, so no CA state applies.)*: the session is plain MQTT to Soracom Beam, which terminates TLS to the broker on the pager's behalf (§6.1); `ca_fp` is absent and the device refuses `cfg.ca`. A relay that predates `proxy` must be deployed first (§0). |
 | `ca_fp` | string | no | 16 lowercase hex chars | *(v0.2)* First 16 hex characters of the SHA-256 of the pinned CA PEM (the same digest carried in the bootstrap bundle's `ca_sha`/a `cfg.ca.sha` push, §4.4). Absent when `tls` is `unpinned` or absent. |
 | `loc_backoff_s` | int | no | 0…86400 | *(v0.2, §13.3)* Seconds until the device's own growing location-attempt backoff next allows a fresh fix attempt; `0` = an attempt is allowed now. See §13.3's amendment for how this relates to `loc_min_s`. |
 | `sms_lost` | int | no | ≥ 0 | *(v0.2, §3.6 — device-direct SMS)* Count of `sms_log` audit entries dropped from the device's NVS queue for lack of space; normally 0. |
@@ -749,6 +754,7 @@ broker-generated LWT.
 | `ota_err` | string | no | 1–8 lowercase letters | *(OTA)* Why the job failed or was rejected: `base`, `hash`, `osha`, `http`, `budget`, `flash`, `nobl`, `pv`, `size`, `expired`. A relay accepts any code in the range, since the list can grow. **Display only.** |
 | `bs` | map | no | sub-map below | *(battery stats, `docs/BATTERY_STATS_DESIGN.md` B5: the board has no fuel gauge, so drain is modelled from time spent in each state.)* The battery-stats window, in every online `/status` once the window holds ≥ 1 s. CBOR only (§3.3). **Display and modelling only.** |
 | `gnss` | int | no | `0` \| `1` | *(GNSS disable, `docs/GNSS_DISABLE_DESIGN.md` D4: shows whether a `cfg.loc` push took effect.)* `1` when the device may power its GNSS receiver, `0` when `cfg.loc` (§3.2) has disabled it. Present in every `/status` from firmware that supports `cfg.loc`; absent means firmware that predates the field, which the relay treats as unknown. **Display only.** |
+| `car` | string | no | ≤24 printable ASCII chars | *(Soracom bearer, `docs/SORACOM_DESIGN.md` §3.4: shows which carrier preset, and so which bearer, the device chose from its SIM.)* Label of the carrier preset in force, e.g. `Soracom`, `US Mobile Dark Star`; absent when no preset is in force (carrier default or typed custom APN) and in firmware that predates the field. A relay drops a malformed value alone, treating it as absent. **Display only.** |
 
 *(`loc_period_s`, `loc_min_s`, `tls`, `ca_fp`, `loc_backoff_s`, `sms_lost`, `xport`, `rst`, `stage`,
 `abn`, `stallcmd` and `loc_move_s` — twelve fields — are **display and diagnosis only**; the relay stores the reported
@@ -878,6 +884,7 @@ Status is **never** published on a plain paging wake or on receipt of a down mes
 | LWT | **NOT SETTABLE from the library** | `mqttConfig()` emits `AT+SQNSMQTTCFG=0,"<clientId>"[,"<user>","<pass>"][,<tlsProfileId>]` and stops there (`src/proto/WalterMQTT.cpp:53-75`) — no will topic, message, QoS or retain argument, and grepping the whole of `src/` for `will`/`lastwill` returns nothing. §5.2's LWT contract therefore has no implementation path through the typed API. Fallback: `WalterModem::sendCmd()` (public) can queue a raw `AT+SQNSMQTTCFG=...` carrying the will parameters *before* `mqttConnect()`. UNVERIFIED against the Sequans AT manual. If that fails, the relay must fall back to inferring offline from keepalive expiry and §5.2's LWT becomes advisory. Tracked in §12. |
 | TLS (production) | TLS 1.2; server certificate validated **only if the bootstrap bundle carried a CA** (`DEVICE_PLAN.md` §3.3, default: none, validation off); username/password per device; profile 2. **The profile MUST name certificate slot 12 even with validation off** — with no slot named the modem's MQTT engine silently sends plaintext MQTT to the TLS port (verified on hardware, `DEVICE_PLAN.md` §3.3). | Pinned mode is the free-tier HiveMQ Cloud model. Provisioning is the vendor's `examples/mqtts` flow: `tlsWriteCredential(false, 12, ca_pem)` → `tlsConfigProfile(2, WALTER_MODEM_TLS_VALIDATION_CA, WALTER_MODEM_TLS_VERSION_12, 12)` → `mqttConfig(client_id, user, pass, 2)`. Both functions are public (`src/WalterModem.h:4147` and `:4404`). **Slot discipline: certificate slots 0–10 and private-key index 1 are reserved for Sequans/BlueCherry — use ≥ 11, and TLS profile ≥ 2 (profile 1 is BlueCherry's).** |
 | TLS (bootstrap) | no server-cert validation; profile 2 (the library caps profile ids at 0–2, and bootstrap and production never share a power cycle) | For the one-time setup fetch (§3.2): `tlsConfigProfile(2, WALTER_MODEM_TLS_VALIDATION_NONE, WALTER_MODEM_TLS_VERSION_12, 12)`. **Verified on hardware:** the slot argument is required — `no_cert` makes the MQTT engine send plaintext (see the production row). The bundle is authenticated and encrypted under a token-derived key, so server authentication on this hop adds only DoS resistance. |
+| Bearer (Soracom Beam) | On a SIM whose carrier preset names the Beam bearer (`docs/SORACOM_DESIGN.md` §3.1, §3.3): **plain MQTT** from the modem to `beam.soracom.io:1883`, TLS profile **0** (`mqttConfig(dev_id, dev_id, mqtt_pw, 0)`, no `tlsConfigProfile`, no CA slot); client id, username and password unchanged and passed through to the broker (Beam `useClientCredentials`); Beam opens MQTTS to EMQX. Keepalive **480 s**, inside Beam's 0 or 5…1200 s; the 300 s host liveness re-SUBSCRIBE (§6.2) crosses both legs and stays inside Beam's 1.5 × keepalive = 720 s idle cut. The bootstrap `boot-<bid>` session (§3.2) also goes through Beam (plain MQTT, keepalive 60); the setup code's `host:port` and the identity's stored `host`/`port` are **not used** on this bearer (Beam's group destination decides the broker) and are kept for a later direct bearer. `cfg.ca` is refused and `/status.tls` is `proxy` (§5.1). The WiFi transport is unaffected. | *(Soracom bearer, 8 Oct 2026: moves TLS off the pager; the topics, QoS, retain flags, envelope and HMAC are unchanged, so the relay cannot tell a Beam session from a direct one.)* Beam's address is in carrier-grade NAT space, so the firmware selects this bearer only when the SIM's preset names it, never on another operator's network. Hop pager → Beam is plaintext inside Soracom's network; envelope authenticity still rests on §14's HMAC. |
 | Reconnect policy | **Only** on detected session loss. Never on a timer. Backoff 5 s, 15 s, 60 s, 300 s, then 300 s steady. | Each reconnect costs a full TLS handshake ≈ 5 kB (§7) — reconnects are the largest single term in the data budget. |
 
 *(scoping note, no behaviour change.)* Every row above describes the **device's**
@@ -1041,6 +1048,12 @@ This is the quantitative reason for "never reconnect on a timer". **Checked whet
 exposes TLS session resumption: it does not.** There is no session-ticket or session-id parameter
 in v1.5.0's public TLS API, so a reconnect is a full ~5 kB handshake every time. This does not
 threaten the data constraint but it is the dominant energy cost.
+
+*(Soracom bearer, 8 Oct 2026: the handshake leaves the pager, so the model's dominant term shrinks.)*
+On the Beam bearer (§6.1) a reconnect is a plain MQTT connect and no record carries §7.1's +29 B
+TLS framing; §7.2's "TLS reconnect" row and the +TLS column do not apply to the radio leg. The
+revised totals and costs are in `docs/SORACOM_EVAL.md` (summary table and "Why the data drops");
+they are estimates until §7.4's measurement is repeated on a Soracom SIM.
 
 **SMS budget: device-direct SMS is in scope (v0.2, owner decision 2026-09-20, reversing this
 document's earlier "no device-side SMS path" rule — see §3.6).** The pager's own modem may send
@@ -1573,6 +1586,7 @@ Devices emit CBOR (§3) with this integer keymap. The relay accepts both JSON (t
 | 67 | `ota_err` | tstr, ≤8 B | `/status` (OTA, §5.1 — failure or rejection code, optional) |
 | 68 | `bs` | map | `/status` (battery stats, `docs/BATTERY_STATS_DESIGN.md`; optional, CBOR only, §3.3) |
 | 69 | `gnss` | uint 0/1 | `/status` (GNSS disable, §5.1 — `cfg.loc` effective state, optional; `docs/GNSS_DISABLE_DESIGN.md` D4) |
+| 70 | `car` | tstr, ≤24 B | `/status` (Soracom bearer, §5.1 — carrier preset label, optional, display only; `docs/SORACOM_DESIGN.md` §3.4) |
 
 *(A relay-side task that added `rst`/`stage`/`abn` was briefed with key 52 for `rst`; by the time
 it landed, 52 was already `xport`, both here and in the shipped relay code. Kept `xport=52` as the

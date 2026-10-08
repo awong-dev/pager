@@ -1054,6 +1054,7 @@ def test_apn_presets_lists_us_mobile_dark_star(client: TestClient, admin_headers
     assert resp.status_code == 200, resp.text
     presets = {p["id"]: p for p in resp.json()}
     assert presets["us-mobile-dark-star"]["apn"] == "ereseller"
+    assert presets["soracom"]["apn"] == "soracom.io"
 
 
 def test_create_device_with_apn_puts_it_in_the_setup_code_and_keeps_it_for_rotation(

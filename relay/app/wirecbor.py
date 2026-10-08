@@ -163,6 +163,8 @@ KEYMAP: dict[str, int] = {
     "bs": 68,
     # docs/GNSS_DISABLE_DESIGN.md D4: `/status`'s GNSS-enabled flag (uint 0/1).
     "gnss": 69,
+    # docs/SORACOM_DESIGN.md §4: `/status`'s carrier name (tstr <= 24).
+    "car": 70,
 }
 REVERSE_KEYMAP: dict[int, str] = {v: k for k, v in KEYMAP.items()}
 

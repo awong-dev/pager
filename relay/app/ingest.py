@@ -860,6 +860,7 @@ class Ingest:
             locBackoffS=env.loc_backoff_s,
             locMoveS=env.loc_move_s,
             gnss=env.gnss,
+            car=env.car,
             smsLost=env.sms_lost,
             link=env.link,
             xport=env.xport,

@@ -90,7 +90,7 @@ class DeviceStatus(BaseModel):
     # docs/V02_DESIGN.md §4.3/§7 (CA trust): trust state and the pinned CA's
     # short fingerprint, per `V02_DESIGN.md` §4.3 ("Relay: persist both on
     # devices/{id}").
-    tls: Literal["unpinned", "pinned", "broken"] | None = None
+    tls: Literal["unpinned", "pinned", "broken", "proxy"] | None = None
     caFp: str | None = None
     # docs/V02_DESIGN.md §5 (location): the device's own reported backoff.
     locBackoffS: int | None = None
@@ -101,6 +101,8 @@ class DeviceStatus(BaseModel):
     locMoveS: int | None = None
     # docs/GNSS_DISABLE_DESIGN.md D4: last `/status` `gnss` (0/1).
     gnss: int | None = None
+    # docs/SORACOM_DESIGN.md §4: last `/status` `car` (carrier name).
+    car: str | None = None
     # docs/V02_DESIGN.md §6/§7 (device SMS): audit-queue drop counter.
     smsLost: int | None = None
     # docs/V02_DESIGN.md §9.5/§7 (this task): MQTT-session generation within

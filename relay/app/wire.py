@@ -279,7 +279,7 @@ class StatusEnvelope(BaseModel):
     # docs/V02_DESIGN.md §4.3/§7 (CA trust, optional, absent = older
     # firmware): trust state and the first 16 hex chars of the pinned CA's
     # SHA-256, per `V02_DESIGN.md` §4.3.
-    tls: Literal["unpinned", "pinned", "broken"] | None = None
+    tls: Literal["unpinned", "pinned", "broken", "proxy"] | None = None
     ca_fp: str | None = None
     # docs/V02_DESIGN.md §5 (location, optional): seconds until the device's
     # own backoff next allows an attempt, 0 = now. Generous upper bound
@@ -336,6 +336,9 @@ class StatusEnvelope(BaseModel):
     # `cfg.loc.gnss`. Display only; absent = firmware predating the field.
     # Any value other than 0/1 is dropped to `None` (like `bpull`).
     gnss: int | None = None
+    # docs/SORACOM_DESIGN.md §4 (key 70): carrier name the pager detected,
+    # display only. Over-long or non-printable values drop to `None`.
+    car: str | None = None
     # docs/OTA_DESIGN.md §5 (envelope keys 62-67), all optional and
     # display-only except `img`/`ota` (the relay's delta choice and the push
     # gate). A malformed value drops just that field to `None` (like `bpull`)
@@ -401,6 +404,13 @@ class StatusEnvelope(BaseModel):
     @classmethod
     def _check_gnss(cls, value: int | None) -> int | None:
         return value if value in (0, 1) else None
+
+    @field_validator("car")
+    @classmethod
+    def _check_car(cls, value: str | None) -> str | None:
+        if value is None or (len(value) <= 24 and value.isprintable() and value.isascii()):
+            return value
+        return None
 
     @field_validator("bpull")
     @classmethod

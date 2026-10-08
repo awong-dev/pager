@@ -50,6 +50,7 @@ import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
 
 import AppShell from "@/components/AppShell";
+import Chip from "@mui/material/Chip";
 import DeviceTrustChip from "@/components/DeviceTrustChip";
 import FirmwareChip from "@/components/FirmwareChip";
 import FirmwareUpdateDialog from "@/components/FirmwareUpdateDialog";
@@ -357,6 +358,8 @@ function DevicesInner() {
                   <TableCell>
                     <Stack spacing={0.5} sx={{ alignItems: "flex-start" }}>
                       <DeviceTrustChip tls={d.status?.tls} caFp={d.status?.caFp} />
+                      {d.status?.car && <Chip size="small" variant="outlined" label={d.status.car} />}
+                      {d.status?.tls !== "proxy" && (
                       <Stack direction="row" spacing={0.5}>
                         <Button
                           size="small"
@@ -376,6 +379,7 @@ function DevicesInner() {
                           Un-pin CA
                         </Button>
                       </Stack>
+                      )}
                     </Stack>
                   </TableCell>
                   <TableCell>
