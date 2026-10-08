@@ -16,6 +16,8 @@ import {
   type AwakeBucket,
   type BatterySample,
   type Cause,
+  floorBucket,
+  nextBucket,
 } from "@/lib/batteryModel";
 
 const W = 600;
@@ -44,6 +46,22 @@ function tickLabel(t: number, spanS: number): string {
   return d.toLocaleDateString([], { month: "short", day: "numeric" });
 }
 
+/** Up to 4 x ticks snapped to local midnights (span > 2 days) or whole local
+ * hours, always including the first and last boundary in [t0, t1]. Falls back
+ * to thirds when fewer than 2 boundaries exist. */
+function voltageTicks(t0: number, t1: number): number[] {
+  const unit = t1 - t0 > 2 * 86400 ? "day" : "hour";
+  const bounds: number[] = [];
+  for (let t = floorBucket(t0, unit); t <= t1; t = nextBucket(t, unit)) {
+    if (t >= t0) bounds.push(t);
+  }
+  if (bounds.length < 2) return [0, 1, 2, 3].map((i) => t0 + ((t1 - t0) * i) / 3);
+  const count = Math.min(4, bounds.length);
+  const idx = new Set<number>();
+  for (let i = 0; i < count; i++) idx.add(Math.round((i * (bounds.length - 1)) / (count - 1)));
+  return [...idx].sort((a, b) => a - b).map((i) => bounds[i]);
+}
+
 export function VoltageChart({ samples }: { samples: BatterySample[] }) {
   const theme = useTheme();
   const pts = samples.filter((s) => s.battMv != null);
@@ -70,7 +88,7 @@ export function VoltageChart({ samples }: { samples: BatterySample[] }) {
     { mv: GNSS_FLOOR_MV, label: "GNSS off below", color: theme.palette.warning.main },
     { mv: OTA_FLOOR_MV, label: "OTA off below", color: theme.palette.info.main },
   ].filter((f) => f.mv >= lo && f.mv <= hi);
-  const ticks = [0, 1, 2, 3].map((i) => t0 + ((t1 - t0) * i) / 3);
+  const ticks = voltageTicks(t0, t1);
   return (
     <Box>
       <svg viewBox={`0 0 ${W} ${H}`} width="100%" role="img" aria-label="Battery voltage over time">
@@ -87,7 +105,7 @@ export function VoltageChart({ samples }: { samples: BatterySample[] }) {
             x={x(t)}
             y={H - 6}
             fontSize="10"
-            textAnchor={i === 0 ? "start" : i === 3 ? "end" : "middle"}
+            textAnchor={i === 0 ? "start" : i === ticks.length - 1 ? "end" : "middle"}
             fill={theme.palette.text.secondary}
           >
             {tickLabel(t, t1 - t0)}
@@ -147,7 +165,12 @@ export function AwakeStackChart({ buckets, unitLabel }: { buckets: AwakeBucket[]
   const plotW = W - PAD.l - PAD.r;
   const bw = plotW / buckets.length;
   const y = (v: number) => PAD.t + (1 - v / ymax) * (H - PAD.t - PAD.b);
-  const rangeS = buckets.length * (buckets.length > 1 ? buckets[1].t0 - buckets[0].t0 : 3600);
+  const rangeS = buckets[buckets.length - 1].t1 - buckets[0].t0;
+  // Day buckets are always labelled by date, hour buckets by time of day.
+  const bucketLabel = (b: AwakeBucket) =>
+    b.t1 - b.t0 > 2 * 3600
+      ? new Date(b.t0 * 1000).toLocaleDateString([], { month: "short", day: "numeric" })
+      : tickLabel(b.t0, rangeS);
   const sums = {} as Record<Cause, number>;
   for (const c of CAUSES) sums[c] = buckets.reduce((a, b) => a + b.values[c], 0);
   return (
@@ -170,7 +193,7 @@ export function AwakeStackChart({ buckets, unitLabel }: { buckets: AwakeBucket[]
             textAnchor={i === 0 ? "start" : "end"}
             fill={theme.palette.text.secondary}
           >
-            {tickLabel(buckets[i].t0, rangeS)}
+            {bucketLabel(buckets[i])}
           </text>
         ))}
         {buckets.map((b, i) => {

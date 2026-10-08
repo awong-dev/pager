@@ -98,10 +98,10 @@ export default function BatteryCard({ deviceId }: { deviceId: string }) {
 
   const model = edited ?? serverModel;
   const days = RANGES.find((r) => r.key === rangeKey)?.days ?? 7;
-  const bucketS = days <= 7 ? 3600 : 86400;
+  const bucketUnit = days <= 7 ? "hour" : "day";
   const unitLabel = days <= 7 ? "per hour" : "per day";
   const withBs = useMemo(() => samples.filter((s) => s.hasBs), [samples]);
-  const buckets = useMemo(() => bucketAwake(samples, bucketS), [samples, bucketS]);
+  const buckets = useMemo(() => bucketAwake(samples, bucketUnit), [samples, bucketUnit]);
   const last = samples.length > 0 ? samples[samples.length - 1] : null;
   const lastMv = [...samples].reverse().find((s) => s.battMv != null)?.battMv;
 

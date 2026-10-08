@@ -206,17 +206,39 @@ export function termBreakdown(samples: BatterySample[], m: BatteryModel): TermRo
 
 export interface AwakeBucket {
   t0: number;
+  /** Bucket end (start of the next local hour/day). */
+  t1: number;
   values: Record<Cause, number>;
 }
 
+export type BucketUnit = "hour" | "day";
+
+/** Start (epoch s) of the viewer's local hour/day containing `tS`. */
+export function floorBucket(tS: number, unit: BucketUnit): number {
+  const d = new Date(tS * 1000);
+  if (unit === "hour") d.setMinutes(0, 0, 0);
+  else d.setHours(0, 0, 0, 0);
+  return d.getTime() / 1000;
+}
+
+/** Start of the local hour/day after the bucket starting at `t0S`. Local
+ * days are 23 or 25 h across DST changes. */
+export function nextBucket(t0S: number, unit: BucketUnit): number {
+  if (unit === "hour") return floorBucket(t0S + 3600, "hour");
+  const d = new Date(t0S * 1000);
+  d.setDate(d.getDate() + 1);
+  d.setHours(0, 0, 0, 0);
+  return d.getTime() / 1000;
+}
+
 /** Spread each sample's awake seconds evenly over [ts - dtS, ts] into
- * fixed buckets of `bucketS` seconds. Contiguous from first to last. */
-export function bucketAwake(samples: BatterySample[], bucketS: number): AwakeBucket[] {
+ * local-clock hour or day buckets. Contiguous from first to last. */
+export function bucketAwake(samples: BatterySample[], unit: BucketUnit): AwakeBucket[] {
   const map = new Map<number, AwakeBucket>();
   const get = (t0: number): AwakeBucket => {
     let b = map.get(t0);
     if (!b) {
-      b = { t0, values: { timer: 0, attn: 0, hot: 0, ui: 0, modem: 0, fetch: 0 } };
+      b = { t0, t1: nextBucket(t0, unit), values: { timer: 0, attn: 0, hot: 0, ui: 0, modem: 0, fetch: 0 } };
       map.set(t0, b);
     }
     return b;
@@ -227,12 +249,12 @@ export function bucketAwake(samples: BatterySample[], bucketS: number): AwakeBuc
     const end = s.ts;
     const start = end - dt;
     if (dt <= 0) {
-      const b = get(Math.floor(end / bucketS) * bucketS);
+      const b = get(floorBucket(end, unit));
       for (const c of CAUSES) b.values[c] += n(s.awakeS?.[c]);
       continue;
     }
-    for (let t0 = Math.floor(start / bucketS) * bucketS; t0 < end; t0 += bucketS) {
-      const overlap = Math.min(end, t0 + bucketS) - Math.max(start, t0);
+    for (let t0 = floorBucket(start, unit); t0 < end; t0 = nextBucket(t0, unit)) {
+      const overlap = Math.min(end, nextBucket(t0, unit)) - Math.max(start, t0);
       if (overlap <= 0) continue;
       const f = overlap / dt;
       const b = get(t0);
@@ -242,7 +264,7 @@ export function bucketAwake(samples: BatterySample[], bucketS: number): AwakeBuc
   const keys = [...map.keys()].sort((a, b) => a - b);
   if (keys.length === 0) return [];
   const out: AwakeBucket[] = [];
-  for (let t0 = keys[0]; t0 <= keys[keys.length - 1]; t0 += bucketS) out.push(get(t0));
+  for (let t0 = keys[0]; t0 <= keys[keys.length - 1]; t0 = nextBucket(t0, unit)) out.push(get(t0));
   return out;
 }
 
