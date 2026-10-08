@@ -32,6 +32,12 @@
 // from IO1 (left header pin 14, now unused) to IO8 (right header pin 23,
 // still active-high, still ext1, still shared with the LIS3DH's INT1).
 // Pins 22 (IO18) and 19 (IO15) are now unused.
+//
+// Rewired again 8 Oct 2026 (owner): right header. The IO8 wake button hardware
+// is removed entirely (pin 23 is free; the firmware had already retired it on
+// 6 Oct). The LIS3DH moved to pins 22/21/20: SCL IO18, SDA IO17, INT1 IO16.
+// Pins 17/16/15 (IO6/IO5/IO4) and 18 (IO7) are now unused. IO16 is an RTC
+// GPIO (ESP32-S3: IO0-IO21), so INT1 stays an ext1 light-sleep wake source.
 
 #ifndef PINS_H
 #define PINS_H
@@ -67,16 +73,14 @@
 #define PAGER_PIN_DISP_MISO 42  // Friend SRAM MISO, unused today (SRAM not read); wired through for the Friend's fixed header order
 #define PAGER_PIN_DISP_SCK 2
 
-// Button (header pin 23, right header). Rewired 3 Oct 2026 (owner): connects
-// the button to the power board's always-on 3V, not GND, so it is
-// active-high. Rewired again 5 Oct 2026 (owner): moved from IO1 (header pin
-// 14, left header, now unused) to IO8 (header pin 23, right header) as part
-// of the same-day right-header rework; still active-high to the board's 3V,
-// still an RTC GPIO, still shares the ext1 wake with the LIS3DH's INT1.
-#define PAGER_PIN_BUTTON 8  // active-high to the board's 3V, ext1 shared with LIS3DH INT1
-// Owner decision 6 Oct 2026: the IO8 wake button is disabled entirely (the shake
-// replaces it; IO8 read pressed on every release build). IO8 stays listed but is
-// unused: no pad config, no ext1 wake bit, no polling. Set to 1 to bring it back.
+// Button: HARDWARE REMOVED 8 Oct 2026 (owner); header pin 23 (IO8) is free.
+// History: moved to IO8 on 5 Oct 2026 (active-high to the board's 3V, ext1
+// shared with the LIS3DH's INT1), retired in firmware on 6 Oct 2026 (the shake
+// replaces it; IO8 read pressed on every release build). The define stays only
+// so the PAGER_WAKE_BUTTON_ENABLED code path still compiles: with it at 0
+// nothing configures, polls or arms IO8. Bringing a button back needs new
+// wiring as well as flipping the flag.
+#define PAGER_PIN_BUTTON 8  // no hardware since 8 Oct 2026; see above
 #ifndef PAGER_WAKE_BUTTON_ENABLED
 #define PAGER_WAKE_BUTTON_ENABLED 0
 #endif
@@ -93,21 +97,21 @@
 #define PAGER_I2C_ADDR_CARDKB 0x5F
 
 // Motion: Adafruit LIS3DH breakout (I2C addr 0x18, SDO/SA0 open), right
-// header pins 17/16/15 (moved from pins 23/22/19 / IO8,IO15,IO18 on 5 Oct
-// 2026 -- owner decision, final). Its own bus, I2C_NUM_1, separate from the
+// header pins 22/21/20 = SCL IO18 / SDA IO17 / INT1 IO16 (moved from pins
+// 17/16/15 / IO6,IO5,IO4 on 8 Oct 2026 -- owner). Its own bus, I2C_NUM_1, separate from the
 // CardKB's I2C_NUM_0, and powered from the Adafruit 6092 power board's
 // always-on "3V" rail (not Walter 3V3-OUT, not gated by any Walter GPIO) so
 // it stays alive through every rail_off() and every light sleep. 3.3 V on
 // the breakout's VIN also makes its level shifter transparent: SDA/SCL
 // pull-ups sit at the ESP32's own I/O rail, never at a 5 V USB VIN. Sharing
 // the CardKB's bus would let these always-on pull-ups feed the unpowered
-// CardKB. INT1 is an RTC GPIO (IO6 still is, same as IO8 was): it is an
-// ext1 light-sleep wake source (net.cpp), shared with the button, push-pull
-// active-high, 3.3 V logic.
-#define PAGER_PIN_LIS3DH_INT1 6
+// CardKB. INT1 is an RTC GPIO (IO16; the S3's RTC pads are IO0-IO21): it is
+// the only ext1 light-sleep wake source (net.cpp) now that the button is
+// gone, push-pull active-high, 3.3 V logic.
+#define PAGER_PIN_LIS3DH_INT1 16
 #define PAGER_I2C_ADDR_LIS3DH 0x18
-#define PAGER_PIN_ACCEL_SDA 5  // own I2C_NUM_1 bus, not the CardKB's
-#define PAGER_PIN_ACCEL_SCL 4  // own I2C_NUM_1 bus, not the CardKB's
+#define PAGER_PIN_ACCEL_SDA 17  // own I2C_NUM_1 bus, not the CardKB's
+#define PAGER_PIN_ACCEL_SCL 18  // own I2C_NUM_1 bus, not the CardKB's
 
 // LTE_WAKE0 (schematic name): a modem input, unused by firmware and by the
 // vendored library today. docs/SLEEP_PAGE_LOSS_BRIEF.md §6 item F: the

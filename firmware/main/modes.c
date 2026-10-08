@@ -2888,7 +2888,7 @@ void modes_run(void)
                 // 3 Oct 2026 rewiring: the button and the LIS3DH motion
                 // interrupt now share one ext1 mask (net.cpp's net_sleep()
                 // own comment) -- esp_sleep_get_ext1_wakeup_status()'s
-                // bitmask (button = IO8, motion = IO6) is what tells them
+                // bitmask (button = IO8, motion = IO16) is what tells them
                 // apart; there is no more ESP_SLEEP_WAKEUP_EXT0.
                 // Rule (b), 5 Oct 2026 (6 Oct 2026: ext1 = accelerometer only, the button is
                 // retired; the button branch below is dead): only the button bit is input (attentive

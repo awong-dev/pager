@@ -11,9 +11,10 @@ before flashing a real device. `docs/PROTOCOL.md` §12 has two still-open protoc
 
 ## Hardware
 
-Rewired 30 Sep 2026; CardKB moved to IO5/IO4 on 3 Oct 2026; right header finalized 5 Oct 2026
-(CardKB SDA/SCL IO10/IO9; LIS3DH INT1/SDA/SCL IO6/IO5/IO4; wake button moved from IO1 to IO8, same
-day, same owner decision). `main/pins.h` is the single source of truth for every GPIO below;
+Rewired 30 Sep 2026; CardKB moved to IO5/IO4 on 3 Oct 2026; right header reworked 5 Oct 2026
+(CardKB SDA/SCL IO10/IO9; wake button moved from IO1 to IO8) and again 8 Oct 2026 (button
+hardware removed; LIS3DH moved to SCL IO18 / SDA IO17 / INT1 IO16). `main/pins.h` is the single
+source of truth for every GPIO below;
 nothing else in the firmware hardcodes a pin.
 
 | Part | Role | Interface / power |
@@ -21,9 +22,9 @@ nothing else in the firmware hardcodes a pin.
 | Walter module (DPTechnics) | ESP32-S3-WROOM-1-N16R2 + Sequans GM02SP LTE-M modem + GNSS | — |
 | Adafruit eInk Breakout Friend, panel Orient Display AES128296A00-2.9ENRS (SSD1680-compatible, 296×128; replaced the GDEY029T94-FT01 on 4 Oct 2026; partial-waveform OTP unverified, see HARDWARE_TESTING.md) | E-paper display | SPI via the GPIO matrix, 4 MHz: SCK IO2, MISO IO42, MOSI IO41, ECS IO40, D/C IO39, RST IO13, BUSY IO11; SRCS IO38 held high (SRAM unused); SDCS not wired. ENA IO12 is the Friend's regulator enable (active-high, pulled up on the Friend): low = panel unpowered. Friend VIN from the power board's always-on "3V" rail, not Walter VIN or Walter 3V3-OUT. |
 | M5Stack CardKB | Keyboard | I2C_NUM_0 addr 0x5F, SDA IO10 / SCL IO9, polled. VCC from Walter's own switched 3V3-OUT (header pin 26, gated by IO0), so it switches with the attentive window independently of the display. |
-| Adafruit LIS3DH breakout | Motion wake | I2C_NUM_1 addr 0x18 (SDO/SA0 open), SDA IO5 / SCL IO4; INT1 → IO6 (push-pull, active-high, 3.3 V, ext1 wake, shared with the button). VIN from the power board's always-on "3V" rail (not gated by any Walter GPIO), so it stays alive through every rail_off() and every light sleep/reset. |
-| Push button (DISABLED 6 Oct 2026, `PAGER_WAKE_BUTTON_ENABLED 0`; the shake replaces it) | Wake / open reply | IO8 to the power board's always-on 3V (not GND), active high, RTC GPIO, ext1 wake shared with the LIS3DH's INT1 |
-| Adafruit 6092 (bq25185 + TLV62569) power board + 3.7 V 2500 mAh LiPo (Adafruit 328) | Power | Board "4.5V" (SYS) → Walter VIN; board always-on "3V" buck → Friend VIN + LIS3DH VIN + button |
+| Adafruit LIS3DH breakout | Motion wake | I2C_NUM_1 addr 0x18 (SDO/SA0 open), SDA IO17 / SCL IO18; INT1 → IO16 (push-pull, active-high, 3.3 V, the only ext1 wake). VIN from the power board's always-on "3V" rail (not gated by any Walter GPIO), so it stays alive through every rail_off() and every light sleep/reset. |
+| Push button (REMOVED 8 Oct 2026; disabled in firmware since 6 Oct, `PAGER_WAKE_BUTTON_ENABLED 0`; the shake replaces it) | — | No hardware. IO8 (header pin 23) is free. |
+| Adafruit 6092 (bq25185 + TLV62569) power board + 3.7 V 2500 mAh LiPo (Adafruit 328) | Power | Board "4.5V" (SYS) → Walter VIN; board always-on "3V" buck → Friend VIN + LIS3DH VIN |
 
 ### Walter header map
 
@@ -33,23 +34,22 @@ is the input side.
 ```
                                         ┌─────── USB-C ───────┐
                   (unused)  RESET   1 ──┤                     ├── 28  VIN      ◄── power board SYS (4.5V) out
-                  (unused)  IO44    2 ──┤                     ├── 27  GND      ◄── common ground (Friend, CardKB, LIS3DH, button, power board)
+                  (unused)  IO44    2 ──┤                     ├── 27  GND      ◄── common ground (Friend, CardKB, LIS3DH, power board)
                   (unused)  IO43    3 ──┤                     ├── 26  3V3-OUT  ──► CardKB VCC (switched by IO0)
        CardKB supply gate  IO0     4 ──┤                     ├── 25  IO10     ◄─► CardKB SDA
                 Friend ENA  IO12    5 ──┤                     ├── 24  IO9      ──► CardKB SCL
-               Friend BUSY  IO11    6 ──┤                     ├── 23  IO8      ◄── Wake button
-                Friend RST  IO13    7 ──┤        Walter       ├── 22  IO18     (unused)
-               Friend SRCS  IO38    8 ──┤      (top view)     ├── 21  IO17     (unused)
-                Friend D/C  IO39    9 ──┤                     ├── 20  IO16     (unused)
+               Friend BUSY  IO11    6 ──┤                     ├── 23  IO8      (unused; button removed 8 Oct)
+                Friend RST  IO13    7 ──┤        Walter       ├── 22  IO18     ──► LIS3DH SCL
+               Friend SRCS  IO38    8 ──┤      (top view)     ├── 21  IO17     ◄─► LIS3DH SDA
+                Friend D/C  IO39    9 ──┤                     ├── 20  IO16     ◄── LIS3DH INT1
                 Friend ECS  IO40   10 ──┤                     ├── 19  IO15     (unused)
                Friend MOSI  IO41   11 ──┤                     ├── 18  IO7      (unused)
-               Friend MISO  IO42   12 ──┤                     ├── 17  IO6      ◄── LIS3DH INT1
-                Friend SCK  IO2    13 ──┤                     ├── 16  IO5      ◄─► LIS3DH SDA
-                  (unused)  IO1    14 ──┤                     ├── 15  IO4      ──► LIS3DH SCL
+               Friend MISO  IO42   12 ──┤                     ├── 17  IO6      (unused)
+                Friend SCK  IO2    13 ──┤                     ├── 16  IO5      (unused)
+                  (unused)  IO1    14 ──┤                     ├── 15  IO4      (unused)
                                         └────────┤ SIM ├────────┘
 
    Off-board wires:  power board 3V ──► Friend VIN, LIS3DH VIN (always on)
-                     button: IO8 ── switch ── power board 3V (not GND; active-high)
                      all GNDs to Walter GND; no capacitors on the distribution board
 ```
 
@@ -59,9 +59,9 @@ Per-peripheral view of the same wiring:
 |---|---|---|---|---|---|---|---|
 | VIN | power board 3V (off-board, always on) | | VCC | 26 3V3-OUT | | VIN | power board 3V (off-board, always on) |
 | GND | 27 GND | | GND | 27 GND | | GND | 27 GND |
-| ENA | 5 IO12 | | SDA | 25 IO10 | | SDA | 16 IO5 |
-| SCK | 13 IO2 | | SCL | 24 IO9 | | SCL | 15 IO4 |
-| MISO | 12 IO42 | | | | | INT1 | 17 IO6 |
+| ENA | 5 IO12 | | SDA | 25 IO10 | | SDA | 21 IO17 |
+| SCK | 13 IO2 | | SCL | 24 IO9 | | SCL | 22 IO18 |
+| MISO | 12 IO42 | | | | | INT1 | 20 IO16 |
 | MOSI | 11 IO41 | | | | | SDO/SA0 | open (addr 0x18) |
 | ECS | 10 IO40 | | | | | | |
 | D/C | 9 IO39 | | | | | | |

@@ -269,7 +269,7 @@ static bool configure_and_arm(uint8_t who)
     s_ctrl3 = ctrl3;
 
     s_present = true;
-    net_enable_accel_wake(); // IO6 becomes a light-sleep wake source, net.cpp's net_sleep()
+    net_enable_accel_wake(); // IO16 becomes a light-sleep wake source, net.cpp's net_sleep()
     ESP_LOGI(TAG, "LIS3DH found (WHO_AM_I=0x%02x), 25Hz LP +-4g, INT1 motion THS=256 mg, "
                   "INT2 shake THS=1152 mg, CTRL_REG3=0x60",
              (unsigned) who);

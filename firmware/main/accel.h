@@ -1,5 +1,5 @@
 /* accel.h — LIS3DH accelerometer driver (I2C 0x18, INT1 on pins.h's
- * PAGER_PIN_LIS3DH_INT1 / IO6), docs/V02_DESIGN.md §5 trigger 2 (sustained
+ * PAGER_PIN_LIS3DH_INT1 / IO16), docs/V02_DESIGN.md §5 trigger 2 (sustained
  * motion).
  *
  * Device-only (ESP-IDF I2C driver, no host-testable part of its own — the
@@ -122,7 +122,7 @@ bool accel_shake_pending(void);
  * low-power 25 Hz ODR at +-4 g with high-pass-filtered motion (generator 1)
  * and shake-candidate (generator 2) interrupts, both routed to INT1
  * (docs/SHAKE_WAKE_DESIGN.md) and calls
- * net_enable_accel_wake() so IO6 becomes a light-sleep wake source. On
+ * net_enable_accel_wake() so IO16 becomes a light-sleep wake source. On
  * failure (no/wrong response — the expected case if the chip is not wired),
  * logs once at INFO and returns false; every other accel.c/loc.c function
  * then simply never has anything to report, which is this task's own
