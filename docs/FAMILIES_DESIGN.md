@@ -4,6 +4,8 @@
 > `smsNumber`, `phoneIndex`, held/delivered inbound SMS and "text any number" are gone; an external is reached only by
 > the pager's own SMS (`cfg.sms`). Members whose `policy.out` is `open`/`any_sms` get every family contact on their
 > pager automatically. See `build/bench-logs/DESIGN_no_relay_sms.md` and CONTACT_REQ_DESIGN.md decision 7.
+> 
+> **8 Oct 2026 (owner decision):** the relay SMS backend returns for members who hold a per-user Twilio number (`users.smsNumber`). Inbound SMS from unknown numbers are held with an alert to family admins; known and approved senders are delivered. Outbound SMS goes through the relay by phone number to externals with the sender's number. See docs/RELAY_SMS_DESIGN.md.
 
 **Status:** implemented overnight 30 Sep → 1 Oct 2026 per `docs/FAMILIES_TASKS.md`; see §10 for where
 the build deviated from this text.
@@ -79,7 +81,7 @@ Where this document differs from them, this document wins. Nothing here changes
    but does not get `/locate` by role (keeps the spirit of the 27 Sep decision; flagged in §9).
 6. **An SMS number is an "external" user.** `users/{uid}` with `kind: 'external'`, `familyId`,
    no Firebase Auth account, alias = `uid`, `displayName` = the name an admin gave it, `phone` on the user doc,
-   no backend row. It reaches the pager only through `cfg.sms` *(7 Oct 2026: no relay SMS)*.
+   no backend row. It reaches the pager only through `cfg.sms` *(7 Oct 2026: no relay SMS)*. *(8 Oct 2026: externals now carry an `sms` backend row (`kind:"sms", verifiedAt: now, config:{phone}`) for relay members with a number; see docs/RELAY_SMS_DESIGN.md decision 3.)*
 7. **Conversation policy lives on the member, is enforced in `routing.send`, and layers on top of
    the allow-list.** "Approved people" and "approved numbers" *are* the member's outgoing `allow`
    edges (to users and to externals respectively). A policy that says *any* bypasses the edge
@@ -95,7 +97,7 @@ Where this document differs from them, this document wins. Nothing here changes
    (a member on the `open` outbound policy started talking to someone they have no edge to) and
    *unrecognised SMS* (held, with approve/block actions). Pager `contactRequests` are shown in the
    same inbox. Every family admin's push tokens receive a `kind: "alert"` FCM message.
-10. **Superseded 7 Oct 2026 (no relay SMS).**
+10. **Per-family Twilio number superseded 7 Oct 2026; per-user number restored 8 Oct 2026.** Each member may hold a relay SMS number (`users.smsNumber`, docs/RELAY_SMS_DESIGN.md decision 1) to send and receive SMS through the relay; see §9 for alerts and decision 6 for externals' backend rows.
 11. **The pager's modem SMS path is a projection, not a second policy.** `devices.smsContacts`
     becomes derived (the member's approved numbers, capped at 8, editable only through the member's
     approved-numbers list). `any_sms` cannot be honoured on the device today because the firmware
@@ -134,13 +136,13 @@ other's `kind`): `people`-type rule → `allow/{S}_{R}.message` (outbound) or `a
 mapped to 403 with a human message). Groups: every (sender, member) pair is checked the same way,
 as today. Externals: no policy of their own; an inbound SMS from external X to member R checks only
 R's inbound rule for numbers; an unrecognised X under `people`/`people_sms`/`sms` is **held** as an
-alert, under `any`/`any_sms` it is **delivered and alerted**. Location requests keep today's
+alert, under `any`/`any_sms` it is **delivered and alerted**. *(8 Oct 2026: `any` on the inbound picker no longer delivers unknown numbers; all unknown SMS are held with an alert to admins. `any` now means the family's *contacts* reach this member without an edge — see docs/RELAY_SMS_DESIGN.md.)*  Location requests keep today's
 `locate`-edge rule; policies do not affect them.
 
 Defaults are applied at user creation from role (`member` → `people`/`people`, `admin`/`super` →
 `open`/`any`) and by the migration for existing users.
 
-*(7 Oct 2026: the numbers column now only decides whether every family contact is implied on the member's pager (`any`) or only approved ones; the relay carries no SMS, so inbound "held/delivered" no longer applies.)*
+*(7 Oct 2026: the numbers column now only decides whether every family contact is implied on the member's pager (`any`) or only approved ones; the relay carries no SMS, so inbound "held/delivered" no longer applies.)* *(8 Oct 2026: inbound SMS are held/delivered again, but with a per-user SMS number and held-to-approval flow, not per-family nor auto-delivery under `any` — see docs/RELAY_SMS_DESIGN.md.)*
 
 ## 3. Data model changes
 
@@ -236,12 +238,12 @@ externals), for members whose rules-visible set is narrower than what they talk 
 accepts `?family=` to replace only edges touching that family, and is the only writer of
 cross-family edges. `/api/admin/contacts/*` moves to `/api/family/alerts/*`.
 
-**Conversations**: An E.164 number resolves only to the sender's family contact, which is refused (`sms_contact`, 403) — the relay sends no SMS (7 Oct 2026). 403 bodies carry `reason ∈ {policy_out, policy_in,
-not_allowed, not_member, sms_contact}` and a message the UI shows verbatim. `POST /api/conversations` (group
+**Conversations**: An E.164 number resolves only to the sender's family contact, which is refused (`sms_contact`, 403) — the relay sends no SMS (7 Oct 2026). *(8 Oct 2026: the relay SMS backend returns via `PATCH /api/family/members {smsNumber}`, but the routing decision is unchanged: E.164 in a DM attempts relay delivery only if the sender has a number; see docs/RELAY_SMS_DESIGN.md decision 2.)*  403 bodies carry `reason ∈ {policy_out, policy_in,
+not_allowed, not_member, sms_contact, no_sms_number}` and a message the UI shows verbatim. `POST /api/conversations` (group
 create) moves to `/api/family/groups`; join (`POST …/members`) requires the joiner to be a family
 admin of the group creator's family and no longer writes `locate` edges.
 
-**Webhooks**: none for SMS (removed 7 Oct 2026).
+**Webhooks**: none for SMS (removed 7 Oct 2026). *(8 Oct 2026: restored for inbound SMS only — `POST /webhooks/twilio/sms` per-IP limited, signature-verified, holds unknown senders for admin approval; see docs/RELAY_SMS_DESIGN.md decision 4 and §4 of this doc.)*
 
 ## 5. Web UI
 
@@ -392,8 +394,7 @@ older, member list) ride along with phase 2.
    is the natural follow-up.
 5. **Externals are global**, one per number, with one display name. A per-family nickname is a
    small addition if two families know the same number by different names.
-6. **Held SMS bodies** are stored in the alert until handled; retention sweep should include
-   `alerts` (default 90 days).
+6. **Held SMS bodies** *(8 Oct 2026: now live in `heldSms`, swept with messages using the same TTL as the message retention window)* are stored in the alert until handled; *(7 Oct 2026: retention sweep should include `alerts` (default 90 days))*.
 7. **The pager cannot honour `any_sms` inbound on its modem** (decision 11); texts from unlisted
    numbers are still blocked on-device and only audited. A firmware `cfg.sms` mode flag would be
    needed; not in this plan.

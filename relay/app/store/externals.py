@@ -7,9 +7,10 @@ An external belongs to exactly one family: `familyId` is null (rules,
 family, `phone` is the E.164 number and `displayName` is that family's name
 for it. Identity is `(fid, e164)`: `uid = "x_" + h[:16]`, `alias = "x" +
 h[:11]` with `h = sha256(f"{fid}|{e164}")`, so `get_or_create` is idempotent
-through `create_user`'s own transaction and lookups need no index. No backend
-row and no reverse index: the relay never texts or receives for a contact; the
-pager texts it from `cfg.sms` (docs/V02_DESIGN.md §6).
+through `create_user`'s own transaction and lookups need no index. A contact
+has one `sms` backend row `{phone}` (docs/RELAY_SMS_DESIGN.md decision 3), made
+by `get_or_create` / `ensure_sms_backend`; the pager also texts it from
+`cfg.sms` (docs/V02_DESIGN.md §6) when its owner has no relay number.
 
 Names are unique per family (the pager matches contacts by name,
 `sms_find_by_name`): `contactNames/{fid}_{sha256(key)[:16]}` = `{uid, familyId}`
@@ -27,6 +28,7 @@ from google.api_core.exceptions import AlreadyExists
 
 from app.db.firestore import get_db
 from app.store import allow as allow_store
+from app.store import backends as backends_store
 from app.store import users as users_store
 from app.store.users import User
 
@@ -120,6 +122,7 @@ def get_or_create(family_id: str, phone: str, display_name: str) -> User:
     uid, alias = contact_ids(family_id, e164)
     existing = users_store.get_user(uid)
     if existing is not None:
+        ensure_sms_backend(existing)
         return existing
 
     key = name_key(display_name)
@@ -143,6 +146,7 @@ def get_or_create(family_id: str, phone: str, display_name: str) -> User:
         if raced is None:
             _release(family_id, key, uid)
             raise ValueError("contact alias collision") from exc
+        ensure_sms_backend(raced)
         return raced
     except Exception:
         _release(family_id, key, uid)
@@ -150,7 +154,23 @@ def get_or_create(family_id: str, phone: str, display_name: str) -> User:
 
     fetched = users_store.get_user(uid)
     assert fetched is not None
+    ensure_sms_backend(fetched)
     return fetched
+
+
+def ensure_sms_backend(user: User) -> str:
+    """The id of `user`'s (an external's) `sms` backend row, creating
+    `{kind:"sms", enabled:true, verified, config:{phone}}` when it has none
+    (a contact that predates the relay SMS feature). Idempotent."""
+    for b in backends_store.list_backends(user.uid):
+        if b.kind == "sms":
+            return b.id
+    # Fixed id: two racing callers write the same doc, never two rows (a
+    # duplicate row would text the contact twice).
+    created = backends_store.create_backend(
+        user.uid, kind="sms", config={"phone": user.phone or ""}, enabled=True, bid="sms"
+    )
+    return created.id
 
 
 def rename(family_id: str, uid: str, new_name: str) -> User:

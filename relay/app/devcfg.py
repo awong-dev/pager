@@ -199,9 +199,9 @@ def _contact_type_hint(uid: str) -> str:
     `users/{uid}` with zero or more backends (`app/store/backends.py`); every
     user also has an implicit `webapp` backend (`users_store.create_user`'s
     own docstring), so `web` is the fallback. An enabled `gchat` backend takes
-    priority over it (`chat`). There is no `t:"sms"`: an SMS contact is
-    `kind == 'external'`, never reaches `c[]` (it reaches the pager only as
-    `cfg.sms`), and the relay has no SMS backend."""
+    priority over it (`chat`). `t:"sms"` (docs/RELAY_SMS_DESIGN.md decision 7)
+    is an external SMS contact listed for an owner with a relay number; it is
+    handled by `_approved_contacts`, not by a backend lookup."""
     kinds = {b.kind for b in backends_store.list_backends(uid) if b.enabled}
     if "gchat" in kinds:
         return "chat"
@@ -233,17 +233,25 @@ def _approved_contacts(owner_uid: str) -> list[dict[str, Any]]:
     (§3.7's `c[]` order is `_ordered_contacts`' job below, since
     `build_book` and `build_book_body` cap and order this same set
     differently). `n` is the owner's nickname for the peer, else its
-    displayName."""
+    displayName. An external SMS contact is listed (`t:"sms"`) only when the
+    owner holds a relay `smsNumber` (docs/RELAY_SMS_DESIGN.md decision 7);
+    otherwise it reaches the pager as `cfg.sms`."""
     from app import book
 
     return [
         {
             "a": e.alias,
             "n": e.label[:_BOOK_NAME_MAX_CODEPOINTS],
-            "t": "grp" if e.kind == "group" else _contact_type_hint(e.uid),  # type: ignore[arg-type]
+            "t": (
+                "grp"
+                if e.kind == "group"
+                else "sms"
+                if e.kind == "external"
+                else _contact_type_hint(e.uid)  # type: ignore[arg-type]
+            ),
         }
         for e in book.entries_for(owner_uid)
-        if e.sendable and e.kind != "external"
+        if e.sendable
     ]
 
 

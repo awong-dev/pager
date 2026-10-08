@@ -158,7 +158,13 @@ def rederive_sms_contacts(owner_uid: str, broker: BrokerClient) -> None:
     owner = users_store.get_user(owner_uid)
     if owner is None or owner.familyId is None:
         return
-    contacts = sms_contacts_for(owner)[: devices_store.MAX_SMS_CONTACTS]
+    # docs/RELAY_SMS_DESIGN.md decision 7: an owner with a relay number
+    # reaches every SMS contact through `c[]`; the modem list is empty.
+    contacts = (
+        []
+        if owner.smsNumber
+        else sms_contacts_for(owner)[: devices_store.MAX_SMS_CONTACTS]
+    )
     sms_contacts = [
         SmsContact(name=truncate_sms_name(u.displayName), phone=u.phone or "") for u in contacts
     ]
@@ -166,6 +172,11 @@ def rederive_sms_contacts(owner_uid: str, broker: BrokerClient) -> None:
     for device in devices:
         devices_store.set_sms_contacts(device.id, sms_contacts)
         devcfg.push_sms_contacts(device.id, [c.model_dump() for c in sms_contacts], broker)
+    if owner.smsNumber:
+        # The contacts are in this owner's `c[]` (docs/RELAY_SMS_DESIGN.md
+        # decision 7): every trigger that re-derives the list also changes
+        # the book.
+        bump_and_push({owner_uid}, broker, reason="sms_contacts")
     implied = sum(
         1
         for u in contacts
@@ -243,9 +254,22 @@ def entries_for(owner_uid: str) -> list[BookEntry]:
             )
         )
     # Externals come only from `sms_contacts_for` (the list `cfg.sms` is cut
-    # from): the relay never texts them, so they are always `sendable` as far
-    # as the pager's own SMS path goes.
+    # from). With a relay number (docs/RELAY_SMS_DESIGN.md decision 7) the
+    # relay texts them: `sendable` follows the same policy gate routing runs;
+    # without one they are the modem's, listed as before.
     for index, contact in enumerate(sms_contacts):
+        if not owner.smsNumber:
+            sendable, reason = False, "no_sms_number"
+        else:
+            has_out = allow_store.get_edge(owner_uid, contact.uid)
+            has_in = allow_store.get_edge(contact.uid, owner_uid)
+            reason = policy_module.check(
+                owner,
+                contact,
+                bool(has_out and has_out.message),
+                bool(has_in and has_in.message),
+            )
+            sendable = reason is None
         entries.append(
             BookEntry(
                 uid=contact.uid,
@@ -255,9 +279,9 @@ def entries_for(owner_uid: str) -> list[BookEntry]:
                 nick=nicks.get(contact.uid),
                 phone=contact.phone,
                 inFamily=False,
-                sendable=True,
-                reason=None,
-                onPager=index < devices_store.MAX_SMS_CONTACTS,
+                sendable=sendable,
+                reason=reason,
+                onPager=sendable if owner.smsNumber else index < devices_store.MAX_SMS_CONTACTS,
             )
         )
     for conv in conversations_store.list_groups_for_member(owner_uid):

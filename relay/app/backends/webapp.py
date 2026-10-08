@@ -149,6 +149,7 @@ class WebappBackend:
 # ---------------------------------------------------------------------------
 
 ALERT_URL = "/family/alerts"
+PUSH_BODY_MAX_CHARS = 300
 
 _ALERT_TITLES = {
     "new_conversation": lambda a: f"New chat: @{a['subjectAlias']} ↔ @{a.get('peerAlias')}",
@@ -187,7 +188,13 @@ def push_alert(family_id: str, alert: dict, fcm_client: FCMClient | None = None)
         "alertKind": str(alert["kind"]),
         "id": str(alert["id"]),
         "title": title_fn(alert),
-        "body": (alert.get("preview") or "")[:PREVIEW_MAX_CHARS],
+        # `pushBody` (held texts, docs/RELAY_SMS_DESIGN.md decision 5) carries
+        # the sender and the text; it is a push-only field, never stored.
+        "body": (
+            alert["pushBody"][:PUSH_BODY_MAX_CHARS]
+            if alert.get("pushBody")
+            else (alert.get("preview") or "")[:PREVIEW_MAX_CHARS]
+        ),
         "url": ALERT_URL,
     }
     for user in users_store.list_users():

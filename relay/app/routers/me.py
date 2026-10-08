@@ -7,8 +7,9 @@ here (see `app/routers/admin.py` for that).
 (§5.1's API surface table). `POST /api/me/backends` calls the new backend's
 `start_link()` right after creating it (§6.1: "e.g. send a code"); only
 `gchat` has a real link flow, and `pager`/`webapp` no-op. There is no `sms`
-backend kind: the relay neither sends nor receives SMS (an SMS contact is a
-`kind: external` user the pager texts itself), so `kind: "sms"` is a 422.
+self-service backend: an `sms` row belongs to an SMS contact (an external)
+and is made by the relay when a family admin approves the number
+(docs/RELAY_SMS_DESIGN.md decision 3), so `kind: "sms"` here is a 422.
 
 `POST /api/me/backends` forces `enabled=False` at creation for any kind with
 a link/verify flow (`gchat`), regardless of what the request body asked for.
@@ -294,6 +295,10 @@ def create_backend(
     authed: Annotated[AuthedUser, Depends(require_backend_create_rate_limit)],
     registry: Annotated[dict[str, BackendImpl], Depends(get_backend_registry)],
 ) -> Backend:
+    if req.kind == "sms":
+        raise HTTPException(
+            status_code=422, detail="sms backends are managed by the relay, not self-service"
+        )
     if req.kind == "pager":
         # Pager backends are provisioned by `POST /api/admin/devices`
         # (docs/SERVER_PLAN.md §5.5) -- a user cannot self-issue one, since

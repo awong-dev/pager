@@ -139,6 +139,7 @@ def test_sweep_runs_and_reports_zero_deletions_with_nothing_stale(client: TestCl
         "gchatLinkCodesDeleted": 0,
         "alertsDeleted": 0,
         "batteryDeleted": 0,
+        "heldSmsDeleted": 0,
     }
 
 

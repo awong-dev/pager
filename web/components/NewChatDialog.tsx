@@ -3,15 +3,16 @@
 /** `/chat`'s "New chat" dialog -- docs/ADDRESS_BOOK_DESIGN.md decision 12:
  * a search-as-you-type select over the signed-in user's own address book
  * (`GET /api/book`), grouped Family / People / Numbers / Groups. Family
- * admins may also type an unknown @alias (freeSolo). Phone numbers are not
- * chat targets: the relay sends no SMS; the pager texts its SMS list
- * (docs/V02_DESIGN.md §6). Selecting or submitting an option only navigates
+ * admins may also type an unknown @alias (freeSolo). Sendable SMS contacts
+ * are listed only when the signed-in user has a relay SMS number
+ * (docs/RELAY_SMS_DESIGN.md decision 8). Selecting or submitting an option only navigates
  * to `/chat/{alias}` -- the conversation
  * itself is created by that thread's first send (docs/FAMILIES_TASKS.md
  * 3.5), never by this dialog.
  */
 
-import { useMemo, useState } from "react";
+import { doc, onSnapshot } from "firebase/firestore";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import Alert from "@mui/material/Alert";
@@ -22,8 +23,10 @@ import DialogActions from "@mui/material/DialogActions";
 import DialogContent from "@mui/material/DialogContent";
 import DialogTitle from "@mui/material/DialogTitle";
 import TextField from "@mui/material/TextField";
+import PhoneIcon from "@mui/icons-material/Phone";
 
 import { useAuth } from "@/lib/auth-context";
+import { getFirestoreDb } from "@/lib/firebase";
 import { BOOK_GROUP_ORDER, type BookGroup, bookGroup, useBook } from "@/lib/book";
 
 interface ChatOption {
@@ -36,6 +39,7 @@ interface ChatOption {
   phone: string | null;
   /** Admins also see unsendable entries, greyed out. */
   disabled: boolean;
+  external: boolean;
 }
 
 /** Parses a free-typed value as a phone number, the loose way §5.2 asks
@@ -78,7 +82,16 @@ interface NewChatDialogProps {
 
 export default function NewChatDialog({ open, onClose }: NewChatDialogProps) {
   const router = useRouter();
-  const { isFamilyAdmin } = useAuth();
+  const { isFamilyAdmin, me } = useAuth();
+  // Live, so an admin setting the number takes effect without a reload.
+  const [hasSmsNumber, setHasSmsNumber] = useState(false);
+  const meUid = me?.uid;
+  useEffect(() => {
+    if (!meUid) return;
+    return onSnapshot(doc(getFirestoreDb(), "users", meUid), (snap) => {
+      setHasSmsNumber(Boolean(snap.data()?.smsNumber));
+    });
+  }, [meUid]);
   const { data } = useBook();
   const [inputValue, setInputValue] = useState("");
   const [value, setValue] = useState<ChatOption | string | null>(null);
@@ -88,16 +101,17 @@ export default function NewChatDialog({ open, onClose }: NewChatDialogProps) {
   const options = useMemo<ChatOption[]>(() => {
     const rows: ChatOption[] = [];
     for (const e of entries) {
-      // SMS contacts are texted from the pager, never chat targets.
-      if (e.kind === "external") continue;
+      // SMS contacts are chat targets only through the user's relay number.
+      if (e.kind === "external" && (!hasSmsNumber || !e.sendable)) continue;
       if (!e.sendable && !isFamilyAdmin) continue;
       rows.push({
         alias: e.alias,
-        label: e.label,
+        label: e.kind === "external" && e.phone ? `${e.label} · ${formatPhoneDigits(e.phone.replace(/^\+/, ""))}` : e.label,
         group: bookGroup(e),
         displayName: e.displayName,
         phone: e.phone ?? null,
         disabled: !e.sendable,
+        external: e.kind === "external",
       });
     }
     rows.sort(
@@ -105,7 +119,7 @@ export default function NewChatDialog({ open, onClose }: NewChatDialogProps) {
         BOOK_GROUP_ORDER.indexOf(a.group) - BOOK_GROUP_ORDER.indexOf(b.group) || a.label.localeCompare(b.label)
     );
     return rows;
-  }, [entries, isFamilyAdmin]);
+  }, [entries, isFamilyAdmin, hasSmsNumber]);
 
   const bookEmpty = data !== null && !entries.some((e) => e.sendable);
 
@@ -180,6 +194,15 @@ export default function NewChatDialog({ open, onClose }: NewChatDialogProps) {
             else go(v.alias);
           }}
           filterOptions={filter}
+          renderOption={(props, o) => {
+            const { key, ...rest } = props;
+            return (
+              <li key={key} {...rest}>
+                {o.external && <PhoneIcon fontSize="small" sx={{ mr: 1 }} />}
+                {o.label}
+              </li>
+            );
+          }}
           renderInput={(params) => (
             <TextField
               {...params}

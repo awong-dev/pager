@@ -48,7 +48,8 @@ class SendMessageResponse(BaseModel):
 _POLICY_REJECT_MESSAGES = {
     "policy_out": "Your family admin has limited who you can message.",
     "not_allowed": "You are not on each other's approved lists.",
-    "sms_contact": "SMS contacts can only be texted from a pager.",
+    "sms_contact": "SMS contacts can't text each other.",
+    "no_sms_number": "You have no SMS number; ask your family admin.",
 }
 
 

@@ -274,6 +274,22 @@ Reading the bars off the glass as a `b w b w ...` list and diffing that against 
 what finally settled it; "looks right except one band" cost a whole round of chasing a defect that
 did not exist.
 
+## Twilio webhook 401s (8 Oct 2026)
+
+**Symptom:** relay logs `SECURITY signature verification failed` for every inbound SMS from Twilio.
+
+**Cause:** `PUBLIC_BASE_URL` does not match the webhook URL registered in the Twilio console byte-for-byte. The HMAC-SHA1 signature in `X-Twilio-Signature` covers the full URL including protocol, domain and path; a mismatch voids the signature.
+
+**Rule:** after deploying the relay, set `PUBLIC_BASE_URL` in the Cloud Run environment to match exactly what Twilio's console shows under "Request URL" — typically the project's Firebase Hosting domain. Case, trailing slash, protocol (https only) and path `/webhooks/twilio/sms` must all match. Stale webhook URLs in the Firestore deployment document will also cause 401s; delete them and re-add the correct one once.
+
+## Stale person `sms` backend rows (8 Oct 2026)
+
+**Symptom:** a person who had a sign-in phone before 7 Oct 2026 shows an `sms` backend row in the Firestore export, but the relay ignores it.
+
+**Cause:** the 7 Oct design removed the relay SMS backend. The 8 Oct design restored it for externals only (`kind:"external"`), never for persons. The relay's `backends_store.list_backends` and `get_backend` skip `kind:"sms"` rows whose owner is a person.
+
+**Rule:** these rows are harmless; they stay in Firestore and will never be read or deleted. The new SMS backend design uses `users.smsNumber` on persons and `users/{uid}/backends/{bid}` rows on externals. See docs/RELAY_SMS_DESIGN.md for the full flow.
+
 ## Tools and workflow
 
 **`serial_capture.py` overwrites without warning:**

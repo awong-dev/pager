@@ -170,6 +170,8 @@ class PatchUserRequest(BaseModel):
     # `person` user between families but can never null one out.
     familyId: str | None = None
     disabled: bool | None = None
+    # docs/RELAY_SMS_DESIGN.md decision 1: absent = leave alone, null = clear.
+    smsNumber: str | None = None
 
 
 @router.post("/users", dependencies=[Depends(require_admin_write_rate_limit)])
@@ -253,6 +255,19 @@ def list_users(family: Annotated[str | None, Query()] = None) -> list[User]:
     return users
 
 
+def normalize_sms_number(raw: str | None) -> str | None:
+    """E.164 for a `smsNumber` request value (`None`/blank clears); 400 on
+    garbage."""
+    if raw is None or not raw.strip():
+        return None
+    try:
+        return externals_store.normalize_phone(raw)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400, detail="smsNumber must be a number like +12065550100"
+        ) from exc
+
+
 def _patch_user_impl(
     uid: str,
     *,
@@ -263,6 +278,7 @@ def _patch_user_impl(
     family_id: str | None,
     disabled: bool | None,
     broker: BrokerClient,
+    sms_number: str | None | users_store._Unset = users_store.UNSET,
 ) -> User:
     """Shared by `PATCH /api/admin/users/{uid}` (below, no family
     restriction) and `PATCH /api/family/members/{uid}`
@@ -273,6 +289,22 @@ def _patch_user_impl(
     existing = users_store.get_user(uid)
     if existing is None:
         raise HTTPException(status_code=404, detail="no such user")
+    sms_changed = False
+    if not isinstance(sms_number, users_store._Unset):
+        # Before any other write: a 400/409 leaves the user untouched.
+        if existing.kind != "person":
+            raise HTTPException(status_code=400, detail="only a person can have an SMS number")
+        new_number = normalize_sms_number(sms_number)
+        sms_changed = new_number != existing.smsNumber
+        if sms_changed:
+            try:
+                users_store.set_sms_number(uid, new_number)
+            except users_store.SmsNumberTaken as exc:
+                holder = users_store.get_user(exc.holder_uid)
+                who = f"@{holder.alias}" if holder is not None else "another member"
+                raise HTTPException(
+                    status_code=409, detail=f"number already assigned to {who}"
+                ) from exc
     if family_id is not None:
         # docs/FAMILIES_DESIGN.md §4: "moves a user between families" --
         # `app.store.users.update_user` (task 1.1's `Files` list, not this
@@ -307,8 +339,11 @@ def _patch_user_impl(
             | {uid}
         )
         book.bump_and_push(owners, broker, reason="member_patch")
-    if family_changed:
-        # The owner's family contacts (and so their `cfg.sms`) changed.
+    if family_changed or sms_changed:
+        # The owner's family contacts (and so their `cfg.sms`) changed, or
+        # their relay SMS number did (docs/RELAY_SMS_DESIGN.md decision 7).
+        if sms_changed:
+            book.bump_and_push({uid}, broker, reason="sms_number")
         book.rederive_sms_contacts(uid, broker)
     # docs/FAMILIES_DESIGN.md §3's trigger list: a displayName change
     # rewrites `participants` (and `familyIds`) in every conversation
@@ -331,6 +366,7 @@ def patch_user(
         family_id=req.familyId,
         disabled=req.disabled,
         broker=broker,
+        sms_number=req.smsNumber if "smsNumber" in req.model_fields_set else users_store.UNSET,
     )
 
 

@@ -133,7 +133,7 @@ EMQX, the Firestore/Auth emulators, and the relay — configures EMQX's rule eng
 `tools/pager_client.py`'s combined device+server client):
 
 ```bash
-relay/.venv/bin/python tools/e2e_v2.py                                       # all 10 scenarios
+relay/.venv/bin/python tools/e2e_v2.py                                       # all 12 scenarios
 relay/.venv/bin/python tools/e2e_v2.py bootstrap text_roundtrip              # named scenarios
 relay/.venv/bin/python tools/e2e_v2.py --wire cbor                           # repeat in CBOR encoding
 ```
@@ -149,6 +149,8 @@ Scenarios available (see `tools/e2e_v2.py`'s module docstring for details):
 - **bytes**: data budget accounting and SIM constraints
 - **setup_code**: real admin-create → code → bootstrap → provisioned flow
 - **address_book**: device requests contact approval, book/cfg ingest and ack
+- **relay_sms**: a member's relay SMS number: inbound from an approved contact, a held
+  unknown number approved, and a pager text out through the Twilio mock (docs/RELAY_SMS_DESIGN.md)
 
 ## Message backends (docs/SERVER_PLAN.md §6.5)
 
@@ -172,7 +174,35 @@ deployment from using it:
   `chat.bot` scope / "Chat Bot" role so `spaces.messages.create` outbound
   sends work. None of this has been done either.
 
-The relay has no SMS backend (owner decision, 7 Oct 2026): the pager texts its own `cfg.sms` list.
+`sms` (`app/backends/sms_twilio.py`, docs/RELAY_SMS_DESIGN.md) is the Twilio adapter. Its backend row
+lives on an SMS contact (an external), and every person who should text through the relay holds their
+own number (`users.smsNumber`, set by a family admin under People or by the super under Admin → Users).
+A member without a number keeps the modem path (`cfg.sms`).
+
+### Twilio
+
+One-time console steps, done by hand (the relay never buys numbers or edits Twilio configuration):
+
+1. Create a **Messaging Service** named `pager` and attach the 10DLC campaign (standard brand, EIN) to it.
+2. Buy one number per member and add **each number to the service's sender pool**. Then set the member's
+   number in the web app (People → member → SMS number). Outbound passes `From=<member number>`
+   explicitly, so no `MessagingServiceSid` is needed.
+3. Set the service's **inbound request URL** to `PUBLIC_BASE_URL/webhooks/twilio/sms` (HTTP POST). One
+   place, not per number.
+4. Secrets: `TWILIO_ACCOUNT_SID` and `TWILIO_AUTH_TOKEN` (the auth token also verifies
+   `X-Twilio-Signature`; blank means the webhook answers 401). Plain env: `TWILIO_BASE_URL`
+   (`https://api.twilio.com`; the compose stack points it at `tools/mocks/twilio_mock.py`) and
+   `PUBLIC_BASE_URL`. There is no `TWILIO_FROM_NUMBER`.
+5. `PUBLIC_BASE_URL` must be the relay's origin **as Twilio calls it** (the Cloud Run `run.app` origin) and
+   match the URL in the console **byte for byte**: Twilio signs the exact URL, so a trailing-slash or host
+   difference fails every request with 401.
+6. Leave **Advanced Opt-Out** on (a carrier requirement); a recipient who texts STOP shows as `SMS failed`
+   (Twilio code 21610) until they text START.
+
+Inbound texts from a number the family has no approved contact for are stored in `heldSms` and raised as
+an `sms_unknown` alert to the family admins; they are delivered only when an admin approves. The relay
+stores message bodies in Firestore, and Twilio keeps its own copy in its message logs. Log lines to watch:
+`sms in to=@alias from=...1234 sid=SM... outcome=...` and `sms out to=...1234 from=...5678 sid=... status=...`.
 
 ## CLI Tools
 

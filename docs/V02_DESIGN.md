@@ -247,7 +247,7 @@ relay. This reverses `PROTOCOL.md` §7.3's "no device-side SMS path"; edit it.
 - **Owner decision 7 Oct 2026:** this is the only SMS path; the relay has no SMS backend. The list is
   derived, not hand-edited: the member's approved Family → Contacts plus, for an `open`/`any_sms`
   member, every family contact (max 8, by name). Contact names are unique per family because the
-  pager matches by name.
+  pager matches by name. *(8 Oct 2026: this modem path now serves members without a relay SMS number; `cfg.sms` is pushed empty for members with a relay number who send/receive through it instead.)*
 - `UNVERIFIED`: SMS on the production SIM at all (a Google Fi data-only SIM may not carry SMS);
   the modem's `+CMTI` behaviour under eDRX; text-mode UCS-2 on this firmware. `smstest` exists to
   find out. Everything fails safe: an SMS that cannot be sent is a `FAILED` thread entry plus an

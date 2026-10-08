@@ -25,7 +25,7 @@ default; the pager checks for a book sync periodically. Tasks: `build/bench-logs
 1. **The book is derived, not stored.** Entries = same-family persons (not self, not disabled) ∪ the
    owner's outgoing message-edge peers (cross-family people, externals) ∪ the owner's groups. One
    function, `app/book.py` `entries_for(owner_uid)`, feeds the pager (`devcfg`), `GET /api/book` and
-   New chat. *(two lists that must agree will drift; the pager and the web must show the same people.)* *(7 Oct 2026: externals come from `book.sms_contacts_for(owner)` — the same list `cfg.sms` is cut from — and are listed with `phone`, sendable, `onPager` for the first 8. They never enter the pager's `c[]`: the pager texts them from `cfg.sms`, so the relay emits no `t:"sms"`.)* 
+   New chat. *(two lists that must agree will drift; the pager and the web must show the same people.)* *(7 Oct 2026: externals come from `book.sms_contacts_for(owner)` — the same list `cfg.sms` is cut from — and are listed with `phone`, sendable, `onPager` for the first 8. They never enter the pager's `c[]`: the pager texts them from `cfg.sms`, so the relay emits no `t:"sms"`.)* *(8 Oct 2026: for a member with a relay SMS number, externals enter `c[]` with `t:"sms"` (name ≤16 cp, capped at 32 total with persons/groups); see docs/RELAY_SMS_DESIGN.md.)*
 2. **Same-family persons count as approved.** In `routing` the `approved` people rule passes on an
    edge **or** both ends being persons with the same non-null `familyId`. `none` rules (policy `sms`,
    `any_sms`) still refuse. *(an entry the owner asked to be listed by default but cannot message is
@@ -83,7 +83,7 @@ default; the pager checks for a book sync periodically. Tasks: `build/bench-logs
     becomes a select over `GET /api/book` sendable non-external entries: `freeSolo={isFamilyAdmin}`, `groupBy`
     Family / People / Groups, `getOptionLabel={o => typeof o === 'string' ? o : o.label}`,
     `filterOptions={createFilterOptions({stringify: o => `${o.label} ${o.displayName} ${o.alias}`})}` 
-    with no phone option — SMS contacts are not chat targets (7 Oct 2026); `isOptionEqualToValue` by alias.
+    with no phone option — SMS contacts are not chat targets (7 Oct 2026). *(8 Oct 2026: New chat lists sendable externals (phone shown) only when the signed-in user has an `smsNumber`, as a separate group after People/Groups; see docs/RELAY_SMS_DESIGN.md decision 8.)*  `isOptionEqualToValue` by alias.
 
 ## Failure modes and recovery
 | failure | effect | recovery |

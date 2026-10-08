@@ -27,6 +27,7 @@ from __future__ import annotations
 from app.backends.webapp import FCMClient, NullFCMClient
 from app.backends.webapp import push_alert as _push_alert
 from app.store import alerts as alerts_store
+from app.store import held_sms as held_sms_store
 from app.store import users as users_store
 from app.store.contacts import ContactRequest
 from app.store.users import User
@@ -140,6 +141,50 @@ def sms_unknown(family_id: str, phone: str, target_uid: str | None, body: str) -
         }
     )
     return create(family_id, alert)
+
+
+def sms_held_upsert(family_id: str, target: User, phone: str, body: str) -> str:
+    """docs/RELAY_SMS_DESIGN.md decision 5: one **open** `sms_unknown` alert
+    per `(family, target person, number)`. The first held text creates it
+    (`preview` = the text, `heldCount`), later ones update `preview` to the
+    newest text, `heldCount` and `updatedAt`; every text pushes FCM to the
+    family admins with body `"<phone> -> @alias: <text>"`. `heldCount` is
+    counted from the `heldSms` rows (status `held`) -- the caller has already
+    written this text's row -- so a crash between row and alert is repaired
+    by the next text. Returns the alert id."""
+    count = held_sms_store.count_held(family_id, phone, target.uid)
+    preview = body[:PREVIEW_MAX_CHARS]
+    push_body = f"{phone} \u2192 @{target.alias}: {body}"
+    existing = alerts_store.find_open(family_id, "sms_unknown", target.uid, phone)
+    if existing is not None:
+        alerts_store.update_fields(
+            family_id, existing.id, {"preview": preview, "heldCount": count}
+        )
+        alert_id = existing.id
+        pushed = {**existing.model_dump(), "preview": preview}
+        _push_alert(
+            family_id, {**pushed, "id": alert_id, "pushBody": push_body}, fcm_client=_fcm_client
+        )
+        return alert_id
+    alert = _base_alert("sms_unknown")
+    alert.update(
+        {
+            "status": "open",
+            "subjectUid": target.uid,
+            "subjectAlias": target.alias,
+            "peerPhone": phone,
+            "preview": preview,
+            "heldBody": None,
+            "heldCount": count,
+            "updatedAt": None,
+            "pushBody": push_body,
+        }
+    )
+    # `pushBody` is push-only: stored alerts do not carry it.
+    stored = {k: v for k, v in alert.items() if k != "pushBody"}
+    alert_id = alerts_store.create(family_id, stored)
+    _push_alert(family_id, {**alert, "id": alert_id}, fcm_client=_fcm_client)
+    return alert_id
 
 
 def contact_request(request: ContactRequest) -> str | None:

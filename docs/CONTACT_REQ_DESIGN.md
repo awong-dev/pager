@@ -67,7 +67,7 @@ on pager. webapp: waiting / sent to app / shown in app / read in app. gchat: sen
 "expired"; fulfilled → "location received". Time suffix unchanged. *(7 Oct 2026: no sms deliveries exist.)*
 
 **5. A person's phone is a sign-in number, never an SMS route.** `users.phone` is the Firebase Auth
-`phone_number` `/login` uses. The relay has no SMS backend at all (7 Oct 2026). People
+`phone_number` `/login` uses. *(8 Oct 2026: the SMS number is a separate `users.smsNumber` per docs/RELAY_SMS_DESIGN.md decision 1, set/cleared by family admins or super.)*  People
 (`web/app/family/people`) and Users (`web/app/admin/users`) label it "Sign-in phone", helper
 "For signing in only. To text a number from a pager, add it under Contacts." (link);
 `POST /api/family/members` and `POST /api/admin/users` normalise it (`normalize_phone`, 400 on
@@ -81,7 +81,7 @@ appears only on the web: the super switcher (`AppShell`) and the admin Users/Dev
 header on `/family/people` re-fetches `GET /api/family` after saving. Nothing else holds the name:
 there is no book bump, no `cfg`, nothing in `/status`, and no pager impact.
 
-**7. Names are unique per family (7 Oct 2026).** There is no reverse index and no backend row. **Names are unique per family**, keyed by the pager's truncated, case-folded name and reserved in `contactNames` with `create()`. The pager matches SMS peers by name (`sms_find_by_name`), so two "Grandma"s would be ambiguous. POST/PATCH contacts → 409, and re-adding the same number returns the existing contact under its old name.
+**7. Names are unique per family (7 Oct 2026).** There is no reverse index and no backend row. *(8 Oct 2026: externals now carry an `sms` backend row (`kind:"sms", enabled:true, verifiedAt: now, config:{phone}`) for delivery to relay members; see docs/RELAY_SMS_DESIGN.md decision 3.)*  **Names are unique per family**, keyed by the pager's truncated, case-folded name and reserved in `contactNames` with `create()`. The pager matches SMS peers by name (`sms_find_by_name`), so two "Grandma"s would be ambiguous. POST/PATCH contacts → 409, and re-adding the same number returns the existing contact under its old name.
 - **`devices.smsContacts`** = `book.sms_contacts_for(owner)[:8]`: the family's contacts the owner has a `message` edge to, plus — when `policy.rule(owner.policy.out, "external") == "any"` (`open`, `any_sms`) — every other family contact, minus explicit `message:false` denies; sorted by name. `rederive_family_sms_contacts` runs on contact create/rename/delete, `/approved` PUT, contact-request and `sms_unknown` approval. `rederive_sms_contacts(owner)` runs on that owner's policy change, family change and device creation, and on admin allow-list replace. The approved list picks existing contacts by uid (`PUT …/approved {contacts:[{uid,message}]}`); it never creates or renames one. Contacts page = externals with `ownerFamilyId == fid`, showing explicit (`approvedFor`) and implied (`impliedFor`) holders, with Add / Rename / Delete.
 - **Callers changed:** `routers/family.py` (put_approved, create/patch contact, sms_unknown approve),
   `routers/conversations.py` (start by number → sender's family), `alerts.py`

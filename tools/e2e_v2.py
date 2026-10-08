@@ -1346,19 +1346,20 @@ def scenario_address_book() -> None:
     )
     print("address_book: device's book ack ('shown') landed at the relay")
 
-    # The relay never texts a contact: an `up` to its alias takes the §4.2
-    # case-3 path (one `unknown recipient` system reply, nothing stored).
+    # The student has no relay SMS number (docs/RELAY_SMS_DESIGN.md decision
+    # 2): an `up` to the contact's alias takes the §4.2 case-3 path with the
+    # `sms not set up` system reply, nothing stored.
     device.inbox.clear()
     device.publish_msg("hi grandma", to=contact_alias)
     wait_until(
         lambda: any(e.data.get("from") == "system" for e in device.inbox),
         timeout=10,
-        description="a system 'unknown recipient' reply for the SMS contact's alias",
+        description="a system 'sms not set up' reply for the SMS contact's alias",
     )
     system_reply = next(e.data for e in device.inbox if e.data.get("from") == "system")
-    assert system_reply["body"] == "unknown recipient", system_reply
+    assert system_reply["body"] == "sms not set up; ask your admin", system_reply
     assert oracle.thread("abstudent", contact_alias) == [], "no relay message to an SMS contact"
-    print("address_book: message to the SMS contact -> 'unknown recipient', no thread written")
+    print("address_book: message to the SMS contact -> 'sms not set up', no thread written")
 
     admin.admin_push_cfg("pgr-e2e-book", auto=2)
     wait_until(
@@ -1448,6 +1449,119 @@ def scenario_sms_log() -> None:
     device.disconnect()
 
 
+TWILIO_MOCK_URL = "http://localhost:8010"
+# Dev-only values pinned in relay/docker-compose.yml's `relay` service.
+E2E_TWILIO_AUTH_TOKEN = "e2e-dev-twilio-token"
+E2E_PUBLIC_BASE_URL = "http://localhost:8000"
+
+
+def _twilio_inbound(to: str, from_: str, body: str, sid: str) -> httpx.Response:
+    """A signed `POST /webhooks/twilio/sms`, as Twilio would send it."""
+    _use_relay_store()
+    from app.backends.sms_twilio import compute_twilio_signature
+
+    params = {"To": to, "From": from_, "Body": body, "MessageSid": sid, "NumMedia": "0"}
+    sig = compute_twilio_signature(
+        f"{E2E_PUBLIC_BASE_URL}/webhooks/twilio/sms", params, E2E_TWILIO_AUTH_TOKEN
+    )
+    return httpx.post(
+        f"{RELAY_URL}/webhooks/twilio/sms",
+        data=params,
+        headers={"X-Twilio-Signature": sig},
+        timeout=10,
+    )
+
+
+def scenario_relay_sms() -> None:
+    """docs/RELAY_SMS_DESIGN.md: admin gives a member a relay SMS number and
+    approves a contact for them -> an inbound text from that known, approved
+    contact reaches the pager as `/down` text -> an inbound text from an
+    unknown number is held (open `sms_unknown` alert, nothing on the pager),
+    and approving the alert delivers it -> a pager `/up to:<contact alias>`
+    reaches the Twilio mock with `From` = the member's number. Runnable as
+    `tools/e2e_v2.py relay_sms`."""
+    bootstrap_admin()
+    oracle = Oracle()
+    admin = pager_client.ServerClient(RELAY_URL, AUTH_URL)
+    admin.login("admin")
+    family_id = admin.me()["user"]["familyId"] or "default"
+    kid = admin.admin_user_add("smskid", "SMSKid", email="smskid@example.com", phone=None)
+    create_device_with_secret(admin, "pgr-e2e-rsms", "smskid")
+    device = make_device("pgr-e2e-rsms")
+    device.connect()
+    wait_until(lambda: device.connected, timeout=10, description="relay_sms device to connect")
+    httpx.post(f"{TWILIO_MOCK_URL}/_reset", timeout=5)
+
+    kid_number = "+15550004444"
+    mom_number = "+15550005555"
+    stranger_number = "+15550006666"
+    resp = admin._http.patch(
+        f"{admin.api_url}/api/admin/users/{kid['uid']}",
+        json={"smsNumber": kid_number},
+        headers=admin._headers(),
+    )
+    assert resp.status_code == 200 and resp.json()["smsNumber"] == kid_number, resp.text
+    # The kid's policy must let numbers in and out.
+    resp = admin._http.patch(
+        f"{admin.api_url}/api/family/members/{kid['uid']}?family={family_id}",
+        json={"policy": {"out": "people_sms", "in": "people_sms"}},
+        headers=admin._headers(),
+    )
+    assert resp.status_code == 200, resp.text
+    mom = admin.family_create_contact(family_id, mom_number, "RelayMom")
+    admin.family_put_approved(family_id, kid["uid"], contacts=[{"uid": mom["uid"]}])
+    print("relay_sms: member has a number and approved contact RelayMom")
+
+    # Known + approved contact -> delivered to the pager.
+    device.inbox.clear()
+    r = _twilio_inbound(kid_number, mom_number, "hi from mom", "SM" + "a" * 32)
+    assert r.status_code == 200, r.text
+    wait_until(
+        lambda: any(e.data.get("body") == "hi from mom" for e in device.inbox),
+        timeout=10,
+        description="RelayMom's text to reach the pager",
+    )
+    print("relay_sms: inbound from RelayMom -> pager received it")
+
+    # Unknown number -> held, nothing on the pager; approve delivers.
+    device.inbox.clear()
+    r = _twilio_inbound(kid_number, stranger_number, "who dis", "SM" + "b" * 32)
+    assert r.status_code == 200, r.text
+    wait_until(
+        lambda: any(
+            a["kind"] == "sms_unknown" and a.get("peerPhone") == stranger_number
+            for a in admin.family_list_alerts(family_id)
+        ),
+        timeout=10,
+        description="a held sms_unknown alert",
+    )
+    assert not any(e.data.get("body") == "who dis" for e in device.inbox), "held text leaked"
+    alert = next(
+        a for a in admin.family_list_alerts(family_id) if a.get("peerPhone") == stranger_number
+    )
+    decision = admin.family_approve_alert(family_id, alert["id"], name="Neighbor")
+    assert decision["delivered"] == 1 and decision["undelivered"] == 0, decision
+    wait_until(
+        lambda: any(e.data.get("body") == "who dis" for e in device.inbox),
+        timeout=10,
+        description="the held text to reach the pager after approve",
+    )
+    print("relay_sms: unknown number held, approve delivered it")
+
+    # Pager -> contact: the mock sees From = the member's number.
+    contact_alias = oracle.users_store.get_user(mom["uid"]).alias
+    device.publish_msg("on my way", to=contact_alias)
+    wait_until(
+        lambda: any(m["body"] == "on my way" for m in httpx.get(f"{TWILIO_MOCK_URL}/_sent").json()),
+        timeout=10,
+        description="the Twilio mock to record the outbound text",
+    )
+    sent = next(m for m in httpx.get(f"{TWILIO_MOCK_URL}/_sent").json() if m["body"] == "on my way")
+    assert sent["from"] == kid_number and sent["to"] == mom_number, sent
+    print("relay_sms: pager -> RelayMom went out From the member's number")
+    device.disconnect()
+
+
 SCENARIOS: dict[str, Callable[[], None]] = {
     "bootstrap": scenario_bootstrap,
     "text_roundtrip": scenario_text_roundtrip,
@@ -1460,6 +1574,7 @@ SCENARIOS: dict[str, Callable[[], None]] = {
     "address_book": scenario_address_book,
     "setup_code": scenario_setup_code,
     "sms_log": scenario_sms_log,
+    "relay_sms": scenario_relay_sms,
 }
 
 

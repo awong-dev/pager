@@ -41,6 +41,8 @@ export interface UserDoc {
   kind: UserKind;
   policy: PolicyDoc;
   notify: { alerts: boolean };
+  // docs/RELAY_SMS_DESIGN.md decision 1: the user's Twilio number (E.164).
+  smsNumber?: string | null;
 }
 
 // ---- families/{fid} -- app/store/families.py ----
@@ -70,6 +72,9 @@ export interface AlertDoc {
   peerPhone: string | null;
   preview: string;
   heldBody?: string | null;
+  // docs/RELAY_SMS_DESIGN.md decision 5: texts held for an unknown number.
+  heldCount?: number;
+  updatedAt?: Timestamp | null;
   convKey: string | null;
   contactRequestKey: string | null;
   decidedAt: Timestamp | null;
@@ -77,7 +82,7 @@ export interface AlertDoc {
 }
 
 // ---- users/{uid}/backends/{bid} -- app/store/backends.py ----
-export type BackendKind = "pager" | "webapp" | "gchat";
+export type BackendKind = "pager" | "webapp" | "gchat" | "sms";
 
 export interface BackendDoc {
   kind: BackendKind;

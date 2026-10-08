@@ -44,6 +44,10 @@ class Alert(BaseModel):
     contactRequestKey: str | None = None
     decidedAt: datetime | None = None
     decidedBy: str | None = None
+    # docs/RELAY_SMS_DESIGN.md decision 5: a held `sms_unknown` counts the
+    # texts waiting; `updatedAt` moves with each new one.
+    heldCount: int = 0
+    updatedAt: datetime | None = None
 
 
 def _alerts(family_id: str):
@@ -67,6 +71,29 @@ def create(family_id: str, alert: dict) -> str:
     ref = _alerts(family_id).document()
     ref.set({**alert, "ts": SERVER_TIMESTAMP})
     return ref.id
+
+
+def find_open(
+    family_id: str, kind: AlertKind, subject_uid: str | None, peer_phone: str | None
+) -> Alert | None:
+    """The open alert of `kind` for `(subject_uid, peer_phone)`, or `None`
+    (the newest if, through a race, there are several)."""
+    query = _alerts(family_id).where(filter=FieldFilter("status", "==", "open"))
+    found = [
+        Alert.model_validate({"id": snap.id, **(snap.to_dict() or {})}) for snap in query.stream()
+    ]
+    found = [
+        a
+        for a in found
+        if a.kind == kind and a.subjectUid == subject_uid and a.peerPhone == peer_phone
+    ]
+    found.sort(key=lambda a: a.ts or datetime.min.replace(tzinfo=UTC), reverse=True)
+    return found[0] if found else None
+
+
+def update_fields(family_id: str, alert_id: str, fields: dict) -> None:
+    """Merges `fields` plus a server `updatedAt` into an existing alert."""
+    _alerts(family_id).document(alert_id).update({**fields, "updatedAt": SERVER_TIMESTAMP})
 
 
 def get(family_id: str, alert_id: str) -> Alert | None:

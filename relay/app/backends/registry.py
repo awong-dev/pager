@@ -6,6 +6,7 @@ from __future__ import annotations
 from app.backends.base import Backend
 from app.backends.gchat import ChatClient, GChatBackend
 from app.backends.pager import PagerBackend
+from app.backends.sms_twilio import SmsTwilioBackend
 from app.backends.webapp import FCMClient, WebappBackend
 from app.broker import BrokerClient
 
@@ -24,4 +25,6 @@ def build_registry(
         # same "inject the real client explicitly" pattern `fcm_client`
         # already established.
         "gchat": GChatBackend(chat_client),
+        # docs/RELAY_SMS_DESIGN.md decision 3: the row lives on an external.
+        "sms": SmsTwilioBackend(),
     }

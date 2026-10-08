@@ -497,8 +497,16 @@ def test_external_entry_comes_from_sms_contacts_for_and_is_sendable_with_phone(
     assert [e.uid for e in externals] == [bob.uid]
     (entry,) = externals
     assert entry.phone == "+12065550001"
-    assert entry.sendable is True and entry.reason is None and entry.inFamily is False
-    assert entry.onPager is True
+    # No relay number for `kid`: the contact is the modem's, not sendable by the relay.
+    assert entry.sendable is False and entry.reason == "no_sms_number"
+    assert entry.inFamily is False and entry.onPager is True
+    assert [e.sendable for e in book_module.entries_for("kid") if e.kind == "external"] == [False]
+
+    # With a relay number (policy people_sms + the edge) the same contact is sendable.
+    _set_policy("kid", "people_sms", "people")
+    users_store.set_sms_number("kid", "+12065550999")
+    (entry,) = [e for e in book_module.entries_for("kid") if e.kind == "external"]
+    assert entry.sendable is True and entry.reason is None and entry.onPager is True
 
     body = client.get("/api/book", headers=h).json()
     assert _aliases(body)[bob.alias]["phone"] == "+12065550001"
@@ -518,10 +526,15 @@ def test_open_member_book_lists_family_contacts_sendable_with_phone_and_on_pager
     body = client.get("/api/book", headers=h).json()
     externals = sorted((e for e in body["entries"] if e["kind"] == "external"), key=lambda e: e["label"])
     assert [e["label"] for e in externals] == [f"c{i}" for i in range(10)]
-    assert all(e["sendable"] and e["phone"] and e["reason"] is None for e in externals)
+    assert all(e["phone"] and not e["sendable"] and e["reason"] == "no_sms_number" for e in externals)
     assert [e["onPager"] for e in externals] == [True] * 8 + [False] * 2
-    # And none of them is in the pager's `c[]`.
+    # And none of them is in the pager's `c[]` (no relay number: they are `cfg.sms`).
     assert devcfg.build_book_body("pgr-open")["c"] == []
+
+    # With a relay number every contact is in `c[]` as t:"sms".
+    users_store.set_sms_number("kid", "+12065550999")
+    c = devcfg.build_book_body("pgr-open")["c"]
+    assert len(c) == 10 and {x["t"] for x in c} == {"sms"}
 
 
 # j ---------------------------------------------------------------------------

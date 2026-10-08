@@ -376,7 +376,7 @@ touching the device at all.
 
 ### 4.7 Budget lines
 PROTOCOL.md §7.2/§7.3 carry a `/loc` line, and §11 of this document tracks the GNSS power cost. The relay has no SMS backend (removed 7 Oct
-2026); the modem's own allow-listed SMS is budgeted in PROTOCOL.md §7.3.
+2026); *(8 Oct 2026: restored for relay members with a per-user SMS number, §6.4)* the modem's own allow-listed SMS is budgeted in PROTOCOL.md §7.3.
 
 ### 4.8 The relay is not an MQTT client
 The relay's *role* is what PROTOCOL.md describes, but its *transport* is the broker's rule engine
@@ -660,10 +660,7 @@ sender alias, body preview). Delivery goes `read` when the browser reports the t
 implicit `webapp` backend at creation.
 
 ### 6.4 `sms` — SMS contacts
-*Removed 7 Oct 2026 (owner decision): the relay neither sends nor receives SMS. The only SMS path
-is the pager's own modem to its `cfg.sms` list (V02_DESIGN.md §6, PROTOCOL.md §3.6). An SMS
-contact is never a relay recipient: a DM to one is refused with reason `sms_contact`, and a pager
-gets §4.2 case 3's `unknown recipient`.*
+Outbound and inbound SMS via Twilio, per user: each family member may be assigned a relay SMS number (`users.smsNumber`) to send and receive SMS through the relay. Held inbound SMS from unknown numbers trigger `sms_unknown` alerts to family admins, who can approve and deliver the backlog or block the sender. See docs/RELAY_SMS_DESIGN.md. *(7 Oct 2026 history: the relay neither sent nor received SMS; the only SMS path was the pager's own modem to its `cfg.sms` list (V02_DESIGN.md §6, PROTOCOL.md §3.6).)*
 
 ### 6.5 `gchat` — Google Chat app
 Outbound: `spaces.messages.create` with the relay's service account (Chat API enabled by
@@ -871,7 +868,7 @@ relay/firestore.rules, relay/firestore.indexes.json, web/firebase.json   deploye
 - `google_firestore_database` (native, `nam5` or the region nearest the family),
   `google_firebase_web_app` + config output, `google_identity_platform_config` with email
   (passwordless) and phone providers, `google_firebase_hosting_site` + custom domain.
-- Secrets: `BROKER_API_KEY`, `BROKER_API_SECRET`, `WEBHOOK_KEY`, `TWILIO_*`, `GCHAT_*`. The
+- Secrets: `BROKER_API_KEY`, `BROKER_API_SECRET`, `WEBHOOK_KEY`, `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `GCHAT_*`. The
   Firestore/FCM credential is the Cloud Run service account itself (ADC) — no key file.
   Terraform creates the *containers*; values are added with `gcloud secrets versions add`.
 - CI: GitHub Actions builds the image, pushes to Artifact Registry (prune to the last 3 tags —
@@ -948,7 +945,7 @@ exists to avoid).
 | Firebase Auth (email link free; phone within the no-cost allowance), FCM, Hosting | $0 |
 | Artifact Registry (pruned), Secret Manager (≤ 6 active versions free), logging | $0 – $1 |
 | EMQX Cloud Serverless: 1 device × 43 200 session-min/month + ≈ 7 MB traffic vs 1M min / 1 GB free | **$0** |
-| Twilio number + SMS backend (only if enabled) | ~$1 + usage |
+| Twilio number + SMS backend (only if enabled) | ~$1.15/number/month + ~1.2 ¢/segment all-in |
 | **Total** | **≈ $0 – $2, plus Twilio if used** |
 
 Versus the two earlier drafts: Cloud SQL (≈ $25–40) → RTDB + always-on Cloud Run (≈ $12–25) →
@@ -1008,7 +1005,7 @@ three marked **OPEN** need a real account before they can be confirmed.
 |---|---|---|
 | D1 | Cloud Run always-on vs. a VM | Scale-to-zero Cloud Run, ≈ $0. The VM reappears only as the broker fallback in §9.5. |
 | D2 | Broker: EMQX Cloud Serverless vs. the open-source options in §9.5 | EMQX Cloud Serverless. **OPEN** — the free tier's rule-engine HTTP action, REST publish and ≥15 s webhook timeout are assumed but unverified against a real account (§9.4). §9.5 (a) is the documented fallback if any of the three does not hold. |
-| D3 | SMS provider, and US A2P 10DLC / toll-free registration (manual, days, a small fee) | Twilio. **OPEN** — the number rental and 10DLC registration are real-world chores nobody has done; until then `TWILIO_*` stays unset and sms deliveries stay `queued`. |
+| D3 | SMS provider, and US A2P 10DLC / toll-free registration (manual, days, a small fee) | Twilio, low-volume standard 10DLC campaign with an EIN (8 Oct 2026: registered). Numbers are bought and attached to the campaign in the Twilio console by hand; see relay/README.md "Twilio". |
 | D4 | Are the deployment's Google accounts on Workspace? Chat apps are unavailable on consumer Gmail. | **OPEN** — unverified against a real Workspace console. The adapter is built on the documented contract regardless; Email (§6.6) is the fallback slot if the restriction holds. |
 | D5 | Sign-in methods: email link, phone, or both | Both enabled; the login page accepts either. Phone needs reCAPTCHA and has a small per-SMS cost past the no-cost allowance. |
 | D6 | Custom domain for the web app | None assumed. The `*.web.app` URL works for everything, including the broker/Chat/Twilio webhook URLs. |

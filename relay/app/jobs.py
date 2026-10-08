@@ -7,6 +7,9 @@ docs/SERVER_PLAN.md §5.7, §5.8.
    2xx) -- at most 10 per device, oldest first, the same cap/ordering as the
    online-edge republish (both come from `messages_store.
    list_pending_for_device`).
+1b. Retry `sms` deliveries still `queued` (Twilio 5xx / transport error):
+   `messages_store.list_recent_queued_by_kind` + `Routing.redeliver`,
+   bounded by `record_delivery_attempt` (docs/RELAY_SMS_DESIGN.md decision 3).
 2. Clear `locReqs/{d}` documents older than `app.location.loc_req_ttl_s()`
    (PROTOCOL.md §13.4) -- `app.location.clear_stale_loc_reqs`.
 
@@ -133,11 +136,22 @@ from app.tasks import TaskQueue, build_task_queue
 
 logger = logging.getLogger("relay.jobs")
 
+# Non-pager backend kinds whose `queued` deliveries tick retries (today just
+# `sms`: docs/RELAY_SMS_DESIGN.md decision 3). `record_delivery_attempt`'s
+# MAX_DELIVERY_ATTEMPTS ends the retries.
+NON_PAGER_RETRY_KINDS: tuple[str, ...] = ("sms",)
+NON_PAGER_RETRY_SCAN_LIMIT = 50
+# Caps how many non-pager retries one tick dispatches (not scans): a tick with
+# Twilio down must not approach Cloud Run's request timeout.
+NON_PAGER_RETRY_DISPATCH_LIMIT = 10
+
+
 @dataclass(frozen=True, slots=True)
 class TickResult:
     devicesChecked: int
     retriesAttempted: int
     locReqsCleared: int = 0
+    nonPagerRetriesAttempted: int = 0
 
 
 def tick(routing: Routing, *, task_queue: TaskQueue | None = None) -> TickResult:
@@ -167,12 +181,31 @@ def tick(routing: Routing, *, task_queue: TaskQueue | None = None) -> TickResult
                 name=f"pager-retry:{msg.id}:{device.id}",
             )
 
+    non_pager_retries_attempted = 0
+    for kind in NON_PAGER_RETRY_KINDS:
+        if non_pager_retries_attempted >= NON_PAGER_RETRY_DISPATCH_LIMIT:
+            break
+        for msg in messages_store.list_recent_queued_by_kind(kind, limit=NON_PAGER_RETRY_SCAN_LIMIT):
+            if non_pager_retries_attempted >= NON_PAGER_RETRY_DISPATCH_LIMIT:
+                break
+            for bid, delivery in msg.deliveries.items():
+                if delivery.kind != kind or delivery.state != "queued":
+                    continue
+                if non_pager_retries_attempted >= NON_PAGER_RETRY_DISPATCH_LIMIT:
+                    break
+                non_pager_retries_attempted += 1
+                task_queue.enqueue(
+                    lambda msg=msg, bid=bid: routing.redeliver(msg, bid),
+                    name=f"{kind}-retry:{msg.id}:{bid}",
+                )
+
     loc_reqs_cleared = location.clear_stale_loc_reqs()
 
     return TickResult(
         devicesChecked=devices_checked,
         retriesAttempted=retries_attempted,
         locReqsCleared=loc_reqs_cleared,
+        nonPagerRetriesAttempted=non_pager_retries_attempted,
     )
 
 
@@ -402,6 +435,7 @@ class SweepResult:
     gchatLinkCodesDeleted: int = 0
     alertsDeleted: int = 0
     batteryDeleted: int = 0
+    heldSmsDeleted: int = 0
 
 
 def sweep() -> SweepResult:
@@ -478,11 +512,17 @@ def sweep() -> SweepResult:
         batch_size,
     )
 
+    # docs/RELAY_SMS_DESIGN.md decision 6: held inbound texts live for the
+    # message retention window (by `receivedAt`).
+    held_sms_deleted = _sweep_by_created_at(
+        lambda: db.collection("heldSms"), msg_cutoff, batch_size, created_at_field="receivedAt"
+    )
+
     settings_store.mark_swept()
 
     logger.info(
         "sweep complete: messages=%d wireIds=%d locations=%d locWireIds=%d locReqs=%d "
-        "orphanedWireIds=%d conversations=%d gchatLinkCodes=%d alerts=%d battery=%d",
+        "orphanedWireIds=%d conversations=%d gchatLinkCodes=%d alerts=%d battery=%d heldSms=%d",
         messages_deleted,
         wire_ids_deleted,
         locations_deleted,
@@ -493,6 +533,7 @@ def sweep() -> SweepResult:
         gchat_link_codes_deleted,
         alerts_deleted,
         battery_deleted,
+        held_sms_deleted,
     )
     return SweepResult(
         messagesDeleted=messages_deleted,
@@ -505,4 +546,5 @@ def sweep() -> SweepResult:
         gchatLinkCodesDeleted=gchat_link_codes_deleted,
         alertsDeleted=alerts_deleted,
         batteryDeleted=battery_deleted,
+        heldSmsDeleted=held_sms_deleted,
     )

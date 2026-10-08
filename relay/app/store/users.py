@@ -88,6 +88,27 @@ class User(BaseModel):
     notify: Notify = Field(default_factory=Notify)
     disabled: bool = False
     createdAt: datetime | None = None
+    # docs/RELAY_SMS_DESIGN.md decision 1: the Twilio number (E.164) that
+    # belongs to this person; `smsNumbers/{e164}` is its reverse index.
+    smsNumber: str | None = None
+
+
+class _Unset:
+    """Sentinel type: "leave the field alone" (as opposed to `None`)."""
+
+    def __repr__(self) -> str:
+        return "UNSET"
+
+
+UNSET = _Unset()
+
+
+class SmsNumberTaken(Exception):
+    """`smsNumbers/{e164}` is held by another uid (`holder_uid`)."""
+
+    def __init__(self, holder_uid: str) -> None:
+        super().__init__(f"sms number already assigned to {holder_uid!r}")
+        self.holder_uid = holder_uid
 
 
 class AliasTaken(Exception):
@@ -173,7 +194,10 @@ def create_user(
     # doc failing to write must not roll back a user that's otherwise fine
     # -- app/routers/me.py's backend listing is written to tolerate its
     # absence too).
-    backends_store.create_backend(uid, kind="webapp", config={}, enabled=True)
+    # An external (SMS contact) has no web client: its only backend is the
+    # `sms` row `externals.get_or_create` adds.
+    if kind == "person":
+        backends_store.create_backend(uid, kind="webapp", config={}, enabled=True)
 
     fetched = get_user(uid)
     assert fetched is not None
@@ -218,6 +242,7 @@ def update_user(
     role: Role | None = None,
     disabled: bool | None = None,
     notify_alerts: bool | None = None,
+    sms_number: str | None | _Unset = UNSET,
 ) -> User:
     """Patch-semantics update of mutable fields. `alias` is intentionally
     not editable here -- changing it would orphan the old `aliases/{alias}`
@@ -247,9 +272,62 @@ def update_user(
             ref.update(updates)
         except NotFound as exc:
             raise KeyError(f"no such user: {uid!r}") from exc
+    if not isinstance(sms_number, _Unset):
+        set_sms_number(uid, sms_number)
     fetched = get_user(uid)
     if fetched is None:
         raise KeyError(f"no such user: {uid!r}")
+    return fetched
+
+
+def _sms_numbers():
+    return get_db().collection("smsNumbers")
+
+
+def get_uid_for_sms_number(e164: str) -> str | None:
+    """The uid `smsNumbers/{e164}` names, or `None`."""
+    snap = _sms_numbers().document(e164).get()
+    if not snap.exists:
+        return None
+    return (snap.to_dict() or {}).get("uid")
+
+
+def _free_sms_index(e164: str, uid: str) -> None:
+    ref = _sms_numbers().document(e164)
+    snap = ref.get()
+    if snap.exists and (snap.to_dict() or {}).get("uid") == uid:
+        ref.delete()
+
+
+def set_sms_number(uid: str, e164: str | None) -> User:
+    """Assigns (or, with `None`, clears) `users/{uid}.smsNumber`. The index
+    doc is reserved with `create()` *before* the user write; a number held by
+    another uid raises `SmsNumberTaken(holder_uid)` (an index naming a user
+    who no longer carries that number is a crash leftover and is taken
+    over). The old number's index is freed only if it names this uid.
+    Raises `KeyError` for no such user."""
+    user = get_user(uid)
+    if user is None:
+        raise KeyError(f"no such user: {uid!r}")
+    old = user.smsNumber
+    # Known race, accepted at family volume: two admins assigning the same
+    # number in the same second can both pass the reservation below.
+    if e164 is not None:
+        ref = _sms_numbers().document(e164)
+        try:
+            ref.create({"uid": uid})
+        except AlreadyExists:
+            holder = (ref.get().to_dict() or {}).get("uid")
+            if holder != uid:
+                holder_user = get_user(holder) if holder else None
+                if holder_user is not None and holder_user.smsNumber == e164:
+                    raise SmsNumberTaken(holder) from None
+                ref.set({"uid": uid})
+    get_db().collection("users").document(uid).update({"smsNumber": e164})
+    if old is not None and old != e164:
+        _free_sms_index(old, uid)
+    fetched = get_user(uid)
+    assert fetched is not None
     return fetched
 
 
@@ -269,5 +347,7 @@ def delete_user(uid: str) -> None:
             transaction.delete(user_ref)
 
         run_transaction(_txn)
+        if user.smsNumber:
+            _free_sms_index(user.smsNumber, uid)
     else:
         user_ref.delete()

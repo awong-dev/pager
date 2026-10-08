@@ -107,6 +107,12 @@ module "relay_service" {
   broker_api_secret_secret_id = module.secrets.secret_ids.broker_api_secret
   webhook_key_secret_id       = module.secrets.secret_ids.webhook_key
 
+  # docs/RELAY_SMS_DESIGN.md decision 9. Gated like cell geo: Cloud Run refuses
+  # a revision referencing a secret with no versions.
+  twilio_account_sid_secret_id = var.enable_sms_secrets ? module.secrets.secret_ids.twilio_account_sid : null
+  twilio_auth_token_secret_id  = var.enable_sms_secrets ? module.secrets.secret_ids.twilio_auth_token : null
+  twilio_base_url              = var.twilio_base_url
+
   cell_geo_provider          = var.cell_geo_provider
   cell_geo_api_key_secret_id = var.enable_cell_geo_secret ? module.secrets.secret_ids.cell_geo_api_key : null
 

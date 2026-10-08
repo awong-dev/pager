@@ -619,6 +619,25 @@ def test_contact_names_is_default_deny(two_pairs):
     assert resp_write.status_code == 403
 
 
+def test_sms_numbers_and_held_sms_are_default_deny(two_pairs):
+    """`smsNumbers/{e164}` (the number -> uid reverse index) and
+    `heldSms/{sid}` (inbound texts awaiting a parent's decision,
+    docs/RELAY_SMS_DESIGN.md) are relay-only: no client, not even the
+    number's owner or a family member, may read or write either."""
+    from app.store import held_sms as held_sms_store
+    from app.store import users as users_store
+
+    users_store.set_sms_number("u1", "+15550007777")
+    held_sms_store.create(
+        "SMrules1", family_id="fam-rules", to_uid="u1", from_phone="+15550008888", body="secret"
+    )
+    owner_token = mint_id_token("u1")
+    for path in ("smsNumbers/+15550007777", "heldSms/SMrules1"):
+        assert _get(path, owner_token).status_code == 403
+        assert _get(path, None).status_code == 403
+        assert _write(path, owner_token, {"uid": "hacked"}).status_code == 403
+
+
 def test_device_secrets_is_default_deny(two_pairs):
     """`deviceSecrets/{d}` (docs/DEVICE_PLAN.md §2.6) holds the device's HMAC
     key and MQTT password hash -- unreadable by the device's own owner (whose

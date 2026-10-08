@@ -294,5 +294,12 @@ incognito window) to act as two different people at once where noted.
     malformed audit upload (bad `sms_log` payload from the pager) shows a red "malformed" chip, its reason in italics,
     "—" for unknown fields, and a "raw" toggle revealing the hex. A chat with an SMS contact interleaves the pager's modem texts for that number as bubbles (out = right, in = left,
     "modem" chip, status, malformed rows with reason/raw); Refresh or window focus reloads them.
+26. **Relay SMS** (docs/RELAY_SMS_DESIGN.md, 8 Oct 2026; the relay now has an `sms` backend, one Twilio number per
+    user): People -> member drawer -> "SMS number" saves on blur/Enter, empty clears, a 400/409 `detail` shows inline;
+    Admin -> Users has the same per member (column "SMS number"). A held `sms_unknown` card reads "to @kid · +1 ...",
+    the newest text, "N messages waiting" (expander lists each text; status chip only when not `held`); Approve
+    (name) shows "Delivered N" and a 409 keeps the dialog open. Delivery chips: "waiting to send SMS" / "sent by SMS" /
+    "SMS failed". New chat lists sendable SMS contacts only for a user with an SMS number; the address book shows
+    "needs an SMS number" for unsendable ones.
 
 `npm run build && npx tsc --noEmit && npm run lint` should all be clean.

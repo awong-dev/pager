@@ -20,6 +20,7 @@
  */
 
 import { useState } from "react";
+import Collapse from "@mui/material/Collapse";
 import Link from "next/link";
 import Alert from "@mui/material/Alert";
 import Button from "@mui/material/Button";
@@ -42,6 +43,26 @@ import { formatPhoneDigits } from "@/components/NewChatDialog";
 import { ApiError, api } from "@/lib/api";
 import { familyQuery } from "@/lib/family-context";
 import type { AlertDoc } from "@/lib/types";
+
+/** One row of `GET /api/family/alerts/{id}/held` (docs/RELAY_SMS_DESIGN.md decision 5). */
+interface HeldText {
+  id: string;
+  body: string;
+  // Assumed epoch seconds, epoch ms or an ISO string; `formatReceived` takes any.
+  receivedAt: number | string | null;
+  status: "held" | "delivered" | "too_long" | "blocked" | "dismissed";
+}
+
+interface ApproveResult {
+  delivered?: number;
+  undelivered?: number;
+}
+
+function formatReceived(v: HeldText["receivedAt"]): string {
+  if (v === null || v === undefined) return "";
+  const ms = typeof v === "number" ? (v < 1e12 ? v * 1000 : v) : Date.parse(v);
+  return Number.isNaN(ms) ? "" : new Date(ms).toLocaleString();
+}
 
 export interface AlertRow extends AlertDoc {
   id: string;
@@ -93,13 +114,36 @@ export default function AlertCard({ alert }: { alert: AlertRow }) {
   const [nameValue, setNameValue] = useState("");
   const [nameConflict, setNameConflict] = useState<string | null>(null);
 
+  // Held-text expander and approve outcome (relay-SMS `sms_unknown` only).
+  const [heldOpen, setHeldOpen] = useState(false);
+  const [heldList, setHeldList] = useState<HeldText[] | null>(null);
+  const [heldError, setHeldError] = useState<string | null>(null);
+  const [result, setResult] = useState<ApproveResult | null>(null);
+
+  const heldCount = alert.kind === "sms_unknown" ? (alert.heldCount ?? 0) : 0;
+  const hasHeld = heldCount > 0;
+
+  async function toggleHeld() {
+    const next = !heldOpen;
+    setHeldOpen(next);
+    if (!next) return;
+    setHeldError(null);
+    try {
+      const resp = await api.get<{ held: HeldText[] }>(`/family/alerts/${alert.id}/held${familyQuery()}`);
+      setHeldList(resp.held);
+    } catch (err) {
+      setHeldError(err instanceof ApiError ? String(err.detail ?? err.message) : "Failed to load messages");
+    }
+  }
+
   const handled = alert.status !== "open";
 
   async function post(action: "approve" | "block" | "dismiss", body: unknown) {
     setSubmitting(true);
     setError(null);
     try {
-      await api.post(`/family/alerts/${alert.id}/${action}${familyQuery()}`, body);
+      const resp = await api.post<ApproveResult | null>(`/family/alerts/${alert.id}/${action}${familyQuery()}`, body);
+      if (action === "approve" && alert.kind === "sms_unknown" && hasHeld) setResult(resp ?? {});
       setSmsOpen(false);
       setNameOpen(false);
       setNameConflict(null);
@@ -153,12 +197,58 @@ export default function AlertCard({ alert }: { alert: AlertRow }) {
         {alert.kind === "sms_unknown" && (
           <>
             <Typography variant="body1">
-              {alert.peerPhone ?? "Unknown number"} → @{alert.subjectAlias}
+              {hasHeld
+                ? `to @${alert.subjectAlias} · ${formatPhoneDigits((alert.peerPhone ?? "").replace(/^\+/, ""))}`
+                : `${alert.peerPhone ?? "Unknown number"} → @${alert.subjectAlias}`}
             </Typography>
             {alert.preview && (
               <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
                 &quot;{alert.preview}&quot;
               </Typography>
+            )}
+            {hasHeld && (
+              <>
+                <Button size="small" onClick={() => void toggleHeld()} sx={{ mt: 0.5, px: 0 }}>
+                  {heldCount} {heldCount === 1 ? "message" : "messages"} waiting {heldOpen ? "▴" : "▾"}
+                </Button>
+                <Collapse in={heldOpen} unmountOnExit>
+                  {heldError && <Alert severity="error">{heldError}</Alert>}
+                  {heldList === null && !heldError && (
+                    <Typography variant="caption" color="text.secondary">
+                      Loading…
+                    </Typography>
+                  )}
+                  <Stack spacing={1} sx={{ mt: 0.5 }}>
+                    {heldList?.map((h) => (
+                      <div key={h.id}>
+                        <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
+                          <Typography variant="caption" color="text.secondary">
+                            {formatReceived(h.receivedAt)}
+                          </Typography>
+                          {h.status !== "held" && (
+                            <Chip size="small" variant="outlined" label={h.status.replace("_", " ")} />
+                          )}
+                        </Stack>
+                        <Typography variant="body2" sx={{ whiteSpace: "pre-wrap" }}>
+                          {h.body}
+                        </Typography>
+                      </div>
+                    ))}
+                  </Stack>
+                </Collapse>
+              </>
+            )}
+            {hasHeld && !handled && (
+              <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.5 }}>
+                Block: no more texts from this number reach @{alert.subjectAlias}; the waiting messages are
+                discarded. Dismiss: the waiting messages are discarded.
+              </Typography>
+            )}
+            {result && (
+              <Alert severity={result.undelivered ? "warning" : "success"} sx={{ mt: 1 }}>
+                Delivered {result.delivered ?? 0}
+                {result.undelivered ? `; ${result.undelivered} could not be delivered` : ""}
+              </Alert>
             )}
           </>
         )}
@@ -276,7 +366,11 @@ export default function AlertCard({ alert }: { alert: AlertRow }) {
             onChange={(e) => setSmsName(e.target.value)}
             fullWidth
             sx={{ mt: 1 }}
-            helperText={`Adds it to @${alert.subjectAlias}'s pager SMS list.`}
+            helperText={
+              hasHeld
+                ? `@${alert.subjectAlias} can text this number from their pager, and the ${heldCount} waiting ${heldCount === 1 ? "message is" : "messages are"} delivered now.`
+                : `Adds it to @${alert.subjectAlias}'s pager SMS list.`
+            }
           />
         </DialogContent>
         <DialogActions>

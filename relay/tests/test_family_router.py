@@ -547,12 +547,12 @@ def test_externals_get_or_create_is_idempotent_by_phone():
     assert a.phone == "+15552223333"
     assert a.kind == "external"
     assert a.displayName == "Pizza Place"
-    # No sms backend and no phoneIndex doc: the relay never texts a contact.
+    # One `sms` backend (no web client) and no phoneIndex doc.
     kinds = [
         snap.to_dict()["kind"]
         for snap in get_db().collection("users").document(a.uid).collection("backends").stream()
     ]
-    assert kinds == ["webapp"]
+    assert kinds == ["sms"]
     assert list(get_db().collection("phoneIndex").stream()) == []
 
 
@@ -1219,7 +1219,7 @@ def test_two_families_keep_separate_contacts_for_one_number():
     db = get_db()
     for uid in (a.uid, b.uid):
         kinds = [s.to_dict()["kind"] for s in db.collection("users").document(uid).collection("backends").stream()]
-        assert "sms" not in kinds
+        assert kinds == ["sms"]
     assert list(db.collection("phoneIndex").stream()) == []
 
 
@@ -1242,7 +1242,7 @@ def test_approve_open_sms_unknown_alert_creates_the_contact_and_rederives(client
     assert [c.phone for c in devices_store.get_device("pgr-fam34").smsContacts] == ["+12065550100"]
 
 
-def test_start_chat_by_number_finds_the_familys_existing_contact_is_403_sms_contact(
+def test_start_chat_by_number_without_own_sms_number_is_403_no_sms_number(
     client: TestClient,
 ):
     family = _make_family("Start")
@@ -1259,8 +1259,8 @@ def test_start_chat_by_number_finds_the_familys_existing_contact_is_403_sms_cont
 
     resp = client.post("/api/conversations/+12065550100/messages", json={"body": "hi"}, headers=kid)
     assert resp.status_code == 403, resp.text
-    assert resp.json()["detail"]["reason"] == "sms_contact"
-    assert resp.json()["detail"]["message"] == "SMS contacts can only be texted from a pager."
+    assert resp.json()["detail"]["reason"] == "no_sms_number"
+    assert resp.json()["detail"]["message"] == "You have no SMS number; ask your family admin."
     assert list(get_db().collection("messages").stream()) == []
     assert list(get_db().collection("conversations").stream()) == []
 

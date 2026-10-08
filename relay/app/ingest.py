@@ -60,6 +60,10 @@ logger = logging.getLogger("relay.ingest")
 # PROTOCOL.md §4.2 case 3: the one exception to "never auto-reply on MQTT".
 UNKNOWN_RECIPIENT_BODY = "unknown recipient"
 
+# docs/RELAY_SMS_DESIGN.md decision 2: the sending member has no relay SMS
+# number (or the recipient SMS contact's person side has none).
+NO_SMS_NUMBER_BODY = "sms not set up; ask your admin"
+
 # S4.1: the one `system` down reply for a `contact_req` beyond the per-device
 # pending cap (docs/PROTOCOL.md §3.2, docs/DEVICE_TASKS.md S4.1's exact
 # wording).
@@ -757,7 +761,12 @@ class Ingest:
             # disallowed recipient -> exactly one `system` down reply, never
             # stored as a message (it is not part of any conversation), rate-
             # limited to one per offending up message.
-            self._send_system_reply(device.id, UNKNOWN_RECIPIENT_BODY, cause_id=env.id)
+            body = (
+                NO_SMS_NUMBER_BODY
+                if result.rejected[0].reason == "no_sms_number"
+                else UNKNOWN_RECIPIENT_BODY
+            )
+            self._send_system_reply(device.id, body, cause_id=env.id)
 
     def _send_system_reply(self, device_id: str, body: str, *, cause_id: str) -> None:
         # The reply's wire `id` is *derived from the offending up message's

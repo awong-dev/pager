@@ -30,9 +30,10 @@ already uses in §3):
   the *sender* is pinned at link time and re-checked on every subsequent
   message, `app/routers/webhooks.py`'s `/webhooks/gchat`).
 
-Retired kinds: a `kind:"sms"` row left over from the removed relay SMS
-backend is skipped by `get_backend`/`list_backends` (it must never 500 a
-read).
+`kind:"sms"` (docs/RELAY_SMS_DESIGN.md decision 3) is valid only on an
+external (`users/{uid}.kind == "external"`): a `sms` row on a person -- the
+7 Oct 2026 person-phone rows still in prod -- is skipped by `get_backend`/
+`list_backends`, as is any row of a retired kind (it must never 500 a read).
 """
 
 from __future__ import annotations
@@ -49,7 +50,7 @@ from app.db.firestore import get_db
 
 logger = logging.getLogger(__name__)
 
-BackendKind = Literal["pager", "webapp", "gchat"]
+BackendKind = Literal["pager", "webapp", "gchat", "sms"]
 
 
 class Backend(BaseModel):
@@ -67,16 +68,22 @@ def _backends(uid: str):
 
 
 def create_backend(
-    uid: str, *, kind: BackendKind, config: dict | None = None, enabled: bool = True
+    uid: str,
+    *,
+    kind: BackendKind,
+    config: dict | None = None,
+    enabled: bool = True,
+    bid: str | None = None,
 ) -> Backend:
-    bid = uuid.uuid4().hex[:12]
+    """`bid` pins the document id (idempotent `set`); default is a random one."""
+    bid = bid or uuid.uuid4().hex[:12]
     ref = _backends(uid).document(bid)
     ref.set(
         {
             "kind": kind,
             "config": config or {},
             "enabled": enabled,
-            "verifiedAt": SERVER_TIMESTAMP if kind == "webapp" else None,
+            "verifiedAt": SERVER_TIMESTAMP if kind in ("webapp", "sms") else None,
         }
     )
     fetched = get_backend(uid, bid)
@@ -84,11 +91,23 @@ def create_backend(
     return fetched
 
 
-def _live_kind(uid: str, bid: str, data: dict) -> bool:
-    if data.get("kind") in get_args(BackendKind):
-        return True
-    logger.warning("skipping backend %s/%s of retired kind %r", uid, bid, data.get("kind"))
-    return False
+def _owner_is_external(uid: str) -> bool:
+    snap = get_db().collection("users").document(uid).get()
+    return snap.exists and (snap.to_dict() or {}).get("kind") == "external"
+
+
+def _live_kind(uid: str, bid: str, data: dict, external: bool | None = None) -> bool:
+    kind = data.get("kind")
+    if kind not in get_args(BackendKind):
+        logger.warning("skipping backend %s/%s of retired kind %r", uid, bid, kind)
+        return False
+    if kind == "sms":
+        if external is None:
+            external = _owner_is_external(uid)
+        if not external:
+            logger.warning("skipping sms backend %s/%s on a non-external owner", uid, bid)
+            return False
+    return True
 
 
 def get_backend(uid: str, bid: str) -> Backend | None:
@@ -103,9 +122,12 @@ def get_backend(uid: str, bid: str) -> Backend | None:
 
 def list_backends(uid: str) -> list[Backend]:
     out: list[Backend] = []
+    external: bool | None = None  # looked up at most once, only if an sms row is seen
     for snap in _backends(uid).stream():
         data = snap.to_dict() or {}
-        if _live_kind(uid, snap.id, data):
+        if data.get("kind") == "sms" and external is None:
+            external = _owner_is_external(uid)
+        if _live_kind(uid, snap.id, data, external):
             out.append(Backend.model_validate({"id": snap.id, **data}))
     return out
 

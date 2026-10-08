@@ -254,7 +254,8 @@ def test_approve_sms_unknown_creates_external_edge_and_rederives_sms_contacts(
         f"/api/family/alerts/{alert_id}/approve", json={"name": "Aunt Sue"}, headers=headers
     )
     assert resp.status_code == 200, resp.text
-    assert resp.json()["status"] == "handled"
+    assert resp.json()["alert"]["status"] == "handled"
+    assert resp.json()["delivered"] == 0 and resp.json()["undelivered"] == 0
 
     ext_uid, _alias = externals_store.contact_ids(family.id, "+19995551234")
     assert users_store.get_user(ext_uid) is not None
@@ -445,15 +446,14 @@ def test_approve_contact_request_alert_makes_a_family_sms_contact(client: TestCl
     ext_uid, _alias = externals_store.contact_ids(family.id, "+15559990000")
     assert allow_store.is_message_allowed("owner2", ext_uid)
     assert not allow_store.is_message_allowed(ext_uid, "owner2")
-    # A contact is a user with a phone and no sms backend (the relay never
-    # texts it).
+    # A contact is a user with a phone and one `sms` backend (no web client).
     ext = users_store.get_user(ext_uid)
     assert ext is not None and ext.phone == "+15559990000"
     raw_kinds = [
         snap.to_dict()["kind"]
         for snap in get_db().collection("users").document(ext_uid).collection("backends").stream()
     ]
-    assert raw_kinds == ["webapp"]
+    assert raw_kinds == ["sms"]
 
 
 # ---------------------------------------------------------------------------

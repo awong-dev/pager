@@ -191,7 +191,8 @@ function FamilyContactsInner() {
       </Stack>
       <Typography variant="body2" color="text.secondary">
         Contacts are texted by the pager&apos;s own SMS. Approve a contact for a member (People → Approved) to
-        put it on their pager.
+        put it on their pager. Members with an SMS number text contacts through the relay; others use the
+        pager&apos;s own SIM.
       </Typography>
       {error && <Alert severity="error">{error}</Alert>}
       {loadError && <Alert severity="error">{loadError}</Alert>}

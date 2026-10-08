@@ -46,7 +46,7 @@ variable "broker_ca_pem" {
 }
 
 variable "public_base_url" {
-  description = "app/config.py's PUBLIC_BASE_URL -- this deployment's own public HTTPS origin. Already used by app/tasks.py; docs/V02_DESIGN.md §4.4 adds a use: the base of the content-addressed `GET /ca/{sha256hex}.pem` pointer a bootstrap bundle or a `cfg.ca` push hands a device. Cloud Run v2 cannot reference a service's own computed .uri from inside the same apply (a genuine cyclic reference -- see this module's `oidc_audience` variable for the same problem solved with a fixed string), so this is a plain variable rather than `google_cloud_run_v2_service.relay.uri`: set it by hand once the service exists (infra/README.md), e.g. the production value `https://pager-relay-2ix4jtetvq-uw.a.run.app`. Empty (the default) means unset: a bootstrap/push for a deployment with a CA configured then fails closed with a clear error instead of silently sending an unpinned bundle (app/devsetup.py)."
+  description = "app/config.py's PUBLIC_BASE_URL -- this deployment's own public HTTPS origin. Already used by app/tasks.py and the Twilio webhook signature check (app/backends/sms_twilio.py: Twilio signs the exact URL it called, so Twilio's inbound request URL must be this same Cloud Run run.app origin plus /webhooks/twilio/sms, docs/RELAY_SMS_DESIGN.md decision 10); docs/V02_DESIGN.md §4.4 adds a use: the base of the content-addressed `GET /ca/{sha256hex}.pem` pointer a bootstrap bundle or a `cfg.ca` push hands a device. Cloud Run v2 cannot reference a service's own computed .uri from inside the same apply (a genuine cyclic reference -- see this module's `oidc_audience` variable for the same problem solved with a fixed string), so this is a plain variable rather than `google_cloud_run_v2_service.relay.uri`: set it by hand once the service exists (infra/README.md), e.g. the production value `https://pager-relay-2ix4jtetvq-uw.a.run.app`. Empty (the default) means unset: a bootstrap/push for a deployment with a CA configured then fails closed with a clear error instead of silently sending an unpinned bundle (app/devsetup.py)."
   type        = string
   default     = ""
 }
@@ -79,6 +79,26 @@ variable "broker_api_secret_secret_id" {
 
 variable "webhook_key_secret_id" {
   type = string
+}
+
+# Optional: only wired into the service's env if non-null (Cloud Run refuses a
+# revision that references a secret with zero versions). With either unset the
+# relay's Twilio client is "not configured": sends stay queued and the inbound
+# webhook fails closed (docs/RELAY_SMS_DESIGN.md decision 4).
+variable "twilio_account_sid_secret_id" {
+  type    = string
+  default = null
+}
+
+variable "twilio_auth_token_secret_id" {
+  type    = string
+  default = null
+}
+
+variable "twilio_base_url" {
+  description = "relay/app/notify/sms.py's TWILIO_BASE_URL (plain env, not secret). Twilio's own API; only a dev/staging stack overrides it (twilio-mock)."
+  type        = string
+  default     = "https://api.twilio.com"
 }
 
 # --- Cell-tower location fallback (docs/PROTOCOL.md §13.2, this task) ----

@@ -158,6 +158,12 @@ def _wire_ids():
     return get_db().collection("wireIds")
 
 
+def wire_id_exists(wire_id: str, recipient_uid: str) -> bool:
+    """Whether `wireIds/{wire_id}_{recipient_uid}` exists (a message with that
+    wire id was already created for that recipient)."""
+    return _wire_ids().document(f"{wire_id}_{recipient_uid}").get().exists
+
+
 def _conversations():
     return get_db().collection("conversations")
 
@@ -475,6 +481,46 @@ def list_pending_for_device(
     ]
 
 
+def list_recent_queued_by_kind(
+    kind: str,
+    *,
+    limit: int = 50,
+    max_age_s: int = EXPIRY_SECONDS,
+    max_pages: int = 20,
+) -> list[Message]:
+    """Messages created within `max_age_s` (default 24h) with at least one
+    `kind`-backend delivery still `queued`, oldest first, at most `limit`.
+    Used by `app/jobs.py`'s `tick()` to retry queued `sms` deliveries (no
+    device id, so no indexed array field to query). The window is paged by
+    `createdAt` cursor (pages of 50, at most `max_pages`) and the `kind`/
+    `queued` filter runs in Python, so a queued delivery behind many
+    unrelated messages is still found."""
+    cutoff = datetime.fromtimestamp(time.time() - max_age_s, tz=UTC)
+    page_size = 50
+    out: list[Message] = []
+    last = None
+    for _ in range(max_pages):
+        query = (
+            _messages()
+            .where(filter=FieldFilter("createdAt", ">", cutoff))
+            .order_by("createdAt")
+            .limit(page_size)
+        )
+        if last is not None:
+            query = query.start_after(last)
+        snaps = list(query.stream())
+        for snap in snaps:
+            msg = Message.model_validate({"id": snap.id, **(snap.to_dict() or {})})
+            if any(d.kind == kind and d.state == "queued" for d in msg.deliveries.values()):
+                out.append(msg)
+                if len(out) >= limit:
+                    return out
+        if len(snaps) < page_size:
+            break
+        last = snaps[-1]
+    return out
+
+
 def clear_pending_device(msg_id: str, device_id: str) -> None:
     """Removes `device_id` from `pendingDeviceIds` -- called once its pager
     delivery reaches a non-pending state (shown/read/failed), so the
@@ -523,6 +569,23 @@ def mark_delivery_sent_if_queued(msg_id: str, backend_id: str) -> None:
         delivery = ((snap.to_dict() or {}).get("deliveries") or {}).get(backend_id)
         if delivery and delivery.get("state") == "queued":
             transaction.update(ref, {f"deliveries.{backend_id}.state": "sent"})
+
+    run_transaction(_txn)
+
+
+def mark_delivery_failed_if_queued(msg_id: str, backend_id: str) -> None:
+    """`queued` -> `failed` for a delivery that can never succeed (a
+    definitive provider rejection), so the tick does not retry it. Only a
+    `queued` delivery is touched."""
+    ref = _messages().document(msg_id)
+
+    def _txn(transaction: Transaction) -> None:
+        snap = ref.get(transaction=transaction)
+        if not snap.exists:
+            return
+        delivery = ((snap.to_dict() or {}).get("deliveries") or {}).get(backend_id)
+        if delivery and delivery.get("state") == "queued":
+            transaction.update(ref, {f"deliveries.{backend_id}.state": "failed"})
 
     run_transaction(_txn)
 

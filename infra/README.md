@@ -106,13 +106,31 @@ convenient, but make sure the values end up identical on both sides. Generate a 
 yourself (e.g. `openssl rand -hex 32`) — it just needs to match what you configure into the EMQX
 rule engine's HTTP action header in step 10.
 
-The relay sends and receives no SMS (owner decision,
-7 Oct 2026): there are no Twilio secrets. The pager texts its own allow-list through its modem
-(`docs/V02_DESIGN.md` §6).
+**Relay SMS (per-user Twilio numbers, `docs/RELAY_SMS_DESIGN.md` decisions 9 and 10).** Terraform
+creates empty `TWILIO_ACCOUNT_SID` and `TWILIO_AUTH_TOKEN` containers (there is no
+`TWILIO_FROM_NUMBER`: each member's own number is the sender) and sets the plain env
+`TWILIO_BASE_URL=https://api.twilio.com`. Order: deploy the relay first, then `terraform apply`
+(the apply on its own only adds empty containers, so the order is not critical). Then:
 
-**Removing Twilio (7 Oct 2026):** the next `terraform apply` destroys the three `TWILIO_*` Secret
-Manager secrets (and any versions in them). Deploy the relay without Twilio first, then apply. Also
-delete the `enable_sms_secrets`/`twilio_base_url` lines from your local `terraform.tfvars` if present.
+a. Add the secret versions (values from the Twilio console, Account Info; no trailing newline):
+
+   ```
+   printf '%s' "$TWILIO_ACCOUNT_SID" | gcloud secrets versions add TWILIO_ACCOUNT_SID --data-file=- --project <PROJECT>
+   printf '%s' "$TWILIO_AUTH_TOKEN"  | gcloud secrets versions add TWILIO_AUTH_TOKEN  --data-file=- --project <PROJECT>
+   ```
+
+b. Keep `PUBLIC_BASE_URL` (`public_base_url`) as the Cloud Run `run.app` origin
+   (`terraform output -raw relay_service_url`), no trailing slash, unchanged. Twilio is pointed
+   directly at Cloud Run, not at the Firebase Hosting origin, so the URL Twilio signs
+   (`<run.app origin>/webhooks/twilio/sms`) equals what the relay verifies, and the device CA
+   pointer `/ca/{sha}.pem` keeps working. No `firebase.json` change and no second setting.
+c. Set `enable_sms_secrets = true` (repo variable `ENABLE_SMS_SECRETS=true` for CI) and
+   apply/deploy again. Do this only after (a): Cloud Run refuses a revision that references a
+   secret with zero versions.
+d. Twilio console: create one Messaging Service "pager" with the 10DLC campaign attached; add each
+   member's number to its sender pool; set the service's inbound request URL to
+   `<PUBLIC_BASE_URL>/webhooks/twilio/sms` (the run.app URL) (HTTP POST). Leave Advanced Opt-Out on. Then assign
+   each number to a member in the web app (People, member drawer, "SMS number").
 
 **`CELL_GEO_API_KEY`** (docs/PROTOCOL.md §13.2 — cell-tower location fallback) is only needed if
 you are enabling `CELL_GEO_PROVIDER=google` (or `opencellid`); leave `enable_cell_geo_secret =
@@ -467,7 +485,8 @@ only with a number" language, before spending any money on `min_instance_count =
 ## Cost summary (recap of `docs/SERVER_PLAN.md` §9.3 — verify against current pricing)
 
 Everything in this tree is designed to be **$0/month** except: (a) Secret Manager/Artifact
-Registry/logging past a few active versions/pruned tags (`$0-$1`), and (b) `broker-gce`'s external IPv4 address if that fallback
+Registry/logging past a few active versions/pruned tags (`$0-$1`), (b) Twilio relay SMS, only when numbers are
+bought (usage-based, not Terraform-managed), and (c) `broker-gce`'s external IPv4 address if that fallback
 is ever turned on (`≈ $0-4/mo`, called out in that module's own comments) — everything else
 (Cloud Run at `min_instance_count = 0`, Firestore/Auth/FCM/Hosting within their no-cost
 allowances, Cloud Scheduler's 2 free jobs, Cloud Tasks) is designed to stay at exactly $0 at this

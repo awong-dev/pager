@@ -41,6 +41,29 @@ resource "google_secret_manager_secret" "webhook_key" {
   }
 }
 
+# --- Twilio (per-user relay SMS, docs/RELAY_SMS_DESIGN.md decisions 9/10) --
+# Containers only; values are added by hand (infra/README.md). There is NO
+# TWILIO_FROM_NUMBER: each member's own number (users.smsNumber) is the From.
+# TWILIO_AUTH_TOKEN is both the HTTP Basic password for outbound Messages API
+# calls and the HMAC key for inbound X-Twilio-Signature validation.
+resource "google_secret_manager_secret" "twilio_account_sid" {
+  project   = var.project_id
+  secret_id = "TWILIO_ACCOUNT_SID"
+  labels    = var.labels
+  replication {
+    auto {}
+  }
+}
+
+resource "google_secret_manager_secret" "twilio_auth_token" {
+  project   = var.project_id
+  secret_id = "TWILIO_AUTH_TOKEN"
+  labels    = var.labels
+  replication {
+    auto {}
+  }
+}
+
 # --- Cell-tower location fallback (docs/PROTOCOL.md §13.2, this task) --
 # CELL_GEO_PROVIDER itself is not a secret (plain env var, relay-service
 # module) -- only the third-party API key needs a Secret Manager container.

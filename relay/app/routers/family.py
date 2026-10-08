@@ -15,6 +15,7 @@ check -- one implementation, not a copy per surface
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -25,6 +26,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from app import book, devcfg
 from app import policy as policy_module
 from app.auth import Principal, require_family_admin, set_claims
+from app.backends import sms_twilio
 from app.book import rederive_family_sms_contacts, rederive_sms_contacts
 from app.broker import BrokerClient
 from app.config import Settings
@@ -33,6 +35,7 @@ from app.emqx_admin import EmqxAdmin
 from app.ingest import Ingest
 from app.routers import admin as admin_router
 from app.routers import conversations as conversations_router
+from app.routing import Routing
 from app.store import alerts as alerts_store
 from app.store import allow as allow_store
 from app.store import contacts as contacts_store
@@ -40,6 +43,7 @@ from app.store import conversations as conversations_store
 from app.store import devices as devices_store
 from app.store import externals as externals_store
 from app.store import families as families_store
+from app.store import held_sms as held_sms_store
 from app.store import rate_limits as rate_limits_store
 from app.store import users as users_store
 from app.store.alerts import Alert
@@ -223,6 +227,8 @@ class PatchMemberRequest(BaseModel):
     # docs/FAMILIES_DESIGN.md §2 / docs/FAMILIES_TASKS.md 3.1: the member's
     # two policy pickers, validated against `app.policy.OUT`/`IN` below.
     policy: Policy | None = None
+    # docs/RELAY_SMS_DESIGN.md decision 1: absent = leave alone, null = clear.
+    smsNumber: str | None = None
 
 
 @router.patch("/members/{uid}", dependencies=[Depends(require_family_write_rate_limit)])
@@ -261,6 +267,7 @@ def patch_member(
         family_id=None,
         disabled=req.disabled,
         broker=broker,
+        sms_number=req.smsNumber if "smsNumber" in req.model_fields_set else users_store.UNSET,
     )
     if policy_changed:
         # docs/ADDRESS_BOOK_DESIGN.md decision 6: a policy change flips
@@ -770,12 +777,25 @@ class ApproveAlertRequest(BaseModel):
     alias: str | None = None
 
 
+class AlertDecision(BaseModel):
+    """`POST /alerts/{id}/approve` for an `sms_unknown` alert: the decided
+    alert plus how many held texts were delivered / left held."""
+
+    alert: Alert
+    delivered: int = 0
+    undelivered: int = 0
+
+
 def _approve_sms_unknown(
     alert: Alert,
     req: ApproveAlertRequest,
     family_id: str,
     broker: BrokerClient,
-) -> None:
+    routing: Routing,
+) -> tuple[int, int]:
+    """docs/RELAY_SMS_DESIGN.md decision 6, steps (a)-(e) in order, each
+    idempotent so a retry after a crash finishes the job. Returns
+    `(delivered, undelivered)`; the caller does (f), `decide`."""
     if not req.name:
         raise HTTPException(status_code=400, detail="name is required")
     if alert.peerPhone is None:
@@ -792,17 +812,56 @@ def _approve_sms_unknown(
     if target is None or target.familyId != family_id:
         raise HTTPException(status_code=403, detail="target is not a member of this family")
 
+    held = held_sms_store.list_held(family_id, alert.peerPhone, target_uid, status="held")
+    # (a) nothing is written if the member's inbound policy refuses numbers.
+    if held and policy_module.rule(target.policy.in_, "external") == "none":
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"@{target.alias}'s inbound policy does not allow numbers; "
+                "change it under People"
+            ),
+        )
+
+    # (b) the contact.
     try:
         external = externals_store.get_or_create(family_id, alert.peerPhone, req.name)
     except externals_store.ContactNameTaken as exc:
         raise _name_taken(family_id, exc) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    # (c) the edge.
     allow_store.set_edge(target_uid, external.uid, message=True, locate=False)
     allow_store.recompute_locatable_by_for_owner(external.uid)
-    # The relay sends no SMS: there is no held body to re-send. The contact
-    # reaches the whole family's pagers (explicit edge + implied holders).
+    # (d) the contact reaches the family's pagers; the member's book changes.
     rederive_family_sms_contacts(family_id, broker)
+    book.bump_and_push({target_uid}, broker, reason="sms_approve")
+
+    # (e) the backlog, oldest first.
+    delivered = undelivered = 0
+    bid = externals_store.ensure_sms_backend(external)
+    for row in held:
+        pager_text = sms_twilio.pager_body(row.body)
+        if not pager_text or sms_twilio.body_too_long(pager_text):
+            held_sms_store.set_status([row.id], "too_long")
+            continue
+        result = routing.send(
+            sender_uid=external.uid,
+            recipient_alias=target.alias,
+            kind="text",
+            body=pager_text,
+            origin_backend_kind="sms",
+            origin_backend_id=bid,
+            wire_id=row.id,
+            ts=int(row.receivedAt.timestamp()),
+        )
+        if result.rejected:
+            undelivered += 1
+            continue
+        # A deduplicated send (empty `messages`) was delivered earlier.
+        held_sms_store.set_status([row.id], "delivered")
+        delivered += 1
+    return delivered, undelivered
 
 
 def _approve_new_conversation(alert: Alert) -> None:
@@ -887,18 +946,51 @@ def _may_link(owner: User, peer: User) -> bool:
     return inbound is not None and inbound.message
 
 
+class HeldTextOut(BaseModel):
+    id: str
+    body: str
+    receivedAt: datetime
+    status: str
+
+
+class HeldTextsOut(BaseModel):
+    held: list[HeldTextOut]
+
+
+@router.get("/alerts/{alert_id}/held")
+def list_alert_held(alert_id: str, scope: FamilyScope) -> HeldTextsOut:
+    """docs/RELAY_SMS_DESIGN.md decision 5: the texts behind an
+    `sms_unknown` alert, oldest first, every status."""
+    _, family_id = scope
+    alert = alerts_store.get(family_id, alert_id)
+    if alert is None:
+        raise HTTPException(status_code=404, detail="no such alert")
+    if alert.kind != "sms_unknown" or alert.peerPhone is None or alert.subjectUid is None:
+        return HeldTextsOut(held=[])
+    rows = held_sms_store.list_held(family_id, alert.peerPhone, alert.subjectUid, status=None)
+    return HeldTextsOut(
+        held=[
+            HeldTextOut(id=r.id, body=r.body, receivedAt=r.receivedAt, status=r.status)
+            for r in rows
+        ]
+    )
+
+
 @router.post("/alerts/{alert_id}/approve", dependencies=[Depends(require_family_write_rate_limit)])
 def approve_alert(
     alert_id: str,
     req: ApproveAlertRequest,
     scope: FamilyScope,
     broker: Annotated[BrokerClient, Depends(get_broker)],
-) -> Alert:
+    routing: Annotated[Routing, Depends(conversations_router.get_routing)],
+) -> Alert | AlertDecision:
     principal, family_id = scope
     alert = _require_open_family_alert(alert_id, family_id)
 
     if alert.kind == "sms_unknown":
-        _approve_sms_unknown(alert, req, family_id, broker)
+        delivered, undelivered = _approve_sms_unknown(alert, req, family_id, broker, routing)
+        decided = alerts_store.decide(family_id, alert_id, "handled", principal.uid)
+        return AlertDecision(alert=decided, delivered=delivered, undelivered=undelivered)
     elif alert.kind == "new_conversation":
         _approve_new_conversation(alert)
     else:  # "contact_request"
@@ -930,6 +1022,18 @@ def _reject_linked_contact_request(
     devcfg.push_book(request.deviceId, broker)
 
 
+def _mark_held(family_id: str, alert: Alert, status: held_sms_store.HeldStatus) -> None:
+    """Block / dismiss: the alert's still-`held` texts get `status`. Block
+    covers the number's held texts for every member of the family."""
+    if alert.peerPhone is None:
+        return
+    to_uid = None if status == "blocked" else alert.subjectUid
+    if status != "blocked" and to_uid is None:
+        return
+    rows = held_sms_store.list_held(family_id, alert.peerPhone, to_uid, status="held")
+    held_sms_store.set_status([r.id for r in rows], status)
+
+
 @router.post("/alerts/{alert_id}/block", dependencies=[Depends(require_family_write_rate_limit)])
 def block_alert(
     alert_id: str,
@@ -944,6 +1048,17 @@ def block_alert(
     alert = _require_open_family_alert(alert_id, family_id)
     if alert.peerPhone is not None:
         families_store.add_blocked_number(family_id, alert.peerPhone)
+        if alert.kind == "sms_unknown":
+            _mark_held(family_id, alert, "blocked")
+            # Their held rows are blocked too: decide every other open
+            # alert for this number.
+            for other in alerts_store.list_alerts(family_id, "open"):
+                if (
+                    other.id != alert.id
+                    and other.kind == "sms_unknown"
+                    and other.peerPhone == alert.peerPhone
+                ):
+                    alerts_store.decide(family_id, other.id, "handled", principal.uid)
     _reject_linked_contact_request(alert, "blocked", principal.uid, broker)
     return alerts_store.decide(family_id, alert_id, "handled", principal.uid)
 
@@ -957,4 +1072,6 @@ def dismiss_alert(
     principal, family_id = scope
     alert = _require_open_family_alert(alert_id, family_id)
     _reject_linked_contact_request(alert, "dismissed", principal.uid, broker)
+    if alert.kind == "sms_unknown":
+        _mark_held(family_id, alert, "dismissed")
     return alerts_store.decide(family_id, alert_id, "dismissed", principal.uid)
