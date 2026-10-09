@@ -151,6 +151,10 @@ Scenarios available (see `tools/e2e_v2.py`'s module docstring for details):
 - **address_book**: device requests contact approval, book/cfg ingest and ack
 - **relay_sms**: a member's relay SMS number: inbound from an approved contact, a held
   unknown number approved, and a pager text out through the Twilio mock (docs/RELAY_SMS_DESIGN.md)
+- **bridge**: the bridge phone (docs/BRIDGE_PHONE_DESIGN.md) against the `bridge-sim` compose service
+  (`tools/bridge_sim.py`, control plane on `localhost:8020`: `/_pair`, `/_inject`, `/_outbox`,
+  `/_fail_next`, `/_reset`, `/_status`): pair, a SIM text held and approved, a pager reply through the
+  outbox with an ack, an unknown Google Chat group held, subscribed and replied to, and a Voice-only variant
 
 ## Message backends (docs/SERVER_PLAN.md §6.5)
 

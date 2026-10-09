@@ -42,6 +42,8 @@ services:
         condition: service_healthy
       twilio-mock:
         condition: service_started
+      bridge-sim:
+        condition: service_started
     # required: false -- CI's unit-test stage (.github/workflows/ci.yml)
     # runs `docker compose up -d firebase` / `down -v` against this same
     # file without ever starting `relay` and without relay/.env existing
@@ -124,6 +126,22 @@ services:
       context: ../tools/mocks
     ports:
       - "8010:8010"
+    networks:
+      - pager-net
+
+  # docs/BRIDGE_PHONE_DESIGN.md decision 14: a stand-in for the headless
+  # bridge phone (pair, events, outbox poll, ack, heartbeat) with a control
+  # plane on :8020 -- see tools/bridge_sim.py. A test double, never shipped.
+  bridge-sim:
+    build:
+      context: ../tools
+      dockerfile: mocks/bridge_sim.Dockerfile
+    environment:
+      RELAY_URL: http://relay:8000
+      BRIDGE_SIM_SIM_NUMBER: "+15550007777"
+      BRIDGE_SIM_HEARTBEAT_S: "30"
+    ports:
+      - "8020:8020"
     networks:
       - pager-net
 
