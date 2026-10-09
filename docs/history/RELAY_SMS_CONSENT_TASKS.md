@@ -1,5 +1,7 @@
 # Relay SMS: consent, keywords and disclosure (tasks)
 
+> **Historical:** the Twilio path this describes was removed 9 Oct 2026 (last at 05ec3ed). Kept for reference only; see docs/BRIDGE_PHONE_DESIGN.md.
+
 Owner spec, 8 Oct 2026. Extends docs/RELAY_SMS_DESIGN.md. The relay owns
 opt-in/opt-out for the Twilio number instead of Twilio's Advanced Opt-Out
 (which intercepts STOP/START/HELP before the webhook, so it must be **off** on

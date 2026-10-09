@@ -274,12 +274,3 @@ def test_webhook_ip_cap_keys_on_x_forwarded_for_not_the_proxy_peer(webhook_clien
         "/webhooks/gchat", json=body, headers={"X-Forwarded-For": "198.51.100.4, 10.0.0.1"}
     )
     assert resp.status_code == 401
-
-
-def test_twilio_webhook_requires_a_valid_signature(webhook_client: TestClient):
-    # docs/RELAY_SMS_DESIGN.md decision 4: the route exists again and fails
-    # closed (401) without a valid `X-Twilio-Signature`.
-    resp = webhook_client.post(
-        "/webhooks/twilio/sms", data={"To": "+15005550006", "From": "+15551234567", "Body": "hi"}
-    )
-    assert resp.status_code == 401

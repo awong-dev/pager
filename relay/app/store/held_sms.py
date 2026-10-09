@@ -1,8 +1,8 @@
 """`heldSms/{MessageSid}` -- inbound texts from numbers the family has not
 approved, kept until a parent decides (docs/RELAY_SMS_DESIGN.md decision 5).
 
-Server-only (no `firestore.rules` match). The doc id is Twilio's
-`MessageSid`, written with `create()`, so a Twilio retry is `AlreadyExists`
+Server-only (no `firestore.rules` match). The doc id is the
+message sid (the bridge event id), written with `create()`, so a redelivered event is `AlreadyExists`
 (`duplicate`) and approve can deliver each row with `wire_id=sid` dedup.
 Queries are single-equality (`familyId`) with the rest filtered and sorted in
 Python: household scale, no composite index.
@@ -47,7 +47,7 @@ def _col():
 def create(
     sid: str, *, family_id: str, to_uid: str, from_phone: str, body: str, alert_id: str | None = None
 ) -> bool:
-    """False when `sid` is already stored (a Twilio retry)."""
+    """False when `sid` is already stored (a redelivered event)."""
     try:
         _col().document(sid).create(
             {

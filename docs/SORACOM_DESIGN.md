@@ -49,8 +49,8 @@ and through the production relay.
   `sora` (PAP or CHAP). Soracom's documented IMSI prefix for Global SIMs is not confirmed on the
   web; the bench reads it from the SIM (§6, step A) and the preset is written from that reading.
 - Device-originated SMS on a Soracom SIM can only reach Soracom's own endpoint, never a phone.
-  The pager's SMS feature is already dead on the US Mobile line and the relay's Twilio path
-  (`RELAY_SMS_DESIGN.md`) is the SMS design of record, so on the Beam bearer the firmware simply
+  The pager's SMS feature is already dead on the US Mobile line and the relay's SMS path
+  (bridge phone, `RELAY_SMS_DESIGN.md`; Twilio removed 9 Oct 2026, last at 05ec3ed) is the SMS design of record, so on the Beam bearer the firmware simply
   never attempts modem SMS.
 
 ## 3. Firmware design

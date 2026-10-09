@@ -19,9 +19,8 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
-from app import book
+from app import book, sms_text
 from app import policy as policy_module
-from app.backends import sms_twilio
 from app.broker import BrokerClient
 from app.routing import Routing
 from app.store import alerts as alerts_store
@@ -186,8 +185,8 @@ def release_backlog(row: BridgeConversation, owner: User, routing: Routing) -> t
     the parents. Returns `(delivered, undelivered)`."""
     delivered = undelivered = 0
     for held in held_chat_store.list_for_conversation(row.id, "held"):
-        text = sms_twilio.pager_body(held.body)
-        if not text or sms_twilio.body_too_long(text):
+        text = sms_text.pager_body(held.body)
+        if not text or sms_text.body_too_long(text):
             held_chat_store.set_status([held.id], "too_long")
             undelivered += 1
             continue
@@ -319,13 +318,13 @@ def deliver_subscribed(
         return None
     _follow_title(bridge, row, owner, previous_title, broker)
     raw = event.text.strip()
-    body = sms_twilio.pager_body(raw) or (
+    body = sms_text.pager_body(raw) or (
         placeholder_for([a.kind for a in event.attachments]) if event.attachments else ""
     )
     if not body:
         return "dropped_empty"
     wire_id = f"br_{bridge.id}_{event.id}"
-    if sms_twilio.body_too_long(body):
+    if sms_text.body_too_long(body):
         # Kept for the parents, never on the pager (decision 7).
         if held_chat_store.create(
             wire_id,

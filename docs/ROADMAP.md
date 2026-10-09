@@ -8,7 +8,7 @@
 
 **beta** — fast wake (tap to "password:" <0.5 s, partial first frame), working relock, datasheet display power-on; rail-gating (3V3 off outside 120 s attentive window, re-init on wake); owner-verified 25 Sep 2026. Implementation in `rail.c` / `rail.h`; tagged `beta`.
 - **v1.0.0**: first stable release, 8 Oct 2026 (tag at `1547715`). Right-header rewire (LIS3DH on
-  IO18/17/16), per-device GNSS disable, host partial LUT; relay per-user Twilio SMS with
+  IO18/17/16), per-device GNSS disable, host partial LUT; relay per-user Twilio SMS (removed 9 Oct 2026, last at 05ec3ed) with
   held-until-approved inbound; web local-time battery charts. OTA with rollback is in this build
   (verified on proto3 7 Oct 2026).
 - **v1.1.0**: Soracom bearer, 8 Oct 2026. A Soracom SIM selects the Beam bearer (plain MQTT to
@@ -163,7 +163,7 @@ From `docs/HARDWARE_TESTING.md` "Not yet seen working," in order:
 
 **Multi-family (per `docs/FAMILIES_DESIGN.md` §9)**
 - ~~**Per-family Twilio number** (decision 10): without it, unrecognised inbound SMS cannot be attributed to a
-  family unless it carries `@alias`; fallback is super-only alert. Cost ≈ $1/month per family.~~ *(7 Oct 2026: moot — no relay SMS)* **→ *(8 Oct 2026: per-user number done; see docs/RELAY_SMS_DESIGN.md)*
+  family unless it carries `@alias`; fallback is super-only alert. Cost ≈ $1/month per family.~~ *(7 Oct 2026: moot — no relay SMS)* **→ *(8 Oct 2026: per-user number done; see docs/RELAY_SMS_DESIGN.md)* → *(9 Oct 2026: Twilio removed)***
 - **`any_sms` outbound** (decision 2): read literally as "numbers only, no people", or "approved people plus
   any number" (`people_anysms` table row)?
 - **Super and `/locate`** (decision 3): super reads locations everywhere; should super also request a fix via
@@ -177,10 +177,11 @@ From `docs/HARDWARE_TESTING.md` "Not yet seen working," in order:
   8 Oct 2026).
 
 **Bridge phones (`docs/BRIDGE_PHONE_DESIGN.md`)**
-- **Twilio removal.** Bridge phones now carry the bridged members. Whether Twilio goes for everyone
-  else is the owner's decision.
-- **STOP numbers on the bridge SIM (O6).** A number that opted out of Twilio is not blocked on the
-  bridge SIM. Flagged for the owner; no code.
+- **Twilio removal.** Done 9 Oct 2026. Twilio relay SMS was last present at commit 05ec3ed
+  (`05ec3ed703cf27c368cb4713d03ea3f25c8ac300`, 9 Oct 2026). It was added at a30ebca (8 Oct 2026),
+  consent/keywords at 13c4a4b, and had been removed once before at 123efa4 (7 Oct 2026). Review the
+  removed code with `git show 05ec3ed:<path>` or `git diff 05ec3ed main -- <path>`. SMS is now
+  bridge-only; a non-bridge number fails `no_bridge`.
 
 **Device/firmware**
 - **CardKB bootloader reflash** (1.1 s key-loss issue; ISP header reflash without bootloader needed if selected).

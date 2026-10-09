@@ -486,58 +486,6 @@ def list_pending_for_device(
     ]
 
 
-def list_recent_queued_by_kind(
-    kind: str,
-    *,
-    limit: int = 50,
-    max_age_s: int = EXPIRY_SECONDS,
-    max_pages: int = 20,
-    exclude_external_prefix: str | None = None,
-) -> list[Message]:
-    """Messages created within `max_age_s` (default 24h) with at least one
-    `kind`-backend delivery still `queued`, oldest first, at most `limit`.
-    Used by `app/jobs.py`'s `tick()` to retry queued `sms` deliveries (no
-    device id, so no indexed array field to query). The window is paged by
-    `createdAt` cursor (pages of 50, at most `max_pages`) and the `kind`/
-    `queued` filter runs in Python, so a queued delivery behind many
-    unrelated messages is still found. `exclude_external_prefix` drops
-    deliveries whose `externalId` starts with it (the tick passes `ob_` so a
-    phone's offline backlog cannot starve Twilio retries,
-    docs/BRIDGE_PHONE_DESIGN.md decision 4)."""
-    cutoff = datetime.fromtimestamp(time.time() - max_age_s, tz=UTC)
-    page_size = 50
-    out: list[Message] = []
-    last = None
-    for _ in range(max_pages):
-        query = (
-            _messages()
-            .where(filter=FieldFilter("createdAt", ">", cutoff))
-            .order_by("createdAt")
-            .limit(page_size)
-        )
-        if last is not None:
-            query = query.start_after(last)
-        snaps = list(query.stream())
-        for snap in snaps:
-            msg = Message.model_validate({"id": snap.id, **(snap.to_dict() or {})})
-            if any(
-                d.kind == kind
-                and d.state == "queued"
-                and not (
-                    exclude_external_prefix is not None
-                    and (d.externalId or "").startswith(exclude_external_prefix)
-                )
-                for d in msg.deliveries.values()
-            ):
-                out.append(msg)
-                if len(out) >= limit:
-                    return out
-        if len(snaps) < page_size:
-            break
-        last = snaps[-1]
-    return out
-
-
 def clear_pending_device(msg_id: str, device_id: str) -> None:
     """Removes `device_id` from `pendingDeviceIds` -- called once its pager
     delivery reaches a non-pending state (shown/read/failed), so the

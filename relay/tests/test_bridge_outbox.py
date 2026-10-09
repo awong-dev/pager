@@ -1,5 +1,5 @@
-"""Bridge outbox, the `bridge` backend kind and the Twilio -> bridge transport
-switch -- docs/BRIDGE_PHONE_DESIGN.md decisions 4, 7 (backend row), 11, O1/O2."""
+"""Bridge outbox, the `bridge` backend kind and the `sms` backend's bridge
+transport -- docs/BRIDGE_PHONE_DESIGN.md decisions 4, 7 (backend row), 11, O1/O2."""
 
 from __future__ import annotations
 
@@ -10,7 +10,6 @@ from fastapi.testclient import TestClient
 
 from app import jobs
 from app.db.firestore import get_db
-from app.notify import sms as sms_client
 from app.routing import Routing
 from app.store import backends as backends_store
 from app.store import bridge_outbox
@@ -62,17 +61,6 @@ def _delivery(msg_id: str):
     return d
 
 
-def _no_twilio(monkeypatch) -> list:
-    sent: list = []
-
-    def boom(*a, **k):
-        sent.append((a, k))
-        raise AssertionError("Twilio must not be called on the bridge path")
-
-    monkeypatch.setattr(sms_client, "send_sms", boom)
-    return sent
-
-
 # ---------------------------------------------------------------------------
 # store
 # ---------------------------------------------------------------------------
@@ -120,22 +108,21 @@ def test_list_pending_oldest_first_capped(client: TestClient, world: World):
 
 
 # ---------------------------------------------------------------------------
-# Twilio -> bridge transport switch
+# the `sms` backend's bridge transport
 # ---------------------------------------------------------------------------
 
 
-def test_bridge_transport_has_no_consent_wrapper_and_stays_queued(
+def test_bridge_transport_sends_the_raw_body_and_stays_queued(
     client: TestClient, world: World, broker: FakeBrokerClient, monkeypatch, caplog
 ):
-    caplog.set_level(logging.INFO, logger="relay.backends.sms_twilio")
-    _no_twilio(monkeypatch)
+    caplog.set_level(logging.INFO, logger="relay.backends.sms")
     bridge, _ = pair_bridge(client, world)
-    ext = _contact(world)  # no smsConsent row at all
+    ext = _contact(world)
     msg = _send(broker, ext.alias, "on my way")
     d = _delivery(msg.id)
     assert d.state == "queued" and d.externalId == f"ob_{msg.id}_sms"
     (item,) = bridge_outbox.list_pending(bridge.id)
-    assert item.text == "on my way"  # raw body: no relay_body wrapper, no disclosure
+    assert item.text == "on my way"  # raw body: no wrapper, no disclosure
     assert item.source == "sms" and item.to == {"phone": MOM}
     assert item.msgId == msg.id and item.bid == "sms"
     line = next(r.getMessage() for r in caplog.records if r.getMessage().startswith("sms out"))
@@ -145,7 +132,6 @@ def test_bridge_transport_has_no_consent_wrapper_and_stays_queued(
 def test_redeliver_twice_leaves_one_outbox_row(
     client: TestClient, world: World, broker: FakeBrokerClient, monkeypatch
 ):
-    _no_twilio(monkeypatch)
     bridge, _ = pair_bridge(client, world)
     ext = _contact(world)
     msg = _send(broker, ext.alias)
@@ -158,7 +144,6 @@ def test_redeliver_twice_leaves_one_outbox_row(
 def test_ack_sent_marks_delivery_sent_and_reack_reapplies(
     client: TestClient, world: World, broker: FakeBrokerClient, monkeypatch
 ):
-    _no_twilio(monkeypatch)
     bridge, headers = pair_bridge(client, world)
     ext = _contact(world)
     msg = _send(broker, ext.alias)
@@ -176,7 +161,6 @@ def test_ack_sent_marks_delivery_sent_and_reack_reapplies(
 def test_ack_failed_sets_error_and_tier2_counts_once(
     client: TestClient, world: World, broker: FakeBrokerClient, monkeypatch
 ):
-    _no_twilio(monkeypatch)
     bridge, headers = pair_bridge(client, world)
     ext = _contact(world)
     msg = _send(broker, ext.alias)
@@ -202,25 +186,16 @@ def test_outbox_from_another_bridge_is_invisible(client: TestClient, world: Worl
     assert other.id != bridge.id
 
 
-def test_twilio_path_untouched_when_the_number_is_not_a_bridge_number(
-    client: TestClient, world: World, broker: FakeBrokerClient, monkeypatch
+def test_a_number_that_is_not_a_bridge_number_fails_no_bridge(
+    client: TestClient, world: World, broker: FakeBrokerClient
 ):
-    from app.notify.sms import TwilioSendResult
-    from app.store import sms_consent as sms_consent_store
     from app.store import users as users_store
 
-    sent: list = []
-    monkeypatch.setattr(
-        sms_client,
-        "send_sms",
-        lambda to, body, *, from_number: sent.append((to, body, from_number))
-        or TwilioSendResult(ok=True, sid="SMx"),
-    )
     users_store.set_sms_number("kid", "+12065550444")
     ext = _contact(world)
-    sms_consent_store.mark_opted_in(MOM, source="admin")
     msg = _send(broker, ext.alias, "hello")
-    assert _delivery(msg.id).state == "sent" and sent and sent[0][2] == "+12065550444"
+    d = _delivery(msg.id)
+    assert d.state == "failed" and d.error == "no_bridge"
     assert bridge_outbox.list_pending("b_none") == []
 
 
@@ -232,7 +207,6 @@ def test_twilio_path_untouched_when_the_number_is_not_a_bridge_number(
 def test_voice_only_bridge_send_lands_as_gvoice_with_the_link(
     client: TestClient, world: World, broker: FakeBrokerClient, monkeypatch
 ):
-    _no_twilio(monkeypatch)
     bridge, _ = pair_bridge(client, world, sim=None, voice=VOICE)
     ext = _contact(world)
     msg = _send(broker, ext.alias, "hi grandma")
@@ -246,7 +220,6 @@ def test_voice_only_bridge_send_lands_as_gvoice_with_the_link(
 def test_via_entry_picks_the_channel_and_voice_conversation(
     client: TestClient, world: World, broker: FakeBrokerClient, monkeypatch
 ):
-    _no_twilio(monkeypatch)
     bridge, _ = pair_bridge(client, world, sim=SIM, voice=VOICE)
     ext = _contact(world)
     backends_store.update_backend(
@@ -351,7 +324,6 @@ def test_outbox_long_poll_returns_at_once_when_an_item_exists_and_waits_otherwis
 def test_tick_fails_a_stale_row_and_its_delivery(
     client: TestClient, world: World, broker: FakeBrokerClient, monkeypatch
 ):
-    _no_twilio(monkeypatch)
     bridge, _ = pair_bridge(client, world)
     ext = _contact(world)
     msg = _send(broker, ext.alias)
@@ -373,42 +345,14 @@ def test_tick_fails_a_stale_row_and_its_delivery(
     assert bridge_outbox.list_pending(bridge.id) == []
 
 
-def test_tick_does_not_redeliver_bridge_queued_sms_and_does_not_starve_twilio(
-    client: TestClient, world: World, broker: FakeBrokerClient, monkeypatch
+def test_tick_does_not_touch_bridge_queued_sms(
+    client: TestClient, world: World, broker: FakeBrokerClient
 ):
-    from app.notify.sms import TwilioSendResult
-    from app.store import sms_consent as sms_consent_store
-    from app.store import users as users_store
-
-    _no_twilio(monkeypatch)
     bridge, _ = pair_bridge(client, world)
     ext = _contact(world)
     for i in range(11):
         _send(broker, ext.alias, f"b{i}")
-    # A second member on Twilio with a queued delivery to a contact.
-    users_store.create_user(uid="sis", alias="sis", display_name="Sis", family_id=world.family_id)
-    users_store.set_sms_number("sis", "+12065550555")
-    get_db().collection("users").document("sis").update(
-        {"policy": {"out": "people_sms", "in": "people_sms"}}
-    )
-    from app.store import allow as allow_store
-
-    allow_store.set_edge("sis", ext.uid, message=True, locate=False)
-    sms_consent_store.mark_opted_in(MOM, source="admin")
-    calls: list = []
-
-    def twilio(to, body, *, from_number):
-        calls.append((to, from_number))
-        return TwilioSendResult(ok=False, error="503", transient=True) if len(calls) == 1 else TwilioSendResult(ok=True, sid="SMr")
-
-    monkeypatch.setattr(sms_client, "send_sms", twilio)
-    Routing(broker).send(
-        sender_uid="sis", recipient_alias=ext.alias, kind="text", body="tw", origin_backend_kind="pager"
-    )
-    assert len(calls) == 1
-    result = jobs.tick(Routing(broker), task_queue=InlineTaskQueue())
-    assert result.nonPagerRetriesAttempted == 1
-    assert len(calls) == 2 and calls[1][1] == "+12065550555"
+    jobs.tick(Routing(broker), task_queue=InlineTaskQueue())
     assert len(bridge_outbox.list_pending(bridge.id)) == 11
 
 
@@ -438,26 +382,3 @@ def test_self_service_cannot_create_a_bridge_backend(client: TestClient, world: 
         headers=auth_header("adm"),
     )
     assert r.status_code == 422
-
-
-def test_welcome_text_is_skipped_for_a_bridge_number(
-    client: TestClient, world: World, monkeypatch
-):
-    """O3 (+ O1 revised): the admin adding a contact for a member whose number
-    is a bridge SIM or Voice number sends no disclosure text."""
-    from app.notify.sms import TwilioSendResult
-
-    sent: list = []
-    monkeypatch.setattr(
-        sms_client,
-        "send_sms",
-        lambda to, body, *, from_number: sent.append(to) or TwilioSendResult(ok=True, sid="S"),
-    )
-    pair_bridge(client, world, sim=None, voice=VOICE)
-    r = client.post(
-        "/api/family/contacts",
-        json={"name": "Gran", "phone": "+12065550123"},
-        headers=world.admin_headers,
-    )
-    assert r.status_code == 201
-    assert sent == []

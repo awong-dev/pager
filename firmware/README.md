@@ -103,7 +103,7 @@ crosses the wire; this section covers the device-local behaviour the protocol do
 
 - **SIM budget**: 100 MB/month data, 100 SMS/month. The pager sends SMS only through the modem path
   (`cfg.sms`, `sms.c`), which the US Mobile line did not carry (7 Oct 2026); the Soracom preset refuses
-  it. Relay SMS runs through Twilio on the server, not on the pager. It keeps one
+  it. Relay SMS runs through the family's bridge phone on the server, not on the pager (Twilio removed 9 Oct 2026, last at 05ec3ed). It keeps one
   persistent TLS+MQTT session and never reconnects on a timer.
 - **Power**: the device sleeps most of the day. In **sleep mode** the modem uses eDRX (target
   20.48 s cycle) and the ESP32 light-sleeps; delivery within ~30 s is acceptable. In **active

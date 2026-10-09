@@ -23,23 +23,20 @@ from firebase_admin import auth as fb_auth
 from google.api_core.exceptions import AlreadyExists
 from pydantic import BaseModel, ConfigDict, Field
 
-from app import book, chat_subscribe, devcfg, sms_compliance
+from app import book, chat_subscribe, devcfg, sms_text
 from app import policy as policy_module
 from app.auth import Principal, require_family_admin, set_claims
-from app.backends import sms_twilio
 from app.book import rederive_family_sms_contacts, rederive_sms_contacts
 from app.broker import BrokerClient
 from app.config import Settings
 from app.db.firestore import get_db
 from app.emqx_admin import EmqxAdmin
 from app.ingest import Ingest
-from app.notify import sms as sms_client
 from app.routers import admin as admin_router
 from app.routers import conversations as conversations_router
 from app.routing import Routing
 from app.store import alerts as alerts_store
 from app.store import allow as allow_store
-from app.store import bridges as bridges_store
 from app.store import contacts as contacts_store
 from app.store import conversations as conversations_store
 from app.store import devices as devices_store
@@ -47,7 +44,6 @@ from app.store import externals as externals_store
 from app.store import families as families_store
 from app.store import held_sms as held_sms_store
 from app.store import rate_limits as rate_limits_store
-from app.store import sms_consent as sms_consent_store
 from app.store import users as users_store
 from app.store.alerts import Alert
 from app.store.devices import Device
@@ -230,8 +226,6 @@ class PatchMemberRequest(BaseModel):
     # docs/FAMILIES_DESIGN.md §2 / docs/FAMILIES_TASKS.md 3.1: the member's
     # two policy pickers, validated against `app.policy.OUT`/`IN` below.
     policy: Policy | None = None
-    # docs/RELAY_SMS_DESIGN.md decision 1: absent = leave alone, null = clear.
-    smsNumber: str | None = None
 
 
 @router.patch("/members/{uid}", dependencies=[Depends(require_family_write_rate_limit)])
@@ -270,7 +264,6 @@ def patch_member(
         family_id=None,
         disabled=req.disabled,
         broker=broker,
-        sms_number=req.smsNumber if "smsNumber" in req.model_fields_set else users_store.UNSET,
     )
     if policy_changed:
         # docs/ADDRESS_BOOK_DESIGN.md decision 6: a policy change flips
@@ -693,34 +686,6 @@ def _contact_out(family_id: str, external: User) -> ContactOut:
     return next(c for c in _list_contacts(family_id) if c.uid == external.uid)
 
 
-def _consent_by_admin(family_id: str, e164: str, from_number: str | None) -> None:
-    """docs/RELAY_SMS_DESIGN.md decision 11: an admin adding or approving a
-    number is its opt-in. On the first opt-in, send the welcome from
-    `from_number` (default: the family's first person, by alias, with a relay
-    number); with none, warn and leave the row `opted_in`."""
-    if not sms_consent_store.mark_opted_in(e164, source="admin"):
-        return
-    if from_number is None:
-        members = sorted(
-            (
-                u
-                for u in users_store.list_users()
-                if u.kind == "person" and u.familyId == family_id and u.smsNumber
-            ),
-            key=lambda u: u.alias,
-        )
-        from_number = members[0].smsNumber if members else None
-    if from_number is None:
-        logger.warning("sms welcome skipped: no member number")
-        return
-    # docs/BRIDGE_PHONE_DESIGN.md O3 (+ O1 revised): a member texting from a
-    # bridge phone's SIM or Voice number needs no disclosure.
-    if bridges_store.get_by_sms_number(from_number) is not None:
-        logger.info("sms welcome skipped: bridge number")
-        return
-    sms_client.send_sms(e164, sms_compliance.welcome(), from_number=from_number)
-
-
 @router.post(
     "/contacts", status_code=201, dependencies=[Depends(require_family_write_rate_limit)]
 )
@@ -741,7 +706,6 @@ def create_contact(
         raise _name_taken(family_id, exc) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    _consent_by_admin(family_id, external.phone or req.phone, None)
     rederive_family_sms_contacts(family_id, broker)
     return _contact_out(family_id, external)
 
@@ -885,9 +849,6 @@ def _approve_sms_unknown(
         raise _name_taken(family_id, exc) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    # Admin consent before the backlog goes out, so the pager's reply to it is
-    # not suppressed (decision 11).
-    _consent_by_admin(family_id, external.phone or alert.peerPhone, target.smsNumber)
     # (c) the edge.
     allow_store.set_edge(target_uid, external.uid, message=True, locate=False)
     allow_store.recompute_locatable_by_for_owner(external.uid)
@@ -899,8 +860,8 @@ def _approve_sms_unknown(
     delivered = undelivered = 0
     bid = externals_store.ensure_sms_backend(external)
     for row in held:
-        pager_text = sms_twilio.pager_body(row.body)
-        if not pager_text or sms_twilio.body_too_long(pager_text):
+        pager_text = sms_text.pager_body(row.body)
+        if not pager_text or sms_text.body_too_long(pager_text):
             held_sms_store.set_status([row.id], "too_long")
             continue
         result = routing.send(
@@ -970,7 +931,6 @@ def _approve_contact_request(
             raise _name_taken(owner.familyId, exc) from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        _consent_by_admin(owner.familyId, contact.phone or request.phone, None)
         allow_store.set_edge(owner.uid, contact.uid, message=True, locate=False)
         rederive_family_sms_contacts(owner.familyId, broker)
     else:

@@ -1,5 +1,7 @@
 # Bridge phone: execution tasks (8 Oct 2026)
 
+> **9 Oct 2026: Twilio removed** (last at 05ec3ed). The Twilio items below (the B2 transport switch, the B3 Twilio handler, `twilio-mock` in B7) are historical and void. SMS is bridge-only.
+
 Design: `docs/BRIDGE_PHONE_DESIGN.md` (decision numbers below refer to it). Order: **B1–B9**
 land the relay contract first; **W** and **A** consume it and may run in parallel after B4;
 **D** last. Every task: `Read` before touching anything, `Files` is exhaustive, `Verify` is the
@@ -293,8 +295,7 @@ npm run build`. Android: `cd bridge-android && ./gradlew assembleDebug`.
 - **Verify:** common relay verify.
 
 ### B7 Simulator + compose
-- **Read:** decision 14; `tools/mocks/twilio_mock.py`, `tools/mocks/Dockerfile`,
-  `relay/docker-compose.yml` (`twilio-mock`, relay env).
+- **Read:** decision 14; `tools/mocks/Dockerfile`, `relay/docker-compose.yml` (relay env; `twilio-mock` removed 9 Oct 2026).
 - **Files:** new `tools/bridge_sim.py`, new `tools/mocks/bridge_sim.Dockerfile` (or extend the
   mocks Dockerfile with a second image), `relay/docker-compose.yml`, `relay/README.md` (one
   paragraph under "End-to-end test scenarios"; D1 writes the rest).
@@ -304,7 +305,7 @@ npm run build`. Android: `cd bridge-android && ./gradlew assembleDebug`.
   a fixed status (`simNumber` from `BRIDGE_SIM_SIM_NUMBER`, default `+15550007777`,
   `accounts: ["kid@example.com"]`, all caps true); `POST /_inject {event}` forwards one event to
   `POST /bridge/events` and returns the relay's result; `POST /_reset`. Compose service
-  `bridge-sim` with `RELAY_URL=http://relay:8000`; relay `depends_on` it like `twilio-mock`.
+  `bridge-sim` with `RELAY_URL=http://relay:8000`; relay `depends_on` it.
 - **Verify:** `cd relay && docker compose up -d --build bridge-sim && curl -s localhost:8020/_outbox`
   returns `[]`; `python3 -I tools/bridge_sim.py --help`.
 
@@ -493,8 +494,7 @@ npm run build`. Android: `cd bridge-android && ./gradlew assembleDebug`.
   screen lock None, DND off, charge limiter, adb over Wi-Fi — and the simulator), `docs/README.md`
   (index rows for `BRIDGE_PHONE_DESIGN.md` and `BRIDGE_PHONE_TASKS.md`), `README.md` Status
   (bridge phone, Chat/Voice/SIM SMS), `docs/OVERVIEW.md` (a "Bridge phone" section: what it is,
-  what it replaces, Twilio kept for members without one), `docs/ROADMAP.md` (Next: Twilio removal
-  decision for the owner; Android app items: Voice number detection, MMS media, multi-account
+  what it replaces; SMS is bridge-only since 9 Oct 2026), `docs/ROADMAP.md` (Next: Twilio removal, done 9 Oct 2026, last at 05ec3ed; Android app items: Voice number detection, MMS media, multi-account
   Chat), `docs/SERVER_PLAN.md` §6.5 note + §10 D4 answered, `docs/RELAY_SMS_DESIGN.md` one
   italic note on decision 1/3 pointing at the bridge transport, `web/README.md` checklist (W5
   did the rows; D1 links the design), new `bridge-android/README.md` (build, sideload, pairing,

@@ -28,13 +28,16 @@ Other:
 | [SORACOM_TASKS.md](SORACOM_TASKS.md) | Execution tasks for SORACOM_DESIGN.md |
 | [VENDOR_BUG_REPORTS.md](VENDOR_BUG_REPORTS.md) | Bug reports drafted for Sequans and DPTechnics. Not yet sent |
 | [history/](history/) | The task lists the first build was executed from. Code comments such as "DEVICE_TASKS.md F3.5" refer to `history/DEVICE_TASKS.md`. Not maintained |
+| [history/TWILIO_ACCOUNTS_DESIGN.md](history/TWILIO_ACCOUNTS_DESIGN.md) | Historical: relay SMS across many Twilio accounts (parked 8 Oct 2026). Twilio removed 9 Oct 2026, last at 05ec3ed |
+| [history/TWILIO_PERSONAL_ACCOUNT_SETUP.md](history/TWILIO_PERSONAL_ACCOUNT_SETUP.md) | Historical: Twilio personal account setup. Twilio removed 9 Oct 2026, last at 05ec3ed |
+| [history/RELAY_SMS_CONSENT_TASKS.md](history/RELAY_SMS_CONSENT_TASKS.md) | Historical: relay SMS consent keywords, welcome and disclosure tasks. Twilio removed 9 Oct 2026, last at 05ec3ed |
 
 Design notes and task lists, one per feature (scope from each file's opening lines):
 
 | Document | Scope |
 |---|---|
 | [OTA_DESIGN.md](OTA_DESIGN.md) | Over-the-air firmware update: signed `cfg.ota` job, HTTPS download from the public bucket, full or delta image, rollback. Shipped; factory slot still open |
-| [RELAY_SMS_DESIGN.md](RELAY_SMS_DESIGN.md) | Relay SMS: one Twilio number per user, outbound by policy, unknown inbound held for parent approval. Decided 8 Oct 2026 |
+| [RELAY_SMS_DESIGN.md](RELAY_SMS_DESIGN.md) | Relay SMS: one number per user, outbound by policy, unknown inbound held for parent approval. Decided 8 Oct 2026. Twilio removed 9 Oct 2026 (last at 05ec3ed); SMS is now bridge-only |
 | [BRIDGE_PHONE_DESIGN.md](BRIDGE_PHONE_DESIGN.md) | Bridge phone: a headless Android phone carries a member's SIM texts, Google Voice and subscribed Google Chat through the relay. Decided 8–9 Oct 2026; built, not yet run on a phone |
 | [BRIDGE_PHONE_TASKS.md](BRIDGE_PHONE_TASKS.md) | Execution tasks for BRIDGE_PHONE_DESIGN.md: relay B1–B9, web W1–W5, Android A1–A7, docs D1–D2 |
 | [LOCATION_TRACKING_DESIGN.md](LOCATION_TRACKING_DESIGN.md) | Location tracking: hourly cell fix when stationary; cell first while moving, GNSS in eDRX gaps every 10 min |

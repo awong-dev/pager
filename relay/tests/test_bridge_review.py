@@ -9,7 +9,6 @@ from fastapi.testclient import TestClient
 
 from app import jobs
 from app.db.firestore import get_db
-from app.notify import sms as sms_client
 from app.routing import Routing
 from app.store import alerts as alerts_store
 from app.store import allow as allow_store
@@ -212,11 +211,9 @@ def test_number_edits_keep_the_phone_reported_sms_bit(client: TestClient, world:
 # 4 ------------------------------------------------------------------------
 
 
-def test_a_bridge_number_with_no_usable_cap_never_falls_through_to_twilio(
-    client: TestClient, world: World, broker: FakeBrokerClient, monkeypatch
+def test_a_bridge_number_with_no_usable_cap_fails_no_bridge(
+    client: TestClient, world: World, broker: FakeBrokerClient
 ):
-    calls: list = []
-    monkeypatch.setattr(sms_client, "send_sms", lambda *a, **k: calls.append(a))
     bridge, _ = pair_bridge(
         client, world, sim=SIM, caps={"sms": False, "gchat": True, "gvoice": False}
     )
@@ -226,7 +223,6 @@ def test_a_bridge_number_with_no_usable_cap_never_falls_through_to_twilio(
     (msg,) = result.messages
     d = messages_store.get_message(msg.id).deliveries["sms"]
     assert d.state == "failed" and d.error == "no_bridge"
-    assert calls == []
 
 
 # 5 ------------------------------------------------------------------------

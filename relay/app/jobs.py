@@ -7,9 +7,8 @@ docs/SERVER_PLAN.md §5.7, §5.8.
    2xx) -- at most 10 per device, oldest first, the same cap/ordering as the
    online-edge republish (both come from `messages_store.
    list_pending_for_device`).
-1b. Retry `sms` deliveries still `queued` (Twilio 5xx / transport error):
-   `messages_store.list_recent_queued_by_kind` + `Routing.redeliver`,
-   bounded by `record_delivery_attempt` (docs/RELAY_SMS_DESIGN.md decision 3).
+1b. Fail bridge outbox rows still `pending` after 24 h (`bridge_offline`);
+   bridge `sms` deliveries are otherwise decided by the phone's ack.
 2. Clear `locReqs/{d}` documents older than `app.location.loc_req_ttl_s()`
    (PROTOCOL.md §13.4) -- `app.location.clear_stale_loc_reqs`.
 
@@ -138,17 +137,8 @@ from app.tasks import TaskQueue, build_task_queue
 
 logger = logging.getLogger("relay.jobs")
 
-# Non-pager backend kinds whose `queued` deliveries tick retries (today just
-# `sms`: docs/RELAY_SMS_DESIGN.md decision 3). `record_delivery_attempt`'s
-# MAX_DELIVERY_ATTEMPTS ends the retries.
-NON_PAGER_RETRY_KINDS: tuple[str, ...] = ("sms",)
-BRIDGE_EXTERNAL_PREFIX = "ob_"
 BRIDGE_OFFLINE_AFTER = timedelta(hours=24)
 BRIDGE_ACKED_RETENTION = timedelta(days=7)
-NON_PAGER_RETRY_SCAN_LIMIT = 50
-# Caps how many non-pager retries one tick dispatches (not scans): a tick with
-# Twilio down must not approach Cloud Run's request timeout.
-NON_PAGER_RETRY_DISPATCH_LIMIT = 10
 
 
 @dataclass(frozen=True, slots=True)
@@ -156,7 +146,6 @@ class TickResult:
     devicesChecked: int
     retriesAttempted: int
     locReqsCleared: int = 0
-    nonPagerRetriesAttempted: int = 0
     bridgeOutboxFailed: int = 0
 
 
@@ -205,30 +194,6 @@ def tick(routing: Routing, *, task_queue: TaskQueue | None = None) -> TickResult
                 name=f"pager-retry:{msg.id}:{device.id}",
             )
 
-    non_pager_retries_attempted = 0
-    for kind in NON_PAGER_RETRY_KINDS:
-        if non_pager_retries_attempted >= NON_PAGER_RETRY_DISPATCH_LIMIT:
-            break
-        # `ob_` = handed to a bridge phone's outbox (docs/BRIDGE_PHONE_DESIGN.md
-        # decision 4): the phone's ack decides those, not the tick.
-        for msg in messages_store.list_recent_queued_by_kind(
-            kind, limit=NON_PAGER_RETRY_SCAN_LIMIT, exclude_external_prefix=BRIDGE_EXTERNAL_PREFIX
-        ):
-            if non_pager_retries_attempted >= NON_PAGER_RETRY_DISPATCH_LIMIT:
-                break
-            for bid, delivery in msg.deliveries.items():
-                if delivery.kind != kind or delivery.state != "queued":
-                    continue
-                if (delivery.externalId or "").startswith(BRIDGE_EXTERNAL_PREFIX):
-                    continue
-                if non_pager_retries_attempted >= NON_PAGER_RETRY_DISPATCH_LIMIT:
-                    break
-                non_pager_retries_attempted += 1
-                task_queue.enqueue(
-                    lambda msg=msg, bid=bid: routing.redeliver(msg, bid),
-                    name=f"{kind}-retry:{msg.id}:{bid}",
-                )
-
     loc_reqs_cleared = location.clear_stale_loc_reqs()
     bridge_rows_failed = _fail_stale_bridge_outbox()
 
@@ -237,7 +202,6 @@ def tick(routing: Routing, *, task_queue: TaskQueue | None = None) -> TickResult
         devicesChecked=devices_checked,
         retriesAttempted=retries_attempted,
         locReqsCleared=loc_reqs_cleared,
-        nonPagerRetriesAttempted=non_pager_retries_attempted,
     )
 
 

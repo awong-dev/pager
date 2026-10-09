@@ -88,23 +88,13 @@ class User(BaseModel):
     notify: Notify = Field(default_factory=Notify)
     disabled: bool = False
     createdAt: datetime | None = None
-    # docs/RELAY_SMS_DESIGN.md decision 1: the Twilio number (E.164) that
-    # belongs to this person; `smsNumbers/{e164}` is its reverse index.
+    # docs/RELAY_SMS_DESIGN.md decision 1: the SMS number (E.164) that
+    # belongs to this person (set from the paired bridge, bridge_numbers.py); `smsNumbers/{e164}` is its reverse index.
     smsNumber: str | None = None
     # docs/BRIDGE_PHONE_DESIGN.md decision 7: set on an external that stands
     # for a subscribed Google Chat conversation: `{bridgeId, conversationId,
     # source, link, isGroup, title, canReply}`.
     chat: dict | None = None
-
-
-class _Unset:
-    """Sentinel type: "leave the field alone" (as opposed to `None`)."""
-
-    def __repr__(self) -> str:
-        return "UNSET"
-
-
-UNSET = _Unset()
 
 
 class SmsNumberTaken(Exception):
@@ -248,7 +238,6 @@ def update_user(
     role: Role | None = None,
     disabled: bool | None = None,
     notify_alerts: bool | None = None,
-    sms_number: str | None | _Unset = UNSET,
 ) -> User:
     """Patch-semantics update of mutable fields. `alias` is intentionally
     not editable here -- changing it would orphan the old `aliases/{alias}`
@@ -278,8 +267,6 @@ def update_user(
             ref.update(updates)
         except NotFound as exc:
             raise KeyError(f"no such user: {uid!r}") from exc
-    if not isinstance(sms_number, _Unset):
-        set_sms_number(uid, sms_number)
     fetched = get_user(uid)
     if fetched is None:
         raise KeyError(f"no such user: {uid!r}")

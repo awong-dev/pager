@@ -5,6 +5,8 @@
 > the pager's own SMS (`cfg.sms`). Members whose `policy.out` is `open`/`any_sms` get every family contact on their
 > pager automatically. See `build/bench-logs/DESIGN_no_relay_sms.md` and CONTACT_REQ_DESIGN.md decision 7.
 > 
+> **9 Oct 2026:** Twilio removed (last at 05ec3ed). SMS is bridge-only: a member's `smsNumber` comes from their bridge phone, and the 8 Oct webhook and per-user Twilio number below are void.
+>
 > **8 Oct 2026 (owner decision):** the relay SMS backend returns for members who hold a per-user Twilio number (`users.smsNumber`). Inbound SMS from unknown numbers are held with an alert to family admins; known and approved senders are delivered. Outbound SMS goes through the relay by phone number to externals with the sender's number. See docs/RELAY_SMS_DESIGN.md.
 
 **Status:** implemented overnight 30 Sep → 1 Oct 2026 per `docs/FAMILIES_TASKS.md`; see §10 for where
@@ -45,7 +47,7 @@ Where this document differs from them, this document wins. Nothing here changes
   `phoneIndex/{e164}` entry (`relay/app/routers/webhooks.py:215-272`, `routers/me.py:199-234`).
   Contact approval in `create` mode manufactures such a user from a pager `contact_req`
   (`routers/admin.py:752-768`). Inbound SMS from an unknown number is logged and dropped
-  (`webhooks.py:236-244`). One deployment-wide Twilio number (`TWILIO_FROM_NUMBER`).
+  (`webhooks.py:236-244`). One deployment-wide Twilio number (`TWILIO_FROM_NUMBER`; the Twilio path is removed 9 Oct 2026, last at 05ec3ed).
 - **The pager's own modem SMS** is a separate transport: `devices.smsContacts` (max 8) is pushed
   as `cfg.sms`, the device shows only listed numbers, and every text is audited to
   `devices/{d}/smsLog` (`V02_DESIGN.md` §6).
@@ -97,7 +99,7 @@ Where this document differs from them, this document wins. Nothing here changes
    (a member on the `open` outbound policy started talking to someone they have no edge to) and
    *unrecognised SMS* (held, with approve/block actions). Pager `contactRequests` are shown in the
    same inbox. Every family admin's push tokens receive a `kind: "alert"` FCM message.
-10. **Per-family Twilio number superseded 7 Oct 2026; per-user number restored 8 Oct 2026.** Each member may hold a relay SMS number (`users.smsNumber`, docs/RELAY_SMS_DESIGN.md decision 1) to send and receive SMS through the relay; see §9 for alerts and decision 6 for externals' backend rows.
+10. **Per-family Twilio number superseded 7 Oct 2026; per-user number restored 8 Oct 2026.** Each member may hold a relay SMS number (`users.smsNumber`, docs/RELAY_SMS_DESIGN.md decision 1; since 9 Oct 2026 it comes from bridge pairing, Twilio removed at 05ec3ed) to send and receive SMS through the relay; see §9 for alerts and decision 6 for externals' backend rows.
 11. **The pager's modem SMS path is a projection, not a second policy.** `devices.smsContacts`
     becomes derived (the member's approved numbers, capped at 8, editable only through the member's
     approved-numbers list). `any_sms` cannot be honoured on the device today because the firmware
@@ -243,7 +245,7 @@ not_allowed, not_member, sms_contact, no_sms_number}` and a message the UI shows
 create) moves to `/api/family/groups`; join (`POST …/members`) requires the joiner to be a family
 admin of the group creator's family and no longer writes `locate` edges.
 
-**Webhooks**: none for SMS (removed 7 Oct 2026). *(8 Oct 2026: restored for inbound SMS only — `POST /webhooks/twilio/sms` per-IP limited, signature-verified, holds unknown senders for admin approval; see docs/RELAY_SMS_DESIGN.md decision 4 and §4 of this doc.)*
+**Webhooks**: none for SMS (removed 7 Oct 2026; the 8 Oct webhook below was removed 9 Oct 2026, last at 05ec3ed). *(8 Oct 2026: restored for inbound SMS only — `POST /webhooks/twilio/sms` per-IP limited, signature-verified, holds unknown senders for admin approval; see docs/RELAY_SMS_DESIGN.md decision 4 and §4 of this doc.)*
 
 ## 5. Web UI
 

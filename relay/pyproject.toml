@@ -25,11 +25,6 @@ dependencies = [
     # docs/SERVER_PLAN.md §5's tasks.py line: app/tasks.py's
     # CloudTasksQueue (TASKS_MODE=cloud_tasks).
     "google-cloud-tasks",
-    # `POST /webhooks/twilio/sms` parses Twilio's
-    # application/x-www-form-urlencoded body via Starlette's
-    # `Request.form()`, which requires this package even for non-multipart
-    # forms.
-    "python-multipart",
     # docs/DEVICE_PLAN.md §2.4: the wire's CBOR encoding, integer-keyed per
     # docs/PROTOCOL.md §10 (`app/wirecbor.py`); `tools/authvectors.json`
     # pins this library's encoding against the firmware's hand-written

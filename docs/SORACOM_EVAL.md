@@ -77,7 +77,7 @@ What breaks or needs care:
 - **Device-direct SMS to a parent's phone does not work on a Soracom SIM.** Mobile-originated SMS
   can only go to Soracom's own endpoint; texting an ordinary phone number is not supported. The
   feature specified in `V02_DESIGN.md` §6 would have to become "pager → SMS → Soracom → (Beam's
-  SMS→HTTP entry point) → relay → Twilio → parent". That still works when the data session is
+  SMS→HTTP entry point) → relay → bridge phone → parent" (Twilio was the last hop until its removal on 9 Oct 2026, last at 05ec3ed)". That still works when the data session is
   down, and the audit log comes for free, but it depends on the relay, which is what the
   direct-SMS design was meant to avoid. Inbound texts from ordinary phones are reported as
   supported; verify.

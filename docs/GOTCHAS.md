@@ -307,6 +307,8 @@ did not exist.
 
 ## Twilio webhook 401s (8 Oct 2026)
 
+*Historical: Twilio was removed 9 Oct 2026 (last at 05ec3ed), so this webhook no longer exists.*
+
 **Symptom:** relay logs `SECURITY signature verification failed` for every inbound SMS from Twilio.
 
 **Cause:** `PUBLIC_BASE_URL` does not match the webhook URL registered in the Twilio console byte-for-byte. The HMAC-SHA1 signature in `X-Twilio-Signature` covers the full URL including protocol, domain and path; a mismatch voids the signature.

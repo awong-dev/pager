@@ -25,9 +25,7 @@ its own provider-specific bearer JWT first (a failure there is a 401,
 matching the webhook-key check's "auth failure, not a malformed payload"
 carve-out) and then dispatches into `app/backends/gchat.py` for the pure,
 unit-tested verification logic, and `app/backends/resolve.py`'s
-`resolve_reply()` for the shared `@alias`/single-peer recipient rule. `POST /webhooks/twilio/sms`
-(docs/RELAY_SMS_DESIGN.md decision 4) is verified with Twilio's HMAC-SHA1
-`X-Twilio-Signature` and dispatches into `_handle_inbound_sms`.
+`resolve_reply()` for the shared `@alias`/single-peer recipient rule.
 
 Two things the gchat handler does for security: it rejects linking a non-DM
 space (`space.type != "DM"`) outright, and it pins the linking message's
@@ -59,21 +57,13 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from google.api_core.exceptions import GoogleAPICallError
 from starlette.concurrency import run_in_threadpool
 
-from app import sms_compliance
 from app.backends import gchat as gchat_backend
-from app.backends import sms_twilio
 from app.backends.resolve import USAGE_HINT, resolve_reply
 from app.broker import BrokerClient
-from app.ids import new_id
-from app.inbound_text import handle_text
 from app.ingest import Ingest
-from app.notify import sms as sms_client
 from app.routing import Routing
 from app.store import backends as backends_store
-from app.store import externals as externals_store
 from app.store import rate_limits as rate_limits_store
-from app.store import sms_consent as sms_consent_store
-from app.store import users as users_store
 
 logger = logging.getLogger("relay.webhooks")
 
@@ -199,94 +189,6 @@ async def mqtt_webhook(request: Request) -> Response:
 
 def _reject_hint(reason: str) -> str:
     return "unknown recipient" if reason == "unknown_alias" else "not allowed to message that recipient"
-
-
-# ---------------------------------------------------------------------------
-# POST /webhooks/twilio/sms -- docs/RELAY_SMS_DESIGN.md decision 4
-# ---------------------------------------------------------------------------
-
-
-def _handle_inbound_sms(params: dict[str, str], routing: Routing) -> tuple[str, str]:
-    """The step table of docs/RELAY_SMS_DESIGN.md decision 4, first match
-    wins. Returns `(outcome, to_label)` for the one INFO line the caller
-    logs. Twilio retries on non-2xx, so every handled case is a 200."""
-    sid = params.get("MessageSid") or new_id("sm_")
-    to_raw = params.get("To", "")
-    try:
-        to_number = externals_store.normalize_phone(to_raw)
-    except ValueError:
-        to_number = to_raw
-
-    target_uid = users_store.get_uid_for_sms_number(to_number) if to_number else None
-    target = users_store.get_user(target_uid) if target_uid else None
-    if (
-        target is None
-        or target.kind != "person"
-        or target.disabled
-        or target.familyId is None
-        or target.smsNumber != to_number
-    ):
-        return "dropped_unknown_to", "-"
-    to_label = f"@{target.alias}"
-
-    try:
-        from_number = externals_store.normalize_phone(params.get("From", ""))
-    except ValueError:
-        return "dropped_bad_from", to_label
-
-    # Consent keywords (decision 11) run before the blocked check: STOP must
-    # work for a blocked number too. Never stored, held or routed.
-    kw = sms_compliance.keyword(params.get("Body") or "")
-    if kw is not None:
-        if kw == "start":
-            sms_consent_store.mark_opted_in(from_number, source="keyword")
-            reply = sms_compliance.welcome()
-        elif kw == "stop":
-            sms_consent_store.mark_opted_out(from_number)
-            reply = sms_compliance.opt_out_reply()
-        else:
-            reply = sms_compliance.help_reply()
-        sms_client.send_sms(from_number, reply, from_number=to_number)
-        return f"keyword_{kw}", to_label
-
-    try:
-        media = int(params.get("NumMedia") or "0")
-    except ValueError:
-        media = 0
-    outcome = handle_text(
-        target,
-        from_number,
-        params.get("Body") or "",
-        sid,
-        routing,
-        reply=lambda text: sms_client.send_sms(from_number, text, from_number=to_number),
-        attachments=["image"] if media > 0 else [],
-    )
-    return outcome, to_label
-
-
-@router.post("/webhooks/twilio/sms")
-async def twilio_sms_webhook(request: Request) -> Response:
-    _check_webhook_ip_rate_limit(request, "sms")
-    form = await request.form()
-    # Twilio's params are single-valued; last-value-wins keeps the type a
-    # plain `dict[str, str]`, what `verify_twilio_signature` expects.
-    params: dict[str, str] = {k: str(v) for k, v in form.items()}
-    signature = request.headers.get("X-Twilio-Signature")
-    url = sms_twilio.twilio_webhook_url()
-    if not sms_twilio.verify_twilio_signature(url, params, signature, sms_client.auth_token()):
-        raise HTTPException(status_code=401, detail="invalid Twilio signature")
-
-    routing: Routing = request.app.state.routing
-    outcome, to_label = await run_in_threadpool(_handle_inbound_sms, params, routing)
-    logger.info(
-        "sms in to=%s from=%s sid=%s outcome=%s",
-        to_label,
-        sms_client.redact_phone(params.get("From", "")),
-        params.get("MessageSid", "-"),
-        outcome,
-    )
-    return Response(status_code=200)
 
 
 # ---------------------------------------------------------------------------

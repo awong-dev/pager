@@ -628,19 +628,7 @@ def test_external_to_external_is_rejected_sms_contact(routing: Routing):
     assert [r.reason for r in result.rejected] == ["sms_contact"]
 
 
-def test_dm_to_external_with_sender_number_sends_from_that_number(
-    routing: Routing, monkeypatch: pytest.MonkeyPatch
-):
-    from app.notify import sms as sms_client
-    from app.notify.sms import TwilioSendResult
-
-    calls: list[dict] = []
-
-    def fake_send(to: str, body: str, *, from_number: str) -> TwilioSendResult:
-        calls.append({"to": to, "body": body, "from": from_number})
-        return TwilioSendResult(ok=True, sid="SM1")
-
-    monkeypatch.setattr(sms_client, "send_sms", fake_send)
+def test_dm_to_external_without_a_bridge_number_fails_no_bridge(routing: Routing):
     fam = families_store.create_family(name="F", created_by="root").id
     _make_user("alice", "alice", family_id=fam)
     get_db().collection("users").document("alice").update(
@@ -648,9 +636,6 @@ def test_dm_to_external_with_sender_number_sends_from_that_number(
     )
     users_store.set_sms_number("alice", "+12065550777")
     ext = _make_contact(fam)
-    from app.store import sms_consent as sms_consent_store
-
-    sms_consent_store.mark_opted_in("+12065550100", source="admin")
 
     result = routing.send(
         sender_uid="alice",
@@ -661,17 +646,9 @@ def test_dm_to_external_with_sender_number_sends_from_that_number(
     )
 
     assert result.rejected == []
-    assert calls == [
-        {
-            "to": "+12065550100",
-            "body": 'alice says: "hi gran" - Pager (Albert Wong)'
-            ". Reply STOP to opt out, HELP for help.",
-            "from": "+12065550777",
-        }
-    ]
     (msg,) = result.messages
-    states = {d.kind: d.state for d in messages_store.get_message(msg.id).deliveries.values()}
-    assert states == {"sms": "sent"}
+    (d,) = messages_store.get_message(msg.id).deliveries.values()
+    assert (d.kind, d.state, d.error) == ("sms", "failed", "no_bridge")
 
 
 def test_broadcast_skips_externals(routing: Routing):

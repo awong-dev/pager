@@ -4,7 +4,7 @@ The row lives on a subscribed Google Chat / Google Voice conversation (an
 external with `chat` set). `deliver()` hands the text to the bridge phone's
 outbox and leaves the delivery `queued`; the phone's ack
 (`POST /bridge/outbox/{id}/ack`) moves it to `sent` or `failed`.
-`apply_outbox_state` is shared with `sms_twilio`'s bridge transport.
+`apply_outbox_state` is shared with the `sms` backend's bridge transport.
 """
 
 from __future__ import annotations

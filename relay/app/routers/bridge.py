@@ -21,11 +21,10 @@ from starlette.concurrency import run_in_threadpool
 
 from app import alerts as alerts_module
 from app import bridge_numbers, chat_subscribe
-from app.backends.sms_twilio import voice_link
 from app.bridgeauth import mint_token, require_bridge
 from app.inbound_text import handle_text, placeholder_for
-from app.notify import sms as sms_client
 from app.routers.webhooks import _check_webhook_ip_rate_limit
+from app.sms_text import redact_phone, voice_link
 from app.store import bridge_conversations, bridge_outbox
 from app.store import bridges as bridges_store
 from app.store import externals as externals_store
@@ -307,7 +306,7 @@ def conv_log_id(conversation_id: str) -> str:
 
 def _from_label(event: BridgeEvent) -> str:
     if event.sender.phone:
-        return sms_client.redact_phone(event.sender.phone)
+        return redact_phone(event.sender.phone)
     return event.sender.name or "-"
 
 

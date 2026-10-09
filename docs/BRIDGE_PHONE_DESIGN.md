@@ -20,17 +20,15 @@ account); Google Voice has no API; Android's `NotificationListenerService` sees 
 - **Backends.** `app/backends/base.py` `Backend` protocol (`deliver/start_link/complete_link/
   render_state`); `registry.py` maps one `kind` to one implementation: `pager`, `webapp`,
   `gchat` (the Workspace Chat-app adapter, `app/backends/gchat.py`, never usable here), `sms`
-  (`SmsTwilioBackend`). `Routing._deliver_one` applies every `DeliverResult` through
+  (`app/backends/sms.py` `SmsBackend`, bridge outbox only; Twilio removed 9 Oct 2026, last at 05ec3ed). `Routing._deliver_one` applies every `DeliverResult` through
   `messages_store.record_delivery_attempt` (attempts+1; `ok=False` at 5 → `failed`; `ok=True`
   with state `queued` only clears `error`). `jobs.tick` retries `queued` `sms` deliveries via
-  `messages_store.list_recent_queued_by_kind("sms")` + `Routing.redeliver` (24 h window).
+  `messages_store.list_recent_queued_by_kind("sms")` + `Routing.redeliver` (24 h window); the Twilio retry path is removed 9 Oct 2026 (last at 05ec3ed), and bridge `ob_` items are skipped.
 - **SMS model (docs/RELAY_SMS_DESIGN.md).** `users.smsNumber` + `smsNumbers/{e164}` index
   (`users_store.set_sms_number`); an external contact (`users/{x_…}` `kind:"external"`,
   `ownerFamilyId`, `phone`, `externals_store.get_or_create`) carries one `sms` backend row
-  (`ensure_sms_backend`, fixed id `sms`, `config.phone`). `SmsTwilioBackend.deliver` reads the
-  sender's `smsNumber`, gates on `smsConsent`, formats with `sms_compliance`, calls
-  `sms_client.send_sms`. Inbound: `routers/webhooks.py` `_handle_inbound_sms(params, routing)`
-  resolves `To` → person, runs keywords, blocked, duplicate, known-contact-delivers, else holds
+  (`ensure_sms_backend`, fixed id `sms`, `config.phone`). The `sms` backend's `deliver` (9 Oct 2026: bridge-only; it was
+  `SmsTwilioBackend`, which read `smsConsent` and called `sms_client.send_sms`, removed at 05ec3ed) hands the send to the sender's bridge. Inbound: `app/inbound_text.py` `handle_text` (from `/bridge/events`; the Twilio webhook is removed) resolves the target person, runs blocked, duplicate, known-contact-delivers, else holds
   (`held_sms_store.create`, `alerts.sms_held_upsert`). Approve: `routers/family.py`
   `_approve_sms_unknown` (contact, edge, `rederive_family_sms_contacts`, backlog via
   `routing.send(... wire_id=row.id)`). `Routing._sms_route_reject` refuses an external peer unless
@@ -60,9 +58,8 @@ account); Google Voice has no API; Android's `NotificationListenerService` sees 
   page.tsx` + `AlertCard.tsx`, `app/settings/book/page.tsx` (member picker over `GET /api/book`),
   `lib/api.ts` (`api.get/post/patch/put/del`), `lib/types.ts` (`AlertKind`, `BackendKind`).
   Static export (`output: 'export'`): no dynamic route segments, member pages use `?uid=`.
-- **Dev/test.** `relay/docker-compose.yml` services `emqx`, `firebase`, `relay`, `twilio-mock`
-  (`tools/mocks/twilio_mock.py`, own Dockerfile); `tools/e2e_v2.py` scenarios (`relay_sms` is the
-  model); `relay/tests/conftest.py` emulator fixtures; `test_rules.py` through the emulator REST.
+- **Dev/test.** `relay/docker-compose.yml` services `emqx`, `firebase`, `relay`, `bridge-sim`
+  (removed 9 Oct 2026, last at 05ec3ed); `tools/e2e_v2.py` scenarios (`relay_sms` removed the same day); `relay/tests/conftest.py` emulator fixtures; `test_rules.py` through the emulator REST.
 - **Toolchain on the Mac (8 Oct 2026).** `adb` and OpenJDK 25 present; **no** Android SDK,
   Android Studio or Gradle. AGP 8.x needs JDK 17.
 
@@ -110,10 +107,10 @@ account); Google Voice has no API; Android's `NotificationListenerService` sees 
    pager's `c[]` with `t:"sms"`. A heartbeat only records `status.simNumber`; a mismatch with the
    accepted `simNumber` sets `status.error = "SIM changed"` and changes nothing else *(review 9 Oct
    2026: a heartbeat that rewrites `smsNumber` lets a stolen token re-point the member's number,
-   and would stomp a Twilio number an admin set on purpose within five minutes)*. `voiceNumber` is **not** an `smsNumbers` index entry *(inbound Voice texts arrive from the
+   and would stomp a number an admin set on purpose within five minutes)*. `voiceNumber` is **not** an `smsNumbers` index entry *(inbound Voice texts arrive from the
    bridge with the owner known, decision 5; nothing routes inbound by the Voice number)* but it does
    become the member's `smsNumber` when there is no SIM (O1, revised 9 Oct 2026).
-4. **One `sms` kind, two transports.** `SmsTwilioBackend.deliver` gains a first step: `bridges_store.
+4. **One `sms` kind, one transport (void 9 Oct 2026: the Twilio branch is removed; the bridge is the only path).** Originally: `SmsTwilioBackend.deliver` gains a first step: `bridges_store.
    get_by_sms_number(sender.smsNumber)` (query on the accepted top-level `simNumber` **or** `voiceNumber`, O1 revised) — when it
    names a paired bridge with `caps.sms` or `caps.gvoice`, the send is handed to `bridge_outbox.enqueue_send(bridge,
    msg, bid, source=<the channel this member last used with this external, decision 5; `gvoice`
@@ -121,8 +118,8 @@ account); Google Voice has no API; Android's `NotificationListenerService` sees 
    the delivery's `externalId` is set to the outbox id, and it returns `DeliverResult(ok=True,
    state="queued", external_id=<outbox id>)`; **no** consent gate, no `relay_body` wrapper, no disclosure, no
    `defang` *(10DLC obligations are Twilio's; a text from a personal SIM is person-to-person)*.
-   Otherwise the Twilio path runs exactly as today. **Twilio is not removed** (members without a
-   bridge keep their relay number); the owner may delete it later — flagged. The outbox id is
+   Otherwise `failed` with `no_bridge` (9 Oct 2026: Twilio removed, last at 05ec3ed; members without a
+   bridge have no SMS). The owner's earlier "may delete it later" flag is closed. The outbox id is
    deterministic, `ob_<msgId>_<bid>`, written with `create()`; on `AlreadyExists` the existing
    row's state is applied (`pending` → `queued`, `sent` → `mark_delivery_sent_if_queued`, `failed`
    → `failed`), so a redeliver also repairs an ack whose delivery write was lost. `jobs.tick`
@@ -153,8 +150,7 @@ account); Google Voice has no API; Android's `NotificationListenerService` sees 
      are out of scope for v1); `sender.phone` normalized (`externals_store.normalize_phone`; bad
      or absent → `dropped_bad_from`); then the step table of RELAY_SMS_DESIGN decision 4 from the *blocked* step on,
      factored out of `_handle_inbound_sms` into `app/inbound_text.py` `handle_text(target, from_
-     number, raw_body, sid, routing, reply)` (no keywords; the Twilio handler keeps its keyword
-     step and then calls the same function). `reply(text)` for the bridge enqueues an outbox send
+     number, raw_body, sid, routing, reply)` (no keywords; the Twilio keyword step was removed 9 Oct 2026). `reply(text)` for the bridge enqueues an outbox send
      on the same source (the `too_long` hint). Empty text with attachments → `[photo]` for one
      image, else `[attachment]`. A delivered text records the channel **per member** on the
      external's `sms` backend row: `config.via.<ownerUid> = "sms"|"gvoice"` and, for `gvoice`,
@@ -352,8 +348,7 @@ account); Google Voice has no API; Android's `NotificationListenerService` sees 
       left open on a thread, charge limiter / smart-plug duty cycle, adb over Wi-Fi for maintenance.
 14. **Simulator.** `tools/bridge_sim.py`: a Python stand-in for the phone speaking the §11/§5
     contract (pair, events, outbox poll, ack, heartbeat) with `/_inject` (an inbound event),
-    `/_outbox` (what it "sent"), `/_fail_next`, `/_reset`; compose service `bridge-sim` next to
-    `twilio-mock`; `tools/e2e_v2.py` scenario `bridge` (pair → SIM text from a known contact →
+    `/_outbox` (what it "sent"), `/_fail_next`, `/_reset`; compose service `bridge-sim`; `tools/e2e_v2.py` scenario `bridge` (pair → SIM text from a known contact →
     pager; unknown Chat group → `chat_unknown` → subscribe → backlog on the pager with `sndr` →
     pager reply → sim outbox; Voice text → one contact for both channels; inspect by link).
 15. **Rules, indexes, migration.** New collections `bridges`, `bridgePairCodes`,
@@ -421,6 +416,11 @@ not rebuilt for this work.
 
 ## Orchestrator decisions (9 Oct 2026, owner not present; each is reversible and flagged in the report)
 
+**9 Oct 2026: Twilio removed.** Twilio relay SMS was last present at commit 05ec3ed
+(`05ec3ed703cf27c368cb4713d03ea3f25c8ac300`, 9 Oct 2026); added at a30ebca (8 Oct 2026), consent/keywords at
+13c4a4b, first removal at 123efa4 (7 Oct 2026). With it, O3, O6 and O7 are moot. The `sms` backend is
+bridge-only, and a non-bridge number fails `no_bridge`.
+
 The server-architect review left eight items for the owner. The recommended option was taken for each so the build could continue:
 
 - **O1 Voice-only bridge — REVISED (owner, 9 Oct 2026 00:xx PDT: "Google Voice only setup should be possible").**
@@ -442,10 +442,10 @@ The server-architect review left eight items for the owner. The recommended opti
   an outbox item with `source:"gvoice"` tries the cached Voice reply action for that peer number (tier 1)
   before opening `to.link` (tier 2). Supersedes the earlier O1 text ("not supported in this pass").
 - **O2 No long-poll from the phone.** A 25-s long-poll holds a Cloud Run instance for ~10 h/day per bridge and costs ~17k Firestore reads/day; the free tier is 50k. The phone polls `GET /bridge/outbox` with `wait=0` every 60 s (configurable 30–300 s on the setup screen) and additionally whenever an FCM data push arrives; the heartbeat response carries `pending` so a phone with FCM can skip idle polls. Outbound latency in the poll-only build is therefore ≤60 s, which is the accepted fallback until the owner registers the Android app with Firebase. `wait` remains implemented for the simulator/e2e.
-- **O3 Welcome text.** `_consent_by_admin`'s welcome text is skipped when the member's `smsNumber` is a bridge SIM (`bridges_store.get_by_sim_number`); person-to-person texting needs no disclosure. B2 Files gains `routers/family.py`.
+- **O3 Welcome text.** *(Moot 9 Oct 2026: Twilio removed, last at 05ec3ed, and with it the welcome text.)* `_consent_by_admin`'s welcome text is skipped when the member's `smsNumber` is a bridge SIM (`bridges_store.get_by_sim_number`); person-to-person texting needs no disclosure. B2 Files gains `routers/family.py`.
 - **O4 Voice sender shows a contact name.** The bridge account keeps an empty contacts list (setup checklist), and A3 reads the number from the notification's shortcut/URI when present before falling back to the title. A text whose sender cannot be resolved to E.164 is reported with `sender.name` only and lands as `dropped_bad_from` with one INFO line, never an alert.
 - **O5 Out-policy on subscribe.** If the owner's outbound people rule is `none`, Subscribe forces `canReply:false` (the dialog shows the switch disabled with "@kid's policy does not allow outbound messages"); it never returns 409. Inbound is judged on the people column for a Chat DM and on the numbers column for an SMS contact, which is the owner's model (one person may be two contacts under two rules).
-- **O6 STOP numbers.** A number that opted out of the Twilio number is not blocked on the bridge SIM: person-to-person traffic carries no opt-out semantics. Flagged for the owner; no code.
-- **O7 Cross-design.** If TWILIO_ACCOUNTS lands, an `smsNumbers` entry without `accountSid` is a bridge number. Noted there when that design is picked up.
+- **O6 STOP numbers.** *(Moot 9 Oct 2026: no opt-out registry exists; Twilio removed, last at 05ec3ed.)* A number that opted out of the Twilio number is not blocked on the bridge SIM: person-to-person traffic carries no opt-out semantics. Flagged for the owner; no code.
+- **O7 Cross-design.** *(Moot 9 Oct 2026: TWILIO_ACCOUNTS is parked and Twilio is removed, last at 05ec3ed.)* If TWILIO_ACCOUNTS lands, an `smsNumbers` entry without `accountSid` is a bridge number. Noted there when that design is picked up.
 - **O8 Router file.** B5 and B6 both live in `relay/app/routers/family_bridges.py`.
 

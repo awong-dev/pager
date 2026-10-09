@@ -48,29 +48,6 @@ function MemberProfileForm({
   const [savedOut, setSavedOut] = useState(member.policy.out);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // Last saved SMS number, so blur/Enter only PATCHes a real change.
-  const [savedSms, setSavedSms] = useState(member.smsNumber ?? "");
-  const [smsNumber, setSmsNumber] = useState(member.smsNumber ?? "");
-  const [smsError, setSmsError] = useState<string | null>(null);
-  const [smsBusy, setSmsBusy] = useState(false);
-
-  async function saveSms() {
-    const next = smsNumber.trim();
-    if (next === savedSms || smsBusy) return;
-    setSmsBusy(true);
-    setSmsError(null);
-    try {
-      await api.patch(`/family/members/${member.uid}${familyQuery()}`, {
-        smsNumber: next === "" ? null : next,
-      });
-      setSavedSms(next);
-    } catch (err) {
-      setSmsError(err instanceof ApiError ? String(err.detail ?? err.message) : "Failed to save SMS number");
-    } finally {
-      setSmsBusy(false);
-    }
-  }
-
   async function save() {
     setBusy(true);
     setError(null);
@@ -115,23 +92,15 @@ function MemberProfileForm({
         <MenuItem value="admin">Admin</MenuItem>
         {member.role === "super" && <MenuItem value="super">Super</MenuItem>}
       </TextField>
-      <TextField
-        label="SMS number"
-        value={smsNumber}
-        onChange={(e) => setSmsNumber(e.target.value)}
-        onBlur={() => void saveSms()}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") void saveSms();
-        }}
-        placeholder="+1 206 555 0100"
-        error={smsError !== null}
-        helperText={
-          smsError ??
-          `A Twilio number from the family's account. Texts to it reach @${member.alias}'s pagers; @${member.alias}'s pager texts contacts from it.`
-        }
-        disabled={smsBusy}
-        fullWidth
-      />
+      <div>
+        <Typography variant="caption" color="text.secondary">
+          SMS number
+        </Typography>
+        <Typography>{member.smsNumber ?? "none"}</Typography>
+        <Typography variant="caption" color="text.secondary">
+          Set by the member&apos;s bridge phone (Family → Devices).
+        </Typography>
+      </div>
       <FormControlLabel
         control={<Switch checked={!disabled} onChange={(e) => setDisabled(!e.target.checked)} />}
         label={disabled ? "Disabled" : "Enabled"}

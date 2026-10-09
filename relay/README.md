@@ -133,7 +133,7 @@ EMQX, the Firestore/Auth emulators, and the relay — configures EMQX's rule eng
 `tools/pager_client.py`'s combined device+server client):
 
 ```bash
-relay/.venv/bin/python tools/e2e_v2.py                                       # all 14 scenarios
+relay/.venv/bin/python tools/e2e_v2.py                                       # all 13 scenarios
 relay/.venv/bin/python tools/e2e_v2.py bootstrap text_roundtrip              # named scenarios
 relay/.venv/bin/python tools/e2e_v2.py --wire cbor                           # repeat in CBOR encoding
 ```
@@ -149,8 +149,8 @@ Scenarios available (see `tools/e2e_v2.py`'s module docstring for details):
 - **bytes**: data budget accounting and SIM constraints
 - **setup_code**: real admin-create → code → bootstrap → provisioned flow
 - **address_book**: device requests contact approval, book/cfg ingest and ack
-- **relay_sms**: a member's relay SMS number: inbound from an approved contact, a held
-  unknown number approved, and a pager text out through the Twilio mock (docs/RELAY_SMS_DESIGN.md)
+- **sms_log**: the modem's device-direct SMS log: an outbound text logged `sent`, an inbound one from an
+  unlisted number logged `blocked`
 - **bridge**: a bridge phone against the `bridge-sim` compose service (see "Bridge phones" below): pair,
   a SIM text held and approved, a pager reply through the outbox with an ack, a Voice text on the same
   contact with the reply on gvoice, an unknown Google Chat group held behind one alert, subscribed and
@@ -180,53 +180,31 @@ deployment from using it:
   `chat.bot` scope / "Chat Bot" role so `spaces.messages.create` outbound
   sends work. None of this has been done either.
 
-`sms` (`app/backends/sms_twilio.py`, docs/RELAY_SMS_DESIGN.md) is the Twilio adapter. Its backend row
-lives on an SMS contact (an external), and every person who should text through the relay holds their
-own number (`users.smsNumber`, set by a family admin under People or by the super under Admin → Users).
-A member without a number keeps the modem path (`cfg.sms`).
+### SMS (bridge phones only)
 
-### Twilio
+`sms` (`app/backends/sms.py`, docs/RELAY_SMS_DESIGN.md, docs/BRIDGE_PHONE_DESIGN.md) is the SMS adapter.
+Its backend row lives on an SMS contact (an external). SMS exists **only through bridge phones**: a
+member's `smsNumber` is set by the relay when a bridge pairs (SIM number, else Google Voice number,
+`app/bridge_numbers.py`) and cleared on unpair or reassign; it is not editable through the admin or
+family APIs (the field stays readable). A member without a bridge has no relay SMS (their pager still
+uses the modem path, `cfg.sms`): sending to an SMS contact from such a member is rejected
+`no_sms_number`, and a number that is not a usable bridge number fails delivery `no_bridge`. Neither is
+retried. Inbound texts arrive as bridge events (`/bridge/events`, source `sms`/`gvoice`) and go through
+`app/inbound_text.py`; a number the family has no approved contact for is stored in `heldSms` and raised
+as an `sms_unknown` alert to the family admins, delivered only when an admin approves (or dropped on
+block). There are no consent keywords (STOP/START/HELP), welcome texts or opted-out registry, and no
+SMS environment variables. Text helpers (control-character stripping, the 160-code-point / 320-byte limit,
+the Voice thread link) are in `app/sms_text.py`. Log lines to watch:
+`sms out to=...1234 from=...5678 sid=ob_... status=queued code=bridge` and the bridge `events` lines.
 
-One-time console steps, done by hand (the relay never buys numbers or edits Twilio configuration):
-
-1. Create a **Messaging Service** named `pager` and attach the 10DLC campaign (standard brand, EIN) to it.
-2. Buy one number per member and add **each number to the service's sender pool**. Then set the member's
-   number in the web app (People → member → SMS number). Outbound passes `From=<member number>`
-   explicitly, so no `MessagingServiceSid` is needed.
-3. Set the service's **inbound request URL** to `PUBLIC_BASE_URL/webhooks/twilio/sms` (HTTP POST). One
-   place, not per number.
-4. Secrets: `TWILIO_ACCOUNT_SID` and `TWILIO_AUTH_TOKEN` (the auth token also verifies
-   `X-Twilio-Signature`; blank means the webhook answers 401). Plain env: `TWILIO_BASE_URL`
-   (`https://api.twilio.com`; the compose stack points it at `tools/mocks/twilio_mock.py`) and
-   `PUBLIC_BASE_URL`. There is no `TWILIO_FROM_NUMBER`.
-5. `PUBLIC_BASE_URL` must be the relay's origin **as Twilio calls it** (the Cloud Run `run.app` origin) and
-   match the URL in the console **byte for byte**: Twilio signs the exact URL, so a trailing-slash or host
-   difference fails every request with 401.
-6. Turn **Advanced Opt-Out off**: the relay answers STOP/START/HELP itself (keywords, replies and the
-   once-a-day disclosure live in `app/sms_compliance.py`; consent rows in `smsConsent/{e164}`). The
-   operator name and support email in those texts come from `SMS_OPERATOR_NAME` (default `Albert Wong`)
-   and `SMS_SUPPORT_EMAIL` (default `awong.dev@gmail.com`).
-
-Outbound format: `<Name> says: "<text>" - Pager (<operator>)`, with URLs and phone numbers in the text
-defanged by spaces, and `. Reply STOP to opt out, HELP for help.` appended to the first relayed message
-to a number each UTC day. Opt-in rule: nothing is sent to a number that has not opted in, either by
-texting START (or IN/OPTIN) or by an admin adding the contact / approving its held text or contact
-request (the relay then sends the welcome from the member's number). A refused send is `failed` with
-`code=not_opted_in` or `code=opted_out` in the `sms out` log line and is never retried; STOP
-(UNSUBSCRIBE/END/QUIT) opts out, HELP (INFO/SUPPORT) answers with the help text. Keyword texts are never
-stored or routed and log `outcome=keyword_start|keyword_stop|keyword_help` on the `sms in` line.
-
-Inbound texts from a number the family has no approved contact for are stored in `heldSms` and raised as
-an `sms_unknown` alert to the family admins; they are delivered only when an admin approves. The relay
-stores message bodies in Firestore, and Twilio keeps its own copy in its message logs. Log lines to watch:
-`sms in to=@alias from=...1234 sid=SM... outcome=...` and `sms out to=...1234 from=...5678 sid=... status=...`.
+History: Twilio relay SMS was last present at commit 05ec3ed (`05ec3ed703cf27c368cb4713d03ea3f25c8ac300`, 9 Oct 2026); it was added at a30ebca (8 Oct 2026), its consent/keywords at 13c4a4b, and it had been removed once before at 123efa4 (7 Oct 2026). Review it with `git show 05ec3ed:<path>` or `git diff 05ec3ed main -- <path>`.
 
 ### Bridge phones
 
-A member's texts can also go through a headless Android phone (`bridge-android/`) instead of Twilio:
-the SIM's texts, Google Voice texts, and subscribed Google Chat conversations. Design:
-`docs/BRIDGE_PHONE_DESIGN.md`; tasks: `docs/BRIDGE_PHONE_TASKS.md`. Members without a bridge phone stay
-on Twilio. Bridges need no environment variables: the bearer token is minted at pairing and only its
+A member's texts can also go through a headless Android phone (`bridge-android/`) 
+(the only SMS transport): the SIM's texts, Google Voice texts, and subscribed Google Chat conversations. Design:
+`docs/BRIDGE_PHONE_DESIGN.md`; tasks: `docs/BRIDGE_PHONE_TASKS.md`. Members without a bridge phone have no
+relay SMS. Bridges need no environment variables: the bearer token is minted at pairing and only its
 hash is stored.
 
 **Pair a phone (web).** Family → Devices → *Add bridge phone*: pick the member and a label. The panel

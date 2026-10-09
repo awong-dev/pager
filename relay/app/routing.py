@@ -562,9 +562,9 @@ class Routing:
 
     def redeliver(self, msg: Message, bid: str) -> bool:
         """Generic re-invocation of *any* backend's `deliver()` for delivery
-        `bid` on `msg` -- `redeliver_pager`'s non-device-keyed sibling, used
-        by `/internal/tick`'s retry of queued `sms` deliveries
-        (`app/jobs.py`). Goes through `_deliver_one`, so
+        `bid` on `msg` -- `redeliver_pager`'s non-device-keyed sibling, not
+        used by `/internal/tick` any more (only pager deliveries are retried
+        there). Goes through `_deliver_one`, so
         `record_delivery_attempt` bounds the retries. Returns False if the
         delivery or its backend row is gone."""
         # Re-read: a concurrent or earlier attempt may already have sent it

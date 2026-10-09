@@ -1,5 +1,7 @@
 # Multi-family tasks
 
+> **9 Oct 2026: Twilio removed** (last at 05ec3ed). Tasks 3.3 and 4.6 (the Twilio webhook and the per-family SMS number) are historical and void; SMS is bridge-only.
+
 Companion to `docs/FAMILIES_DESIGN.md`, which holds the reasoning and the decisions; this file holds
 only what an implementing agent needs. Each task names its agent, the files to read first, the files
 it may touch, what to do, and how to verify. Section numbers (§) refer to `FAMILIES_DESIGN.md`
@@ -395,7 +397,7 @@ message to `+1 555 123 4567` from an `any_sms` member creates the external and r
 same from a `people_sms` member without an edge → 404; `/contacts` lists only the family's
 externals; the book carries `t:"sms"` entries for approved numbers.
 
-### 3.3 Twilio webhook: family resolution, hold or deliver — backend-dev
+### 3.3 Twilio webhook: family resolution, hold or deliver — backend-dev (VOID 9 Oct 2026: Twilio removed)
 
 **Read:** §2 last paragraph (unrecognised X), §4 Webhooks, §1 decision 10; `relay/app/routers/
 webhooks.py:215-272`, `relay/app/backends/resolve.py:28-54`, `relay/app/notify/sms.py:79-113`,
@@ -554,7 +556,7 @@ writes the edges.
 **Verify:** lint/build/tsc clean. Manual: toggling off then triggering an alert sends no push
 (relay log shows the skip).
 
-### 4.6 Per-family SMS number in the UI — web-dev (parallel with 4.4)
+### 4.6 Per-family SMS number in the UI — web-dev (parallel with 4.4) (VOID 9 Oct 2026: Twilio removed)
 
 **Read:** §1 decision 10, §5.5 Families; `web/app/admin/families/page.tsx` (1.8).
 **Files:** `web/app/admin/families/page.tsx`.

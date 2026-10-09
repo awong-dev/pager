@@ -1,6 +1,15 @@
-# Relay SMS: one Twilio number per user (8 Oct 2026)
+# Relay SMS: one number per user (8 Oct 2026)
 
-*(9 Oct 2026: a member whose `smsNumber` is a bridge phone's SIM or Google Voice number sends and receives through that phone instead of Twilio — docs/BRIDGE_PHONE_DESIGN.md decisions 3–4; the number-belongs-to-a-person model, the hold-until-approved inbound flow and the pager's `t:"sms"` book entries below are unchanged. Twilio remains the transport for every other number.)*
+> **9 Oct 2026: Twilio removed.** The Twilio transport, webhook, consent keywords, welcome text and
+> secrets are removed. Twilio relay SMS was last present at commit 05ec3ed
+> (`05ec3ed703cf27c368cb4713d03ea3f25c8ac300`, 9 Oct 2026). It was added at a30ebca (8 Oct 2026),
+> consent/keywords at 13c4a4b, and had been removed once before at 123efa4 (7 Oct 2026). Review the
+> removed code with `git show 05ec3ed:<path>` or `git diff 05ec3ed main -- <path>`.
+> The held-until-approved model, `smsNumber`, `sms_unknown` alerts and the `t:"sms"` cfg remain and
+> are now carried by bridge phones (docs/BRIDGE_PHONE_DESIGN.md decision O1). Decisions below are
+> kept as written; those marked "void 9 Oct 2026" no longer apply.
+
+*(9 Oct 2026: a member whose `smsNumber` is a bridge phone's SIM or Google Voice number sends and receives through that phone instead of Twilio — docs/BRIDGE_PHONE_DESIGN.md decisions 3–4; the number-belongs-to-a-person model, the hold-until-approved inbound flow and the pager's `t:"sms"` book entries below are unchanged. ~~Twilio remains the transport for every other number.~~ void 9 Oct 2026: non-bridge numbers fail `no_bridge`.)*
 
 *(owner, 8 Oct 2026: "Examine the entire flow to ensure we can associate a twilio number with a
 *user*. Then the pager sending/receiving to a SMS will go through the relay. Outbound policy should
@@ -10,7 +19,7 @@ contents forwarded. Admins can then authorize. Prior messages can be delivered."
 
 This reverses the 7 Oct 2026 "no relay SMS" decision (`build/bench-logs/DESIGN_no_relay_sms.md`,
 commit 123efa4) for members who hold a relay SMS number. The modem path (`cfg.sms`,
-`firmware/main/sms.c`) is unchanged and still serves members without one. Twilio account: the
+`firmware/main/sms.c`) is unchanged and still serves members without one. *Void 9 Oct 2026: the Twilio account and console steps below no longer apply.* Twilio account: the
 owner's, low-volume standard 10DLC brand with an EIN; numbers are bought and attached to the
 campaign by hand in the Twilio console (see relay/README.md "Twilio"). Tasks:
 `build/bench-logs/TASK_relaysms_{backend,web,infra,docs}.md`.
@@ -42,7 +51,7 @@ each contact appears once and every text goes through the relay.
   explicit denies) but never puts them in the pager's `c[]`.
 
 ## Decisions
-1. **The number belongs to a person.** `users/{uid}.smsNumber: E.164 | null`, persons only.
+1. **The number belongs to a person.** *(Void 9 Oct 2026 in part: the relay sets `smsNumber` from bridge pairing (SIM, else Google Voice) and clears it on unpair; admin PATCH no longer accepts `smsNumber`.)* `users/{uid}.smsNumber: E.164 | null`, persons only.
    Reverse index `smsNumbers/{e164}` = `{uid}` written with `create()` (server-only: no rules
    block, pinned in `test_rules.py`), freed on clear. Set or cleared by a family admin
    (`PATCH /api/family/members/{uid} {smsNumber}`) or super (`PATCH /api/admin/users/{uid}`):
@@ -59,7 +68,7 @@ each contact appears once and every text goes through the relay.
    recipient still exclude externals (unchanged, out of scope). The pager's §4.2 case-3 reply for
    `no_sms_number` is `sms not set up; ask your admin`; the web 403 message is "You have no SMS
    number; ask your family admin."
-3. **Delivery to an external is an `sms` backend row on the external.** `externals.get_or_create`
+3. *Void 9 Oct 2026 for the Twilio parts (`SmsTwilioBackend`, error codes, retry).* **Delivery to an external is an `sms` backend row on the external.** `externals.get_or_create`
    creates `users/{x}/backends/{bid}` `{kind:"sms", enabled:true, verifiedAt:now, config:{phone}}`;
    `externals.ensure_sms_backend(x)` backfills one for a contact that predates this. `"sms"`
    returns to `BackendKind` and the registry; `LINK_FLOW_KINDS` stays `{"gchat"}` and
@@ -73,7 +82,7 @@ each contact appears once and every text goes through the relay.
    bounded retry for `sms` deliveries left `queued` (restore `Routing.redeliver` and
    `messages_store.list_recent_queued_by_kind` from 123efa4^; `record_delivery_attempt`'s
    MAX_DELIVERY_ATTEMPTS still ends it). `render_state`: sent → "sent by SMS".
-4. **Inbound: known and approved delivers, everything else is held.** `POST /webhooks/twilio/sms`
+4. *Void 9 Oct 2026 for the webhook and table below (Twilio removed); the same outcomes now come from `/bridge/events` via `app/inbound_text.py`.* **Inbound: known and approved delivers, everything else is held.** `POST /webhooks/twilio/sms`
    (restored shape: per-IP limiter, `X-Twilio-Signature` over `PUBLIC_BASE_URL + path`, fail
    closed without `TWILIO_AUTH_TOKEN`). Steps, first match wins; every outcome is one INFO line
    `sms in to=@alias from=...1234 sid=SM… outcome=<…>` with the number redacted:
@@ -121,7 +130,7 @@ each contact appears once and every text goes through the relay.
    `devices.smsContacts = []` (pushed as an empty `cfg.sms`); otherwise unchanged. Triggers: all
    of today's plus `smsNumber` set/cleared.
 8. **Web.** People → member drawer gains "SMS number" (admin; helper: "A Twilio number from the
-   family's account. Texts to it reach @kid's pagers; @kid's pager texts contacts from it.") with
+   family's account. *(Void 9 Oct 2026: the number is no longer admin-editable; bridge pairing sets it.)* Texts to it reach @kid's pagers; @kid's pager texts contacts from it.") with
    409 shown inline; Admin → Users gets the same field for super. The alert card for a held
    `sms_unknown` shows "to @kid · +1 206 555 0100", the newest text, "N messages waiting", an
    expander listing them (`GET …/held`), and Approve (name) / Block / Dismiss with the approve
@@ -129,7 +138,7 @@ each contact appears once and every text goes through the relay.
    now." `DeliveryChips`: `sms` → waiting to send SMS / sent by SMS / SMS failed. New chat lists
    sendable externals (phone shown) again, only when the signed-in user has an `smsNumber`.
    Contacts page: a "via relay for @a, @b" hint is optional (skip if time is short).
-9. **Infra and config.** Secrets `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`; env `TWILIO_BASE_URL`
+9. *Void 9 Oct 2026 (Twilio removed): none of the Twilio secrets, env, mock or `relay_sms` scenario remain.* **Infra and config.** Secrets `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`; env `TWILIO_BASE_URL`
    (`https://api.twilio.com`) and `PUBLIC_BASE_URL` on the Cloud Run service; **no**
    `TWILIO_FROM_NUMBER`. `PUBLIC_BASE_URL` stays the Cloud Run `run.app` origin it already is (it
    is also the base of the device CA pointer, which Firebase Hosting does not rewrite): Twilio is
@@ -139,14 +148,14 @@ each contact appears once and every text goes through the relay.
    `TWILIO_BASE_URL=http://twilio-mock:8010`; CI unit tests need no mock (httpx is stubbed); the
    e2e suite gets one `relay_sms` scenario against the mock (inbound known → pager; inbound
    unknown → held → approve → delivered; pager → contact → mock `/_sent`).
-10. **Twilio console (owner, documented in relay/README.md).** One Messaging Service "pager" with
+10. *Void 9 Oct 2026 (Twilio removed).* **Twilio console (owner, documented in relay/README.md).** One Messaging Service "pager" with
     the 10DLC campaign; every member number is added to its sender pool; the service's inbound
     request URL is `PUBLIC_BASE_URL/webhooks/twilio/sms`, i.e. the Cloud Run origin (one place, not
     per number). Outbound
     passes `From=<member number>` explicitly, so no `MessagingServiceSid` is needed. Advanced
     Opt-Out is **off** (decision 11: the relay answers the keywords itself). The relay stores bodies in Firestore; Twilio keeps its
     own copy in its logs — note for the owner.
-11. **Consent is owned by the relay (owner, 8 Oct 2026; tasks in docs/RELAY_SMS_CONSENT_TASKS.md).**
+11. *Void 9 Oct 2026 in full (Twilio removed; no keywords, welcome or disclosure; no `smsConsent`).* **Consent is owned by the relay (owner, 8 Oct 2026; tasks in docs/history/RELAY_SMS_CONSENT_TASKS.md).**
     `smsConsent/{e164}` = `{status: opted_in|opted_out, optedInAt, optedOutAt, source:
     keyword|admin, lastDisclosureDate, updatedAt}`, server-only. Inbound keywords (trimmed,
     case-insensitive, whole body, checked before the blocked-number test, never stored or routed):
@@ -163,7 +172,7 @@ each contact appears once and every text goes through the relay.
     `SMS_OPERATOR_NAME` / `SMS_SUPPORT_EMAIL`.
 
 ## Rejected
-- Twilio Advanced Opt-Out: it intercepts STOP/START/HELP before the webhook (the relay never sees
+- Twilio Advanced Opt-Out (void 9 Oct 2026: no Twilio): it intercepts STOP/START/HELP before the webhook (the relay never sees
   the keywords) and its carrier reply text cannot name the operator, which the program requires.
 - A per-family number with `@alias` routing (the 7 Oct model): the owner asked for a number per
   user; aliases typed by grandparents were the failure mode CONTACT_REQ fixed.
@@ -190,11 +199,11 @@ each contact appears once and every text goes through the relay.
 ## Failure modes
 | failure | effect | recovery |
 |---|---|---|
-| Twilio 5xx / timeout on send | delivery `queued`, chip "waiting to send SMS" | tick retry, ≤5 attempts, then `failed` |
+| ~~Twilio 5xx / timeout on send~~ (void 9 Oct 2026) | delivery `queued`, chip "waiting to send SMS" | tick retry, ≤5 attempts, then `failed` |
 | sender has no number | `failed` at once; pager gets `sms not set up; ask your admin` | admin assigns a number |
-| recipient opted out (21610) | `failed`, chip "SMS failed" | the recipient texts START |
-| number never opted in / opted out in `smsConsent` | `failed` at once, no Twilio call, log `code=not_opted_in` / `opted_out`, never retried | admin adds/approves the contact, or the recipient texts START |
-| webhook signature fails | 401, Twilio retries, then gives up | fix `PUBLIC_BASE_URL`/token; Twilio console shows the error |
+| ~~recipient opted out (21610)~~ (void 9 Oct 2026) | `failed`, chip "SMS failed" | the recipient texts START |
+| ~~number never opted in / opted out in `smsConsent`~~ (void 9 Oct 2026) | `failed` at once, no Twilio call, log `code=not_opted_in` / `opted_out`, never retried | admin adds/approves the contact, or the recipient texts START |
+| ~~webhook signature fails~~ (void 9 Oct 2026) | 401, Twilio retries, then gives up | fix `PUBLIC_BASE_URL`/token; Twilio console shows the error |
 | flood from one unknown number | 25 held, rest dropped and logged | Block |
 | held text > 160 cp approved | row `too_long`, not on the pager | parents read it in the alert |
 | number reassigned to another member | 409 until cleared on the first | clear, then set |
@@ -203,7 +212,7 @@ each contact appears once and every text goes through the relay.
 - `sms in … outcome=` counts per outcome per day; `held` versus `delivered` ratio.
 - `sms out to=...1234 from=...5678 sid= status=sent|failed code=` per send.
 - Open `sms_unknown` alerts older than 7 days (parents not responding).
-- Twilio console: segments per month against the §cost estimate (~1.2 ¢/segment all-in).
+- *(void 9 Oct 2026)* Twilio console: segments per month against the §cost estimate (~1.2 ¢/segment all-in).
 
 ## PROTOCOL.md edits (additive, no envelope change)
 - §3.2 `c[]` row: replace the 7 Oct parenthetical with: *(8 Oct 2026: a member with a relay SMS

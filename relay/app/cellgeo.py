@@ -30,7 +30,7 @@ the provider APIs bill per call, and the cache is what keeps cell-based
 locations working through a provider outage.
 
 Settings, read fresh from the environment on every call (the same per-call
-`os.environ.get(...)` pattern `app/notify/sms.py`/`app/location.py` use, not
+`os.environ.get(...)` pattern `app/location.py` uses, not
 threaded through `app.config.Settings`):
   - `CELL_GEO_PROVIDER`: `"google"` | `"opencellid"` | `"none"` (default).
   - `CELL_GEO_API_KEY`: the provider's API key. Required for `google`/

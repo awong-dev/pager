@@ -224,7 +224,7 @@ In the order worth testing:
 
 7. Modem SMS is not seen working. On the US Mobile line (7 Oct 2026) `AT+CMGS` returns `OK` with
    `+CMGS: -2147483648` (no message reference) and nothing arrives, so that line does not carry it. The
-   Soracom preset refuses modem SMS. Relay SMS through Twilio (`docs/RELAY_SMS_DESIGN.md`) has not been
+   Soracom preset refuses modem SMS. Relay SMS (bridge phone; Twilio removed 9 Oct 2026, last at 05ec3ed; `docs/RELAY_SMS_DESIGN.md`) has not been
    run on the bench: texts from listed and unlisted numbers are still to test.
 
 8. The accelerometer on the 8 Oct 2026 pins (SDA IO17, SCL IO18, INT1 IO16) is not bench-tested since

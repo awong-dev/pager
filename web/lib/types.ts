@@ -41,7 +41,7 @@ export interface UserDoc {
   kind: UserKind;
   policy: PolicyDoc;
   notify: { alerts: boolean };
-  // docs/RELAY_SMS_DESIGN.md decision 1: the user's Twilio number (E.164).
+  // Set by the user's bridge phone (SIM or Google Voice number, E.164; docs/BRIDGE_PHONE_DESIGN.md decision O1). Read-only.
   smsNumber?: string | null;
 }
 

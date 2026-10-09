@@ -660,7 +660,7 @@ sender alias, body preview). Delivery goes `read` when the browser reports the t
 implicit `webapp` backend at creation.
 
 ### 6.4 `sms` — SMS contacts
-Outbound and inbound SMS via Twilio, per user: each family member may be assigned a relay SMS number (`users.smsNumber`) to send and receive SMS through the relay. Held inbound SMS from unknown numbers trigger `sms_unknown` alerts to family admins, who can approve and deliver the backlog or block the sender. See docs/RELAY_SMS_DESIGN.md. *(7 Oct 2026 history: the relay neither sent nor received SMS; the only SMS path was the pager's own modem to its `cfg.sms` list (V02_DESIGN.md §6, PROTOCOL.md §3.6).)*
+Outbound and inbound SMS, per user, through the member's bridge phone (Twilio removed 9 Oct 2026, last at 05ec3ed): each family member may be assigned a relay SMS number (`users.smsNumber`) to send and receive SMS through the relay. Held inbound SMS from unknown numbers trigger `sms_unknown` alerts to family admins, who can approve and deliver the backlog or block the sender. See docs/RELAY_SMS_DESIGN.md. *(7 Oct 2026 history: the relay neither sent nor received SMS; the only SMS path was the pager's own modem to its `cfg.sms` list (V02_DESIGN.md §6, PROTOCOL.md §3.6).)*
 
 ### 6.5 `gchat` — Google Chat app
 *(9 Oct 2026: consumer accounts cannot use the Chat API (Workspace only, confirmed against Google's troubleshooting page), so for personal Google accounts this adapter is superseded by the bridge phone — docs/BRIDGE_PHONE_DESIGN.md: a sideloaded Android app relays Chat, Voice and SIM SMS through `/bridge/*` and the `bridge` backend kind. The `gchat` adapter stays for a Workspace deployment.)*
@@ -826,8 +826,7 @@ with `DEV_MODE=1`), and runs named scenarios:
 6. `location_on_demand`: `locate` → device answers; second `locate` inside 60 s answered cached
    without a wire message; two requesters coalesce onto one `loc_req`; `loc fail on` → `no_fix`;
    derived expiry after a shortened `LOC_REQ_TTL_S` + `tick`.
-7. `fanout`: parent has webapp + a fake `sms` backend (Twilio stubbed via `TWILIO_BASE_URL` pointing
-   at the mock) → both deliveries recorded, origin backend excluded on reply; mock returns 500 →
+7. `fanout`: parent has webapp + a fake `sms` backend (Twilio stub removed 9 Oct 2026, last at 05ec3ed) → both deliveries recorded, origin backend excluded on reply; mock returns 500 →
    retry path → `failed` after max attempts.
 8. `retention`: set `retention.locations=1d`, back-date fixes, `sweep`, documents gone; messages
    untouched; repeat with `2w` for messages; abort the sweep mid-run (small `SWEEP_BATCH`) and
@@ -869,7 +868,7 @@ relay/firestore.rules, relay/firestore.indexes.json, web/firebase.json   deploye
 - `google_firestore_database` (native, `nam5` or the region nearest the family),
   `google_firebase_web_app` + config output, `google_identity_platform_config` with email
   (passwordless) and phone providers, `google_firebase_hosting_site` + custom domain.
-- Secrets: `BROKER_API_KEY`, `BROKER_API_SECRET`, `WEBHOOK_KEY`, `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `GCHAT_*`. The
+- Secrets: `BROKER_API_KEY`, `BROKER_API_SECRET`, `WEBHOOK_KEY`, `GCHAT_*` (the Twilio secrets were removed 9 Oct 2026, last at 05ec3ed). The
   Firestore/FCM credential is the Cloud Run service account itself (ADC) — no key file.
   Terraform creates the *containers*; values are added with `gcloud secrets versions add`.
 - CI: GitHub Actions builds the image, pushes to Artifact Registry (prune to the last 3 tags —
@@ -946,8 +945,7 @@ exists to avoid).
 | Firebase Auth (email link free; phone within the no-cost allowance), FCM, Hosting | $0 |
 | Artifact Registry (pruned), Secret Manager (≤ 6 active versions free), logging | $0 – $1 |
 | EMQX Cloud Serverless: 1 device × 43 200 session-min/month + ≈ 7 MB traffic vs 1M min / 1 GB free | **$0** |
-| Twilio number + SMS backend (only if enabled) | ~$1.15/number/month + ~1.2 ¢/segment all-in |
-| **Total** | **≈ $0 – $2, plus Twilio if used** |
+| **Total** | **≈ $0 – $2** (no Twilio since 9 Oct 2026, last at 05ec3ed) |
 
 Versus the two earlier drafts: Cloud SQL (≈ $25–40) → RTDB + always-on Cloud Run (≈ $12–25) →
 **this (≈ $0–2)**. The whole saving is the always-on instance, which the rule-engine bridge
@@ -1006,10 +1004,10 @@ three marked **OPEN** need a real account before they can be confirmed.
 |---|---|---|
 | D1 | Cloud Run always-on vs. a VM | Scale-to-zero Cloud Run, ≈ $0. The VM reappears only as the broker fallback in §9.5. |
 | D2 | Broker: EMQX Cloud Serverless vs. the open-source options in §9.5 | EMQX Cloud Serverless. **OPEN** — the free tier's rule-engine HTTP action, REST publish and ≥15 s webhook timeout are assumed but unverified against a real account (§9.4). §9.5 (a) is the documented fallback if any of the three does not hold. |
-| D3 | SMS provider, and US A2P 10DLC / toll-free registration (manual, days, a small fee) | Twilio, low-volume standard 10DLC campaign with an EIN (8 Oct 2026: registered). Numbers are bought and attached to the campaign in the Twilio console by hand; see relay/README.md "Twilio". |
+| D3 | SMS provider, and US A2P 10DLC / toll-free registration (manual, days, a small fee) | Twilio, low-volume standard 10DLC campaign with an EIN (8 Oct 2026: registered). *Superseded 9 Oct 2026: Twilio removed, last at 05ec3ed; SMS is bridge-only.* |
 | D4 | Are the deployment's Google accounts on Workspace? Chat apps are unavailable on consumer Gmail. | **ANSWERED 9 Oct 2026** — the owner's accounts are personal; the Chat API is Workspace-only. Personal Google Chat is bridged by the Android bridge phone instead (docs/BRIDGE_PHONE_DESIGN.md); `gchat` remains for a Workspace deployment. |
 | D5 | Sign-in methods: email link, phone, or both | Both enabled; the login page accepts either. Phone needs reCAPTCHA and has a small per-SMS cost past the no-cost allowance. |
-| D6 | Custom domain for the web app | None assumed. The `*.web.app` URL works for everything, including the broker/Chat/Twilio webhook URLs. |
+| D6 | Custom domain for the web app | None assumed. The `*.web.app` URL works for everything, including the broker and Chat webhook URLs. |
 | D7 | Retention defaults | 4 weeks messages, 1 week locations, 52-week cap, weekly sweep Sunday 03:00 local. |
 | D8 | Device addressing UX: `@alias` typed on the CardKB vs. a recipient picker on the e-paper | The wire supports both (`to` is optional); firmware decides. |
 | D9 | Map: link-out or an embedded map | Link-out. A Leaflet + OpenStreetMap tile map is an optional follow-up. |

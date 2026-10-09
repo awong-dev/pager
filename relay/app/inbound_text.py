@@ -1,9 +1,7 @@
-"""The inbound-text step table shared by Twilio and the bridge phone --
-docs/RELAY_SMS_DESIGN.md decision 4 from the *blocked* step on, factored out
-of `routers/webhooks.py` `_handle_inbound_sms` (docs/BRIDGE_PHONE_DESIGN.md
-decision 5). Keywords and `To` resolution stay with the Twilio handler; the
-bridge path has neither (the owner is known from the bridge, and no consent
-or keyword code runs there, O1/O3).
+"""The inbound-text step table for the bridge phone --
+docs/RELAY_SMS_DESIGN.md decision 4 from the *blocked* step on
+(docs/BRIDGE_PHONE_DESIGN.md decision 5). The owner is known from the bridge;
+there are no consent keywords (O1/O3).
 """
 
 from __future__ import annotations
@@ -12,9 +10,8 @@ import logging
 from collections.abc import Callable, Sequence
 
 from app import alerts as alerts_module
-from app import book
+from app import book, sms_text
 from app import policy as policy_module
-from app.backends import sms_twilio
 from app.routing import Routing
 from app.store import backends as backends_store
 from app.store import externals as externals_store
@@ -86,7 +83,7 @@ def handle_text(
     # `raw_body` is kept as received (held rows show parents the original);
     # `body` is what may reach a pager (§3.1 control characters).
     raw_body = (raw_body or "").strip()
-    body = sms_twilio.pager_body(raw_body)
+    body = sms_text.pager_body(raw_body)
     if not body:
         if not attachments:
             return "dropped_empty"
@@ -99,9 +96,9 @@ def handle_text(
         and policy_module.check(contact, target, False, book.edge_or_family(target, contact))
         is None
     ):
-        if sms_twilio.body_too_long(body):
+        if sms_text.body_too_long(body):
             # Rejected with a hint, never truncated, and never stored.
-            reply(sms_twilio.too_long_hint())
+            reply(sms_text.too_long_hint())
             return "too_long"
         bid = externals_store.ensure_sms_backend(contact)
         result = routing.send(

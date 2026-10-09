@@ -130,16 +130,16 @@ pager itself computes.
 
 ## Texting from the pager
 
-Texts go through the relay, which gives each user one Twilio number (`RELAY_SMS_DESIGN.md`), or a
-bridge phone for a member who has one (below). A
-text to or from a known, approved contact is delivered. A text from anyone else is held and the
+Texts go through the relay and the member's bridge phone (below), which carries the member's SIM or
+Google Voice number (`RELAY_SMS_DESIGN.md`). Twilio was removed 9 Oct 2026 (last at 05ec3ed), so a member
+without a bridge phone has no SMS. A text to or from a known, approved contact is delivered. A text from anyone else is held and the
 family's admins are alerted; a held text reaches the pager only after an admin approves the sender.
 The modem's own SMS path is dead on the US Mobile line (7 Oct 2026), so it is not used there.
 
 ## Bridge phones
 
 A bridge phone is a headless Android phone running the app in `bridge-android/`. It carries a
-member's texts and Google Chat instead of Twilio (`BRIDGE_PHONE_DESIGN.md`). It is signed into the
+member's texts and Google Chat (`BRIDGE_PHONE_DESIGN.md`). It is signed into the
 member's own Google account and nobody uses it. The relay holds no connection to it: the phone
 polls the relay for outbound items and posts inbound messages.
 

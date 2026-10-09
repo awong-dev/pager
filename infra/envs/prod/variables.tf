@@ -67,21 +67,9 @@ variable "broker_ca_pem_file" {
 }
 
 variable "public_base_url" {
-  description = "docs/V02_DESIGN.md §4.4 / infra/modules/relay-service/variables.tf's public_base_url: this deployment's own public HTTPS origin (already used by app/tasks.py and the Twilio webhook signature check -- keep it the Cloud Run run.app origin and point Twilio directly at it, infra/README.md; also the base of the CA-pointer URL a bootstrap bundle hands a device). Cloud Run v2's own computed URL cannot be referenced from inside the same apply that creates the service (a genuine cyclic reference), so this has no default derived from module.relay_service.service_url -- set it by hand after the service exists. Empty (the default) leaves it unset; production's value is `https://pager-relay-2ix4jtetvq-uw.a.run.app` (infra/README.md)."
+  description = "docs/V02_DESIGN.md §4.4 / infra/modules/relay-service/variables.tf's public_base_url: this deployment's own public HTTPS origin (used by app/tasks.py; keep it the Cloud Run run.app origin, infra/README.md; also the base of the CA-pointer URL a bootstrap bundle hands a device). Cloud Run v2's own computed URL cannot be referenced from inside the same apply that creates the service (a genuine cyclic reference), so this has no default derived from module.relay_service.service_url -- set it by hand after the service exists. Empty (the default) leaves it unset; production's value is `https://pager-relay-2ix4jtetvq-uw.a.run.app` (infra/README.md)."
   type        = string
   default     = ""
-}
-
-variable "twilio_base_url" {
-  description = "TWILIO_BASE_URL for the relay (docs/RELAY_SMS_DESIGN.md decision 9). Leave at the default in a real deployment; only a staging stack pointed at the Twilio mock overrides it."
-  type        = string
-  default     = "https://api.twilio.com"
-}
-
-variable "enable_sms_secrets" {
-  description = "Wire TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN into the relay service. Leave false until both secrets have a version (infra/README.md) -- Cloud Run refuses to create a revision that references a secret with zero versions."
-  type        = bool
-  default     = false
 }
 
 # --- Cell-tower location fallback (docs/PROTOCOL.md §13.2, this task) ----

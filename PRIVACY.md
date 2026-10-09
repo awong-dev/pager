@@ -2,7 +2,7 @@
 
 **Operated by:** Albert Wong ("Pager")
 **Contact:** awong.dev@gmail.com
-**Last updated:** October 8, 2026
+**Last updated:** October 9, 2026
 
 This policy covers the Pager SMS test program, in which Albert Wong relays text messages between a Pager device and the mobile phones of people who have agreed to take part.
 
@@ -27,11 +27,11 @@ Message content is retained for one week by default. Retention may be configured
 
 We do not sell or share your SMS opt-in data or personal information with third parties for marketing purposes.
 
-Your data is processed only by the infrastructure providers needed to run the program: Twilio (SMS delivery), Google Cloud and Firebase (hosting and storage), EMQX (message broker), and Soracom (device connectivity). These providers process data solely to deliver the service.
+Your data is processed only by the infrastructure providers needed to run the program: the bridge phone that carries your texts (SMS delivery; Twilio removed 9 Oct 2026, last at 05ec3ed), Google Cloud and Firebase (hosting and storage), EMQX (message broker), and Soracom (device connectivity). These providers process data solely to deliver the service.
 
 ## Opting out
 
-Reply **STOP** to any message to stop receiving texts. Reply **HELP** for help, or email awong.dev@gmail.com.
+Texts come from a family's own phone number, person to person, so there is no automated keyword system. Reply to the family directly and ask them to stop, or block the number on your phone. A family admin can also block a number from the web app, after which no pager in that family can text it.
 
 ## Changes
 

@@ -1,5 +1,7 @@
 # Twilio personal account setup (awong.dev@gmail.com)
 
+> **Historical:** the Twilio path this describes was removed 9 Oct 2026 (last at 05ec3ed). Kept for reference only; see docs/BRIDGE_PHONE_DESIGN.md.
+
 Written 8 Oct 2026. A checklist for the owner. Every step is in the Twilio
 console on the owner's side: the sign-up, the card, and the brand passcode
 cannot be done by an agent.
@@ -53,7 +55,7 @@ cannot be done by an agent.
    on kid-pager.web.app, or a public raw GitHub link).
 6. **Messaging Service** named `pager`. Add the number to its sender pool, let
    the campaign attach to it, and turn **Advanced Opt-Out off**: the relay
-   answers STOP/START/HELP itself (docs/RELAY_SMS_CONSENT_TASKS.md), and with
+   answers STOP/START/HELP itself (RELAY_SMS_CONSENT_TASKS.md), and with
    it on Twilio swallows those keywords before the webhook. Inbound request URL,
    HTTP POST, exactly this string, no trailing slash:
    ```
@@ -82,5 +84,5 @@ no registration. Not pursued yet.
 
 ## What comes after
 
-- Second account (the EIN entity) is where docs/TWILIO_ACCOUNTS_DESIGN.md
+- Second account (the EIN entity) is where TWILIO_ACCOUNTS_DESIGN.md
   starts to matter. The single-account path works today without any of it.

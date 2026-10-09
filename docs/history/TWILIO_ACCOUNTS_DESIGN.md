@@ -1,5 +1,7 @@
 # Relay SMS across many Twilio accounts (proposal, 8 Oct 2026)
 
+> **Historical:** the Twilio path this describes was removed 9 Oct 2026 (last at 05ec3ed). Kept for reference only; see docs/BRIDGE_PHONE_DESIGN.md.
+
 *Status note (9 Oct 2026): bridge phones (`docs/BRIDGE_PHONE_DESIGN.md`, decision O7) are the owner's chosen direction; this design is parked.*
 
 *(owner, 8 Oct 2026: "we might eventually have to handle multiple twilio EIN style accounts.

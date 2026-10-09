@@ -111,22 +111,6 @@ function AdminUsersInner() {
     }
   }
 
-  async function editSmsNumber(u: UserRow) {
-    setError(null);
-    const entered = window.prompt(
-      `SMS number for @${u.alias} (E.164, e.g. +12065550100; empty clears)`,
-      u.smsNumber ?? ""
-    );
-    if (entered === null) return;
-    const next = entered.trim();
-    if (next === (u.smsNumber ?? "")) return;
-    try {
-      await api.patch(`/admin/users/${u.uid}`, { smsNumber: next === "" ? null : next });
-    } catch (err) {
-      setError(err instanceof ApiError ? String(err.detail ?? err.message) : "Failed to set SMS number");
-    }
-  }
-
   async function deleteUser(u: UserRow) {
     setError(null);
     if (!window.confirm(`Delete @${u.alias}? This does not delete their message history.`)) return;
@@ -188,13 +172,7 @@ function AdminUsersInner() {
               <TableCell>{u.displayName}</TableCell>
               <TableCell>{u.email ?? (u.phone ? `${u.phone} (sign-in)` : "--")}</TableCell>
               <TableCell>
-                {u.kind === "external" ? (
-                  "--"
-                ) : (
-                  <Button size="small" onClick={() => void editSmsNumber(u)}>
-                    {u.smsNumber ?? "Set"}
-                  </Button>
-                )}
+                {u.kind === "external" ? "--" : (u.smsNumber ?? "none")}
               </TableCell>
               <TableCell>{u.familyId ? (familyNameById.get(u.familyId) ?? u.familyId) : "--"}</TableCell>
               <TableCell>
