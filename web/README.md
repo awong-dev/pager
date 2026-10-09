@@ -302,4 +302,24 @@ incognito window) to act as two different people at once where noted.
     "SMS failed". New chat lists sendable SMS contacts only for a user with an SMS number; the address book shows
     "needs an SMS number" for unsendable ones.
 
+27. **Bridge phone** (docs/BRIDGE_PHONE_DESIGN.md, docs/BRIDGE_PHONE_TASKS.md W2-W5; needs the relay's bridge
+    routes, `tools/bridge_sim.py` can stand in for the phone):
+    - Family -> Devices -> "Bridge phones": Add bridge phone (member + label) opens the pairing panel with an 8-digit
+      code, a 10-minute countdown and the phone checklist; once the phone pairs the panel flips to "paired". The
+      table polls every 10 s: Google account, SIM and Voice numbers, the member's SMS number, "Voice only" chip when
+      there is no SIM, last seen in red past 15 min, battery, listener / SMS app / accessibility chips, tier-2 count.
+      Numbers edits both numbers (empty clears), Reassign and Unpair (confirm) work, New code appears only for an
+      unpaired phone, Accept SIM only when the phone reports a different SIM.
+    - People -> member drawer -> "Google Chat..." (and Family -> Google Chat) opens `/family/chat?uid=`. An unknown
+      Chat group message shows under "Seen, not subscribed" and as a "Google Chat" alert card (title, Group (N people
+      seen) or DM, people chips, newest text, "N messages waiting"; Subscribe, Ignore, Dismiss, no Block).
+    - Subscribe: name defaults to the first 16 characters of the title (409 text shows inline), roster nicks default
+      to lowercase slugs and are checked inline (shape, unique); with the member's outbound policy "No people" the
+      "Kid can reply" switch is off and disabled ("@kid's policy does not allow outbound messages"). Success toasts
+      "<name> is on @kid's pager; N waiting messages delivered". Rename, Edit roster, Pause / Resume, Unsubscribe
+      work from Manage; entries past the pager's 32 show "Not on pager". Add by link: paste a chat.google.com or
+      voice.google.com link, Inspect; the dialog opens within ~30 s when the phone reports it.
+    - Address book shows a "Google Chat" / "Google Voice" chip on bridged contacts; New chat lists sendable ones
+      without needing an SMS number. Delivery chips: "waiting for the phone" / "sent on Google Chat".
+
 `npm run build && npx tsc --noEmit && npm run lint` should all be clean.

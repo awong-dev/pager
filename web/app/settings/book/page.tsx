@@ -183,7 +183,11 @@ function BookInner() {
           <List key={g} dense subheader={<ListSubheader disableSticky>{g}</ListSubheader>}>
             {rows.map((e) => {
               const secondary = [
-                e.kind === "external" && e.phone ? formatPhoneDigits(e.phone) : e.kind === "group" ? "" : `@${e.alias}`,
+                e.kind === "external" && e.phone
+                  ? formatPhoneDigits(e.phone)
+                  : e.kind === "group" || e.chat
+                    ? ""
+                    : `@${e.alias}`,
                 e.nick ? `was ${e.displayName}` : "",
               ]
                 .filter(Boolean)
@@ -200,6 +204,14 @@ function BookInner() {
                   }
                 >
                   <ListItemText primary={e.label} secondary={secondary || undefined} />
+                  {e.chat && (
+                    <Chip
+                      size="small"
+                      variant="outlined"
+                      label={e.chat.source === "gvoice" ? "Google Voice" : "Google Chat"}
+                      sx={{ mr: e.sendable && e.onPager ? 4 : 1 }}
+                    />
+                  )}
                   {!e.sendable && <Chip size="small" label={reasonText(e.reason)} sx={{ mr: 4 }} />}
                   {e.sendable && !e.onPager && (
                     <Chip size="small" color="warning" variant="outlined" label="Not on pager" sx={{ mr: 4 }} />

@@ -102,7 +102,9 @@ export default function NewChatDialog({ open, onClose }: NewChatDialogProps) {
     const rows: ChatOption[] = [];
     for (const e of entries) {
       // SMS contacts are chat targets only through the user's relay number.
-      if (e.kind === "external" && (!hasSmsNumber || !e.sendable)) continue;
+      // A bridged Google Chat contact (`chat` set) needs no relay number; it
+      // is listed with the SMS group when sendable (docs/BRIDGE_PHONE_DESIGN.md decision 7).
+      if (e.kind === "external" && !e.chat && (!hasSmsNumber || !e.sendable)) continue;
       if (!e.sendable && !isFamilyAdmin) continue;
       rows.push({
         alias: e.alias,
@@ -198,7 +200,7 @@ export default function NewChatDialog({ open, onClose }: NewChatDialogProps) {
             const { key, ...rest } = props;
             return (
               <li key={key} {...rest}>
-                {o.external && <PhoneIcon fontSize="small" sx={{ mr: 1 }} />}
+                {o.external && o.phone && <PhoneIcon fontSize="small" sx={{ mr: 1 }} />}
                 {o.label}
               </li>
             );
