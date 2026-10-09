@@ -110,12 +110,12 @@ account); Google Voice has no API; Android's `NotificationListenerService` sees 
    pager's `c[]` with `t:"sms"`. A heartbeat only records `status.simNumber`; a mismatch with the
    accepted `simNumber` sets `status.error = "SIM changed"` and changes nothing else *(review 9 Oct
    2026: a heartbeat that rewrites `smsNumber` lets a stolen token re-point the member's number,
-   and would stomp a Twilio number an admin set on purpose within five minutes)*. `voiceNumber` is informational (shown on the
-   Devices row); it is **not** an `smsNumbers` index entry *(inbound Voice texts arrive from the
-   bridge with the owner known, decision 5; nothing routes by the Voice number)*.
+   and would stomp a Twilio number an admin set on purpose within five minutes)*. `voiceNumber` is **not** an `smsNumbers` index entry *(inbound Voice texts arrive from the
+   bridge with the owner known, decision 5; nothing routes inbound by the Voice number)* but it does
+   become the member's `smsNumber` when there is no SIM (O1, revised 9 Oct 2026).
 4. **One `sms` kind, two transports.** `SmsTwilioBackend.deliver` gains a first step: `bridges_store.
-   get_by_sms_number(sender.smsNumber)` (query on the accepted top-level `simNumber`) — when it
-   names a paired bridge with `caps.sms`, the send is handed to `bridge_outbox.enqueue_send(bridge,
+   get_by_sms_number(sender.smsNumber)` (query on the accepted top-level `simNumber` **or** `voiceNumber`, O1 revised) — when it
+   names a paired bridge with `caps.sms` or `caps.gvoice`, the send is handed to `bridge_outbox.enqueue_send(bridge,
    msg, bid, source=<the channel this member last used with this external, decision 5; `gvoice`
    only when `caps.gvoice`, else `sms`>, to={phone, conversationId?}, text=_render_body(msg))`,
    the delivery's `externalId` is set to the outbox id, and it returns `DeliverResult(ok=True,
@@ -423,7 +423,24 @@ not rebuilt for this work.
 
 The server-architect review left eight items for the owner. The recommended option was taken for each so the build could continue:
 
-- **O1 Voice-only bridge (no SIM).** Not supported in this pass: a bridge without a SIM number has `caps.sms=false` and the member keeps whatever `smsNumber` they had (Twilio or none). Texting through Google Voice alone is a follow-up (transport pick via `bridges_store.get_for_owner`, route check accepting `caps.gvoice`).
+- **O1 Voice-only bridge — REVISED (owner, 9 Oct 2026 00:xx PDT: "Google Voice only setup should be possible").**
+  A bridge may carry `simNumber`, `voiceNumber`, or both. Both are top-level accepted fields set at pair
+  (`POST /bridge/pair {…, simNumber?, voiceNumber?}`; the phone cannot read the Voice number, so the
+  setup screen asks for it) and editable by a family admin on the Bridge row (`PATCH /api/family/bridges/{id}
+  {voiceNumber?, simNumber?}`, same normalisation and 409 rules as `smsNumber`). `caps.sms` = SIM present
+  and the default-SMS role held; `caps.gvoice` = Voice number present. The member's `smsNumber` on pair /
+  reassign / number edit = `simNumber` if present, else `voiceNumber`; `bridges_store.get_by_sms_number(n)`
+  matches **either** field, so decision 4's transport pick hands the send to the bridge in both cases and
+  `_sms_route_reject` is unchanged (a Voice-only member has an `smsNumber`). Channel per send: the member's
+  `via` entry for that external if set (decision 5), else `gvoice` when the member's number matched
+  `voiceNumber`, else `sms`. A `gvoice` outbox item carries `to.phone` **and** `to.link =
+  https://voice.google.com/u/0/messages?itemId=t.<E.164>` so tier 2 can initiate to any number with no prior
+  notification *(the Voice web app addresses a thread by the peer's number; this is what makes a cold
+  "text grandma" work on a Voice-only bridge)*. The welcome-text skip (O3) covers both numbers. Inbound is
+  unchanged (the owner is known from the bridge). Web: the pairing panel and Bridge row carry both
+  numbers and a "Voice only" chip when there is no SIM. Android: the setup screen has a Voice number field;
+  an outbox item with `source:"gvoice"` tries the cached Voice reply action for that peer number (tier 1)
+  before opening `to.link` (tier 2). Supersedes the earlier O1 text ("not supported in this pass").
 - **O2 No long-poll from the phone.** A 25-s long-poll holds a Cloud Run instance for ~10 h/day per bridge and costs ~17k Firestore reads/day; the free tier is 50k. The phone polls `GET /bridge/outbox` with `wait=0` every 60 s (configurable 30–300 s on the setup screen) and additionally whenever an FCM data push arrives; the heartbeat response carries `pending` so a phone with FCM can skip idle polls. Outbound latency in the poll-only build is therefore ≤60 s, which is the accepted fallback until the owner registers the Android app with Firebase. `wait` remains implemented for the simulator/e2e.
 - **O3 Welcome text.** `_consent_by_admin`'s welcome text is skipped when the member's `smsNumber` is a bridge SIM (`bridges_store.get_by_sim_number`); person-to-person texting needs no disclosure. B2 Files gains `routers/family.py`.
 - **O4 Voice sender shows a contact name.** The bridge account keeps an empty contacts list (setup checklist), and A3 reads the number from the notification's shortcut/URI when present before falling back to the title. A text whose sender cannot be resolved to E.164 is reported with `sender.name` only and lands as `dropped_bad_from` with one INFO line, never an alert.
