@@ -196,8 +196,19 @@ One-time console steps, done by hand (the relay never buys numbers or edits Twil
 5. `PUBLIC_BASE_URL` must be the relay's origin **as Twilio calls it** (the Cloud Run `run.app` origin) and
    match the URL in the console **byte for byte**: Twilio signs the exact URL, so a trailing-slash or host
    difference fails every request with 401.
-6. Leave **Advanced Opt-Out** on (a carrier requirement); a recipient who texts STOP shows as `SMS failed`
-   (Twilio code 21610) until they text START.
+6. Turn **Advanced Opt-Out off**: the relay answers STOP/START/HELP itself (keywords, replies and the
+   once-a-day disclosure live in `app/sms_compliance.py`; consent rows in `smsConsent/{e164}`). The
+   operator name and support email in those texts come from `SMS_OPERATOR_NAME` (default `Albert Wong`)
+   and `SMS_SUPPORT_EMAIL` (default `awong.dev@gmail.com`).
+
+Outbound format: `<Name> says: "<text>" - Pager (<operator>)`, with URLs and phone numbers in the text
+defanged by spaces, and `. Reply STOP to opt out, HELP for help.` appended to the first relayed message
+to a number each UTC day. Opt-in rule: nothing is sent to a number that has not opted in, either by
+texting START (or IN/OPTIN) or by an admin adding the contact / approving its held text or contact
+request (the relay then sends the welcome from the member's number). A refused send is `failed` with
+`code=not_opted_in` or `code=opted_out` in the `sms out` log line and is never retried; STOP
+(UNSUBSCRIBE/END/QUIT) opts out, HELP (INFO/SUPPORT) answers with the help text. Keyword texts are never
+stored or routed and log `outcome=keyword_start|keyword_stop|keyword_help` on the `sms in` line.
 
 Inbound texts from a number the family has no approved contact for are stored in `heldSms` and raised as
 an `sms_unknown` alert to the family admins; they are delivered only when an admin approves. The relay

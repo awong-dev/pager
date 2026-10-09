@@ -142,10 +142,27 @@ each contact appears once and every text goes through the relay.
     request URL is `PUBLIC_BASE_URL/webhooks/twilio/sms`, i.e. the Cloud Run origin (one place, not
     per number). Outbound
     passes `From=<member number>` explicitly, so no `MessagingServiceSid` is needed. Advanced
-    Opt-Out stays on (carrier requirement). The relay stores bodies in Firestore; Twilio keeps its
+    Opt-Out is **off** (decision 11: the relay answers the keywords itself). The relay stores bodies in Firestore; Twilio keeps its
     own copy in its logs — note for the owner.
+11. **Consent is owned by the relay (owner, 8 Oct 2026; tasks in docs/RELAY_SMS_CONSENT_TASKS.md).**
+    `smsConsent/{e164}` = `{status: opted_in|opted_out, optedInAt, optedOutAt, source:
+    keyword|admin, lastDisclosureDate, updatedAt}`, server-only. Inbound keywords (trimmed,
+    case-insensitive, whole body, checked before the blocked-number test, never stored or routed):
+    START/OPTIN/IN -> opt in + welcome (`outcome=keyword_start`); STOP/UNSUBSCRIBE/END/QUIT -> opt
+    out + confirmation (`keyword_stop`); HELP/INFO/SUPPORT -> help text (`keyword_help`). Replies
+    are sent from the member's number straight through `send_sms`, outside the opt-in gate.
+    Outbound `deliver()` only goes to an `opted_in` number (else `failed`, `not_opted_in` /
+    `opted_out`, never retried). Body = `<Name> says: "<defanged text>" - Pager (<operator>)`, plus
+    `. Reply STOP to opt out, HELP for help.` on the first relayed message to a number per UTC day
+    (claimed in a transaction before the send; a failed send keeps the claim). URLs and phone numbers
+    in the text get human-undoable spaces (`app/sms_compliance.defang`). An admin adding a contact
+    or approving a held alert / contact request is the opt-in: first time only, the relay sends
+    the welcome from the member's number. Operator name and support email come from
+    `SMS_OPERATOR_NAME` / `SMS_SUPPORT_EMAIL`.
 
 ## Rejected
+- Twilio Advanced Opt-Out: it intercepts STOP/START/HELP before the webhook (the relay never sees
+  the keywords) and its carrier reply text cannot name the operator, which the program requires.
 - A per-family number with `@alias` routing (the 7 Oct model): the owner asked for a number per
   user; aliases typed by grandparents were the failure mode CONTACT_REQ fixed.
 - A person's sign-in `users.phone` as the SMS route: CONTACT_REQ decision 5 stands.
@@ -174,6 +191,7 @@ each contact appears once and every text goes through the relay.
 | Twilio 5xx / timeout on send | delivery `queued`, chip "waiting to send SMS" | tick retry, ≤5 attempts, then `failed` |
 | sender has no number | `failed` at once; pager gets `sms not set up; ask your admin` | admin assigns a number |
 | recipient opted out (21610) | `failed`, chip "SMS failed" | the recipient texts START |
+| number never opted in / opted out in `smsConsent` | `failed` at once, no Twilio call, log `code=not_opted_in` / `opted_out`, never retried | admin adds/approves the contact, or the recipient texts START |
 | webhook signature fails | 401, Twilio retries, then gives up | fix `PUBLIC_BASE_URL`/token; Twilio console shows the error |
 | flood from one unknown number | 25 held, rest dropped and logged | Block |
 | held text > 160 cp approved | row `too_long`, not on the pager | parents read it in the alert |

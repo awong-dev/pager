@@ -619,7 +619,7 @@ def test_contact_names_is_default_deny(two_pairs):
     assert resp_write.status_code == 403
 
 
-def test_sms_numbers_and_held_sms_are_default_deny(two_pairs):
+def test_sms_numbers_held_sms_and_sms_consent_are_default_deny(two_pairs):
     """`smsNumbers/{e164}` (the number -> uid reverse index) and
     `heldSms/{sid}` (inbound texts awaiting a parent's decision,
     docs/RELAY_SMS_DESIGN.md) are relay-only: no client, not even the
@@ -632,7 +632,10 @@ def test_sms_numbers_and_held_sms_are_default_deny(two_pairs):
         "SMrules1", family_id="fam-rules", to_uid="u1", from_phone="+15550008888", body="secret"
     )
     owner_token = mint_id_token("u1")
-    for path in ("smsNumbers/+15550007777", "heldSms/SMrules1"):
+    from app.store import sms_consent as sms_consent_store
+
+    sms_consent_store.mark_opted_in("+15550008888", source="admin")
+    for path in ("smsNumbers/+15550007777", "heldSms/SMrules1", "smsConsent/+15550008888"):
         assert _get(path, owner_token).status_code == 403
         assert _get(path, None).status_code == 403
         assert _write(path, owner_token, {"uid": "hacked"}).status_code == 403

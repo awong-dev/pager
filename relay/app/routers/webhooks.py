@@ -60,7 +60,7 @@ from google.api_core.exceptions import GoogleAPICallError
 from starlette.concurrency import run_in_threadpool
 
 from app import alerts as alerts_module
-from app import book
+from app import book, sms_compliance
 from app import policy as policy_module
 from app.backends import gchat as gchat_backend
 from app.backends import sms_twilio
@@ -76,6 +76,7 @@ from app.store import families as families_store
 from app.store import held_sms as held_sms_store
 from app.store import messages as messages_store
 from app.store import rate_limits as rate_limits_store
+from app.store import sms_consent as sms_consent_store
 from app.store import users as users_store
 
 logger = logging.getLogger("relay.webhooks")
@@ -237,6 +238,21 @@ def _handle_inbound_sms(params: dict[str, str], routing: Routing) -> tuple[str, 
         from_number = externals_store.normalize_phone(params.get("From", ""))
     except ValueError:
         return "dropped_bad_from", to_label
+
+    # Consent keywords (decision 11) run before the blocked check: STOP must
+    # work for a blocked number too. Never stored, held or routed.
+    kw = sms_compliance.keyword(params.get("Body") or "")
+    if kw is not None:
+        if kw == "start":
+            sms_consent_store.mark_opted_in(from_number, source="keyword")
+            reply = sms_compliance.welcome()
+        elif kw == "stop":
+            sms_consent_store.mark_opted_out(from_number)
+            reply = sms_compliance.opt_out_reply()
+        else:
+            reply = sms_compliance.help_reply()
+        sms_client.send_sms(from_number, reply, from_number=to_number)
+        return f"keyword_{kw}", to_label
 
     family = families_store.get_family(family_id)
     if family is not None and from_number in family.blockedNumbers:

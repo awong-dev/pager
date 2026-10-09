@@ -648,6 +648,9 @@ def test_dm_to_external_with_sender_number_sends_from_that_number(
     )
     users_store.set_sms_number("alice", "+12065550777")
     ext = _make_contact(fam)
+    from app.store import sms_consent as sms_consent_store
+
+    sms_consent_store.mark_opted_in("+12065550100", source="admin")
 
     result = routing.send(
         sender_uid="alice",
@@ -658,7 +661,14 @@ def test_dm_to_external_with_sender_number_sends_from_that_number(
     )
 
     assert result.rejected == []
-    assert calls == [{"to": "+12065550100", "body": "hi gran", "from": "+12065550777"}]
+    assert calls == [
+        {
+            "to": "+12065550100",
+            "body": 'alice says: "hi gran" - Pager (Albert Wong)'
+            ". Reply STOP to opt out, HELP for help.",
+            "from": "+12065550777",
+        }
+    ]
     (msg,) = result.messages
     states = {d.kind: d.state for d in messages_store.get_message(msg.id).deliveries.values()}
     assert states == {"sms": "sent"}

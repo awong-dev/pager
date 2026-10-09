@@ -48,6 +48,7 @@ import sys
 import time
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger("e2e_v2")
 
@@ -80,6 +81,7 @@ sys.path.insert(0, str(TOOLS_DIR))
 sys.path.insert(0, str(RELAY_DIR))
 import httpx
 import pager_client
+from app import sms_compliance
 
 _env_backup: str | None = None
 
@@ -1510,7 +1512,18 @@ def scenario_relay_sms() -> None:
     assert resp.status_code == 200, resp.text
     mom = admin.family_create_contact(family_id, mom_number, "RelayMom")
     admin.family_put_approved(family_id, kid["uid"], contacts=[{"uid": mom["uid"]}])
-    print("relay_sms: member has a number and approved contact RelayMom")
+    # Adding a contact is admin consent: one welcome text to the number
+    # (docs/RELAY_SMS_DESIGN.md decision 11).
+    welcome = sms_compliance.welcome()
+    wait_until(
+        lambda: any(
+            m["to"] == mom_number and m["body"] == welcome
+            for m in httpx.get(f"{TWILIO_MOCK_URL}/_sent").json()
+        ),
+        timeout=10,
+        description="the welcome text to RelayMom",
+    )
+    print("relay_sms: member has a number and approved contact RelayMom (welcomed)")
 
     # Known + approved contact -> delivered to the pager.
     device.inbox.clear()
@@ -1541,6 +1554,10 @@ def scenario_relay_sms() -> None:
     )
     decision = admin.family_approve_alert(family_id, alert["id"], name="Neighbor")
     assert decision["delivered"] == 1 and decision["undelivered"] == 0, decision
+    assert any(
+        m["to"] == stranger_number and m["from"] == kid_number and m["body"] == welcome
+        for m in httpx.get(f"{TWILIO_MOCK_URL}/_sent").json()
+    ), "approve did not welcome the stranger from the member's number"
     wait_until(
         lambda: any(e.data.get("body") == "who dis" for e in device.inbox),
         timeout=10,
@@ -1549,16 +1566,46 @@ def scenario_relay_sms() -> None:
     print("relay_sms: unknown number held, approve delivered it")
 
     # Pager -> contact: the mock sees From = the member's number.
+    # Body is the carrier-facing format; the first relayed text to a number
+    # that day carries the STOP/HELP disclosure.
     contact_alias = oracle.users_store.get_user(mom["uid"]).alias
+    expected = sms_compliance.relay_body("SMSKid", "on my way") + sms_compliance.DISCLOSURE
+
+    def _sent_to_mom() -> list[dict[str, Any]]:
+        return [
+            m
+            for m in httpx.get(f"{TWILIO_MOCK_URL}/_sent").json()
+            if m["to"] == mom_number and m["body"] != welcome
+        ]
+
     device.publish_msg("on my way", to=contact_alias)
+    wait_until(lambda: len(_sent_to_mom()) >= 1, timeout=10, description="the outbound text")
+    sent = _sent_to_mom()[0]
+    assert sent["from"] == kid_number and sent["body"] == expected, sent
+    print("relay_sms: pager -> RelayMom went out From the member's number, formatted")
+
+    # STOP opts the number out (confirmation still sent); a pager text to it
+    # now fails without reaching Twilio; START re-enables it.
+    r = _twilio_inbound(kid_number, mom_number, "STOP", "SM" + "c" * 32)
+    assert r.status_code == 200, r.text
     wait_until(
-        lambda: any(m["body"] == "on my way" for m in httpx.get(f"{TWILIO_MOCK_URL}/_sent").json()),
+        lambda: any(m["body"] == sms_compliance.opt_out_reply() for m in _sent_to_mom()),
         timeout=10,
-        description="the Twilio mock to record the outbound text",
+        description="the STOP confirmation",
     )
-    sent = next(m for m in httpx.get(f"{TWILIO_MOCK_URL}/_sent").json() if m["body"] == "on my way")
-    assert sent["from"] == kid_number and sent["to"] == mom_number, sent
-    print("relay_sms: pager -> RelayMom went out From the member's number")
+    before = len(_sent_to_mom())
+    device.publish_msg("still there?", to=contact_alias)
+    time.sleep(3)
+    assert len(_sent_to_mom()) == before, "a text went out to an opted-out number"
+    r = _twilio_inbound(kid_number, mom_number, "start", "SM" + "d" * 32)
+    assert r.status_code == 200, r.text
+    device.publish_msg("back on", to=contact_alias)
+    wait_until(
+        lambda: any(m["body"] == sms_compliance.relay_body("SMSKid", "back on") for m in _sent_to_mom()),
+        timeout=10,
+        description="the text after START (no second disclosure that day)",
+    )
+    print("relay_sms: STOP suppressed outbound, START restored it")
     device.disconnect()
 
 

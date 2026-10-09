@@ -13,6 +13,13 @@
   documented algorithm: https://www.twilio.com/docs/usage/webhooks/
   webhooks-security -- base64(HMAC-SHA1(authToken, url + every POST param's
   key+value, sorted by key, concatenated with no separator))).
+- **Consent** (decision 11): outbound goes only to a number with an
+  `smsConsent` row `opted_in` (else `failed`, `not_opted_in` / `opted_out`,
+  never retried). The body is `<Name> says: "<defanged text>" - Pager
+  (<operator>)`, plus the STOP/HELP disclosure on the first relayed message to
+  a number per UTC day. The day's disclosure is claimed *before* the send; if
+  the send then fails the claim stands, so a retry the same day goes out
+  without it.
 """
 
 from __future__ import annotations
@@ -23,12 +30,15 @@ import hmac
 import logging
 import os
 import re
+from datetime import UTC, datetime
 
 from pydantic import BaseModel, ConfigDict
 
+from app import sms_compliance
 from app.backends.base import DeliverResult, LinkStep
 from app.notify import sms as sms_client
 from app.store import messages as messages_store
+from app.store import sms_consent
 from app.store import users as users_store
 from app.store.backends import Backend as BackendRow
 from app.store.messages import Delivery, Message
@@ -44,6 +54,10 @@ class SmsConfig(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     phone: str
+
+
+def _today_utc() -> str:
+    return datetime.now(UTC).strftime("%Y-%m-%d")
 
 
 def _render_body(msg: Message) -> str:
@@ -77,7 +91,25 @@ class SmsTwilioBackend:
             messages_store.mark_delivery_failed_if_queued(msg.id, backend.id)
             return DeliverResult(ok=False, state="failed", error="no_sms_number")
 
-        result = sms_client.send_sms(phone, _render_body(msg), from_number=from_number)
+        consent = sms_consent.get(phone)
+        if consent is None or consent.status != "opted_in":
+            code = "opted_out" if consent is not None else "not_opted_in"
+            logger.info(
+                "sms out to=%s from=%s sid=- status=failed code=%s",
+                sms_client.redact_phone(phone),
+                sms_client.redact_phone(from_number),
+                code,
+            )
+            messages_store.mark_delivery_failed_if_queued(msg.id, backend.id)
+            return DeliverResult(ok=False, state="failed", error=code)
+
+        text = sms_compliance.relay_body(
+            sender.displayName if sender is not None else "",
+            sms_compliance.defang(_render_body(msg)),
+        )
+        if sms_consent.claim_disclosure(phone, _today_utc()):
+            text += sms_compliance.DISCLOSURE
+        result = sms_client.send_sms(phone, text, from_number=from_number)
         status = "sent" if result.ok else ("queued" if result.transient else "failed")
         logger.info(
             "sms out to=%s from=%s sid=%s status=%s code=%s",

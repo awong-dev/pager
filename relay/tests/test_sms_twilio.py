@@ -38,6 +38,7 @@ from app.store import families as families_store
 from app.store import held_sms as held_sms_store
 from app.store import messages as messages_store
 from app.store import push_tokens as push_tokens_store
+from app.store import sms_consent as sms_consent_store
 from app.store import users as users_store
 from app.tasks import InlineTaskQueue
 from tests.fake_transport import FakeBrokerClient
@@ -187,6 +188,8 @@ def world(client: TestClient) -> World:
 def _approved_contact(world: World, phone: str = MOM_NUMBER, name: str = "Mom"):
     ext = externals_store.get_or_create(world.family_id, phone, name)
     allow_store.set_edge("kid", ext.uid, message=True, locate=False)
+    # Outbound needs the number's opt-in (docs/RELAY_SMS_DESIGN.md decision 11).
+    sms_consent_store.mark_opted_in(phone, source="admin")
     return ext
 
 
@@ -547,7 +550,14 @@ def test_pager_up_to_contact_goes_out_from_the_owners_number(
         wire_id="u_out1",
     )
     assert result.rejected == []
-    assert outbound.sent == [{"to": MOM_NUMBER, "body": "on my way", "from": KID_NUMBER}]
+    assert outbound.sent == [
+        {
+            "to": MOM_NUMBER,
+            "body": 'Kid says: "on my way" - Pager (Albert Wong)'
+            ". Reply STOP to opt out, HELP for help.",
+            "from": KID_NUMBER,
+        }
+    ]
     (msg,) = result.messages
     deliveries = messages_store.get_message(msg.id).deliveries
     assert [(d.kind, d.state) for d in deliveries.values()] == [("sms", "sent")]
@@ -609,7 +619,8 @@ def test_twilio_4xx_fails_and_5xx_stays_queued_then_tick_retries(
     assert result.nonPagerRetriesAttempted == 1
     (d,) = messages_store.get_message(queued.id).deliveries.values()
     assert d.state == "sent"
-    assert [s["body"] for s in outbound.sent][-1] == "b"
+    assert [s["body"] for s in outbound.sent][-1] == 'Kid says: "b" - Pager (Albert Wong)'
+
 
 
 def test_send_sms_client_maps_twilio_responses(monkeypatch: pytest.MonkeyPatch):

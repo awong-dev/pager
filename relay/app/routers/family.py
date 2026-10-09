@@ -23,7 +23,7 @@ from firebase_admin import auth as fb_auth
 from google.api_core.exceptions import AlreadyExists
 from pydantic import BaseModel, ConfigDict, Field
 
-from app import book, devcfg
+from app import book, devcfg, sms_compliance
 from app import policy as policy_module
 from app.auth import Principal, require_family_admin, set_claims
 from app.backends import sms_twilio
@@ -33,6 +33,7 @@ from app.config import Settings
 from app.db.firestore import get_db
 from app.emqx_admin import EmqxAdmin
 from app.ingest import Ingest
+from app.notify import sms as sms_client
 from app.routers import admin as admin_router
 from app.routers import conversations as conversations_router
 from app.routing import Routing
@@ -45,6 +46,7 @@ from app.store import externals as externals_store
 from app.store import families as families_store
 from app.store import held_sms as held_sms_store
 from app.store import rate_limits as rate_limits_store
+from app.store import sms_consent as sms_consent_store
 from app.store import users as users_store
 from app.store.alerts import Alert
 from app.store.devices import Device
@@ -684,6 +686,29 @@ def _contact_out(family_id: str, external: User) -> ContactOut:
     return next(c for c in _list_contacts(family_id) if c.uid == external.uid)
 
 
+def _consent_by_admin(family_id: str, e164: str, from_number: str | None) -> None:
+    """docs/RELAY_SMS_DESIGN.md decision 11: an admin adding or approving a
+    number is its opt-in. On the first opt-in, send the welcome from
+    `from_number` (default: the family's first person, by alias, with a relay
+    number); with none, warn and leave the row `opted_in`."""
+    if not sms_consent_store.mark_opted_in(e164, source="admin"):
+        return
+    if from_number is None:
+        members = sorted(
+            (
+                u
+                for u in users_store.list_users()
+                if u.kind == "person" and u.familyId == family_id and u.smsNumber
+            ),
+            key=lambda u: u.alias,
+        )
+        from_number = members[0].smsNumber if members else None
+    if from_number is None:
+        logger.warning("sms welcome skipped: no member number")
+        return
+    sms_client.send_sms(e164, sms_compliance.welcome(), from_number=from_number)
+
+
 @router.post(
     "/contacts", status_code=201, dependencies=[Depends(require_family_write_rate_limit)]
 )
@@ -704,6 +729,7 @@ def create_contact(
         raise _name_taken(family_id, exc) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    _consent_by_admin(family_id, external.phone or req.phone, None)
     rederive_family_sms_contacts(family_id, broker)
     return _contact_out(family_id, external)
 
@@ -847,6 +873,9 @@ def _approve_sms_unknown(
         raise _name_taken(family_id, exc) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    # Admin consent before the backlog goes out, so the pager's reply to it is
+    # not suppressed (decision 11).
+    _consent_by_admin(family_id, external.phone or alert.peerPhone, target.smsNumber)
     # (c) the edge.
     allow_store.set_edge(target_uid, external.uid, message=True, locate=False)
     allow_store.recompute_locatable_by_for_owner(external.uid)
@@ -929,6 +958,7 @@ def _approve_contact_request(
             raise _name_taken(owner.familyId, exc) from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        _consent_by_admin(owner.familyId, contact.phone or request.phone, None)
         allow_store.set_edge(owner.uid, contact.uid, message=True, locate=False)
         rederive_family_sms_contacts(owner.familyId, broker)
     else:
