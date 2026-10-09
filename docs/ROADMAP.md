@@ -74,7 +74,7 @@ Download, verify, switch and rollback are done (`docs/OTA_DESIGN.md`; verified o
 ### Bridge phones (`docs/BRIDGE_PHONE_DESIGN.md`, 9 Oct 2026)
 
 Built and landed: relay B1–B9 (`f9649f2`..`1bc22f4`), web W1–W5 (`7f3c4fc`..`927a11c`), Android
-A1–A7 (`714b2c0`). WhatsApp (DMs and groups, both tiers) landed 9 Oct 2026 as A9, B11 and W7 (one commit on main right after the Twilio removal `663168e`). The relay suite passes (1291 tests) and `python3 tools/e2e_v2.py bridge
+A1–A7 (`714b2c0`). WhatsApp (DMs and groups, both tiers) landed 9 Oct 2026 as A9, B11 and W7 (`8209141`). The relay suite passes (1291 tests) and `python3 tools/e2e_v2.py bridge
 bridge_voice` passes; both were re-run on 9 Oct 2026. Not re-run in that check: the web verify
 commands and `./gradlew`. The Android unit-test count (23) is as the commit message reports it.
 
