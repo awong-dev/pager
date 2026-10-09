@@ -30,6 +30,7 @@ from app.routers import (
     admin,
     battery,
     book,
+    bridge,
     ca,
     conversations,
     dev,
@@ -131,6 +132,7 @@ def create_app(
         return response
 
     app.include_router(webhooks.router)
+    app.include_router(bridge.router)
     app.include_router(ca.router)
     app.include_router(admin.router)
     app.include_router(dev.router)

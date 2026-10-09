@@ -128,6 +128,7 @@ from google.cloud.firestore import (
 from app import location
 from app.db.firestore import get_db
 from app.routing import Routing
+from app.store import bridges as bridges_store
 from app.store import devices as devices_store
 from app.store import messages as messages_store
 from app.store import settings as settings_store
@@ -436,6 +437,7 @@ class SweepResult:
     alertsDeleted: int = 0
     batteryDeleted: int = 0
     heldSmsDeleted: int = 0
+    bridgePairCodesDeleted: int = 0
 
 
 def sweep() -> SweepResult:
@@ -518,6 +520,12 @@ def sweep() -> SweepResult:
         lambda: db.collection("heldSms"), msg_cutoff, batch_size, created_at_field="receivedAt"
     )
 
+    # docs/BRIDGE_PHONE_DESIGN.md decision 2: expired pairing codes.
+    bridge_codes_deleted = 0
+    for code in bridges_store.list_expired_pair_codes(datetime.now(UTC)):
+        bridges_store.delete_pair_code(code)
+        bridge_codes_deleted += 1
+
     settings_store.mark_swept()
 
     logger.info(
@@ -547,4 +555,5 @@ def sweep() -> SweepResult:
         alertsDeleted=alerts_deleted,
         batteryDeleted=battery_deleted,
         heldSmsDeleted=held_sms_deleted,
+        bridgePairCodesDeleted=bridge_codes_deleted,
     )

@@ -61,3 +61,10 @@ packages = ["app"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff.lint.per-file-ignores]
+# docs/BRIDGE_PHONE_DESIGN.md tests import the shared fixtures from
+# tests/bridge_world.py; pytest needs them in the module namespace.
+"tests/test_bridge*.py" = ["F811"]
+"tests/test_chat*.py" = ["F811"]
+"tests/test_family_bridges.py" = ["F811"]
