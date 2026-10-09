@@ -219,6 +219,20 @@ an `sms_unknown` alert to the family admins; they are delivered only when an adm
 stores message bodies in Firestore, and Twilio keeps its own copy in its message logs. Log lines to watch:
 `sms in to=@alias from=...1234 sid=SM... outcome=...` and `sms out to=...1234 from=...5678 sid=... status=...`.
 
+### Bridge phones
+
+A member's texts can also go through a headless Android phone instead of Twilio: SIM SMS, Google
+Voice, and subscribed Google Chat conversations (docs/BRIDGE_PHONE_DESIGN.md, task list
+docs/BRIDGE_PHONE_TASKS.md). Twilio stays for members without a bridge phone and is untouched on
+their path. A family admin adds a phone under Family → Devices (`POST /api/family/bridges` returns a
+10-minute pairing code), the phone calls `POST /bridge/pair`, and the member's `smsNumber` becomes the
+SIM number, else the Voice number. The relay holds no connection to the phone: it polls
+`GET /bridge/outbox` (and is nudged by an FCM data push when the app has Firebase), and posts what it
+sees to `POST /bridge/events`. Bridges need **no environment variables** (the bearer token is minted at
+pairing and only its hash is stored). The runbook (phone setup checklist, pairing, the simulator
+`tools/bridge_sim.py`) is D1's "Bridge phones" section; until it lands, `docs/BRIDGE_PHONE_DESIGN.md`
+is the reference.
+
 ## CLI Tools
 
 For sending messages via the relay API and driving a simulated device +
