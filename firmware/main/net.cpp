@@ -23,6 +23,7 @@
 #include "net_probe_guard.h"
 #include "publish_quiet.h"
 #include "wifi_sta.h"
+#include "ui.h" // ui_kb_sleep_park()/unpark() around esp_light_sleep_start()
 extern "C" {
 #include "battstat.h" // battstat_raise(BS_MODEM) in the publish wrappers (BATTERY_STATS_DESIGN.md B3)
 }
@@ -747,7 +748,7 @@ void note_registration(bool registered)
 
 bool configure_session(void); // not `static`: net_internal.h re-declares this for xport_lte.cpp
 
-// Weak default: no-op. Layering seam (same style as disp_busy_idle_hook()):
+// Weak default: no-op. Layering seam (same style as disp_pre_write_gate_hook()):
 // ui.c supplies the strong definition. Called only from net_bringup() below,
 // i.e. on net_init()'s caller task, never from URC/event handlers.
 extern "C" __attribute__((weak)) void net_boot_progress_hook(const char *status)
@@ -1526,7 +1527,9 @@ extern "C" void net_sleep(uint32_t ms)
         flightrec_event('S', (int32_t) ms, flightrec_cts_level());
     }
 
+    ui_kb_sleep_park(); // power effect: none; waits <=100 ms for an in-flight kbd read
     esp_light_sleep_start();
+    ui_kb_sleep_unpark(); // power effect: none; kbd task resumes polling
 
     // 5 Oct 2026 (bench, proto3): ext1_wakeup_prepare() above (inside
     // esp_light_sleep_start()) latches an RTC pad HOLD on every ext1 pad and, on the

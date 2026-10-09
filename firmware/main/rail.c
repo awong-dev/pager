@@ -133,8 +133,8 @@ void rail_init(void)
     portENTER_CRITICAL(&s_on_mux);
     s_rail_on = true;
     s_on_since_us = esp_timer_get_time();
-    portEXIT_CRITICAL(&s_on_mux);
     s_restored_us = esp_timer_get_time(); // see rail.h: counts as a restore edge
+    portEXIT_CRITICAL(&s_on_mux);
 }
 
 void rail_on(void)
@@ -165,8 +165,9 @@ void rail_on(void)
     portENTER_CRITICAL(&s_on_mux);
     s_rail_on = true;
     s_on_since_us = on_edge_us;
-    portEXIT_CRITICAL(&s_on_mux);
     s_restored_us = esp_timer_get_time();
+    portEXIT_CRITICAL(&s_on_mux);
+    ui_kb_rail_changed(); // kbd task: guard starts now; power effect: none (wakes CPU1 task)
 }
 
 void rail_off(void)
@@ -188,6 +189,7 @@ void rail_off(void)
     s_on_acc_us += esp_timer_get_time() - s_on_since_us;
     s_rail_on = false;
     portEXIT_CRITICAL(&s_on_mux);
+    ui_kb_rail_changed(); // kbd task: park until next rail_on(); power effect: none
 }
 
 uint32_t rail_on_ms_total(void)
@@ -201,4 +203,10 @@ uint32_t rail_on_ms_total(void)
 
 bool rail_is_on(void) { return s_rail_on; }
 
-int64_t rail_restored_us(void) { return s_restored_us; }
+int64_t rail_restored_us(void)
+{
+    portENTER_CRITICAL(&s_on_mux);
+    int64_t us = s_restored_us;
+    portEXIT_CRITICAL(&s_on_mux);
+    return us;
+}

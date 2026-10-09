@@ -451,34 +451,38 @@ bool ui_incoming(const char *from, bool was_asleep);
  * (disp_partial_refresh()), PENDING_HW; a no-op/log-only if disp_is_dead(). */
 void ui_show_toast(const char *text);
 
-/* Non-blocking CardKB I2C poll + decode, called once per modes_run()
- * iteration whenever input_awake() is true (mirrors the pre-F6.3 ui.c's
- * composer-only poll, now generalised to every screen — see input.h's
- * scope note on why input.c does not do this itself). Feeds each decoded
- * byte to input_feed_key() (input.h), which arms the UI-awake window and
- * queues an INPUT_EVT_KEY event for modes.c's existing event-drain loop to
- * hand to ui_dispatch_key(). On 3 consecutive I2C failures, logs once and
- * backs off until the next call (same "keyboard not found" tolerance the
- * pre-F6.3 composer had) — never blocks the wake-and-drain loop. Rail gate
- * (docs/ROADMAP.md, owner 24 Sep 10:30 pm PDT): withholds the read (no I2C
- * transaction at all, counted in ui_kb_skipped_read_count()) for
- * PAGER_KB_BOOT_GUARD_MS (ui.c, 300 ms) after the most recent rail.c
- * rail_restored_us() edge — the CardKB MCU needs that long to boot after
- * its power (the 3V3 rail) returns; a read failing after that guard has
- * elapsed re-initializes the I2C driver once per restore edge. Power
- * effect: one I2C read per call (~0.1 ms, negligible next to the 100ms
- * poll cadence input_awake() already implies), or none while the guard is
- * withholding it. */
-void ui_poll_keyboard(void);
+/* CardKB reads run on ui.c's own "kbd" task (4096 B stack, priority
+ * 2, pinned to CPU1, one read per 10 ms tick), created at the end of
+ * ui_init(). It is the only read path: the main loop does not poll. Each
+ * decoded byte goes to input_feed_key() (input.h), which arms the UI-awake
+ * window and queues an INPUT_EVT_KEY event for modes.c's drain loop. Rail
+ * gate (docs/ROADMAP.md): the task blocks while rail_is_on() is false, and
+ * withholds reads for PAGER_KB_BOOT_GUARD_MS (ui.c, 1300 ms) after each
+ * rail_restored_us() edge; a read failing after that re-initializes the I2C
+ * driver once per edge. Power effect: ~100 I2C reads/s (~0.3 ms each) while
+ * the rail is on and the chip is awake; none while the rail is off. */
 
-/* Round 9: pauses (true) or resumes (false) ui_poll_keyboard() above
- * entirely, for the `kbtime` bench probe's own exclusive use of I2C_NUM_0
- * (ui.c's s_kb_poll_paused has the full rationale). Never called outside
- * that one console command. */
+/* rail.c calls this as the last line of rail_on()/rail_off(), once the rail
+ * state is final: wakes the kbd task so it re-evaluates (starts the boot
+ * guard, or parks). Safe before ui_init() (no-op). Power effect: none. */
+void ui_kb_rail_changed(void);
+
+/* net.cpp's net_sleep() brackets only esp_light_sleep_start() with these (the WiFi vTaskDelay path never parks). Park takes the kbd bus mutex
+ * (100 ms bound; logs and sleeps anyway on timeout) so a light sleep never
+ * starts in the middle of a CardKB I2C transaction; unpark releases it if it
+ * was taken. Power effect: none. */
+void ui_kb_sleep_park(void);
+void ui_kb_sleep_unpark(void);
+
+/* Round 9: pauses (true) or resumes (false) the kbd task, for the `kbtime`
+ * and `i2cscan` bench commands' own exclusive use of I2C_NUM_0 (ui.c's
+ * s_kb_poll_paused has the full rationale). Pausing is synchronous: any
+ * in-flight read has finished when it returns. Never called outside those
+ * console commands. */
 void ui_debug_pause_kb_poll(bool paused);
 
-/* Count of ui_poll_keyboard() calls withheld by the post-rail-restore
- * CardKB boot guard above, since boot. Free-running, never reset — bench
+/* Count of rail-restore edges whose CardKB boot guard the kbd task waited
+ * out, since boot. Free-running, never reset — bench
  * diagnostic (modes.c's sleeptest report: "kb_skipped_reads="). */
 uint32_t ui_kb_skipped_read_count(void);
 
@@ -503,7 +507,7 @@ void ui_kb_bus_release(void);
 /* rail.c's rail_on() calls this AFTER driving PAGER_PIN_3V3_EN low: returns
  * PAGER_PIN_KB_SDA/PAGER_PIN_KB_SCL to the I2C driver (re-runs
  * i2c_kb_init()). The existing PAGER_KB_BOOT_GUARD_MS post-restore guard
- * (ui_poll_keyboard(), keyed off rail.c's rail_restored_us()) already
+ * (the kbd task, keyed off rail.c's rail_restored_us()) already
  * withholds the first read until the CardKB MCU has had time to boot, so no
  * additional guard is needed here. Power effect: none by itself — the rail
  * edge that powers the CardKB back up already happened in rail_on(); this
@@ -515,11 +519,12 @@ void ui_kb_bus_restore(void);
  * report: "kb_bus_releases="). */
 uint32_t ui_kb_bus_release_count(void);
 
-/* Round 9 resume: the one-shot I2C driver delete+reinstall ui_poll_
- * keyboard() already does internally after a few failed reads post-
+/* Round 9 resume: the one-shot I2C driver delete+reinstall the kbd
+ * task already does internally after a few failed reads post-
  * restore ("the bus could have been left mid-transaction when the rail
  * dropped") -- exposed so main.c's `kbtime` bench probe can reproduce the
- * exact same recovery a real post-wake keystroke goes through, instead of
+ * exact same recovery a real post-wake keystroke goes through (takes the
+ * kbd bus mutex), instead of
  * measuring a number production code never actually gets to rely on. */
 void ui_kb_i2c_reinit(void);
 

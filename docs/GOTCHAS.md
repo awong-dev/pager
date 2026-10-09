@@ -339,6 +339,33 @@ did not exist.
 
 **Rule:** keep the bridge account's contacts list empty (the setup checklist). A name-only sender is dropped with one INFO line and never raises an alert.
 
+## CardKB holds one key: a main-loop stall drops the burst (9 Oct 2026)
+
+**Symptom:** typing fast into the composer shows about the first and last character of each burst;
+the middle keys never appear. Slow typing is fine.
+
+**Cause:** the CardKB has no FIFO. It holds one unread key, and the next key overwrites it if the
+pager has not read it yet. Any main-loop block longer than one keystroke gap loses the keys in
+between. The stalls measured on the bench: the wake status refresh (43 ms typical, 2 x 5000 ms
+worst case while the AT queue is busy), the publish-quiet gate in `disp_pre_write_gate_hook()`
+(560-710 ms seen, 1500 ms cap), and modem servicing (publish and session calls, hundreds of ms).
+
+**Rule:** read the CardKB from its own task (`kbd`, `ui.c`), never from the main loop. Keys that
+arrive during a stall wait in the input queue (`input.c`, 32 deep). A queue-full drop logs at WARN
+(`input event queue full`), so a loss there is visible. Design: `docs/TASK_kbtask.md`.
+
+UNVERIFIED on hardware until the owner's `abcdefgh` burst test passes (`firmware/README.md`,
+"Keyboard task").
+
+## sora1's CardKB does not answer at 0x5F (9 Oct 2026)
+
+**Symptom:** `i2cscan` finds 0 devices, the SDA and SCL lines sit idle high, and `kbtime` reports
+"never acked". The baseline build and the new build both behave this way on sora1.
+
+**Status:** not diagnosed. Check the wiring first (SDA IO10 on header pin 25, SCL IO9 on pin 24;
+VCC from 3V3-OUT on pin 26, gated by IO0), and check that the rail is on. Until then, no keystroke
+result from sora1 counts as a keyboard result.
+
 ## Tools and workflow
 
 **`serial_capture.py` overwrites without warning:**
@@ -352,8 +379,11 @@ solo `esptool.py --after hard_reset chip_id`, then start captures in the same sh
 flash.
 
 **Console `key` injection:** Enter goes on the wire as `key \\n` (esp_console strips one backslash),
-and a `key` burst longer than 8 keystrokes loses its tail. See `docs/HARDWARE_TESTING.md` (Seen working,
-CardKB).
+and a `key` burst longer than the input queue loses its tail (the command feeds every character
+into the queue in one go). The queue was 8 deep, hence the old "8 keystrokes per `key` call" rule;
+since the `kbd` task (9 Oct 2026) it is 32 deep, so up to ~31 per call should fit. Not re-measured;
+keep bursts to 8 per call until a capture shows otherwise. See `docs/HARDWARE_TESTING.md` (Seen
+working, CardKB).
 
 **`gcloud logging read` needs `--project kid-pager`:**
 The shell's default project is another one; the read silently returns other services' logs and

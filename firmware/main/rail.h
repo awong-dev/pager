@@ -101,7 +101,7 @@ bool rail_is_on(void);
 
 /* esp_timer_get_time() timestamp of the most recent rail-restore edge: the
  * last rail_init() or off->on rail_on() transition. 0 only before
- * rail_init() has run. ui.c's ui_poll_keyboard() withholds CardKB reads
+ * rail_init() has run. ui.c's kbd task withholds CardKB reads
  * until PAGER_KB_BOOT_GUARD_MS after this, since the CardKB MCU needs time
  * to boot after its power returns.
  */

@@ -73,7 +73,7 @@
 // interception slot as lock.c/book.c above), its own tiny RTC-resident route
 // hint (loc_rtc_t, embedded below), and its `/status` fields
 // (loc_min_s/loc_period_s/loc_backoff_s). accel.c's LIS3DH poll is driven
-// from modes_run()'s loop alongside input_poll()/ui_poll_keyboard().
+// from modes_run()'s loop alongside input_poll() (the CardKB is read by ui.c's kbd task).
 #include "accel.h"
 #include "loc.h"
 
@@ -458,9 +458,9 @@ uint32_t modes_last_sleep_ext1_wakes(void)
 
 // Key-render coalescing removed 4 Oct 2026 (TASK_keylat.md): it added up to
 // ~300ms of latency per keystroke. The bug it was written against (a key
-// typed mid-refresh was lost outright) is prevented by disp_busy_idle_hook()
-// (ui.c), which polls the CardKB during disp_partial_refresh()'s BUSY wait;
-// a key that arrives during a refresh is queued by that hook and drained on
+// typed mid-refresh was lost outright) is prevented by ui.c's kbd task,
+// which polls the CardKB independently of this loop; a key that arrives
+// during a refresh is queued by that task and drained on
 // the next modes_run() iteration, where it renders together with whatever
 // else drained that iteration.
 
@@ -1699,11 +1699,9 @@ void modes_debug_sleeptest_report(void)
     }
     // Rail gate (docs/ROADMAP.md, owner 24 Sep 10:30 pm PDT): off_sleeps +
     // kept_on_sleeps should equal the `light sleeps` count in the summary
-    // line above; kb_skipped_reads is ui.c's own post-restore CardKB-boot-
-    // guard counter (ui_kb_skipped_read_count(), ui.h) — TASK_ui_round2.md
-    // Do #4 also folds ui_poll_keyboard()'s own new "rail is off, skip the
-    // read outright" early return into this same counter (see that
-    // function's own comment). kb_bus_releases (owner, 24 Sep 11:15 pm PDT
+    // line above; kb_skipped_reads is ui.c's own count of rail-restore
+    // edges whose CardKB boot guard the kbd task waited out
+    // (ui_kb_skipped_read_count(), ui.h). kb_bus_releases (owner, 24 Sep 11:15 pm PDT
     // fix) is ui_kb_bus_release_count() — should track off_sleeps 1:1 (one
     // release per rail_off() edge, ui.c/rail.c). on_wakes/lazy_on
     // (TASK_ui_round2.md Do #4, the lazy-rail rewrite): on_wakes is this
@@ -2454,17 +2452,6 @@ void modes_boot(void)
     ESP_LOGI(TAG, "boot complete, entering sleep mode");
 }
 
-// Recorded on modes_run()'s very first line below; modes_on_run_task()
-// (modes.h) compares against it. RAM-only, never RTC_DATA_ATTR — a task
-// handle from this boot is meaningless after a reset, and this design never
-// deep sleeps anyway (see s_render_pending's own comment on that).
-static TaskHandle_t s_modes_run_task = NULL;
-
-bool modes_on_run_task(void)
-{
-    return s_modes_run_task != NULL && xTaskGetCurrentTaskHandle() == s_modes_run_task;
-}
-
 // Round 4 (bug report 25 Sep ~3am PDT): the attentive/normal cadence edge,
 // pulled out of modes_run()'s loop body into its own function so it is
 // unmistakably independent of everything below it in that loop -- in
@@ -2560,7 +2547,6 @@ static bs_cause_t loop_cause(bool attentive, bool btn_busy, bool btn_stuck, bool
 
 void modes_run(void)
 {
-    s_modes_run_task = xTaskGetCurrentTaskHandle();
     uint32_t backoff_index = 0;
     int64_t next_session_retry_us = 0; // 0 = retry as soon as we notice we're down
 
@@ -2840,9 +2826,8 @@ void modes_run(void)
             // would reboot the CardKB every second and lose keys, defeating
             // the whole point of the attentive cadence. Never races a
             // display refresh: every disp_*_refresh() call in this build
-            // runs synchronously, on this same task (ui.c's own comment on
-            // modes_on_run_task() -- today only modes_run()'s task ever
-            // calls one), and this iteration's own render
+            // runs synchronously, on this same task (today only
+            // modes_run()'s task ever calls one), and this iteration's own render
             // (ui_render()/ui_on_awake_lapse(), below, later in this same
             // iteration) always completes before the loop reaches back here
             // -- there is no separate "refresh in progress" state to poll.
@@ -3114,13 +3099,7 @@ void modes_run(void)
         watchdog_kick(WD_INPUT_UI);
         input_poll(); // power effect: one GPIO read (button FSM step) - see input.h
 
-        // F6.3: CardKB read moved to ui.c (ui_poll_keyboard(), see its own
-        // doc comment) - polled here, before the event-drain loop below, so
-        // any key it decodes this same iteration is available to drain
-        // immediately rather than waiting one more iteration. Gated on
-        // input_awake() (not skip_sleep/btn_busy/btn_stuck): there is no
-        // screen to type into unless the UI is awake, and reading I2C while
-        // asleep would cost a transaction for nothing.
+        // CardKB is read by ui.c's kbd task (feeds input.c's queue); no polling here.
         bool ui_awake_now = input_awake();
 #ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
         // TASK_looptime.md: the one marked point `period` is measured
@@ -3132,14 +3111,6 @@ void modes_run(void)
         s_dbg_looptime_prev_us = dbg_now_us;
         int64_t dbg_status_us = 0; // set below iff ui_awake_edge_in fires this iteration
 #endif
-        // Bench finding (21 Sep): with no button wired, a keystroke is the only
-        // way to wake the UI, and the keyboard was read only while awake. Poll
-        // it on every loop iteration instead: awake, that is the 100 ms
-        // cadence as before; asleep, one I2C read per wake-and-drain cycle
-        // (~100 us every 5 s), so a key pressed while "sleeping" wakes the UI
-        // within one cycle if the CardKB holds it until read (README M13).
-        ui_poll_keyboard(); // power effect: one I2C read - see ui.h
-
         input_event_t ievt;
         while (input_get_event(&ievt)) {
             modes_note_activity(); // any resolved key/button event counts as activity

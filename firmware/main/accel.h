@@ -145,7 +145,7 @@ bool accel_init(void);
  * wake). Generator 2 observations feed accel_shake_step(). Returns true
  * exactly once per intentional shake (FIRED); the caller turns that into a
  * wake gesture (input_note_shake_wake()). Power effect: two I2C reads, same
- * class as ui_poll_keyboard()'s CardKB read, plus at most one CTRL_REG3
+ * class as the kbd task's CardKB read, plus at most one CTRL_REG3
  * write when the wanted IA1/IA2 routing changes. */
 bool accel_poll(void);
 
@@ -157,7 +157,7 @@ bool accel_poll(void);
  * only (defined in accel.c's own `#ifdef ESP_PLATFORM` section; not part
  * of the host build, same as accel_init()/accel_poll() above). Runs on the
  * caller's task (the console task) -- the IDF I2C driver is per-port
- * mutexed, so concurrent ui_poll_keyboard()/accel_poll() from modes_run()'s
+ * mutexed, so concurrent kbd task / accel_poll() from modes_run()'s
  * task is safe.
  * --------------------------------------------------------------------- */
 

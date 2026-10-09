@@ -688,7 +688,7 @@ static int cmd_kbtime(int argc, char **argv)
     long long min_ms = -1, max_ms = -1;
     int got = 0;
     // Round 9 resume: ui_debug_pause_kb_poll(true) stops modes_run()'s own
-    // concurrent ui_poll_keyboard() from touching I2C_NUM_0 for the
+    // concurrent kbd-task CardKB read from touching I2C_NUM_0 for the
     // duration -- the actual fix for the contention the first attempt at
     // this measurement hit ("CardKB: I2C read failed post-restore" on
     // every cycle, both sides reinitializing the driver at once). Settle
@@ -720,7 +720,7 @@ static int cmd_kbtime(int argc, char **argv)
             // Round 9 resume finding: the bus does not reliably answer on
             // the very first i2c_kb_init() after rail_on() -- every attempt
             // NACKs (ESP_FAIL) for the whole window without this, yet
-            // ui_poll_keyboard()'s own production recovery (ui.c: delete +
+            // the kbd task's own production recovery (ui.c: delete +
             // re-init the driver after a few failed reads, "the bus could
             // have been left mid-transaction when the rail dropped") is
             // exactly what makes real keystrokes work after a real wake
@@ -731,7 +731,7 @@ static int cmd_kbtime(int argc, char **argv)
             // need -- not an idealized number a production wake never gets.
             if (!reinit_done && esp_timer_get_time() - t0 >= 50000) {
                 reinit_done = true;
-                ui_kb_i2c_reinit(); // exactly ui_poll_keyboard()'s own one-shot recovery
+                ui_kb_i2c_reinit(); // exactly the kbd task's own one-shot recovery
             }
             vTaskDelay(pdMS_TO_TICKS(1)); // owner: "probe... every 1ms"
         }
@@ -891,6 +891,9 @@ static int cmd_i2cscan(int argc, char **argv)
     // accel.c installs the driver at boot) -- wire vs. wedged-chip triage.
     bool accel = (argc >= 2) && (strcmp(argv[1], "accel") == 0);
     i2c_port_t port = accel ? I2C_NUM_1 : I2C_NUM_0;
+    if (!accel) {
+        ui_debug_pause_kb_poll(true); // kbd task owns I2C_NUM_0 otherwise; power effect: none
+    }
     int sda = accel ? PAGER_PIN_ACCEL_SDA : (swap ? PAGER_PIN_KB_SCL : PAGER_PIN_KB_SDA);
     int scl = accel ? PAGER_PIN_ACCEL_SCL : (swap ? PAGER_PIN_KB_SDA : PAGER_PIN_KB_SCL);
     if (swap) {
@@ -933,6 +936,16 @@ static int cmd_i2cscan(int argc, char **argv)
            "Lines idle: SDA=%d SCL=%d (1 = pulled up, as they should be)\n",
            found, sda, scl, nack, timeout, other, gpio_get_level((gpio_num_t) sda),
            gpio_get_level((gpio_num_t) scl));
+    if (swap) {
+        if (rail_is_on()) {
+            ui_kb_i2c_reinit(); // back to the real pins (driver was reinstalled on the swapped ones)
+        } else {
+            ui_kb_bus_release(); // rail off: no driver on dead pins; drive the bus low again
+        }
+    }
+    if (!accel) {
+        ui_debug_pause_kb_poll(false); // kbd task resumes
+    }
     if (timeout > 0) {
         printf("i2cscan: timeouts mean a line is stuck: check for a short, a swapped pair, or a "
                "keyboard powered from the wrong rail\n");
@@ -1318,7 +1331,7 @@ static int cmd_smslist(int argc, char **argv)
 // the owner can wire the chip and start typing without a reboot -- if it
 // now answers and had not been configured yet, this prints that once.
 // Runs on this console task; the IDF I2C driver is per-port mutexed, so
-// concurrent ui_poll_keyboard()/accel_poll() (modes_run()'s task) is safe.
+// concurrent kbd task / accel_poll() (modes_run()'s task) is safe.
 // `acceltest samples 600` blocks THIS task (never modes_run()'s) for ~60s
 // (one sample per ODR period, 40ms at the default 25Hz).
 static const char *ACCELTEST_USAGE =

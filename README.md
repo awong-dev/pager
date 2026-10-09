@@ -17,6 +17,10 @@ right-header rewire, per-device GNSS disable, the host partial LUT, relay SMS th
 unknown senders held for parent approval, and local-time battery charts. Over-the-air updates with
 rollback were verified on a bench pager on 7 Oct 2026.
 
+**Keyboard (9 Oct 2026): built, not yet verified.** The CardKB is scanned by its own `kbd` task, so
+fast typing should no longer drop keys during main-loop stalls; the burst test needs a working
+keyboard on the bench (`docs/TASK_kbtask.md`).
+
 What works end to end today: a message typed in the web app reaches the pager over LTE-M and
 shows on its screen, the pager acknowledges it, and replies typed on the pager reach the web app.
 A page sent to a pager that is asleep is delivered: on a Soracom bench unit running the release

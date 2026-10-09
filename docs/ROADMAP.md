@@ -43,6 +43,21 @@ Download, verify, switch and rollback are done (`docs/OTA_DESIGN.md`; verified o
 - **Debug console multi-char input:** `key <text>` produced no redraw on bench (v0.3 task 1.0,
   `build/bench-logs/phaseG.log`) (status unverified, 8 Oct 2026; console `key` injection now drives
   the keyboard on the bench, see `docs/HARDWARE_TESTING.md`).
+- **CardKB burst loss: done 9 Oct 2026, burst verification pending.** Keys were lost whenever the
+  main loop stalled (wake status refresh, publish-quiet gate, modem servicing). The CardKB is now
+  read by a `kbd` task, the input queue is 32 deep, and queue-full logs at WARN
+  (`docs/TASK_kbtask.md`). Pending: the owner's `abcdefgh` burst test with a working keyboard in
+  three scenarios (`firmware/README.md`, "Keyboard task"). The bench unit sora1's CardKB does not
+  answer on I2C yet (`docs/GOTCHAS.md`).
+- **Wake status refresh after the first draw** (open; `docs/TASK_kbtask.md` survey item 1). The
+  refresh in `modes.c` (43 ms typical, 2 x 5 s worst case) runs before the first render. Move it to
+  the pass after `ui_render()`, and show the cached battery and RSSI first.
+- **kbd task wakes the main loop** (open, follow-up; survey item 5). Replace the 100 ms
+  `vTaskDelay` in `modes.c` with `ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(100))`, and have the task
+  notify the modes task after `input_feed_key()`. Measure separately from the burst fix.
+- **Measure modem servicing** (later; survey item 4). Add a `svc=` bucket to the debug `looptime`
+  line before any change. Defer a non-urgent step only if a call goes over 300 ms while the UI is
+  awake.
 - **CardKB loses keys in first ~1.1 s after rail-on** (measured 1136–1137 ms to first I2C ACK; guard
   now 1300 ms in ui.c via `rail_off()` and `rail_on()` calls in modes.c). Option: reflash CardKB
   ATmega8A without bootloader via ISP header. **Owner decision needed.**

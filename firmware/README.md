@@ -25,7 +25,7 @@ nothing else in the firmware hardcodes a pin.
 |---|---|---|
 | Walter module (DPTechnics) | ESP32-S3-WROOM-1-N16R2 + Sequans GM02SP LTE-M modem + GNSS | — |
 | Adafruit eInk Breakout Friend, panel Orient Display AES128296A00-2.9ENRS (SSD1680-compatible, 296×128; replaced the GDEY029T94-FT01 on 4 Oct 2026; partial-waveform OTP unverified, see HARDWARE_TESTING.md) | E-paper display | SPI via the GPIO matrix, 4 MHz: SCK IO2, MISO IO42, MOSI IO41, ECS IO40, D/C IO39, RST IO13, BUSY IO11; SRCS IO38 held high (SRAM unused); SDCS not wired. ENA IO12 is the Friend's regulator enable (active-high, pulled up on the Friend): low = panel unpowered. Friend VIN from the power board's always-on "3V" rail, not Walter VIN or Walter 3V3-OUT. |
-| M5Stack CardKB | Keyboard | I2C_NUM_0 addr 0x5F, SDA IO10 / SCL IO9, polled. VCC from Walter's own switched 3V3-OUT (header pin 26, gated by IO0), so it switches with the attentive window independently of the display. |
+| M5Stack CardKB | Keyboard | I2C_NUM_0 addr 0x5F, SDA IO10 / SCL IO9, scanned by the `kbd` task every 10 ms (see "Keyboard task" below). VCC from Walter's own switched 3V3-OUT (header pin 26, gated by IO0), so it switches with the attentive window independently of the display. |
 | Adafruit LIS3DH breakout | Motion wake | I2C_NUM_1 addr 0x18 (SDO/SA0 open), SDA IO17 / SCL IO18; INT1 → IO16 (push-pull, active-high, 3.3 V, the only ext1 wake). VIN from the power board's always-on "3V" rail (not gated by any Walter GPIO), so it stays alive through every rail_off() and every light sleep/reset. |
 | Push button (REMOVED 8 Oct 2026; disabled in firmware since 6 Oct, `PAGER_WAKE_BUTTON_ENABLED 0`; the shake replaces it) | — | No hardware. IO8 (header pin 23) is free. |
 | Adafruit 6092 (bq25185 + TLV62569) power board + 3.7 V 2500 mAh LiPo (Adafruit 328) | Power | Board "4.5V" (SYS) → Walter VIN; board always-on "3V" buck → Friend VIN + LIS3DH VIN |
@@ -110,8 +110,8 @@ crosses the wire; this section covers the device-local behaviour the protocol do
   mode** the modem stays connected and messages must show within 5 s.
 - **Modes**: boot in sleep mode. Enter active mode on an incoming message or a shake plus a key (the IO8 button was retired 6 Oct 2026); leave
   it after 10 minutes with no keyboard activity. The 10-minute timeout runs from mode
-  *entry*, not from the last activity. The CardKB is polled every 100 ms, and only while the reply
-  composer is open.
+  *entry*, not from the last activity. The CardKB is read by the `kbd` task
+  (see "Keyboard task" below), not by the main loop.
 - **Display refresh**: partial refresh for the message pane. Full refreshes come from the refresh
   policy (`refreshpol.c`), not from a fixed count. Its defaults, relaxed 7 Oct 2026, are a floor of
   40 partials, an 8 s idle gap, a ceiling of 120 partials and a pre-sleep minimum of 6 (`refreshpol.h`).
@@ -165,6 +165,37 @@ override is read at boot. `carrier` shows what was detected and what is in force
 - Full list of what to check on first hardware bring-up: the measurement checklists below (M1-M23)
   and the "Residual risks" section's cheapest-experiment column, roughly in priority order.
 
+## Keyboard task (`kbd`, 9 Oct 2026)
+
+The CardKB is scanned by a static FreeRTOS task, `kbd` (`ui.c`; priority 2, pinned to CPU1). It
+polls every 10 ms while the keyboard rail is on and past the 1300 ms boot guard. While the rail is
+off it blocks on a rail notification. The task is the only CardKB read path: `ui_poll_keyboard()`
+and the refresh-time poll hook are deleted, and the main loop does not touch the CardKB. Keys go
+to the input queue (`input.c`, 32 deep). A queue-full drop logs at WARN. Design and review
+history: `docs/TASK_kbtask.md`. Why the main loop must not read the CardKB: `docs/GOTCHAS.md`.
+
+- **Console:** `i2cscan` and `kbtime` pause the task and resume it after. `i2cscan swap` re-inits
+  the bus only with the rail on.
+- **Light sleep:** the task is parked around `esp_light_sleep_start()`, so a sleep never starts in
+  the middle of a CPU1 I2C read.
+- **Status:** built 9 Oct 2026. Burst verification is **pending** (the bench check below). On the
+  bench unit sora1, the CardKB currently does not answer at 0x5F (`docs/GOTCHAS.md`), so no
+  keystroke result from sora1 counts until that is fixed.
+
+**Bench: keyboard burst test.** The owner types `abcdefgh` fast, three times in each scenario, on
+each flash (the baseline, then the new build). Capture the `ui: CardKB: 0x..` DEBUG lines
+(0x61-0x68):
+
+- A. screen awake, idle chat;
+- B. right after a shake, starting at the first draw (keys typed during the 1.3 s boot guard are
+  lost on both builds, because the CardKB is still booting);
+- C. within 2 s of sending a message.
+
+Expected on the new build: 8 of 8 in A, B and C, and no `input event queue full` lines. The
+baseline is expected to drop about the first and last keys in B and C. Also expect `kbd: task
+started` at boot, `kbd: paused (rail off)` after about 120 s idle, and `kbd: boot guard` then
+`kbd: polling` about 1300 ms after a shake.
+
 ## Measurement checklist: network and power (PENDING_HW unless a row says resolved)
 
 These rows were written before any device was attached. A row marked **Resolved** has a bench result
@@ -182,8 +213,8 @@ arithmetic these numbers feed.
 | M6 | `MEMORY_FULL` event count over 24h | Direct evidence the wake-and-drain cycle is losing messages; counted in RTC (`mqtt_memfull_count`) but never exercised against real traffic |
 | M7 | Does the modem send PINGREQ autonomously at the configured keepalive? | Resolved by construction per the library API (no ping call exists), but never observed on the wire |
 | M8 | Clean-session behaviour across an ESP32-only reset (modem session survives?) | PROTOCOL.md §12 item 4 - the highest-value follow-up experiment; unresolved and load-bearing for whether §8.3(b) (deep sleep + forced redelivery) is ever worth revisiting |
-| M16 | I²C CardKB polling (`ui.c`'s composer read / `input_feed_key()`, F6.2) across repeated 100 ms light-sleep cycles | `DEVICE_PLAN.md` §10's own open assumption: whether the CardKB and its I2C bus survive `net_sleep()`'s light-sleep re-entry without a dropped or garbled byte while the composer is open. The plan's own cheapest experiment is "one afternoon with M1's current trace" |
-| M17 | UI-awake window current draw (active mode, composer open, CardKB polled every 100 ms, `PAGER_UI_AWAKE_S`=30s) | Validates `DEVICE_PLAN.md` §5.7's ≈ 7 mAh/day-at-20-interactions estimate and the "one more AT round trip per UI wake (signal + battery), ≈ 100 ms at 40 mA" it is built on |
+| M16 | I²C CardKB polling (the `kbd` task in `ui.c`, which feeds `input_feed_key()`, F6.2) across repeated 100 ms light-sleep cycles | `DEVICE_PLAN.md` §10's own open assumption: whether the CardKB and its I2C bus survive `net_sleep()`'s light-sleep re-entry without a dropped or garbled byte while the composer is open. The plan's own cheapest experiment is "one afternoon with M1's current trace" |
+| M17 | UI-awake window current draw (active mode, composer open, CardKB scanned every 10 ms by the `kbd` task, `PAGER_UI_AWAKE_S`=30s) | Validates `DEVICE_PLAN.md` §5.7's ≈ 7 mAh/day-at-20-interactions estimate and the "one more AT round trip per UI wake (signal + battery), ≈ 100 ms at 40 mA" it is built on |
 | M18 | `bars_from_rssi_dbm()` bucket thresholds (`ui.c`: dBm ≥ -85/-95/-105/-115 → 4/3/2/1/0 bars) against a real cell | The dBm conversion itself is settled in source (F3.4: `WalterModem::getRSSI()`/AT+CSQ, `dBm = -113 + raw*2`, `raw==99` guarded off as "no reading" — `net.cpp`'s `net_get_rssi()`); the bucket boundaries chosen for the status-bar icon are engineering estimates that have never been seen against a live signal |
 | M19 | `segs_from_batt_mv()` LiPo threshold calibration (`ui.c`: 4000/3850/3700/3550 mV → 4/3/2/1/0 segments) | `DEVICE_PLAN.md` §10: these thresholds were picked, not derived from a real discharge curve under the device's own load; pairs with M15's voltage-reading check |
 

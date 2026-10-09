@@ -371,13 +371,7 @@ static void disp_delay_at_least_ms(uint32_t ms)
     vTaskDelay((ms + portTICK_PERIOD_MS - 1) / portTICK_PERIOD_MS + 1);
 }
 
-// Weak default: no-op. disp.h's own comment explains the layering seam —
-// disp.c must not include ui.h, so ui.c/modes.c overrides this with the
-// strong definition that polls the CardKB during a long BUSY wait.
-__attribute__((weak)) void disp_busy_idle_hook(void) {}
-
-// Weak default: no-op. Same layering seam as disp_busy_idle_hook() above,
-// for the same reason (disp.c must not include net.h either) — ui.c
+// Weak default: no-op. Layering seam: disp.c must not include net.h; ui.c
 // overrides this with the strong definition that blocks on net.c's
 // publish-quiet gate. See full_refresh_locked()/partial_refresh_locked()'s
 // own call sites for the field failure this closes.
@@ -417,17 +411,12 @@ static bool disp_wait_busy_fb(uint32_t fallback_ms)
                 ESP_LOGI(TAG, "BUSY line never asserted; using fixed waits (check the IO18 wire)");
                 s_busy_fallback_logged = true;
             }
-            // 10ms steps rather than one long vTaskDelay(fallback_ms), so
-            // disp_busy_idle_hook() gets a chance to run each iteration —
-            // see disp.h's own comment (this is the up-to-3.5s full-refresh
-            // fallback wait, the one a lost keystroke is most likely to land
-            // in).
+            // 10ms steps rather than one long vTaskDelay(fallback_ms).
             uint32_t waited_ms = 0;
             while (waited_ms < fallback_ms) {
                 uint32_t step = (fallback_ms - waited_ms < 10) ? (fallback_ms - waited_ms) : 10;
                 vTaskDelay(pdMS_TO_TICKS(step)); // NEVER a tight busy-loop
                 waited_ms += step;
-                disp_busy_idle_hook();
             }
             ESP_LOGD(TAG, "BUSY: entry=%d fixed-wait=%lu ms (fallback, no BUSY assert seen)",
                      entry_level, (unsigned long) fallback_ms);
@@ -454,7 +443,6 @@ static bool disp_wait_busy_fb(uint32_t fallback_ms)
             return false;
         }
         vTaskDelay(pdMS_TO_TICKS(10)); // NEVER a tight busy-loop
-        disp_busy_idle_hook();
     }
     ESP_LOGI(TAG, "BUSY: entry=%d exit=%d iters=%d elapsed=%lld us", entry_level,
              gpio_get_level(PAGER_PIN_DISP_BUSY), iters, esp_timer_get_time() - start);
@@ -873,9 +861,9 @@ static void full_refresh_locked(uint8_t tag, bool upgraded)
 // that never matched gfx.c's framebuffer again ("garbled bands that never
 // settle"). Root cause: the old-RAM (0x26) and s_fb_old re-sync below used
 // gfx_fb_native_row(r) read AFTER the ~0.5s BUSY wait, not the data actually
-// handed to the panel in the 0x24 write before it. disp_busy_idle_hook()'s
-// current strong definition (ui.c) only queues key events and never draws
-// (see its own comment), so it does not itself race this — but nothing in
+// handed to the panel in the 0x24 write before it. the kbd task
+// (ui.c) only queues key events and never draws, so it does not itself race
+// this — but nothing in
 // disp.c enforced that invariant, and any future or other call path that
 // draws into gfx_fb from a different task while this task blocks in the
 // wait (disp_lock() only serializes disp.c's own entry points, not gfx.c's

@@ -86,21 +86,6 @@ void disp_partial_refresh(void);
  * demand (modes.c refreshpol idle/ceiling poll). */
 void disp_request_full(void);
 
-/* Weak hook, called every ~10ms from inside disp_wait_busy_fb()'s BUSY-wait
- * loops (both the poll-until-low loop and the fixed-wait fallback path) for
- * as long as a refresh keeps the panel/task busy (up to ~3.5s on the full-
- * refresh fallback). Default definition (disp.c) is empty. modes.c/ui.c's
- * bug fix (CardKB losing keystrokes typed during a partial refresh's ~455ms
- * BUSY wait, since ui_poll_keyboard() otherwise only runs once per
- * modes_run() loop iteration) provides the strong definition, which polls
- * the CardKB while it's safe to do so. disp.c intentionally does NOT
- * include ui.h — this hook is the layering seam that lets a UI-level poll
- * happen without disp.c knowing anything about the UI. Runs on whichever
- * task called the refresh (disp_lock() is already held, so no two refreshes
- * ever call it concurrently); the strong definition is responsible for its
- * own task-safety check before touching shared I2C/input state. */
-void disp_busy_idle_hook(void);
-
 /* Weak hook, called once at the very top of full_refresh_locked()/
  * partial_refresh_locked() — before ANY panel command, including the
  * register re-arm ahead of it — so it also covers full_refresh_locked()'s
@@ -111,10 +96,8 @@ void disp_busy_idle_hook(void);
  * LTE uplink was in flight; zero on console-driven (`disptest`) refreshes,
  * which never publish. ui.c's strong definition blocks (bounded, via
  * net_publish_quiet_wait_ms()) until net.c's publish-quiet gate reports
- * clear. disp.c intentionally does NOT include net.h — same layering seam
- * disp_busy_idle_hook() above uses to avoid including ui.h. Runs on
- * whichever task called the refresh, with disp_lock() already held (same
- * as disp_busy_idle_hook()). */
+ * clear. disp.c intentionally does NOT include net.h (layering seam). Runs
+ * on whichever task called the refresh, with disp_lock() already held. */
 void disp_pre_write_gate_hook(void);
 
 /* Owner-visible display orientation: NVS-persisted 180-degree rotation of

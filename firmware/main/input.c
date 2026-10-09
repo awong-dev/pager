@@ -67,7 +67,7 @@ static const char *TAG = "input";
 /* Hot keyboard window opened by a shake from sleep (see input_hot()). */
 #define PAGER_UI_HOT_S 15
 
-#define INPUT_QUEUE_DEPTH 8
+#define INPUT_QUEUE_DEPTH 32 /* kbd task (CPU1) can queue ~17 keys across a gate + refresh stall */
 
 typedef enum {
     BTN_IDLE = 0,
@@ -84,6 +84,9 @@ static int64_t s_btn_debounce_start_us = 0;
 #endif
 
 static int64_t s_awake_until_us = 0;
+/* Guards s_awake_until_us/s_hot_until_us: written on the kbd task's CPU
+ * (input_feed_key) and read on the main loop's; Xtensa int64 can tear. */
+static portMUX_TYPE s_win_mux = portMUX_INITIALIZER_UNLOCKED;
 
 static StaticQueue_t s_queue_buf;
 static uint8_t s_queue_storage[INPUT_QUEUE_DEPTH * sizeof(input_event_t)];
@@ -93,7 +96,10 @@ static int64_t s_hot_until_us;
 
 static void arm_awake_window(int64_t now_us)
 {
-    s_awake_until_us = now_us + (int64_t) PAGER_UI_AWAKE_S * 1000000;
+    int64_t until_us = now_us + (int64_t) PAGER_UI_AWAKE_S * 1000000;
+    portENTER_CRITICAL(&s_win_mux);
+    s_awake_until_us = until_us;
+    portEXIT_CRITICAL(&s_win_mux);
 }
 
 static void push_event(input_event_t evt)
@@ -102,7 +108,7 @@ static void push_event(input_event_t evt)
      * drops the event rather than blocking this FSM step from any caller
      * context (CLAUDE.md: no busy-wait loops). */
     if (xQueueSend(s_queue, &evt, 0) != pdTRUE) {
-        ESP_LOGD(TAG, "input event queue full, dropping event type=%d", (int) evt.type);
+        ESP_LOGW(TAG, "input event queue full, dropping event type=%d", (int) evt.type);
     }
 }
 
@@ -246,12 +252,18 @@ void input_note_shake_wake(int64_t now_us)
         arm_awake_window(now_us);
         return;
     }
-    s_hot_until_us = now_us + (int64_t) PAGER_UI_HOT_S * 1000000;
+    int64_t until_us = now_us + (int64_t) PAGER_UI_HOT_S * 1000000;
+    portENTER_CRITICAL(&s_win_mux);
+    s_hot_until_us = until_us;
+    portEXIT_CRITICAL(&s_win_mux);
 }
 
 bool input_hot(void)
 {
-    return esp_timer_get_time() < s_hot_until_us;
+    portENTER_CRITICAL(&s_win_mux);
+    int64_t until_us = s_hot_until_us;
+    portEXIT_CRITICAL(&s_win_mux);
+    return esp_timer_get_time() < until_us;
 }
 
 void input_feed_key(uint8_t byte)
@@ -260,7 +272,9 @@ void input_feed_key(uint8_t byte)
     if (key.type == INPUT_KEY_NONE) {
         return;
     }
+    portENTER_CRITICAL(&s_win_mux);
     s_hot_until_us = 0; /* the full awake window supersedes the hot one */
+    portEXIT_CRITICAL(&s_win_mux);
     arm_awake_window(esp_timer_get_time());
     push_event((input_event_t) { .type = INPUT_EVT_KEY, .key = key });
 }
@@ -300,7 +314,10 @@ bool input_get_event(input_event_t *out)
 
 bool input_awake(void)
 {
-    return esp_timer_get_time() < s_awake_until_us;
+    portENTER_CRITICAL(&s_win_mux);
+    int64_t until_us = s_awake_until_us;
+    portEXIT_CRITICAL(&s_win_mux);
+    return esp_timer_get_time() < until_us;
 }
 
 bool input_button_busy(void)
