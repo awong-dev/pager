@@ -1497,6 +1497,67 @@ class ServerClient:
             raise RuntimeError(f"family delete_contact failed: {resp.status_code} {resp.text}")
         return resp.json()
 
+    # ---- bridge phone (docs/BRIDGE_PHONE_DESIGN.md) ----
+
+    def _checked(self, resp: httpx.Response, what: str) -> Any:
+        if resp.status_code >= 400:
+            raise RuntimeError(f"{what} failed: {resp.status_code} {resp.text}")
+        return resp.json()
+
+    def family_create_bridge(self, family: str, owner_uid: str, label: str) -> dict[str, Any]:
+        """`POST /api/family/bridges?family=` -> `{bridge, code, expiresAt}`."""
+        return self._checked(
+            self.api_post(f"/api/family/bridges?family={family}", {"ownerUid": owner_uid, "label": label}),
+            "family create_bridge",
+        )
+
+    def family_list_bridges(self, family: str) -> list[dict[str, Any]]:
+        """`GET /api/family/bridges?family=`."""
+        return self._checked(self.api_get(f"/api/family/bridges?family={family}"), "family list_bridges")
+
+    def family_member_chat(self, family: str, uid: str) -> dict[str, Any]:
+        """`GET /api/family/members/{uid}/chat?family=` -> `{subscribed, seen, bridges}`."""
+        return self._checked(
+            self.api_get(f"/api/family/members/{uid}/chat?family={family}"), "family member_chat"
+        )
+
+    def family_chat_subscribe(
+        self,
+        family: str,
+        bridge_id: str,
+        ref: str,
+        *,
+        pager_name: str,
+        roster: list[dict[str, str]] | None = None,
+        can_reply: bool = True,
+    ) -> dict[str, Any]:
+        """`POST /api/family/bridges/{b}/conversations/{ref}/subscribe`."""
+        body = {"pagerName": pager_name, "canReply": can_reply, "roster": roster or []}
+        return self._checked(
+            self.api_post(
+                f"/api/family/bridges/{bridge_id}/conversations/{ref}/subscribe?family={family}", body
+            ),
+            "family chat_subscribe",
+        )
+
+    def family_chat_ignore(self, family: str, bridge_id: str, ref: str) -> dict[str, Any]:
+        return self._checked(
+            self.api_post(
+                f"/api/family/bridges/{bridge_id}/conversations/{ref}/ignore?family={family}", {}
+            ),
+            "family chat_ignore",
+        )
+
+    def family_bridge_inspect(self, family: str, bridge_id: str, link: str) -> dict[str, Any]:
+        """`POST /api/family/bridges/{b}/inspect?family=` -> 202 `{outboxId}`."""
+        resp = self.api_post(f"/api/family/bridges/{bridge_id}/inspect?family={family}", {"link": link})
+        if resp.status_code != 202:
+            raise RuntimeError(f"family bridge_inspect failed: {resp.status_code} {resp.text}")
+        return resp.json()
+
+    def family_list_contacts(self, family: str) -> list[dict[str, Any]]:
+        return self._checked(self.api_get(f"/api/family/contacts?family={family}"), "family list_contacts")
+
     def admin_push_cfg(
         self, device_id: str, *, auto: int | None = None, clear: bool | None = None
     ) -> dict[str, Any]:

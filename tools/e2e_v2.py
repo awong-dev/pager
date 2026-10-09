@@ -1609,6 +1609,345 @@ def scenario_relay_sms() -> None:
     device.disconnect()
 
 
+BRIDGE_SIM_URL = "http://localhost:8020"
+BRIDGE_SIM_SIM_NUMBER = "+15550007777"  # relay/docker-compose.yml's BRIDGE_SIM_SIM_NUMBER
+
+
+def _bridge_member(admin: pager_client.ServerClient, family_id: str, alias: str, device_id: str):
+    """A member with a pager that is connected, whose policy lets numbers in and out."""
+    member = admin.admin_user_add(alias, alias.title(), email=f"{alias}@example.com", phone=None)
+    create_device_with_secret(admin, device_id, alias)
+    device = make_device(device_id)
+    device.connect()
+    wait_until(lambda: device.connected, timeout=10, description=f"{device_id} to connect")
+    resp = admin._http.patch(
+        f"{admin.api_url}/api/family/members/{member['uid']}?family={family_id}",
+        json={"policy": {"out": "people_sms", "in": "people_sms"}},
+        headers=admin._headers(),
+    )
+    assert resp.status_code == 200, resp.text
+    return member, device
+
+
+def _pair_sim(
+    admin: pager_client.ServerClient,
+    sim: Any,
+    family_id: str,
+    owner_uid: str,
+    label: str,
+    **numbers: Any,
+) -> dict[str, Any]:
+    """Create the bridge row + code through the family API, pair the simulator
+    with it, and wait for a heartbeat and the owner's `smsNumber`."""
+    created = admin.family_create_bridge(family_id, owner_uid, label)
+    bridge_id = created["bridge"]["id"]
+    sim.reset()
+    sim.pair(created["code"], **numbers)
+
+    def _paired() -> bool:
+        row = next(b for b in admin.family_list_bridges(family_id) if b["id"] == bridge_id)
+        return bool(row["paired"] and row["lastSeenAt"])
+
+    wait_until(_paired, timeout=15, description="the bridge row to show paired with lastSeenAt")
+    return next(b for b in admin.family_list_bridges(family_id) if b["id"] == bridge_id)
+
+
+def _sim_sent(sim: Any, since: int = 0) -> list[dict[str, Any]]:
+    return [i for i in sim.outbox()[since:] if i.get("kind") == "send"]
+
+
+def scenario_bridge() -> None:
+    """docs/BRIDGE_PHONE_DESIGN.md decision 14 against the `bridge-sim`
+    compose service: pair -> an SMS from an unknown number is held (open
+    `sms_unknown` alert, nothing on the pager) -> approve delivers it -> the
+    pager's reply reaches the sim's outbox on `sms` and is acked `sent` -> a
+    Voice text from the same number is the same contact and the next reply
+    goes out on `gvoice` -> an unknown Google Chat group is held behind ONE
+    `chat_unknown` alert -> subscribe delivers the backlog with `sndr` -> a
+    pager reply reaches the sim with the conversation -> inspect by link ->
+    an ignored conversation drops. Runnable as `tools/e2e_v2.py bridge`."""
+    import bridge_sim
+
+    bootstrap_admin()
+    oracle = Oracle()
+    admin = pager_client.ServerClient(RELAY_URL, AUTH_URL)
+    admin.login("admin")
+    family_id = admin.me()["user"]["familyId"] or "default"
+    sim = bridge_sim.BridgeSimClient(BRIDGE_SIM_URL)
+    httpx.post(f"{TWILIO_MOCK_URL}/_reset", timeout=5)
+
+    kid, device = _bridge_member(admin, family_id, "bkid", "pgr-e2e-brg")
+    voice_number = "+15550009999"
+    bridge = _pair_sim(
+        admin, sim, family_id, kid["uid"], "Kitchen phone", voiceNumber=voice_number
+    )
+    assert bridge["simNumber"] == BRIDGE_SIM_SIM_NUMBER and bridge["voiceNumber"] == voice_number, bridge
+    assert bridge["caps"]["sms"] and bridge["caps"]["gvoice"] and "tokenHash" not in bridge, bridge
+    wait_until(
+        lambda: oracle.users_store.get_user(kid["uid"]).smsNumber == BRIDGE_SIM_SIM_NUMBER,
+        timeout=10,
+        description="the bridge SIM to become the member's smsNumber",
+    )
+    bridge_id = bridge["id"]
+    print("bridge: paired; the member's smsNumber is the SIM")
+
+    # SMS from an unknown number -> held, then approved.
+    neighbor = "+15550006666"
+    device.inbox.clear()
+    out = sim.inject(
+        {
+            "source": "sms",
+            "conversation": {"id": "sms-1", "isGroup": False},
+            "sender": {"name": "", "phone": neighbor},
+            "text": "who dis",
+        }
+    )
+    assert out["results"][0]["outcome"] == "held", out
+    alert = next(
+        a
+        for a in admin.family_list_alerts(family_id)
+        if a["kind"] == "sms_unknown" and a.get("peerPhone") == neighbor
+    )
+    assert not any(e.data.get("body") == "who dis" for e in device.inbox), "held text leaked"
+    decision = admin.family_approve_alert(family_id, alert["id"], name="BridgeNeighbor")
+    assert decision["delivered"] == 1 and decision["undelivered"] == 0, decision
+    wait_until(
+        lambda: any(e.data.get("body") == "who dis" for e in device.inbox),
+        timeout=10,
+        description="the approved held SMS to reach the pager",
+    )
+    assert not any(
+        m["to"] == neighbor for m in httpx.get(f"{TWILIO_MOCK_URL}/_sent").json()
+    ), "a bridge number must not trigger a Twilio welcome text"
+    print("bridge: SMS held, approved, delivered (no Twilio traffic)")
+
+    contact = next(
+        c for c in admin.family_list_contacts(family_id) if c["phone"] == neighbor
+    )
+    # Pager reply -> outbox (sms) -> acked sent.
+    device.publish_msg("on my way", to=contact["alias"])
+    wait_until(
+        lambda: any(i["text"] == "on my way" for i in _sim_sent(sim)),
+        timeout=15,
+        description="the pager reply to reach the bridge outbox",
+    )
+    item = next(i for i in _sim_sent(sim) if i["text"] == "on my way")
+    assert item["source"] == "sms" and item["to"]["phone"] == neighbor, item
+    assert item["ackState"] == "sent", item
+
+    def _delivery_state(text: str) -> str | None:
+        from app.db.firestore import get_db
+
+        for snap in get_db().collection("messages").stream():
+            data = snap.to_dict() or {}
+            if data.get("body") == text and data.get("senderUid") == kid["uid"]:
+                return (data.get("deliveries") or {}).get("sms", {}).get("state")
+        return None
+
+    wait_until(
+        lambda: _delivery_state("on my way") == "sent",
+        timeout=15,
+        description="the ack to mark the delivery sent",
+    )
+    print("bridge: pager reply -> outbox (sms) -> acked sent -> delivery sent")
+
+    # Voice text from the same number -> same contact; replies now go on gvoice.
+    out = sim.inject(
+        {
+            "source": "gvoice",
+            "conversation": {"id": "voice-thread-1", "isGroup": False},
+            "sender": {"name": "BridgeNeighbor", "phone": neighbor},
+            "text": "texting from voice",
+        }
+    )
+    assert out["results"][0]["outcome"] == "delivered", out
+    assert len([c for c in admin.family_list_contacts(family_id) if c["phone"] == neighbor]) == 1
+    device.publish_msg("got it", to=contact["alias"])
+    wait_until(
+        lambda: any(i["text"] == "got it" for i in _sim_sent(sim)),
+        timeout=15,
+        description="the second pager reply to reach the bridge outbox",
+    )
+    item = next(i for i in _sim_sent(sim) if i["text"] == "got it")
+    assert item["source"] == "gvoice" and item["to"]["conversationId"] == "voice-thread-1", item
+    assert item["to"]["link"].endswith(f"t.{neighbor}"), item
+    print("bridge: Voice text -> same contact, reply went out on gvoice with the thread")
+
+    # Unknown Google Chat group -> one chat_unknown alert, nothing on the pager.
+    group_id = "spaces/AAA|soccer"
+    link = "https://chat.google.com/room/AAA"
+    device.inbox.clear()
+    for sender, text in (("Dana P", "who is driving?"), ("Lee", "I can")):
+        out = sim.inject(
+            {
+                "source": "gchat",
+                "conversation": {
+                    "id": group_id,
+                    "title": "Soccer carpool",
+                    "isGroup": True,
+                    "link": link,
+                },
+                "sender": {"name": sender},
+                "text": text,
+            }
+        )
+        assert out["results"][0]["outcome"] == "held", out
+    chat_alerts = [a for a in admin.family_list_alerts(family_id) if a["kind"] == "chat_unknown"]
+    assert len(chat_alerts) == 1 and chat_alerts[0]["heldCount"] == 2, chat_alerts
+    assert chat_alerts[0]["people"] == ["Dana P", "Lee"], chat_alerts[0]
+    time.sleep(1)
+    assert not any(e.data.get("body") == "who is driving?" for e in device.inbox), "held chat leaked"
+    tab = admin.family_member_chat(family_id, kid["uid"])
+    (seen,) = [r for r in tab["seen"] if r["conversationId"] == group_id]
+    result = admin.family_chat_subscribe(
+        family_id,
+        bridge_id,
+        seen["ref"],
+        pager_name="Soccer",
+        roster=[{"name": "Dana P", "nick": "dana"}, {"name": "Lee", "nick": "lee"}],
+    )
+    assert result["delivered"] == 2 and result["undelivered"] == 0, result
+    group_alias = result["alias"]
+    wait_until(
+        lambda: sum(1 for e in device.inbox if e.data.get("sndr")) >= 2,
+        timeout=10,
+        description="the Chat backlog to reach the pager with sndr",
+    )
+    pages = [e.data for e in device.inbox if e.data.get("sndr")]
+    assert [(p["from"], p["sndr"], p["body"]) for p in pages[:2]] == [
+        (group_alias, "dana", "who is driving?"),
+        (group_alias, "lee", "I can"),
+    ], pages
+    assert not [a for a in admin.family_list_alerts(family_id) if a["kind"] == "chat_unknown"]
+    print("bridge: Chat group held behind one alert, subscribe delivered the backlog with sndr")
+
+    # Pager reply to the group -> outbox with the conversation.
+    device.publish_msg("I will drive", to=group_alias)
+    wait_until(
+        lambda: any(i["text"] == "I will drive" for i in _sim_sent(sim)),
+        timeout=15,
+        description="the group reply to reach the bridge outbox",
+    )
+    item = next(i for i in _sim_sent(sim) if i["text"] == "I will drive")
+    assert item["source"] == "gchat" and item["to"]["conversationId"] == group_id, item
+    assert item["to"]["link"] == link, item
+    print("bridge: pager reply to the group reached the outbox with conversationId and link")
+
+    # Inspect by link -> the phone reports the conversation.
+    inspect_link = "https://chat.google.com/dm/grandma-xyz"
+    ob = admin.family_bridge_inspect(family_id, bridge_id, inspect_link)["outboxId"]
+    wait_until(
+        lambda: any(i["id"] == ob for i in sim.outbox()),
+        timeout=15,
+        description="the inspect request to reach the phone",
+    )
+    out = sim.inject(
+        {
+            "source": "gchat",
+            "kind": "inspect",
+            "conversation": {"id": "dm/grandma-xyz", "title": "Grandma", "isGroup": False, "link": inspect_link},
+            "sender": {"name": ""},
+            "people": ["Grandma"],
+        }
+    )
+    assert out["results"][0]["outcome"] == "inspected", out
+    tab = admin.family_member_chat(family_id, kid["uid"])
+    assert any(r["link"] == inspect_link and r["status"] == "seen" for r in tab["seen"]), tab["seen"]
+    print("bridge: inspect by link produced a seen row")
+
+    # Ignore another conversation -> later events drop.
+    other = {
+        "source": "gchat",
+        "conversation": {"id": "spaces/ZZZ", "title": "Spam room", "isGroup": True},
+        "sender": {"name": "Bot"},
+        "text": "buy now",
+    }
+    assert sim.inject(other)["results"][0]["outcome"] == "held"
+    tab = admin.family_member_chat(family_id, kid["uid"])
+    (spam,) = [r for r in tab["seen"] if r["conversationId"] == "spaces/ZZZ"]
+    admin.family_chat_ignore(family_id, bridge_id, spam["ref"])
+    assert sim.inject(other)["results"][0]["outcome"] == "dropped_ignored"
+    print("bridge: ignored conversation drops")
+    device.disconnect()
+
+
+def scenario_bridge_voice() -> None:
+    """O1 (revised 9 Oct 2026): a Google-Voice-only bridge (no SIM). The
+    member's `smsNumber` is the Voice number and a pager text to a contact
+    reaches the phone as `gvoice` with `to.link` -- no thread needed. Runnable
+    as `tools/e2e_v2.py bridge_voice`."""
+    import bridge_sim
+
+    bootstrap_admin()
+    oracle = Oracle()
+    admin = pager_client.ServerClient(RELAY_URL, AUTH_URL)
+    admin.login("admin")
+    family_id = admin.me()["user"]["familyId"] or "default"
+    sim = bridge_sim.BridgeSimClient(BRIDGE_SIM_URL)
+    httpx.post(f"{TWILIO_MOCK_URL}/_reset", timeout=5)
+
+    kid, device = _bridge_member(admin, family_id, "vkid", "pgr-e2e-brv")
+    voice_number = "+15550001111"
+    bridge = _pair_sim(
+        admin, sim, family_id, kid["uid"], "Voice only", simNumber=None, voiceNumber=voice_number
+    )
+    assert bridge["simNumber"] is None and bridge["voiceNumber"] == voice_number, bridge
+    assert bridge["caps"]["gvoice"] and not bridge["caps"]["sms"], bridge
+    wait_until(
+        lambda: oracle.users_store.get_user(kid["uid"]).smsNumber == voice_number,
+        timeout=10,
+        description="the Voice number to become the member's smsNumber",
+    )
+    gran_number = "+15550002222"
+    gran = admin.family_create_contact(family_id, gran_number, "VoiceGran")
+    admin.family_put_approved(family_id, kid["uid"], contacts=[{"uid": gran["uid"]}])
+    assert not any(
+        m["to"] == gran_number for m in httpx.get(f"{TWILIO_MOCK_URL}/_sent").json()
+    ), "no Twilio welcome for a bridge number"
+
+    # Cold outbound: no thread has ever been seen for this number.
+    alias = oracle.users_store.get_user(gran["uid"]).alias
+    device.publish_msg("hello grandma", to=alias)
+    wait_until(
+        lambda: any(i["text"] == "hello grandma" for i in _sim_sent(sim)),
+        timeout=15,
+        description="the cold Voice text to reach the bridge outbox",
+    )
+    item = next(i for i in _sim_sent(sim) if i["text"] == "hello grandma")
+    assert item["source"] == "gvoice" and item["to"]["phone"] == gran_number, item
+    assert item["to"]["link"] == f"https://voice.google.com/u/0/messages?itemId=t.{gran_number}", item
+    assert item["ackState"] == "sent", item
+
+    # Inbound Voice text from her is delivered to the pager.
+    device.inbox.clear()
+    out = sim.inject(
+        {
+            "source": "gvoice",
+            "conversation": {"id": "vt-gran", "isGroup": False},
+            "sender": {"name": "VoiceGran", "phone": gran_number},
+            "text": "hi dear",
+        }
+    )
+    assert out["results"][0]["outcome"] == "delivered", out
+    wait_until(
+        lambda: any(e.data.get("body") == "hi dear" for e in device.inbox),
+        timeout=10,
+        description="the Voice text to reach the pager",
+    )
+    # A SIM-sourced event is refused: this phone has no SIM.
+    out = sim.inject(
+        {
+            "source": "sms",
+            "conversation": {"id": "sms-x", "isGroup": False},
+            "sender": {"name": "", "phone": gran_number},
+            "text": "sim?",
+        }
+    )
+    assert out["results"][0]["outcome"] == "dropped_cap", out
+    print("bridge_voice: Voice-only bridge: cold outbound on gvoice with link, inbound delivered")
+    device.disconnect()
+
+
 SCENARIOS: dict[str, Callable[[], None]] = {
     "bootstrap": scenario_bootstrap,
     "text_roundtrip": scenario_text_roundtrip,
@@ -1622,6 +1961,8 @@ SCENARIOS: dict[str, Callable[[], None]] = {
     "setup_code": scenario_setup_code,
     "sms_log": scenario_sms_log,
     "relay_sms": scenario_relay_sms,
+    "bridge": scenario_bridge,
+    "bridge_voice": scenario_bridge_voice,
 }
 
 

@@ -22,7 +22,6 @@ Environment: `RELAY_URL` (default `http://relay:8000`), `BRIDGE_SIM_PAIR_CODE`
 `BRIDGE_SIM_POLL_WAIT_S` (5).
 """
 
-from __future__ import annotations
 
 import argparse
 import json
