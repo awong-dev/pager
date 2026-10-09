@@ -104,7 +104,19 @@ networks and the password would go to whatever answers there.
 context's stored `auth_proto` is NONE, which is its starting value, so nothing is sent. The firmware
 sends `AT+CGAUTH=1,1,"user","pass"` raw after `definePDPContext`, before the attach. The modem is
 expected to keep `+CGAUTH` across resets, so a `carrier/auth` flag makes a later non-Soracom boot
-send `AT+CGAUTH=1,0` once. Not yet verified on the bench.
+send `AT+CGAUTH=1,0` once. The PAP attach was verified on the bench on 8 Oct 2026
+(`docs/SORACOM_DESIGN.md` §6 B); the clear-back path is not yet verified.
+
+## Debug logs carry the Beam device password
+
+**Symptom:** none on the device. The password is in a log you are about to share.
+
+**Cause:** the MQTT password is sent in the `AT+SQNSMQTTCFG` line. That line is in the TX trace of every
+debug serial log, as it always was. On the Beam bearer the CONNECT that carries the password also
+crosses the carrier link in plain text (see above).
+
+**Rule:** never paste a debug log that contains `AT+SQNSMQTTCFG` into a chat, an issue or a doc. Remove
+or redact that line first.
 
 ## The vendored modem library
 
@@ -200,7 +212,7 @@ re-SUBSCRIBE to fetch the URC before sleeping.
 
 ## USB and light sleep
 
-**USB dies in light sleep** and often does not come back afterwards, even across `esp_restart()`; on the bench it stayed dead for hours and needed a physical reset. The debug build's `sleeptest` now ends with a reset through the RTC watchdog, which resets the USB block too (UNVERIFIED that this brings the port back). A single serial capture spanning a restart shows nothing; open the port again afterwards. The port's name changes (`/dev/cu.usbmodem101`, `...1101`): always glob. **A watchdog or panic reset does NOT bring the USB port back, only a power cycle does; that is why the reset reason, stage, and stalled command name now travel in `/status` (key 58 `rst`, 59 `stallcmd`) so the relay stores them.**
+**USB dies in light sleep** and often does not come back afterwards, even across `esp_restart()`; on the bench it stayed dead for hours and needed a physical reset. The debug build's `sleeptest` now ends with a reset through the RTC watchdog, which is meant to reset the USB block too; that has not been shown to bring the port back. A single serial capture spanning a restart shows nothing; open the port again afterwards. The port's name changes (`/dev/cu.usbmodem101`, `...1101`): always glob. **A watchdog or panic reset has not brought the USB port back on the bench. On 8 Oct 2026 the port stayed gone through a sleeping release build until the owner's physical reset (hold BOOT, tap RESET, or power-cycle).** Ask the owner rather than poll. That is why the reset reason, stage, and stalled command name now travel in `/status` (key 58 `rst`, 59 `stallcmd`) so the relay stores them.
 
 **15-minute hold on exit:** the debug build holds the CPU running for 15 minutes after a `sleeptest` window ends (printing a "still running" reminder every 60 s), so a USB replug can retrieve the flight recorder PSRAM dump with the `flightrec` console command before the next hard reset.
 
@@ -320,6 +332,10 @@ esptool's reset handshake and a running `serial_capture.py` cannot share the USB
 port; a collision parks the chip in the ROM bootloader (`boot:0x22 DOWNLOAD`). Recover with a
 solo `esptool.py --after hard_reset chip_id`, then start captures in the same shell line as the
 flash.
+
+**Console `key` injection:** Enter goes on the wire as `key \\n` (esp_console strips one backslash),
+and a `key` burst longer than 8 keystrokes loses its tail. See `docs/HARDWARE_TESTING.md` (Seen working,
+CardKB).
 
 **`gcloud logging read` needs `--project kid-pager`:**
 The shell's default project is another one; the read silently returns other services' logs and

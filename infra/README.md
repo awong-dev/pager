@@ -1,10 +1,10 @@
 # infra/ — deployment runbook
 
 This is the **only** place real cloud resources get touched for this project, and only by a
-human running these steps by hand (or by CI, once step 9 below has been done). Nothing in
-`infra/` was ever `terraform apply`'d or `terraform plan`'d against a real backend while this
-tree was built — every module only ever saw `terraform init -backend=false` +
-`terraform validate`. Read `docs/SERVER_PLAN.md` §9 first; this file is the "how", that section
+human running these steps by hand (or by CI, once step 9 below has been done). This tree has been
+applied to the real project: the owner ran `terraform apply` by hand (7 Oct 2026, for the OTA bucket
+and relay variables), and the Deploy workflow runs `terraform apply` on every push to `main` with the
+sha-tagged relay image (§8). Read `docs/SERVER_PLAN.md` §9 first; this file is the "how", that section
 is the "what and why".
 
 **Never commit**: `terraform.tfvars` (only `terraform.tfvars.example` is tracked), any
@@ -213,6 +213,9 @@ with a 500 (`app/devsetup.py` refuses to issue an unpinned bundle silently) rath
 that can never validate its CA pointer.
 
 ## 9. Wire up GitHub Actions (turns `.github/workflows/deploy.yml` from a no-op into a real pipeline)
+
+Status (8 Oct 2026): done. The Deploy workflow runs for real: it pushes the sha-tagged relay image,
+applies Terraform with that image, and deploys Hosting and Firestore. It is no longer a no-op.
 
 Read that workflow's own top-of-file comment for the exact gating mechanism first. Then:
 
@@ -428,8 +431,8 @@ process, not per-device auth.
 
 ## 15. Cold-start measurement (`docs/SERVER_PLAN.md` §9.3, §10 D10) — procedure, not yet performed
 
-There is no real deployment yet (no `terraform apply` has ever been run against a real project), so
-this is written for a human to follow **after** a real deployment exists, not executed now.
+A real deployment exists now (production, §8 and §9), but no cold-start measurement is recorded in the
+repo or the handoff, so this procedure has not been run.
 
 **What to measure**: wall-clock latency of the parent→pager path (`docs/SERVER_PLAN.md`'s
 `POST /api/conversations/{alias}/messages` → pager `deliver()` → broker REST publish → device
@@ -472,6 +475,9 @@ only with a number" language, before spending any money on `min_instance_count =
 ---
 
 ## 16. Firmware OTA bucket (`docs/OTA_DESIGN.md`)
+
+Status (7 Oct 2026): done. The bucket `kid-pager-pager-fw` is live with its index at `fw/index.json`,
+and the first builds were published with `tools/fwpub.py`. The steps below are how it was set up.
 
 1. In `envs/prod/terraform.tfvars` set `fw_publishers = ["user:<your google account>"]` (optionally `fw_bucket_name`; default `<project_id>-pager-fw`).
 2. `terraform apply` (human step): creates the public-read bucket, grants you `objectAdmin`, and sets `FW_BUCKET_BASE`/`FW_INDEX_URL` on the relay. Apply after the relay code that reads them is deployed; an unrecognised env var is harmless.

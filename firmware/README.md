@@ -2,10 +2,14 @@
 
 ESP-IDF 5.x project for the Walter device (ESP32-S3 + Sequans LTE-M modem).
 
-**Status: code-complete, builds clean, never run on real hardware.**
-Every timing/current/visual number in this codebase is either vendor-documented or an engineering
-estimate marked `PENDING_HW` — see the measurement checklists and "Residual risks" section below
-before flashing a real device. `docs/PROTOCOL.md` §12 has two still-open protocol decisions
+**Status (8 Oct 2026): firmware v1.1.0 runs on the bench pager `sora1` (Soracom SIM).** Tag `v1.1.0`
+was cut 8 Oct 2026 (the version string is `git describe`, so a tagged build reports `v1.1.0` and a
+later commit `v1.1.0-N-g<sha>`); the release image is published to the OTA bucket. `rc1` runs a beta-82
+build. What is measured and what is still an
+estimate is tracked in `docs/HARDWARE_TESTING.md` ("Seen working on hardware" and "Not yet seen
+working"). A `PENDING_HW` marker in the code means an estimate that has not been measured on a device.
+See the measurement checklists and "Residual risks" section below before flashing a real device.
+`docs/PROTOCOL.md` §12 has two still-open protocol decisions
 (broker free-tier verification, LWT/clean-session) that aren't firmware bugs but do affect what
 `net.cpp` can promise.
 
@@ -97,7 +101,9 @@ UART0 and unused (the console is USB Serial/JTAG).
 These are the project's fixed constraints. `docs/PROTOCOL.md` is authoritative for anything that
 crosses the wire; this section covers the device-local behaviour the protocol doc does not specify.
 
-- **SIM budget**: 100 MB/month data, 100 SMS/month. The device never sends SMS. It keeps one
+- **SIM budget**: 100 MB/month data, 100 SMS/month. The pager sends SMS only through the modem path
+  (`cfg.sms`, `sms.c`), which the US Mobile line did not carry (7 Oct 2026); the Soracom preset refuses
+  it. Relay SMS runs through Twilio on the server, not on the pager. It keeps one
   persistent TLS+MQTT session and never reconnects on a timer.
 - **Power**: the device sleeps most of the day. In **sleep mode** the modem uses eDRX (target
   20.48 s cycle) and the ESP32 light-sleeps; delivery within ~30 s is acceptable. In **active
@@ -106,15 +112,16 @@ crosses the wire; this section covers the device-local behaviour the protocol do
   it after 10 minutes with no keyboard activity. The 10-minute timeout runs from mode
   *entry*, not from the last activity. The CardKB is polled every 100 ms, and only while the reply
   composer is open.
-- **Display refresh**: partial refresh for the message pane, with a full refresh every 20th
-  partial. 20 is this project's deliberate choice over the panel's more common "~10" guidance.
+- **Display refresh**: partial refresh for the message pane. Full refreshes come from the refresh
+  policy (`refreshpol.c`), not from a fixed count. Its defaults, relaxed 7 Oct 2026, are a floor of
+  40 partials, an 8 s idle gap, a ceiling of 120 partials and a pre-sleep minimum of 6 (`refreshpol.h`).
 - **Display orientation**: `disp_flip` (NVS, default off; console `flip on|off|status`, or the
   Device screen's "Rotate display" row)
   180-degree-rotates the whole 296x128 image at blit time, so every screen/partial/toast reads
   upside down together — not a per-screen setting.
 - **Message bodies** are at most 160 characters.
-- The managed `walter-modem` component is never patched in place. Anything the vendor API cannot
-  express is either worked around in our own code or documented as a limitation.
+- The vendored `walter-modem` component is patched only as recorded in its `PATCHES.md`. Anything the
+  vendor API cannot express is either worked around in our own code or documented as a limitation.
 
 ## Carrier and bearer
 
@@ -131,6 +138,10 @@ may be sent.
   bundle's host, port and CA URL are ignored, `/status` reports `tls: "proxy"`, and CA pushes are
   refused. See `docs/SORACOM_DESIGN.md` §3.
 
+Verified on the bench 8 Oct 2026 on the `sora1` unit, on both bearers. Direct: PAP attach with roaming
+on 310410 in about 17 s, eDRX granted, provisioning direct. Beam: plain MQTT to `beam.soracom.io:1883`,
+session usable 17.4 s after boot, provisioning through Beam. Results: `docs/SORACOM_DESIGN.md` §6.
+
 Console: `bearer [auto|direct|beam]` (NVS `carrier/bearer`) overrides the bearer for A/B tests. The
 override is read at boot. `carrier` shows what was detected and what is in force. Gotchas are in
 `docs/GOTCHAS.md`.
@@ -138,9 +149,11 @@ override is read at boot. `carrier` shows what was detected and what is in force
 ## Dependencies
 
 - ESP-IDF 5.x
-- `dptechnics/walter-modem` component, pinned to exactly `1.5.0` in `main/idf_component.yml` —
-  do not let this float to a newer version without re-reading the vendor source first; two separate
-  conclusions in `docs/PROTOCOL.md` turned out to depend on which version was actually checked out.
+- `dptechnics/walter-modem` v1.5.0, vendored in `components/dptechnics__walter-modem/` (upstream
+  commit `51b16ce`) with local patches 1.1-1.22 listed in that directory's `PATCHES.md`. Do not re-sync
+  from upstream without re-reading the vendor source and re-applying the patches (each is marked
+  `// PAGER PATCH:`). Two separate conclusions in `docs/PROTOCOL.md` turned out to depend on which
+  version was actually checked out.
 - Display driver (SSD1680): custom, in-tree (`main/ui.c`) — no external component. See
   `docs/PROTOCOL.md` §6 for why (the one registry candidate found requires a newer ESP-IDF than
   this project builds against).
@@ -152,19 +165,20 @@ override is read at boot. `carrier` shows what was detected and what is in force
 - Full list of what to check on first hardware bring-up: the measurement checklists below (M1-M23)
   and the "Residual risks" section's cheapest-experiment column, roughly in priority order.
 
-## Measurement checklist: network and power (all PENDING_HW)
+## Measurement checklist: network and power (PENDING_HW unless a row says resolved)
 
-No device has been attached. Every line below is a
-number `net.cpp`/`modes.c` either assumes or logs enough to compute, but none has been
-measured. See `docs/PROTOCOL.md` §6.5, §8.2-§8.4 for the arithmetic these numbers feed.
+These rows were written before any device was attached. A row marked **Resolved** has a bench result
+in the handoff or the design docs. The other rows are still a number `net.cpp`/`modes.c` either
+assumes or logs enough to compute, not yet measured. See `docs/PROTOCOL.md` §6.5, §8.2-§8.4 for the
+arithmetic these numbers feed.
 
 | # | What to measure | Why it matters |
 |---|---|---|
 | M1 | Sleep-mode average current, `T`=5s | Validates the ~1.8-2.1 mA / 43-50 mAh/day estimate (§8.4) |
 | M2 | Per-wake awake time / current | Validates the ~50 ms, ~40 mA assumptions behind §8.2's `I_light(T)` model |
 | M3 | End-to-end latency: `send.py` timestamp -> serial log line | Validates the 27.3 s (sleep) / 4.3 s (active) worst-case budget (§6.5) |
-| M4 | Granted eDRX/PTW from `WALTER_MODEM_NETWORK_EVENT_EDRX_RECEIVED` | Assert granted eDRX == requested `"0010"` (20.48s); logged by `net.cpp`'s network event handler, but not yet confirmed against a real SIM/carrier |
-| M5 | RTS hold-off: does the Sequans queue URCs while CTS is deasserted, or drop them? | The single riskiest assumption in the whole sleep design (§8.3); `net_sleep()`'s RTS choreography is unverified end to end |
+| M4 | Granted eDRX/PTW from `WALTER_MODEM_NETWORK_EVENT_EDRX_RECEIVED` | Assert granted eDRX == requested `"0010"` (20.48s); logged by `net.cpp`'s network event handler, and now confirmed on a real SIM and carrier. **Resolved 8 Oct 2026:** granted on AT&T 310410 (Soracom SIM on `sora1`): `+CEDRXRDP: 4,"0010","0010","0001"` (`docs/SORACOM_DESIGN.md` §6 B). |
+| M5 | RTS hold-off: does the Sequans queue URCs while CTS is deasserted, or drop them? | The single riskiest assumption in the whole sleep design (§8.3); `net_sleep()`'s RTS choreography was unverified end to end. **Resolved 23-24 Sep 2026:** the modem queues URCs while CTS is deasserted and releases them only when the host speaks (23 Sep 17:50). The RTS pin was excluded from light-sleep pad isolation (`gpio_sleep_sel_dis()`, ab5927c); a `sleeptest 3` window then delivered a page 9 s after the relay stamped it, and the release build acked through sleep. See `docs/SLEEP_URC_DESIGN.md` §1 and `docs/RCA_SLEEP_URC.md`. |
 | M6 | `MEMORY_FULL` event count over 24h | Direct evidence the wake-and-drain cycle is losing messages; counted in RTC (`mqtt_memfull_count`) but never exercised against real traffic |
 | M7 | Does the modem send PINGREQ autonomously at the configured keepalive? | Resolved by construction per the library API (no ping call exists), but never observed on the wire |
 | M8 | Clean-session behaviour across an ESP32-only reset (modem session survives?) | PROTOCOL.md §12 item 4 - the highest-value follow-up experiment; unresolved and load-bearing for whether §8.3(b) (deep sleep + forced redelivery) is ever worth revisiting |
@@ -177,9 +191,10 @@ Also unresolved and not measurable without hardware: whether the modem/broker si
 a 1800s MQTT keepalive, and whether the carrier's NAT tolerates a 1800s idle TCP flow
 (PROTOCOL.md §6.2).
 
-## Measurement checklist: display and input (all PENDING_HW)
+## Measurement checklist: display and input (PENDING_HW unless a row says resolved)
 
-Same rule as above: no device has been attached.
+Same rule as above. The panel has been driven on the glass since 22 Sep 2026 (see
+`docs/HARDWARE_TESTING.md`); the rows here are left as written.
 
 | # | What to measure | Why it matters |
 |---|---|---|
@@ -192,9 +207,10 @@ Same rule as above: no device has been attached.
 | M15 | `getVoltage()`/`AT+SQNVMON` reading vs. a multimeter across the actual battery | PROTOCOL.md §12 item 6: `net_get_battery_mv()` now publishes a real reading in `/status`'s `batt_mv`, inferred from Walter's public schematics to track `VBAT` rather than a fixed regulated rail, but never confirmed against real hardware. 5-minute check on first bring-up. |
 | M20 | Typing ~50 mixed characters on the CardKB, timed against a stopwatch | `DEVICE_PLAN.md` §10: is this acceptable to a non-developer? First bring-up check; if not, the Wi-Fi portal noted in §3.0 is the fallback. |
 
-## Measurement checklist: firmware timing and storage (all PENDING_HW)
+## Measurement checklist: firmware timing and storage (PENDING_HW unless a row says resolved)
 
-Same rule as above: no device has been attached. These three come from `DEVICE_PLAN.md` §10 rows
+Same rule as above. None of these three has a recorded bench result (the M21 figure is host-CPU only).
+They come from `DEVICE_PLAN.md` §10 rows
 that explicitly call for a device-side timing measurement (as opposed to the CPU-speed/host-only
 numbers already available, cited below for comparison).
 
@@ -222,8 +238,9 @@ PROTOCOL.md §9.1; the `_Static_assert` at `modes.c:138` is present and passing.
 2 s active (`modes.c:45-46`), post-wake yield 50 ms ≥ the 30 ms floor (`modes.c:47`), keepalive
 1800 s, eDRX `"0010"`/`"0001"`, PSM disabled, cert slot 12 / TLS profile 2 — all match the doc.
 
-**Still no hardware has ever been attached.** Everything below is reasoning against source, not
-measurement. Ranked by risk to battery life and message latency.
+**This list was written against source before any hardware was attached.** It is reasoning, not
+measurement, and it is not updated item by item. Check `.overnight-handoff.md` and
+`docs/HARDWARE_TESTING.md` before acting on one. Ranked by risk to battery life and message latency, as written.
 
 ### Already fixed (both rebuilt clean)
 - `net.cpp` + `net.h` + `modes.c`: `net_modem_busy()` interlock. `_eventProcessingTask` is
@@ -250,6 +267,9 @@ hardware needed — put the device in a Faraday bag / pull the antenna and watch
 climbing in the serial log.
 
 ### R2 — a held or stuck button busy-polls at full power indefinitely (battery)
+
+**Moot as of 8 Oct 2026:** the button hardware was removed, and `PAGER_WAKE_BUTTON_ENABLED` has been 0 since 6 Oct 2026, so the button cannot be held. Kept for the record.
+
 `BTN_HELD` (`modes.c:585-589`) only exits when the button is released, and `modes_run()`'s
 `skip_sleep` keeps `net_sleep()` out for as long as the FSM is not IDLE (`modes.c:704`). There is
 no tickless idle in `sdkconfig.defaults`, so that is ~40 mA continuously: a button wedged in a
@@ -398,7 +418,7 @@ Low impact on its own; listed because it interacts with R1 and R2.
   rail. **Still open**: that reasoning is inference from Walter's public schematics, not a
   confirmed fact about Walter's own unpublished internal routing — compare `getVoltage()`'s reading
   against a multimeter on first hardware bring-up (5 min, M15 in the checklist above).
-- **§12 item 2 (broker free-tier limits): unchecked.** Nobody has set up a real HiveMQ/EMQX account
-  yet — only local `docker compose` mosquitto has been exercised. Confirm the chosen free tier
-  actually supports QoS 1 both directions, a retained topic, a ~1800s keepalive, and a persistent
-  session before flashing a device against it.
+- **§12 item 2 (broker free-tier limits): overtaken by production, not re-checked.** Production runs on
+  EMQX Cloud Serverless (`infra/README.md` §10), and the firmware keepalive is 480 s
+  (`docs/SORACOM_DESIGN.md` §3.3). Whether the free tier gives QoS 1 both ways, a retained topic and a
+  persistent session is not recorded in the sources; confirm before relying on it.

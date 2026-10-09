@@ -7,35 +7,42 @@
 **alpha** — first stable beta-candidate state (24 Sep 2026).
 
 **beta** — fast wake (tap to "password:" <0.5 s, partial first frame), working relock, datasheet display power-on; rail-gating (3V3 off outside 120 s attentive window, re-init on wake); owner-verified 25 Sep 2026. Implementation in `rail.c` / `rail.h`; tagged `beta`.
+- **v1.0.0**: first stable release, 8 Oct 2026 (tag at `1547715`). Right-header rewire (LIS3DH on
+  IO18/17/16), per-device GNSS disable, host partial LUT; relay per-user Twilio SMS with
+  held-until-approved inbound; web local-time battery charts. OTA with rollback is in this build
+  (verified on proto3 7 Oct 2026).
+- **v1.1.0**: Soracom bearer, 8 Oct 2026. A Soracom SIM selects the Beam bearer (plain MQTT to
+  Beam, PAP APN auth). Direct and Beam both verified on the bench unit, with a one-hour relay-side
+  watch on the direct bearer (`docs/SORACOM_DESIGN.md` §6).
 
-## 1.0.0 (planned)
+## Next
 
-### OTA updates, rollback, and factory slot
+### OTA: factory slot and bootloader precondition
 
-**Core design agreed; firmware-architect review + owner approval needed before build.**
-
-Facts:
-- Release firmware 663 KB; flash 16 MB with `ota_0` and `ota_1` at 2 MB each (0x120000 and 0x320000);
-  ~10.7 MB unused after msghist (ends ~0x540000).
-- No `esp_ota_*` or `esp_https_ota` code yet.
-
-Plan:
-- OTA download, verify and switch code.
-- `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE` with app marking itself valid after health check.
+Download, verify, switch and rollback are done (`docs/OTA_DESIGN.md`; verified on proto3 7 Oct
+2026). Still open:
 - 2 MB `factory` app partition (appended to partitions.csv, preserving existing offsets; existing
-  pagers need partition-table + factory-image write only).
+  pagers need partition-table + factory-image write only). Not built.
 - Factory reset: erase otadata (held by `CONFIG_BOOTLOADER_FACTORY_RESET` on button hold at power-on),
-  optionally wipe chosen data partitions.
+  optionally wipe chosen data partitions. The wake button was removed on 8 Oct 2026 (`a26e2f9`), so
+  the trigger needs a new decision.
 - Bench workflow change: `idf.py flash` targets factory slot once it exists; dev flash to OTA slots
   requires explicit target or erasing otadata.
 - Frozen factory image must stay able to connect and pull current firmware.
+- Each pager needs one USB flash of the rollback-capable bootloader before its first OTA
+  (`docs/OTA_DESIGN.md` D8). `sora1` has it (full USB flash 8 Oct 2026; its bootloader matches
+  `build/images/ota-bootloader.bin`). `rc1`: not recorded; confirm before its first OTA push.
+- `otaErr: "bad"` stays in `/status` after a good update; the relay should clear it on dl/ok
+  (status unverified, 8 Oct 2026).
+- Orphan cleanup for the firmware bucket: a script the owner applies (status unverified, 8 Oct 2026).
 
 ### Firmware
 
 - **Composer overflow:** single-line tail-scroll, counter only from 120 chars (v0.3 task 1.0-1.4,
   `docs/DEVICE_PLAN.md` 822-840).
 - **Debug console multi-char input:** `key <text>` produced no redraw on bench (v0.3 task 1.0,
-  `build/bench-logs/phaseG.log`).
+  `build/bench-logs/phaseG.log`) (status unverified, 8 Oct 2026; console `key` injection now drives
+  the keyboard on the bench, see `docs/HARDWARE_TESTING.md`).
 - **CardKB loses keys in first ~1.1 s after rail-on** (measured 1136–1137 ms to first I2C ACK; guard
   now 1300 ms in ui.c via `rail_off()` and `rail_on()` calls in modes.c). Option: reflash CardKB
   ATmega8A without bootloader via ISP header. **Owner decision needed.**
@@ -51,11 +58,15 @@ Plan:
   (`docs/VENDOR_BUG_REPORTS.md` item 7).
 - **Temporary diagnostics and raw AT trace** now debug-build-only (`PAGER_DEBUG_NO_LIGHT_SLEEP`); release
   binary does not carry them.
-- **SMS testing:** does the SIM carry SMS at all; texts from listed and unlisted numbers
-  (`docs/HARDWARE_TESTING.md` item 7, task S4 in `docs/DEVICE_NEXT_TASKS.md`).
-- **Accelerometer (LIS3DH):** wire and tune; resets location and no-coverage backoff
-  (`docs/HARDWARE_TESTING.md` item 8, task A4 in `docs/DEVICE_NEXT_TASKS.md`; driver exists, chip not wired on bench).
-- **Group chat `sndr` (G7)** and **SMS messages (S0-S5)** per `docs/DEVICE_NEXT_TASKS.md`.
+- **SMS (modem): dead on the US Mobile line.** The SIM carries no SMS over NAS (7 Oct 2026). Texting
+  goes through the relay instead (`docs/RELAY_SMS_DESIGN.md`, shipped in v1.0.0). The modem SMS tasks
+  (S0-S5 in `docs/DEVICE_NEXT_TASKS.md`) are superseded for this line.
+- **Accelerometer (LIS3DH):** wired on the right header (v1.0.0 rewire) and driving shake-to-wake,
+  calibrated on the bench 6 Oct 2026. Tuning for the location and no-coverage backoff resets is still
+  open (`docs/HARDWARE_TESTING.md` item 8, task A4 in `docs/DEVICE_NEXT_TASKS.md`) (status unverified,
+  8 Oct 2026).
+- **Group chat `sndr` (G7):** parse committed (`ec8749f`); the author line on the real pager still
+  needs the owner's glass check (`docs/GROUP_CHAT_DESIGN.md`).
 - **Sleep phase 2 — modem-woken host (S9):** CTS asserted through sleep, `esp_sleep_enable_uart_wakeup()`,
   parser resync for clipped first line. **Ask owner about RI line (modem ring indicator) first** — if
   wired, simpler fix with no clipping risk (`docs/SLEEP_URC_TASKS.md` S9, `docs/SLEEP_URC_DESIGN.md` §8.7).
@@ -83,25 +94,31 @@ Plan:
 
 - **No test runner.** Validation logic in pure modules for later testing.
 - **Chat auto-scroll with new-messages chip** and mark-read gated on being at bottom (v0.3 task 2.1-2.4,
-  `docs/V03_TASKS.md`).
+  `docs/V03_TASKS.md`) (status unverified, 8 Oct 2026).
 - **PWA installability polish (v0.3 item 3b):** manifest (icons, maskable variant), install prompt handling,
   service worker (`onMessage` foreground, caching/fetch handler). See `docs/V03_PLAN.md` §3.2,
-  `docs/SERVER_PLAN.md` §15.
-- **WiFi phase 1 completion (W6-attempt-2, W8, W13, W15):** first WiFi session, fallback, no double session.
-  WiFi panel and transport chip (W8). Heap margin ≥10 kB (W13 if needed). Catrust transport-blind (W15).
-  See `docs/WIFI_TASKS.md`.
+  `docs/SERVER_PLAN.md` §15 (status unverified, 8 Oct 2026).
+- **WiFi phase 1 completion:** the WiFi transport (W5), the device WiFi API and the web WiFi panel with
+  transport chip are committed (`c33a07f`, `7aad6ae`, `0ac1bf0`). Still open: first WiFi session on
+  hardware (W6-attempt-2), no double session, heap margin ≥10 kB (W13 if needed), catrust
+  transport-blind (W15). See `docs/WIFI_TASKS.md` (status unverified, 8 Oct 2026).
 
 ### Hardware tests
 
 From `docs/HARDWARE_TESTING.md` "Not yet seen working," in order:
-1. Confirm 480 s MQTT keepalive on AT&T for ≥1 hour idle (minimum overnight).
+1. Confirm 480 s MQTT keepalive on AT&T for ≥1 hour idle (minimum overnight). (status unverified, 8 Oct
+   2026: sora1 on AT&T roaming had no reconnects in its one-hour relay-side watch, `docs/SORACOM_DESIGN.md`
+   §6 D, but that is not the same test.)
 2. Bisect post-wake window between 50–200 ms; explain 136 s delivery; try bare `AT` probe.
 3. No-coverage radio duty cycle, field-tested; sustained motion resets backoff.
 4. End-to-end `/loc` cell answer: relay receives and resolves cell envelope, stores `src: "cell"`.
 5. CA push from web app with right and wrong CA.
 6. `gnsstest` outdoors: which radio route (in-place vs `CFUN=4` window), cold/hot fix times, re-attach time.
-7. SMS: does SIM carry it; texts from listed and unlisted numbers.
-8. Accelerometer and button on hardware.
+7. ~~SMS: does SIM carry it; texts from listed and unlisted numbers.~~ *(7 Oct 2026: the US Mobile SIM
+   carries no SMS over NAS; relay SMS replaces the modem path, `docs/RELAY_SMS_DESIGN.md`.)*
+8. ~~Accelerometer and button on hardware.~~ *(8 Oct 2026: the wake button was removed, `a26e2f9`; the
+   accelerometer is wired on the right header and drives shake-to-wake, calibrated 6 Oct 2026. Field
+   tuning still open.)*
 9. Power board bring-up: SYS to Walter VIN, 3V to Friend/LIS3DH, CardKB gated by IO0, button to 3V, sleep current with the green LED removed.
 
 ### Measurements (unverified, driving design trade-offs)
@@ -128,15 +145,18 @@ From `docs/HARDWARE_TESTING.md` "Not yet seen working," in order:
 - **External nicknames** (decision 5): per-family nickname if two families know the same number by different
   names (small addition)?
 - **Pager modem `any_sms`** (decision 11): device firmware cannot honour `any_sms` inbound (texts from unlisted
-  numbers still blocked on-device); `cfg.sms` mode flag would be needed.
+  numbers still blocked on-device); `cfg.sms` mode flag would be needed. Modem SMS is dead on the US Mobile
+  line, and relay SMS holds unknown senders for approval (`docs/RELAY_SMS_DESIGN.md`) (status unverified,
+  8 Oct 2026).
 
 **Device/firmware**
 - **CardKB bootloader reflash** (1.1 s key-loss issue; ISP header reflash without bootloader needed if selected).
 - **Modem ring indicator (RI) wiring** (simplifies UART-woken host; if routed to GPIO, phase 2 becomes
   "wake on RI, one `AT` to flush" with no byte loss — decide before S9 implementation).
-- **Soracom Beam bearer** (`docs/SORACOM_DESIGN.md`, decided 8 Oct 2026; the eval is `docs/SORACOM_EVAL.md`).
-  Precondition before trusting the Beam bearer with real page bodies: AEAD bodies (see Ideas on hold).
-  Beam can read bodies today. The broker-free UDP design remains the long-term option (eval, step 3).
+- **Soracom Beam bearer:** decided and verified on the bench 8 Oct 2026 (`docs/SORACOM_DESIGN.md` §6; the
+  eval is `docs/SORACOM_EVAL.md`). Open precondition before trusting the Beam bearer with real page bodies:
+  AEAD bodies (see Ideas on hold). Beam can read bodies today. The broker-free UDP design remains the
+  long-term option (eval, step 3).
 - **Send the three vendor bug reports** (`docs/VENDOR_BUG_REPORTS.md`).
 - **eDRX vs delivery deadline** (S14): test with eDRX 10.24 s vs 20.48 s; impacts latency estimate and power
   cost trade-off (`docs/PROTOCOL.md` §8.2-8.3).
@@ -158,8 +178,8 @@ and complete the feature.
 
 3. **Tune the 20 s / 40 s attempt budgets and the 5 min to 12 h backoff** from measured numbers in step 1.
 
-4. **Wire and tune the LIS3DH accelerometer** (driver exists; chip not wired on bench). Resets both location
-   and no-coverage backoff.
+4. **Tune the LIS3DH accelerometer** (wired on the right header since the v1.0.0 rewire). Resets both location
+   and no-coverage backoff (status unverified, 8 Oct 2026).
 
 5. **Measure assistance-data download size and power** against the data budget.
 

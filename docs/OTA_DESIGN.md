@@ -4,6 +4,23 @@ Owner brief: build/bench-logs/DESIGN_ota_brief.md. Tasks: build/bench-logs/TASK_
 Numbers marked *measured* came from build/images/*-release-app.bin on 7 Oct 2026 (scripts and the host
 decode prototype are in build/bench-logs/ota_meas/); *estimate* means not measured, with the assumption stated.
 
+## Status (8 Oct 2026)
+
+- **Implemented:** `firmware/main/ota.c` and `otapipe.c`; relay `push_ota` and `cancel_ota` in
+  `relay/app/devcfg.py`, with the index reader in `relay/app/firmware.py`; the web Devices "Update
+  firmware…" dialog (`web/components/FirmwareUpdateDialog.tsx`); `tools/fwpub.py`; bucket
+  `kid-pager-pager-fw` with index `fw/index.json`
+  (https://storage.googleapis.com/kid-pager-pager-fw/fw/index.json).
+- **Verified on hardware on proto3 (7 Oct 2026):** a delta OTA and a full OTA each reached `ota_st ok`,
+  and an image that aborts at boot came back `rb` (`.overnight-handoff.md`, the 7 Oct 2026 entries
+  titled "~10:25 am PDT, OTA ROLLBACK VERIFIED", "~12:15 pm PDT, FIRST OTA SUCCEEDED" and "~1:10 pm PDT").
+- **Precondition, unchanged (D8):** each pager needs one USB flash of bootloader, partition table,
+  otadata and app before its first OTA.
+- **Release:** v1.1.0 (tag cut 8 Oct 2026) is the first tagged release published to the bucket, with
+  `tools/fwpub.py publish build/images/v1.1.0-release-app.bin --bucket kid-pager-pager-fw`; deltas
+  are built against the previous index entries (beta-80/81) and the v1.0.0-era bench images.
+- Per-item status for the §7 bench list is noted under §7.
+
 ## 1. Decisions
 
 | # | Decision |
@@ -105,8 +122,8 @@ In CBOR the hashes are 32-byte bstr and `fmt` is 0 (full) or 1 (delta). The larg
 | GCS unreachable over the modem's TLS (UNVERIFIED) | Gate experiment §7.1. If it fails, the relay serves `/fw/<id16>/<obj>` from the bucket with the same bytes and the same hashes, and only `url` changes. |
 
 ## 7. What to measure (bench, owner-run; no agent flashes)
-1. **GCS reachability** (cheapest experiment, today's firmware): run `cafetch https://storage.googleapis.com/<bucket>/fw/probe-4k.bin <sha>` on the debug console. Expect `OK` and `mqtt_survived=1`.
-2. **Newline-loss defect**: run `otafetch` with a null sink on a 64 KB object made only of `0x0A` bytes, and count short-copy events. Then run it on the real 339 KB `full.z` and log B/s; that replaces the 4 KB/s assumption.
-3. **Current trace** of one full and one delta OTA, then compare against the 2.9 and 0.5 mAh estimates.
-4. **Rollback**: OTA to an image that panics at boot and confirm it comes back with `rb`. OTA a good image and confirm `PENDING_VERIFY` → valid after the first status.
-5. **Airplane**: push `cfg.ota` while in airplane mode. Expect no socket opened and `ota_st` to stay `wait`.
+1. **GCS reachability** (cheapest experiment, today's firmware): run `cafetch https://storage.googleapis.com/<bucket>/fw/probe-4k.bin <sha>` on the debug console. Expect `OK` and `mqtt_survived=1`. **Status 8 Oct 2026: in effect done.** The full and delta OTAs on proto3 (7 Oct) reached `ready` through the direct GCS path of D3. The 4 KB `cafetch` probe line itself is not in the handoff.
+2. **Newline-loss defect**: run `otafetch` with a null sink on a 64 KB object made only of `0x0A` bytes, and count short-copy events. Then run it on the real 339 KB `full.z` and log B/s; that replaces the 4 KB/s assumption. **Status 8 Oct 2026: not recorded.** Patch 1.22 (short-copy detection with Range resume) is in the vendored tree. The handoff does not say whether any `short` resume line appeared, and the null-sink run and the B/s figure are not recorded.
+3. **Current trace** of one full and one delta OTA, then compare against the 2.9 and 0.5 mAh estimates. **Status 8 Oct 2026: not recorded.**
+4. **Rollback**: OTA to an image that panics at boot and confirm it comes back with `rb`. OTA a good image and confirm `PENDING_VERIFY` → valid after the first status. **Status 8 Oct 2026: done.** An image that aborts at boot (`PAGER_OTA_TEST_ABORT`) came back `rb` on proto3 at 10:22 am PDT, 7 Oct. A good image reached `ota_st ok` at 12:15 pm and 12:41 pm PDT the same day. The `esp_ota_mark_app_valid_cancel_rollback` log line is expected but is not quoted in the handoff.
+5. **Airplane**: push `cfg.ota` while in airplane mode. Expect no socket opened and `ota_st` to stay `wait`. **Status 8 Oct 2026: waived by the owner on 7 Oct; not run.**

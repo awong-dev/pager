@@ -11,18 +11,27 @@ one charge.
 
 ## Status
 
-**v0.1: a message typed in the web app reaches the pager's screen**, over LTE-M, MQTT on TLS with
-a pinned CA, signed in both directions, and acknowledged back. The relay is deployed (GCP Cloud
-Run, Firestore, Firebase Hosting); the broker is EMQX Cloud Serverless; pushing to `main`
-deploys.
+**v1.1.0 (8 Oct 2026)** is the current firmware, released with the matching relay and web app. It
+adds the Soracom bearer. **v1.0.0** (8 Oct 2026) was the first stable release. It brought the
+right-header rewire, per-device GNSS disable, the host partial LUT, relay SMS through Twilio with
+unknown senders held for parent approval, and local-time battery charts. Over-the-air updates with
+rollback were verified on a bench pager on 7 Oct 2026.
 
-**v0.2**, on `main` and running on the bench pager: the pager picks its carrier APN from the SIM;
-falls back gracefully if it cannot verify the broker's certificate, and can be given a new CA from
-the web app; answers location requests with short GNSS attempts and a backoff; and can text a
-parent-managed list of phone numbers directly, with every text logged for the parent.
+What works end to end today: a message typed in the web app reaches the pager over LTE-M and
+shows on its screen, the pager acknowledges it, and replies typed on the pager reach the web app.
+A page sent to a pager that is asleep is delivered: on a Soracom bench unit running the release
+image, pages sent at +10 and +40 minutes into a one-hour watch were on the pager within a minute.
 
-Not yet proven: a page arriving while the pager is asleep, which the whole power design rests on;
-replies, location fixes and SMS on real hardware. See `docs/HARDWARE_TESTING.md`.
+Soracom: a pager on a Soracom SIM detects the SIM and connects through Soracom Beam, which takes
+plain MQTT from the pager and opens TLS to the broker. The SIM is authenticated with PAP. On the
+bench (8 Oct 2026) the Beam session was usable 17 s after boot, against 32 s on the direct bearer,
+and provisioning through Beam took 10 s against 26 s. Beam can read message bodies, so encrypting
+bodies is the open precondition before real pages go over Beam (`docs/ROADMAP.md`).
+
+Still open, from `docs/ROADMAP.md`: cell-tower location end to end, pushing a CA from the web app,
+GNSS outdoors, and the no-coverage backoff in the field. Modem SMS is dead on the US Mobile line
+(7 Oct 2026), so texting goes through the relay. See `docs/HARDWARE_TESTING.md` for what has been
+seen on hardware.
 
 **Start with [`docs/OVERVIEW.md`](docs/OVERVIEW.md)**, then
 [`docs/GOTCHAS.md`](docs/GOTCHAS.md). [`docs/README.md`](docs/README.md) indexes the rest.

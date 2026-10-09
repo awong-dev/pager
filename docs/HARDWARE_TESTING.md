@@ -26,6 +26,10 @@ esptool.py --chip esp32s3 write_flash 0x11000 assets.bin      # fonts (tools/mka
 esptool.py --chip esp32s3 erase_region 0x9000 0x6000          # wipe settings -> Setup mode
 ```
 
+A release build in light sleep has no USB port, so nothing can be flashed until the owner resets the
+board (hold BOOT, tap RESET, or power-cycle). `ls /dev/cu.usbmodem*` coming back empty means ask the
+owner, not poll the port (8 Oct 2026).
+
 ## Console commands
 
 Setup mode has `setup`, `carrier` and `bearer`; on the debug build it also has `nettest`, `mqtttest`
@@ -70,7 +74,8 @@ runs — the UI render task would repaint over the test pattern. Commands:
 |---|---|
 | `disptest` or `disptest info` | Print refresh mode, partial count, and dirty rows. Run again to re-read. |
 | `disptest again <0\|1>` | `0` deliberately reproduces the pre-fix two-plane bug; `1` is the corrected code. |
-| `disptest lut <0\|1>` | A/B for the Orient AES128296A00-2.9ENRS "no partial waveform in OTP" hypothesis (5 Oct 2026). `0` (default) = today's partial command stream unchanged (0x22=0xFF). `1` = also sends 0x32 + the 153-byte `WF_PARTIAL_2IN9` LUT (`firmware/main/wf_partial_2in9.h`, copied from `docs/reference/wf_partial_2in9.h`) before 0x20, and 0x22=0xCF instead of 0xFF. Not persisted; per-partial log line says which mode ran. |
+| `disptest lut <0\|1>` | A/B for the Orient AES128296A00-2.9ENRS "no partial waveform in OTP" hypothesis (5 Oct 2026). `0` = the OTP partial waveform, the partial command stream before 7 Oct 2026 (0x22=0xFF); it bleached the panel on the glass, so it is for A/B only. `1` = also sends 0x32 + the 153-byte `WF_PARTIAL_2IN9` LUT (`firmware/main/wf_partial_2in9.h`, copied from `docs/reference/wf_partial_2in9.h`) before 0x20, and 0x22=0xCF instead of 0xFF. `1` is the default (NVS `disp`/`lut`, absent = 1, so the setting persists). The per-partial log line says which mode ran. |
+| `disptest tp0a [N]` | Show or set the host LUT's TP0A frame count (NVS `disp`/`tp0a`, default 7 since 7 Oct 2026, down from the reference table's 10, to win back keystroke latency). Raise it (8 or 9) if changed pixels look faint. |
 | `disptest bars` | Paint 8-pixel wide full-height stripes (black / white / black / ...) with a FULL refresh. Establishes a baseline pattern. |
 | `disptest step <n>` | Invert the 8-pixel screen column at x=n*8, trigger ONE partial refresh, wait for BUSY. |
 | `disptest seq [n0] [n1] [ms]` | Step through columns n0 to n1 inclusive, ms apart (defaults: 2 12 1500). Watch for band flipping; verify pattern matches prediction. |
@@ -118,9 +123,34 @@ the other bus, so its presence check is the boot log's `LIS3DH found (WHO_AM_I=0
 
 ### Power board (Adafruit 6092)
 
-SYS terminal (bq25185 4.2 V regulator) → Walter VIN (4.5 V on USB, battery voltage minus protection FET, BUVLO at 3.0 V). 3V terminal (TLV62569 3.3 V buck, 35 µA quiescent) → LIS3DH and eInk Friend VIN (always on). Walter IO0 (3V3-OUT, switched) → CardKB only. Wake button (active-high, ext1 shared with LIS3DH INT1) → board's 3V. Board green 3.3 V LED is removed. Passive distribution carries no capacitors; the TLV62569 wants 10–47 µF total, already satisfied on the 6092.
+SYS terminal (bq25185 4.2 V regulator) → Walter VIN (4.5 V on USB, battery voltage minus protection FET, BUVLO at 3.0 V). 3V terminal (TLV62569 3.3 V buck, 35 µA quiescent) → LIS3DH and eInk Friend VIN (always on). Walter IO0 (3V3-OUT, switched) → CardKB only. The wake button was removed 8 Oct 2026, so ext1 wakes on LIS3DH INT1 alone. Board green 3.3 V LED is removed. Passive distribution carries no capacitors; the TLV62569 wants 10–47 µF total, already satisfied on the 6092.
 
 ## Seen working on hardware
+
+### v1.1.0 bench results, 7-8 Oct 2026
+
+- **Soracom SIM attaches with PAP** (`sora1`, IMSI 311588112011642). `AT+CGAUTH=1,1,"sora","sora"` is
+  accepted, and the modem roams on 310410 (AT&T, LTE-M) in about 17 s. Direct bearer: session usable
+  32 s after boot (release build 25 s); `SETUP done` 26 s after the command. (`docs/SORACOM_DESIGN.md` §6 B)
+- **Direct bearer carries pages and replies.** Two web-to-pager pages shown within 1-6 s; two console
+  replies reached the web chat. (§6 C)
+- **Beam bearer** (plain MQTT to `beam.soracom.io:1883`). Session usable 17.4 s after boot, with no TLS
+  step. The web Devices row shows "via Beam" with the CA controls hidden. A page and a reply both work
+  through Beam. (§6 E)
+- **Provisioning through Beam.** After an NVS erase, `setup` bootstraps through Beam, skips the CA fetch,
+  and reports `SETUP done` 10 s after the command. (§6 E)
+- **Pages into a sleeping pager.** Release build on the Soracom SIM: +10 and +40 min pages showed "on
+  pager" within a minute of Send over the direct bearer (1 h relay-side watch). Over Beam, a page to the
+  sleeping unit showed "on pager" about 40 s after Send. (§6 D, E)
+- **eDRX granted while roaming on AT&T 310410:** `+CEDRXRDP: 4,"0010","0010","0001"` (20.48 s cycle). (§6 B)
+- **OTA full, delta and rollback on proto3 (7 Oct 2026).** A delta and a full image each reached
+  `ota_st ok`. An image that aborts at boot came back `rb`, and a refused id reported `bad`.
+  (`docs/OTA_DESIGN.md` §7)
+- **Battery sampling.** `/status` key 68 `bs` is stored as battery samples. The first sample on proto3
+  read 3700 mV (7 Oct), and `sora1` logged about one every 25 min at 3700 mV (8 Oct). The modem's
+  reading is not yet checked against a multimeter (M15 in `firmware/README.md`).
+
+### Earlier results (v0.2, debug build)
 
 Debug build, v0.2, against the production relay and broker. Google Fi (T-Mobile) and US Mobile
 Dark Star (AT&T) SIMs.
@@ -192,8 +222,14 @@ In the order worth testing:
 6. `gnsstest` outdoors: which radio route the modem accepts (in-place or `CFUN=4` window), time to
    fix cold and hot, re-attach time. Record numbers for tuning attempt and backoff budgets.
 
-7. SMS at all: the SIM may not carry it. Then texts from listed and unlisted numbers.
+7. Modem SMS is not seen working. On the US Mobile line (7 Oct 2026) `AT+CMGS` returns `OK` with
+   `+CMGS: -2147483648` (no message reference) and nothing arrives, so that line does not carry it. The
+   Soracom preset refuses modem SMS. Relay SMS through Twilio (`docs/RELAY_SMS_DESIGN.md`) has not been
+   run on the bench: texts from listed and unlisted numbers are still to test.
 
-8. The accelerometer, and the button.
+8. The accelerometer on the 8 Oct 2026 pins (SDA IO17, SCL IO18, INT1 IO16) is not bench-tested since
+   the rewire; the shake was calibrated on the old pins on 6 Oct. The button was removed on 8 Oct, so
+   drop it from this list.
 
-Registration takes about two minutes at the bench location on AT&T, a second or two on T-Mobile.
+Registration took about two minutes at the bench location on AT&T, and a second or two on T-Mobile.
+On 8 Oct 2026 the Soracom SIM roamed onto 310410 (AT&T) in about 17 s (`docs/SORACOM_DESIGN.md` §6 B).

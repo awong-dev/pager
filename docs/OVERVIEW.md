@@ -17,7 +17,7 @@ The pager leg is MQTT over TLS from the modem, or on a Soracom SIM plain MQTT vi
 opens the TLS leg to the broker (`docs/SORACOM_DESIGN.md`).
 
 - **Pager** (`firmware/`): a DPTechnics Walter board (ESP32-S3 plus a Sequans GM02SP LTE-M/GNSS
-  modem), a 296×128 e-paper display, a keyboard and a button. ESP-IDF, C with one C++ file
+  modem), a 296×128 e-paper display, a keyboard and an accelerometer. ESP-IDF, C with one C++ file
   (`net.cpp`) wrapping the vendor's modem library, which is vendored and patched in
   `firmware/components/`.
 - **Broker**: EMQX Cloud Serverless. It authenticates each pager by username and password, limits
@@ -34,7 +34,7 @@ opens the TLS leg to the broker (`docs/SORACOM_DESIGN.md`).
 ## Addressing
 
 People are addressed by **alias**. A pager is not an addressee: it is one of its owner's
-*delivery backends*, alongside the web app and Google Chat; the pager also texts a parent-managed SMS list through its own modem. A message to a user fans
+*delivery backends*, alongside the web app and Google Chat; the pager's texts go through the relay (see *Texting from the pager*). A message to a user fans
 out to every enabled backend they have. An **allow-list** decides who may message, and separately
 who may locate, whom; the relay enforces it, never the pager.
 
@@ -97,7 +97,7 @@ The modem stays registered with **eDRX** (a 20.48 s paging cycle, PSM off), so a
 within about 20 s without the radio being on. The modem's built-in MQTT client owns the session
 but sends no keepalive pings of its own, so the ESP32 re-subscribes to its topic every 300 s of
 silence from a wake it takes anyway (`GOTCHAS.md`, `V02_DESIGN.md` §9). The ESP32 light-sleeps,
-waking every 5 s (or on the button) for about 200 ms to collect events held by the modem. The
+waking every 5 s (or on a deliberate shake) for about 200 ms to collect events held by the modem. The
 modem does queue events; a 50 ms wake window is too short to receive them (pages vanish), while
 150 ms succeeds and 200 ms is in use (4% awake, against the 1% the design assumed).
 
@@ -112,7 +112,8 @@ roughly 1-2 MB a month nominal (`PROTOCOL.md` §7).
 
 The pager chooses its APN itself, from the SIM, the way Android does: a small table in the
 firmware (`firmware/main/carrier.c`) matches the SIM's network code and its `EF_GID1` group
-identifier to a carrier. A person can override it on the pager. See `GOTCHAS.md` for why a blank
+identifier to a carrier. A person can override it on the pager. A Soracom SIM also selects PAP APN
+auth and the Beam bearer (`SORACOM_DESIGN.md`). See `GOTCHAS.md` for why a blank
 APN is not a safe default.
 
 ## Location
@@ -129,10 +130,17 @@ pager itself computes.
 
 ## Texting from the pager
 
-The pager can send and receive SMS directly through its modem, to and from an allow-list of at
-most eight numbers that only the pager's owner can edit in the web app. Texts from anyone else
-are never shown. Every text in either direction, blocked ones included, is uploaded as a signed
-audit record that the owner can read in the web app (`V02_DESIGN.md` §6, `PROTOCOL.md` §3.6).
+Texts go through the relay, which gives each user one Twilio number (`RELAY_SMS_DESIGN.md`). A
+text to or from a known, approved contact is delivered. A text from anyone else is held and the
+family's admins are alerted; a held text reaches the pager only after an admin approves the sender.
+The modem's own SMS path is dead on the US Mobile line (7 Oct 2026), so it is not used there.
+
+## Firmware updates
+
+A super admin pushes a build from the web app's Devices page. The relay sends the
+pager a signed `cfg.ota` job, and the pager downloads the image over HTTPS from a public bucket,
+checks its SHA-256 and switches to it. If the new image does not confirm itself after boot, the
+pager rolls back to the old one (`OTA_DESIGN.md`).
 
 ## Where to look
 
