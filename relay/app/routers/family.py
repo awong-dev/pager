@@ -522,7 +522,9 @@ def _approved_out(uid: str, family_id: str) -> ApprovedOut:
         if peer is None:
             continue
         if peer.kind == "external":
-            if peer.ownerFamilyId == family_id:
+            # A Google Chat subscription edge is managed under Google Chat
+            # (docs/BRIDGE_PHONE_DESIGN.md), never through the contact editor.
+            if peer.ownerFamilyId == family_id and not peer.chat:
                 contacts.append(ApprovedContact(uid=peer.uid, message=edge.message))
         else:
             people.append(
@@ -573,6 +575,7 @@ def put_approved(
             contact is None
             or contact.kind != "external"
             or contact.ownerFamilyId != family_id
+            or contact.chat
         ):
             raise HTTPException(status_code=404, detail=f"no such contact: {c.uid}")
 
@@ -595,6 +598,8 @@ def put_approved(
         if peer is None:
             continue
         if peer.kind == "external":
+            if peer.chat:
+                continue  # the subscribe edge belongs to Google Chat, not this editor
             if edge.toUid not in kept_contact_uids:
                 allow_store.delete_edge(uid, edge.toUid)
         elif edge.toUid not in kept_people_uids:
@@ -668,6 +673,7 @@ def _list_contacts(family_id: str) -> list[ContactOut]:
             impliedFor=sorted(set(implying) - has_edge.get(ext.uid, set())),
         )
         for ext in externals_store.list_family_contacts(family_id)
+        if not ext.chat
     ]
     out.sort(key=lambda c: c.displayName.casefold())
     return out

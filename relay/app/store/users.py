@@ -91,6 +91,10 @@ class User(BaseModel):
     # docs/RELAY_SMS_DESIGN.md decision 1: the Twilio number (E.164) that
     # belongs to this person; `smsNumbers/{e164}` is its reverse index.
     smsNumber: str | None = None
+    # docs/BRIDGE_PHONE_DESIGN.md decision 7: set on an external that stands
+    # for a subscribed Google Chat conversation: `{bridgeId, conversationId,
+    # source, link, isGroup, title, canReply}`.
+    chat: dict | None = None
 
 
 class _Unset:
@@ -144,6 +148,7 @@ def create_user(
     family_id: str | None = None,
     kind: Kind = "person",
     owner_family_id: str | None = None,
+    chat: dict | None = None,
 ) -> User:
     """Creates `users/{uid}` and `aliases/{alias}` in one transaction --
     `aliases/{alias}` is created with `transaction.create`, which raises
@@ -181,6 +186,7 @@ def create_user(
                 "notify": {"alerts": True},
                 "disabled": False,
                 "createdAt": SERVER_TIMESTAMP,
+                **({"chat": chat} if chat is not None else {}),
             },
         )
 

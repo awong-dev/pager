@@ -50,6 +50,7 @@ _POLICY_REJECT_MESSAGES = {
     "not_allowed": "You are not on each other's approved lists.",
     "sms_contact": "SMS contacts can't text each other.",
     "no_sms_number": "You have no SMS number; ask your family admin.",
+    "no_bridge": "Google Chat is not set up for this chat; ask your family admin.",
 }
 
 
@@ -261,6 +262,8 @@ def add_group_member(
     group = conversations_store.get_by_alias(alias)
     if group is None:
         raise HTTPException(status_code=404, detail="no such group")
+    if group.bridge is not None:
+        raise HTTPException(status_code=409, detail="managed under Google Chat")
 
     # docs/FAMILIES_TASKS.md 1.3 / docs/FAMILIES_DESIGN.md §4: joining is no
     # longer self-service for any current member -- the caller must be a
@@ -304,6 +307,8 @@ def leave_group(
         raise HTTPException(status_code=404, detail="no such group")
     if authed.uid not in group.uids:
         raise HTTPException(status_code=404, detail="not a member of this group")
+    if group.bridge is not None:
+        raise HTTPException(status_code=409, detail="managed under Google Chat")
     updated = conversations_store.remove_member(group.convKey, authed.uid)
     # The leaver's own book loses this group -- push to the leaver
     # specifically (they're no longer in `updated.uids`, so

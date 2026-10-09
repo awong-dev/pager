@@ -157,3 +157,23 @@ def test_check_external_recipient_skips_recipients_own_side() -> None:
 
 def test_check_both_external_is_always_none() -> None:
     assert policy.check(_external(), _external(), False, False) is None
+
+
+def test_chat_external_is_a_person_peer():
+    """docs/BRIDGE_PHONE_DESIGN.md decision 9(d): an external with `chat` set
+    reads the people column, so the subscribe edge approves it; a plain
+    external still reads the numbers column."""
+
+    @dataclass
+    class _ChatExternal(_FakeUser):
+        chat: dict | None = None
+
+    chat_ext = _ChatExternal(kind="external", policy=_FakePolicy(out="", in_=""), chat={"bridgeId": "b"})
+    owner = _person("people", "people")
+    # people column: approved -> needs the edge; the numbers column would be `none`.
+    assert policy.check(owner, chat_ext, False, False) == "not_allowed"
+    assert policy.check(owner, chat_ext, True, True) is None
+    assert policy.check(chat_ext, owner, False, True) is None
+    assert policy.check(chat_ext, owner, False, False) == "not_allowed"
+    plain = _external()
+    assert policy.check(owner, plain, True, True) == "policy_out"

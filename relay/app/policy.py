@@ -47,6 +47,16 @@ def rule(policy_code: str, peer_kind: PeerKind) -> Rule:
     return people_rule if peer_kind == "person" else numbers_rule
 
 
+def _peer_kind(user: _UserLike) -> PeerKind:
+    """docs/BRIDGE_PHONE_DESIGN.md decision 9(d): an external that stands for
+    a subscribed Google Chat conversation (`chat` set) is read as a *person*
+    peer -- the subscribe edge is what approves it, and the numbers column
+    stays about phone numbers."""
+    if user.kind == "external" and getattr(user, "chat", None):
+        return "person"
+    return user.kind  # type: ignore[return-value]
+
+
 class _PolicyLike(Protocol):
     out: str
     in_: str
@@ -75,14 +85,14 @@ def check(
     `policy_*` one -- a missing approval is not the same failure as a
     policy that refuses the peer kind outright."""
     if sender.kind != "external":
-        out_rule = rule(sender.policy.out, recipient.kind)  # type: ignore[arg-type]
+        out_rule = rule(sender.policy.out, _peer_kind(recipient))
         if out_rule == "none":
             return "policy_out"
         if out_rule == "approved" and not has_edge_out:
             return "not_allowed"
 
     if recipient.kind != "external":
-        in_rule = rule(recipient.policy.in_, sender.kind)  # type: ignore[arg-type]
+        in_rule = rule(recipient.policy.in_, _peer_kind(sender))
         if in_rule == "none":
             return "policy_in"
         if in_rule == "approved" and not has_edge_in:

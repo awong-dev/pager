@@ -188,6 +188,89 @@ def ensure_bridge_backend(user: User, config: dict) -> str:
     return created.id
 
 
+def chat_ids(bridge_id: str, conversation_id: str) -> tuple[str, str, str]:
+    """`(uid, alias, h)` of the external standing for a bridge conversation
+    (decision 7): `x_c` + h[:16], alias `c` + h[:11] (12 characters, inside
+    `ALIAS_RE`); `h` is also what `conversations.create_bridge_group` derives
+    its ids from."""
+    h = hashlib.sha256(f"{bridge_id}|{conversation_id}".encode()).hexdigest()
+    return f"x_c{h[:16]}", f"c{h[:11]}", h
+
+
+def get_or_create_chat(
+    family_id: str,
+    bridge_id: str,
+    conversation_id: str,
+    display_name: str,
+    *,
+    source: str,
+    link: str | None,
+    is_group: bool,
+    title: str | None,
+    can_reply: bool,
+) -> User:
+    """Idempotent on `(bridge_id, conversation_id)`: the external user for a
+    subscribed conversation, `phone: null`, `chat` set, with its `bridge`
+    backend row. Name reservation as `get_or_create` (`ContactNameTaken`).
+    An existing user keeps its name and `chat` fields (the retry of a
+    subscribe finds what the crashed attempt wrote)."""
+    uid, alias, _h = chat_ids(bridge_id, conversation_id)
+    config = {
+        "bridgeId": bridge_id,
+        "source": source,
+        "conversationId": conversation_id,
+        "link": link,
+    }
+    existing = users_store.get_user(uid)
+    if existing is not None:
+        ensure_bridge_backend(existing, config)
+        return existing
+
+    key = name_key(display_name)
+    _reserve(family_id, key, uid, display_name)
+    chat = {
+        "bridgeId": bridge_id,
+        "conversationId": conversation_id,
+        "source": source,
+        "link": link,
+        "isGroup": is_group,
+        "title": title,
+        "canReply": can_reply,
+    }
+    try:
+        users_store.create_user(
+            uid=uid,
+            alias=alias,
+            display_name=display_name,
+            phone=None,
+            family_id=None,
+            kind="external",
+            owner_family_id=family_id,
+            chat=chat,
+        )
+    except users_store.AliasTaken as exc:
+        raced = users_store.get_user(uid)
+        if raced is None:
+            _release(family_id, key, uid)
+            raise ValueError("contact alias collision") from exc
+        ensure_bridge_backend(raced, config)
+        return raced
+    except Exception:
+        _release(family_id, key, uid)
+        raise
+    fetched = users_store.get_user(uid)
+    assert fetched is not None
+    ensure_bridge_backend(fetched, config)
+    return fetched
+
+
+def update_chat(uid: str, **fields: object) -> None:
+    """Merges `fields` into `users/{uid}.chat` (dotted-path update)."""
+    get_db().collection("users").document(uid).update(
+        {f"chat.{key}": value for key, value in fields.items()}
+    )
+
+
 def rename(family_id: str, uid: str, new_name: str) -> User:
     """Renames the family's contact `uid`. Reserve-new, update, release-old: a
     crash leaves both keys held by `uid`, freed by the next rename/delete.

@@ -136,6 +136,11 @@ class Conversation(BaseModel):
     # change (see `build_participants_and_family_ids` below).
     familyIds: list[str] = []
     participants: dict[str, Participant] = {}
+    # docs/BRIDGE_PHONE_DESIGN.md decision 7: a group bridged to a Google
+    # Chat space: `{bridgeId, conversationId, source, link}`, and the
+    # `{nick: person name}` roster that becomes the wire's `sndr`.
+    bridge: dict | None = None
+    roster: dict[str, str] = {}
 
 
 def conv_key(uid_a: str, uid_b: str) -> str:

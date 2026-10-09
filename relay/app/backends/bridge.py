@@ -14,7 +14,7 @@ import logging
 from pydantic import BaseModel, ConfigDict
 
 from app.backends.base import DeliverResult, LinkStep
-from app.store import bridge_outbox
+from app.store import bridge_conversations, bridge_outbox
 from app.store import bridges as bridges_store
 from app.store import messages as messages_store
 from app.store.backends import Backend as BackendRow
@@ -58,7 +58,11 @@ class BridgeBackend:
         if bridge is None or not bridge.paired:
             messages_store.mark_delivery_failed_if_queued(msg.id, backend.id, error="no_bridge")
             return DeliverResult(ok=False, state="failed", error="no_bridge")
-        # B4 adds the `paused` check against the bridgeConversations row.
+        if config.conversationId:
+            row = bridge_conversations.get(bridge.id, config.conversationId)
+            if row is not None and row.status == "paused":
+                messages_store.mark_delivery_failed_if_queued(msg.id, backend.id, error="paused")
+                return DeliverResult(ok=False, state="failed", error="paused")
         if msg.kind != "text" or not msg.body:
             messages_store.mark_delivery_failed_if_queued(msg.id, backend.id, error="unsupported")
             return DeliverResult(ok=False, state="failed", error="unsupported")

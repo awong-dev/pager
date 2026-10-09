@@ -128,6 +128,7 @@ from app.broker import BrokerClient
 from app.ids import new_id
 from app.store import allow as allow_store
 from app.store import backends as backends_store
+from app.store import bridges as bridges_store
 from app.store import conversations as conversations_store
 from app.store import devices as devices_store
 from app.store import messages as messages_store
@@ -135,6 +136,7 @@ from app.store import users as users_store
 from app.store.backends import Backend as BackendRow
 from app.store.conversations import Conversation
 from app.store.messages import Delivery, Message, MessageKind
+from app.store.users import User
 
 logger = logging.getLogger("relay.routing")
 
@@ -160,6 +162,7 @@ RejectReason = Literal[
     "policy_in",
     "sms_contact",
     "no_sms_number",
+    "no_bridge",
 ]
 
 
@@ -208,7 +211,11 @@ class Routing:
         wire_id: str | None = None,
         device_id: str | None = None,
         ts: int | None = None,
+        sender_alias: str | None = None,
     ) -> SendResult:
+        """`sender_alias` (docs/BRIDGE_PHONE_DESIGN.md decision 9a): the alias
+        a group copy carries as `senderAlias` (the wire's `sndr`) instead of
+        the sender's own alias -- a bridged Google Chat group's roster nick."""
         ts = ts if ts is not None else int(time.time())
 
         if recipient_alias is not None:
@@ -224,6 +231,7 @@ class Routing:
                     origin_backend_id=origin_backend_id,
                     wire_id=wire_id,
                     ts=ts,
+                    sender_alias=sender_alias,
                 )
 
         candidates, rejected = self._candidate_recipients(sender_uid, recipient_alias, device_id)
@@ -279,6 +287,7 @@ class Routing:
                 origin_backend_id=origin_backend_id,
                 wire_id=wire_id,
                 ts=ts,
+                sender_alias=sender_alias,
             )
             if msg is not None:
                 created.append(msg)
@@ -355,8 +364,26 @@ class Routing:
             # moved to another family can no longer reach the old contact.
             if ext.disabled or person is None or ext.ownerFamilyId != person.familyId:
                 return "sms_contact"
+            bridge_row = backends_store.get_backend(ext.uid, "bridge")
+            if bridge_row is not None:
+                return self._bridge_route_reject(ext, person, bridge_row, outbound=recipient_ext)
             if not person.smsNumber:
                 return "no_sms_number"
+        return None
+
+    def _bridge_route_reject(
+        self, ext: User, person: User, bridge_row: BackendRow, *, outbound: bool
+    ) -> RejectReason | None:
+        """docs/BRIDGE_PHONE_DESIGN.md decision 9(c): an external with a
+        `bridge` backend is a pair only with that bridge's owner, and only
+        while the bridge is paired (`no_bridge`); a read-only subscription
+        (`chat.canReply == false`) refuses the owner's outbound
+        (`not_allowed`)."""
+        bridge = bridges_store.get(str(bridge_row.config.get("bridgeId") or ""))
+        if bridge is None or not bridge.paired or bridge.ownerUid != person.uid:
+            return "no_bridge"
+        if outbound and (ext.chat or {}).get("canReply") is False:
+            return "not_allowed"
         return None
 
     # ---- policy gate (docs/FAMILIES_DESIGN.md §2, §1 decision 7) ----
@@ -398,6 +425,7 @@ class Routing:
         origin_backend_id: str | None,
         wire_id: str | None,
         ts: int,
+        sender_alias: str | None = None,
     ) -> SendResult:
         if sender_uid not in group.uids:
             logger.warning(
@@ -413,8 +441,9 @@ class Routing:
                 ],
             )
 
-        sender = users_store.get_user(sender_uid)
-        sender_alias = sender.alias if sender is not None else sender_uid
+        if sender_alias is None:
+            sender = users_store.get_user(sender_uid)
+            sender_alias = sender.alias if sender is not None else sender_uid
 
         seq = messages_store.allocate_seq()
         # See this module's docstring for why a device-originated send
@@ -425,12 +454,35 @@ class Routing:
         created: list[Message] = []
         rejected: list[RejectedRecipient] = []
         sender_is_external = _is_external(sender_uid)
+        sender_is_bridge = sender_is_external and backends_store.has_kind(sender_uid, "bridge")
         for recipient_uid in sorted(uid for uid in group.uids if uid != sender_uid):
             # An SMS contact never takes part in a relay group (create/add
-            # refuse one); a stale member is skipped quietly.
-            if sender_is_external or _is_external(recipient_uid):
+            # refuse one); a stale member is skipped quietly. A *bridge*
+            # external (a Google Chat conversation, decision 9b) is the one
+            # exception: it may be the sender (inbound) or a recipient
+            # (outbound) -- and then every pair with an external side runs
+            # the route check before the policy gate, so a bridge group can
+            # only carry owner <-> external.
+            recipient_is_external = _is_external(recipient_uid)
+            if (sender_is_external and not sender_is_bridge) or (
+                recipient_is_external and not backends_store.has_kind(recipient_uid, "bridge")
+            ):
                 logger.debug("skipping sms contact in group %s fan-out", group.convKey)
                 continue
+            if sender_is_external or recipient_is_external:
+                route_reason = self._sms_route_reject(sender_uid, recipient_uid)
+                if route_reason is not None:
+                    logger.warning(
+                        "SECURITY sender %s cannot reach bridge peer %s (group=%s) reason=%s",
+                        sender_uid,
+                        recipient_uid,
+                        group.convKey,
+                        route_reason,
+                    )
+                    rejected.append(
+                        RejectedRecipient(alias=group.alias, uid=recipient_uid, reason=route_reason)
+                    )
+                    continue
             reason = self._policy_reject_reason(sender_uid, recipient_uid)
             if reason is not None:
                 logger.warning(

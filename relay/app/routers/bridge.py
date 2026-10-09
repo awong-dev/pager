@@ -20,7 +20,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from starlette.concurrency import run_in_threadpool
 
 from app import alerts as alerts_module
-from app import bridge_numbers
+from app import bridge_numbers, chat_subscribe
 from app.backends.sms_twilio import voice_link
 from app.bridgeauth import mint_token, require_bridge
 from app.inbound_text import handle_text, placeholder_for
@@ -341,18 +341,13 @@ def _handle_text_event(
 CONVERSATIONS_PER_DAY = 50
 
 
-def deliver_subscribed(bridge, row, event: BridgeEvent, routing) -> str | None:
-    """Replaced by B5 (`app.chat_subscribe.deliver_subscribed`): a subscribed
-    conversation's text goes to the pager. `None` = hold it like an unknown
-    one."""
-    return None
-
-
 def _preview(event: BridgeEvent) -> str:
     return (event.text.strip() or (placeholder_for([a.kind for a in event.attachments]) if event.attachments else ""))
 
 
-def _handle_chat_event(bridge: bridges_store.Bridge, event: BridgeEvent, routing) -> str:
+def _handle_chat_event(
+    bridge: bridges_store.Bridge, event: BridgeEvent, routing, broker
+) -> str:
     """`gchat` events (decisions 5, 6, 8)."""
     conv = event.conversation
     existing = bridge_conversations.get(bridge.id, conv.id)
@@ -398,7 +393,9 @@ def _handle_chat_event(bridge: bridges_store.Bridge, event: BridgeEvent, routing
         preview=body,
     )
     if row.status == "subscribed":
-        outcome = deliver_subscribed(bridge, row, event, routing)
+        outcome = chat_subscribe.deliver_subscribed(
+            bridge, row, event, routing, broker, existing.title if existing else None
+        )
         if outcome is not None:
             return outcome
     hid = f"br_{bridge.id}_{event.id}"
@@ -424,15 +421,17 @@ def _handle_chat_event(bridge: bridges_store.Bridge, event: BridgeEvent, routing
     return "held"
 
 
-def process_event(bridge: bridges_store.Bridge, event: BridgeEvent, routing) -> str:
+def process_event(bridge: bridges_store.Bridge, event: BridgeEvent, routing, broker) -> str:
     if event.source in ("sms", "gvoice") and event.kind == "message":
         return _handle_text_event(bridge, event, routing)
     if event.source in ("gchat", "gvoice"):
-        return _handle_chat_event(bridge, event, routing)
+        return _handle_chat_event(bridge, event, routing, broker)
     return "dropped_unsupported"
 
 
-def process_events(bridge: bridges_store.Bridge, events: list[BridgeEvent], routing) -> list[dict]:
+def process_events(
+    bridge: bridges_store.Bridge, events: list[BridgeEvent], routing, broker
+) -> list[dict]:
     for _ in events:
         if not rate_limits_store.check_and_increment(
             f"bridge_events:{bridge.id}", limit=EVENTS_PER_MINUTE, window_s=60
@@ -440,7 +439,7 @@ def process_events(bridge: bridges_store.Bridge, events: list[BridgeEvent], rout
             raise HTTPException(status_code=429, detail="too many requests")
     results = []
     for event in events:
-        outcome = process_event(bridge, event, routing)
+        outcome = process_event(bridge, event, routing, broker)
         logger.info(
             "bridge in bridge=%s src=%s conv=%s from=%s outcome=%s",
             bridge.id, event.source, conv_log_id(event.conversation.id), _from_label(event), outcome,
@@ -455,5 +454,7 @@ async def post_events(
     request: Request,
     bridge: Annotated[bridges_store.Bridge, Depends(require_bridge)],
 ) -> dict:
-    results = await run_in_threadpool(process_events, bridge, req.events, request.app.state.routing)
+    results = await run_in_threadpool(
+        process_events, bridge, req.events, request.app.state.routing, request.app.state.broker
+    )
     return {"results": results}

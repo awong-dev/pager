@@ -245,7 +245,7 @@ def _approved_contacts(owner_uid: str) -> list[dict[str, Any]]:
             "t": (
                 "grp"
                 if e.kind == "group"
-                else "sms"
+                else ("chat" if e.chat else "sms")
                 if e.kind == "external"
                 else _contact_type_hint(e.uid)  # type: ignore[arg-type]
             ),

@@ -63,6 +63,8 @@ UNKNOWN_RECIPIENT_BODY = "unknown recipient"
 # docs/RELAY_SMS_DESIGN.md decision 2: the sending member has no relay SMS
 # number (or the recipient SMS contact's person side has none).
 NO_SMS_NUMBER_BODY = "sms not set up; ask your admin"
+# docs/BRIDGE_PHONE_DESIGN.md decision 9(c).
+NO_BRIDGE_BODY = "bridge not set up; ask your admin"
 
 # S4.1: the one `system` down reply for a `contact_req` beyond the per-device
 # pending cap (docs/PROTOCOL.md §3.2, docs/DEVICE_TASKS.md S4.1's exact
@@ -764,6 +766,8 @@ class Ingest:
             body = (
                 NO_SMS_NUMBER_BODY
                 if result.rejected[0].reason == "no_sms_number"
+                else NO_BRIDGE_BODY
+                if result.rejected[0].reason == "no_bridge"
                 else UNKNOWN_RECIPIENT_BODY
             )
             self._send_system_reply(device.id, body, cause_id=env.id)
