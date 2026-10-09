@@ -24,7 +24,7 @@ from app import bridge_numbers, chat_subscribe
 from app.bridgeauth import mint_token, require_bridge
 from app.inbound_text import handle_text, placeholder_for
 from app.routers.webhooks import _check_webhook_ip_rate_limit
-from app.sms_text import redact_phone, voice_link
+from app.sms_text import redact_phone, voice_link, wa_link
 from app.store import bridge_conversations, bridge_outbox
 from app.store import bridges as bridges_store
 from app.store import externals as externals_store
@@ -47,6 +47,7 @@ class PairCaps(BaseModel):
     sms: bool = False
     gchat: bool = False
     gvoice: bool = False
+    whatsapp: bool = False
 
 
 class PairRequest(BaseModel):
@@ -93,10 +94,13 @@ def pair(req: PairRequest, request: Request) -> PairResponse:
         raise HTTPException(status_code=404, detail="unknown or expired code")
 
     token, token_hash = mint_token(bridge.id)
-    caps = bridge_numbers.caps_for(req.caps.sms, req.caps.gchat, sim, voice)
+    caps = bridge_numbers.caps_for(
+        req.caps.sms, req.caps.gchat, sim, voice, whatsapp=req.caps.whatsapp
+    )
     status = {
         "accounts": req.accounts,
         "smsCapable": req.caps.sms,
+        "whatsapp": req.caps.whatsapp,
         "simNumber": sim,
         "voiceNumber": voice,
         "version": req.version,
@@ -122,6 +126,7 @@ class HeartbeatStatus(BaseModel):
     listenerBound: bool | None = None
     smsDefault: bool | None = None
     accessibility: bool | None = None
+    whatsapp: bool | None = None
     accounts: list[Annotated[str, Field(max_length=120)]] | None = Field(default=None, max_length=10)
     simNumber: str | None = Field(default=None, max_length=32)
     voiceNumber: str | None = Field(default=None, max_length=32)
@@ -158,9 +163,15 @@ def heartbeat(
         elif key in status:
             status[key] = None
     bridges_store.touch(bridge.id, status, req.fcmToken)
-    if "smsCapable" in status:
+    if status.get("whatsapp") is None:
+        status.pop("whatsapp", None)
+    if "smsCapable" in status or "whatsapp" in status:
         caps = bridge_numbers.caps_for(
-            status["smsCapable"], bridge.caps.gchat, bridge.simNumber, bridge.voiceNumber
+            status.get("smsCapable", bridge.status.smsCapable or bridge.caps.sms),
+            bridge.caps.gchat,
+            bridge.simNumber,
+            bridge.voiceNumber,
+            whatsapp=status.get("whatsapp", bridge.caps.whatsapp),
         )
         if caps != bridge.caps:
             bridges_store.set_caps(bridge.id, caps)
@@ -277,7 +288,7 @@ class BridgeEvent(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     id: str
-    source: Literal["sms", "gchat", "gvoice"]
+    source: Literal["sms", "gchat", "gvoice", "whatsapp"]
     kind: Literal["message", "inspect"] = "message"
     conversation: EventConversation
     sender: EventSender = Field(default_factory=EventSender)
@@ -327,7 +338,11 @@ def _handle_text_event(
         or target.familyId is None
     ):
         return "dropped_owner"
-    caps_ok = bridge.caps.sms if event.source == "sms" else bridge.caps.gvoice
+    caps_ok = {
+        "sms": bridge.caps.sms,
+        "gvoice": bridge.caps.gvoice,
+        "whatsapp": bridge.caps.whatsapp,
+    }.get(event.source, False)
     if not caps_ok:
         return "dropped_cap"
     try:
@@ -335,7 +350,9 @@ def _handle_text_event(
     except ValueError:
         return "dropped_bad_from"
     sid = f"br_{bridge.id}_{event.id}"
-    gvoice = event.source == "gvoice"
+    # Voice and WhatsApp DMs both carry a conversation id (thread id / JID)
+    # and a deep link for the tier-2 reply.
+    conv_link = {"gvoice": voice_link, "whatsapp": wa_link}.get(event.source)
 
     def reply(text: str) -> None:
         bridge_outbox.enqueue_hint(
@@ -345,8 +362,8 @@ def _handle_text_event(
             text=text,
             wire_id=sid,
             to_extra=(
-                {"conversationId": event.conversation.id, "link": voice_link(from_number)}
-                if gvoice
+                {"conversationId": event.conversation.id, "link": conv_link(from_number)}
+                if conv_link
                 else None
             ),
         )
@@ -360,7 +377,7 @@ def _handle_text_event(
         reply=reply,
         attachments=[a.kind for a in event.attachments],
         via=event.source,
-        voice_conv=event.conversation.id if gvoice else None,
+        voice_conv=event.conversation.id if conv_link else None,
     )
 
 
@@ -380,9 +397,18 @@ def _handle_chat_event(
     target = users_store.get_user(bridge.ownerUid)
     if target is None or target.kind != "person" or target.disabled or target.familyId is None:
         return "dropped_owner"
-    caps_ok = bridge.caps.gchat if event.source == "gchat" else bridge.caps.gvoice
+    caps_ok = {
+        "gchat": bridge.caps.gchat,
+        "gvoice": bridge.caps.gvoice,
+        "whatsapp": bridge.caps.whatsapp,
+    }.get(event.source, False)
     if not caps_ok:
         return "dropped_cap"
+    if event.source == "whatsapp" and event.sender.name.startswith("~"):
+        # WA3: unsaved group members show as "~ Name".
+        event = event.model_copy(
+            update={"sender": event.sender.model_copy(update={"name": event.sender.name.lstrip("~").strip()})}
+        )
     if existing is None:
         since = datetime.now(UTC) - timedelta(days=1)
         if bridge_conversations.count_created_since(bridge.id, since) >= CONVERSATIONS_PER_DAY:
@@ -449,6 +475,11 @@ def _handle_chat_event(
 
 
 def process_event(bridge: bridges_store.Bridge, event: BridgeEvent, routing, broker) -> str:
+    if event.source == "whatsapp":
+        # WA2/WA3: DMs are phone-keyed texts, groups are Chat-style conversations.
+        if event.kind == "message" and not event.conversation.isGroup:
+            return _handle_text_event(bridge, event, routing)
+        return _handle_chat_event(bridge, event, routing, broker)
     if event.source in ("sms", "gvoice") and event.kind == "message":
         return _handle_text_event(bridge, event, routing)
     if event.source in ("gchat", "gvoice"):

@@ -20,7 +20,7 @@ export interface BookEntry {
   phone?: string | null;
   // docs/BRIDGE_PHONE_DESIGN.md decision 7: set on a bridged Google Chat /
   // Google Voice contact (`t:"chat"` on the pager).
-  chat?: { source: "gchat" | "gvoice" } | null;
+  chat?: { source: "gchat" | "gvoice" | "whatsapp" } | null;
   inFamily: boolean;
   sendable: boolean;
   reason?: string | null;

@@ -23,7 +23,7 @@ from firebase_admin import auth as fb_auth
 from google.api_core.exceptions import AlreadyExists
 from pydantic import BaseModel, ConfigDict, Field
 
-from app import book, chat_subscribe, devcfg, sms_text
+from app import book, chat_subscribe, devcfg, inbound_text, sms_text
 from app import policy as policy_module
 from app.auth import Principal, require_family_admin, set_claims
 from app.book import rederive_family_sms_contacts, rederive_sms_contacts
@@ -859,6 +859,12 @@ def _approve_sms_unknown(
     # (e) the backlog, oldest first.
     delivered = undelivered = 0
     bid = externals_store.ensure_sms_backend(external)
+    # The channel the person used (B11b): the newest held row that carries
+    # one, recorded as a live inbound would so the first reply goes back on it.
+    # Rows from before the field existed have none and change nothing.
+    channel_row = next((r for r in reversed(held) if r.via), None)
+    if channel_row is not None and channel_row.via is not None:
+        inbound_text.record_channel(external.uid, bid, target_uid, channel_row.via, channel_row.conv)
     for row in held:
         pager_text = sms_text.pager_body(row.body)
         if not pager_text or sms_text.body_too_long(pager_text):

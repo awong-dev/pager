@@ -332,6 +332,23 @@ npm run build`. Android: `cd bridge-android && ./gradlew assembleDebug`.
   "Message backends": a "Bridge phones" subsection pointer to D1's runbook.
 - **Verify:** `ruff` clean; nothing else.
 
+### B11 WhatsApp: relay source, caps, DM and group paths, sim, e2e — **done 9 Oct 2026**
+- **Read:** WA1–WA5 and WA9 in `docs/BRIDGE_PHONE_DESIGN.md`; decisions 4, 5, 9; `relay/app/backends/sms.py`
+  (`_deliver_via_bridge`), `relay/app/inbound_text.py`, `relay/app/bridge_numbers.py`, `relay/app/routers/bridge.py`.
+- **Files:** `relay/app/backends/sms.py`, `relay/app/bridge_numbers.py`, `relay/app/inbound_text.py`,
+  `relay/app/routers/bridge.py`, `relay/app/routers/family_bridges.py`, `relay/app/sms_text.py`,
+  `relay/app/store/bridges.py`, `tools/bridge_sim.py` (source `whatsapp`), `tools/e2e_v2.py` (scenario
+  `bridge_whatsapp`), `relay/README.md` (runbook: source `whatsapp`).
+- **Do:** `whatsapp` source on the event, outbox and caps models; `caps.whatsapp` from pair and heartbeat, kept
+  by number PATCH and accept-sim; a `@s.whatsapp.net` or `dataUri` sender goes through `handle_text` with `via:
+  whatsapp`, a `@lid` sender is `dropped_bad_from`; `@g.us` conversations go through the chat path with the
+  `whatsapp` source; the `wa.me` link and `conversationId` on DM sends; caps fallback to sms, then gvoice, then
+  `no_bridge`; "Add by link" refuses WhatsApp links with 400 (WA3).
+- **Verify:** `cd relay && ruff check . && ruff format --check . && pytest -q` (needs `docker compose up -d
+  firebase`); `relay/.venv/bin/python tools/e2e_v2.py bridge_whatsapp` against the compose stack.
+  *TODO(orchestrator): when this row was written `git status` showed no change under `tools/`; confirm
+  `bridge_whatsapp` and the simulator source landed before treating the e2e line as run.*
+
 ---
 
 ## Web (web-dev) — after B4; B5/B6 contracts as specified above
@@ -390,6 +407,16 @@ npm run build`. Android: `cd bridge-android && ./gradlew assembleDebug`.
   `entry.chat?.source`), `web/components/NewChatDialog.tsx` (chat externals listed with the
   SMS group when sendable), `web/README.md` (manual checklist rows for W2–W4).
 - **Verify:** web verify.
+
+### W7 WhatsApp: web labels, caps chip, link refusal — **done 9 Oct 2026**
+- **Read:** WA3, WA8; `web/lib/types.ts`, `web/lib/bridges.ts`, `web/lib/book.ts`.
+- **Files:** `web/lib/types.ts` (`BridgeSource` gains `whatsapp`), `web/lib/bridges.ts`, `web/lib/book.ts`,
+  `web/components/AlertCard.tsx`, `web/components/BridgePhonesSection.tsx`, `web/app/family/chat/page.tsx`,
+  `web/app/settings/book/page.tsx`. (`web/README.md` is not part of this row.)
+- **Do:** "WhatsApp" label and chip wherever Google Voice or Google Chat is chosen by source; `BridgePhonesSection`
+  caps chip `WhatsApp`; the Add by link dialog refuses `whatsapp.com` and `wa.me` links client-side with the WA3
+  message "whatsapp links cannot be inspected; wait for a message".
+- **Verify:** `cd web && npm run lint && npx tsc --noEmit && npm run build`.
 
 ---
 
@@ -485,6 +512,18 @@ npm run build`. Android: `cd bridge-android && ./gradlew assembleDebug`.
   in place; the poll-only build is fully functional with ≤60 s outbound latency.
 - **Verify:** `./gradlew assembleDebug` with the file present builds with `FCM=true`.
 
+### A9 WhatsApp: both tiers on the phone — **done 9 Oct 2026**
+- **Read:** WA4, WA6, WA7 in `docs/BRIDGE_PHONE_DESIGN.md`; decision 13; `bridge-android/app/src/main/java/app/kidpager/bridge/Targets.kt`.
+- **Files:** `ChatNotificationListener.kt`, `NotificationMapper.kt`, `Dispatcher.kt`, `ReplyCache.kt`, `Targets.kt`,
+  `BridgeAccessibilityService.kt`, `RelayClient.kt`, `SetupActivity.kt`, `Status.kt`, `res/layout/activity_setup.xml`,
+  `res/values/strings.xml`, `AndroidManifest.xml`, unit tests `NotificationMapperTest.kt`, `TargetsTest.kt`.
+- **Do:** listen to `com.whatsapp` and `com.whatsapp.w4b`; MessagingStyle only, group-summary skipped; media placeholders
+  become attachments; sender `You` skipped; DM tier 1 by conversation id then phone, tier 2 `https://wa.me/<digits>` with
+  package `com.whatsapp`; group tier 2 by title search with `no_match`; selectors in `Targets` marked verify-on-bench;
+  SetupActivity WhatsApp row (no number field); status `whatsapp: bool`.
+- **Verify:** `cd bridge-android && JAVA_HOME=$(/usr/libexec/java_home -v 17) ./gradlew assembleDebug testDebugUnitTest`.
+  Bench verification on a phone is open (`docs/ROADMAP.md`): selectors, JID shortcut ids, media placeholders, group search.
+
 ---
 
 ## Docs (docs-writer; after everything lands)
@@ -506,3 +545,11 @@ npm run build`. Android: `cd bridge-android && ./gradlew assembleDebug`.
   italic *(8 Oct 2026: `t:"chat"` is also emitted for a bridged Google Chat contact,
   docs/BRIDGE_PHONE_DESIGN.md)*; nothing else.
 - **Verify:** `git diff --stat docs/PROTOCOL.md` touches only those lines.
+
+### D3 WhatsApp docs row — **done 9 Oct 2026**
+- **Files:** `docs/BRIDGE_PHONE_DESIGN.md` (WhatsApp section WA1–WA9, source enumerations, decision 13 package list,
+  failure-mode rows), `docs/BRIDGE_PHONE_TASKS.md` (rows A9, B11, W7, D3), `README.md` (Status sentence; e2e count 14),
+  `docs/OVERVIEW.md` ("Bridge phones" WhatsApp source), `docs/ROADMAP.md` (status line; "WhatsApp bench verification"),
+  `docs/README.md` (index rows). `docs/PROTOCOL.md` needs no change: its bridge notes do not enumerate sources, and
+  `t:"sms"` (phone contact) and `t:"grp"` (group) already cover WhatsApp DMs and groups. No firmware change.
+- **Verify:** every link in `docs/README.md` resolves (`grep -o '\](\S*\.md' docs/README.md | sort -u` and `ls`).

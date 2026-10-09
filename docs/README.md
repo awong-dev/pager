@@ -38,8 +38,8 @@ Design notes and task lists, one per feature (scope from each file's opening lin
 |---|---|
 | [OTA_DESIGN.md](OTA_DESIGN.md) | Over-the-air firmware update: signed `cfg.ota` job, HTTPS download from the public bucket, full or delta image, rollback. Shipped; factory slot still open |
 | [RELAY_SMS_DESIGN.md](RELAY_SMS_DESIGN.md) | Relay SMS: one number per user, outbound by policy, unknown inbound held for parent approval. Decided 8 Oct 2026. Twilio removed 9 Oct 2026 (last at 05ec3ed); SMS is now bridge-only |
-| [BRIDGE_PHONE_DESIGN.md](BRIDGE_PHONE_DESIGN.md) | Bridge phone: a headless Android phone carries a member's SIM texts, Google Voice and subscribed Google Chat through the relay. Decided 8–9 Oct 2026; built, not yet run on a phone |
-| [BRIDGE_PHONE_TASKS.md](BRIDGE_PHONE_TASKS.md) | Execution tasks for BRIDGE_PHONE_DESIGN.md: relay B1–B9, web W1–W5, Android A1–A7, docs D1–D2 |
+| [BRIDGE_PHONE_DESIGN.md](BRIDGE_PHONE_DESIGN.md) | Bridge phone: a headless Android phone carries a member's SIM texts, Google Voice, subscribed Google Chat and WhatsApp (DMs and groups, 9 Oct 2026) through the relay. Decided 8–9 Oct 2026; built, not yet run on a phone |
+| [BRIDGE_PHONE_TASKS.md](BRIDGE_PHONE_TASKS.md) | Execution tasks for BRIDGE_PHONE_DESIGN.md: relay B1–B9 and B11, web W1–W5 and W7, Android A1–A7 and A9, docs D1–D3 |
 | [LOCATION_TRACKING_DESIGN.md](LOCATION_TRACKING_DESIGN.md) | Location tracking: hourly cell fix when stationary; cell first while moving, GNSS in eDRX gaps every 10 min |
 | [GNSS_DISABLE_DESIGN.md](GNSS_DISABLE_DESIGN.md) | Per-device `cfg.loc.gnss` setting that stops the pager from ever powering the GNSS receiver |
 | [BATTERY_STATS_DESIGN.md](BATTERY_STATS_DESIGN.md) | On-device state-time counters (`/status` key 68) and the modelled mAh/day drain shown in the web app |

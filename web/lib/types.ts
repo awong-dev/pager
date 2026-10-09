@@ -94,7 +94,7 @@ export interface AlertDoc {
 
 // docs/BRIDGE_PHONE_DESIGN.md decision 5: which app on the bridge phone an event
 // or a send belongs to.
-export type BridgeSource = "sms" | "gchat" | "gvoice";
+export type BridgeSource = "sms" | "gchat" | "gvoice" | "whatsapp";
 
 // ---- users/{uid}/backends/{bid} -- app/store/backends.py ----
 export type BackendKind = "pager" | "webapp" | "gchat" | "sms" | "bridge";
@@ -361,7 +361,7 @@ export interface BridgeRow {
   simNumber: string | null;
   voiceNumber: string | null;
   status: BridgeStatus;
-  caps: { sms: boolean; gchat: boolean; gvoice: boolean };
+  caps: { sms: boolean; gchat: boolean; gvoice: boolean; whatsapp: boolean };
   createdAt: ApiTime;
 }
 
@@ -378,7 +378,7 @@ export interface BridgeConversationRow {
   ref: string;
   bridgeId: string;
   conversationId: string;
-  source: "gchat" | "gvoice";
+  source: "gchat" | "gvoice" | "whatsapp";
   title: string | null;
   isGroup: boolean;
   link: string | null;
@@ -406,7 +406,7 @@ export interface ChatTabOut {
   subscribed: BridgeConversationRow[];
   seen: BridgeConversationRow[];
   // The member's bridge phones (for Add by link).
-  bridges: { id: string; label: string; paired: boolean; caps: { sms: boolean; gchat: boolean; gvoice: boolean } }[];
+  bridges: { id: string; label: string; paired: boolean; caps: { sms: boolean; gchat: boolean; gvoice: boolean; whatsapp: boolean } }[];
 }
 
 // `POST .../subscribe`

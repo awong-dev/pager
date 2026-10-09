@@ -13,6 +13,8 @@ import androidx.core.app.NotificationCompat
  * notification.actions and NotificationCompat.WearableExtender(notification).actions, rebuilt
  * from getActiveNotifications() on onListenerConnected" and the tier-1 reply:
  * RemoteInput.addResultsToIntent + actionIntent.send; CanceledException -> tier 2.
+ * The phone -> conversation map is per source (WA4): Voice and WhatsApp threads for the same
+ * number are different conversations.
  */
 object ReplyCache {
     private const val TAG = "reply"
@@ -23,19 +25,19 @@ object ReplyCache {
     }
 
     private val byConversation = HashMap<String, Entry>()
-    /** Voice: peer phone -> conversation id, so a `gvoice` send with only `to.phone` finds its thread. */
-    private val voiceByPhone = HashMap<String, String>()
+    /** `source|phone` -> conversation id, so a `gvoice`/`whatsapp` send with only `to.phone` finds its thread. */
+    private val byPhone = HashMap<String, String>()
 
     @Synchronized fun size() = byConversation.size
 
     @Synchronized
-    fun clear() { byConversation.clear(); voiceByPhone.clear() }
+    fun clear() { byConversation.clear(); byPhone.clear() }
 
     @Synchronized
-    fun rememberVoicePhone(phone: String, conversationId: String) { voiceByPhone[phone] = conversationId }
+    fun rememberPhone(source: String, phone: String, conversationId: String) { byPhone["$source|$phone"] = conversationId }
 
     @Synchronized
-    fun conversationForPhone(phone: String): String? = voiceByPhone[phone]
+    fun conversationForPhone(source: String, phone: String): String? = byPhone["$source|$phone"]
 
     @Synchronized
     fun has(conversationId: String) = byConversation.containsKey(conversationId)

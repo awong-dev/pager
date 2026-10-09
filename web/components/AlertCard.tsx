@@ -47,7 +47,7 @@ import SmsIcon from "@mui/icons-material/Sms";
 import ChatSubscribeDialog from "@/components/ChatSubscribeDialog";
 import { formatPhoneDigits } from "@/components/NewChatDialog";
 import { ApiError, api } from "@/lib/api";
-import { ignoreChat } from "@/lib/bridges";
+import { ignoreChat, sourceLabel } from "@/lib/bridges";
 import { familyQuery } from "@/lib/family-context";
 import type { AlertDoc } from "@/lib/types";
 
@@ -339,7 +339,7 @@ export default function AlertCard({ alert }: { alert: AlertRow }) {
             </Typography>
             <Typography variant="body2" color="text.secondary">
               {alert.isGroup ? `Group (${chatPeople.length} ${chatPeople.length === 1 ? "person" : "people"} seen)` : "Direct message"}
-              {alert.source === "gvoice" ? " · Google Voice" : ""}
+              {alert.source === "gvoice" || alert.source === "whatsapp" ? ` · ${sourceLabel(alert.source)}` : ""}
             </Typography>
             {chatPeople.length > 0 && (
               <Stack direction="row" spacing={0.5} useFlexGap sx={{ mt: 0.5, flexWrap: "wrap" }}>

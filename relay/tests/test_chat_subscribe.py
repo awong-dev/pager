@@ -186,7 +186,8 @@ def test_pager_reply_to_group_alias_lands_in_the_outbox_with_conversation_and_li
     replies = env.pager_up(out["alias"], "I can drive", "u_g1")
     assert replies == []  # no system reply
     (item,) = bridge_outbox.list_pending(env.bridge.id)
-    assert item.to == {"conversationId": GROUP, "link": LINK} and item.text == "I can drive"
+    assert item.to == {"conversationId": GROUP, "link": LINK, "title": "Soccer carpool"}
+    assert item.text == "I can drive"
     assert item.source == "gchat" and item.replyHint == GROUP
     (msg,) = [m for m in get_db().collection("messages").stream() if m.to_dict()["senderUid"] == "kid"]
     assert msg.to_dict()["deliveries"]["bridge"]["state"] == "queued"

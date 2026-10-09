@@ -20,6 +20,7 @@ import androidx.lifecycle.lifecycleScope
  * Decision 13 (setup screen) + O1/O2: relay URL, pairing code -> POST /bridge/pair with
  * accounts, simNumber (auto-filled, editable), voiceNumber (hand-entered), caps; status rows with
  * "Open settings" for Notification access, Default SMS app, battery optimisation, Accessibility;
+ * a WhatsApp row (WA7: installed / bridged, no number field);
  * the outbox poll period; a log screen.
  */
 class SetupActivity : AppCompatActivity() {
@@ -91,7 +92,8 @@ class SetupActivity : AppCompatActivity() {
         b.smsState.text = "Default SMS app: ${if (s.smsDefault) "YES" else "NO"}"
         b.batteryState.text = "Battery optimisation exempt: ${if (Status.batteryExempt(this)) "YES" else "NO"} (${s.battery}%)"
         b.accessibilityState.text = "Accessibility service: ${if (s.accessibility) "ON" else "OFF"}"
-        b.capsState.text = "caps: sms=${s.caps.sms} gchat=${s.caps.gchat} gvoice=${s.caps.gvoice}  fcm=${s.fcm}  accounts=${s.accounts.size}"
+        b.whatsappState.text = "WhatsApp: installed ${if (s.whatsappInstalled) "YES" else "NO"}, bridged ${if (s.whatsapp) "YES" else "NO (needs notification access)"}"
+        b.capsState.text = "caps: sms=${s.caps.sms} gchat=${s.caps.gchat} gvoice=${s.caps.gvoice} whatsapp=${s.caps.whatsapp}  fcm=${s.fcm}  accounts=${s.accounts.size}"
     }
 
     /** Decision 2: POST /bridge/pair {code, version, accounts, simNumber?, voiceNumber?, caps}; the token is returned once. */

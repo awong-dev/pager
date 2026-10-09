@@ -19,7 +19,14 @@ end to end without a phone. Two things live here:
 Environment: `RELAY_URL` (default `http://relay:8000`), `BRIDGE_SIM_PAIR_CODE`
 (pair on start), `BRIDGE_SIM_SIM_NUMBER` (default `+15550007777`),
 `BRIDGE_SIM_VOICE_NUMBER` (default none), `BRIDGE_SIM_HEARTBEAT_S` (30),
-`BRIDGE_SIM_POLL_WAIT_S` (5).
+`BRIDGE_SIM_POLL_WAIT_S` (5), `BRIDGE_SIM_WHATSAPP` (default on; `0` pairs
+without `caps.whatsapp`).
+
+WhatsApp (WA1-WA5): the sim reports `caps.whatsapp` at pair and
+`status.whatsapp` on every heartbeat; `whatsapp_dm_event()` /
+`whatsapp_group_event()` build JID-shaped events (`<digits>@s.whatsapp.net`,
+`<id>@g.us`) for `inject`. `POST /_pair` accepts `whatsapp: false` to pair
+without the cap.
 """
 
 
@@ -33,6 +40,38 @@ import urllib.request
 from typing import Any
 
 DEFAULT_SIM_NUMBER = "+15550007777"
+
+
+def whatsapp_dm_event(
+    phone: str, text: str, *, name: str = "Contact", event_id: str | None = None
+) -> dict[str, Any]:
+    """A WhatsApp DM as the phone reports it: the conversation id is the
+    shortcut-id JID, the phone is already extracted from it (WA2)."""
+    event: dict[str, Any] = {
+        "source": "whatsapp",
+        "conversation": {"id": f"{phone.lstrip('+')}@s.whatsapp.net", "isGroup": False},
+        "sender": {"name": name, "phone": phone},
+        "text": text,
+    }
+    if event_id:
+        event["id"] = event_id
+    return event
+
+
+def whatsapp_group_event(
+    group_id: str, title: str, sender: str, text: str, *, event_id: str | None = None
+) -> dict[str, Any]:
+    """A WhatsApp group message: id = `<group_id>@g.us`, sender as shown
+    (possibly `~ Name`, WA3)."""
+    event: dict[str, Any] = {
+        "source": "whatsapp",
+        "conversation": {"id": f"{group_id}@g.us", "title": title, "isGroup": True},
+        "sender": {"name": sender},
+        "text": text,
+    }
+    if event_id:
+        event["id"] = event_id
+    return event
 _UNSET: Any = object()
 
 
@@ -81,8 +120,10 @@ class BridgeSim:
         voice_number: str | None = None,
         heartbeat_s: float = 30.0,
         poll_wait_s: int = 5,
+        whatsapp: bool = True,
     ) -> None:
         self.relay_url = relay_url.rstrip("/")
+        self.whatsapp = whatsapp
         self.sim_number = sim_number
         self.voice_number = voice_number
         self.heartbeat_s = heartbeat_s
@@ -106,6 +147,7 @@ class BridgeSim:
             "listenerBound": True,
             "smsDefault": True,
             "accessibility": True,
+            "whatsapp": self.whatsapp,
             "accounts": ["kid@example.com"],
             "simNumber": self.sim_number,
             "voiceNumber": self.voice_number,
@@ -113,8 +155,15 @@ class BridgeSim:
         }
 
     def pair(
-        self, code: str, *, sim_number: Any = _UNSET, voice_number: Any = _UNSET
+        self,
+        code: str,
+        *,
+        sim_number: Any = _UNSET,
+        voice_number: Any = _UNSET,
+        whatsapp: Any = _UNSET,
     ) -> dict[str, Any]:
+        if whatsapp is not _UNSET:
+            self.whatsapp = bool(whatsapp)
         if sim_number is not _UNSET:
             self.sim_number = sim_number
         if voice_number is not _UNSET:
@@ -123,7 +172,7 @@ class BridgeSim:
             "code": code,
             "version": "sim-1",
             "accounts": ["kid@example.com"],
-            "caps": {"sms": True, "gchat": True, "gvoice": True},
+            "caps": {"sms": True, "gchat": True, "gvoice": True, "whatsapp": self.whatsapp},
         }
         if self.sim_number:
             body["simNumber"] = self.sim_number
@@ -272,6 +321,14 @@ class BridgeSimClient:
     def inject(self, event: dict[str, Any]) -> dict[str, Any]:
         return self._call("POST", "/_inject", {"event": event})
 
+    def whatsapp_dm(self, phone: str, text: str, **kw: Any) -> dict[str, Any]:
+        return self.inject(whatsapp_dm_event(phone, text, **kw))
+
+    def whatsapp_group(
+        self, group_id: str, title: str, sender: str, text: str, **kw: Any
+    ) -> dict[str, Any]:
+        return self.inject(whatsapp_group_event(group_id, title, sender, text, **kw))
+
     def outbox(self) -> list[dict[str, Any]]:
         return self._call("GET", "/_outbox")
 
@@ -305,6 +362,8 @@ def create_app(sim: BridgeSim):
             kwargs["sim_number"] = body["simNumber"]
         if "voiceNumber" in body:
             kwargs["voice_number"] = body["voiceNumber"]
+        if "whatsapp" in body:
+            kwargs["whatsapp"] = body["whatsapp"]
         try:
             out = sim.pair(str(body.get("code", "")), **kwargs)
         except RelayError as exc:
@@ -351,6 +410,7 @@ def create_app(sim: BridgeSim):
             "bridgeId": sim.bridge_id,
             "simNumber": sim.sim_number,
             "voiceNumber": sim.voice_number,
+            "whatsapp": sim.whatsapp,
             "heartbeats": sim.heartbeats,
             "lastError": sim.last_error,
         }
@@ -372,6 +432,7 @@ def main() -> None:
         voice_number=os.environ.get("BRIDGE_SIM_VOICE_NUMBER") or None,
         heartbeat_s=float(os.environ.get("BRIDGE_SIM_HEARTBEAT_S", "30")),
         poll_wait_s=int(os.environ.get("BRIDGE_SIM_POLL_WAIT_S", "5")),
+        whatsapp=os.environ.get("BRIDGE_SIM_WHATSAPP", "1") != "0",
     )
     sim.start()
     code = os.environ.get("BRIDGE_SIM_PAIR_CODE")

@@ -139,7 +139,7 @@ The modem's own SMS path is dead on the US Mobile line (7 Oct 2026), so it is no
 ## Bridge phones
 
 A bridge phone is a headless Android phone running the app in `bridge-android/`. It carries a
-member's texts and Google Chat (`BRIDGE_PHONE_DESIGN.md`). It is signed into the
+member's texts, Google Chat and WhatsApp (`BRIDGE_PHONE_DESIGN.md`). It is signed into the
 member's own Google account and nobody uses it. The relay holds no connection to it: the phone
 polls the relay for outbound items and posts inbound messages.
 
@@ -154,13 +154,18 @@ polls the relay for outbound items and posts inbound messages.
   a contact. Waiting messages are delivered in order, and later ones follow. The owner sets whether
   the kid may reply, and can rename, pause, unsubscribe or ignore the conversation. A conversation
   can also be added by pasting its link.
-- **Replies, two tiers.** Tier 1 fires the reply action on the Chat or Voice notification, which
+- **WhatsApp.** A WhatsApp direct message is a text from the sender's number, held for approval like any
+  unknown number; later texts to that person go back on WhatsApp, because the last inbound channel wins.
+  A WhatsApp group is held and subscribed like a Chat conversation. Replies use the same two tiers. Tier 2
+  drives the WhatsApp screen, which carries an account-ban risk, and group tier 2 is best-effort: it finds
+  the group by its title.
+- **Replies, two tiers.** Tier 1 fires the reply action on the Chat, Voice or WhatsApp notification, which
   needs no screen. If that action is gone (after a reboot, or after the notification was dismissed),
   tier 2 opens the conversation's stored link, types the reply through the phone's accessibility
   service, and goes home.
 - **Delivery.** A pager text to a bridged contact shows as waiting for the phone until the phone
   acks it. An item the phone has not taken within 24 h fails.
-- **Status.** Built and tested against a simulator. The app has not run on a phone yet. Open items
+- **Status.** Built and tested against a simulator. The app has not run on a phone yet. WhatsApp landed 9 Oct 2026; its selectors are unverified on a phone. Open items
   are in `docs/ROADMAP.md`.
 
 ## Firmware updates

@@ -58,20 +58,29 @@ class BridgeBackend:
         if bridge is None or not bridge.paired:
             messages_store.mark_delivery_failed_if_queued(msg.id, backend.id, error="no_bridge")
             return DeliverResult(ok=False, state="failed", error="no_bridge")
-        if config.conversationId:
-            row = bridge_conversations.get(bridge.id, config.conversationId)
-            if row is not None and row.status == "paused":
-                messages_store.mark_delivery_failed_if_queued(msg.id, backend.id, error="paused")
-                return DeliverResult(ok=False, state="failed", error="paused")
+        row = (
+            bridge_conversations.get(bridge.id, config.conversationId)
+            if config.conversationId
+            else None
+        )
+        if row is not None and row.status == "paused":
+            messages_store.mark_delivery_failed_if_queued(msg.id, backend.id, error="paused")
+            return DeliverResult(ok=False, state="failed", error="paused")
         if msg.kind != "text" or not msg.body:
             messages_store.mark_delivery_failed_if_queued(msg.id, backend.id, error="unsupported")
             return DeliverResult(ok=False, state="failed", error="unsupported")
+        to: dict[str, str | None] = {"conversationId": config.conversationId, "link": config.link}
+        if config.conversationId:
+            # WA4: tier 2 finds a conversation by its title (all chat sources).
+            title = row.title if row is not None else None
+            if title:
+                to["title"] = title
         item = bridge_outbox.enqueue_send(
             bridge,
             msg.id,
             backend.id,
             source=config.source,
-            to={"conversationId": config.conversationId, "link": config.link},
+            to=to,
             text=msg.body,
             reply_hint=config.conversationId,
         )

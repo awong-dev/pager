@@ -31,10 +31,10 @@ bodies is the open precondition before real pages go over Beam (`docs/ROADMAP.md
 **Bridge phones (9 Oct 2026): built, not yet run on a phone.** A member's SIM texts, Google Voice
 texts and subscribed Google Chat conversations go through a headless Android phone
 (`bridge-android/`). SMS is bridge-only: Twilio was removed on 9 Oct 2026 (last at 05ec3ed), so a
-member without a bridge phone has no SMS. The relay has 1268 tests passing, and the `bridge` and
+member without a bridge phone has no SMS. The relay has 1291 tests passing, and the `bridge` and
 `bridge_voice` end-to-end scenarios pass against the simulator. The web pages and the Android app
 have landed, but the app has never run on a phone, and until the owner registers its Firebase
-Android app it polls for work every 60 s. See
+Android app it polls for work every 60 s. WhatsApp DMs and groups are bridged too (9 Oct 2026). See
 `docs/OVERVIEW.md` ("Bridge phones"), `relay/README.md` ("Bridge phones") and the open items in
 `docs/ROADMAP.md`.
 
@@ -48,7 +48,7 @@ seen on hardware.
 
 ## Running the tests
 
-The full end-to-end suite (13 scenarios covering text, location, address book, provisioning)
+The full end-to-end suite (14 scenarios covering text, location, address book, provisioning)
 passes in both `--wire json` and `--wire cbor` encoding modes. From the repo root:
 
 ```bash
@@ -67,7 +67,8 @@ relay/.venv/bin/python tools/e2e_v2.py bootstrap setup_code address_book
 ```
 
 Available scenarios: `bootstrap`, `text_roundtrip`, `allowlist`, `republish`, `location_periodic`,
-`location_on_demand`, `fanout`, `retention`, `bytes`, `setup_code`, `address_book`. See
+`location_on_demand`, `retention`, `bytes`, `address_book`, `setup_code`, `sms_log`, `bridge`,
+`bridge_voice`, `bridge_whatsapp`. See
 `relay/README.md` for details and `tools/e2e_v2.py` for the implementation.
 
 Unit tests and the manual checklist (for web app and device provisioning flow) are documented in
@@ -82,5 +83,5 @@ Unit tests and the manual checklist (for web app and device provisioning flow) a
 | `web/` | Next.js + MUI web app on Firebase (Auth, Firestore listeners, FCM). Device provisioning UI, contact approval flow, and lock controls. See `web/README.md`. |
 | `firmware/` | ESP-IDF firmware for the Walter (ESP32-S3 + Sequans GM02SP) device. See `firmware/README.md` for hardware, build instructions, the measurement checklist, and known residual risks. |
 | `infra/` | Terraform for GCP (Cloud Run, Firestore, Firebase Hosting/Auth, Scheduler, Tasks, Secret Manager, WIF) plus the deployment runbook in `infra/README.md`. |
-| `tools/` | `pager_client.py` (simulated device + server driver with setup-code bootstrap support), `e2e_v2.py` (13-scenario end-to-end suite against the real docker-compose stack), `send.py` (send a message from the CLI), `provision.py` (type a setup code over USB serial or fetch one from the API), `emqx_setup.py`. |
-| `.github/workflows/` | `ci.yml` runs the relay unit tests and the 13-scenario end-to-end suite on push; `deploy.yml` is the deploy pipeline, a push to `main` builds the relay image, applies Terraform and deploys. |
+| `tools/` | `pager_client.py` (simulated device + server driver with setup-code bootstrap support), `e2e_v2.py` (14-scenario end-to-end suite against the real docker-compose stack), `send.py` (send a message from the CLI), `provision.py` (type a setup code over USB serial or fetch one from the API), `emqx_setup.py`. |
+| `.github/workflows/` | `ci.yml` runs the relay unit tests and the 14-scenario end-to-end suite on push; `deploy.yml` is the deploy pipeline, a push to `main` builds the relay image, applies Terraform and deploys. |

@@ -1,4 +1,4 @@
-# Bridge phone: Google Chat, Google Voice and SIM SMS through a headless Android phone (8 Oct 2026)
+# Bridge phone: Google Chat, Google Voice, WhatsApp and SIM SMS through a headless Android phone (8 Oct 2026; WhatsApp 9 Oct 2026)
 
 *(owner, 8 Oct 2026 evening: "I want to work on bridges to personal Google Chat and possibly
 Google Voice. Both do not have an API that will work." … "android is not a bad option. Can we
@@ -11,7 +11,7 @@ Also implement SMS via the phone's native SMS messaging and SMS via Google voice
 
 Facts that shaped this (checked 8 Oct 2026): the Google Chat API, including user-authenticated
 calls, is Workspace-only (`docs/SERVER_PLAN.md` §10 D4 is now answered: **no** for a personal
-account); Google Voice has no API; Android's `NotificationListenerService` sees both apps'
+account); Google Voice has no API; Android's `NotificationListenerService` sees the Chat, Voice and WhatsApp apps'
 `MessagingStyle` notifications with full per-message text, and their reply actions carry a
 `RemoteInput` the listener can fire; a sideloaded app may be the default SMS app. Tasks:
 `docs/BRIDGE_PHONE_TASKS.md`. **Firmware does not change** (§PROTOCOL below).
@@ -131,7 +131,7 @@ account); Google Voice has no API; Android's `NotificationListenerService` sees 
    delivery `failed` (`mark_delivery_failed_if_queued`), so a dead phone cannot hold deliveries
    forever. `render_state` for an `sms` delivery is unchanged (it returns the raw state, `queued`; the web's
    chip text is W1's).
-5. **Inbound events.** `POST /bridge/events {events: [{id, source: "sms"|"gchat"|"gvoice",
+5. **Inbound events.** `POST /bridge/events {events: [{id, source: "sms"|"gchat"|"gvoice"|"whatsapp",
    kind?: "message"|"inspect", conversation: {id, title?, isGroup, link?}, sender: {name,
    phone?}, text, ts, attachments?: [{kind: "image"|"video"|"audio"|"file"}], people?: [name…]}]}`
    → `{results: [{id, outcome}]}`; every event is processed (the phone retries the batch on a
@@ -315,7 +315,7 @@ account); Google Voice has no API; Android's `NotificationListenerService` sees 
     - `BridgeService` (foreground, `START_STICKY`, boot receiver, `RECEIVE_BOOT_COMPLETED`), 5-min
       heartbeat (`WorkManager` periodic + in-service timer).
     - `ChatNotificationListener` (`NotificationListenerService`) for `com.google.android.apps.
-      dynamite` and `com.google.android.apps.googlevoice`: `NotificationCompat.MessagingStyle.
+      dynamite` and `com.google.android.apps.googlevoice`, `com.whatsapp` and `com.whatsapp.w4b` (WhatsApp, WA6): `NotificationCompat.MessagingStyle.
       extractMessagingStyleFromNotification`, `conversationTitle`, `isGroupConversation`,
       `messages[]` (sender `Person.name`, text, timestamp); conversation id = `sbn.notification.
       shortcutId` when set, else `sbn.key` with the account/tag stripped; dedup on `(conversation
@@ -342,6 +342,8 @@ account); Google Voice has no API; Android's `NotificationListenerService` sees 
       existing Firebase project (Android app `app.kidpager.bridge`, created in the console or
       `firebase apps:create android`); **if the file cannot be obtained in a session the Gradle
       plugin is applied conditionally and the build runs poll-only** (`BuildConfig.FCM = false`).
+    - `Targets.kt` holds every per-app id and description the tier-2 code uses (Chat, Voice, WhatsApp);
+      each is marked verify-on-bench in `bridge-android/README.md`. WhatsApp's are in WA4.
     - Phone setup (documented in `relay/README.md` "Bridge phones"): screen lock **None** *(a
       PIN leaves the phone in before-first-unlock after a power cut; no app runs, no notification
       fires)*, Do Not Disturb off, both Google apps signed in with notifications on, Chat never
@@ -397,6 +399,8 @@ account); Google Voice has no API; Android's `NotificationListenerService` sees 
 | Chat title changes | `title` follows; pager name follows unless custom | Rename |
 | pairing code expired / reused | 404 from `/bridge/pair` | issue a new code |
 | token leaked | holder can inject texts to the owner as any approved contact or subscribed conversation, read and ack (suppress) the owner's outbound texts; cannot change `smsNumber` (decision 3) or reach another bridge | Unpair, pair again (new token); per-bridge limiter bounds the flood |
+| WhatsApp group tier 2 finds no conversation row with the title | outbox row `failed` `no_match` | tier 1 still works while the reply action exists; group tier 2 is best-effort (search by title) |
+| WhatsApp sender is a `@lid` JID (no phone number) | `dropped_bad_from`, one INFO line, nothing stored | none in this change; the message is not bridged |
 
 ## What to measure
 - `bridge in … outcome=` per outcome per day; `held` vs `delivered`; `dropped_ignored` volume.
@@ -449,3 +453,87 @@ The server-architect review left eight items for the owner. The recommended opti
 - **O7 Cross-design.** *(Moot 9 Oct 2026: TWILIO_ACCOUNTS is parked and Twilio is removed, last at 05ec3ed.)* If TWILIO_ACCOUNTS lands, an `smsNumbers` entry without `accountSid` is a bridge number. Noted there when that design is picked up.
 - **O8 Router file.** B5 and B6 both live in `relay/app/routers/family_bridges.py`.
 
+
+## WhatsApp (orchestrator decisions WA1–WA9, 9 Oct 2026)
+
+*(owner, 9 Oct 2026: "implement whats app, both tiers". WhatsApp is a third notification source next
+to Google Chat (`gchat`) and Google Voice (`gvoice`). The `sms` backend is bridge-only, so a WhatsApp
+DM is a phone-keyed text and a WhatsApp group is a Chat-style conversation. Tasks: A9, B11, W7, D3 in
+`docs/BRIDGE_PHONE_TASKS.md`.)*
+
+**WA1 Source and capability.** `whatsapp` is a new source value wherever `sms|gchat|gvoice` is
+enumerated: `BridgeEvent.source`, outbox `source`, `BridgeCaps.whatsapp`, web `BridgeSource`,
+`ConversationOut.source`, book `chat.source`. `caps.whatsapp` is the phone's report: the pair body's
+`caps.whatsapp` (listener bound and `com.whatsapp` installed), and heartbeat `status.whatsapp` (same
+meaning) updates `caps.whatsapp`, because WhatsApp may be installed after pairing. `bridge_numbers.
+caps_for` gains a `whatsapp` argument; number PATCH and accept-sim keep it. There is no number
+requirement: the WhatsApp account's own number is whatever the owner registered (usually the SIM), and
+the relay never needs it.
+- Rejected: a WhatsApp number field on the bridge. The relay never uses it.
+
+**WA2 DMs are phone-keyed texts (same path as Voice).** A WhatsApp notification with `isGroup=false`
+goes to `_handle_text_event`: the target is the bridge owner, the text is held until approved for an
+unknown number (`sms_unknown` alert), and `via: whatsapp` is recorded on the owner's external backend
+`config.via[ownerUid]`, so later sends to that person go back on WhatsApp. The sender phone comes from
+the shortcut id JID `<digits>@s.whatsapp.net` (becomes `+<digits>`), else the `dataUri`, else the sender
+line or title normalized as E.164 (an unsaved contact shows as the number, with an empty contacts list),
+else `dropped_bad_from`. Conversation tracking reuses the existing `voiceConv` slot generically; backend-dev
+may rename it to `conv` or add `waConv`, whichever is the smaller change, and Voice behaviour stays
+intact. Reply hints (`too_long` and the like) go back with `source: whatsapp`, `to.phone`,
+`to.conversationId` (the JID) and `to.link = https://wa.me/<digits>`.
+- Rejected: LID JIDs (`<digits>@lid`). A LID carries no phone number, so the sender is dropped with
+  `dropped_bad_from` and logged once.
+
+**WA3 Groups are Chat-style conversations.** `isGroup=true` goes to `_handle_chat_event` with source
+`whatsapp`. The conversation id is the group JID `<id>@g.us` (shortcut id) and the title is the group
+subject. The sender name is the message's Person name, with a leading `~ ` stripped (unsaved members
+appear as `~ Name` or a number). Seen and held rows, one `chat_unknown` alert, and Subscribe, Ignore and
+the roster work exactly as for Chat; a subscribed group projects as `t:"grp"`. Inspect by link is not
+offered for WhatsApp: the relay's `Add by link` rejects WhatsApp links with 400 `whatsapp links cannot be
+inspected; wait for a message`, and the web dialog says the same.
+- Rejected: a group deep link. None exists for a WhatsApp group chat; `chat.whatsapp.com/<code>` is a
+  join link, not a conversation link.
+
+**WA4 Outbox and tiers (Android).** A `send` with `source: whatsapp` is dispatched as follows.
+- DM: tier 1 is the ReplyCache by `conversationId`, else by phone (`rememberVoicePhone` and
+  `conversationForPhone` generalised to any source). Tier 2 opens `https://wa.me/<digits>` with package
+  `com.whatsapp` (WhatsApp opens the chat composer for a known number), then the existing composer and
+  Send flow. Selectors in `Targets`: composer id `entry`, send button description `Send`.
+- Group: `to.conversationId` (JID) and `to.title`. Tier 1 is the ReplyCache by `conversationId`. Tier 2
+  opens the WhatsApp main activity, taps the toolbar search (`menuitem_search`, description "Search"),
+  sets the title text, clicks the first conversation row whose text equals the title
+  (`conversations_row_contact_name` / `conversation_contact_name`), then the composer and Send. No
+  matching row fails with `no_match`.
+- All ids and descriptions live in `Targets` and are marked "verify on bench" in `bridge-android/README.md`.
+- Relay side (`SmsBackend._deliver_via_bridge`): `via == "whatsapp"` gives `source="whatsapp"`, `to.phone`,
+  `to.link = wa_link(phone)`, and `to.conversationId` from the external's stored conversation when known.
+  Caps fallback: no `caps.whatsapp` falls back to sms, then gvoice, then `failed no_bridge`. Group sends go
+  through the existing bridge chat backend path, keyed by the conversation's source. Hint id, ack and retry
+  semantics are unchanged.
+- Risk: tier 2 drives the WhatsApp UI, which carries an account-ban risk. Group tier 2 is best-effort: it
+  finds the group by searching its title, and a miss fails `no_match`.
+
+**WA5 Channel choice for a phone contact.** Unchanged: the `via` entry for (external, member) wins, and it
+is written by the last inbound channel (`sms`, `gvoice`, now `whatsapp`). No admin override in this change.
+
+**WA6 Notification hygiene (Android).** The listener covers `com.whatsapp` and `com.whatsapp.w4b`
+(WhatsApp Business) with the same mapping. Only MessagingStyle notifications map. Calls, "checking for new
+messages", backup, status, and group-summary notifications (`FLAG_GROUP_SUMMARY`, "N messages from M chats")
+are ignored; the group-summary skip is added if it is missing. Media placeholders (`📷 Photo`, `🎥 Video`,
+`🎤 Voice message`, `🎵 Audio`, `📄 <name>` or `Document`, `📍 Location`, `👤 Contact`, `GIF`, `Sticker`)
+become an `attachments` entry (image, video, audio or file) with empty text, so the relay renders `[photo]`
+or `[attachment]`; a caption after the emoji is kept as text. Own messages match `MessagingStyle.user` as
+today, and the sender `You` (WhatsApp's "You: ..." lines in group notifications) is skipped.
+
+**WA7 Setup and status.** SetupActivity shows a WhatsApp row (installed yes/no, listener bound) and no number
+field. The status block gains `whatsapp: bool` (installed and listener bound). The phone checklist: install
+WhatsApp, register it with the SIM number, notifications on with previews, no contacts, and archive or mute
+nothing you want bridged. The checklist notes the ban risk of tier 2 and that group tier 2 is best-effort.
+
+**WA8 Web.** `BridgeSource` gains `whatsapp`. Chips and labels read "WhatsApp" wherever "Google Voice" or
+"Google Chat" is chosen by source (AlertCard, the family chat page, settings book, the BridgePhonesSection
+caps chip). The Add by link dialog refuses `whatsapp.com` and `wa.me` links client-side with the WA3 message.
+
+**WA9 Docs.** This section; the task rows in `docs/BRIDGE_PHONE_TASKS.md`; one-liners in `README.md`,
+`docs/OVERVIEW.md` and `docs/ROADMAP.md`; the `relay/README.md` runbook and simulator support for source
+`whatsapp`; and the `bridge-android/README.md` checklist and verify-on-bench list.

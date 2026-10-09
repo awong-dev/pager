@@ -193,7 +193,7 @@ def test_number_edits_keep_the_phone_reported_sms_bit(client: TestClient, world:
     assert bridge.caps.sms is False and bridge.status.smsCapable is False
     url = f"/api/family/bridges/{bridge.id}"
     r = client.patch(url, json={"voiceNumber": VOICE}, headers=world.admin_headers)
-    assert r.json()["caps"] == {"sms": False, "gchat": True, "gvoice": True}
+    assert r.json()["caps"] == {"sms": False, "gchat": True, "gvoice": True, "whatsapp": False}
     # The phone later gets the default-SMS role: the heartbeat reports it.
     client.post("/bridge/heartbeat", json={"status": {"smsDefault": True}}, headers=headers)
     assert bridges_store.get(bridge.id).caps.sms is True

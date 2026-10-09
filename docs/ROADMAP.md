@@ -74,7 +74,7 @@ Download, verify, switch and rollback are done (`docs/OTA_DESIGN.md`; verified o
 ### Bridge phones (`docs/BRIDGE_PHONE_DESIGN.md`, 9 Oct 2026)
 
 Built and landed: relay B1–B9 (`f9649f2`..`1bc22f4`), web W1–W5 (`7f3c4fc`..`927a11c`), Android
-A1–A7 (`714b2c0`). The relay suite passes (1316 tests) and `python3 tools/e2e_v2.py bridge
+A1–A7 (`714b2c0`). WhatsApp (DMs and groups, both tiers) landed 9 Oct 2026 as A9, B11 and W7 (one commit on main right after the Twilio removal `663168e`). The relay suite passes (1291 tests) and `python3 tools/e2e_v2.py bridge
 bridge_voice` passes; both were re-run on 9 Oct 2026. Not re-run in that check: the web verify
 commands and `./gradlew`. The Android unit-test count (23) is as the commit message reports it.
 
@@ -85,6 +85,9 @@ Open:
 - **Firebase Android registration (owner step).** Create the Android app `app.kidpager.bridge` in
   the pager's Firebase project and save its `google-services.json` as `bridge-android/app/`. Until
   then the build is poll-only (`BuildConfig.FCM = false`), with outbound latency up to 60 s.
+- **WhatsApp bench verification.** Unverified on a phone: the tier-2 selectors (`entry`, `Send`, `menuitem_search`,
+  the conversation row ids), the JID shortcut ids (`@s.whatsapp.net`, `@g.us`), the media placeholders, and group
+  search by title. Until these run on the bench, WhatsApp tier 2 is best-effort.
 - **Voice sender number.** The Voice number is typed on the setup screen; no detection is built.
   The Voice sender number comes from the notification's ids, sender line or title (O4). Which of
   these Voice fills is unknown until a text is seen on hardware.

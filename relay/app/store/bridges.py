@@ -36,6 +36,7 @@ PHONE_STATUS_KEYS = (
     "smsDefault",
     "smsCapable",
     "accessibility",
+    "whatsapp",
     "accounts",
     "simNumber",
     "voiceNumber",
@@ -54,6 +55,9 @@ class BridgeStatus(BaseModel):
     # the presence of a SIM (`bridge_numbers.caps_for`).
     smsCapable: bool = False
     accessibility: bool = False
+    # WA1: WhatsApp installed and its notifications listened to (the phone's
+    # own bit; `caps.whatsapp` mirrors it).
+    whatsapp: bool = False
     accounts: list[str] = Field(default_factory=list)
     simNumber: str | None = None
     voiceNumber: str | None = None
@@ -69,6 +73,7 @@ class BridgeCaps(BaseModel):
     sms: bool = False
     gchat: bool = False
     gvoice: bool = False
+    whatsapp: bool = False
 
 
 class Bridge(BaseModel):

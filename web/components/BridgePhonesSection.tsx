@@ -277,6 +277,7 @@ export default function BridgePhonesSection({
                       <StatusChip label="listener" ok={st.listenerBound} />
                       {sim && <StatusChip label="SMS app" ok={st.smsDefault} />}
                       <StatusChip label="accessibility" ok={st.accessibility} />
+                      {b.caps?.whatsapp && <Chip size="small" color="success" label="WhatsApp" />}
                       {st.error && <Chip size="small" color="error" label={st.error} />}
                     </Stack>
                   </TableCell>

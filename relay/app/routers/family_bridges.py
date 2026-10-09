@@ -311,6 +311,15 @@ GOOGLE_LINK_PREFIXES = (
     "https://mail.google.com/chat/",
     "https://voice.google.com/",
 )
+WHATSAPP_LINK_PREFIXES = (
+    "https://wa.me/",
+    "http://wa.me/",
+    "https://api.whatsapp.com/",
+    "https://chat.whatsapp.com/",
+    "https://whatsapp.com/",
+    "https://www.whatsapp.com/",
+    "whatsapp://",
+)
 
 
 class InspectRequest(BaseModel):
@@ -328,6 +337,11 @@ def inspect_link(bridge_id: str, req: InspectRequest, scope: FamilyScope) -> dic
     _, family_id = scope
     bridge = _require_bridge(bridge_id, family_id)
     link = req.link.strip()
+    lowered = link.lower()
+    if lowered.startswith(WHATSAPP_LINK_PREFIXES) or "//wa.me/" in lowered or ".whatsapp.com/" in lowered:
+        raise HTTPException(
+            status_code=400, detail="whatsapp links cannot be inspected; wait for a message"
+        )
     if not link.startswith(GOOGLE_LINK_PREFIXES):
         raise HTTPException(status_code=422, detail="not a Google Chat or Google Voice link")
     if not bridge.paired:
@@ -525,7 +539,11 @@ def patch_bridge(
         # The previous owner (or the previous numbers) are released first.
         bridge_numbers.release_numbers(bridge, broker)
     caps = bridge_numbers.caps_for(
-        bridge.status.smsCapable or bridge.caps.sms, bridge.caps.gchat, new_sim, new_voice
+        bridge.status.smsCapable or bridge.caps.sms,
+        bridge.caps.gchat,
+        new_sim,
+        new_voice,
+        whatsapp=bridge.caps.whatsapp,
     )
     if owner_changed:
         bridges_store.set_owner(bridge.id, new_owner_uid)
@@ -568,6 +586,7 @@ def accept_sim(
             bridge.caps.gchat,
             reported,
             bridge.voiceNumber,
+            whatsapp=bridge.caps.whatsapp,
         )
         bridges_store.set_numbers(
             bridge.id, sim_number=reported, voice_number=bridge.voiceNumber, caps=caps

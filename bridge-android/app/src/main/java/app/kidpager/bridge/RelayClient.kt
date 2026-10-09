@@ -39,9 +39,9 @@ class RelayClient(private val ctx: Context) {
 
     private fun base(): String = Prefs.relayUrl(ctx)
 
-    // ---- decision 2: POST /bridge/pair {code, version, accounts, simNumber?, voiceNumber?, caps} ----
+    // ---- decision 2: POST /bridge/pair {code, version, accounts, simNumber?, voiceNumber?, caps} (caps.whatsapp: WA1) ----
     @Serializable
-    data class Caps(val sms: Boolean, val gchat: Boolean, val gvoice: Boolean)
+    data class Caps(val sms: Boolean, val gchat: Boolean, val gvoice: Boolean, val whatsapp: Boolean = false)
 
     @Serializable
     data class PairRequest(
@@ -68,8 +68,9 @@ class RelayClient(private val ctx: Context) {
     }
 
     // ---- decision 11: GET /bridge/outbox?wait=25 ----
+    /** WA4: `title` is the WhatsApp group subject, the only handle tier 2 has for a group. */
     @Serializable
-    data class OutboxTo(val phone: String? = null, val conversationId: String? = null, val link: String? = null)
+    data class OutboxTo(val phone: String? = null, val conversationId: String? = null, val link: String? = null, val title: String? = null)
 
     @Serializable
     data class OutboxItem(

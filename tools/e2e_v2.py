@@ -1782,6 +1782,126 @@ def scenario_bridge_voice() -> None:
     device.disconnect()
 
 
+def scenario_bridge_whatsapp() -> None:
+    """WhatsApp as a bridge source (WA1-WA5, 9 Oct 2026): a DM from an
+    unknown number is held -> approve delivers it (and records the channel
+    from the held row) -> the pager's reply reaches the sim on `whatsapp` with the JID and the wa.me link -> a
+    WhatsApp group is held behind one `chat_unknown` alert -> subscribe
+    delivers the backlog with `sndr` (the `~ ` prefix stripped) -> a pager
+    reply to the group carries conversationId and title -> inspect by a wa.me
+    link is a 400. Runnable as `tools/e2e_v2.py bridge_whatsapp`."""
+    import bridge_sim
+
+    bootstrap_admin()
+    oracle = Oracle()
+    admin = pager_client.ServerClient(RELAY_URL, AUTH_URL)
+    admin.login("admin")
+    family_id = admin.me()["user"]["familyId"] or "default"
+    sim = bridge_sim.BridgeSimClient(BRIDGE_SIM_URL)
+
+    kid, device = _bridge_member(admin, family_id, "wkid", "pgr-e2e-brw")
+    wa_sim_number = "+15550003333"  # the default SIM number belongs to the `bridge` scenario's member
+    bridge = _pair_sim(
+        admin, sim, family_id, kid["uid"], "WhatsApp phone", simNumber=wa_sim_number, whatsapp=True
+    )
+    assert bridge["caps"]["whatsapp"] is True, bridge
+    bridge_id = bridge["id"]
+    wait_until(
+        lambda: oracle.users_store.get_user(kid["uid"]).smsNumber == wa_sim_number,
+        timeout=10,
+        description="the bridge SIM to become the member's smsNumber",
+    )
+
+    # DM from an unknown number -> held -> approved -> delivered.
+    friend = "+15550004444"
+    jid = f"{friend.lstrip('+')}@s.whatsapp.net"
+    device.inbox.clear()
+    out = sim.inject(bridge_sim.whatsapp_dm_event(friend, "hey from whatsapp", name="WaFriend"))
+    assert out["results"][0]["outcome"] == "held", out
+    alert = next(
+        a
+        for a in admin.family_list_alerts(family_id)
+        if a["kind"] == "sms_unknown" and a.get("peerPhone") == friend
+    )
+    assert not any(e.data.get("body") == "hey from whatsapp" for e in device.inbox), "held text leaked"
+    decision = admin.family_approve_alert(family_id, alert["id"], name="WaFriend")
+    assert decision["delivered"] == 1 and decision["undelivered"] == 0, decision
+    wait_until(
+        lambda: any(e.data.get("body") == "hey from whatsapp" for e in device.inbox),
+        timeout=10,
+        description="the approved WhatsApp text to reach the pager",
+    )
+    contact = next(c for c in admin.family_list_contacts(family_id) if c["phone"] == friend)
+    device.publish_msg("hi back", to=contact["alias"])
+    wait_until(
+        lambda: any(i["text"] == "hi back" for i in _sim_sent(sim)),
+        timeout=15,
+        description="the pager reply to reach the bridge outbox",
+    )
+    item = next(i for i in _sim_sent(sim) if i["text"] == "hi back")
+    assert item["source"] == "whatsapp" and item["to"]["phone"] == friend, item
+    assert item["to"]["conversationId"] == jid, item
+    assert item["to"]["link"] == f"https://wa.me/{friend.lstrip('+')}", item
+    assert item["ackState"] == "sent", item
+    print("bridge_whatsapp: DM held, approved, reply went out on whatsapp with the JID and wa.me link")
+
+    # Group -> one chat_unknown alert -> subscribe -> backlog with sndr.
+    group_jid = "120363999111@g.us"
+    device.inbox.clear()
+    for sender, text in (("~ Dana P", "who is driving?"), ("~Lee", "I can")):
+        out = sim.inject(
+            bridge_sim.whatsapp_group_event("120363999111", "Soccer WA", sender, text)
+        )
+        assert out["results"][0]["outcome"] == "held", out
+    chat_alerts = [a for a in admin.family_list_alerts(family_id) if a["kind"] == "chat_unknown"]
+    assert len(chat_alerts) == 1 and chat_alerts[0]["people"] == ["Dana P", "Lee"], chat_alerts
+    assert chat_alerts[0]["source"] == "whatsapp", chat_alerts[0]
+    tab = admin.family_member_chat(family_id, kid["uid"])
+    (seen,) = [r for r in tab["seen"] if r["conversationId"] == group_jid]
+    assert seen["source"] == "whatsapp" and seen["title"] == "Soccer WA", seen
+    result = admin.family_chat_subscribe(
+        family_id,
+        bridge_id,
+        seen["ref"],
+        pager_name="SoccerWA",
+        roster=[{"name": "Dana P", "nick": "dana"}, {"name": "Lee", "nick": "lee"}],
+    )
+    assert result["delivered"] == 2 and result["undelivered"] == 0, result
+    group_alias = result["alias"]
+    wait_until(
+        lambda: sum(1 for e in device.inbox if e.data.get("sndr")) >= 2,
+        timeout=10,
+        description="the WhatsApp group backlog to reach the pager with sndr",
+    )
+    pages = [e.data for e in device.inbox if e.data.get("sndr")]
+    assert [(p["from"], p["sndr"], p["body"]) for p in pages[:2]] == [
+        (group_alias, "dana", "who is driving?"),
+        (group_alias, "lee", "I can"),
+    ], pages
+    print("bridge_whatsapp: group held behind one alert, subscribe delivered the backlog with sndr")
+
+    device.publish_msg("I will drive", to=group_alias)
+    wait_until(
+        lambda: any(i["text"] == "I will drive" for i in _sim_sent(sim)),
+        timeout=15,
+        description="the group reply to reach the bridge outbox",
+    )
+    item = next(i for i in _sim_sent(sim) if i["text"] == "I will drive")
+    assert item["source"] == "whatsapp" and item["to"]["conversationId"] == group_jid, item
+    assert item["to"]["title"] == "Soccer WA", item
+    print("bridge_whatsapp: group reply carries conversationId and title")
+
+    # Inspect by a wa.me link is refused.
+    resp = admin.api_post(
+        f"/api/family/bridges/{bridge_id}/inspect?family={family_id}",
+        {"link": "https://wa.me/15550004444"},
+    )
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["detail"] == "whatsapp links cannot be inspected; wait for a message", resp.text
+    print("bridge_whatsapp: inspect of a wa.me link is a 400")
+    device.disconnect()
+
+
 SCENARIOS: dict[str, Callable[[], None]] = {
     "bootstrap": scenario_bootstrap,
     "text_roundtrip": scenario_text_roundtrip,
@@ -1796,6 +1916,7 @@ SCENARIOS: dict[str, Callable[[], None]] = {
     "sms_log": scenario_sms_log,
     "bridge": scenario_bridge,
     "bridge_voice": scenario_bridge_voice,
+    "bridge_whatsapp": scenario_bridge_whatsapp,
 }
 
 

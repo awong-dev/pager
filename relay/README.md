@@ -133,7 +133,7 @@ EMQX, the Firestore/Auth emulators, and the relay — configures EMQX's rule eng
 `tools/pager_client.py`'s combined device+server client):
 
 ```bash
-relay/.venv/bin/python tools/e2e_v2.py                                       # all 13 scenarios
+relay/.venv/bin/python tools/e2e_v2.py                                       # all 14 scenarios
 relay/.venv/bin/python tools/e2e_v2.py bootstrap text_roundtrip              # named scenarios
 relay/.venv/bin/python tools/e2e_v2.py --wire cbor                           # repeat in CBOR encoding
 ```
@@ -157,6 +157,9 @@ Scenarios available (see `tools/e2e_v2.py`'s module docstring for details):
   replied to, inspected by link, and ignored
 - **bridge_voice**: a Voice-only bridge: a cold outbound on gvoice with the Voice thread link, and an
   inbound text delivered
+- **bridge_whatsapp**: WhatsApp as a bridge source: a DM held, approved and answered on `whatsapp` with the
+  JID and the `wa.me` link, a group held behind one alert, subscribed and replied to (conversation id and
+  title in the outbox item), and a `wa.me` inspect refused with 400
 
 ## Message backends (docs/SERVER_PLAN.md §6.5)
 
@@ -215,6 +218,22 @@ SIM number, else the Voice number. The row shows *last seen* after the first hea
 row. Unpair fails the phone's pending outbox items and clears the member's number; contacts and
 conversations are kept.
 
+**WhatsApp.** `whatsapp` is a third source next to `gchat` and `gvoice` (docs: WA1-WA9 in
+`docs/BRIDGE_PHONE_DESIGN.md`). It needs no number: `caps.whatsapp` is whatever the phone reports at pair
+(`caps.whatsapp`) and on every heartbeat (`status.whatsapp`, WhatsApp installed and the listener bound).
+A DM (`isGroup=false`) takes the same path as a Voice text (`POST /bridge/events`, `sender.phone` already
+extracted from the `<digits>@s.whatsapp.net` JID; no phone -> `dropped_bad_from`): known contact -> pager,
+unknown -> held with an `sms_unknown` alert, and the member's last channel (`config.via[uid] = whatsapp`,
+JID in `config.voiceConv[uid]`, which is now the generic conversation slot) makes later pager texts to that
+person go out as `source whatsapp`, `to {phone, conversationId, link https://wa.me/<digits>}`. Without
+`caps.whatsapp` the relay falls back to sms, then gvoice, else the delivery fails `no_bridge`. A group
+(`<id>@g.us`) is a Chat-style conversation: one `chat_unknown` alert, subscribe/ignore/roster as for Google
+Chat, a leading `~ ` stripped from sender names, replies carry `to.conversationId` and `to.title` (the
+phone finds the group by title in tier 2). There is no deep link to a group, so `POST
+/api/family/bridges/{id}/inspect` with a `wa.me` / `whatsapp.com` / `whatsapp://` link returns 400 `whatsapp
+links cannot be inspected; wait for a message`. A held DM (Voice or WhatsApp) stores its channel and conversation on the held row, and approval records
+them as a live inbound would, so the first reply goes back on that channel.
+
 **Phone setup checklist** (copied from `bridge-android/README.md`; the setup screen has a button or
 status row for each step). Build and install first:
 
@@ -262,7 +281,9 @@ docker compose up -d --build bridge-sim
 python3 -I ../tools/bridge_sim.py --help
 ```
 
-- `POST /_pair {code, simNumber?, voiceNumber?}` pairs with a code from Devices (`null` for none).
+- `POST /_pair {code, simNumber?, voiceNumber?, whatsapp?}` pairs with a code from Devices (`null` for none;
+  `whatsapp` defaults to true, `BRIDGE_SIM_WHATSAPP=0` flips the default). `bridge_sim.whatsapp_dm_event()` and
+  `whatsapp_group_event()` build JID-shaped WhatsApp events for `/_inject`.
 - `POST /_inject {event}` (or `{events: [...]}`) posts an inbound event to `/bridge/events` and returns
   the relay's result.
 - `GET /_outbox` lists what the sim "sent". Each item is acked `sent` (tier 1) unless a failure is armed.
@@ -272,7 +293,7 @@ python3 -I ../tools/bridge_sim.py --help
 **End to end.** With the stack up (`docker compose up -d --build` in `relay/`), from the repo root:
 
 ```sh
-python3 tools/e2e_v2.py bridge bridge_voice
+python3 tools/e2e_v2.py bridge bridge_voice bridge_whatsapp
 ```
 
 Scenario descriptions are in the list above.

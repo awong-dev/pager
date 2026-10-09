@@ -32,6 +32,7 @@
         <Button android:id="@+id/openBattery" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Exempt from battery optimisation" />
         <TextView android:id="@+id/accessibilityState" android:layout_width="match_parent" android:layout_height="wrap_content" />
         <Button android:id="@+id/openAccessibility" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Open accessibility settings" />
+        <TextView android:id="@+id/whatsappState" android:layout_width="match_parent" android:layout_height="wrap_content" android:paddingTop="8dp" />
 
         <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Service" android:textSize="18sp" android:paddingTop="16dp" />
         <Button android:id="@+id/startService" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Start bridge service" />

@@ -319,6 +319,8 @@ incognito window) to act as two different people at once where noted.
       "<name> is on @kid's pager; N waiting messages delivered". Rename, Edit roster, Pause / Resume, Unsubscribe
       work from Manage; entries past the pager's 32 show "Not on pager". Add by link: paste a chat.google.com or
       voice.google.com link, Inspect; the dialog opens within ~30 s when the phone reports it.
+    - WhatsApp is a third bridge source (9 Oct 2026): "WhatsApp" caps chip on the phone row, "WhatsApp" labels on chats/alerts/book;
+      Add by link refuses wa.me / whatsapp.com links (wait for a message from the chat).
     - Address book shows a "Google Chat" / "Google Voice" chip on bridged contacts; New chat lists sendable ones
       without needing an SMS number. Delivery chips: "waiting for the phone" / "sent on Google Chat".
 

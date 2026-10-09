@@ -29,7 +29,7 @@ def placeholder_for(attachments: Sequence[str]) -> str:
     return "[photo]" if list(attachments) == ["image"] else "[attachment]"
 
 
-def _record_channel(
+def record_channel(
     contact_uid: str, bid: str, member_uid: str, via: str, voice_conv: str | None
 ) -> None:
     """Decision 5: the channel a member last used with this external, kept
@@ -45,7 +45,9 @@ def _record_channel(
     if via_map.get(member_uid) != via:
         via_map[member_uid] = via
         changed = True
-    if via == "gvoice" and voice_conv and conv_map.get(member_uid) != voice_conv:
+    # `voiceConv` holds the Voice thread id or, for `whatsapp`, the chat JID
+    # (WA2): the member's last channel is the only one used, so one slot is enough.
+    if via in ("gvoice", "whatsapp") and voice_conv and conv_map.get(member_uid) != voice_conv:
         conv_map[member_uid] = voice_conv
         changed = True
     if changed:
@@ -69,7 +71,7 @@ def handle_text(
 ) -> str:
     """Blocked, duplicate, empty, known contact -> deliver, else held.
     Returns the outcome label. `reply(text)` sends a text back to
-    `from_number` (the `too_long` hint). `via` (`sms`|`gvoice`, bridge only)
+    `from_number` (the `too_long` hint). `via` (`sms`|`gvoice`|`whatsapp`, bridge only)
     is recorded per member on a delivered text."""
     family_id = target.familyId
     assert family_id is not None
@@ -115,14 +117,15 @@ def handle_text(
         if not result.messages:
             return "duplicate"
         if via is not None:
-            _record_channel(contact.uid, bid, target.uid, via, voice_conv)
+            record_channel(contact.uid, bid, target.uid, via, voice_conv)
         return "delivered"
 
     # Held: no contact, no edge, or the member's numbers rule is `none`.
     if held_sms_store.count_held(family_id, from_number, target.uid) >= held_sms_store.HELD_CAP:
         return "held_cap"
     if not held_sms_store.create(
-        sid, family_id=family_id, to_uid=target.uid, from_phone=from_number, body=raw_body
+        sid, family_id=family_id, to_uid=target.uid, from_phone=from_number, body=raw_body,
+        via=via, conv=voice_conv,
     ):
         return "duplicate"
     alert_id = alerts_module.sms_held_upsert(family_id, target, from_number, raw_body)

@@ -21,7 +21,7 @@ import kotlinx.serialization.json.put
  * Decision 1's `status` block and A2: battery, listener bound, default SMS role, accessibility
  * enabled, Google accounts, SIM number, Voice number (O1: hand-entered), app version; and the
  * `caps` the pair request carries (O1: `sms` = SIM present and role held, `gvoice` = Voice
- * number present, `gchat` = listener bound).
+ * number present, `gchat` = listener bound, `whatsapp` = WhatsApp installed and listener bound (WA1/WA7)).
  */
 object Status {
     data class Snapshot(
@@ -32,6 +32,8 @@ object Status {
         val accounts: List<String>,
         val simNumber: String?,
         val voiceNumber: String?,
+        /** WA7: `com.whatsapp` (or WhatsApp Business) is installed. */
+        val whatsappInstalled: Boolean,
         val version: String,
         val fcm: Boolean,
         val pollSec: Int,
@@ -40,7 +42,11 @@ object Status {
             sms = simNumber != null && smsDefault,
             gchat = listenerBound,
             gvoice = voiceNumber != null,
+            whatsapp = whatsapp,
         )
+
+        /** WA1: the phone can bridge WhatsApp (installed and the listener reads its notifications). */
+        val whatsapp get() = whatsappInstalled && listenerBound
 
         /** Decision 11 heartbeat `status`. */
         fun toJson(): JsonObject = buildJsonObject {
@@ -51,6 +57,7 @@ object Status {
             put("accounts", buildJsonArray { accounts.forEach { add(kotlinx.serialization.json.JsonPrimitive(it)) } })
             if (simNumber != null) put("simNumber", simNumber)
             if (voiceNumber != null) put("voiceNumber", voiceNumber)
+            put("whatsapp", whatsapp)
             put("version", version)
             put("fcm", fcm)
             put("pollSec", pollSec)
@@ -66,6 +73,7 @@ object Status {
         accounts = accounts(ctx),
         simNumber = simNumber(ctx),
         voiceNumber = Prefs.voiceNumber(ctx)?.let { PhoneNumbers.normalize(it) },
+        whatsappInstalled = whatsappPackage(ctx) != null,
         version = BuildConfig.VERSION_NAME,
         fcm = BuildConfig.FCM,
         pollSec = Prefs.pollIntervalSec(ctx),
@@ -89,6 +97,12 @@ object Status {
         val short = "${ctx.packageName}/.${BridgeAccessibilityService::class.java.simpleName}"
         return enabled.split(':').any { it.equals(me, true) || it.equals(short, true) }
     }
+
+    /** WA7: the installed WhatsApp package (`com.whatsapp` first, then Business), or null. */
+    fun whatsappPackage(ctx: Context): String? =
+        listOf(Targets.WHATSAPP_PKG, Targets.WHATSAPP_BUSINESS_PKG).firstOrNull { pkg ->
+            try { ctx.packageManager.getPackageInfo(pkg, 0); true } catch (e: PackageManager.NameNotFoundException) { false }
+        }
 
     fun batteryExempt(ctx: Context): Boolean =
         (ctx.getSystemService(Context.POWER_SERVICE) as android.os.PowerManager).isIgnoringBatteryOptimizations(ctx.packageName)
@@ -125,7 +139,7 @@ object Status {
     }
 
     fun describe(s: Snapshot): String = buildString {
-        append("battery ${s.battery}%  listener ${s.listenerBound}  smsDefault ${s.smsDefault}  a11y ${s.accessibility}\n")
+        append("battery ${s.battery}%  listener ${s.listenerBound}  smsDefault ${s.smsDefault}  a11y ${s.accessibility}  whatsapp ${s.whatsapp}\n")
         append("accounts ${s.accounts}  sim ${Log.redact(s.simNumber)}  voice ${Log.redact(s.voiceNumber)}  fcm ${s.fcm}  poll ${s.pollSec}s")
     }
 }

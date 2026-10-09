@@ -45,6 +45,9 @@ import {
   ignoreChat,
   inspectLink,
   isGoogleChatLink,
+  isWhatsAppLink,
+  sourceLabel,
+  WHATSAPP_LINK_MESSAGE,
   patchChat,
   toMs,
   unsubscribeChat,
@@ -76,7 +79,7 @@ function SourceChip({ r }: { r: BridgeConversationRow }) {
   return (
     <Stack direction="row" spacing={0.5}>
       <Chip size="small" label={r.isGroup ? "Group" : "DM"} />
-      <Chip size="small" variant="outlined" label={r.source === "gvoice" ? "Google Voice" : "Google Chat"} />
+      <Chip size="small" variant="outlined" label={sourceLabel(r.source)} />
     </Stack>
   );
 }
@@ -182,6 +185,10 @@ function ChatInner() {
   async function addByLink() {
     const url = link.trim();
     if (!ownerUid || !url) return;
+    if (isWhatsAppLink(url)) {
+      setLinkMsg({ severity: "error", text: WHATSAPP_LINK_MESSAGE });
+      return;
+    }
     if (!isGoogleChatLink(url)) {
       setLinkMsg({ severity: "error", text: "Paste a chat.google.com, mail.google.com/chat or voice.google.com link." });
       return;
@@ -355,7 +362,7 @@ function ChatInner() {
           <Stack spacing={1} sx={{ maxWidth: 640 }}>
             <Typography variant="h6">Add by link</Typography>
             <Typography variant="body2" color="text.secondary">
-              To start a conversation nobody has posted in yet, paste its Google Chat or Voice link. The phone opens it
+              To start a conversation nobody has posted in yet, paste its Google Chat or Voice link (WhatsApp chats cannot be added by link). The phone opens it
               and reports back.
             </Typography>
             <Stack direction="row" spacing={1}>

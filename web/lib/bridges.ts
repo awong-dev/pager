@@ -11,6 +11,7 @@ import type {
   ApiTime,
   BridgeConversationRow,
   BridgeRow,
+  BridgeSource,
   ChatTabOut,
   RosterEntry,
   SubscribeRequest,
@@ -135,4 +136,25 @@ export function defaultRoster(names: string[], known: Record<string, string> = {
  * it Subscribe forces canReply=false (design O5). */
 export function outboundBlocksPeople(policyOut: string): boolean {
   return policyOut === "sms" || policyOut === "any_sms";
+}
+
+/** Human label for a bridge source. */
+export function sourceLabel(source: BridgeSource | undefined): string {
+  switch (source) {
+    case "gchat":
+      return "Google Chat";
+    case "gvoice":
+      return "Google Voice";
+    case "whatsapp":
+      return "WhatsApp";
+    default:
+      return "SMS";
+  }
+}
+
+export const WHATSAPP_LINK_MESSAGE = "WhatsApp chats cannot be added by link; wait for a message from the chat";
+
+/** wa.me, whatsapp.com (incl. chat.whatsapp.com) and whatsapp:// links. */
+export function isWhatsAppLink(url: string): boolean {
+  return /^\s*(whatsapp:\/\/|(https?:\/\/)?([a-z0-9-]+\.)*(wa\.me|whatsapp\.com)(\/|\?|#|$))/i.test(url);
 }

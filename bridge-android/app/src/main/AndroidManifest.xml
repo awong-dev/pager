@@ -24,6 +24,9 @@
     <queries>
         <package android:name="com.google.android.apps.dynamite" />
         <package android:name="com.google.android.apps.googlevoice" />
+        <!-- WA7: Status.whatsappPackage / getLaunchIntentForPackage need package visibility on API 30+ -->
+        <package android:name="com.whatsapp" />
+        <package android:name="com.whatsapp.w4b" />
     </queries>
 
     <application
@@ -65,7 +68,7 @@
             </intent-filter>
         </service>
 
-        <!-- A3: notification listener for Chat and Voice -->
+        <!-- A3: notification listener for Chat, Voice and WhatsApp (WA6) -->
         <service
             android:name=".ChatNotificationListener"
             android:exported="false"

@@ -23,10 +23,20 @@ def desired_sms_number(bridge: bridges_store.Bridge) -> str | None:
     return bridge.simNumber or bridge.voiceNumber
 
 
-def caps_for(bridge_sms_cap: bool, gchat: bool, sim: str | None, voice: str | None):
+def caps_for(
+    bridge_sms_cap: bool,
+    gchat: bool,
+    sim: str | None,
+    voice: str | None,
+    *,
+    whatsapp: bool,
+):
     """`caps.sms` = a SIM is present and the phone says it can send;
-    `caps.gvoice` = a Voice number is present (O1 revised)."""
-    return bridges_store.BridgeCaps(sms=bool(bridge_sms_cap and sim), gchat=gchat, gvoice=bool(voice))
+    `caps.gvoice` = a Voice number is present (O1 revised); `caps.whatsapp`
+    = the phone says WhatsApp is installed and listened to (WA1, no number)."""
+    return bridges_store.BridgeCaps(
+        sms=bool(bridge_sms_cap and sim), gchat=gchat, gvoice=bool(voice), whatsapp=whatsapp
+    )
 
 
 def apply_numbers(bridge: bridges_store.Bridge, broker: BrokerClient) -> bool:

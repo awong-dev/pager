@@ -41,6 +41,7 @@ import {
   saveNick,
   useBook,
 } from "@/lib/book";
+import { sourceLabel } from "@/lib/bridges";
 import { useDirectory } from "@/lib/directory";
 import { useFamily } from "@/lib/family-context";
 
@@ -208,7 +209,7 @@ function BookInner() {
                     <Chip
                       size="small"
                       variant="outlined"
-                      label={e.chat.source === "gvoice" ? "Google Voice" : "Google Chat"}
+                      label={sourceLabel(e.chat.source)}
                       sx={{ mr: e.sendable && e.onPager ? 4 : 1 }}
                     />
                   )}
