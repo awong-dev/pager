@@ -1,5 +1,7 @@
 # Relay SMS: one Twilio number per user (8 Oct 2026)
 
+*(9 Oct 2026: a member whose `smsNumber` is a bridge phone's SIM or Google Voice number sends and receives through that phone instead of Twilio — docs/BRIDGE_PHONE_DESIGN.md decisions 3–4; the number-belongs-to-a-person model, the hold-until-approved inbound flow and the pager's `t:"sms"` book entries below are unchanged. Twilio remains the transport for every other number.)*
+
 *(owner, 8 Oct 2026: "Examine the entire flow to ensure we can associate a twilio number with a
 *user*. Then the pager sending/receiving to a SMS will go through the relay. Outbound policy should
 follow what we've implemented as rules. Inbound policy should store any unknown SMS but it should

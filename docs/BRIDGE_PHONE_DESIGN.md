@@ -411,7 +411,7 @@ account); Google Voice has no API; Android's `NotificationListenerService` sees 
 - Open `chat_unknown` alerts older than 7 days.
 
 ## PROTOCOL.md impact
-**None.** The pager receives a bridged group as a group page (`from` = the minted group alias,
+**No envelope or firmware change.** *(9 Oct 2026 sweep: PROTOCOL.md carries two additive notes — the `c` row in §3.1 names `t:"chat"` for a bridged DM, and §4.2 case 3 lists the `bridge not set up; ask your admin` body.)* The pager receives a bridged group as a group page (`from` = the minted group alias,
 `sndr` = the roster nick, both alias-shaped) and a bridged DM as a page from an external's alias;
 the book lists them as `t:"grp"` / `t:"chat"` / `t:"sms"`, all of which `firmware/main/book.h`
 already carries as icon hints, and `scr_pick.c` labels rows from `type` verbatim. A pager reply is
