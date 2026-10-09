@@ -50,6 +50,7 @@ import { familyQuery, useFamily } from "@/lib/family-context";
 import { getFirestoreDb } from "@/lib/firebase";
 import type { DeviceDoc } from "@/lib/types";
 
+import BridgePhonesSection from "@/components/BridgePhonesSection";
 import SetupCodePanel, { type SetupCodeResult } from "../../admin/devices/SetupCodePanel";
 
 // docs/V02_DESIGN.md §4.4: `POST /api/family/devices/{id}/ca`
@@ -476,6 +477,13 @@ function FamilyDevicesInner() {
           onClose={() => setSetupResult(null)}
         />
       )}
+
+      <BridgePhonesSection
+        familyId={familyId}
+        members={familyMembers
+          .filter((c) => byUid(c.uid)?.kind === "person")
+          .map((c) => ({ uid: c.uid, alias: c.alias, displayName: c.displayName }))}
+      />
 
       <Dialog open={caConfirm !== null} onClose={() => (caBusy ? undefined : setCaConfirm(null))}>
         <DialogTitle>
