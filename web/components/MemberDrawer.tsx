@@ -6,6 +6,7 @@
  * (`ApprovedEditor`, `PUT .../{uid}/approved`) -- docs/FAMILIES_TASKS.md 3.4.
  */
 
+import Link from "next/link";
 import { useState } from "react";
 import Alert from "@mui/material/Alert";
 import Button from "@mui/material/Button";
@@ -143,6 +144,13 @@ function MemberProfileForm({
 
       <Typography variant="subtitle2">Policy</Typography>
       <PolicyPicker uid={member.uid} policy={member.policy} onSaved={(p) => setSavedOut(p.out)} />
+
+      <Divider />
+
+      <Typography variant="subtitle2">Google Chat</Typography>
+      <Button component={Link} href={`/family/chat?uid=${encodeURIComponent(member.uid)}`} variant="outlined">
+        Google Chat…
+      </Button>
 
       <Divider />
 
