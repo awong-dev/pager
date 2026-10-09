@@ -155,6 +155,8 @@ _ALERT_TITLES = {
     "new_conversation": lambda a: f"New chat: @{a['subjectAlias']} ↔ @{a.get('peerAlias')}",
     "sms_unknown": lambda a: f"Text from an unknown number for @{a['subjectAlias']}",
     "contact_request": lambda a: f"Contact request from @{a['subjectAlias']}'s pager",
+    # docs/BRIDGE_PHONE_DESIGN.md decision 8.
+    "chat_unknown": lambda a: f"Google Chat for @{a['subjectAlias']}: {a.get('convTitle') or 'a conversation'}",
 }
 
 

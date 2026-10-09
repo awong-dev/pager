@@ -39,12 +39,14 @@ from app.routers import conversations as conversations_router
 from app.routing import Routing
 from app.store import alerts as alerts_store
 from app.store import allow as allow_store
+from app.store import bridge_conversations
 from app.store import bridges as bridges_store
 from app.store import contacts as contacts_store
 from app.store import conversations as conversations_store
 from app.store import devices as devices_store
 from app.store import externals as externals_store
 from app.store import families as families_store
+from app.store import held_chat as held_chat_store
 from app.store import held_sms as held_sms_store
 from app.store import rate_limits as rate_limits_store
 from app.store import sms_consent as sms_consent_store
@@ -1046,6 +1048,10 @@ def approve_alert(
         return AlertDecision(alert=decided, delivered=delivered, undelivered=undelivered)
     elif alert.kind == "new_conversation":
         _approve_new_conversation(alert)
+    elif alert.kind == "chat_unknown":
+        raise HTTPException(
+            status_code=400, detail="subscribe this conversation under People \u2192 Google Chat"
+        )
     else:  # "contact_request"
         _approve_contact_request(alert, req, principal.uid, broker)
 
@@ -1099,6 +1105,10 @@ def block_alert(
     never offers Block for, but nothing here assumes that)."""
     principal, family_id = scope
     alert = _require_open_family_alert(alert_id, family_id)
+    if alert.kind == "chat_unknown":
+        raise HTTPException(
+            status_code=400, detail="use Ignore for a Google Chat conversation"
+        )
     if alert.peerPhone is not None:
         families_store.add_blocked_number(family_id, alert.peerPhone)
         if alert.kind == "sms_unknown":
@@ -1127,4 +1137,15 @@ def dismiss_alert(
     _reject_linked_contact_request(alert, "dismissed", principal.uid, broker)
     if alert.kind == "sms_unknown":
         _mark_held(family_id, alert, "dismissed")
+    if alert.kind == "chat_unknown" and alert.bridgeId and alert.conversationId:
+        # The conversation row stays `seen`, so a later text raises a fresh alert.
+        held_chat_store.set_status(
+            [
+                r.id
+                for r in held_chat_store.list_for_conversation(
+                    bridge_conversations.row_id(alert.bridgeId, alert.conversationId)
+                )
+            ],
+            "dismissed",
+        )
     return alerts_store.decide(family_id, alert_id, "dismissed", principal.uid)

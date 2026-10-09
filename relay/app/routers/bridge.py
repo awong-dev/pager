@@ -12,21 +12,24 @@ import hashlib
 import logging
 import re
 import time
+from datetime import UTC, datetime, timedelta
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from starlette.concurrency import run_in_threadpool
 
+from app import alerts as alerts_module
 from app import bridge_numbers
 from app.backends.sms_twilio import voice_link
 from app.bridgeauth import mint_token, require_bridge
-from app.inbound_text import handle_text
+from app.inbound_text import handle_text, placeholder_for
 from app.notify import sms as sms_client
 from app.routers.webhooks import _check_webhook_ip_rate_limit
-from app.store import bridge_outbox
+from app.store import bridge_conversations, bridge_outbox
 from app.store import bridges as bridges_store
 from app.store import externals as externals_store
+from app.store import held_chat as held_chat_store
 from app.store import messages as messages_store
 from app.store import rate_limits as rate_limits_store
 from app.store import users as users_store
@@ -335,10 +338,98 @@ def _handle_text_event(
     )
 
 
+CONVERSATIONS_PER_DAY = 50
+
+
+def deliver_subscribed(bridge, row, event: BridgeEvent, routing) -> str | None:
+    """Replaced by B5 (`app.chat_subscribe.deliver_subscribed`): a subscribed
+    conversation's text goes to the pager. `None` = hold it like an unknown
+    one."""
+    return None
+
+
+def _preview(event: BridgeEvent) -> str:
+    return (event.text.strip() or (placeholder_for([a.kind for a in event.attachments]) if event.attachments else ""))
+
+
+def _handle_chat_event(bridge: bridges_store.Bridge, event: BridgeEvent, routing) -> str:
+    """`gchat` events (decisions 5, 6, 8)."""
+    conv = event.conversation
+    existing = bridge_conversations.get(bridge.id, conv.id)
+    if event.kind == "inspect":
+        bridge_conversations.upsert_seen(
+            bridge,
+            source=event.source,
+            conversation_id=conv.id,
+            title=conv.title,
+            is_group=conv.isGroup,
+            link=conv.link,
+            speaker=None,
+            people=event.people,
+            preview=None,
+            inspected=True,
+        )
+        return "inspected"
+    if existing is not None and existing.status == "ignored":
+        return "dropped_ignored"
+    if existing is not None and existing.status == "paused":
+        return "dropped_paused"
+    target = users_store.get_user(bridge.ownerUid)
+    if target is None or target.kind != "person" or target.disabled or target.familyId is None:
+        return "dropped_owner"
+    if not bridge.caps.gchat:
+        return "dropped_cap"
+    body = _preview(event)
+    if not body:
+        return "dropped_empty"
+    if existing is None:
+        since = datetime.now(UTC) - timedelta(days=1)
+        if bridge_conversations.count_created_since(bridge.id, since) >= CONVERSATIONS_PER_DAY:
+            return "dropped_conv_cap"
+    row = bridge_conversations.upsert_seen(
+        bridge,
+        source=event.source,
+        conversation_id=conv.id,
+        title=conv.title,
+        is_group=conv.isGroup,
+        link=conv.link,
+        speaker=event.sender.name,
+        people=event.people,
+        preview=body,
+    )
+    if row.status == "subscribed":
+        outcome = deliver_subscribed(bridge, row, event, routing)
+        if outcome is not None:
+            return outcome
+    hid = f"br_{bridge.id}_{event.id}"
+    if held_chat_store.count_held(row.id) >= held_chat_store.HELD_CAP:
+        return "held_cap"
+    if not held_chat_store.create(
+        hid,
+        bridge_id=bridge.id,
+        conversation_id=conv.id,
+        conv_row_id=row.id,
+        family_id=target.familyId,
+        to_uid=target.uid,
+        sender_name=event.sender.name,
+        body=body,
+    ):
+        return "duplicate"
+    alert_id = alerts_module.chat_held_upsert(
+        target.familyId, target, row, body, event.sender.name or "someone"
+    )
+    bridge_conversations.set_fields(
+        row.id, heldCount=held_chat_store.count_held(row.id), alertId=alert_id
+    )
+    return "held"
+
+
 def process_event(bridge: bridges_store.Bridge, event: BridgeEvent, routing) -> str:
-    if event.source in ("sms", "gvoice"):
+    if event.source in ("sms", "gvoice") and event.kind == "message":
         return _handle_text_event(bridge, event, routing)
-    return "dropped_unsupported"  # gchat: B4
+    if event.source in ("gchat", "gvoice"):
+        return _handle_chat_event(bridge, event, routing)
+    return "dropped_unsupported"
 
 
 def process_events(bridge: bridges_store.Bridge, events: list[BridgeEvent], routing) -> list[dict]:

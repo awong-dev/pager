@@ -471,6 +471,7 @@ class SweepResult:
     heldSmsDeleted: int = 0
     bridgePairCodesDeleted: int = 0
     bridgeOutboxDeleted: int = 0
+    heldChatDeleted: int = 0
 
 
 def sweep() -> SweepResult:
@@ -553,6 +554,12 @@ def sweep() -> SweepResult:
         lambda: db.collection("heldSms"), msg_cutoff, batch_size, created_at_field="receivedAt"
     )
 
+    # docs/BRIDGE_PHONE_DESIGN.md decision 15: held Chat texts live for the
+    # message retention window.
+    held_chat_deleted = _sweep_by_created_at(
+        lambda: db.collection("heldChat"), msg_cutoff, batch_size, created_at_field="receivedAt"
+    )
+
     # docs/BRIDGE_PHONE_DESIGN.md decision 2: expired pairing codes.
     bridge_codes_deleted = 0
     for code in bridges_store.list_expired_pair_codes(datetime.now(UTC)):
@@ -592,4 +599,5 @@ def sweep() -> SweepResult:
         heldSmsDeleted=held_sms_deleted,
         bridgePairCodesDeleted=bridge_codes_deleted,
         bridgeOutboxDeleted=outbox_deleted,
+        heldChatDeleted=held_chat_deleted,
     )

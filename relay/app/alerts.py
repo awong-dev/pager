@@ -27,6 +27,7 @@ from __future__ import annotations
 from app.backends.webapp import FCMClient, NullFCMClient
 from app.backends.webapp import push_alert as _push_alert
 from app.store import alerts as alerts_store
+from app.store import held_chat as held_chat_store
 from app.store import held_sms as held_sms_store
 from app.store import users as users_store
 from app.store.contacts import ContactRequest
@@ -216,3 +217,55 @@ def contact_request(request: ContactRequest) -> str | None:
     if peer is not None:
         alert.update({"peerUid": peer.uid, "peerAlias": peer.alias, "peerName": peer.displayName})
     return create(owner.familyId, alert)
+
+
+def chat_held_upsert(family_id: str, target: User, row, body: str, sender_name: str) -> str:
+    """docs/BRIDGE_PHONE_DESIGN.md decision 8: one **open** `chat_unknown`
+    alert per `(bridge, conversation)`. The first held text creates it
+    (`preview` = the text, `heldCount`, the people seen so far); later ones
+    update `preview`, `heldCount` and `people` and push again. `heldCount`
+    is counted from the `heldChat` rows (status `held`), so a crash between
+    row and alert is repaired by the next text. `pushBody` is
+    `"<title> (<sender>) -> @alias: <text>"`. Returns the alert id."""
+    count = held_chat_store.count_held(row.id)
+    preview = body[:PREVIEW_MAX_CHARS]
+    title = row.title or "a conversation"
+    push_body = f"{title} ({sender_name}) \u2192 @{target.alias}: {body}"
+    fields = {
+        "preview": preview,
+        "heldCount": count,
+        "people": list(row.people),
+        "convTitle": row.title,
+        "isGroup": row.isGroup,
+    }
+    existing = alerts_store.find_open(
+        family_id, "chat_unknown", target.uid, None, bridge_conv=(row.bridgeId, row.conversationId)
+    )
+    if existing is not None:
+        alerts_store.update_fields(family_id, existing.id, fields)
+        pushed = {**existing.model_dump(), **fields}
+        _push_alert(
+            family_id,
+            {**pushed, "id": existing.id, "pushBody": push_body},
+            fcm_client=_fcm_client,
+        )
+        return existing.id
+    alert = _base_alert("chat_unknown")
+    alert.update(
+        {
+            "status": "open",
+            "subjectUid": target.uid,
+            "subjectAlias": target.alias,
+            **fields,
+            "bridgeId": row.bridgeId,
+            "conversationId": row.conversationId,
+            "convRef": row.ref,
+            "source": row.source,
+            "updatedAt": None,
+        }
+    )
+    alert_id = alerts_store.create(family_id, alert)
+    _push_alert(
+        family_id, {**alert, "id": alert_id, "pushBody": push_body}, fcm_client=_fcm_client
+    )
+    return alert_id

@@ -152,7 +152,6 @@ def test_drop_outcomes(client: TestClient, world: World, broker: FakeBrokerClien
     assert _post(client, headers, inspect) == ["dropped_unsupported"]
     users_store.update_user("kid", disabled=True)
     assert _post(client, headers, _ev()) == ["dropped_owner"]
-    assert _post(client, headers, _ev("gchat")) == ["dropped_unsupported"]  # B4 replaces this
 
 
 def test_unknown_number_is_held_with_an_alert_whose_push_carries_the_text(

@@ -21,7 +21,7 @@ from pydantic import BaseModel, ConfigDict
 
 from app.db.firestore import get_db
 
-AlertKind = Literal["new_conversation", "sms_unknown", "contact_request"]
+AlertKind = Literal["new_conversation", "sms_unknown", "contact_request", "chat_unknown"]
 AlertStatus = Literal["open", "handled", "dismissed"]
 
 
@@ -48,6 +48,15 @@ class Alert(BaseModel):
     # texts waiting; `updatedAt` moves with each new one.
     heldCount: int = 0
     updatedAt: datetime | None = None
+    # docs/BRIDGE_PHONE_DESIGN.md decision 8: a `chat_unknown` alert names the
+    # bridge conversation (`convRef` is what the web's Subscribe calls with).
+    bridgeId: str | None = None
+    conversationId: str | None = None
+    convRef: str | None = None
+    convTitle: str | None = None
+    isGroup: bool | None = None
+    people: list[str] = []
+    source: str | None = None
 
 
 def _alerts(family_id: str):
@@ -74,10 +83,16 @@ def create(family_id: str, alert: dict) -> str:
 
 
 def find_open(
-    family_id: str, kind: AlertKind, subject_uid: str | None, peer_phone: str | None
+    family_id: str,
+    kind: AlertKind,
+    subject_uid: str | None,
+    peer_phone: str | None,
+    bridge_conv: tuple[str, str] | None = None,
 ) -> Alert | None:
     """The open alert of `kind` for `(subject_uid, peer_phone)`, or `None`
-    (the newest if, through a race, there are several)."""
+    (the newest if, through a race, there are several). `bridge_conv` =
+    `(bridgeId, conversationId)` additionally matches a `chat_unknown`
+    alert's conversation (docs/BRIDGE_PHONE_DESIGN.md decision 8)."""
     query = _alerts(family_id).where(filter=FieldFilter("status", "==", "open"))
     found = [
         Alert.model_validate({"id": snap.id, **(snap.to_dict() or {})}) for snap in query.stream()
@@ -85,7 +100,10 @@ def find_open(
     found = [
         a
         for a in found
-        if a.kind == kind and a.subjectUid == subject_uid and a.peerPhone == peer_phone
+        if a.kind == kind
+        and a.subjectUid == subject_uid
+        and a.peerPhone == peer_phone
+        and (bridge_conv is None or (a.bridgeId, a.conversationId) == bridge_conv)
     ]
     found.sort(key=lambda a: a.ts or datetime.min.replace(tzinfo=UTC), reverse=True)
     return found[0] if found else None
