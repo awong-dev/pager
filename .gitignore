@@ -44,3 +44,11 @@ build-v2.log
 
 # host test build output
 firmware/host/build/
+
+# Android bridge phone app (docs/BRIDGE_PHONE_DESIGN.md decision 13)
+bridge-android/.gradle/
+bridge-android/build/
+bridge-android/app/build/
+bridge-android/local.properties
+bridge-android/app/google-services.json
+bridge-android/.kotlin/

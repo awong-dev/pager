@@ -1,0 +1,9 @@
+<resources>
+    <string name="app_name">Pager Bridge</string>
+    <string name="accessibility_description">Lets the pager bridge type a reply into Google Chat or Google Voice when the notification reply action is gone. Used only on this headless relay phone.</string>
+    <string name="channel_service">Bridge service</string>
+    <string name="channel_alerts">Bridge alerts</string>
+    <string name="notif_running">Pager bridge running</string>
+    <string name="notif_repair">Pager bridge needs re-pairing</string>
+    <string name="notif_repair_body">The relay rejected the bridge token. Open the app and enter a new pairing code.</string>
+</resources>

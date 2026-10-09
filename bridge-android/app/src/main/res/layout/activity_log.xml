@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent" android:layout_height="match_parent" android:orientation="vertical">
+    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal">
+        <Button android:id="@+id/replyCache" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="Reply cache" />
+        <Button android:id="@+id/status" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="Status" />
+    </LinearLayout>
+    <ScrollView android:id="@+id/scroll" android:layout_width="match_parent" android:layout_height="match_parent">
+        <TextView android:id="@+id/text" android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:fontFamily="monospace" android:textSize="11sp" android:padding="8dp" android:textIsSelectable="true" />
+    </ScrollView>
+</LinearLayout>

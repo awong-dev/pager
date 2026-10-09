@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent" android:layout_height="match_parent">
+    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:orientation="vertical" android:padding="16dp">
+
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Pager bridge" android:textSize="22sp" />
+        <TextView android:id="@+id/pairState" android:layout_width="match_parent" android:layout_height="wrap_content" android:paddingTop="4dp" />
+        <TextView android:id="@+id/serviceState" android:layout_width="match_parent" android:layout_height="wrap_content" />
+        <TextView android:id="@+id/capsState" android:layout_width="match_parent" android:layout_height="wrap_content" android:textSize="12sp" android:paddingBottom="8dp" />
+
+        <EditText android:id="@+id/relayUrl" android:layout_width="match_parent" android:layout_height="wrap_content" android:hint="Relay URL (https://…)" android:inputType="textUri" />
+        <EditText android:id="@+id/simNumber" android:layout_width="match_parent" android:layout_height="wrap_content" android:hint="SIM number (+1…; blank = no SIM)" android:inputType="phone" />
+        <EditText android:id="@+id/voiceNumber" android:layout_width="match_parent" android:layout_height="wrap_content" android:hint="Google Voice number (+1…; optional)" android:inputType="phone" />
+        <EditText android:id="@+id/accounts" android:layout_width="match_parent" android:layout_height="wrap_content" android:hint="Google account emails (comma separated; blank = read from device)" android:inputType="textEmailAddress" />
+        <EditText android:id="@+id/pollSec" android:layout_width="match_parent" android:layout_height="wrap_content" android:hint="Outbox poll period, seconds (30–300)" android:inputType="number" />
+        <Button android:id="@+id/save" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Save fields" />
+
+        <EditText android:id="@+id/pairCode" android:layout_width="match_parent" android:layout_height="wrap_content" android:hint="Pairing code (8 digits)" android:inputType="number" />
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal">
+            <Button android:id="@+id/pair" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="Pair" />
+            <Button android:id="@+id/unpair" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="Forget token" />
+        </LinearLayout>
+
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Permissions and roles" android:textSize="18sp" android:paddingTop="16dp" />
+        <Button android:id="@+id/permissions" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Grant runtime permissions (SMS, phone, accounts)" />
+        <TextView android:id="@+id/listenerState" android:layout_width="match_parent" android:layout_height="wrap_content" />
+        <Button android:id="@+id/openListener" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Open notification access settings" />
+        <TextView android:id="@+id/smsState" android:layout_width="match_parent" android:layout_height="wrap_content" />
+        <Button android:id="@+id/openSmsRole" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Make default SMS app" />
+        <TextView android:id="@+id/batteryState" android:layout_width="match_parent" android:layout_height="wrap_content" />
+        <Button android:id="@+id/openBattery" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Exempt from battery optimisation" />
+        <TextView android:id="@+id/accessibilityState" android:layout_width="match_parent" android:layout_height="wrap_content" />
+        <Button android:id="@+id/openAccessibility" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Open accessibility settings" />
+
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Service" android:textSize="18sp" android:paddingTop="16dp" />
+        <Button android:id="@+id/startService" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Start bridge service" />
+        <Button android:id="@+id/heartbeatNow" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Heartbeat + poll now" />
+        <Button android:id="@+id/openLog" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Open log" />
+    </LinearLayout>
+</ScrollView>
