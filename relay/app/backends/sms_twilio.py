@@ -103,8 +103,18 @@ class SmsTwilioBackend:
         # number is a paired bridge's SIM or Voice number texts through the
         # phone -- before the consent gate (10DLC obligations are Twilio's).
         bridge = bridges_store.get_by_sms_number(from_number)
-        if bridge is not None and (bridge.caps.sms or bridge.caps.gvoice):
-            return self._deliver_via_bridge(msg, backend, bridge, phone, from_number)
+        if bridge is not None:
+            if bridge.caps.sms or bridge.caps.gvoice:
+                return self._deliver_via_bridge(msg, backend, bridge, phone, from_number)
+            # A bridge number never goes out through Twilio: this phone can
+            # send nothing right now (never retried).
+            logger.info(
+                "sms out to=%s from=%s sid=- status=failed code=no_bridge",
+                sms_client.redact_phone(phone),
+                sms_client.redact_phone(from_number),
+            )
+            messages_store.mark_delivery_failed_if_queued(msg.id, backend.id, error="no_bridge")
+            return DeliverResult(ok=False, state="failed", error="no_bridge")
 
         consent = sms_consent.get(phone)
         if consent is None or consent.status != "opted_in":

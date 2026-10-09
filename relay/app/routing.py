@@ -117,7 +117,7 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Any, Literal
 
 from app import alerts as alerts_module
 from app import book
@@ -139,6 +139,8 @@ from app.store.messages import Delivery, Message, MessageKind
 from app.store.users import User
 
 logger = logging.getLogger("relay.routing")
+
+_UNSET: Any = object()
 
 # docs/FAMILIES_DESIGN.md §2, §1 decision 7: `policy_out`/`policy_in` are the
 # hard-refusal verdicts from `app.policy.check` (the sender's/recipient's
@@ -346,7 +348,9 @@ class Routing:
 
     # ---- an SMS contact is a relay peer only through a numbered person ----
 
-    def _sms_route_reject(self, sender_uid: str, recipient_uid: str) -> RejectReason | None:
+    def _sms_route_reject(
+        self, sender_uid: str, recipient_uid: str, *, bridge_row: Any = _UNSET
+    ) -> RejectReason | None:
         """docs/RELAY_SMS_DESIGN.md decision 2. Both external: `sms_contact`.
         Exactly one external: the person side must hold a `smsNumber`, else
         `no_sms_number`. Otherwise `None`."""
@@ -364,7 +368,8 @@ class Routing:
             # moved to another family can no longer reach the old contact.
             if ext.disabled or person is None or ext.ownerFamilyId != person.familyId:
                 return "sms_contact"
-            bridge_row = backends_store.get_backend(ext.uid, "bridge")
+            if bridge_row is _UNSET:
+                bridge_row = backends_store.get_backend(ext.uid, "bridge")
             if bridge_row is not None:
                 return self._bridge_route_reject(ext, person, bridge_row, outbound=recipient_ext)
             if not person.smsNumber:
@@ -454,7 +459,12 @@ class Routing:
         created: list[Message] = []
         rejected: list[RejectedRecipient] = []
         sender_is_external = _is_external(sender_uid)
-        sender_is_bridge = sender_is_external and backends_store.has_kind(sender_uid, "bridge")
+        # One `bridge` backend read per external (fixed id `bridge`), reused
+        # for the skip decision and the route check.
+        sender_bridge_row = (
+            backends_store.get_backend(sender_uid, "bridge") if sender_is_external else None
+        )
+        sender_is_bridge = sender_bridge_row is not None
         for recipient_uid in sorted(uid for uid in group.uids if uid != sender_uid):
             # An SMS contact never takes part in a relay group (create/add
             # refuse one); a stale member is skipped quietly. A *bridge*
@@ -464,13 +474,22 @@ class Routing:
             # the route check before the policy gate, so a bridge group can
             # only carry owner <-> external.
             recipient_is_external = _is_external(recipient_uid)
+            recipient_bridge_row = (
+                backends_store.get_backend(recipient_uid, "bridge")
+                if recipient_is_external
+                else None
+            )
             if (sender_is_external and not sender_is_bridge) or (
-                recipient_is_external and not backends_store.has_kind(recipient_uid, "bridge")
+                recipient_is_external and recipient_bridge_row is None
             ):
                 logger.debug("skipping sms contact in group %s fan-out", group.convKey)
                 continue
             if sender_is_external or recipient_is_external:
-                route_reason = self._sms_route_reject(sender_uid, recipient_uid)
+                route_reason = self._sms_route_reject(
+                    sender_uid,
+                    recipient_uid,
+                    bridge_row=sender_bridge_row if sender_is_external else recipient_bridge_row,
+                )
                 if route_reason is not None:
                     logger.warning(
                         "SECURITY sender %s cannot reach bridge peer %s (group=%s) reason=%s",

@@ -116,7 +116,11 @@ def upsert_seen(
             if name and name not in merged and len(merged) < PEOPLE_MAX:
                 merged.append(name)
         updates: dict[str, Any] = {"people": merged}
-        if title:
+        # A subscribed or paused row keeps its shape: `isGroup` is never
+        # rewritten (the external, the group doc and the book depend on it)
+        # and `title` follows the phone only while no parent renamed it.
+        locked = snap.exists and data.get("status") in ("subscribed", "paused")
+        if title and not (locked and data.get("customName")):
             updates["title"] = title
         if link:
             updates["link"] = link
@@ -125,7 +129,8 @@ def upsert_seen(
         if preview is not None:
             updates["lastPreview"] = preview[:PREVIEW_MAX]
             updates["lastAt"] = SERVER_TIMESTAMP
-        updates["isGroup"] = is_group
+        if not locked:
+            updates["isGroup"] = is_group
         if snap.exists:
             transaction.update(ref, updates)
         else:

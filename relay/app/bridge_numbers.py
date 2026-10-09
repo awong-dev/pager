@@ -13,6 +13,7 @@ import logging
 from app import book
 from app.broker import BrokerClient
 from app.store import bridges as bridges_store
+from app.store import externals as externals_store
 from app.store import users as users_store
 
 logger = logging.getLogger("relay.bridge")
@@ -66,6 +67,7 @@ def release_numbers(bridge: bridges_store.Bridge, broker: BrokerClient) -> None:
     owner = users_store.get_user(bridge.ownerUid)
     if owner is None:
         return
+    externals_store.clear_member_channels(bridge.familyId, owner.uid)
     if owner.smsNumber and owner.smsNumber in {bridge.simNumber, bridge.voiceNumber}:
         users_store.set_sms_number(owner.uid, None)
         book.bump_and_push({owner.uid}, broker, reason="sms_number")

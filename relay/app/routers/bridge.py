@@ -97,6 +97,7 @@ def pair(req: PairRequest, request: Request) -> PairResponse:
     caps = bridge_numbers.caps_for(req.caps.sms, req.caps.gchat, sim, voice)
     status = {
         "accounts": req.accounts,
+        "smsCapable": req.caps.sms,
         "simNumber": sim,
         "voiceNumber": voice,
         "version": req.version,
@@ -111,10 +112,28 @@ def pair(req: PairRequest, request: Request) -> PairResponse:
     return PairResponse(bridgeId=bridge.id, token=token)
 
 
+class HeartbeatStatus(BaseModel):
+    """What the phone may report. Typed so a bad value is a 422 and never
+    reaches the stored row (a wrong type there would make every read of the
+    bridge raise). `error` is accepted and ignored: it is relay-owned."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    battery: int | None = Field(default=None, ge=0, le=100)
+    listenerBound: bool | None = None
+    smsDefault: bool | None = None
+    accessibility: bool | None = None
+    accounts: list[Annotated[str, Field(max_length=120)]] | None = Field(default=None, max_length=10)
+    simNumber: str | None = Field(default=None, max_length=32)
+    voiceNumber: str | None = Field(default=None, max_length=32)
+    version: str | None = Field(default=None, max_length=40)
+    error: str | None = Field(default=None, max_length=200)
+
+
 class HeartbeatRequest(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    status: dict = Field(default_factory=dict)
+    status: HeartbeatStatus = Field(default_factory=HeartbeatStatus)
     fcmToken: str | None = Field(default=None, max_length=4096)
 
 
@@ -127,7 +146,9 @@ def heartbeat(
 ) -> dict:
     """Decision 3: records the status; a reported SIM that differs from the
     accepted one sets `status.error` and nothing else (never `smsNumber`)."""
-    status = dict(req.status)
+    status = req.status.model_dump(exclude_unset=True, exclude={"error"})
+    if status.get("smsDefault") is not None:
+        status["smsCapable"] = status["smsDefault"]
     for key in ("simNumber", "voiceNumber"):
         value = status.get(key)
         if isinstance(value, str) and value.strip():
@@ -138,6 +159,12 @@ def heartbeat(
         elif key in status:
             status[key] = None
     bridges_store.touch(bridge.id, status, req.fcmToken)
+    if "smsCapable" in status:
+        caps = bridge_numbers.caps_for(
+            status["smsCapable"], bridge.caps.gchat, bridge.simNumber, bridge.voiceNumber
+        )
+        if caps != bridge.caps:
+            bridges_store.set_caps(bridge.id, caps)
     reported = status.get("simNumber")
     if reported is not None and reported != bridge.simNumber:
         bridges_store.set_error(bridge.id, SIM_CHANGED)
@@ -351,6 +378,16 @@ def _handle_chat_event(
     """`gchat` events (decisions 5, 6, 8)."""
     conv = event.conversation
     existing = bridge_conversations.get(bridge.id, conv.id)
+    target = users_store.get_user(bridge.ownerUid)
+    if target is None or target.kind != "person" or target.disabled or target.familyId is None:
+        return "dropped_owner"
+    caps_ok = bridge.caps.gchat if event.source == "gchat" else bridge.caps.gvoice
+    if not caps_ok:
+        return "dropped_cap"
+    if existing is None:
+        since = datetime.now(UTC) - timedelta(days=1)
+        if bridge_conversations.count_created_since(bridge.id, since) >= CONVERSATIONS_PER_DAY:
+            return "dropped_conv_cap"
     if event.kind == "inspect":
         bridge_conversations.upsert_seen(
             bridge,
@@ -369,18 +406,9 @@ def _handle_chat_event(
         return "dropped_ignored"
     if existing is not None and existing.status == "paused":
         return "dropped_paused"
-    target = users_store.get_user(bridge.ownerUid)
-    if target is None or target.kind != "person" or target.disabled or target.familyId is None:
-        return "dropped_owner"
-    if not bridge.caps.gchat:
-        return "dropped_cap"
     body = _preview(event)
     if not body:
         return "dropped_empty"
-    if existing is None:
-        since = datetime.now(UTC) - timedelta(days=1)
-        if bridge_conversations.count_created_since(bridge.id, since) >= CONVERSATIONS_PER_DAY:
-            return "dropped_conv_cap"
     row = bridge_conversations.upsert_seen(
         bridge,
         source=event.source,
@@ -432,11 +460,10 @@ def process_event(bridge: bridges_store.Bridge, event: BridgeEvent, routing, bro
 def process_events(
     bridge: bridges_store.Bridge, events: list[BridgeEvent], routing, broker
 ) -> list[dict]:
-    for _ in events:
-        if not rate_limits_store.check_and_increment(
-            f"bridge_events:{bridge.id}", limit=EVENTS_PER_MINUTE, window_s=60
-        ):
-            raise HTTPException(status_code=429, detail="too many requests")
+    if events and not rate_limits_store.check_and_increment(
+        f"bridge_events:{bridge.id}", limit=EVENTS_PER_MINUTE, window_s=60, count=len(events)
+    ):
+        raise HTTPException(status_code=429, detail="too many requests")
     results = []
     for event in events:
         outcome = process_event(bridge, event, routing, broker)

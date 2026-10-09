@@ -212,20 +212,26 @@ def fail_pending(bridge_id: str, reason: str) -> list[OutboxItem]:
     return out
 
 
-def list_stale_pending(bridge_id: str, older_than: datetime) -> list[OutboxItem]:
-    return [
-        i
-        for i in list_pending(bridge_id, limit=10_000)
-        if i.createdAt is not None and i.createdAt < older_than
-    ]
+def list_stale_pending_all(older_than: datetime) -> list[OutboxItem]:
+    """Pending rows older than `older_than` on **every** bridge, from one
+    collection-group query on `state == pending` (single-field, no composite
+    index; `createdAt` is filtered here)."""
+    out: list[OutboxItem] = []
+    query = get_db().collection_group("outbox").where(filter=FieldFilter("state", "==", "pending"))
+    for snap in query.stream():
+        bridge_id = snap.reference.parent.parent.id
+        item = _from_snap(bridge_id, snap)
+        if item.createdAt is not None and item.createdAt < older_than:
+            out.append(item)
+    return out
 
 
 def delete_acked_before(cutoff: datetime) -> int:
-    """Acked (`sent`/`failed`) rows older than `cutoff`, on every bridge."""
+    """Acked (`sent`/`failed`) rows older than `cutoff`, on every bridge (one
+    collection-group query on `ackedAt`)."""
     deleted = 0
-    for bridge in bridges_store.list_all():
-        query = _outbox(bridge.id).where(filter=FieldFilter("ackedAt", "<", cutoff))
-        for snap in query.stream():
-            snap.reference.delete()
-            deleted += 1
+    query = get_db().collection_group("outbox").where(filter=FieldFilter("ackedAt", "<", cutoff))
+    for snap in query.stream():
+        snap.reference.delete()
+        deleted += 1
     return deleted

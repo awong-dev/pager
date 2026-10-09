@@ -12,16 +12,19 @@ only what the phone last reported.
 
 from __future__ import annotations
 
+import logging
 import secrets
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from google.api_core.exceptions import AlreadyExists, NotFound
 from google.cloud.firestore import SERVER_TIMESTAMP, FieldFilter, Transaction
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from app.db.firestore import get_db, run_transaction
 from app.ids import new_id
+
+logger = logging.getLogger("relay.bridges")
 
 PAIR_CODE_TTL = timedelta(minutes=10)
 
@@ -31,6 +34,7 @@ PHONE_STATUS_KEYS = (
     "battery",
     "listenerBound",
     "smsDefault",
+    "smsCapable",
     "accessibility",
     "accounts",
     "simNumber",
@@ -45,6 +49,10 @@ class BridgeStatus(BaseModel):
     battery: int | None = None
     listenerBound: bool = False
     smsDefault: bool = False
+    # The phone's own "I can send SMS" bit (pair `caps.sms`, then the
+    # heartbeat's `smsDefault`); `caps.sms` is always derived from it plus
+    # the presence of a SIM (`bridge_numbers.caps_for`).
+    smsCapable: bool = False
     accessibility: bool = False
     accounts: list[str] = Field(default_factory=list)
     simNumber: str | None = None
@@ -95,7 +103,21 @@ def _codes():
 
 
 def _from_snap(snap) -> Bridge:
-    return Bridge.model_validate({"id": snap.id, **(snap.to_dict() or {})})
+    """A row that fails validation (a corrupt `status`, say) is logged and
+    read as an unpaired bridge instead of raising, so one bad row cannot
+    brick the family list or the transport switch."""
+    data = snap.to_dict() or {}
+    try:
+        return Bridge.model_validate({"id": snap.id, **data})
+    except ValidationError:
+        logger.exception("bridge row %s fails validation; treating it as unpaired", snap.id)
+        return Bridge(
+            id=snap.id,
+            ownerUid=str(data.get("ownerUid") or ""),
+            familyId=str(data.get("familyId") or ""),
+            label=str(data.get("label") or ""),
+            tokenHash=None,
+        )
 
 
 def create(owner_uid: str, family_id: str, label: str, created_by: str) -> Bridge:
@@ -191,6 +213,10 @@ def set_numbers(
     if caps is not None:
         updates["caps"] = caps.model_dump()
     _update(bridge_id, updates)
+
+
+def set_caps(bridge_id: str, caps: BridgeCaps) -> None:
+    _update(bridge_id, {"caps": caps.model_dump()})
 
 
 def set_sim_number(bridge_id: str, sim_number: str | None) -> None:

@@ -29,6 +29,7 @@ from app.store import bridge_conversations, bridge_outbox
 from app.store import bridges as bridges_store
 from app.store import conversations as conversations_store
 from app.store import devices as devices_store
+from app.store import messages as messages_store
 from app.store import users as users_store
 from app.store.bridge_conversations import BridgeConversation
 
@@ -357,6 +358,9 @@ class BridgeOut(BaseModel):
     status: bridges_store.BridgeStatus
     caps: bridges_store.BridgeCaps
     createdAt: datetime | None
+    # Only on `PATCH` (reassign): how many subscribed Google Chat
+    # conversations were unsubscribed because the owner changed.
+    unsubscribed: int = 0
 
 
 class CreateBridgeRequest(BaseModel):
@@ -504,11 +508,24 @@ def patch_bridge(
 
     if req.label is not None:
         bridges_store.set_label(bridge.id, req.label.strip())
+    unsubscribed = 0
+    if owner_changed:
+        # The old owner's subscriptions, queued texts and last-used channels
+        # go with them; this runs while `bridge.ownerUid` is still the old one.
+        principal, _ = scope
+        unsubscribed = chat_subscribe.reassign_conversations(
+            family_id, bridge, new_owner_uid, principal.uid, broker
+        )
+        for item in bridge_outbox.fail_pending(bridge.id, "reassigned"):
+            if item.msgId and item.bid:
+                messages_store.mark_delivery_failed_if_queued(
+                    item.msgId, item.bid, error="reassigned"
+                )
     if bridge.paired:
         # The previous owner (or the previous numbers) are released first.
         bridge_numbers.release_numbers(bridge, broker)
-    caps = bridges_store.BridgeCaps(
-        sms=bool(new_sim), gchat=bridge.caps.gchat, gvoice=bool(new_voice)
+    caps = bridge_numbers.caps_for(
+        bridge.status.smsCapable or bridge.caps.sms, bridge.caps.gchat, new_sim, new_voice
     )
     if owner_changed:
         bridges_store.set_owner(bridge.id, new_owner_uid)
@@ -522,7 +539,9 @@ def patch_bridge(
         bridge_numbers.rederive(new_owner.uid, broker)
     fresh = bridges_store.get(bridge.id)
     assert fresh is not None
-    return _bridge_out(fresh)
+    out = _bridge_out(fresh)
+    out.unsubscribed = unsubscribed
+    return out
 
 
 @router.post(
@@ -544,8 +563,11 @@ def accept_sim(
     if reported != bridge.simNumber:
         _number_taken(bridge.ownerUid, reported, bridge)
         bridge_numbers.release_numbers(bridge, broker)
-        caps = bridges_store.BridgeCaps(
-            sms=True, gchat=bridge.caps.gchat, gvoice=bridge.caps.gvoice
+        caps = bridge_numbers.caps_for(
+            bridge.status.smsCapable or bridge.caps.sms,
+            bridge.caps.gchat,
+            reported,
+            bridge.voiceNumber,
         )
         bridges_store.set_numbers(
             bridge.id, sim_number=reported, voice_number=bridge.voiceNumber, caps=caps
@@ -567,8 +589,6 @@ def unpair_bridge(
     `smsNumber` if it is one of the bridge's numbers, fails every pending
     outbox row `unpaired` (and its delivery). The row, every contact and
     every conversation stay."""
-    from app.store import messages as messages_store
-
     _, family_id = scope
     bridge = _require_bridge(bridge_id, family_id)
     bridges_store.unpair(bridge.id)

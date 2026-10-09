@@ -264,6 +264,34 @@ def get_or_create_chat(
     return fetched
 
 
+def clear_member_channels(family_id: str, member_uid: str) -> int:
+    """Drops `member_uid`'s entries from `config.via` / `config.voiceConv` on
+    every SMS contact's `sms` backend row of the family (docs/
+    BRIDGE_PHONE_DESIGN.md decision 5: the last-used channel is per member and
+    tied to a bridge; on unpair, reassign or a removed Voice number it would
+    point at a transport that is gone). Returns the rows changed."""
+    changed = 0
+    for ext in list_family_contacts(family_id):
+        row = backends_store.get_backend(ext.uid, "sms")
+        if row is None:
+            continue
+        config = dict(row.config)
+        touched = False
+        for key in ("via", "voiceConv"):
+            mapping = config.get(key)
+            if isinstance(mapping, dict) and member_uid in mapping:
+                mapping = {k: v for k, v in mapping.items() if k != member_uid}
+                if mapping:
+                    config[key] = mapping
+                else:
+                    config.pop(key)
+                touched = True
+        if touched:
+            backends_store.update_backend(ext.uid, row.id, config=config)
+            changed += 1
+    return changed
+
+
 def update_chat(uid: str, **fields: object) -> None:
     """Merges `fields` into `users/{uid}.chat` (dotted-path update)."""
     get_db().collection("users").document(uid).update(

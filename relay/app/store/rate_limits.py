@@ -37,12 +37,17 @@ def _rate_limits():
     return get_db().collection("rateLimits")
 
 
-def check_and_increment(key: str, *, limit: int, window_s: int, now: float | None = None) -> bool:
+def check_and_increment(
+    key: str, *, limit: int, window_s: int, now: float | None = None, count: int = 1
+) -> bool:
     """Returns True (and records this attempt) if `key` has made fewer than
     `limit` calls in the current `window_s`-second fixed window; returns
     False (and does NOT record -- a *rejected* call must never itself count
     against the caller, or a client retrying a 429 would only ever dig itself
     deeper) otherwise.
+
+    `count` (default 1) is how many calls this one transaction accounts for
+    (a batch of N events): allowed only if all N fit in the window.
 
     `now` is injectable for tests only (asserting "trips after N, resets
     after the window" without a real sleep) -- every real caller leaves it as
@@ -54,15 +59,17 @@ def check_and_increment(key: str, *, limit: int, window_s: int, now: float | Non
         snap = ref.get(transaction=transaction)
         data = snap.to_dict() if snap.exists else None
         window_start = data.get("windowStart") if data else None
-        count = data.get("count", 0) if data else 0
+        used = data.get("count", 0) if data else 0
         if window_start is None or (now - window_start) >= window_s:
             # No window yet, or the previous one has fully elapsed -- this
             # call starts a fresh one.
-            transaction.set(ref, {"windowStart": now, "count": 1})
+            if count > limit:
+                return False
+            transaction.set(ref, {"windowStart": now, "count": count})
             return True
-        if count >= limit:
+        if used + count > limit:
             return False
-        transaction.update(ref, {"count": count + 1})
+        transaction.update(ref, {"count": used + count})
         return True
 
     return run_transaction(_txn)

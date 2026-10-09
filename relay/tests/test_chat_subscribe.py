@@ -291,7 +291,8 @@ def test_title_change_renames_unless_custom(env: Env):
     )
     assert env.events(_ev("Lee", "y", title="Soccer 2028")) == ["delivered"]
     assert users_store.get_user(out["uid"]).displayName == "My team"
-    assert conv_store.get(env.bridge.id, GROUP).title == "Soccer 2028"
+    # A parent's rename locks the title: the phone no longer rewrites it.
+    assert conv_store.get(env.bridge.id, GROUP).title == "Soccer 2027"
 
 
 def test_unsubscribe_removes_docs_and_edges_and_keeps_messages(env: Env):

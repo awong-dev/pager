@@ -166,16 +166,15 @@ def _fail_stale_bridge_outbox() -> int:
     delivery with it, so a dead phone cannot hold deliveries forever."""
     cutoff = datetime.now(UTC) - BRIDGE_OFFLINE_AFTER
     failed = 0
-    for bridge in bridges_store.list_all():
-        for item in bridge_outbox.list_stale_pending(bridge.id, cutoff):
-            acked = bridge_outbox.ack(bridge.id, item.id, "failed", "bridge_offline", 0)
-            if acked is None or not acked[1]:
-                continue
-            failed += 1
-            if item.msgId and item.bid:
-                messages_store.mark_delivery_failed_if_queued(
-                    item.msgId, item.bid, error="bridge_offline"
-                )
+    for item in bridge_outbox.list_stale_pending_all(cutoff):
+        acked = bridge_outbox.ack(item.bridgeId or "", item.id, "failed", "bridge_offline", 0)
+        if acked is None or not acked[1]:
+            continue
+        failed += 1
+        if item.msgId and item.bid:
+            messages_store.mark_delivery_failed_if_queued(
+                item.msgId, item.bid, error="bridge_offline"
+            )
     return failed
 
 
