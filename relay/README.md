@@ -133,7 +133,7 @@ EMQX, the Firestore/Auth emulators, and the relay — configures EMQX's rule eng
 `tools/pager_client.py`'s combined device+server client):
 
 ```bash
-relay/.venv/bin/python tools/e2e_v2.py                                       # all 12 scenarios
+relay/.venv/bin/python tools/e2e_v2.py                                       # all 14 scenarios
 relay/.venv/bin/python tools/e2e_v2.py bootstrap text_roundtrip              # named scenarios
 relay/.venv/bin/python tools/e2e_v2.py --wire cbor                           # repeat in CBOR encoding
 ```
