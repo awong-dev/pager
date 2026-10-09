@@ -315,7 +315,7 @@ function ChatListInner() {
                   disablePadding
                   divider
                   secondaryAction={
-                    isGroup ? (
+                    isGroup && !c.bridge ? (
                       <IconButton edge="end" aria-label={`leave ${c.label}`} onClick={() => void leaveGroup(c)}>
                         <LogoutIcon fontSize="small" />
                       </IconButton>

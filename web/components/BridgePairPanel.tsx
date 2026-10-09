@@ -65,7 +65,7 @@ export default function BridgePairPanel({
 
   const exp = toMs(expiresAt);
   const remaining = exp === null ? 0 : exp - now;
-  const paired = bridge.paired === true || (toMs(bridge.pairedAt) !== null && bridge.paired !== false);
+  const paired = bridge.paired;
   const sim = bridge.simNumber ?? bridge.status.simNumber ?? null;
 
   async function copy() {

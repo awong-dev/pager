@@ -69,6 +69,8 @@ export interface GroupInfo {
   alias: string;
   name: string;
   uids: string[];
+  /** True for a group bridged to Google Chat: managed under Family -> Google Chat, no leave. */
+  bridged: boolean;
 }
 
 interface DirectoryContextValue {
@@ -196,6 +198,7 @@ export function DirectoryProvider({ children }: { children: ReactNode }) {
             alias: data.alias,
             name: data.name ?? data.alias,
             uids: data.uids,
+            bridged: Boolean(data.bridge),
           });
         }
       });

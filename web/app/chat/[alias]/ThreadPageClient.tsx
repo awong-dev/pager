@@ -527,7 +527,7 @@ function ThreadInner({ alias }: { alias: string }) {
           </Typography>
         )}
         <Box sx={{ flexGrow: 1 }} />
-        {group && (
+        {group && !group.bridged && (
           <Button size="small" color="inherit" disabled={leaving} onClick={() => void handleLeave()}>
             Leave
           </Button>

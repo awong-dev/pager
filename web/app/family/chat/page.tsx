@@ -45,7 +45,6 @@ import {
   ignoreChat,
   inspectLink,
   isGoogleChatLink,
-  listBridges,
   patchChat,
   toMs,
   unsubscribeChat,
@@ -53,7 +52,7 @@ import {
 import { useDirectory } from "@/lib/directory";
 import { useFamily } from "@/lib/family-context";
 import { formatRelativeAge } from "@/lib/time";
-import type { BridgeConversationRow, ChatTabOut, RosterEntry, SubscribedChatRow } from "@/lib/types";
+import type { BridgeConversationRow, ChatTabOut, RosterEntry } from "@/lib/types";
 
 const POLL_MS = 5000;
 const LINK_POLL_MS = 3000;
@@ -64,7 +63,7 @@ function errText(e: unknown, fallback: string): string {
 }
 
 function targetOf(r: BridgeConversationRow): SubscribeTarget {
-  return { bridgeId: r.bridgeId, ref: r.ref, title: r.title, isGroup: r.isGroup, people: r.people };
+  return { bridgeId: r.bridgeId, ref: r.ref, title: r.title ?? "", isGroup: r.isGroup, people: r.people };
 }
 
 function lastSeen(r: BridgeConversationRow): string {
@@ -94,10 +93,10 @@ function ChatInner() {
   const [subscribe, setSubscribe] = useState<SubscribeTarget | null>(null);
   const [toast, setToast] = useState<string | null>(null);
 
-  const [menu, setMenu] = useState<{ el: HTMLElement; row: SubscribedChatRow } | null>(null);
-  const [rename, setRename] = useState<{ row: SubscribedChatRow; name: string } | null>(null);
-  const [rosterEdit, setRosterEdit] = useState<{ row: SubscribedChatRow; roster: RosterEntry[] } | null>(null);
-  const [unsub, setUnsub] = useState<SubscribedChatRow | null>(null);
+  const [menu, setMenu] = useState<{ el: HTMLElement; row: BridgeConversationRow } | null>(null);
+  const [rename, setRename] = useState<{ row: BridgeConversationRow; name: string } | null>(null);
+  const [rosterEdit, setRosterEdit] = useState<{ row: BridgeConversationRow; roster: RosterEntry[] } | null>(null);
+  const [unsub, setUnsub] = useState<BridgeConversationRow | null>(null);
   const [dialogBusy, setDialogBusy] = useState(false);
   const [dialogError, setDialogError] = useState<string | null>(null);
 
@@ -190,8 +189,8 @@ function ChatInner() {
     setLinkBusy(true);
     setLinkMsg(null);
     try {
-      // The member's bridge phone (a member may own several; the first paired one is asked).
-      const mine = (await listBridges()).filter((b) => b.ownerUid === ownerUid && b.paired !== false);
+      // The member's paired bridge phone (the tab response lists them; the first is asked).
+      const mine = (tab?.bridges ?? []).filter((b) => b.paired);
       if (mine.length === 0) {
         setLinkMsg({ severity: "warning", text: "This member has no paired bridge phone. Add one under Family -> Devices." });
         return;
@@ -267,7 +266,7 @@ function ChatInner() {
                       <TableCell>
                         {r.pagerName ?? r.title}
                         <Stack direction="row" spacing={0.5} sx={{ mt: 0.5 }}>
-                          {!r.onPager && <Chip size="small" color="warning" variant="outlined" label="Not on pager" />}
+                          {r.onPager === false && <Chip size="small" color="warning" variant="outlined" label="Not on pager" />}
                           {r.status === "paused" && <Chip size="small" label="Paused" />}
                           {r.canReply === false && <Chip size="small" variant="outlined" label="Read only" />}
                         </Stack>
@@ -380,7 +379,7 @@ function ChatInner() {
       <Menu anchorEl={menu?.el} open={menu !== null} onClose={() => setMenu(null)}>
         <MenuItem
           onClick={() => {
-            if (menu) setRename({ row: menu.row, name: menu.row.pagerName ?? menu.row.title });
+            if (menu) setRename({ row: menu.row, name: menu.row.pagerName ?? menu.row.title ?? "" });
             setDialogError(null);
             setMenu(null);
           }}
@@ -392,7 +391,7 @@ function ChatInner() {
             onClick={() => {
               if (menu) {
                 const r = menu.row;
-                setRosterEdit({ row: r, roster: defaultRoster(r.people, r.roster ?? {}) });
+                setRosterEdit({ row: r, roster: defaultRoster(r.people, Object.fromEntries((r.roster ?? []).map((x) => [x.name, x.nick]))) });
               }
               setDialogError(null);
               setMenu(null);
@@ -515,7 +514,7 @@ function ChatInner() {
           onSubscribed={(res, name) => {
             setSubscribe(null);
             setToast(
-              `${name} is on @${owner?.alias ?? "the member"}'s pager; ${res.delivered ?? 0} waiting ${
+              `${name} is on @${owner?.alias ?? "the member"}'s pager; ${res.delivered} waiting ${
                 res.delivered === 1 ? "message" : "messages"
               } delivered`
             );

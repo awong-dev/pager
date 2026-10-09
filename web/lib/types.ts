@@ -294,6 +294,10 @@ export interface ConversationDoc {
   name?: string;
   alias?: string;
   createdBy?: string;
+  // docs/BRIDGE_PHONE_DESIGN.md decision 7: set on a group bridged to a Google
+  // Chat space. Its member routes return 409 "managed under Google Chat", so
+  // the UI offers no leave for it.
+  bridge?: { bridgeId: string; conversationId: string; source: string; link?: string | null } | null;
   // docs/FAMILIES_TASKS.md 2.4: per-member alias/name snapshot, keyed by
   // uid -- lets a DM/group row and NotificationWatcher (2.5) name a peer
   // without a directory lookup. Optional: written by 2.4, not yet present
@@ -323,11 +327,11 @@ export interface RetentionSettingsDoc {
 export const LOC_REQ_TTL_MS = 15 * 60 * 1000;
 
 // ---- bridge phones -- docs/BRIDGE_PHONE_DESIGN.md decisions 1, 6, 7 ----
-// Bridge docs are server-only (no Firestore rules), so these are API response
-// shapes (`GET /api/family/bridges`, `GET /api/family/members/{uid}/chat`),
-// not document mirrors. Times arrive as ISO strings or epoch numbers; read
-// them with `toMs` in `lib/bridges.ts`.
-export type ApiTime = string | number | null;
+// Bridge docs are server-only (no Firestore rules), so these are the API
+// response shapes of `relay/app/routers/family_bridges.py` (`BridgeOut`,
+// `ConversationOut`, `ChatTabOut`). Times are ISO-8601 strings (FastAPI
+// serialises the relay's datetimes).
+export type ApiTime = string | null;
 
 export interface BridgeStatus {
   battery?: number | null;
@@ -343,40 +347,46 @@ export interface BridgeStatus {
   unpaired?: boolean;
 }
 
+// `BridgeOut`
 export interface BridgeRow {
   id: string;
   ownerUid: string;
-  familyId: string;
+  ownerAlias: string | null;
+  ownerName: string | null;
   label: string;
+  paired: boolean;
   pairedAt: ApiTime;
   lastSeenAt: ApiTime;
-  // The accepted SIM number (decision 3); `status.simNumber` is as reported.
+  // Accepted numbers (decisions 3, O1 revised); `status.*Number` is as reported.
   simNumber: string | null;
-  // O1 (revised 9 Oct 2026): the Google Voice number, accepted/edited the same
-  // way. A bridge with a Voice number and no SIM is "Voice only".
-  voiceNumber?: string | null;
+  voiceNumber: string | null;
   status: BridgeStatus;
   caps: { sms: boolean; gchat: boolean; gvoice: boolean };
   createdAt: ApiTime;
-  // True once a token exists; false while waiting for a pairing code or after unpair.
-  paired?: boolean;
 }
 
 export type BridgeConversationStatus = "seen" | "subscribed" | "ignored" | "paused";
 
+export interface RosterEntry {
+  name: string;
+  nick: string;
+}
+
+// `ConversationOut`
 export interface BridgeConversationRow {
-  bridgeId: string;
   // sha256(conversationId)[:16] -- what every conversation route takes.
   ref: string;
-  source: "gchat" | "gvoice";
+  bridgeId: string;
   conversationId: string;
-  title: string;
+  source: "gchat" | "gvoice";
+  title: string | null;
   isGroup: boolean;
   link: string | null;
   people: string[];
   lastPreview: string;
   lastAt: ApiTime;
   firstSeenAt: ApiTime;
+  inspectedAt: ApiTime;
   heldCount: number;
   status: BridgeConversationStatus;
   uid: string | null;
@@ -384,28 +394,22 @@ export interface BridgeConversationRow {
   pagerName: string | null;
   customName: boolean;
   alertId: string | null;
-  // Not in the design's row; the roster editor and the Pause/Reply switches
-  // need them (TODO(orchestrator) in the report if the API omits them).
-  roster?: Record<string, string>;
-  canReply?: boolean;
-}
-
-export interface SubscribedChatRow extends BridgeConversationRow {
-  onPager: boolean;
+  // Subscribed / paused rows only.
+  alias?: string | null;
+  canReply?: boolean | null;
+  roster?: RosterEntry[] | null;
+  onPager?: boolean | null;
 }
 
 // `GET /api/family/members/{uid}/chat`
 export interface ChatTabOut {
-  subscribed: SubscribedChatRow[];
+  subscribed: BridgeConversationRow[];
   seen: BridgeConversationRow[];
+  // The member's bridge phones (for Add by link).
+  bridges: { id: string; label: string; paired: boolean; caps: { sms: boolean; gchat: boolean; gvoice: boolean } }[];
 }
 
-export interface RosterEntry {
-  name: string;
-  nick: string;
-}
-
-// `POST /api/family/bridges/{b}/conversations/{ref}/subscribe`
+// `POST .../subscribe`
 export interface SubscribeRequest {
   pagerName: string;
   canReply: boolean;
@@ -413,8 +417,10 @@ export interface SubscribeRequest {
 }
 
 export interface SubscribeResult {
-  uid?: string;
-  convKey?: string | null;
-  delivered?: number;
-  undelivered?: number;
+  uid: string;
+  convKey: string | null;
+  alias: string;
+  delivered: number;
+  undelivered: number;
+  conversation: BridgeConversationRow;
 }

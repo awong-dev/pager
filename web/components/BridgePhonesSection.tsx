@@ -240,7 +240,7 @@ export default function BridgePhonesSection({
             {bridges.map((b) => {
               const st = b.status ?? {};
               const seen = toMs(b.lastSeenAt);
-              const unpaired = st.unpaired === true || b.paired === false;
+              const unpaired = !b.paired;
               const stale = !unpaired && (seen === null || now - seen > STALE_MS);
               const sim = b.simNumber ?? null;
               const voice = b.voiceNumber ?? null;
@@ -250,7 +250,7 @@ export default function BridgePhonesSection({
                 <TableRow key={b.id}>
                   <TableCell>{b.label}</TableCell>
                   <TableCell>
-                    {memberLabel(b.ownerUid)}
+                    {b.ownerName ? `${b.ownerName} (@${b.ownerAlias})` : memberLabel(b.ownerUid)}
                     <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
                       SMS number: {smsNumber ?? "none"}
                     </Typography>
@@ -283,7 +283,7 @@ export default function BridgePhonesSection({
                   <TableCell>{st.tier2Count ?? 0}</TableCell>
                   <TableCell>
                     <Stack direction="row" spacing={0.5}>
-                      {unpaired || (!b.paired && seen === null) ? (
+                      {unpaired ? (
                         <Button size="small" onClick={() => void reissue(b)}>
                           New code
                         </Button>
@@ -407,8 +407,9 @@ export default function BridgePhonesSection({
               void run(
                 async () =>
                   void (await patchBridge(numbers.id, {
-                    simNumber: numbers.sim.trim() || null,
-                    voiceNumber: numbers.voice.trim() || null,
+                    // "" clears, a string sets (relay PatchBridgeRequest).
+                    simNumber: numbers.sim.trim(),
+                    voiceNumber: numbers.voice.trim(),
                   })),
                 () => setNumbers(null)
               )

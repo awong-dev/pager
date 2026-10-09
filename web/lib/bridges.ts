@@ -9,6 +9,7 @@ import { api } from "./api";
 import { familyQuery } from "./family-context";
 import type {
   ApiTime,
+  BridgeConversationRow,
   BridgeRow,
   ChatTabOut,
   RosterEntry,
@@ -18,10 +19,9 @@ import type {
 
 const seg = encodeURIComponent;
 
-/** Epoch ms from an ISO string, epoch seconds or epoch ms; null when absent. */
+/** Epoch ms from the relay's ISO-8601 timestamps; null when absent. */
 export function toMs(v: ApiTime | undefined): number | null {
-  if (v === null || v === undefined) return null;
-  if (typeof v === "number") return v < 1e12 ? v * 1000 : v;
+  if (!v) return null;
   const ms = Date.parse(v);
   return Number.isNaN(ms) ? null : ms;
 }
@@ -35,15 +35,7 @@ export interface CreatedBridge extends BridgeCode {
   bridge: BridgeRow;
 }
 
-// The design says "rows"; accept a bare array or a `{bridges}` envelope.
-interface BridgeList {
-  bridges: BridgeRow[];
-}
-
-export async function listBridges(): Promise<BridgeRow[]> {
-  const resp = await api.get<BridgeRow[] | BridgeList>(`/family/bridges${familyQuery()}`);
-  return Array.isArray(resp) ? resp : resp.bridges;
-}
+export const listBridges = () => api.get<BridgeRow[]>(`/family/bridges${familyQuery()}`);
 
 export const createBridge = (ownerUid: string, label: string) =>
   api.post<CreatedBridge>(`/family/bridges${familyQuery()}`, { ownerUid, label });
@@ -51,12 +43,12 @@ export const createBridge = (ownerUid: string, label: string) =>
 export const newBridgeCode = (id: string) =>
   api.post<BridgeCode>(`/family/bridges/${seg(id)}/code${familyQuery()}`);
 
-export const patchBridge = (id: string, body: { ownerUid?: string; label?: string; simNumber?: string | null; voiceNumber?: string | null }) =>
-  api.patch<BridgeRow | null>(`/family/bridges/${seg(id)}${familyQuery()}`, body);
+export const patchBridge = (id: string, body: { ownerUid?: string; label?: string; simNumber?: string; voiceNumber?: string }) =>
+  api.patch<BridgeRow>(`/family/bridges/${seg(id)}${familyQuery()}`, body);
 
-export const acceptSim = (id: string) => api.post<BridgeRow | null>(`/family/bridges/${seg(id)}/accept-sim${familyQuery()}`);
+export const acceptSim = (id: string) => api.post<BridgeRow>(`/family/bridges/${seg(id)}/accept-sim${familyQuery()}`);
 
-export const unpairBridge = (id: string) => api.del<unknown>(`/family/bridges/${seg(id)}${familyQuery()}`);
+export const unpairBridge = (id: string) => api.del<BridgeRow>(`/family/bridges/${seg(id)}${familyQuery()}`);
 
 export const inspectLink = (bridgeId: string, link: string) =>
   api.post<{ outboxId: string }>(`/family/bridges/${seg(bridgeId)}/inspect${familyQuery()}`, { link });
@@ -71,7 +63,7 @@ export const subscribeChat = (bridgeId: string, ref: string, body: SubscribeRequ
   api.post<SubscribeResult>(`${convPath(bridgeId, ref)}/subscribe${familyQuery()}`, body);
 
 export const ignoreChat = (bridgeId: string, ref: string) =>
-  api.post<unknown>(`${convPath(bridgeId, ref)}/ignore${familyQuery()}`);
+  api.post<BridgeConversationRow>(`${convPath(bridgeId, ref)}/ignore${familyQuery()}`);
 
 export interface ChatPatch {
   pagerName?: string;
@@ -81,10 +73,10 @@ export interface ChatPatch {
 }
 
 export const patchChat = (bridgeId: string, ref: string, body: ChatPatch) =>
-  api.patch<unknown>(`${convPath(bridgeId, ref)}${familyQuery()}`, body);
+  api.patch<BridgeConversationRow>(`${convPath(bridgeId, ref)}${familyQuery()}`, body);
 
 export const unsubscribeChat = (bridgeId: string, ref: string) =>
-  api.del<unknown>(`${convPath(bridgeId, ref)}${familyQuery()}`);
+  api.del<BridgeConversationRow>(`${convPath(bridgeId, ref)}${familyQuery()}`);
 
 // ---- roster nicks (decision 7) ----
 

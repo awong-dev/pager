@@ -444,7 +444,7 @@ export default function AlertCard({ alert }: { alert: AlertRow }) {
           onClose={() => setSubscribeOpen(false)}
           onSubscribed={(res, name) => {
             setSubscribeOpen(false);
-            setChatResult(`${name} is on the pager; ${res.delivered ?? 0} waiting messages delivered`);
+            setChatResult(`${name} is on the pager; ${res.delivered} waiting messages delivered`);
           }}
         />
       )}

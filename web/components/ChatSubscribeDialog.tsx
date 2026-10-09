@@ -81,7 +81,7 @@ function Body({
         canReply: replyBlocked ? false : canReply,
         roster: target.isGroup ? roster : [],
       });
-      onSubscribed(res ?? {}, name.trim());
+      onSubscribed(res, name.trim());
     } catch (e) {
       setFailure(e instanceof ApiError ? String(e.detail ?? e.message) : "Could not subscribe");
     } finally {
