@@ -18,6 +18,9 @@ export interface BookEntry {
   nick: string | null;
   label: string;
   phone?: string | null;
+  // docs/BRIDGE_PHONE_DESIGN.md decision 7: set on a bridged Google Chat /
+  // Google Voice contact (`t:"chat"` on the pager).
+  chat?: { source: "gchat" | "gvoice" } | null;
   inFamily: boolean;
   sendable: boolean;
   reason?: string | null;
@@ -124,6 +127,8 @@ export function reasonText(reason?: string | null): string {
       return "SMS contacts can only be texted from a pager";
     case "no_sms_number":
       return "needs an SMS number";
+    case "no_bridge":
+      return "Bridge phone not set up";
     case "not_allowed":
       return "Not approved";
     default:

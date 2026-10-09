@@ -33,12 +33,20 @@ const WHERE: Record<string, string> = {
   webapp: "app",
   gchat: "Google Chat",
   sms: "SMS",
+  bridge: "Google Chat",
 };
 
 const LABELS: Record<string, Partial<Record<DeliveryState, string>>> = {
   pager: { queued: "waiting for pager", sent: "sent to pager", shown: "on pager", read: "read on pager" },
   webapp: { queued: "waiting", sent: "sent to app", shown: "shown in app", read: "read in app" },
   gchat: { queued: "waiting", sent: "sent to Google Chat", shown: "sent to Google Chat", read: "read in Google Chat" },
+  // docs/BRIDGE_PHONE_DESIGN.md decision 7: a delivery handed to the bridge phone.
+  bridge: {
+    queued: "waiting for the phone",
+    sent: "sent on Google Chat",
+    shown: "sent on Google Chat",
+    read: "sent on Google Chat",
+  },
   sms: { queued: "waiting to send SMS", sent: "sent by SMS", shown: "sent by SMS", read: "sent by SMS" },
 };
 

@@ -36,6 +36,7 @@ import Stack from "@mui/material/Stack";
 import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
 import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutlined";
+import ForumIcon from "@mui/icons-material/Forum";
 import PersonAddIcon from "@mui/icons-material/PersonAdd";
 import SmsIcon from "@mui/icons-material/Sms";
 
@@ -87,6 +88,8 @@ function kindIcon(kind: AlertDoc["kind"]) {
       return <ChatBubbleOutlineIcon fontSize="small" />;
     case "contact_request":
       return <PersonAddIcon fontSize="small" />;
+    case "chat_unknown":
+      return <ForumIcon fontSize="small" />;
   }
 }
 
@@ -98,6 +101,8 @@ function kindLabel(kind: AlertDoc["kind"]): string {
       return "New conversation";
     case "contact_request":
       return "Contact request";
+    case "chat_unknown":
+      return "Google Chat";
   }
 }
 

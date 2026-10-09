@@ -57,7 +57,9 @@ export interface FamilyDoc {
 // docs/FAMILIES_DESIGN.md §3, §5.4, §6: a family admin's inbox of things
 // needing a decision -- an unrecognised SMS sender held pending approval, a
 // member starting an out-of-policy DM, or a pager's `contact_req`.
-export type AlertKind = "new_conversation" | "sms_unknown" | "contact_request";
+// docs/BRIDGE_PHONE_DESIGN.md decision 8: `chat_unknown` is one open alert per
+// (bridge, Google Chat conversation) the bridge phone saw but nobody subscribed.
+export type AlertKind = "new_conversation" | "sms_unknown" | "contact_request" | "chat_unknown";
 export type AlertStatus = "open" | "handled" | "dismissed";
 
 export interface AlertDoc {
@@ -75,14 +77,27 @@ export interface AlertDoc {
   // docs/RELAY_SMS_DESIGN.md decision 5: texts held for an unknown number.
   heldCount?: number;
   updatedAt?: Timestamp | null;
+  // docs/BRIDGE_PHONE_DESIGN.md decision 8 (`chat_unknown` only): `convRef` is
+  // what the Subscribe/Ignore routes take, `people` the speakers seen so far.
+  bridgeId?: string;
+  conversationId?: string;
+  convRef?: string;
+  convTitle?: string;
+  isGroup?: boolean;
+  people?: string[];
+  source?: BridgeSource;
   convKey: string | null;
   contactRequestKey: string | null;
   decidedAt: Timestamp | null;
   decidedBy: string | null;
 }
 
+// docs/BRIDGE_PHONE_DESIGN.md decision 5: which app on the bridge phone an event
+// or a send belongs to.
+export type BridgeSource = "sms" | "gchat" | "gvoice";
+
 // ---- users/{uid}/backends/{bid} -- app/store/backends.py ----
-export type BackendKind = "pager" | "webapp" | "gchat" | "sms";
+export type BackendKind = "pager" | "webapp" | "gchat" | "sms" | "bridge";
 
 export interface BackendDoc {
   kind: BackendKind;
@@ -306,3 +321,100 @@ export interface RetentionSettingsDoc {
 // PROTOCOL.md §13.4 / SERVER_PLAN.md §5.6: a loc_req is `expired` 15 minutes
 // after creation if never `fulfilled` -- derived at read time, not stored.
 export const LOC_REQ_TTL_MS = 15 * 60 * 1000;
+
+// ---- bridge phones -- docs/BRIDGE_PHONE_DESIGN.md decisions 1, 6, 7 ----
+// Bridge docs are server-only (no Firestore rules), so these are API response
+// shapes (`GET /api/family/bridges`, `GET /api/family/members/{uid}/chat`),
+// not document mirrors. Times arrive as ISO strings or epoch numbers; read
+// them with `toMs` in `lib/bridges.ts`.
+export type ApiTime = string | number | null;
+
+export interface BridgeStatus {
+  battery?: number | null;
+  listenerBound?: boolean;
+  smsDefault?: boolean;
+  accessibility?: boolean;
+  accounts?: string[];
+  simNumber?: string | null;
+  voiceNumber?: string | null;
+  tier2Count?: number;
+  version?: string | null;
+  error?: string | null;
+  unpaired?: boolean;
+}
+
+export interface BridgeRow {
+  id: string;
+  ownerUid: string;
+  familyId: string;
+  label: string;
+  pairedAt: ApiTime;
+  lastSeenAt: ApiTime;
+  // The accepted SIM number (decision 3); `status.simNumber` is as reported.
+  simNumber: string | null;
+  // O1 (revised 9 Oct 2026): the Google Voice number, accepted/edited the same
+  // way. A bridge with a Voice number and no SIM is "Voice only".
+  voiceNumber?: string | null;
+  status: BridgeStatus;
+  caps: { sms: boolean; gchat: boolean; gvoice: boolean };
+  createdAt: ApiTime;
+  // True once a token exists; false while waiting for a pairing code or after unpair.
+  paired?: boolean;
+}
+
+export type BridgeConversationStatus = "seen" | "subscribed" | "ignored" | "paused";
+
+export interface BridgeConversationRow {
+  bridgeId: string;
+  // sha256(conversationId)[:16] -- what every conversation route takes.
+  ref: string;
+  source: "gchat" | "gvoice";
+  conversationId: string;
+  title: string;
+  isGroup: boolean;
+  link: string | null;
+  people: string[];
+  lastPreview: string;
+  lastAt: ApiTime;
+  firstSeenAt: ApiTime;
+  heldCount: number;
+  status: BridgeConversationStatus;
+  uid: string | null;
+  convKey: string | null;
+  pagerName: string | null;
+  customName: boolean;
+  alertId: string | null;
+  // Not in the design's row; the roster editor and the Pause/Reply switches
+  // need them (TODO(orchestrator) in the report if the API omits them).
+  roster?: Record<string, string>;
+  canReply?: boolean;
+}
+
+export interface SubscribedChatRow extends BridgeConversationRow {
+  onPager: boolean;
+}
+
+// `GET /api/family/members/{uid}/chat`
+export interface ChatTabOut {
+  subscribed: SubscribedChatRow[];
+  seen: BridgeConversationRow[];
+}
+
+export interface RosterEntry {
+  name: string;
+  nick: string;
+}
+
+// `POST /api/family/bridges/{b}/conversations/{ref}/subscribe`
+export interface SubscribeRequest {
+  pagerName: string;
+  canReply: boolean;
+  roster: RosterEntry[];
+}
+
+export interface SubscribeResult {
+  uid?: string;
+  convKey?: string | null;
+  delivered?: number;
+  undelivered?: number;
+}
