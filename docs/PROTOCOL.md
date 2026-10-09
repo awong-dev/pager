@@ -137,7 +137,7 @@ Base envelope:
 | `name` | string | `contact_req` only | ≤16 code points, ≤48 UTF-8 bytes | Contact display name (§4.2). *(v0.4: also the group's display name on `/up` `grp_req`, §3.8, same bounds — one name rule for both requests.)* |
 | `ph` | string | `contact_req` only | E.164 or absent | Phone number `+…` or alias reference (§4.2). |
 | `d` | string | `book` only | same regex as `from` | Default recipient alias (§4.3). |
-| `c` | array of objects | `book` only | ≤10 contacts | Approved contacts; each has `a` (alias), `n` (name ≤16 cp), `t` (type: `web`/`sms`/`chat`/`grp`, the last for a group conversation) (§4.3). *(8 Oct 2026: a member with a relay SMS number (`users.smsNumber`, docs/RELAY_SMS_DESIGN.md) gets their SMS contacts in `c[]` with `t:"sms"` and an empty `cfg.sms`; a text to such an entry is an ordinary `/up to:<alias>` the relay forwards by SMS. Members without a number keep the 7 Oct behaviour.)* |
+| `c` | array of objects | `book` only | ≤10 contacts | Approved contacts; each has `a` (alias), `n` (name ≤16 cp), `t` (type: `web`/`sms`/`chat`/`grp`, the last for a group conversation) (§4.3). *(8 Oct 2026: a member with a relay SMS number (`users.smsNumber`, docs/RELAY_SMS_DESIGN.md) gets their SMS contacts in `c[]` with `t:"sms"` and an empty `cfg.sms`; a text to such an entry is an ordinary `/up to:<alias>` the relay forwards by SMS. Members without a number keep the 7 Oct behaviour.)* *(9 Oct 2026: a bridged Google Chat DM is also `t:"chat"` (docs/BRIDGE_PHONE_DESIGN.md); a bridged group is an ordinary `t:"grp"` group; nothing else changes.)* |
 | `p` | array of objects | `book` only | ≤4 pending requests | Pending `contact_req`; each has `n` (name), `s` (status: `pend`/`no`) (§4.3). |
 | `more` | bool | `book` only | — | Reserved for chunking if the cap moves (§4.3). |
 | `cfg` | object | `/down` `cfg` kind only | — | Configuration map carrying `lock` (object with `clear` bool and `auto` int minutes; a dangling cross-reference to "§5.8" for its full shape predates this table's current section numbering and is flagged, not fixed, here), `ca` (v0.2, §4.4), `sms` (v0.2, §3.6 — the SMS contact allow-list) and `wifi` (`docs/WIFI_DESIGN.md` §4/§6, §10 below — the WiFi enable flag and up to two credential pairs). *(GNSS disable, 8 Oct 2026: also `loc`, §3.2 `cfg.loc`, §10 — `{gnss}`, the GNSS enable flag.)* |
@@ -706,7 +706,7 @@ is never trusted to know who it may talk to).**
 The allow-list decision is made by the relay **and** re-stated in the data store's own access
 rules; neither alone is the enforcement point. Case 3's `system` reply is the single exception to
 §3.4's "never auto-reply on MQTT". *(also §3.2's `contact_req` rejection and `too many
-pending requests` replies — same shape, one per offending `id`.)* *(8 Oct 2026: DM to an external whose sender has no SMS number `users.smsNumber` gets `sms not set up; ask your admin`, similar to the 7 Oct case for SMS contacts — see docs/RELAY_SMS_DESIGN.md.)*
+pending requests` replies — same shape, one per offending `id`.)* *(8 Oct 2026: DM to an external whose sender has no SMS number `users.smsNumber` gets `sms not set up; ask your admin`, similar to the 7 Oct case for SMS contacts — see docs/RELAY_SMS_DESIGN.md.)* *(9 Oct 2026: a `to` naming a bridged Google Chat contact or group whose bridge phone is not paired gets `bridge not set up; ask your admin`, the same shape.)*
 
 ---
 

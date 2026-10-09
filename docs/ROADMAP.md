@@ -71,6 +71,33 @@ Download, verify, switch and rollback are done (`docs/OTA_DESIGN.md`; verified o
   parser resync for clipped first line. **Ask owner about RI line (modem ring indicator) first** — if
   wired, simpler fix with no clipping risk (`docs/SLEEP_URC_TASKS.md` S9, `docs/SLEEP_URC_DESIGN.md` §8.7).
 
+### Bridge phones (`docs/BRIDGE_PHONE_DESIGN.md`, 9 Oct 2026)
+
+Built and landed: relay B1–B9 (`f9649f2`..`1bc22f4`), web W1–W5 (`7f3c4fc`..`927a11c`), Android
+A1–A7 (`714b2c0`). The relay suite passes (1316 tests) and `python3 tools/e2e_v2.py bridge
+bridge_voice` passes; both were re-run on 9 Oct 2026. Not re-run in that check: the web verify
+commands and `./gradlew`. The Android unit-test count (23) is as the commit message reports it.
+
+Open:
+- **The Android app has never run on a phone.** No device was attached. The bench steps are in
+  `bridge-android/README.md`. Until they run, the notification shapes, the conversation-id rule,
+  the reply cache and the tier-2 selectors in `Targets.kt` are assumptions.
+- **Firebase Android registration (owner step).** Create the Android app `app.kidpager.bridge` in
+  the pager's Firebase project and save its `google-services.json` as `bridge-android/app/`. Until
+  then the build is poll-only (`BuildConfig.FCM = false`), with outbound latency up to 60 s.
+- **Voice sender number.** The Voice number is typed on the setup screen; no detection is built.
+  The Voice sender number comes from the notification's ids, sender line or title (O4). Which of
+  these Voice fills is unknown until a text is seen on hardware.
+- **MMS media.** Attachments are reported by kind (`[photo]`); no media is forwarded. The app does
+  not send M-NotifyResp or M-Acknowledge, so a carrier may redeliver.
+- **Multi-account Chat.** One Google account per phone.
+- **Dual SIM.** The relay never sends an outbox item's `sim`, so sends use the default subscription.
+- **Conversation ids.** A notification's `shortcutId` and an inspect link's id may differ. If they
+  do, a conversation subscribed by link never matches its later messages.
+- **Reboot with a screen lock.** The boot receiver listens for `BOOT_COMPLETED` only, with no
+  direct-boot handling. The mitigation is the checklist's screen lock None (`docs/GOTCHAS.md`).
+- **Heartbeat gap.** The Devices row turns red after 15 min. There is no push alert for it.
+
 ### Relay
 
 - **Composer overflow gate:** message envelope limit fails on ten maximal-length contacts (pre-existing,
@@ -148,6 +175,12 @@ From `docs/HARDWARE_TESTING.md` "Not yet seen working," in order:
   numbers still blocked on-device); `cfg.sms` mode flag would be needed. Modem SMS is dead on the US Mobile
   line, and relay SMS holds unknown senders for approval (`docs/RELAY_SMS_DESIGN.md`) (status unverified,
   8 Oct 2026).
+
+**Bridge phones (`docs/BRIDGE_PHONE_DESIGN.md`)**
+- **Twilio removal.** Bridge phones now carry the bridged members. Whether Twilio goes for everyone
+  else is the owner's decision.
+- **STOP numbers on the bridge SIM (O6).** A number that opted out of Twilio is not blocked on the
+  bridge SIM. Flagged for the owner; no code.
 
 **Device/firmware**
 - **CardKB bootloader reflash** (1.1 s key-loss issue; ISP header reflash without bootloader needed if selected).

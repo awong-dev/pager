@@ -28,6 +28,15 @@ bench (8 Oct 2026) the Beam session was usable 17 s after boot, against 32 s on 
 and provisioning through Beam took 10 s against 26 s. Beam can read message bodies, so encrypting
 bodies is the open precondition before real pages go over Beam (`docs/ROADMAP.md`).
 
+**Bridge phones (9 Oct 2026): built, not yet run on a phone.** A member's SIM texts, Google Voice
+texts and subscribed Google Chat conversations can go through a headless Android phone
+(`bridge-android/`) instead of Twilio. The relay has 1316 tests passing, and the `bridge` and
+`bridge_voice` end-to-end scenarios pass against the simulator. The web pages and the Android app
+have landed, but the app has never run on a phone, and until the owner registers its Firebase
+Android app it polls for work every 60 s. Twilio stays for members without a bridge phone. See
+`docs/OVERVIEW.md` ("Bridge phones"), `relay/README.md` ("Bridge phones") and the open items in
+`docs/ROADMAP.md`.
+
 Still open, from `docs/ROADMAP.md`: cell-tower location end to end, pushing a CA from the web app,
 GNSS outdoors, and the no-coverage backoff in the field. Modem SMS is dead on the US Mobile line
 (7 Oct 2026), so texting goes through the relay. See `docs/HARDWARE_TESTING.md` for what has been

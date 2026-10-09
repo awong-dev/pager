@@ -130,10 +130,38 @@ pager itself computes.
 
 ## Texting from the pager
 
-Texts go through the relay, which gives each user one Twilio number (`RELAY_SMS_DESIGN.md`). A
+Texts go through the relay, which gives each user one Twilio number (`RELAY_SMS_DESIGN.md`), or a
+bridge phone for a member who has one (below). A
 text to or from a known, approved contact is delivered. A text from anyone else is held and the
 family's admins are alerted; a held text reaches the pager only after an admin approves the sender.
 The modem's own SMS path is dead on the US Mobile line (7 Oct 2026), so it is not used there.
+
+## Bridge phones
+
+A bridge phone is a headless Android phone running the app in `bridge-android/`. It carries a
+member's texts and Google Chat instead of Twilio (`BRIDGE_PHONE_DESIGN.md`). It is signed into the
+member's own Google account and nobody uses it. The relay holds no connection to it: the phone
+polls the relay for outbound items and posts inbound messages.
+
+- **SIM.** The phone's SIM number becomes the member's `smsNumber`. Texts to and from it go through
+  the phone as ordinary SMS, which needs the phone to be the default SMS app.
+- **Voice-only.** A phone with no SIM can carry the member's Google Voice number instead. Texts then
+  go through Google Voice, and the relay can start a new thread to any number, because it sends the
+  Voice thread link. A bridge may carry both numbers; the SIM is then the member's `smsNumber`.
+- **Google Chat.** A message from a conversation nobody has subscribed to is held, and the admins
+  get one `chat_unknown` alert. Subscribing (Family → Google Chat) puts the conversation on the
+  pager: a group becomes a group with each writer's roster nickname as the sender, and a DM becomes
+  a contact. Waiting messages are delivered in order, and later ones follow. The owner sets whether
+  the kid may reply, and can rename, pause, unsubscribe or ignore the conversation. A conversation
+  can also be added by pasting its link.
+- **Replies, two tiers.** Tier 1 fires the reply action on the Chat or Voice notification, which
+  needs no screen. If that action is gone (after a reboot, or after the notification was dismissed),
+  tier 2 opens the conversation's stored link, types the reply through the phone's accessibility
+  service, and goes home.
+- **Delivery.** A pager text to a bridged contact shows as waiting for the phone until the phone
+  acks it. An item the phone has not taken within 24 h fails.
+- **Status.** Built and tested against a simulator. The app has not run on a phone yet. Open items
+  are in `docs/ROADMAP.md`.
 
 ## Firmware updates
 
@@ -154,3 +182,4 @@ pager rolls back to the old one (`OTA_DESIGN.md`).
 | Screens | `firmware/main/ui.c`, `scr_*.c`, `gfx.c`; fonts are built by `tools/mkassets.py` |
 | Deployment | `infra/README.md` (runbook), `.github/workflows/deploy.yml` (push to `main` deploys) |
 | A simulated pager | `tools/pager_client.py`; the end-to-end suite is `tools/e2e_v2.py` |
+| Bridge phones | `relay/app/routers/bridge.py`, `relay/app/backends/bridge.py`, `relay/app/chat_subscribe.py`; the phone app in `bridge-android/` |

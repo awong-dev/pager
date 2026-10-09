@@ -151,10 +151,12 @@ Scenarios available (see `tools/e2e_v2.py`'s module docstring for details):
 - **address_book**: device requests contact approval, book/cfg ingest and ack
 - **relay_sms**: a member's relay SMS number: inbound from an approved contact, a held
   unknown number approved, and a pager text out through the Twilio mock (docs/RELAY_SMS_DESIGN.md)
-- **bridge**: the bridge phone (docs/BRIDGE_PHONE_DESIGN.md) against the `bridge-sim` compose service
-  (`tools/bridge_sim.py`, control plane on `localhost:8020`: `/_pair`, `/_inject`, `/_outbox`,
-  `/_fail_next`, `/_reset`, `/_status`): pair, a SIM text held and approved, a pager reply through the
-  outbox with an ack, an unknown Google Chat group held, subscribed and replied to, and a Voice-only variant
+- **bridge**: a bridge phone against the `bridge-sim` compose service (see "Bridge phones" below): pair,
+  a SIM text held and approved, a pager reply through the outbox with an ack, a Voice text on the same
+  contact with the reply on gvoice, an unknown Google Chat group held behind one alert, subscribed and
+  replied to, inspected by link, and ignored
+- **bridge_voice**: a Voice-only bridge: a cold outbound on gvoice with the Voice thread link, and an
+  inbound text delivered
 
 ## Message backends (docs/SERVER_PLAN.md §6.5)
 
@@ -221,17 +223,85 @@ stores message bodies in Firestore, and Twilio keeps its own copy in its message
 
 ### Bridge phones
 
-A member's texts can also go through a headless Android phone instead of Twilio: SIM SMS, Google
-Voice, and subscribed Google Chat conversations (docs/BRIDGE_PHONE_DESIGN.md, task list
-docs/BRIDGE_PHONE_TASKS.md). Twilio stays for members without a bridge phone and is untouched on
-their path. A family admin adds a phone under Family → Devices (`POST /api/family/bridges` returns a
-10-minute pairing code), the phone calls `POST /bridge/pair`, and the member's `smsNumber` becomes the
-SIM number, else the Voice number. The relay holds no connection to the phone: it polls
-`GET /bridge/outbox` (and is nudged by an FCM data push when the app has Firebase), and posts what it
-sees to `POST /bridge/events`. Bridges need **no environment variables** (the bearer token is minted at
-pairing and only its hash is stored). The runbook (phone setup checklist, pairing, the simulator
-`tools/bridge_sim.py`) is D1's "Bridge phones" section; until it lands, `docs/BRIDGE_PHONE_DESIGN.md`
-is the reference.
+A member's texts can also go through a headless Android phone (`bridge-android/`) instead of Twilio:
+the SIM's texts, Google Voice texts, and subscribed Google Chat conversations. Design:
+`docs/BRIDGE_PHONE_DESIGN.md`; tasks: `docs/BRIDGE_PHONE_TASKS.md`. Members without a bridge phone stay
+on Twilio. Bridges need no environment variables: the bearer token is minted at pairing and only its
+hash is stored.
+
+**Pair a phone (web).** Family → Devices → *Add bridge phone*: pick the member and a label. The panel
+shows an 8-digit code, valid for 10 minutes. The phone's setup screen takes the code and *Pair*; a code
+that has expired or was used is refused (404), so use *New code*. The member's `smsNumber` becomes the
+SIM number, else the Voice number. The row shows *last seen* after the first heartbeat (every 5 min).
+*Reassign*, *Edit numbers* (SIM and Voice, either optional), *Accept SIM* and *Unpair* are on the same
+row. Unpair fails the phone's pending outbox items and clears the member's number; contacts and
+conversations are kept.
+
+**Phone setup checklist** (copied from `bridge-android/README.md`; the setup screen has a button or
+status row for each step). Build and install first:
+
+```sh
+cd bridge-android
+export JAVA_HOME=/opt/homebrew/opt/openjdk@17      # AGP 8.7 refuses the default JDK 25
+./gradlew assembleDebug
+adb install -r app/build/outputs/apk/debug/app-debug.apk
+adb shell am start -n app.kidpager.bridge/.SetupActivity
+```
+
+On the phone, in this order:
+
+1. Sign the phone into the bridge member's own Google account; install Google Chat and Google Voice,
+   sign both in, notifications **on** for both. **Keep this account's contacts list empty** so Voice
+   shows the peer's number, not a name.
+2. Open Pager Bridge → *Grant runtime permissions* (SMS, phone, accounts, notifications).
+3. *Open notification access settings* → enable Pager Bridge.
+4. *Make default SMS app* (only if the phone has a SIM you want to text through).
+5. *Exempt from battery optimisation*.
+6. *Open accessibility settings* → enable Pager Bridge. Without it, outbox items that need tier 2 ack
+   `failed no_accessibility`.
+7. Fill *Relay URL*, check the auto-filled *SIM number* (blank = no SIM), enter the *Google Voice
+   number* if the account has one, optionally the account emails, then *Save fields*.
+8. Paste the 8-digit code from Family → Devices and tap *Pair*. The token is stored encrypted and the
+   service starts.
+9. Phone hygiene: screen lock **None** (a PIN leaves the phone before first unlock after a power cut;
+   no app runs and no notification fires), Do Not Disturb off, never leave Chat open on a thread,
+   charge limiter or smart-plug duty cycle, and `adb tcpip 5555` for maintenance over Wi-Fi.
+
+**Latency.** The app polls `GET /bridge/outbox` every 60 s (30–300 s on the setup screen) and again on
+every FCM push. Push needs the owner's Firebase step (`bridge-android/README.md`); until then, outbound
+takes up to 60 s.
+
+**Limits (in code).** 10 `/bridge/pair` calls a minute, globally. 120 events a minute per bridge; a
+batch over the limit gets 429. 50 new Chat conversations a day per bridge. 25 held Chat messages per
+conversation. A pending outbox item older than 24 h fails with `bridge_offline`.
+
+**Simulator (no phone).** `tools/bridge_sim.py` speaks the phone's `/bridge/*` contract, with a control
+plane on `localhost:8020` (the compose service `bridge-sim`):
+
+```sh
+cd relay
+docker compose up -d --build bridge-sim
+python3 -I ../tools/bridge_sim.py --help
+```
+
+- `POST /_pair {code, simNumber?, voiceNumber?}` pairs with a code from Devices (`null` for none).
+- `POST /_inject {event}` (or `{events: [...]}`) posts an inbound event to `/bridge/events` and returns
+  the relay's result.
+- `GET /_outbox` lists what the sim "sent". Each item is acked `sent` (tier 1) unless a failure is armed.
+- `POST /_fail_next {times}` acks the next N items `failed` (`sim_failed`).
+- `POST /_reset` and `GET /_status`.
+
+**End to end.** With the stack up (`docker compose up -d --build` in `relay/`), from the repo root:
+
+```sh
+python3 tools/e2e_v2.py bridge bridge_voice
+```
+
+Scenario descriptions are in the list above.
+
+**Tests.** `relay/tests/test_bridge_*.py`, `test_chat_subscribe.py` and `test_family_bridges.py` (the
+rules for the bridge collections are in `test_rules.py`). The Android unit tests are in
+`bridge-android/app/src/test`, run with `./gradlew testDebugUnitTest`.
 
 ## CLI Tools
 

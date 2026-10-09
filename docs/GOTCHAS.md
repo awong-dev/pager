@@ -321,6 +321,22 @@ did not exist.
 
 **Rule:** these rows are harmless; they stay in Firestore and will never be read or deleted. The new SMS backend design uses `users.smsNumber` on persons and `users/{uid}/backends/{bid}` rows on externals. See docs/RELAY_SMS_DESIGN.md for the full flow.
 
+## A bridge phone that reboots with a screen lock stays dark (9 Oct 2026)
+
+**Symptom:** after a power cut or reboot, nothing from the bridge phone arrives. Chat and Voice texts do not reach the relay, SMS is not forwarded, outbox items wait, and the Devices row's last-seen goes red after 15 min.
+
+**Cause:** with a PIN, pattern or password set, Android keeps the phone in before-first-unlock state after a reboot. No app runs and no notification fires, and `BOOT_COMPLETED` is not sent until the first unlock. Pager Bridge's boot receiver listens only for `BOOT_COMPLETED` (`bridge-android/app/src/main/AndroidManifest.xml`), so nothing restarts it.
+
+**Rule:** the bridge phone's screen lock is **None** (the setup checklist in `relay/README.md`, "Bridge phones"). The app has no direct-boot handling yet (`docs/ROADMAP.md`), and the screen-lock-None recovery has not been tested on a phone.
+
+## A Voice text arrives as a name, not a number (9 Oct 2026)
+
+**Symptom:** a Google Voice text shows in the relay's `bridge in` log with `outcome=dropped_bad_from`. Nothing reaches the pager, and no alert appears.
+
+**Cause:** when the bridge account's contacts list holds the sender, Voice shows the contact's name instead of the number. The app takes the sender number from the notification ids, the sender line or the title (decision O4). If none of them is a phone number, the event carries `sender.name` only, and the relay drops it.
+
+**Rule:** keep the bridge account's contacts list empty (the setup checklist). A name-only sender is dropped with one INFO line and never raises an alert.
+
 ## Tools and workflow
 
 **`serial_capture.py` overwrites without warning:**
