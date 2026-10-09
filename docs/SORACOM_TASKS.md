@@ -176,7 +176,7 @@ D1 docs sweep (after F5/R3)
   idempotent; prints the resulting group config. Use `httpx` from the relay venv.
 - **Verify:** `--dry-run` prints the exact requests with the secret redacted; unit-test the
   request builder with the relay pytest if cheap. It cannot be run live without the owner's key:
-  say so.
+  say so. (Ran live 8 Oct 2026 with the key from `~/soracom.key`; field names accepted.)
 
 ### D1 — Docs sweep (docs-writer, after F5 and R3)
 - **Do:** `docs/README.md` row for `SORACOM_DESIGN.md`/`SORACOM_TASKS.md`; `SORACOM_EVAL.md` status

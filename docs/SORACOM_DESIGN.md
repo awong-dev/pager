@@ -245,8 +245,25 @@ stays up. The unit is fully erased, so every step starts with a full flash
   pages at +10 and +40 min both "on pager" within a minute of Send (delivered into eDRX
   sleep), battery samples every ~25 min at 3700 mV, device page after the hour online with
   sleeps 152, reconnects 2 (the two deliberate reboots), ext1 wakes 0.
-- **E.** Not run: the Soracom console is signed out on the bench Mac and no API key is present,
-  so Beam is not configured for the SIM's group (§5 is the owner's step).
+- **E.** Passed (19:40-19:51 PDT, after the owner supplied the API key in `~/soracom.key`).
+  `tools/soracom_beam.py --imsi 311588112011642` ran live: group `pager-beam` created, the
+  SoracomBeam entry accepted with the §5 field names (echoed back unchanged by GET), SIM set to
+  the group. Bench (debug image, `bearer auto` -> beam, `battstat reboot`): `bearer beam: no TLS
+  profile, MQTT to beam.soracom.io:1883 plain`, `+SQNSMQTTONCONNECT:0,0` 1 s after the connect,
+  session usable **17.4 s after boot** (direct: 32 s; no TLS handshake, no CA step). Web: Devices
+  row "via Beam" + "Soracom", Push/Un-pin CA hidden. Messaging through Beam: page "beam page one"
+  `+SQNSMQTTONMESSAGE` ~1 s after Send, `shown` within 1 s, "read on pager"; console reply
+  "okbeam" reached the web ("sent to app"). The pager also re-acked the two earlier watch pages
+  as `shown` on this session (web flipped them to "read on pager"). NVS erased
+  (`erase_region 0x9000 0x6000`), Rotate on Devices -> sora1, `setup <code> @ host`:
+  `bootstrap via Beam: ignoring the code's host ...:8883, plain MQTT to beam.soracom.io:1883`,
+  bootstrap session as `boot-<id>` usable 2 s after attach, bundle 327 B, `SETUP CA fetch skipped:
+  Beam bearer terminates TLS`, **`SETUP done` 10 s after the command** (direct: 26 s); after the
+  restart `trust state at boot: unpinned`, session usable 17.4 s. Release image flashed back:
+  `boot complete, entering sleep mode` 15.7 s, session usable 16.0 s, `/status online
+  (mode=sleep)`; a page sent to the sleeping unit was "on pager" ~40 s after Send. Not seen:
+  any refusal from Beam, any CME error on the plain connect. Unit left: release image,
+  provisioned as sora1 via Beam, **no NVS bearer override** (auto), port closed.
 
 Definition of done: steps A–D pass on the bench unit; relay tests, web lint/tsc/build, host tests
 and both firmware builds pass; the Beam step E is either passed or left with the exact owner

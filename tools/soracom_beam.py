@@ -17,7 +17,8 @@ group. The auth key id and secret come only from the environment, are never prin
 (--dry-run shows <redacted>) and are never written to disk; the API key and token live in
 memory only. Paths verified against the soracom-cli copy of the API spec (8 Oct 2026);
 the field names inside the Beam entry `value` are not in the public spec and come from
-docs/SORACOM_TASKS.md T1 (unverified until a live run).
+docs/SORACOM_TASKS.md T1; a live run on 8 Oct 2026 created `pager-beam`, had the entry
+accepted as written and the pager then connected through Beam (docs/SORACOM_DESIGN.md §6 E).
 """
 
 from __future__ import annotations
