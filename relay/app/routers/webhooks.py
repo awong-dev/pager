@@ -59,22 +59,18 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from google.api_core.exceptions import GoogleAPICallError
 from starlette.concurrency import run_in_threadpool
 
-from app import alerts as alerts_module
-from app import book, sms_compliance
-from app import policy as policy_module
+from app import sms_compliance
 from app.backends import gchat as gchat_backend
 from app.backends import sms_twilio
 from app.backends.resolve import USAGE_HINT, resolve_reply
 from app.broker import BrokerClient
 from app.ids import new_id
+from app.inbound_text import handle_text
 from app.ingest import Ingest
 from app.notify import sms as sms_client
 from app.routing import Routing
 from app.store import backends as backends_store
 from app.store import externals as externals_store
-from app.store import families as families_store
-from app.store import held_sms as held_sms_store
-from app.store import messages as messages_store
 from app.store import rate_limits as rate_limits_store
 from app.store import sms_consent as sms_consent_store
 from app.store import users as users_store
@@ -231,7 +227,6 @@ def _handle_inbound_sms(params: dict[str, str], routing: Routing) -> tuple[str, 
         or target.smsNumber != to_number
     ):
         return "dropped_unknown_to", "-"
-    family_id = target.familyId
     to_label = f"@{target.alias}"
 
     try:
@@ -254,61 +249,20 @@ def _handle_inbound_sms(params: dict[str, str], routing: Routing) -> tuple[str, 
         sms_client.send_sms(from_number, reply, from_number=to_number)
         return f"keyword_{kw}", to_label
 
-    family = families_store.get_family(family_id)
-    if family is not None and from_number in family.blockedNumbers:
-        return "blocked", to_label
-
-    if held_sms_store.exists(sid) or messages_store.wire_id_exists(sid, target.uid):
-        return "duplicate", to_label
-
-    # `raw_body` is kept as received (held rows show parents the original);
-    # `body` is what may reach a pager (§3.1 control characters).
-    raw_body = (params.get("Body") or "").strip()
-    body = sms_twilio.pager_body(raw_body)
-    if not body:
-        try:
-            media = int(params.get("NumMedia") or "0")
-        except ValueError:
-            media = 0
-        if media <= 0:
-            return "dropped_empty", to_label
-        raw_body = body = "[photo]"
-
-    contact = externals_store.get_family_contact(family_id, from_number)
-    if (
-        contact is not None
-        and not contact.disabled
-        and policy_module.check(contact, target, False, book.edge_or_family(target, contact))
-        is None
-    ):
-        if sms_twilio.body_too_long(body):
-            # Rejected with a hint, never truncated, and never stored.
-            sms_client.send_sms(from_number, sms_twilio.too_long_hint(), from_number=to_number)
-            return "too_long", to_label
-        bid = externals_store.ensure_sms_backend(contact)
-        result = routing.send(
-            sender_uid=contact.uid,
-            recipient_alias=target.alias,
-            kind="text",
-            body=body,
-            origin_backend_kind="sms",
-            origin_backend_id=bid,
-            wire_id=sid,
-        )
-        if result.rejected:
-            return f"rejected_{result.rejected[0].reason}", to_label
-        return ("delivered" if result.messages else "duplicate"), to_label
-
-    # Held: no contact, no edge, or the member's numbers rule is `none`.
-    if held_sms_store.count_held(family_id, from_number, target.uid) >= held_sms_store.HELD_CAP:
-        return "held_cap", to_label
-    if not held_sms_store.create(
-        sid, family_id=family_id, to_uid=target.uid, from_phone=from_number, body=raw_body
-    ):
-        return "duplicate", to_label
-    alert_id = alerts_module.sms_held_upsert(family_id, target, from_number, raw_body)
-    held_sms_store.set_alert_id([sid], alert_id)
-    return "held", to_label
+    try:
+        media = int(params.get("NumMedia") or "0")
+    except ValueError:
+        media = 0
+    outcome = handle_text(
+        target,
+        from_number,
+        params.get("Body") or "",
+        sid,
+        routing,
+        reply=lambda text: sms_client.send_sms(from_number, text, from_number=to_number),
+        attachments=["image"] if media > 0 else [],
+    )
+    return outcome, to_label
 
 
 @router.post("/webhooks/twilio/sms")

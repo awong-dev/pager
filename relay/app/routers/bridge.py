@@ -8,22 +8,28 @@ through `app.bridgeauth.require_bridge`.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
+import re
 import time
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from starlette.concurrency import run_in_threadpool
 
 from app import bridge_numbers
+from app.backends.sms_twilio import voice_link
 from app.bridgeauth import mint_token, require_bridge
+from app.inbound_text import handle_text
+from app.notify import sms as sms_client
 from app.routers.webhooks import _check_webhook_ip_rate_limit
 from app.store import bridge_outbox
 from app.store import bridges as bridges_store
 from app.store import externals as externals_store
 from app.store import messages as messages_store
 from app.store import rate_limits as rate_limits_store
+from app.store import users as users_store
 
 logger = logging.getLogger("relay.bridge")
 
@@ -198,3 +204,165 @@ def ack_outbox(
         bridge.id, ob_id, item.state, req.tier, latency_ms,
     )
     return Response(status_code=204)
+
+
+# ---------------------------------------------------------------------------
+# POST /bridge/events -- decision 5
+# ---------------------------------------------------------------------------
+
+EVENT_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+EVENTS_PER_MINUTE = 120
+MAX_EVENTS_PER_BATCH = 50
+
+
+class EventConversation(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    id: str = Field(min_length=1)
+    title: str | None = Field(default=None, max_length=200)
+    isGroup: bool = False
+    link: str | None = Field(default=None, max_length=2048)
+
+    @field_validator("id")
+    @classmethod
+    def _id_bytes(cls, v: str) -> str:
+        if len(v.encode("utf-8")) > 512:
+            raise ValueError("conversation.id longer than 512 bytes")
+        return v
+
+
+class EventSender(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    name: str = Field(default="", max_length=200)
+    phone: str | None = Field(default=None, max_length=64)
+
+
+class EventAttachment(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    kind: Literal["image", "video", "audio", "file"]
+
+
+class BridgeEvent(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    id: str
+    source: Literal["sms", "gchat", "gvoice"]
+    kind: Literal["message", "inspect"] = "message"
+    conversation: EventConversation
+    sender: EventSender = Field(default_factory=EventSender)
+    text: str = Field(default="", max_length=1600)
+    ts: float = 0
+    attachments: list[EventAttachment] = Field(default_factory=list, max_length=20)
+    people: list[Annotated[str, Field(max_length=200)]] = Field(default_factory=list, max_length=64)
+
+    @field_validator("id")
+    @classmethod
+    def _id_shape(cls, v: str) -> str:
+        if not EVENT_ID_RE.match(v):
+            raise ValueError("event id must match ^[A-Za-z0-9_-]{1,64}$")
+        return v
+
+
+class EventsRequest(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    events: list[BridgeEvent] = Field(max_length=MAX_EVENTS_PER_BATCH)
+
+
+def conv_log_id(conversation_id: str) -> str:
+    return hashlib.sha256(conversation_id.encode()).hexdigest()[:8]
+
+
+def _from_label(event: BridgeEvent) -> str:
+    if event.sender.phone:
+        return sms_client.redact_phone(event.sender.phone)
+    return event.sender.name or "-"
+
+
+def _handle_text_event(
+    bridge: bridges_store.Bridge, event: BridgeEvent, routing
+) -> str:
+    """`sms` / `gvoice` messages (decision 5): the target is always the
+    bridge owner; the step table is `inbound_text.handle_text`."""
+    if event.kind != "message":
+        return "dropped_unsupported"
+    if event.conversation.isGroup:
+        return "dropped_group"
+    target = users_store.get_user(bridge.ownerUid)
+    if (
+        target is None
+        or target.kind != "person"
+        or target.disabled
+        or target.familyId is None
+    ):
+        return "dropped_owner"
+    caps_ok = bridge.caps.sms if event.source == "sms" else bridge.caps.gvoice
+    if not caps_ok:
+        return "dropped_cap"
+    try:
+        from_number = externals_store.normalize_phone(event.sender.phone or "")
+    except ValueError:
+        return "dropped_bad_from"
+    sid = f"br_{bridge.id}_{event.id}"
+    gvoice = event.source == "gvoice"
+
+    def reply(text: str) -> None:
+        bridge_outbox.enqueue_hint(
+            bridge,
+            source=event.source,
+            phone=from_number,
+            text=text,
+            wire_id=sid,
+            to_extra=(
+                {"conversationId": event.conversation.id, "link": voice_link(from_number)}
+                if gvoice
+                else None
+            ),
+        )
+
+    return handle_text(
+        target,
+        from_number,
+        event.text,
+        sid,
+        routing,
+        reply=reply,
+        attachments=[a.kind for a in event.attachments],
+        via=event.source,
+        voice_conv=event.conversation.id if gvoice else None,
+    )
+
+
+def process_event(bridge: bridges_store.Bridge, event: BridgeEvent, routing) -> str:
+    if event.source in ("sms", "gvoice"):
+        return _handle_text_event(bridge, event, routing)
+    return "dropped_unsupported"  # gchat: B4
+
+
+def process_events(bridge: bridges_store.Bridge, events: list[BridgeEvent], routing) -> list[dict]:
+    for _ in events:
+        if not rate_limits_store.check_and_increment(
+            f"bridge_events:{bridge.id}", limit=EVENTS_PER_MINUTE, window_s=60
+        ):
+            raise HTTPException(status_code=429, detail="too many requests")
+    results = []
+    for event in events:
+        outcome = process_event(bridge, event, routing)
+        logger.info(
+            "bridge in bridge=%s src=%s conv=%s from=%s outcome=%s",
+            bridge.id, event.source, conv_log_id(event.conversation.id), _from_label(event), outcome,
+        )
+        results.append({"id": event.id, "outcome": outcome})
+    return results
+
+
+@router.post("/events")
+async def post_events(
+    req: EventsRequest,
+    request: Request,
+    bridge: Annotated[bridges_store.Bridge, Depends(require_bridge)],
+) -> dict:
+    results = await run_in_threadpool(process_events, bridge, req.events, request.app.state.routing)
+    return {"results": results}

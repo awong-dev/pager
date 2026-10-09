@@ -133,14 +133,20 @@ def enqueue_send(
 
 
 def enqueue_hint(
-    bridge: bridges_store.Bridge, *, source: str, phone: str, text: str, wire_id: str
+    bridge: bridges_store.Bridge,
+    *,
+    source: str,
+    phone: str,
+    text: str,
+    wire_id: str,
+    to_extra: dict[str, Any] | None = None,
 ) -> OutboxItem:
     """The `too_long` reply hint: id `ob_h_<wireId>`, no `msgId`/`bid`, so a
     retried event batch does not text the hint twice."""
     return _create(
         bridge,
         f"ob_h_{wire_id}",
-        {"kind": "send", "source": source, "to": {"phone": phone}, "text": text,
+        {"kind": "send", "source": source, "to": {"phone": phone, **(to_extra or {})}, "text": text,
          "msgId": None, "bid": None, "replyHint": None},
     )
 
