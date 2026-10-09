@@ -4,6 +4,7 @@ backend is one module + one line in `registry.py`"."""
 from __future__ import annotations
 
 from app.backends.base import Backend
+from app.backends.bridge import BridgeBackend
 from app.backends.gchat import ChatClient, GChatBackend
 from app.backends.pager import PagerBackend
 from app.backends.sms_twilio import SmsTwilioBackend
@@ -27,4 +28,7 @@ def build_registry(
         "gchat": GChatBackend(chat_client),
         # docs/RELAY_SMS_DESIGN.md decision 3: the row lives on an external.
         "sms": SmsTwilioBackend(),
+        # docs/BRIDGE_PHONE_DESIGN.md decision 7: a subscribed Google Chat
+        # conversation; the row lives on an external.
+        "bridge": BridgeBackend(),
     }

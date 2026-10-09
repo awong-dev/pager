@@ -487,6 +487,7 @@ def list_recent_queued_by_kind(
     limit: int = 50,
     max_age_s: int = EXPIRY_SECONDS,
     max_pages: int = 20,
+    exclude_external_prefix: str | None = None,
 ) -> list[Message]:
     """Messages created within `max_age_s` (default 24h) with at least one
     `kind`-backend delivery still `queued`, oldest first, at most `limit`.
@@ -494,7 +495,10 @@ def list_recent_queued_by_kind(
     device id, so no indexed array field to query). The window is paged by
     `createdAt` cursor (pages of 50, at most `max_pages`) and the `kind`/
     `queued` filter runs in Python, so a queued delivery behind many
-    unrelated messages is still found."""
+    unrelated messages is still found. `exclude_external_prefix` drops
+    deliveries whose `externalId` starts with it (the tick passes `ob_` so a
+    phone's offline backlog cannot starve Twilio retries,
+    docs/BRIDGE_PHONE_DESIGN.md decision 4)."""
     cutoff = datetime.fromtimestamp(time.time() - max_age_s, tz=UTC)
     page_size = 50
     out: list[Message] = []
@@ -511,7 +515,15 @@ def list_recent_queued_by_kind(
         snaps = list(query.stream())
         for snap in snaps:
             msg = Message.model_validate({"id": snap.id, **(snap.to_dict() or {})})
-            if any(d.kind == kind and d.state == "queued" for d in msg.deliveries.values()):
+            if any(
+                d.kind == kind
+                and d.state == "queued"
+                and not (
+                    exclude_external_prefix is not None
+                    and (d.externalId or "").startswith(exclude_external_prefix)
+                )
+                for d in msg.deliveries.values()
+            ):
                 out.append(msg)
                 if len(out) >= limit:
                     return out
@@ -573,10 +585,13 @@ def mark_delivery_sent_if_queued(msg_id: str, backend_id: str) -> None:
     run_transaction(_txn)
 
 
-def mark_delivery_failed_if_queued(msg_id: str, backend_id: str) -> None:
+def mark_delivery_failed_if_queued(
+    msg_id: str, backend_id: str, *, error: str | None = None
+) -> None:
     """`queued` -> `failed` for a delivery that can never succeed (a
     definitive provider rejection), so the tick does not retry it. Only a
-    `queued` delivery is touched."""
+    `queued` delivery is touched. `error` (docs/BRIDGE_PHONE_DESIGN.md
+    decision 11: the phone's `reason`) is stored with it when given."""
     ref = _messages().document(msg_id)
 
     def _txn(transaction: Transaction) -> None:
@@ -585,9 +600,18 @@ def mark_delivery_failed_if_queued(msg_id: str, backend_id: str) -> None:
             return
         delivery = ((snap.to_dict() or {}).get("deliveries") or {}).get(backend_id)
         if delivery and delivery.get("state") == "queued":
-            transaction.update(ref, {f"deliveries.{backend_id}.state": "failed"})
+            updates: dict[str, object] = {f"deliveries.{backend_id}.state": "failed"}
+            if error is not None:
+                updates[f"deliveries.{backend_id}.error"] = error
+            transaction.update(ref, updates)
 
     run_transaction(_txn)
+
+
+def set_delivery_external_id(msg_id: str, backend_id: str, external_id: str) -> None:
+    """Records the provider-side id of a delivery (the bridge outbox id,
+    docs/BRIDGE_PHONE_DESIGN.md decision 4) without touching its state."""
+    _messages().document(msg_id).update({f"deliveries.{backend_id}.externalId": external_id})
 
 
 def apply_delivery_ack(

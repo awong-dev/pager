@@ -7,17 +7,22 @@ through `app.bridgeauth.require_bridge`.
 
 from __future__ import annotations
 
+import asyncio
 import logging
-from typing import Annotated
+import time
+from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, ConfigDict, Field
+from starlette.concurrency import run_in_threadpool
 
 from app import bridge_numbers
 from app.bridgeauth import mint_token, require_bridge
 from app.routers.webhooks import _check_webhook_ip_rate_limit
+from app.store import bridge_outbox
 from app.store import bridges as bridges_store
 from app.store import externals as externals_store
+from app.store import messages as messages_store
 from app.store import rate_limits as rate_limits_store
 
 logger = logging.getLogger("relay.bridge")
@@ -129,5 +134,67 @@ def heartbeat(
         bridges_store.set_error(bridge.id, SIM_CHANGED)
     elif bridge.status.error == SIM_CHANGED:
         bridges_store.set_error(bridge.id, None)
-    return {"pending": 0}
+    return {"pending": bridge_outbox.count_pending(bridge.id)}
 
+
+
+OUTBOX_WAIT_CAP_S = 25
+OUTBOX_POLL_INTERVAL_S = 2
+
+
+@router.get("/outbox")
+async def get_outbox(
+    bridge: Annotated[bridges_store.Bridge, Depends(require_bridge)],
+    wait: Annotated[int, Query(ge=0)] = 0,
+) -> dict:
+    """Decision 11 / O2: pending items, oldest first, at most 20. `wait`
+    (cap 25 s, default 0) long-polls in 2-s Firestore reads; the sleep is
+    `asyncio.sleep`, so a waiting poll holds no threadpool thread. The phone
+    itself polls with `wait=0` (O2); `wait` is for the simulator and e2e."""
+    deadline = time.monotonic() + min(wait, OUTBOX_WAIT_CAP_S)
+    while True:
+        items = await run_in_threadpool(bridge_outbox.list_pending, bridge.id)
+        if items or time.monotonic() >= deadline:
+            return {"items": [i.for_phone() for i in items]}
+        await asyncio.sleep(min(OUTBOX_POLL_INTERVAL_S, max(0.0, deadline - time.monotonic())))
+
+
+class AckRequest(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    state: Literal["sent", "failed"]
+    reason: str | None = Field(default=None, max_length=200)
+    tier: Literal[1, 2] = 1
+
+
+def apply_ack_to_delivery(item: bridge_outbox.OutboxItem) -> None:
+    """Decision 11: re-applies the delivery transition from the stored row
+    state (both helpers are monotonic), so a retried ack repairs a lost
+    delivery write. Items without a `msgId` (hints, inspect) have none."""
+    if not item.msgId or not item.bid:
+        return
+    if item.state == "sent":
+        messages_store.mark_delivery_sent_if_queued(item.msgId, item.bid)
+    elif item.state == "failed":
+        messages_store.mark_delivery_failed_if_queued(item.msgId, item.bid, error=item.reason)
+
+
+@router.post("/outbox/{ob_id}/ack", status_code=204)
+def ack_outbox(
+    ob_id: str, req: AckRequest, bridge: Annotated[bridges_store.Bridge, Depends(require_bridge)]
+) -> Response:
+    acked = bridge_outbox.ack(bridge.id, ob_id, req.state, req.reason, req.tier)
+    if acked is None:
+        raise HTTPException(status_code=404, detail="no such outbox item")
+    item, transitioned = acked
+    apply_ack_to_delivery(item)
+    if transitioned and req.tier == 2:
+        bridges_store.increment_tier2(bridge.id)
+    latency_ms = -1
+    if item.createdAt is not None and item.ackedAt is not None:
+        latency_ms = int((item.ackedAt - item.createdAt).total_seconds() * 1000)
+    logger.info(
+        "bridge out bridge=%s ob=%s state=%s tier=%d ms=%d",
+        bridge.id, ob_id, item.state, req.tier, latency_ms,
+    )
+    return Response(status_code=204)

@@ -36,9 +36,11 @@ from pydantic import BaseModel, ConfigDict
 
 from app import sms_compliance
 from app.backends.base import DeliverResult, LinkStep
+from app.backends.bridge import apply_outbox_state
 from app.notify import sms as sms_client
+from app.store import bridge_outbox, sms_consent
+from app.store import bridges as bridges_store
 from app.store import messages as messages_store
-from app.store import sms_consent
 from app.store import users as users_store
 from app.store.backends import Backend as BackendRow
 from app.store.messages import Delivery, Message
@@ -58,6 +60,12 @@ class SmsConfig(BaseModel):
 
 def _today_utc() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%d")
+
+
+def voice_link(e164: str) -> str:
+    """O1 (revised): the Voice web app addresses a thread by the peer's
+    number, so tier 2 can start a text to any number."""
+    return f"https://voice.google.com/u/0/messages?itemId=t.{e164}"
 
 
 def _render_body(msg: Message) -> str:
@@ -90,6 +98,13 @@ class SmsTwilioBackend:
             )
             messages_store.mark_delivery_failed_if_queued(msg.id, backend.id)
             return DeliverResult(ok=False, state="failed", error="no_sms_number")
+
+        # docs/BRIDGE_PHONE_DESIGN.md decision 4 (+ O1 revised): a sender whose
+        # number is a paired bridge's SIM or Voice number texts through the
+        # phone -- before the consent gate (10DLC obligations are Twilio's).
+        bridge = bridges_store.get_by_sms_number(from_number)
+        if bridge is not None and (bridge.caps.sms or bridge.caps.gvoice):
+            return self._deliver_via_bridge(msg, backend, bridge, phone, from_number)
 
         consent = sms_consent.get(phone)
         if consent is None or consent.status != "opted_in":
@@ -125,6 +140,43 @@ class SmsTwilioBackend:
         if status == "failed":
             messages_store.mark_delivery_failed_if_queued(msg.id, backend.id)
         return DeliverResult(ok=False, state=status, error=result.error)  # type: ignore[arg-type]
+
+    def _deliver_via_bridge(
+        self,
+        msg: Message,
+        backend: BackendRow,
+        bridge: bridges_store.Bridge,
+        phone: str,
+        from_number: str,
+    ) -> DeliverResult:
+        """Channel per send: the sender's `config.via` entry for this
+        external if set, else `gvoice` when the sender's number is the
+        bridge's Voice number (and not its SIM), else `sms`; demoted to
+        whatever the bridge's caps allow."""
+        via = (backend.config.get("via") or {}).get(msg.senderUid)
+        if via not in ("sms", "gvoice"):
+            via = "gvoice" if from_number == bridge.voiceNumber != bridge.simNumber else "sms"
+        if via == "gvoice" and not bridge.caps.gvoice:
+            via = "sms"
+        if via == "sms" and not bridge.caps.sms:
+            via = "gvoice"
+        to: dict[str, str] = {"phone": phone}
+        if via == "gvoice":
+            conv = (backend.config.get("voiceConv") or {}).get(msg.senderUid)
+            if conv:
+                to["conversationId"] = conv
+            to["link"] = voice_link(phone)
+        item = bridge_outbox.enqueue_send(
+            bridge, msg.id, backend.id, source=via, to=to, text=_render_body(msg)
+        )
+        logger.info(
+            "sms out to=%s from=%s sid=%s status=%s code=bridge",
+            sms_client.redact_phone(phone),
+            sms_client.redact_phone(from_number),
+            item.id,
+            "queued" if item.state == "pending" else item.state,
+        )
+        return apply_outbox_state(msg, backend.id, item)
 
     def start_link(self, user: User, backend: BackendRow) -> LinkStep | None:
         return None

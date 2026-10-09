@@ -39,6 +39,7 @@ from app.routers import conversations as conversations_router
 from app.routing import Routing
 from app.store import alerts as alerts_store
 from app.store import allow as allow_store
+from app.store import bridges as bridges_store
 from app.store import contacts as contacts_store
 from app.store import conversations as conversations_store
 from app.store import devices as devices_store
@@ -705,6 +706,11 @@ def _consent_by_admin(family_id: str, e164: str, from_number: str | None) -> Non
         from_number = members[0].smsNumber if members else None
     if from_number is None:
         logger.warning("sms welcome skipped: no member number")
+        return
+    # docs/BRIDGE_PHONE_DESIGN.md O3 (+ O1 revised): a member texting from a
+    # bridge phone's SIM or Voice number needs no disclosure.
+    if bridges_store.get_by_sms_number(from_number) is not None:
+        logger.info("sms welcome skipped: bridge number")
         return
     sms_client.send_sms(e164, sms_compliance.welcome(), from_number=from_number)
 

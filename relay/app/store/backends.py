@@ -50,7 +50,7 @@ from app.db.firestore import get_db
 
 logger = logging.getLogger(__name__)
 
-BackendKind = Literal["pager", "webapp", "gchat", "sms"]
+BackendKind = Literal["pager", "webapp", "gchat", "sms", "bridge"]
 
 
 class Backend(BaseModel):
@@ -83,7 +83,7 @@ def create_backend(
             "kind": kind,
             "config": config or {},
             "enabled": enabled,
-            "verifiedAt": SERVER_TIMESTAMP if kind in ("webapp", "sms") else None,
+            "verifiedAt": SERVER_TIMESTAMP if kind in ("webapp", "sms", "bridge") else None,
         }
     )
     fetched = get_backend(uid, bid)
@@ -96,16 +96,20 @@ def _owner_is_external(uid: str) -> bool:
     return snap.exists and (snap.to_dict() or {}).get("kind") == "external"
 
 
+# `bridge` (docs/BRIDGE_PHONE_DESIGN.md decision 7) is treated like `sms`.
+_EXTERNAL_ONLY_KINDS = ("sms", "bridge")
+
+
 def _live_kind(uid: str, bid: str, data: dict, external: bool | None = None) -> bool:
     kind = data.get("kind")
     if kind not in get_args(BackendKind):
         logger.warning("skipping backend %s/%s of retired kind %r", uid, bid, kind)
         return False
-    if kind == "sms":
+    if kind in _EXTERNAL_ONLY_KINDS:
         if external is None:
             external = _owner_is_external(uid)
         if not external:
-            logger.warning("skipping sms backend %s/%s on a non-external owner", uid, bid)
+            logger.warning("skipping %s backend %s/%s on a non-external owner", kind, uid, bid)
             return False
     return True
 
@@ -125,11 +129,16 @@ def list_backends(uid: str) -> list[Backend]:
     external: bool | None = None  # looked up at most once, only if an sms row is seen
     for snap in _backends(uid).stream():
         data = snap.to_dict() or {}
-        if data.get("kind") == "sms" and external is None:
+        if data.get("kind") in _EXTERNAL_ONLY_KINDS and external is None:
             external = _owner_is_external(uid)
         if _live_kind(uid, snap.id, data, external):
             out.append(Backend.model_validate({"id": snap.id, **data}))
     return out
+
+
+def has_kind(uid: str, kind: str) -> bool:
+    """True when `uid` has a live backend row of `kind`."""
+    return any(b.kind == kind for b in list_backends(uid))
 
 
 def update_backend(

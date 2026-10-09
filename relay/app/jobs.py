@@ -115,7 +115,7 @@ import logging
 import os
 import time
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from google.cloud.firestore import (
     Client,
@@ -128,6 +128,7 @@ from google.cloud.firestore import (
 from app import location
 from app.db.firestore import get_db
 from app.routing import Routing
+from app.store import bridge_outbox
 from app.store import bridges as bridges_store
 from app.store import devices as devices_store
 from app.store import messages as messages_store
@@ -141,6 +142,9 @@ logger = logging.getLogger("relay.jobs")
 # `sms`: docs/RELAY_SMS_DESIGN.md decision 3). `record_delivery_attempt`'s
 # MAX_DELIVERY_ATTEMPTS ends the retries.
 NON_PAGER_RETRY_KINDS: tuple[str, ...] = ("sms",)
+BRIDGE_EXTERNAL_PREFIX = "ob_"
+BRIDGE_OFFLINE_AFTER = timedelta(hours=24)
+BRIDGE_ACKED_RETENTION = timedelta(days=7)
 NON_PAGER_RETRY_SCAN_LIMIT = 50
 # Caps how many non-pager retries one tick dispatches (not scans): a tick with
 # Twilio down must not approach Cloud Run's request timeout.
@@ -153,6 +157,26 @@ class TickResult:
     retriesAttempted: int
     locReqsCleared: int = 0
     nonPagerRetriesAttempted: int = 0
+    bridgeOutboxFailed: int = 0
+
+
+def _fail_stale_bridge_outbox() -> int:
+    """docs/BRIDGE_PHONE_DESIGN.md decision 4: a `pending` outbox row older
+    than 24 h on any bridge (paired or not) fails `bridge_offline`, and its
+    delivery with it, so a dead phone cannot hold deliveries forever."""
+    cutoff = datetime.now(UTC) - BRIDGE_OFFLINE_AFTER
+    failed = 0
+    for bridge in bridges_store.list_all():
+        for item in bridge_outbox.list_stale_pending(bridge.id, cutoff):
+            acked = bridge_outbox.ack(bridge.id, item.id, "failed", "bridge_offline", 0)
+            if acked is None or not acked[1]:
+                continue
+            failed += 1
+            if item.msgId and item.bid:
+                messages_store.mark_delivery_failed_if_queued(
+                    item.msgId, item.bid, error="bridge_offline"
+                )
+    return failed
 
 
 def tick(routing: Routing, *, task_queue: TaskQueue | None = None) -> TickResult:
@@ -186,11 +210,17 @@ def tick(routing: Routing, *, task_queue: TaskQueue | None = None) -> TickResult
     for kind in NON_PAGER_RETRY_KINDS:
         if non_pager_retries_attempted >= NON_PAGER_RETRY_DISPATCH_LIMIT:
             break
-        for msg in messages_store.list_recent_queued_by_kind(kind, limit=NON_PAGER_RETRY_SCAN_LIMIT):
+        # `ob_` = handed to a bridge phone's outbox (docs/BRIDGE_PHONE_DESIGN.md
+        # decision 4): the phone's ack decides those, not the tick.
+        for msg in messages_store.list_recent_queued_by_kind(
+            kind, limit=NON_PAGER_RETRY_SCAN_LIMIT, exclude_external_prefix=BRIDGE_EXTERNAL_PREFIX
+        ):
             if non_pager_retries_attempted >= NON_PAGER_RETRY_DISPATCH_LIMIT:
                 break
             for bid, delivery in msg.deliveries.items():
                 if delivery.kind != kind or delivery.state != "queued":
+                    continue
+                if (delivery.externalId or "").startswith(BRIDGE_EXTERNAL_PREFIX):
                     continue
                 if non_pager_retries_attempted >= NON_PAGER_RETRY_DISPATCH_LIMIT:
                     break
@@ -201,8 +231,10 @@ def tick(routing: Routing, *, task_queue: TaskQueue | None = None) -> TickResult
                 )
 
     loc_reqs_cleared = location.clear_stale_loc_reqs()
+    bridge_rows_failed = _fail_stale_bridge_outbox()
 
     return TickResult(
+        bridgeOutboxFailed=bridge_rows_failed,
         devicesChecked=devices_checked,
         retriesAttempted=retries_attempted,
         locReqsCleared=loc_reqs_cleared,
@@ -438,6 +470,7 @@ class SweepResult:
     batteryDeleted: int = 0
     heldSmsDeleted: int = 0
     bridgePairCodesDeleted: int = 0
+    bridgeOutboxDeleted: int = 0
 
 
 def sweep() -> SweepResult:
@@ -526,6 +559,8 @@ def sweep() -> SweepResult:
         bridges_store.delete_pair_code(code)
         bridge_codes_deleted += 1
 
+    outbox_deleted = bridge_outbox.delete_acked_before(datetime.now(UTC) - BRIDGE_ACKED_RETENTION)
+
     settings_store.mark_swept()
 
     logger.info(
@@ -556,4 +591,5 @@ def sweep() -> SweepResult:
         batteryDeleted=battery_deleted,
         heldSmsDeleted=held_sms_deleted,
         bridgePairCodesDeleted=bridge_codes_deleted,
+        bridgeOutboxDeleted=outbox_deleted,
     )

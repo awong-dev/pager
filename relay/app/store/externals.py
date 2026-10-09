@@ -173,6 +173,21 @@ def ensure_sms_backend(user: User) -> str:
     return created.id
 
 
+def ensure_bridge_backend(user: User, config: dict) -> str:
+    """The id of `user`'s (an external's) `bridge` backend row, creating or
+    refreshing `{kind:"bridge", config}` under the fixed id `bridge`
+    (docs/BRIDGE_PHONE_DESIGN.md decision 7). Idempotent."""
+    for b in backends_store.list_backends(user.uid):
+        if b.kind == "bridge":
+            if b.config != config:
+                backends_store.update_backend(user.uid, b.id, config=config)
+            return b.id
+    created = backends_store.create_backend(
+        user.uid, kind="bridge", config=config, enabled=True, bid="bridge"
+    )
+    return created.id
+
+
 def rename(family_id: str, uid: str, new_name: str) -> User:
     """Renames the family's contact `uid`. Reserve-new, update, release-old: a
     crash leaves both keys held by `uid`, freed by the next rename/delete.
