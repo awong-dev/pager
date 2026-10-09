@@ -13,6 +13,10 @@
  *   their `policy.out: open` but flagged for review. View opens the
  *   family-admin read-only monitor thread (`/chat/view/{convKey}`, task
  *   2.6); Approve adds the `allow` edge so future messages aren't flagged.
+ * - `chat_unknown`: a Google Chat conversation the bridge phone saw
+ *   (docs/BRIDGE_PHONE_DESIGN.md decision 8). Subscribe opens
+ *   `ChatSubscribeDialog` (its endpoint decides the alert), Ignore marks the
+ *   conversation ignored, Dismiss drops the held texts; no Block.
  * - `contact_request`: a pager's `contact_req`. One-click Approve: an SMS
  *   request creates an SMS contact for the owner, a link request adds the
  *   owner->peer edge; approval never creates a person
@@ -40,8 +44,10 @@ import ForumIcon from "@mui/icons-material/Forum";
 import PersonAddIcon from "@mui/icons-material/PersonAdd";
 import SmsIcon from "@mui/icons-material/Sms";
 
+import ChatSubscribeDialog from "@/components/ChatSubscribeDialog";
 import { formatPhoneDigits } from "@/components/NewChatDialog";
 import { ApiError, api } from "@/lib/api";
+import { ignoreChat } from "@/lib/bridges";
 import { familyQuery } from "@/lib/family-context";
 import type { AlertDoc } from "@/lib/types";
 
@@ -142,6 +148,27 @@ export default function AlertCard({ alert }: { alert: AlertRow }) {
   }
 
   const handled = alert.status !== "open";
+
+  // chat_unknown (docs/BRIDGE_PHONE_DESIGN.md decision 8): Subscribe opens the
+  // dialog, whose endpoint decides the alert; Ignore marks the conversation.
+  const [subscribeOpen, setSubscribeOpen] = useState(false);
+  const [chatResult, setChatResult] = useState<string | null>(null);
+  const chatPeople = alert.people ?? [];
+  const chatWaiting = alert.heldCount ?? 0;
+  const chatReady = Boolean(alert.bridgeId && alert.convRef);
+
+  async function ignoreChatAlert() {
+    if (!alert.bridgeId || !alert.convRef) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      await ignoreChat(alert.bridgeId, alert.convRef);
+    } catch (err) {
+      setError(err instanceof ApiError ? String(err.detail ?? err.message) : "Failed to ignore");
+    } finally {
+      setSubmitting(false);
+    }
+  }
 
   async function post(action: "approve" | "block" | "dismiss", body: unknown) {
     setSubmitting(true);
@@ -305,6 +332,40 @@ export default function AlertCard({ alert }: { alert: AlertRow }) {
           </>
         )}
 
+        {alert.kind === "chat_unknown" && (
+          <>
+            <Typography variant="body1">
+              {alert.convTitle || "Untitled conversation"} → @{alert.subjectAlias}
+            </Typography>
+            <Typography variant="body2" color="text.secondary">
+              {alert.isGroup ? `Group (${chatPeople.length} ${chatPeople.length === 1 ? "person" : "people"} seen)` : "Direct message"}
+              {alert.source === "gvoice" ? " · Google Voice" : ""}
+            </Typography>
+            {chatPeople.length > 0 && (
+              <Stack direction="row" spacing={0.5} useFlexGap sx={{ mt: 0.5, flexWrap: "wrap" }}>
+                {chatPeople.map((p) => (
+                  <Chip key={p} size="small" variant="outlined" label={p} />
+                ))}
+              </Stack>
+            )}
+            {alert.preview && (
+              <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+                &quot;{alert.preview}&quot;
+              </Typography>
+            )}
+            {chatWaiting > 0 && (
+              <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.5 }}>
+                {chatWaiting} {chatWaiting === 1 ? "message" : "messages"} waiting
+              </Typography>
+            )}
+            {chatResult && (
+              <Alert severity="success" sx={{ mt: 1 }}>
+                {chatResult}
+              </Alert>
+            )}
+          </>
+        )}
+
         {error && (
           <Alert severity="error" sx={{ mt: 1 }}>
             {error}
@@ -345,7 +406,17 @@ export default function AlertCard({ alert }: { alert: AlertRow }) {
               Approve
             </Button>
           )}
-          {(alert.kind !== "contact_request" || isSms) && (
+          {alert.kind === "chat_unknown" && (
+            <>
+              <Button size="small" variant="contained" disabled={submitting || !chatReady} onClick={() => setSubscribeOpen(true)}>
+                Subscribe
+              </Button>
+              <Button size="small" disabled={submitting || !chatReady} onClick={() => void ignoreChatAlert()}>
+                Ignore
+              </Button>
+            </>
+          )}
+          {alert.kind !== "chat_unknown" && (alert.kind !== "contact_request" || isSms) && (
             <Button size="small" color="warning" onClick={() => void post("block", {})} disabled={submitting}>
               Block
             </Button>
@@ -354,6 +425,28 @@ export default function AlertCard({ alert }: { alert: AlertRow }) {
             Dismiss
           </Button>
         </CardActions>
+      )}
+
+      {alert.kind === "chat_unknown" && alert.bridgeId && alert.convRef && (
+        <ChatSubscribeDialog
+          ownerUid={alert.subjectUid}
+          target={
+            subscribeOpen
+              ? {
+                  bridgeId: alert.bridgeId,
+                  ref: alert.convRef,
+                  title: alert.convTitle ?? "",
+                  isGroup: alert.isGroup ?? false,
+                  people: chatPeople,
+                }
+              : null
+          }
+          onClose={() => setSubscribeOpen(false)}
+          onSubscribed={(res, name) => {
+            setSubscribeOpen(false);
+            setChatResult(`${name} is on the pager; ${res.delivered ?? 0} waiting messages delivered`);
+          }}
+        />
       )}
 
       <Dialog open={smsOpen} onClose={() => setSmsOpen(false)} fullWidth maxWidth="xs">
