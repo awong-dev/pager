@@ -108,8 +108,9 @@ pair again with a new code (Devices → New code).
 - `BridgeService.kt`, `BootReceiver.kt`, `HeartbeatWorker.kt`, `Notifications.kt`, `Status.kt`,
   `Prefs.kt`, `SetupActivity.kt`, `LogActivity.kt`, `FcmTokens.kt`, `src/{fcm,nofcm}/.../FcmService.kt`.
 
-Unit tests (`app/src/test`, JUnit 4, 23 tests): mapper (ids, self-filter, dedup, Voice numbers,
-bounds), phone normalisation and link helpers, `AckTracker` state machine, MMS PDU parsing, SMS
+Unit tests (`app/src/test`, JUnit 4, 30 tests): mapper (ids, self-filter, dedup, Voice numbers,
+bounds), phone normalisation and link helpers, `AckTracker` state machine (bounded ack retries,
+404-forget, re-issue after purge), MMS PDU parsing, the MMS and SMS pure event steps, SMS
 event shape and JSON.
 
 ## Fields to verify on the bench (design vs. what the apps really emit)

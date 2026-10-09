@@ -49,7 +49,7 @@ class OutboxWorker(private val ctx: Context, private val scope: CoroutineScope) 
 
     private suspend fun pollOnce() {
         flushAcks()
-        tracker.forgetAckedBefore(System.currentTimeMillis() - 48L * 3600 * 1000)
+        for (id in tracker.purge()) Log.w(TAG, "ack $id given up after ${AckTracker.MAX_ACK_ATTEMPTS} attempts / 24 h; dropped")
         var more = true
         while (more) {
             val items = client.outbox(0).items
@@ -81,12 +81,13 @@ class OutboxWorker(private val ctx: Context, private val scope: CoroutineScope) 
             } catch (e: RelayClient.Unauthorized) {
                 throw e
             } catch (e: RelayClient.HttpError) {
-                if (e.code == 404 || e.code == 409 || e.code == 422) {
-                    Log.w(TAG, "ack $id rejected ${e.code}; dropping")
-                    tracker.acked(id)
-                } else Log.w(TAG, "ack $id failed ${e.code}; will retry")
+                when (e.code) {
+                    404 -> { Log.w(TAG, "ack $id 404; relay forgot it, forgetting too"); tracker.forget(id) }
+                    409, 422 -> { Log.w(TAG, "ack $id rejected ${e.code}; dropping"); tracker.acked(id) }
+                    else -> Log.w(TAG, "ack $id failed ${e.code} (attempt ${tracker.ackFailed(id)}); will retry")
+                }
             } catch (e: Exception) {
-                Log.w(TAG, "ack $id failed: ${e.message}; will retry")
+                Log.w(TAG, "ack $id failed: ${e.message} (attempt ${tracker.ackFailed(id)}); will retry")
             }
         }
     }

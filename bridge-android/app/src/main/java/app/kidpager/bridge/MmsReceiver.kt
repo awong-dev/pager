@@ -20,12 +20,30 @@ import java.io.File
  * from the PDU, attachments reported by kind"): the M-Notification.ind arrives here, the body is
  * fetched with SmsManager.downloadMultimediaMessage into [MmsFileProvider], parsed by [MmsPdu]
  * and sent as one `sms` event (text part + attachment kinds; empty text becomes `[photo]` on
- * the relay, decision 5).
+ * the relay, decision 5). onReceive runs on the main thread and must stay off Room: the spool
+ * insert goes through goAsync() + EventQueue.enqueueAsync (A8 review fix); [event] is the pure
+ * PDU -> event step.
  */
 class MmsReceiver : BroadcastReceiver() {
     companion object {
         private const val TAG = "mms"
         const val ACTION_DOWNLOADED = "app.kidpager.bridge.MMS_DOWNLOADED"
+
+        /** Pure: a parsed M-Retrieve.conf plus the sender -> one `sms` event. */
+        fun event(from: String, pdu: MmsPdu.Pdu, tsMillis: Long): BridgeEvent {
+            val phone = PhoneNumbers.normalize(from) ?: from
+            val text = pdu.text
+            val attachments = pdu.attachments
+            return BridgeEvent(
+                id = NotificationMapper.eventId("mms:$phone", tsMillis, text + attachments.size).replaceFirst("n_", "m_"),
+                source = Targets.SOURCE_SMS,
+                conversation = Conversation(id = phone, isGroup = false),
+                sender = Sender(name = phone, phone = phone),
+                text = Bounds.cp(text, Bounds.TEXT_CP),
+                ts = tsMillis / 1000,
+                attachments = attachments.ifEmpty { null },
+            )
+        }
     }
 
     override fun onReceive(context: Context, intent: Intent) {
@@ -67,21 +85,10 @@ class MmsReceiver : BroadcastReceiver() {
         val pdu = try { MmsPdu.parse(f.readBytes()) } catch (e: Exception) { Log.e(TAG, "bad retrieve pdu", e); f.delete(); return }
         f.delete()
         val from = pdu.from ?: intent.getStringExtra("from") ?: run { Log.w(TAG, "no sender"); return }
-        val phone = PhoneNumbers.normalize(from) ?: from
-        val text = pdu.text
-        val attachments = pdu.attachments
-        val ts = System.currentTimeMillis()
-        val e = BridgeEvent(
-            id = NotificationMapper.eventId("mms:$phone", ts, text + attachments.size).replaceFirst("n_", "m_"),
-            source = Targets.SOURCE_SMS,
-            conversation = Conversation(id = phone, isGroup = false),
-            sender = Sender(name = phone, phone = phone),
-            text = Bounds.cp(text, Bounds.TEXT_CP),
-            ts = ts / 1000,
-            attachments = attachments.ifEmpty { null },
-        )
-        Log.i(TAG, "in from=${Log.redact(phone)} len=${text.length} attachments=${attachments.map { it.kind }}")
-        EventQueue.enqueue(context, listOf(e))
+        val e = event(from, pdu, System.currentTimeMillis())
+        Log.i(TAG, "in from=${Log.redact(e.sender.phone)} len=${e.text.length} attachments=${e.attachments?.map { it.kind } ?: emptyList<String>()}")
+        val result = goAsync()
+        EventQueue.enqueueAsync(context, listOf(e)) { result.finish() }
     }
 }
 

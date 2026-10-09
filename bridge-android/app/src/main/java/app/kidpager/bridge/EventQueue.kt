@@ -35,6 +35,24 @@ object EventQueue {
         kicks.trySend(Unit)
     }
 
+    /**
+     * For BroadcastReceivers: the Room insert must not run on the main thread (AppDb has no
+     * allowMainThreadQueries). Runs [enqueue] on the IO scope and calls `onDone` afterwards
+     * (the receiver's `goAsync()` result is finished there).
+     */
+    fun enqueueAsync(ctx: Context, events: List<BridgeEvent>, onDone: () -> Unit = {}) {
+        val app = ctx.applicationContext
+        scope.launch {
+            try {
+                enqueue(app, events)
+            } catch (e: Exception) {
+                Log.e(TAG, "spool failed", e)
+            } finally {
+                onDone()
+            }
+        }
+    }
+
     fun start(ctx: Context) {
         if (loop?.isActive == true) return
         synchronized(this) {

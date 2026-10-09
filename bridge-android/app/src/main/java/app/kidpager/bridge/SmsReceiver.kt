@@ -8,7 +8,8 @@ import android.provider.Telephony
 /**
  * Decision 13 ("SMS_DELIVER receiver, BROADCAST_SMS permission"): as the default SMS app every
  * incoming text lands here. Parts of one message are joined and sent as one `sms` event with
- * `sender.phone` (decision 5).
+ * `sender.phone` (decision 5). onReceive runs on the main thread and must stay off Room: the
+ * spool insert goes through goAsync() + EventQueue.enqueueAsync (A8 review fix).
  */
 class SmsReceiver : BroadcastReceiver() {
     companion object {
@@ -36,6 +37,7 @@ class SmsReceiver : BroadcastReceiver() {
         val ts = msgs[0].timestampMillis
         val e = event(from, body, ts)
         Log.i(TAG, "in from=${Log.redact(e.sender.phone)} len=${body.length} parts=${msgs.size}")
-        EventQueue.enqueue(context, listOf(e))
+        val result = goAsync()
+        EventQueue.enqueueAsync(context, listOf(e)) { result.finish() }
     }
 }
