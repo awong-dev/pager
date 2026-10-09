@@ -15,9 +15,10 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 
-from app import chat_subscribe, devcfg
+from app import bridge_numbers, chat_subscribe, devcfg
 from app.broker import BrokerClient
 from app.chat_subscribe import ChatError
+from app.routers.bridge import normalize_optional_phone
 from app.routers.family import (
     FamilyScope,
     _require_family_member,
@@ -157,7 +158,7 @@ def _row_out(row: BridgeConversation, *, on_pager: set[str] | None = None) -> Co
             group = conversations_store.get_bridge_group(row.convKey)
             if group is not None:
                 out.alias = group.alias
-                out.roster = [RosterEntry(name=n, nick=k) for k, n in group.roster.items()]
+                out.roster = [RosterEntry(name=n, nick=k) for k, n in sorted(group.roster.items())]
         if on_pager is not None:
             out.onPager = out.alias in on_pager
     return out
@@ -332,3 +333,250 @@ def inspect_link(bridge_id: str, req: InspectRequest, scope: FamilyScope) -> dic
         raise HTTPException(status_code=409, detail="the bridge phone is not paired")
     item = bridge_outbox.enqueue_inspect(bridge, link)
     return {"outboxId": item.id}
+
+
+# ---------------------------------------------------------------------------
+# Bridge phones: list / create / code / reassign / numbers / accept-sim / unpair
+# (decisions 1-3, O1 revised)
+# ---------------------------------------------------------------------------
+
+
+class BridgeOut(BaseModel):
+    """A bridge as the web sees it: never `tokenHash` or `fcmToken`."""
+
+    id: str
+    ownerUid: str
+    ownerAlias: str | None
+    ownerName: str | None
+    label: str
+    paired: bool
+    pairedAt: datetime | None
+    lastSeenAt: datetime | None
+    simNumber: str | None
+    voiceNumber: str | None
+    status: bridges_store.BridgeStatus
+    caps: bridges_store.BridgeCaps
+    createdAt: datetime | None
+
+
+class CreateBridgeRequest(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    ownerUid: str
+    label: str = Field(min_length=1, max_length=80)
+
+
+class PairCodeOut(BaseModel):
+    code: str
+    expiresAt: datetime
+
+
+class CreateBridgeOut(PairCodeOut):
+    bridge: BridgeOut
+
+
+class PatchBridgeRequest(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    ownerUid: str | None = None
+    label: str | None = Field(default=None, min_length=1, max_length=80)
+    simNumber: str | None = Field(default=None, max_length=32)
+    voiceNumber: str | None = Field(default=None, max_length=32)
+
+
+def _bridge_out(bridge: bridges_store.Bridge) -> BridgeOut:
+    owner = users_store.get_user(bridge.ownerUid)
+    return BridgeOut(
+        id=bridge.id,
+        ownerUid=bridge.ownerUid,
+        ownerAlias=owner.alias if owner is not None else None,
+        ownerName=owner.displayName if owner is not None else None,
+        label=bridge.label,
+        paired=bridge.paired,
+        pairedAt=bridge.pairedAt,
+        lastSeenAt=bridge.lastSeenAt,
+        simNumber=bridge.simNumber,
+        voiceNumber=bridge.voiceNumber,
+        status=bridge.status,
+        caps=bridge.caps,
+        createdAt=bridge.createdAt,
+    )
+
+
+def _require_active_person(uid: str, family_id: str) -> users_store.User:
+    owner = users_store.get_user(uid)
+    if owner is None or owner.kind != "person" or owner.familyId != family_id:
+        raise HTTPException(status_code=404, detail="no such member in this family")
+    if owner.disabled:
+        raise HTTPException(status_code=409, detail="that member is disabled")
+    return owner
+
+
+@router.get("/bridges")
+def list_bridges(scope: FamilyScope) -> list[BridgeOut]:
+    _, family_id = scope
+    return [_bridge_out(b) for b in bridges_store.list_for_family(family_id)]
+
+
+@router.post(
+    "/bridges", status_code=201, dependencies=[Depends(require_family_write_rate_limit)]
+)
+def create_bridge(req: CreateBridgeRequest, scope: FamilyScope) -> CreateBridgeOut:
+    """Decision 2: creates the (unpaired) row and a 10-minute pairing code."""
+    principal, family_id = scope
+    _require_active_person(req.ownerUid, family_id)
+    bridge = bridges_store.create(req.ownerUid, family_id, req.label.strip(), principal.uid)
+    code, expires_at = bridges_store.create_pair_code(bridge.id)
+    return CreateBridgeOut(bridge=_bridge_out(bridge), code=code, expiresAt=expires_at)
+
+
+@router.post(
+    "/bridges/{bridge_id}/code", dependencies=[Depends(require_family_write_rate_limit)]
+)
+def new_pair_code(bridge_id: str, scope: FamilyScope) -> PairCodeOut:
+    """A new code, only while the bridge has no token (never paired, or
+    unpaired)."""
+    _, family_id = scope
+    bridge = _require_bridge(bridge_id, family_id)
+    if bridge.paired:
+        raise HTTPException(status_code=409, detail="this bridge phone is already paired")
+    code, expires_at = bridges_store.create_pair_code(bridge.id)
+    return PairCodeOut(code=code, expiresAt=expires_at)
+
+
+def _normalize(raw: str | None, field: str) -> str | None:
+    return normalize_optional_phone(raw, field)
+
+
+def _number_taken(owner_uid: str, number: str, bridge: bridges_store.Bridge) -> None:
+    """409 when `number` already belongs to another member or another bridge
+    (the bridge's own previous owner holding it through this very bridge does
+    not count: reassigning releases it)."""
+    bridge_id = bridge.id
+    holder = users_store.get_uid_for_sms_number(number)
+    own_release = holder == bridge.ownerUid and number in (bridge.simNumber, bridge.voiceNumber)
+    if holder is not None and holder != owner_uid and not own_release:
+        holder_user = users_store.get_user(holder)
+        if holder_user is not None and holder_user.smsNumber == number:
+            raise HTTPException(
+                status_code=409, detail=f"that number belongs to @{holder_user.alias}"
+            )
+    other = bridges_store.get_by_sms_number(number)
+    if other is not None and other.id != bridge_id:
+        raise HTTPException(status_code=409, detail="that number is used by another bridge phone")
+
+
+@router.patch("/bridges/{bridge_id}", dependencies=[Depends(require_family_write_rate_limit)])
+def patch_bridge(
+    bridge_id: str,
+    req: PatchBridgeRequest,
+    scope: FamilyScope,
+    broker: Annotated[BrokerClient, Depends(get_broker)],
+) -> BridgeOut:
+    """Label, reassign (`ownerUid`) and the accepted numbers (`simNumber`,
+    `voiceNumber`: a non-null string sets, `""` clears, absent leaves).
+    The owner's `smsNumber` follows the bridge: SIM if present, else Voice
+    (O1 revised); a number held by another member or bridge is a 409."""
+    _, family_id = scope
+    bridge = _require_bridge(bridge_id, family_id)
+    fields = req.model_fields_set
+
+    new_sim = (
+        _normalize(req.simNumber, "simNumber") if "simNumber" in fields else bridge.simNumber
+    )
+    new_voice = (
+        _normalize(req.voiceNumber, "voiceNumber") if "voiceNumber" in fields else bridge.voiceNumber
+    )
+    new_owner_uid = req.ownerUid if req.ownerUid is not None else bridge.ownerUid
+    new_owner = _require_active_person(new_owner_uid, family_id)
+    owner_changed = new_owner_uid != bridge.ownerUid
+    numbers_changed = (new_sim, new_voice) != (bridge.simNumber, bridge.voiceNumber)
+    if not owner_changed and not numbers_changed:
+        if req.label is not None:
+            bridges_store.set_label(bridge.id, req.label.strip())
+        fresh = bridges_store.get(bridge.id)
+        assert fresh is not None
+        return _bridge_out(fresh)
+
+    for number in (new_sim, new_voice):
+        if number is not None:
+            _number_taken(new_owner_uid, number, bridge)
+
+    if req.label is not None:
+        bridges_store.set_label(bridge.id, req.label.strip())
+    if bridge.paired:
+        # The previous owner (or the previous numbers) are released first.
+        bridge_numbers.release_numbers(bridge, broker)
+    caps = bridges_store.BridgeCaps(
+        sms=bool(new_sim), gchat=bridge.caps.gchat, gvoice=bool(new_voice)
+    )
+    if owner_changed:
+        bridges_store.set_owner(bridge.id, new_owner_uid)
+    bridges_store.set_numbers(bridge.id, sim_number=new_sim, voice_number=new_voice, caps=caps)
+    bridges_store.set_error(bridge.id, None)
+    fresh = bridges_store.get(bridge.id)
+    assert fresh is not None
+    if fresh.paired:
+        bridge_numbers.apply_numbers(fresh, broker)
+    if owner_changed:
+        bridge_numbers.rederive(new_owner.uid, broker)
+    fresh = bridges_store.get(bridge.id)
+    assert fresh is not None
+    return _bridge_out(fresh)
+
+
+@router.post(
+    "/bridges/{bridge_id}/accept-sim", dependencies=[Depends(require_family_write_rate_limit)]
+)
+def accept_sim(
+    bridge_id: str, scope: FamilyScope, broker: Annotated[BrokerClient, Depends(get_broker)]
+) -> BridgeOut:
+    """Decision 3: the SIM number the phone reports becomes the accepted one
+    (same `smsNumber` handling as pairing), clearing `status.error`."""
+    _, family_id = scope
+    bridge = _require_bridge(bridge_id, family_id)
+    reported = bridge.status.simNumber
+    if not bridge.paired:
+        raise HTTPException(status_code=409, detail="the bridge phone is not paired")
+    if reported is None:
+        raise HTTPException(status_code=409, detail="the phone has not reported a SIM number")
+    _require_active_person(bridge.ownerUid, family_id)
+    if reported != bridge.simNumber:
+        _number_taken(bridge.ownerUid, reported, bridge)
+        bridge_numbers.release_numbers(bridge, broker)
+        caps = bridges_store.BridgeCaps(
+            sms=True, gchat=bridge.caps.gchat, gvoice=bridge.caps.gvoice
+        )
+        bridges_store.set_numbers(
+            bridge.id, sim_number=reported, voice_number=bridge.voiceNumber, caps=caps
+        )
+    bridges_store.set_error(bridge.id, None)
+    fresh = bridges_store.get(bridge.id)
+    assert fresh is not None
+    bridge_numbers.apply_numbers(fresh, broker)
+    fresh = bridges_store.get(bridge.id)
+    assert fresh is not None
+    return _bridge_out(fresh)
+
+
+@router.delete("/bridges/{bridge_id}", dependencies=[Depends(require_family_write_rate_limit)])
+def unpair_bridge(
+    bridge_id: str, scope: FamilyScope, broker: Annotated[BrokerClient, Depends(get_broker)]
+) -> BridgeOut:
+    """Decision 2: clears the token and FCM token, clears the owner's
+    `smsNumber` if it is one of the bridge's numbers, fails every pending
+    outbox row `unpaired` (and its delivery). The row, every contact and
+    every conversation stay."""
+    from app.store import messages as messages_store
+
+    _, family_id = scope
+    bridge = _require_bridge(bridge_id, family_id)
+    bridges_store.unpair(bridge.id)
+    for item in bridge_outbox.fail_pending(bridge.id, "unpaired"):
+        if item.msgId and item.bid:
+            messages_store.mark_delivery_failed_if_queued(item.msgId, item.bid, error="unpaired")
+    bridge_numbers.release_numbers(bridge, broker)
+    fresh = bridges_store.get(bridge.id)
+    assert fresh is not None
+    logger.info("bridge unpaired bridge=%s owner=%s", bridge.id, bridge.ownerUid)
+    return _bridge_out(fresh)

@@ -187,6 +187,12 @@ service cloud.firestore {
       allow read: if registered();
     }
 
+    // docs/BRIDGE_PHONE_DESIGN.md decision 1/15: `bridges` (+ `outbox`),
+    // `bridgePairCodes`, `bridgeConversations` and `heldChat` are server-only
+    // on purpose -- no match block, default-deny (token hashes, FCM tokens,
+    // chat text). The web reads them through `GET /api/family/bridges` and
+    // `GET /api/family/members/{uid}/chat`. tests/test_rules.py pins it.
+
     // Clients never write; role/family are Firebase custom claims, set by
     // the relay (app/auth.py), and every write goes through the relay API.
     match /{document=**} {

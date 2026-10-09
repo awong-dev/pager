@@ -40,6 +40,14 @@ def apply_numbers(bridge: bridges_store.Bridge, broker: BrokerClient) -> bool:
     if number is None:
         return True
     if owner.smsNumber != number:
+        # Decision 1: a person may own several bridges only if each has a
+        # different number -- a second bridge never takes the number over
+        # from another bridge the owner already uses.
+        current = bridges_store.get_by_sms_number(owner.smsNumber) if owner.smsNumber else None
+        if current is not None and current.id != bridge.id and current.ownerUid == owner.uid:
+            bridges_store.set_error(bridge.id, f"@{owner.alias} already uses another bridge phone")
+            logger.info("bridge number refused bridge=%s other=%s", bridge.id, current.id)
+            return False
         try:
             users_store.set_sms_number(owner.uid, number)
         except users_store.SmsNumberTaken as exc:
@@ -62,3 +70,7 @@ def release_numbers(bridge: bridges_store.Bridge, broker: BrokerClient) -> None:
         users_store.set_sms_number(owner.uid, None)
         book.bump_and_push({owner.uid}, broker, reason="sms_number")
     book.rederive_sms_contacts(owner.uid, broker)
+
+
+def rederive(owner_uid: str, broker: BrokerClient) -> None:
+    book.rederive_sms_contacts(owner_uid, broker)

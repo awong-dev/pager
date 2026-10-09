@@ -641,6 +641,45 @@ def test_sms_numbers_held_sms_and_sms_consent_are_default_deny(two_pairs):
         assert _write(path, owner_token, {"uid": "hacked"}).status_code == 403
 
 
+def test_bridge_collections_are_default_deny(two_pairs):
+    """docs/BRIDGE_PHONE_DESIGN.md decision 1/15: `bridges/{b}`, its `outbox`,
+    `bridgePairCodes/{c}`, `bridgeConversations/{r}` and `heldChat/{h}` carry
+    token hashes, FCM tokens and chat text; no match block, so nobody -- a
+    family admin, a member, another family's admin, an unauthenticated
+    caller -- reads or writes any of them."""
+    from app.store import bridge_conversations as conv_store
+    from app.store import bridge_outbox
+    from app.store import bridges as bridges_store
+    from app.store import held_chat as held_chat_store
+
+    _create_family("fam-bridge")
+    admin_token = _make_family_admin("bridge-admin", "badmin", "fam-bridge")
+    other_admin_token = _make_family_admin("bridge-admin2", "badmin2", "fam-other")
+    member_token = mint_id_token("u1")
+    bridge = bridges_store.create("u1", "fam-bridge", "phone", "bridge-admin")
+    item = bridge_outbox.enqueue_send(bridge, "m_1", "sms", source="sms", to={}, text="secret")
+    code, _ = bridges_store.create_pair_code(bridge.id)
+    row = conv_store.upsert_seen(
+        bridge, source="gchat", conversation_id="c1", title="t", is_group=False, link=None,
+        speaker="x", people=[], preview="p",
+    )
+    held_chat_store.create(
+        "br_x_1", bridge_id=bridge.id, conversation_id="c1", conv_row_id=row.id,
+        family_id="fam-bridge", to_uid="u1", sender_name="x", body="secret",
+    )
+    paths = (
+        f"bridges/{bridge.id}",
+        f"bridges/{bridge.id}/outbox/{item.id}",
+        f"bridgePairCodes/{code}",
+        f"bridgeConversations/{row.id}",
+        "heldChat/br_x_1",
+    )
+    for token in (admin_token, other_admin_token, member_token, None):
+        for path in paths:
+            assert _get(path, token).status_code == 403, (path, token is None)
+            assert _write(path, token, {"tokenHash": "hacked"}).status_code == 403
+
+
 def test_device_secrets_is_default_deny(two_pairs):
     """`deviceSecrets/{d}` (docs/DEVICE_PLAN.md §2.6) holds the device's HMAC
     key and MQTT password hash -- unreadable by the device's own owner (whose
