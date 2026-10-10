@@ -75,9 +75,6 @@ static void pick_on_key(input_key_t key)
         }
         break;
     case INPUT_KEY_ENTER: {
-        // pending/rejected rows (book_request_at()) are not part of s_sel's
-        // range at all (§5.5: "greyed and are not selectable") — nothing
-        // else to check here.
         if (n == 0) {
             break; // nothing to choose — esc is the only way out
         }
@@ -113,7 +110,6 @@ static void pick_render(void)
     size_t n_book = book_contact_count();
     size_t n_sms = sms_contact_count();
     size_t n_contacts = n_book + n_sms; /* selectable rows: book contacts, then sms contacts */
-    size_t n_requests = book_request_count();
 
     int y = UI_BODY_TOP + 2;
 
@@ -123,9 +119,9 @@ static void pick_render(void)
         // == 0 is book.h's own documented "never applied a book yet" signal
         // (book_init()'s doc comment), used here rather than n_contacts == 0
         // alone, since a book with bv > 0 but zero approved contacts (e.g.
-        // every request still pending) is a different, valid state that
-        // should fall through to the ordinary (empty-contacts, greyed
-        // pending rows) rendering below instead of this one-time message.
+        // every contact removed) is a different, valid state that
+        // should fall through to the ordinary (empty-contacts)
+        // rendering below instead of this one-time message.
         gfx_text(0, y, GFX_FONT_NORMAL, "No address book yet.");
         y += 12;
         gfx_text(0, y, GFX_FONT_NORMAL, "Re-sync from the Device screen.");
@@ -133,15 +129,10 @@ static void pick_render(void)
         return;
     }
 
-    // Scroll-into-view over the combined contacts+requests list (up to
-    // BOOK_MAX_CONTACTS + BOOK_MAX_REQUESTS = 14 rows, more than the 8-row
-    // viewport) — same fresh-each-render scroll_top computation
-    // scr_device.c's device_render_normal() uses, adapted to this screen's
-    // two-section (contacts then requests) layout. s_sel indexes contacts
-    // only (0..n_contacts-1, requests are never selectable), which also
-    // happens to equal the row index directly since contacts are always
-    // the first section.
-    int total_n = (int) (n_contacts + n_requests);
+    // Scroll-into-view over the contacts list — same fresh-each-render
+    // scroll_top computation scr_device.c's device_render_normal() uses.
+    // s_sel indexes contacts (0..n_contacts-1) and equals the row index.
+    int total_n = (int) n_contacts;
     int sel_abs = s_sel;
     int scroll_top = 0;
     if (sel_abs >= PICK_VISIBLE_ROWS) {
@@ -188,21 +179,6 @@ static void pick_render(void)
             gfx_text(10, y, GFX_FONT_NORMAL, sc.name);
             int tw = gfx_text_width(GFX_FONT_NORMAL, "sms");
             gfx_text(GFX_SCREEN_W - tw, y, GFX_FONT_NORMAL, "sms");
-        } else {
-            // Pending/rejected requests: greyed (drawn plain, no `>` marker
-            // — this gfx.c has no separate "dim" ink, so "greyed and
-            // unselectable" is expressed the same way scr_device.c
-            // expresses "not selectable": no cursor ever lands here,
-            // s_sel's range never includes these rows).
-            book_request_t req;
-            if (!book_request_at((size_t) (r - (int) n_contacts), &req)) {
-                continue;
-            }
-            gfx_text(10, y, GFX_FONT_NORMAL, req.name);
-            const char *status =
-                (strcmp(req.status, "pend") == 0) ? "pending approval" : "not approved";
-            int tw = gfx_text_width(GFX_FONT_NORMAL, status);
-            gfx_text(GFX_SCREEN_W - tw, y, GFX_FONT_NORMAL, status);
         }
         // TASK_ui_round2.md Do #2: shared row pitch (ui.h) — was a flat
         // `y += 12`, undercounting DejaVu's own descenders the same way

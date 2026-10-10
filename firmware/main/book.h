@@ -314,22 +314,18 @@ bool book_apply_fetched(const uint8_t *body, size_t len, uint64_t expect_n, uint
 uint64_t book_next_up_n(bool *wrapped);
 
 /* Builds, signs (when ident's IDENT_FLAG_REQ_SIG is set) and publishes a
- * `kind:"contact_req"` `/up` envelope (docs/DEVICE_PLAN.md §4.2,
- * docs/PROTOCOL.md §3.2): `name` (1-16 code points/<=48 UTF-8 bytes,
- * book_name_valid()) is required; `ph_or_alias` (E.164 phone or an alias
- * reference — the relay's own `app/ingest.py` resolves the single wire
- * field `ph` this way: a leading `+` means phone, anything else means
- * alias, doc-commented there since docs/PROTOCOL.md §3.2's prose alone does
- * not say how an alias reference is carried) may be NULL/empty for neither.
- * Single publish attempt (no device-side retry queue — see this task's own
- * report for why: no RTC storage backs this module, matching net_publish_raw()'s
- * existing "accepted by the modem, not confirmed delivered" semantics
- * msg.c's msg_pump() already documents for every other /up publish this
- * firmware makes). Returns false without publishing on a bad `name` or a
- * `w.err`/auth_sign() failure; the relay's own rate-limit/dedup (docs/PROTOCOL.md
- * §3.2: 5 pending per device, dedup on `id`) is enforced server-side, not
- * here. Power effect: one MQTT publish (QoS 1), no modem/sleep-state effect
- * beyond that. */
+ * `kind:"contact_req"` `/up` envelope (docs/PROTOCOL.md §3.2;
+ * docs/BOOK_ADD_ANYONE_DESIGN.md D13/D16): `name` (1-16 code points/<=48
+ * UTF-8 bytes, book_name_valid()) is required; `ph_or_alias` is either a
+ * phone number (digits, optional leading `+`) or an alias reference, and may
+ * be NULL/empty for neither. The relay adds the entry (anyone may be added;
+ * delivery is policy), so it shows up after the next book pull; there is no
+ * device-side pending/rejected state. Rate limits are relay-side (10/h, 32
+ * added). Single publish attempt (no device-side retry queue): "accepted by
+ * the modem, not confirmed delivered", like every other /up publish. Returns
+ * false without publishing on a bad `name` or a `w.err`/auth_sign() failure.
+ * Power effect: one MQTT publish (QoS 1), no modem/sleep-state effect beyond
+ * that. */
 bool book_request(const char *name, const char *ph_or_alias);
 
 #endif /* ESP_PLATFORM */

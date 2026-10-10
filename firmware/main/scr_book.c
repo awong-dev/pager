@@ -1,4 +1,4 @@
-// scr_book.c — Address Book screen: contacts + pending/rejected requests,
+// scr_book.c — Address Book screen: contacts,
 // the Add-contact form, and the per-contact Nickname form (docs/DEVICE_TASKS.md
 // F7.2, docs/DEVICE_PLAN.md §5.5 "Address book", "Nicknames").
 //
@@ -9,7 +9,7 @@
 // Three internal modes, one screen (mirrors scr_device.c's own
 // confirm/passcode-modal pattern for a single ui_screen_t with more than one
 // rendered state):
-//   BOOK_MODE_LIST — the contacts + greyed requests + "Add" row.
+//   BOOK_MODE_LIST — the contacts + "Add" row.
 //   BOOK_MODE_ADD  — the two-field Add-contact form (§4.2/§5.5).
 //   BOOK_MODE_NICK — the one-field Nickname form (§5.5's "Nicknames"
 //                    paragraph), reached by `enter` on an approved contact
@@ -38,8 +38,7 @@
 // says the field "accepts only `+` and digits", while its own mockup
 // (§5.5) shows a second line directly under it, "(or leave blank and type
 // an @alias)" — which is unreachable if the filter is *only* `+`/digit.
-// Read together with book.h's own book_request()'s doc comment ("a leading
-// `+` means phone, anything else means alias") and §4.2's prose ("either a
+// Read together with book.h's own book_request() doc comment and §4.2's prose ("either a
 // phone number ... or an alias the student already knows"), the field is
 // clearly meant to carry both, mediated by its own leading character: `+`
 // or a digit locks the rest of the field to E.164 digits (the Do bullet's
@@ -213,8 +212,7 @@ static void add_submit(void)
     char stripped[BOOK_REQ_PH_MAX];
     if (s_add_phone_len > 0) {
         if (s_add_phone[0] == '@') {
-            // book.h's book_request(): "anything else [not a leading '+']
-            // means alias" — the alias value itself carries no '@'.
+            // An alias reference carries no '@'.
             strncpy(stripped, s_add_phone + 1, sizeof(stripped) - 1);
         } else {
             strncpy(stripped, s_add_phone, sizeof(stripped) - 1);
@@ -223,7 +221,7 @@ static void add_submit(void)
         ph_or_alias = stripped;
     }
     if (book_request(s_add_name.buf, ph_or_alias)) {
-        ui_show_toast("sent for approval");
+        ui_show_toast("added");
         s_mode = BOOK_MODE_LIST;
     } else {
         ui_show_toast("could not send request");
@@ -290,7 +288,7 @@ static void add_render(void)
     gfx_text(8, y, GFX_FONT_NORMAL, "(or leave blank and type an @alias)");
 
     gfx_text(0, UI_FOOTER_Y, GFX_FONT_NORMAL,
-             "tab next field   enter send for approval   esc cancel");
+             "tab next field   enter add   esc cancel");
 }
 
 /* ---------------------------------------------------------------------
@@ -427,18 +425,15 @@ static void list_on_key(input_key_t key)
 static void list_render(void)
 {
     size_t n_contacts = book_contact_count();
-    size_t n_requests = book_request_count();
     int y = UI_BODY_TOP + 2;
 
-    // Scroll-into-view over contacts + requests + the trailing "Add" row (up
-    // to 10+4+1 = 15 rows, more than the 8-row viewport) — same fresh-each-
+    // Scroll-into-view over contacts + the trailing "Add" row (more rows
+    // than the 8-row viewport) — same fresh-each-
     // render scroll_top computation scr_device.c's device_render_normal()
     // and scr_pick.c's pick_render() use. s_sel (from selectable_count():
-    // contacts, 0..n_contacts-1, plus one more for "Add") maps to the
-    // combined row index sel_abs by skipping over the (never selectable)
-    // request rows for the "Add" case.
-    int total_n = (int) (n_contacts + n_requests) + 1;
-    int sel_abs = (s_sel < (int) n_contacts) ? s_sel : (int) (n_contacts + n_requests);
+    // contacts, 0..n_contacts-1, plus one more for "Add") is the row index.
+    int total_n = (int) n_contacts + 1;
+    int sel_abs = s_sel;
     int scroll_top = 0;
     if (sel_abs >= BOOK_VISIBLE_ROWS) {
         scroll_top = sel_abs - BOOK_VISIBLE_ROWS + 1;
@@ -472,16 +467,6 @@ static void list_render(void)
             int tw = gfx_text_width(GFX_FONT_NORMAL, c.type);
             gfx_text(GFX_SCREEN_W - tw, y, GFX_FONT_NORMAL, c.type);
             (void) x;
-        } else if (r < (int) (n_contacts + n_requests)) {
-            book_request_t req;
-            if (!book_request_at((size_t) (r - (int) n_contacts), &req)) {
-                continue;
-            }
-            gfx_text(10, y, GFX_FONT_NORMAL, req.name);
-            const char *status =
-                (strcmp(req.status, "pend") == 0) ? "pending approval" : "not approved";
-            int tw = gfx_text_width(GFX_FONT_NORMAL, status);
-            gfx_text(GFX_SCREEN_W - tw, y, GFX_FONT_NORMAL, status);
         } else {
             if (r == sel_abs) {
                 gfx_text(0, y, GFX_FONT_NORMAL, ">");
