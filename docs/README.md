@@ -54,6 +54,7 @@ Design notes and task lists, one per feature (scope from each file's opening lin
 | [V03_PLAN.md](V03_PLAN.md) | v0.3 plan: composer overflow, web auto-scroll, push and geofence. Tasks in [V03_TASKS.md](V03_TASKS.md) |
 | [DEVICE_NEXT_TASKS.md](DEVICE_NEXT_TASKS.md) | Next device tasks: group `sndr`, accelerometer, SMS |
 | [TASK_cores_eval.md](TASK_cores_eval.md) | Architect evaluation (9 Oct 2026): network work in worker tasks, floating affinity, UI on CPU1. Recommendation: neither now; triggers and the pinned-worker design if a measurement ever justifies it |
+| [TASK_ulp_keyboard_eval.md](TASK_ulp_keyboard_eval.md) | Architect evaluation (10 Oct 2026): ULP-polled CardKB so the CPU light-sleeps through the typing window. Pins fail the RTC I2C constraint (SDA IO1/3, SCL IO0/2), RTC slow memory has 544 B free; recommendation: no ULP, shorten the 119/120 s windows first |
 | [TASK_kbtask.md](TASK_kbtask.md) | CardKB scan moved to its own `kbd` task (9 Oct 2026): spec, bench status, and the survey of render-latency stalls. Built; burst verification pending |
 | [SLEEP_URC_DESIGN.md](SLEEP_URC_DESIGN.md) | Delivering a page URC through light sleep. Tasks in [SLEEP_URC_TASKS.md](SLEEP_URC_TASKS.md) |
 | [SLEEP_PAGE_LOSS_BRIEF.md](SLEEP_PAGE_LOSS_BRIEF.md) | Self-contained brief on pages lost while the pager light-sleeps (resolved 24 Sep 2026) |
