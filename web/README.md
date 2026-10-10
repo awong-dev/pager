@@ -209,6 +209,8 @@ incognito window) to act as two different people at once where noted.
    A thread now marks messages read only when the viewer is at the bottom of
    the list and the tab is visible; before this change, opening the thread
    marked everything read even if it was off-screen.
+10. **On-demand OTA delta**: push to a device on an older published build shows
+   "delta (made at push)" in the dialog; after the push the job reads delta.
 
 ## Thread auto-scroll behaviour
 

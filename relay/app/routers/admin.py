@@ -951,17 +951,24 @@ def list_firmware(
     builds: list[dict[str, object]] = []
     for b in sorted(index.builds, key=lambda b: b.published, reverse=True):
         c = firmware.choose(index, b.id16, img)
-        builds.append(
-            {
-                "id16": b.id16,
-                "version": b.version,
-                "size": b.size,
-                "published": b.published,
-                "kind": c.kind,
-                "osz": c.obj.osz,
-                "estBytes": firmware.estimate_bytes(c.obj.osz),
-            }
-        )
+        entry: dict[str, object] = {
+            "id16": b.id16,
+            "version": b.version,
+            "size": b.size,
+            "published": b.published,
+        }
+        on_demand = False
+        if c.kind == "full" and img is not None:
+            img16 = img.strip().lower()[:16]
+            cached = firmware.cached_delta(index, img16, b.id16, settings)
+            if cached is not None:
+                c = firmware.Choice("delta", b, cached, on_demand=True)
+            else:
+                on_demand = firmware.can_delta_on_demand(index, img16, b.id16)
+        entry.update(kind=c.kind, osz=c.obj.osz, estBytes=firmware.estimate_bytes(c.obj.osz))
+        if on_demand:
+            entry["onDemandDelta"] = True
+        builds.append(entry)
     return {"builds": builds}
 
 
@@ -996,6 +1003,12 @@ def push_ota(
     if dev.status.img and dev.status.img.strip().lower()[:16] == target_build.id16:
         raise HTTPException(status_code=409, detail="already running that build")
     choice = firmware.choose(index, req.target, dev.status.img)
+    if choice.kind == "full" and dev.status.img:
+        img16 = dev.status.img.strip().lower()[:16]
+        if firmware.can_delta_on_demand(index, img16, target_build.id16):
+            made = firmware.delta_on_demand(index, img16, target_build.id16, settings)
+            if made is not None:
+                choice = firmware.Choice("delta", target_build, made, on_demand=True)
     est = firmware.estimate_bytes(choice.obj.osz)
     ok = devcfg.push_ota(
         device_id,
@@ -1006,10 +1019,19 @@ def push_ota(
             "kind": choice.kind,
             "osz": choice.obj.osz,
             "estBytes": est,
+            "onDemand": choice.on_demand,
             "by_uid": authed.uid,
         },
     )
-    return {"ok": ok, "kind": choice.kind, "osz": choice.obj.osz, "estBytes": est}
+    resp: dict[str, object] = {
+        "ok": ok,
+        "kind": choice.kind,
+        "osz": choice.obj.osz,
+        "estBytes": est,
+    }
+    if choice.on_demand:
+        resp["onDemand"] = True
+    return resp
 
 
 # ---------------------------------------------------------------------------

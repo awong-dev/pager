@@ -138,7 +138,7 @@ export default function FirmwareUpdateDialog({
                       </Typography>
                       <Typography variant="caption" color="text.secondary">
                         {new Date(b.published * 1000).toLocaleDateString()}, {formatBytes(b.size)};{" "}
-                        {b.kind}, ~{formatBytes(b.estBytes)}
+                        {b.onDemandDelta ? "delta (made at push)" : b.kind}, ~{formatBytes(b.estBytes)}
                       </Typography>
                     </>
                   }
@@ -149,7 +149,11 @@ export default function FirmwareUpdateDialog({
         </FormControl>
         {chosen && (
           <Typography variant="body2" sx={{ mt: 2 }}>
-            Cellular data for this update: ~{formatBytes(chosen.estBytes)} (about{" "}
+            Cellular data for this update:{" "}
+            {chosen.onDemandDelta
+              ? `up to ~${formatBytes(chosen.estBytes)}; a delta is generated at push time and is usually much smaller`
+              : `~${formatBytes(chosen.estBytes)}`}{" "}
+            (about{" "}
             {((chosen.estBytes / MONTHLY_TARGET_BYTES) * 100).toFixed(1)} % of the 10 MB monthly
             target)
           </Typography>

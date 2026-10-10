@@ -194,6 +194,7 @@ export interface OtaJob {
   kind: "full" | "delta";
   osz: number;
   estBytes: number;
+  onDemand?: boolean;
   by_uid: string;
   at: number;
 }

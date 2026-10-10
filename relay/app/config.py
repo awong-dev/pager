@@ -86,6 +86,15 @@ class Settings:
     fw_index_url: str | None = None
     fw_bucket_base: str | None = None
 
+    @property
+    def fw_bucket_name(self) -> str | None:
+        """The bucket name inside `fw_bucket_base` (D12 writes `fw-cache/`)."""
+        if not self.fw_bucket_base:
+            return None
+        from app.firmware import bucket_name
+
+        return bucket_name(self.fw_bucket_base)
+
     @classmethod
     def from_env(cls) -> Settings:
         return cls(

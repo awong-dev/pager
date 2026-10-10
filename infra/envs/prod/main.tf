@@ -68,6 +68,18 @@ module "fw_bucket" {
   labels      = var.labels
 }
 
+# Relay writes on-demand OTA deltas under fw-cache/ (expired after 7 days by
+# the fw-bucket lifecycle rule). Declared here, not in the fw-bucket module,
+# because relay-service consumes module.fw_bucket outputs (a module-level
+# reference back would be a cycle). objectCreator = create only: no overwrite
+# or delete (the relay uploads with if_generation_match=0). Uniform bucket-level
+# access makes the grant bucket-wide; the relay code only writes fw-cache/.
+resource "google_storage_bucket_iam_member" "relay_cache_writer" {
+  bucket = module.fw_bucket.bucket_name
+  role   = "roles/storage.objectCreator"
+  member = "serviceAccount:${module.relay_service.service_account_email}"
+}
+
 # --- Cloud Run relay service + one-off jobs --------------------------------
 # CI owns the relay image. When var.relay_image is empty (the default, e.g. a
 # local apply), resolve the image the live service is serving so the apply is a

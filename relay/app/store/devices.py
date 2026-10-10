@@ -214,6 +214,7 @@ class OtaJob(BaseModel):
     osz: int
     estBytes: int
     by_uid: str
+    onDemand: bool = False
     at: datetime | None = None
 
 

@@ -41,6 +41,11 @@ dependencies = [
     # with a default region ("US"), which can add a missing US country code
     # to a bare 10-digit number.
     "phonenumbers",
+    # docs/OTA_DESIGN.md D12: app/firmware.py makes OTA deltas on demand
+    # (detools has no manylinux wheel; the Dockerfile builds it in a builder
+    # stage) and writes them to the firmware bucket.
+    "detools",
+    "google-cloud-storage",
 ]
 
 [project.optional-dependencies]

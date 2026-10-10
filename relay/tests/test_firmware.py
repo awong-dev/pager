@@ -224,7 +224,17 @@ def test_cfg_ota_shapes_and_envelope_limit():
         firmware.choose(idx, ID_NEW[:16], ID_OLD[:16]), settings(fw_bucket_base=long_base)
     )
     assert len(long_delta["url"]) == 90
-    for cfg in (full, delta, long_delta):
+    # D12: the `fw-cache/` path is 6 chars longer than `fw/`... (96 chars)
+    cache_delta = firmware.FwDelta(
+        path=f"fw-cache/{ID_NEW[:16]}/from-{ID_OLD[:16]}.dz", osz=42513, osha="e5" * 32,
+        base=ID_OLD, psz=686466,
+    )
+    long_cache = firmware.build_cfg_ota(
+        firmware.Choice("delta", idx.find(ID_NEW[:16]), cache_delta, on_demand=True),
+        settings(fw_bucket_base=long_base),
+    )
+    assert len(long_cache["url"]) == 96
+    for cfg in (full, delta, long_delta, long_cache):
         devcfg._assert_within_envelope_limit(
             {"v": 1, "id": "m_aaaaaaaa", "ts": 1_700_000_000, "kind": "cfg",
              "cfg": {"ota": cfg}, "ack": None}

@@ -34,6 +34,10 @@ Download, verify, switch and rollback are done (`docs/OTA_DESIGN.md`; verified o
   `build/images/ota-bootloader.bin`). `rc1`: not recorded; confirm before its first OTA push.
 - `otaErr: "bad"` stays in `/status` after a good update; the relay should clear it on dl/ok
   (status unverified, 8 Oct 2026).
+- On-demand OTA deltas (`docs/OTA_DESIGN.md` D12, 9 Oct 2026): the relay builds and caches
+  `fw-cache/<target16>/from-<base16>.dz` for any published (base, target) pair; the 7-day lifecycle
+  rule is infra-dev's. Landed in `relay/`; needs a real push to verify (bucket write, Cloud Run
+  image with the `detools` build, device fetch from `fw-cache/`).
 - Orphan cleanup for the firmware bucket: a script the owner applies (status unverified, 8 Oct 2026).
 
 ### Firmware

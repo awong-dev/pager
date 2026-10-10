@@ -462,6 +462,15 @@ and the first builds were published with `tools/fwpub.py`. The steps below are h
 5. Check `terraform output fw_index_url` serves the index with `curl`.
 6. Cost: about 0.56 MB per release, inside the always-free 5 GiB; no resource here is billable at this scale.
 
+Delta cache (9 Oct 2026): the relay generates OTA deltas on demand and caches them in this bucket under
+`fw-cache/`. A lifecycle rule deletes objects under that prefix 7 days after creation (GCS evaluates
+lifecycle about daily, so 7-8 days in practice); it is prefix-scoped and never touches `fw/`. The relay's
+service account gets `roles/storage.objectCreator` on the bucket (create only, no overwrite or delete;
+`google_storage_bucket_iam_member.relay_cache_writer` in `envs/prod/main.tf`). Uniform bucket-level access
+makes the grant bucket-wide, but the relay code only writes under `fw-cache/`. No one-time owner step is
+needed beyond the normal deploy: `.github/workflows/deploy.yml` applies Terraform on push to main, so the
+next push after this lands adds the rule (in-place bucket update, no replacement) and the grant.
+
 ---
 
 ## Cost summary (recap of `docs/SERVER_PLAN.md` §9.3 — verify against current pricing)

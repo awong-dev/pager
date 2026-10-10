@@ -86,6 +86,18 @@ run inside the `relay` container or against the emulators from the host)
 creates a Firebase Auth user + `users/{uid}` doc with `role: 'admin'` + the
 `admin` custom claim — idempotent, safe to re-run.
 
+## OTA firmware (docs/OTA_DESIGN.md)
+
+`FW_INDEX_URL` and `FW_BUCKET_BASE` point at the public firmware bucket
+(`tools/fwpub.py` publishes it). A super admin's push picks the published delta
+for the device's running image, else the full image. If the device runs some
+other published build, the relay generates the delta itself (D12): it fetches
+both `full.z` images, builds and round-trip checks a `detools` patch and
+writes it to `fw-cache/<target16>/from-<base16>.dz` (7-day bucket lifecycle,
+owned by Terraform). The Cloud Run service account needs object create/read on
+the bucket; any failure falls back to the full image. The Docker image builds
+`detools` in a builder stage because it has no manylinux wheel.
+
 ## Tests
 
 Unit tests need the Firestore + Auth emulators running (the broker is

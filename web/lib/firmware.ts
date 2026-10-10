@@ -16,6 +16,8 @@ export interface FirmwareBuild {
   kind: "full" | "delta";
   osz: number;
   estBytes: number;
+  /** True: preview says "full" but the push will generate a delta. */
+  onDemandDelta?: boolean;
 }
 
 export interface OtaPushResult {
@@ -23,6 +25,7 @@ export interface OtaPushResult {
   kind?: "full" | "delta";
   osz?: number;
   estBytes?: number;
+  onDemand?: boolean;
 }
 
 type OtaStatus = Pick<DeviceStatusDoc, "otaState" | "otaPct" | "otaErr">;
