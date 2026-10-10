@@ -43,7 +43,7 @@ from app.soracom import (
     beam_entry,
     build_auth_call,
     build_calls,
-    enrol,
+    enroll,
     ensure_group_created,
 )
 
@@ -77,7 +77,7 @@ def run(group: str, imsi: str, destination: str) -> int:
         with SoracomClient(key_id, key) as client:
             group_id, created = ensure_group_created(client, group, destination)
             print(f"{'created' if created else 'reusing'} group {group} ({group_id})")
-            enrol(client, imsi, group_id)
+            enroll(client, imsi, group_id)
             final: Any = client.send(Call("GET", f"/groups/{group_id}"))
     except SoracomError as e:
         print(f"soracom: {e.detail}", file=sys.stderr)

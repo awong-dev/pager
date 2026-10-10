@@ -1,4 +1,4 @@
-/** Soracom SIM enrolment -- docs/SORACOM_DESIGN.md §5-6. Super-admin only. */
+/** Soracom SIM enrollment -- docs/SORACOM_DESIGN.md §5-6. Super-admin only. */
 
 import { api } from "@/lib/api";
 
@@ -18,13 +18,13 @@ export interface SoracomSimsResponse {
   sims: SoracomSim[];
 }
 
-export interface EnrolResult {
+export interface EnrollResult {
   ok: boolean;
   imsi: string;
   groupId: string;
 }
 
-export interface EnrolAllResult {
+export interface EnrollAllResult {
   ok: boolean;
   enrolled: string[];
   already: string[];
@@ -34,12 +34,12 @@ export function listSoracomSims(): Promise<SoracomSimsResponse> {
   return api.get<SoracomSimsResponse>("/admin/soracom/sims");
 }
 
-export function enrolSim(imsi: string): Promise<EnrolResult> {
-  return api.post<EnrolResult>(`/admin/soracom/sims/${encodeURIComponent(imsi)}/enrol`);
+export function enrollSim(imsi: string): Promise<EnrollResult> {
+  return api.post<EnrollResult>(`/admin/soracom/sims/${encodeURIComponent(imsi)}/enroll`);
 }
 
-export function enrolAllSims(): Promise<EnrolAllResult> {
-  return api.post<EnrolAllResult>("/admin/soracom/enrol-all");
+export function enrollAllSims(): Promise<EnrollAllResult> {
+  return api.post<EnrollAllResult>("/admin/soracom/enroll-all");
 }
 
 /** All but the last four digits hidden: "***********1234". */

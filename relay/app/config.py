@@ -87,7 +87,7 @@ class Settings:
     fw_bucket_base: str | None = None
     # docs/SORACOM_DESIGN.md §8: a Soracom SAM user's auth key (Secret Manager)
     # for enrolling SIMs into the Beam group from the admin UI. Unset = the
-    # enrol routes answer 503 and the list route reports `configured: false`.
+    # enroll routes answer 503 and the list route reports `configured: false`.
     soracom_auth_key_id: str | None = None
     soracom_auth_key: str | None = None
     soracom_beam_group: str = "pager-beam"

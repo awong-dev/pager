@@ -1099,7 +1099,7 @@ def patch_family(fid: str, req: PatchFamilyRequest) -> Family:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
-# ---- Soracom Beam enrolment (docs/SORACOM_DESIGN.md §8) ----
+# ---- Soracom Beam enrollment (docs/SORACOM_DESIGN.md §8) ----
 
 ImsiPath = Annotated[str, Path(pattern=r"^\d{14,15}$")]
 
@@ -1150,9 +1150,9 @@ def list_soracom_sims(
 
 
 @router.post(
-    "/soracom/sims/{imsi}/enrol", dependencies=[Depends(require_admin_write_rate_limit)]
+    "/soracom/sims/{imsi}/enroll", dependencies=[Depends(require_admin_write_rate_limit)]
 )
-def enrol_soracom_sim(
+def enroll_soracom_sim(
     imsi: ImsiPath,
     settings: Annotated[Settings, Depends(get_app_settings)],
     authed: Annotated[AuthedUser, Depends(require_super)],
@@ -1162,15 +1162,15 @@ def enrol_soracom_sim(
             gid = soracom.ensure_group(
                 client, settings.soracom_beam_group, settings.soracom_beam_destination
             )
-            soracom.enrol(client, imsi, gid)
+            soracom.enroll(client, imsi, gid)
     except soracom.SoracomError as exc:
         raise _soracom_502(exc) from None
-    log.info("soracom enrol imsi=%s group=%s by=%s", soracom.mask_imsi(imsi), gid, authed.uid)
+    log.info("soracom enroll imsi=%s group=%s by=%s", soracom.mask_imsi(imsi), gid, authed.uid)
     return {"ok": True, "imsi": imsi, "groupId": gid}
 
 
-@router.post("/soracom/enrol-all", dependencies=[Depends(require_admin_write_rate_limit)])
-def enrol_all_soracom_sims(
+@router.post("/soracom/enroll-all", dependencies=[Depends(require_admin_write_rate_limit)])
+def enroll_all_soracom_sims(
     settings: Annotated[Settings, Depends(get_app_settings)],
     authed: Annotated[AuthedUser, Depends(require_super)],
 ) -> dict[str, object]:
@@ -1192,10 +1192,10 @@ def enrol_all_soracom_sims(
                     client, settings.soracom_beam_group, settings.soracom_beam_destination
                 )
             for imsi in todo:
-                soracom.enrol(client, imsi, str(gid))
+                soracom.enroll(client, imsi, str(gid))
                 enrolled.append(imsi)
                 log.info(
-                    "soracom enrol imsi=%s group=%s by=%s", soracom.mask_imsi(imsi), gid, authed.uid
+                    "soracom enroll imsi=%s group=%s by=%s", soracom.mask_imsi(imsi), gid, authed.uid
                 )
     except soracom.SoracomError as exc:
         raise _soracom_502(exc) from None

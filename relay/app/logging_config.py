@@ -81,7 +81,7 @@ def configure_logging(level: str | int = "INFO") -> None:
     handler = logging.StreamHandler()
     handler.setFormatter(JsonLogFormatter())
     root.handlers = [handler]
-    # httpx logs every request URL at INFO. The Soracom enrolment URL carries
+    # httpx logs every request URL at INFO. The Soracom enrollment URL carries
     # the full IMSI (app/soracom.py), which must not reach the logs; the
     # relay's own lines name the failure and a masked IMSI instead.
     logging.getLogger("httpx").setLevel(logging.WARNING)

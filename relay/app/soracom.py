@@ -1,4 +1,4 @@
-"""Soracom API client for Beam enrolment (docs/SORACOM_DESIGN.md §5, §8).
+"""Soracom API client for Beam enrollment (docs/SORACOM_DESIGN.md §5, §8).
 
 Shared by `tools/soracom_beam.py` (CLI) and the admin routes. Auth is one
 `POST /auth` per `SoracomClient`; the key id, key, API key and token are never
@@ -233,6 +233,6 @@ def ensure_group(client: SoracomClient, group_name: str, destination: str) -> st
     return ensure_group_created(client, group_name, destination)[0]
 
 
-def enrol(client: SoracomClient, imsi: str, group_id: str) -> None:
+def enroll(client: SoracomClient, imsi: str, group_id: str) -> None:
     """Move the SIM into the group (idempotent)."""
     client.send(Call("POST", f"/subscribers/{imsi}/set_group", {"groupId": group_id}))

@@ -135,12 +135,12 @@ one school + home), stays a tiny fraction of that free allowance — realistical
 repo does not track it). OpenCelliD's own pricing/free-tier terms are unverified here too — see
 `app/cellgeo.py`'s docstring on that provider's `UNVERIFIED` API shape.
 
-### Soracom enrolment key
+### Soracom enrollment key
 
-The relay enrols Soracom SIMs into the Beam group from the admin UI. That needs a Soracom SAM
+The relay enrolls Soracom SIMs into the Beam group from the admin UI. That needs a Soracom SAM
 auth key (id + secret), held as the Secret Manager secrets `SORACOM_AUTH_KEY_ID` and
 `SORACOM_AUTH_KEY` (containers created by Terraform; values never in the repo). **Until the enable
-flag below is on, the admin UI shows Soracom enrolment as "not configured" and nothing else
+flag below is on, the admin UI shows Soracom enrollment as "not configured" and nothing else
 changes** (the secrets stay empty containers and the relay revision references neither).
 
 1. Soracom console -> **Security -> SAM (Soracom Access Management)** -> create a SAM user (for

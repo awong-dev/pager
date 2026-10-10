@@ -258,7 +258,7 @@ incognito window) to act as two different people at once where noted.
 15. **Sign out**: confirm "Sign out" returns to `/login` and that navigating
     back to `/chat` redirects to `/login` rather than showing stale data.
 16. **Soracom SIMs**: Admin -> Devices -> Soracom SIMs lists the account's SIMs;
-    Enrol moves one into pager-beam; Enrol all handles the rest; an
+    Enroll moves one into pager-beam; Enroll all handles the rest; an
     unconfigured relay shows the setup alert.
 
 ## Multi-family tenancy checklist (docs/FAMILIES_TASKS.md)

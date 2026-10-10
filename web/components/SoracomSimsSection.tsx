@@ -20,7 +20,7 @@ import Tooltip from "@mui/material/Tooltip";
 import Typography from "@mui/material/Typography";
 
 import { ApiError } from "@/lib/api";
-import { enrolAllSims, enrolSim, listSoracomSims, maskImsi, type SoracomSimsResponse } from "@/lib/soracom";
+import { enrollAllSims, enrollSim, listSoracomSims, maskImsi, type SoracomSimsResponse } from "@/lib/soracom";
 
 function errText(e: unknown, fallback: string): string {
   return e instanceof ApiError ? String(e.detail ?? e.message) : fallback;
@@ -70,9 +70,9 @@ export default function SoracomSimsSection() {
           <Button
             variant="contained"
             disabled={busy || unenrolled === 0}
-            onClick={() => void act(enrolAllSims, "Could not enrol the SIMs")}
+            onClick={() => void act(enrollAllSims, "Could not enroll the SIMs")}
           >
-            Enrol all
+            Enroll all
           </Button>
         </Stack>
       </Stack>
@@ -83,8 +83,8 @@ export default function SoracomSimsSection() {
 
       {data && !data.configured ? (
         <Alert severity="info">
-          Soracom enrolment is not configured. Add the SAM auth key to Secret Manager and enable it (infra/README.md,
-          &quot;Soracom enrolment key&quot;).
+          Soracom enrollment is not configured. Add the SAM auth key to Secret Manager and enable it (infra/README.md,
+          &quot;Soracom enrollment key&quot;).
         </Alert>
       ) : (
         <TableContainer sx={{ overflowX: "auto" }}>
@@ -131,9 +131,9 @@ export default function SoracomSimsSection() {
                       <Button
                         size="small"
                         disabled={busy}
-                        onClick={() => void act(() => enrolSim(s.imsi), "Could not enrol the SIM")}
+                        onClick={() => void act(() => enrollSim(s.imsi), "Could not enroll the SIM")}
                       >
-                        Enrol
+                        Enroll
                       </Button>
                     )}
                   </TableCell>

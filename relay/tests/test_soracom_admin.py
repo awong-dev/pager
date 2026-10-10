@@ -1,4 +1,4 @@
-"""Soracom Beam enrolment: app/soracom.py and /api/admin/soracom/* (docs/SORACOM_DESIGN.md §8)."""
+"""Soracom Beam enrollment: app/soracom.py and /api/admin/soracom/* (docs/SORACOM_DESIGN.md §8)."""
 
 from __future__ import annotations
 
@@ -100,10 +100,10 @@ def test_unconfigured_list(admin_headers):  # noqa: F811
     assert r.json() == {"configured": False, "group": "pager-beam", "groupId": None, "sims": []}
 
 
-def test_unconfigured_enrol_503(admin_headers):  # noqa: F811
+def test_unconfigured_enroll_503(admin_headers):  # noqa: F811
     with _client(False) as c:
-        assert c.post("/api/admin/soracom/sims/295050000000001/enrol", headers=admin_headers).status_code == 503
-        assert c.post("/api/admin/soracom/enrol-all", headers=admin_headers).status_code == 503
+        assert c.post("/api/admin/soracom/sims/295050000000001/enroll", headers=admin_headers).status_code == 503
+        assert c.post("/api/admin/soracom/enroll-all", headers=admin_headers).status_code == 503
 
 
 def test_list_pages_marks_enrolled_no_msisdn(admin_headers):  # noqa: F811
@@ -124,12 +124,12 @@ def test_list_pages_marks_enrolled_no_msisdn(admin_headers):  # noqa: F811
     assert KEY not in r.text
 
 
-def test_enrol_creates_group_in_tool_order(admin_headers, caplog):  # noqa: F811
+def test_enroll_creates_group_in_tool_order(admin_headers, caplog):  # noqa: F811
     fake = FakeSoracom(SIMS)
     _use(fake)
     caplog.set_level(logging.INFO)
     with _client() as c:
-        r = c.post("/api/admin/soracom/sims/295050000000003/enrol", headers=admin_headers)
+        r = c.post("/api/admin/soracom/sims/295050000000003/enroll", headers=admin_headers)
     assert r.status_code == 200, r.text
     assert r.json() == {"ok": True, "imsi": "295050000000003", "groupId": GID}
     assert fake.calls == [
@@ -140,32 +140,32 @@ def test_enrol_creates_group_in_tool_order(admin_headers, caplog):  # noqa: F811
         ("POST", "/subscribers/295050000000003/set_group"),
     ]
     assert fake.set_group == {"295050000000003": GID}
-    assert "soracom enrol imsi=...0003 group=grp-1 by=" in caplog.text
+    assert "soracom enroll imsi=...0003 group=grp-1 by=" in caplog.text
     ours = [r.getMessage() for r in caplog.records if r.name == "app.routers.admin"]
     assert len(ours) == 1 and "295050000000003" not in ours[0]
 
 
-def test_enrol_reuses_group(admin_headers):  # noqa: F811
+def test_enroll_reuses_group(admin_headers):  # noqa: F811
     fake = FakeSoracom(SIMS, groups=[{"groupId": GID, "tags": {"name": "pager-beam"}}])
     _use(fake)
     with _client() as c:
-        r = c.post("/api/admin/soracom/sims/295050000000002/enrol", headers=admin_headers)
+        r = c.post("/api/admin/soracom/sims/295050000000002/enroll", headers=admin_headers)
     assert r.status_code == 200
     assert ("POST", "/groups") not in fake.calls
     assert fake.set_group == {"295050000000002": GID}
 
 
 @pytest.mark.parametrize("imsi", ["123", "29505000000000x", "2950500000000011111"])
-def test_enrol_bad_imsi_422(admin_headers, imsi):  # noqa: F811
+def test_enroll_bad_imsi_422(admin_headers, imsi):  # noqa: F811
     with _client() as c:
-        assert c.post(f"/api/admin/soracom/sims/{imsi}/enrol", headers=admin_headers).status_code == 422
+        assert c.post(f"/api/admin/soracom/sims/{imsi}/enroll", headers=admin_headers).status_code == 422
 
 
-def test_enrol_all_skips_enrolled(admin_headers):  # noqa: F811
+def test_enroll_all_skips_enrolled(admin_headers):  # noqa: F811
     fake = FakeSoracom(SIMS, groups=[{"groupId": GID, "tags": {"name": "pager-beam"}}])
     _use(fake)
     with _client() as c:
-        r = c.post("/api/admin/soracom/enrol-all", headers=admin_headers)
+        r = c.post("/api/admin/soracom/enroll-all", headers=admin_headers)
     assert r.status_code == 200, r.text
     assert r.json() == {
         "ok": True,
@@ -181,8 +181,8 @@ def test_soracom_failure_502(admin_headers, status):  # noqa: F811
     with _client() as c:
         for r in (
             c.get("/api/admin/soracom/sims", headers=admin_headers),
-            c.post("/api/admin/soracom/sims/295050000000001/enrol", headers=admin_headers),
-            c.post("/api/admin/soracom/enrol-all", headers=admin_headers),
+            c.post("/api/admin/soracom/sims/295050000000001/enroll", headers=admin_headers),
+            c.post("/api/admin/soracom/enroll-all", headers=admin_headers),
         ):
             assert r.status_code == 502
             assert r.json()["detail"] == f"soracom: HTTP {status}"
@@ -195,8 +195,8 @@ def test_non_super_403():
     with _client() as c:
         h = auth_header(u.uid)
         assert c.get("/api/admin/soracom/sims", headers=h).status_code == 403
-        assert c.post("/api/admin/soracom/enrol-all", headers=h).status_code == 403
-        assert c.post("/api/admin/soracom/sims/295050000000001/enrol", headers=h).status_code == 403
+        assert c.post("/api/admin/soracom/enroll-all", headers=h).status_code == 403
+        assert c.post("/api/admin/soracom/sims/295050000000001/enroll", headers=h).status_code == 403
 
 
 def test_list_sims_pagination_and_optional_fields():
