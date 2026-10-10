@@ -12,8 +12,11 @@ default; the pager checks for a book sync periodically. Tasks: `build/bench-logs
 - Every book change is `contacts_store.bump_book_version(d)` (one transaction on `devices/{d}`)
   then `devcfg.push_book(d)` (nudge or full book). Callers: approve/reject contact, allow-list PUT,
   `/approved` PUT, group create/join/leave (`conversations._push_book_to_members`), device create,
-  displayName change (edge holders only). **Gap:** `PATCH /api/family/contacts/{uid}` (external
-  rename) bumps nothing, so the pager keeps the old name.
+  displayName change (edge holders only). External rename
+  (`PATCH /api/family/contacts/{uid}`; corrected 10 Oct 2026, this was listed as a gap): re-derives
+  `cfg.sms` and pushes it for every family member (modem owners carry the name there, not in
+  `c[]`, so no book bump); for owners with a relay `smsNumber` the contacts are in `c[]`, so the
+  same re-derive also bumps and pushes their book (`reason=sms_contacts`).
 - The pager already sends `bv` in every `/status` (`modes.c:857`), including the hourly heartbeat
   (`maybe_publish_heartbeat`, §5.4(d)); `ingest.handle_status` re-nudges whenever the reported `bv` is
   behind (`renudge_if_behind`). The Device screen's "Re-sync address book" publishes `/status` now.

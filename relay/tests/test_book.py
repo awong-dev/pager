@@ -366,9 +366,14 @@ def test_external_rename_rederives_cfg_sms_without_a_book_bump(
         allow_store.set_edge(kid, ext.uid, message=True, locate=False)
         _set_policy(kid, "people_sms", "people")
     b1, b2 = _bv("pgr-i1"), _bv("pgr-i2")
+    broker.published.clear()
 
     resp = client.patch(f"/api/family/contacts/{ext.uid}", json={"name": "Grandma"}, headers=h)
     assert resp.status_code == 200, resp.text
+    cfgs = [d for d in (json.loads(m.payload) for m in broker.published) if d.get("kind") == "cfg"]
+    sms_cfgs = [d["cfg"]["sms"] for d in cfgs if "sms" in d.get("cfg", {})]
+    assert len(sms_cfgs) == 2 and all(s == [{"n": "Grandma", "p": ext.phone}] for s in sms_cfgs)
+    assert not _book_pushes(broker)
     assert (_bv("pgr-i1"), _bv("pgr-i2")) == (b1, b2)
     for device_id in ("pgr-i1", "pgr-i2"):
         assert [c.name for c in devices_store.get_device(device_id).smsContacts] == ["Grandma"]
