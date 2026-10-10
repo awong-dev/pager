@@ -75,7 +75,7 @@ class SmsBackend:
         # through a paired bridge phone. The sender's number must be that
         # bridge's SIM or Voice number and the phone must be able to send
         # something right now; otherwise the send fails, never retried.
-        bridge = bridges_store.get_by_sms_number(from_number)
+        bridge = bridges_store.get_by_sms_number(from_number, prefer_owner=sender.uid)
         if bridge is None or not (bridge.caps.sms or bridge.caps.gvoice or bridge.caps.whatsapp):
             logger.info(
                 "sms out to=%s from=%s sid=- status=failed code=no_bridge",

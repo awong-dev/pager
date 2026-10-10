@@ -39,6 +39,23 @@ def caps_for(
     )
 
 
+def number_taken(owner_uid: str, number: str, bridge: bridges_store.Bridge) -> str | None:
+    """The 409 detail when `number` already belongs to another member or
+    another bridge phone anywhere on the relay, else `None` (the bridge's own
+    previous owner holding it through this very bridge does not count:
+    reassigning releases it)."""
+    holder = users_store.get_uid_for_sms_number(number)
+    own_release = holder == bridge.ownerUid and number in (bridge.simNumber, bridge.voiceNumber)
+    if holder is not None and holder != owner_uid and not own_release:
+        holder_user = users_store.get_user(holder)
+        if holder_user is not None and holder_user.smsNumber == number:
+            return f"that number belongs to @{holder_user.alias}"
+    other = bridges_store.get_by_sms_number(number)
+    if other is not None and other.id != bridge.id:
+        return "that number is used by another bridge phone"
+    return None
+
+
 def apply_numbers(bridge: bridges_store.Bridge, broker: BrokerClient) -> bool:
     """Sets the owner's `smsNumber` to the bridge's number when it differs,
     then re-derives the owner's SMS contacts and book. `SmsNumberTaken` is
@@ -54,7 +71,7 @@ def apply_numbers(bridge: bridges_store.Bridge, broker: BrokerClient) -> bool:
         # Decision 1: a person may own several bridges only if each has a
         # different number -- a second bridge never takes the number over
         # from another bridge the owner already uses.
-        current = bridges_store.get_by_sms_number(owner.smsNumber) if owner.smsNumber else None
+        current = bridges_store.get_by_sms_number(owner.smsNumber, prefer_owner=owner.uid) if owner.smsNumber else None
         if current is not None and current.id != bridge.id and current.ownerUid == owner.uid:
             bridges_store.set_error(bridge.id, f"@{owner.alias} already uses another bridge phone")
             logger.info("bridge number refused bridge=%s other=%s", bridge.id, current.id)

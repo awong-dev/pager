@@ -173,16 +173,23 @@ def list_all() -> list[Bridge]:
 _EPOCH = datetime.fromtimestamp(0, tz=UTC)
 
 
-def get_by_sms_number(e164: str) -> Bridge | None:
+def get_by_sms_number(e164: str, *, prefer_owner: str | None = None) -> Bridge | None:
     """The *paired* bridge whose accepted `simNumber` **or** `voiceNumber` is
     `e164` (decision 4, O1 revised). Two single-field queries, no index; the
-    paired filter is in Python."""
+    paired filter is in Python. Numbers are unique across the relay, but if
+    older data has duplicates, `prefer_owner`'s own bridge wins, else the
+    first match."""
+    matches: list[Bridge] = []
     for field in ("simNumber", "voiceNumber"):
         for snap in _bridges().where(filter=FieldFilter(field, "==", e164)).stream():
             bridge = _from_snap(snap)
             if bridge.paired:
+                matches.append(bridge)
+    if prefer_owner is not None:
+        for bridge in matches:
+            if bridge.ownerUid == prefer_owner:
                 return bridge
-    return None
+    return matches[0] if matches else None
 
 
 def _update(bridge_id: str, updates: dict[str, Any]) -> None:
@@ -303,6 +310,17 @@ def consume_pair_code(code: str, *, now: datetime | None = None) -> str | None:
         return data.get("bridgeId")
 
     return run_transaction(_txn)
+
+
+def peek_pair_code(code: str, *, now: datetime | None = None) -> str | None:
+    """Read-only twin of `consume_pair_code`: the bridge id for a live code,
+    `None` for a missing or expired one; nothing is deleted."""
+    now = now or datetime.now(UTC)
+    data = _codes().document(code).get().to_dict() or {}
+    expires_at = data.get("expiresAt")
+    if expires_at is None or expires_at <= now:
+        return None
+    return data.get("bridgeId")
 
 
 def list_expired_pair_codes(now: datetime) -> list[str]:

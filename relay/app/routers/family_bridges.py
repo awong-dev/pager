@@ -467,21 +467,10 @@ def _normalize(raw: str | None, field: str) -> str | None:
 
 
 def _number_taken(owner_uid: str, number: str, bridge: bridges_store.Bridge) -> None:
-    """409 when `number` already belongs to another member or another bridge
-    (the bridge's own previous owner holding it through this very bridge does
-    not count: reassigning releases it)."""
-    bridge_id = bridge.id
-    holder = users_store.get_uid_for_sms_number(number)
-    own_release = holder == bridge.ownerUid and number in (bridge.simNumber, bridge.voiceNumber)
-    if holder is not None and holder != owner_uid and not own_release:
-        holder_user = users_store.get_user(holder)
-        if holder_user is not None and holder_user.smsNumber == number:
-            raise HTTPException(
-                status_code=409, detail=f"that number belongs to @{holder_user.alias}"
-            )
-    other = bridges_store.get_by_sms_number(number)
-    if other is not None and other.id != bridge_id:
-        raise HTTPException(status_code=409, detail="that number is used by another bridge phone")
+    """409 when `number` already belongs to another member or another bridge."""
+    detail = bridge_numbers.number_taken(owner_uid, number, bridge)
+    if detail is not None:
+        raise HTTPException(status_code=409, detail=detail)
 
 
 @router.patch("/bridges/{bridge_id}", dependencies=[Depends(require_family_write_rate_limit)])

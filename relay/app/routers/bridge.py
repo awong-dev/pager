@@ -88,6 +88,17 @@ def pair(req: PairRequest, request: Request) -> PairResponse:
     sim = normalize_optional_phone(req.simNumber, "simNumber")
     voice = normalize_optional_phone(req.voiceNumber, "voiceNumber")
 
+    # Numbers are unique across the relay: check before the code is consumed
+    # so a 409 does not burn it. An unknown code stays a 404.
+    peeked_id = bridges_store.peek_pair_code(req.code)
+    peeked = bridges_store.get(peeked_id) if peeked_id else None
+    if peeked is not None and not peeked.paired:
+        for number in (sim, voice):
+            if number is not None:
+                detail = bridge_numbers.number_taken(peeked.ownerUid, number, peeked)
+                if detail is not None:
+                    raise HTTPException(status_code=409, detail=detail)
+
     bridge_id = bridges_store.consume_pair_code(req.code)
     bridge = bridges_store.get(bridge_id) if bridge_id else None
     if bridge is None or bridge.paired:

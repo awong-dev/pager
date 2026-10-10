@@ -35,26 +35,7 @@ def record_channel(
     """Decision 5: the channel a member last used with this external, kept
     per member on the external's `sms` backend row (the contact is
     family-wide, so one sibling's Voice thread must not switch another's)."""
-    row = backends_store.get_backend(contact_uid, bid)
-    if row is None:
-        return
-    config = dict(row.config)
-    via_map = dict(config.get("via") or {})
-    conv_map = dict(config.get("voiceConv") or {})
-    changed = False
-    if via_map.get(member_uid) != via:
-        via_map[member_uid] = via
-        changed = True
-    # `voiceConv` holds the Voice thread id or, for `whatsapp`, the chat JID
-    # (WA2): the member's last channel is the only one used, so one slot is enough.
-    if via in ("gvoice", "whatsapp") and voice_conv and conv_map.get(member_uid) != voice_conv:
-        conv_map[member_uid] = voice_conv
-        changed = True
-    if changed:
-        config["via"] = via_map
-        if conv_map:
-            config["voiceConv"] = conv_map
-        backends_store.update_backend(contact_uid, bid, config=config)
+    backends_store.record_member_channel(contact_uid, bid, member_uid, via, voice_conv)
 
 
 def handle_text(

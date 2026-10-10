@@ -537,3 +537,11 @@ caps chip). The Add by link dialog refuses `whatsapp.com` and `wa.me` links clie
 **WA9 Docs.** This section; the task rows in `docs/BRIDGE_PHONE_TASKS.md`; one-liners in `README.md`,
 `docs/OVERVIEW.md` and `docs/ROADMAP.md`; the `relay/README.md` runbook and simulator support for source
 `whatsapp`; and the `bridge-android/README.md` checklist and verify-on-bench list.
+
+## Cross-family review (9 Oct 2026)
+
+**Numbers are unique across the whole relay.** `POST /bridge/pair` now runs the same number check as the family API's edit and accept-SIM paths (`bridge_numbers.number_taken`) and answers 409 with the same detail text. The check runs before the pair code is consumed (via the read-only `bridges_store.peek_pair_code`), so a refused pair does not burn the code. An unknown code is still 404 before any number check.
+
+**Lookup prefers the sender's own bridge.** `bridges_store.get_by_sms_number(e164, prefer_owner=...)` returns the matching paired bridge owned by `prefer_owner` when there is one, else the first match. `SmsBackend.deliver` and `apply_numbers` pass the sender or owner, so data written before the pair check cannot send one family's text through another family's phone. The uniqueness check itself stays unpreferred: any other bridge with the number is a conflict.
+
+**Channel records are transactional.** `backends_store.record_member_channel` does the read-modify-write of `config.via` and `config.voiceConv` inside one Firestore transaction, so two siblings' inbound texts handled concurrently both keep their entry. It writes nothing when the row is missing, not live, or unchanged; `inbound_text.record_channel` delegates to it.

@@ -553,3 +553,7 @@ npm run build`. Android: `cd bridge-android && ./gradlew assembleDebug`.
   `docs/README.md` (index rows). `docs/PROTOCOL.md` needs no change: its bridge notes do not enumerate sources, and
   `t:"sms"` (phone contact) and `t:"grp"` (group) already cover WhatsApp DMs and groups. No firmware change.
 - **Verify:** every link in `docs/README.md` resolves (`grep -o '\](\S*\.md' docs/README.md | sort -u` and `ls`).
+
+### B12 Entanglement fixes — **done 9 Oct 2026**
+- **Files:** `relay/app/routers/bridge.py` (pair checks numbers before consuming the code), `relay/app/bridge_numbers.py` (`number_taken`), `relay/app/routers/family_bridges.py`, `relay/app/store/bridges.py` (`peek_pair_code`, `get_by_sms_number(prefer_owner=)`), `relay/app/backends/sms.py`, `relay/app/store/backends.py` (`record_member_channel`), `relay/app/inbound_text.py`, `relay/tests/test_bridge_entanglement.py`.
+- **Verify:** `cd relay && .venv/bin/python -m pytest -q tests/test_bridge_entanglement.py`.

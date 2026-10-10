@@ -114,11 +114,13 @@ def test_heartbeat_with_a_different_sim_flags_error_and_leaves_sms_number(
     assert bridges_store.get(bridge.id).status.error is None
 
 
-def test_sms_number_taken_is_recorded_and_user_untouched(client: TestClient, world: World):
+def test_sms_number_taken_is_409_and_user_untouched(client: TestClient, world: World):
+    # Cross-family review (9 Oct 2026): pair refuses a taken number like edit/accept.
     users_store.create_user(uid="sis", alias="sis", display_name="Sis", family_id=world.family_id)
     users_store.set_sms_number("sis", SIM)
-    bridge, _ = pair_bridge(client, world)
-    assert "@sis" in bridges_store.get(bridge.id).status.error
+    _, code = _new_code(world)
+    resp = client.post("/bridge/pair", json={"code": code, "simNumber": SIM, "caps": {"sms": True}})
+    assert resp.status_code == 409 and "@sis" in resp.json()["detail"]
     assert users_store.get_user("kid").smsNumber is None
     assert users_store.get_user("sis").smsNumber == SIM
 

@@ -35,7 +35,7 @@ bodies is the open precondition before real pages go over Beam (`docs/ROADMAP.md
 **Bridge phones (9 Oct 2026): built, not yet run on a phone.** A member's SIM texts, Google Voice
 texts and subscribed Google Chat conversations go through a headless Android phone
 (`bridge-android/`). SMS is bridge-only: Twilio was removed on 9 Oct 2026 (last at 05ec3ed), so a
-member without a bridge phone has no SMS. The relay has 1291 tests passing, and the `bridge` and
+member without a bridge phone has no SMS. The relay has 1303 tests passing, and the `bridge` and
 `bridge_voice` end-to-end scenarios pass against the simulator. The web pages and the Android app
 have landed, but the app has never run on a phone, and until the owner registers its Firebase
 Android app it polls for work every 60 s. WhatsApp DMs and groups are bridged too (9 Oct 2026). See

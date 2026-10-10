@@ -43,10 +43,10 @@ import uuid
 from datetime import datetime
 from typing import Literal, get_args
 
-from google.cloud.firestore import SERVER_TIMESTAMP
+from google.cloud.firestore import SERVER_TIMESTAMP, Transaction
 from pydantic import BaseModel, ConfigDict
 
-from app.db.firestore import get_db
+from app.db.firestore import get_db, run_transaction
 
 logger = logging.getLogger(__name__)
 
@@ -167,6 +167,42 @@ def update_backend(
     if fetched is None:
         raise KeyError(f"no such backend: {uid}/{bid}")
     return fetched
+
+
+def record_member_channel(
+    uid: str, bid: str, member_uid: str, via: str, conv: str | None
+) -> None:
+    """Atomic read-modify-write of `config.via[member]` / `config.voiceConv[member]`
+    on an external's row, so two siblings recorded at once both survive.
+    Missing or not-live row: no write. Unchanged: no write. `conv` is the
+    Voice thread id or, for `whatsapp`, the chat JID (WA2)."""
+    ref = _backends(uid).document(bid)
+
+    def _txn(transaction: Transaction) -> None:
+        snap = ref.get(transaction=transaction)
+        if not snap.exists:
+            return
+        data = snap.to_dict() or {}
+        if not _live_kind(uid, bid, data):
+            return
+        config = dict(data.get("config") or {})
+        via_map = dict(config.get("via") or {})
+        conv_map = dict(config.get("voiceConv") or {})
+        changed = False
+        if via_map.get(member_uid) != via:
+            via_map[member_uid] = via
+            changed = True
+        if via in ("gvoice", "whatsapp") and conv and conv_map.get(member_uid) != conv:
+            conv_map[member_uid] = conv
+            changed = True
+        if not changed:
+            return
+        config["via"] = via_map
+        if conv_map:
+            config["voiceConv"] = conv_map
+        transaction.update(ref, {"config": config})
+
+    run_transaction(_txn)
 
 
 def delete_backend(uid: str, bid: str) -> None:
