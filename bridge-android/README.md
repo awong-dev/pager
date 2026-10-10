@@ -22,6 +22,9 @@ export JAVA_HOME=/opt/homebrew/opt/openjdk@17      # AGP 8.7 refuses the default
 # -> app/build/outputs/apk/debug/app-debug.apk
 ```
 
+`-PRELAY_URL=https://...` (or `RELAY_URL=` in `gradle.properties`) sets `BuildConfig.DEFAULT_RELAY_URL`,
+the setup screen's default *Relay URL*; unset it is `https://kid-pager.web.app`.
+
 `local.properties` (`sdk.dir=$HOME/Library/Android/sdk`) is git-ignored and must exist. The
 wrapper pins Gradle 8.10.2; versions are in `gradle/libs.versions.toml` (AGP 8.7.3, Kotlin
 2.0.21, KSP, Room 2.6.1, WorkManager 2.10, security-crypto, OkHttp 4.12, kotlinx-serialization

@@ -123,7 +123,13 @@ class SetupActivity : AppCompatActivity() {
                     "paired as ${r.bridgeId}"
                 } catch (e: RelayClient.HttpError) {
                     Log.w("setup", "pair failed ${e.code}: ${e.body.take(120)}")
-                    when (e.code) { 404 -> "code expired or already used"; 429 -> "too many attempts; wait a minute"; 422 -> "relay rejected a field: ${e.body.take(80)}"; else -> "pair failed: HTTP ${e.code}" }
+                    when (e.code) {
+                        404 -> "code expired or already used"
+                        429 -> "too many attempts; wait a minute"
+                        409 -> e.detail ?: "pair rejected: ${e.body.take(80)}"
+                        422 -> "relay rejected a field: ${e.reason().take(80)}"
+                        else -> e.detail?.let { "pair failed: $it" } ?: "pair failed: HTTP ${e.code}"
+                    }
                 } catch (e: Exception) {
                     Log.e("setup", "pair failed", e)
                     "pair failed: ${e.message}"

@@ -21,7 +21,15 @@ import java.util.concurrent.TimeUnit
  * and the service shows a re-pair notification.
  */
 class RelayClient(private val ctx: Context) {
-    class HttpError(val code: Int, val body: String) : IOException("HTTP $code: ${body.take(200)}")
+    /** [detail] is the relay's `{"detail": "..."}` text when the body is that shape (null for FastAPI's 422 list). */
+    class HttpError(val code: Int, val body: String) : IOException("HTTP $code: ${body.take(200)}") {
+        val detail: String? by lazy {
+            try { (WireJson.parseToJsonElement(body) as? JsonObject)?.get("detail")?.let { (it as? JsonPrimitive)?.takeIf { p -> p.isString }?.content } }
+            catch (e: Exception) { null }
+        }
+        /** [detail] if present, else a short cut of the body. */
+        fun reason(): String = detail ?: body.take(120)
+    }
     class Unauthorized : IOException("401 unauthorized")
 
     companion object {

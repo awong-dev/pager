@@ -13,7 +13,9 @@ import kotlinx.coroutines.withTimeoutOrNull
 /**
  * A3 ("events batched (debounce 500 ms) to POST /bridge/events") and decision 5 ("the phone
  * retries the batch on a non-2xx"): events are spooled in Room, flushed in batches of at most
- * 50 after a 500 ms quiet period, deleted only after a 2xx. Backoff doubles to 5 min on failure.
+ * 50 after a 500 ms quiet period, deleted only after a 2xx. Backoff doubles to 5 min on failure
+ * (5xx, 429, network). A 4xx other than 401/429 means the relay rejected the payload itself, so
+ * that batch is logged and dropped rather than retried forever.
  */
 object EventQueue {
     private const val TAG = "events"
@@ -82,6 +84,17 @@ object EventQueue {
                     for (r in resp.results) Log.i(TAG, "relay ${r.id} outcome=${r.outcome}")
                     backoff = 2_000L
                 } catch (e: RelayClient.Unauthorized) {
+                    break
+                } catch (e: RelayClient.HttpError) {
+                    if (e.code in 400..499 && e.code != 429) {
+                        Log.w(TAG, "relay rejected batch of ${rows.size} (HTTP ${e.code}: ${e.reason()}); dropping ids=${rows.map { it.eventId }}")
+                        db.pendingEvents().delete(rows.map { it.rowId })
+                        continue
+                    }
+                    Log.w(TAG, "batch of ${rows.size} failed (HTTP ${e.code}); retry in ${backoff / 1000}s")
+                    delay(backoff)
+                    backoff = (backoff * 2).coerceAtMost(300_000L)
+                    kicks.trySend(Unit)
                     break
                 } catch (e: Exception) {
                     Log.w(TAG, "batch of ${rows.size} failed (${e.message}); retry in ${backoff / 1000}s")
