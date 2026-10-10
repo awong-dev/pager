@@ -117,7 +117,7 @@ void bs_core_raise(bs_ram_t *ram, bs_cause_t c)
 
 void bs_core_note_mv(battstat_rtc_t *r, int mv)
 {
-    if (mv < 2000 || mv > 4500) {
+    if (mv < 2000 || mv > 5000) {
         return;
     }
     if (r->mvn == 0 || mv < (int) r->mvn) {

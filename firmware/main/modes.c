@@ -681,9 +681,13 @@ static void on_auth_epoch_wrap(void)
 #define STK_OTA_PCT 66 // 0-100
 #define STK_OTA_ERR 67 // short error code, omitted when none
 
-// PROTOCOL.md §5.1: batt_mv must be in [2000, 4500] when state:"online".
+// PROTOCOL.md §5.1: batt_mv must be in [2000, 5000] when state:"online".
+// The upper bound is 5000, not the LiPo's 4200: AT+SQNVMON measures the
+// modem's own VIN/SYS rail, which sits at about 4.5 V (4.7 V seen) on USB,
+// and a tighter bound threw those readings away (stuck 3700 placeholder,
+// 10 Oct 2026). The web greys samples >= USB_MV (4300).
 #define PAGER_BATT_MV_MIN 2000
-#define PAGER_BATT_MV_MAX 4500
+#define PAGER_BATT_MV_MAX 5000
 
 // "Unknown" placeholder returned before any real AT+SQNVMON reading has
 // landed this boot (refresh_batt_mv()/modes_get_batt_mv() below) -- not a
@@ -719,9 +723,13 @@ static bool cbor_w_int(cbor_w_t *w, uint32_t key, int64_t v)
 static int refresh_batt_mv(void)
 {
     int batt_mv;
-    if (!net_get_battery_mv(&batt_mv) || batt_mv < PAGER_BATT_MV_MIN ||
-        batt_mv > PAGER_BATT_MV_MAX) {
-        batt_mv = (s_last_batt_mv != 0) ? s_last_batt_mv : PAGER_BATT_MV_UNKNOWN_PLACEHOLDER;
+    bool got = net_get_battery_mv(&batt_mv);
+    if (!got || batt_mv < PAGER_BATT_MV_MIN || batt_mv > PAGER_BATT_MV_MAX) {
+        int keep = (s_last_batt_mv != 0) ? s_last_batt_mv : PAGER_BATT_MV_UNKNOWN_PLACEHOLDER;
+        if (got) {
+            ESP_LOGI(TAG, "batt: reading %d mV out of range, keeping %d", batt_mv, keep);
+        }
+        batt_mv = keep;
     } else {
         s_last_batt_mv = batt_mv;
         battstat_note_mv(batt_mv); // window minimum for `bs.mvn`

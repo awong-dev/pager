@@ -66,7 +66,7 @@ int64_t modes_debug_last_input_age_us(void);
  * modes_get_batt_mv() returns a hardcoded "unknown" mV placeholder
  * (PAGER_BATT_MV_UNKNOWN_PLACEHOLDER, modes.c) before that (or if every
  * reading since boot has been out of range) purely so the UI battery icon
- * and the /status `batt_mv` field (PROTOCOL.md §5.1's [2000,4500] range
+ * and the /status `batt_mv` field (PROTOCOL.md §5.1's [2000,5000] range
  * requirement) always have *something* numeric to show — it is NOT a real
  * reading. loc.c's battery floor (LOC_BATTERY_FLOOR_MV, loc.h) must not
  * treat that placeholder as a real "at the floor" reading: callers that
