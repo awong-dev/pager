@@ -67,7 +67,7 @@ on pager. webapp: waiting / sent to app / shown in app / read in app. gchat: sen
 "expired"; fulfilled → "location received". Time suffix unchanged. *(7 Oct 2026: no sms deliveries exist.)*
 
 **5. A person's phone is a sign-in number, never an SMS route.** `users.phone` is the Firebase Auth
-`phone_number` `/login` uses. *(8 Oct 2026: the SMS number is a separate `users.smsNumber` per docs/RELAY_SMS_DESIGN.md decision 1, set/cleared by family admins or super.)*  People
+`phone_number` `/login` uses. *(8 Oct 2026: the SMS number is a separate `users.smsNumber` per docs/RELAY_SMS_DESIGN.md decision 1, set/cleared by family admins or super.)* *(9 Oct 2026: reversed for inbound only, owner decision after the first bridge-phone test: a text from a same-family member's `users.phone` is delivered as that member; outbound it is still never an SMS route. See docs/RELAY_SMS_DESIGN.md §8.)*  People
 (`web/app/family/people`) and Users (`web/app/admin/users`) label it "Sign-in phone", helper
 "For signing in only. To text a number from a pager, add it under Contacts." (link);
 `POST /api/family/members` and `POST /api/admin/users` normalise it (`normalize_phone`, 400 on

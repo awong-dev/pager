@@ -221,3 +221,36 @@ each contact appears once and every text goes through the relay.
   relay forwards by SMS. Members without a number keep the 7 Oct behaviour.)*
 - §3.6 `cfg.sms`: append *(8 Oct 2026: pushed empty for a member with a relay SMS number.)*
 - §4.2 case 3: add the `sms not set up; ask your admin` body to the list of system replies.
+
+## §8 Sign-in phone as member identity (owner decision 9 Oct 2026)
+Reverses docs/CONTACT_REQ_DESIGN.md decision 5 for **inbound only**. Live case: @albertphone (`users.phone` +1206…3403) texted @may's bridge SIM and was held as `sms_unknown`.
+
+**1. Inbound.** In `inbound_text.handle_text`, after the *blocked*, *duplicate* and *empty* steps and before `externals_store.get_family_contact`, resolve
+`member = [u for u in users_store.list_users() if u.kind == "person" and u.familyId == target.familyId and u.phone == from_number]`.
+- Exactly one, not disabled, `uid != target.uid` → `too_long` check (same hint reply as contacts), then `routing.send(sender_uid=member.uid, recipient_alias=target.alias, kind="text", body=body, origin_backend_kind="sms", origin_backend_id=None, wire_id=sid)`. This is the web-app send path: `_policy_reject_reason` (member's `out`, target's `in`, `edge_or_family`), `new_conversation` alert when the DM doc is created, pager `from` = the member's alias. Outcome `delivered_member`; no `record_channel` (no external `sms` row exists).
+- Policy refuses → `rejected_<reason>` (routing logs SECURITY), **no held row, no alert, no reply**. A held row would let a parent "approve" a member as an external contact; the web app would also just refuse.
+- Disabled member → not a member match; falls through to the contact lookup, normally `held` + `sms_unknown` (same as an unknown number).
+- Other family's member → no match (same-family filter); stays unknown/held. Cross-family identity is never inferred from a phone.
+- Also an approved external contact of the family → **member wins**; the contact row is untouched (the admin may delete it), and no `record_channel` is written.
+- Same e164 is also a `smsNumbers/{e164}` holder: only `users.phone` is consulted inbound; if the holder is the member, nothing changes; if it is a different member (a bridge SIM that is someone's sign-in phone), `users.phone` wins because it is Firebase-verified. `smsNumbers` stays an outbound/pairing index.
+- `uid == target.uid` (member texts their own bridge number) → `dropped_self`, nothing stored.
+- More than one match (Auth makes phones unique, so stale data) → ERROR log, treat as no match (fail closed: held).
+- Blocked number that is a member's phone → stays `blocked` (explicit admin action runs first).
+
+**2. Outbound.** The target's reply is an ordinary DM to the member's alias: routed to the member's normal backends (pager, webapp push, gchat). It goes back over SMS **only** if the member holds an `smsNumber`, through the existing bridge path. Decision 5 still holds outbound: `users.phone` is never an SMS route. No web or pager change; the pager book entry stays a person (`t` unchanged), so no PROTOCOL.md edit.
+
+**3. Index.** `users_store` has no `where` queries today; family scans use `list_users()` + Python filter (`book.py:441`, `routers/family.py:116,154,693`). Follow that pattern: no composite index. (A future `where("phone","==")` alone uses the automatic single-field index; adding an `orderBy` would need a composite.) Cost: one users scan per inbound bridge text, acceptable at family scale.
+
+**4. Tests** (`relay/tests/test_bridge_events.py`, using `bridge_world.py`):
+- `test_member_signin_phone_delivers_as_member`: outcome `delivered_member`; message `senderUid` = member, `from` alias on the pager envelope, no `heldSms` row, no `sms_unknown` alert.
+- `test_member_signin_phone_new_conversation_alert`: first text creates the DM and raises `new_conversation` exactly when the web send would.
+- `test_member_signin_phone_policy_refused_not_held`: target `in` = `none`-style policy → `rejected_*`, no held row, no alert.
+- `test_other_family_member_phone_is_unknown`: `held` + `sms_unknown`.
+- `test_disabled_member_phone_is_unknown`: `held` + `sms_unknown`.
+- `test_member_beats_approved_contact_same_number`: sender is the member uid, the contact's `sms` row unchanged.
+- `test_member_texts_own_bridge_dropped_self`: `dropped_self`, nothing written.
+- `test_member_signin_phone_redelivery_is_duplicate`: same event id twice → second `duplicate`.
+
+**5. Alert/UI.** No new alert kind. Helper text under "Sign-in phone" (`web/app/family/people/page.tsx:284`, `web/app/admin/users/page.tsx:234`) becomes "Used to sign in. Texts from this number to a family bridge phone count as this person. To text a number from a pager, add it under Contacts."
+
+**Measure.** `sms in … outcome=delivered_member|dropped_self` counts; `sms_unknown` alerts whose number matches some family's `users.phone` should drop to zero.
