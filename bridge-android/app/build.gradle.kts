@@ -10,7 +10,7 @@ plugins {
 
 val hasGoogleServices = file("google-services.json").exists()
 // Default relay URL (Prefs.relayUrl): -PRELAY_URL=https://... or gradle.properties; else the prod host.
-val relayUrl = (project.findProperty("RELAY_URL") as String?)?.trim()?.ifEmpty { null } ?: "https://kid-pager.web.app"
+val relayUrl = (project.findProperty("RELAY_URL") as String?)?.trim()?.ifEmpty { null } ?: "https://kidpager.sps-by-the-numbers.com"
 if (hasGoogleServices) {
     apply(plugin = "com.google.gms.google-services")
 }

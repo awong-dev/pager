@@ -30,7 +30,7 @@ object Prefs {
         }
     }
 
-    /** Defaults to BuildConfig.DEFAULT_RELAY_URL (gradle property RELAY_URL, else https://kid-pager.web.app). */
+    /** Defaults to BuildConfig.DEFAULT_RELAY_URL (gradle property RELAY_URL, else https://kidpager.sps-by-the-numbers.com). */
     fun relayUrl(ctx: Context): String =
         get(ctx).getString("relayUrl", null)?.ifBlank { null } ?: BuildConfig.DEFAULT_RELAY_URL.trimEnd('/')
     fun setRelayUrl(ctx: Context, url: String) = get(ctx).edit().putString("relayUrl", url.trimEnd('/')).apply()

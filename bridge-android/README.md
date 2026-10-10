@@ -23,7 +23,7 @@ export JAVA_HOME=/opt/homebrew/opt/openjdk@17      # AGP 8.7 refuses the default
 ```
 
 `-PRELAY_URL=https://...` (or `RELAY_URL=` in `gradle.properties`) sets `BuildConfig.DEFAULT_RELAY_URL`,
-the setup screen's default *Relay URL*; unset it is `https://kid-pager.web.app`.
+the setup screen's default *Relay URL*; unset it is `https://kidpager.sps-by-the-numbers.com`.
 
 `local.properties` (`sdk.dir=$HOME/Library/Android/sdk`) is git-ignored and must exist. The
 wrapper pins Gradle 8.10.2; versions are in `gradle/libs.versions.toml` (AGP 8.7.3, Kotlin
@@ -67,7 +67,7 @@ On the phone, in this order (the setup screen has a button or status row for eac
    receiver / WorkManager restart it).
 6. *Open accessibility settings* → enable Pager Bridge (A6, tier 2 and `inspect`). Without it
    outbox items that need tier 2 ack `failed no_accessibility`.
-7. Fill *Relay URL*, check the auto-filled *SIM number* (blank = no SIM), enter the *Google Voice
+7. Fill *Relay URL* (`https://kidpager.sps-by-the-numbers.com`; Hosting rewrites `/bridge/**` to the relay), check the auto-filled *SIM number* (blank = no SIM), enter the *Google Voice
    number* if the account has one (O1: a Voice-only bridge is fine), optionally the account
    emails if the device does not expose them, then *Save fields*.
 8. Paste the 8-digit code from Family → Devices → Add bridge phone and tap *Pair*. The token is

@@ -307,7 +307,7 @@ account); Google Voice has no API; Android's `NotificationListenerService` sees 
     kind → "waiting for the phone" / "sent on Google Chat". Existing SMS pickers unchanged.
 13. **Android app** (`bridge-android/`, Kotlin, Gradle wrapper, AGP 8.7.x + JDK 17, minSdk 26,
     targetSdk 35, applicationId `app.kidpager.bridge`, sideloaded via `adb install`):
-    - Setup screen: relay URL, pairing code → `POST /bridge/pair`; token in
+    - Setup screen: relay URL (default `https://kidpager.sps-by-the-numbers.com`; Hosting rewrites `/bridge/**` to Cloud Run, so `wait=` is capped at 25 s, under the 60 s rewrite timeout), pairing code → `POST /bridge/pair`; token in
       `EncryptedSharedPreferences`; status rows with "Open settings" buttons for Notification access
       (`ACTION_NOTIFICATION_LISTENER_SETTINGS`), Default SMS app (`RoleManager.createRequestRoleIntent
       (ROLE_SMS)`), battery optimisation (`ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`),
