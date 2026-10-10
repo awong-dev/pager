@@ -40,6 +40,7 @@ broker_host = "<your-deployment>.emqxsl.com"
 # enable_email_link_auth = true
 # cell_geo_provider      = "none"  # "google" | "opencellid" | "none" (docs/PROTOCOL.md §13.2)
 # enable_cell_geo_secret = false   # flip once CELL_GEO_API_KEY has a real value set
+# enable_soracom_secrets = false   # flip once SORACOM_AUTH_KEY_ID and SORACOM_AUTH_KEY have values set
 # time_zone              = "America/Los_Angeles"
 # use_broker_gce         = false   # EMQX Cloud Serverless is the default plan (D2)
 # broker_domain          = ""      # required if use_broker_gce = true

@@ -94,6 +94,31 @@ variable "cell_geo_api_key_secret_id" {
   default     = null
 }
 
+# --- Soracom SIM enrolment (admin UI enrols SIMs into the Beam group) ----
+variable "soracom_auth_key_id_secret_id" {
+  description = "Optional: only wired into the service's env (as SORACOM_AUTH_KEY_ID) if non-null. Unset means the admin UI shows Soracom enrolment as not configured. The secret must hold a version before this is set."
+  type        = string
+  default     = null
+}
+
+variable "soracom_auth_key_secret_id" {
+  description = "Optional: only wired into the service's env (as SORACOM_AUTH_KEY) if non-null. Same gating as soracom_auth_key_id_secret_id."
+  type        = string
+  default     = null
+}
+
+variable "soracom_beam_group" {
+  description = "SORACOM_BEAM_GROUP: name of the Soracom group the relay creates/uses for Beam enrolment. Not secret."
+  type        = string
+  default     = "pager-beam"
+}
+
+variable "soracom_beam_destination" {
+  description = "SORACOM_BEAM_DESTINATION: Beam destination override. Empty (default) leaves the env var unset so the relay's own default applies."
+  type        = string
+  default     = ""
+}
+
 variable "oidc_audience" {
   description = "app/routers/internal.py's OIDC_AUDIENCE -- must match infra/modules/schedule's oidc_token.audience exactly (both fed the same value from envs/prod, per that file's module docstring 'Known gap' section). Also set as this service's custom_audiences so a fixed, non-self-referential string (e.g. \"https://pager-relay\") can be used instead of the service's own computed .uri."
   type        = string

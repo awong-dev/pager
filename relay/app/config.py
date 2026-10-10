@@ -85,6 +85,17 @@ class Settings:
     # index are appended to it). Either unset = every OTA route answers 503.
     fw_index_url: str | None = None
     fw_bucket_base: str | None = None
+    # docs/SORACOM_DESIGN.md §8: a Soracom SAM user's auth key (Secret Manager)
+    # for enrolling SIMs into the Beam group from the admin UI. Unset = the
+    # enrol routes answer 503 and the list route reports `configured: false`.
+    soracom_auth_key_id: str | None = None
+    soracom_auth_key: str | None = None
+    soracom_beam_group: str = "pager-beam"
+    soracom_beam_destination: str = "mqtts://s1289801.ala.us-east-1.emqxsl.com:8883"
+
+    @property
+    def soracom_configured(self) -> bool:
+        return bool(self.soracom_auth_key_id and self.soracom_auth_key)
 
     @property
     def fw_bucket_name(self) -> str | None:
@@ -119,4 +130,9 @@ class Settings:
             push_backend=os.environ.get("PUSH_BACKEND", "null").strip().lower(),
             fw_index_url=(os.environ.get("FW_INDEX_URL") or "").strip() or None,
             fw_bucket_base=(os.environ.get("FW_BUCKET_BASE") or "").strip() or None,
+            soracom_auth_key_id=(os.environ.get("SORACOM_AUTH_KEY_ID") or "").strip() or None,
+            soracom_auth_key=(os.environ.get("SORACOM_AUTH_KEY") or "").strip() or None,
+            soracom_beam_group=(os.environ.get("SORACOM_BEAM_GROUP") or "").strip() or "pager-beam",
+            soracom_beam_destination=(os.environ.get("SORACOM_BEAM_DESTINATION") or "").strip()
+            or "mqtts://s1289801.ala.us-east-1.emqxsl.com:8883",
         )

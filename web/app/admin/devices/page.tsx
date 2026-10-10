@@ -55,6 +55,7 @@ import DeviceTrustChip from "@/components/DeviceTrustChip";
 import FirmwareChip from "@/components/FirmwareChip";
 import FirmwareUpdateDialog from "@/components/FirmwareUpdateDialog";
 import RequireAuth from "@/components/RequireAuth";
+import SoracomSimsSection from "@/components/SoracomSimsSection";
 import { ApiError, api } from "@/lib/api";
 import { locBackoffLabel } from "@/lib/deviceTrust";
 import { useDirectory } from "@/lib/directory";
@@ -459,6 +460,8 @@ function DevicesInner() {
           </TableBody>
         </Table>
       </TableContainer>
+
+      <SoracomSimsSection />
 
       <Dialog open={createOpen} onClose={() => setCreateOpen(false)} fullWidth maxWidth="xs">
         <DialogTitle>Add device</DialogTitle>

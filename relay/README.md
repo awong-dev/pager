@@ -98,6 +98,15 @@ owned by Terraform). The Cloud Run service account needs object create/read on
 the bucket; any failure falls back to the full image. The Docker image builds
 `detools` in a builder stage because it has no manylinux wheel.
 
+## Soracom SIM enrolment (docs/SORACOM_DESIGN.md §8)
+
+The admin UI lists the account's Soracom SIMs and enrols them into the Beam group
+(`/api/admin/soracom/*`). Set `SORACOM_AUTH_KEY_ID` and `SORACOM_AUTH_KEY` (a SAM
+user's auth key; Secret Manager in production). Optional: `SORACOM_BEAM_GROUP`
+(default `pager-beam`) and `SORACOM_BEAM_DESTINATION` (default the EMQX Cloud
+host). Without the key the routes answer 503 (the list answers `configured:
+false`). Enrol a SIM before the pager first boots on it.
+
 ## Tests
 
 Unit tests need the Firestore + Auth emulators running (the broker is

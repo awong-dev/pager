@@ -63,7 +63,9 @@ locals {
   # name -> secret_id, only for secrets that are actually configured.
   optional_secret_envs = {
     for k, v in {
-      CELL_GEO_API_KEY = var.cell_geo_api_key_secret_id
+      CELL_GEO_API_KEY    = var.cell_geo_api_key_secret_id
+      SORACOM_AUTH_KEY_ID = var.soracom_auth_key_id_secret_id
+      SORACOM_AUTH_KEY    = var.soracom_auth_key_secret_id
     } : k => v if v != null
   }
 }
@@ -173,6 +175,18 @@ resource "google_cloud_run_v2_service" "relay" {
       env {
         name  = "CELL_GEO_PROVIDER"
         value = var.cell_geo_provider
+      }
+      env {
+        name  = "SORACOM_BEAM_GROUP"
+        value = var.soracom_beam_group
+      }
+      # Empty = unset: the relay's own default destination applies.
+      dynamic "env" {
+        for_each = var.soracom_beam_destination == "" ? [] : [var.soracom_beam_destination]
+        content {
+          name  = "SORACOM_BEAM_DESTINATION"
+          value = env.value
+        }
       }
       env {
         name  = "OIDC_AUDIENCE"

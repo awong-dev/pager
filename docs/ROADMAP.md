@@ -14,6 +14,9 @@
 - **v1.1.0**: Soracom bearer, 8 Oct 2026. A Soracom SIM selects the Beam bearer (plain MQTT to
   Beam, PAP APN auth). Direct and Beam both verified on the bench unit, with a one-hour relay-side
   watch on the direct bearer (`docs/SORACOM_DESIGN.md` §6).
+- **Soracom enrolment from the admin UI**, 9 Oct 2026: `/api/admin/soracom/{sims,sims/{imsi}/enrol,enrol-all}`
+  (`relay/app/soracom.py`, `docs/SORACOM_DESIGN.md` §8). Live run against the account pending; the
+  `/subscribers` list fields are from the public spec and unverified live. Web UI page not yet built.
 
 ## Next
 

@@ -85,6 +85,12 @@ variable "enable_cell_geo_secret" {
   default     = false
 }
 
+variable "enable_soracom_secrets" {
+  description = "Wire SORACOM_AUTH_KEY_ID and SORACOM_AUTH_KEY into the relay service (Beam enrolment from the admin UI). Leave false until both secrets hold a version -- see infra/README.md \"Soracom enrolment key\". Cloud Run refuses to create a revision that references a secret with zero versions."
+  type        = bool
+  default     = false
+}
+
 # --- Firmware OTA bucket (docs/OTA_DESIGN.md) -----------------------------
 variable "fw_bucket_name" {
   description = "Public firmware bucket name. Empty = \"<project_id>-pager-fw\"."

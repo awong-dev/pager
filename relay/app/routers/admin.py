@@ -32,16 +32,17 @@ not each route independently), `RATE_LIMIT_ADMIN_WRITE_LIMIT` calls per
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import secrets
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 from firebase_admin import auth as fb_auth
 from pydantic import BaseModel, ConfigDict, Field
 
-from app import apn_presets, book, ca_resolve, devcfg, devsetup, firmware
+from app import apn_presets, book, ca_resolve, devcfg, devsetup, firmware, soracom
 from app.auth import AuthedUser, principal_for, require_super, set_claims
 from app.broker import BrokerClient
 from app.config import Settings
@@ -64,6 +65,8 @@ from app.store.devices import Device
 from app.store.families import Family
 from app.store.settings import RetentionSetting, RetentionSettings
 from app.store.users import User
+
+log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/admin", dependencies=[Depends(require_super)])
 
@@ -1094,3 +1097,106 @@ def patch_family(fid: str, req: PatchFamilyRequest) -> Family:
         return families_store.update_family(fid, name=name)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+# ---- Soracom Beam enrolment (docs/SORACOM_DESIGN.md §8) ----
+
+ImsiPath = Annotated[str, Path(pattern=r"^\d{14,15}$")]
+
+
+def _soracom_client(settings: Settings) -> soracom.SoracomClient:
+    if not settings.soracom_configured:
+        raise HTTPException(status_code=503, detail="Soracom not configured")
+    assert settings.soracom_auth_key_id and settings.soracom_auth_key
+    return soracom.SoracomClient(settings.soracom_auth_key_id, settings.soracom_auth_key)
+
+
+def _soracom_502(exc: soracom.SoracomError) -> HTTPException:
+    return HTTPException(status_code=502, detail=f"soracom: {exc.detail}")
+
+
+@router.get("/soracom/sims")
+def list_soracom_sims(
+    settings: Annotated[Settings, Depends(get_app_settings)],
+) -> dict[str, object]:
+    out: dict[str, object] = {
+        "configured": settings.soracom_configured,
+        "group": settings.soracom_beam_group,
+        "groupId": None,
+        "sims": [],
+    }
+    if not settings.soracom_configured:
+        return out
+    try:
+        with _soracom_client(settings) as client:
+            gid = soracom.find_group(client, settings.soracom_beam_group)
+            sims = soracom.list_sims(client)
+    except soracom.SoracomError as exc:
+        raise _soracom_502(exc) from None
+    out["groupId"] = gid
+    out["sims"] = [
+        {
+            "imsi": s.imsi,
+            "iccid": s.iccid,
+            "status": s.status,
+            "groupId": s.groupId,
+            "enrolled": gid is not None and s.groupId == gid,
+            "name": s.name,
+            "subscription": s.subscription,
+        }
+        for s in sims
+    ]
+    return out
+
+
+@router.post(
+    "/soracom/sims/{imsi}/enrol", dependencies=[Depends(require_admin_write_rate_limit)]
+)
+def enrol_soracom_sim(
+    imsi: ImsiPath,
+    settings: Annotated[Settings, Depends(get_app_settings)],
+    authed: Annotated[AuthedUser, Depends(require_super)],
+) -> dict[str, object]:
+    try:
+        with _soracom_client(settings) as client:
+            gid = soracom.ensure_group(
+                client, settings.soracom_beam_group, settings.soracom_beam_destination
+            )
+            soracom.enrol(client, imsi, gid)
+    except soracom.SoracomError as exc:
+        raise _soracom_502(exc) from None
+    log.info("soracom enrol imsi=%s group=%s by=%s", soracom.mask_imsi(imsi), gid, authed.uid)
+    return {"ok": True, "imsi": imsi, "groupId": gid}
+
+
+@router.post("/soracom/enrol-all", dependencies=[Depends(require_admin_write_rate_limit)])
+def enrol_all_soracom_sims(
+    settings: Annotated[Settings, Depends(get_app_settings)],
+    authed: Annotated[AuthedUser, Depends(require_super)],
+) -> dict[str, object]:
+    enrolled: list[str] = []
+    already: list[str] = []
+    try:
+        with _soracom_client(settings) as client:
+            gid = soracom.find_group(client, settings.soracom_beam_group)
+            todo: list[str] = []
+            for s in soracom.list_sims(client):
+                if not s.imsi:
+                    continue
+                if gid is not None and s.groupId == gid:
+                    already.append(s.imsi)
+                else:
+                    todo.append(s.imsi)
+            if todo:
+                gid = soracom.ensure_group(
+                    client, settings.soracom_beam_group, settings.soracom_beam_destination
+                )
+            for imsi in todo:
+                soracom.enrol(client, imsi, str(gid))
+                enrolled.append(imsi)
+                log.info(
+                    "soracom enrol imsi=%s group=%s by=%s", soracom.mask_imsi(imsi), gid, authed.uid
+                )
+    except soracom.SoracomError as exc:
+        raise _soracom_502(exc) from None
+    return {"ok": True, "enrolled": enrolled, "already": already}

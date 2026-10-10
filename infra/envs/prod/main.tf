@@ -122,6 +122,11 @@ module "relay_service" {
   cell_geo_provider          = var.cell_geo_provider
   cell_geo_api_key_secret_id = var.enable_cell_geo_secret ? module.secrets.secret_ids.cell_geo_api_key : null
 
+  # Soracom SAM auth key (Beam enrolment from the admin UI). Each secret must
+  # hold a version before the flag is on (infra/README.md "Soracom enrolment key").
+  soracom_auth_key_id_secret_id = var.enable_soracom_secrets ? module.secrets.secret_ids.soracom_auth_key_id : null
+  soracom_auth_key_secret_id    = var.enable_soracom_secrets ? module.secrets.secret_ids.soracom_auth_key : null
+
   # docs/V03_PLAN.md §3a / task 3a.3: production always wants real push once
   # the web app can request one (its NEXT_PUBLIC_FIREBASE_VAPID_KEY secret,
   # infra/README.md step 9) -- fixed here rather than exposed as another

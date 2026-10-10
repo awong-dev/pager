@@ -55,6 +55,28 @@ resource "google_secret_manager_secret" "cell_geo_api_key" {
   }
 }
 
+# --- Soracom SIM enrolment (Beam group, admin UI) ----------------------
+# SAM user auth key used by the relay to put SIMs into the Beam group.
+# Optional: unset in the relay means the admin UI shows "not configured".
+# The Beam group name/destination are plain env vars (relay-service module).
+resource "google_secret_manager_secret" "soracom_auth_key_id" {
+  project   = var.project_id
+  secret_id = "SORACOM_AUTH_KEY_ID" # relay/app/config.py Settings.soracom_auth_key_id
+  labels    = var.labels
+  replication {
+    auto {}
+  }
+}
+
+resource "google_secret_manager_secret" "soracom_auth_key" {
+  project   = var.project_id
+  secret_id = "SORACOM_AUTH_KEY" # relay/app/config.py Settings.soracom_auth_key
+  labels    = var.labels
+  replication {
+    auto {}
+  }
+}
+
 # --- Google Chat (gchat backend, docs/SERVER_PLAN.md §6.5) -------------
 # Deliberately NOT created: relay/app/backends/gchat.py needs no secret
 # material. Outbound uses the relay Cloud Run service account itself via ADC

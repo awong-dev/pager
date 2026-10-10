@@ -285,3 +285,26 @@ overnight work; production holds test data only).
 5. **Soracom detection is by IMSI prefix read on the bench**, like the existing preset; if a later
    Soracom SIM has a different prefix the owner picks `Soracom` from the Carrier menu, which is the
    fallback the carrier design already has.
+
+## 8. Enrolment from the admin UI (9 Oct 2026)
+
+(Numbered §8 because §7 above was already taken.) The admin web UI can move SIMs into the Beam
+group without the CLI. Three super-only routes in `relay/app/routers/admin.py`, backed by
+`relay/app/soracom.py` (which `tools/soracom_beam.py` now wraps):
+
+- `GET /api/admin/soracom/sims`: the account's SIMs (`GET /v1/subscribers`, paged, 10 pages of
+  100 at most) with `enrolled` = the SIM's `groupId` equals the `pager-beam` group's id. When no
+  key is configured it answers 200 `configured: false` and an empty list so the page can show
+  setup instructions. A Soracom failure is 502 `soracom: HTTP <status>` (no body, no secrets).
+- `POST /api/admin/soracom/sims/{imsi}/enrol`: finds or creates the group, PUTs the Beam entry
+  (§5), sets the SIM's group. Idempotent. 503 when not configured; 422 unless the IMSI is 14-15
+  digits.
+- `POST /api/admin/soracom/enrol-all`: enrols every listed SIM not already in the group.
+
+The key is a SAM user's auth key (`SORACOM_AUTH_KEY_ID`, `SORACOM_AUTH_KEY`) held in Secret
+Manager; infra-dev documents the Terraform side. The MSISDN is never returned or logged, and one
+info line per enrolment logs the IMSI masked to its last four digits.
+
+**Enrol before the pager's first boot on that SIM:** an SIM outside the Beam group cannot reach
+Beam, so the pager's first MQTT connect would fail. The `/subscribers` list fields are from the
+public API spec and have not been checked against the live account.

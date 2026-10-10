@@ -135,6 +135,42 @@ one school + home), stays a tiny fraction of that free allowance — realistical
 repo does not track it). OpenCelliD's own pricing/free-tier terms are unverified here too — see
 `app/cellgeo.py`'s docstring on that provider's `UNVERIFIED` API shape.
 
+### Soracom enrolment key
+
+The relay enrols Soracom SIMs into the Beam group from the admin UI. That needs a Soracom SAM
+auth key (id + secret), held as the Secret Manager secrets `SORACOM_AUTH_KEY_ID` and
+`SORACOM_AUTH_KEY` (containers created by Terraform; values never in the repo). **Until the enable
+flag below is on, the admin UI shows Soracom enrolment as "not configured" and nothing else
+changes** (the secrets stay empty containers and the relay revision references neither).
+
+1. Soracom console -> **Security -> SAM (Soracom Access Management)** -> create a SAM user (for
+   example `pager-relay`), no console login needed.
+2. Give it an inline permission policy limited to groups and subscribers. The action names are
+   `<Tag>:<operationId>` from the Soracom API spec (checked against soracom-cli's
+   `soracom-api.en.yaml`, 9 Oct 2026):
+
+   ```json
+   {"statements": [{"effect": "allow", "api": [
+     "Group:listGroups", "Group:getGroup", "Group:createGroup", "Group:putConfigurationParameters",
+     "Subscriber:listSubscribers", "Subscriber:setGroup"
+   ]}]}
+   ```
+
+   Nothing else (no billing, no SIM state changes, no user management). `Group:getGroup` is only
+   used to print the resulting Beam config; drop it if you want the minimum.
+3. On that SAM user, **Generate auth key**. Copy the key id (`keyId-...`) and secret (shown once).
+4. Add the secret versions (no trailing newline; use `printf`, not `echo`):
+   `printf '%s' '<keyId>' | gcloud secrets versions add SORACOM_AUTH_KEY_ID --project <PROJECT_ID> --data-file=-`
+   `printf '%s' '<secret>' | gcloud secrets versions add SORACOM_AUTH_KEY --project <PROJECT_ID> --data-file=-`
+5. Turn the flag on: set the repo variable `ENABLE_SORACOM_SECRETS=true` (GitHub -> Settings ->
+   Secrets and variables -> Actions -> Variables; `.github/workflows/deploy.yml` passes it as
+   `-var enable_soracom_secrets=...`), or `enable_soracom_secrets = true` in `terraform.tfvars` for a
+   hand apply. Then push to `main` or re-run the Deploy workflow. Cloud Run refuses a revision that
+   references a secret with zero versions, so do step 4 first.
+6. Optional plain settings (relay-service variables, not secrets): `soracom_beam_group` (default
+   `pager-beam`, env `SORACOM_BEAM_GROUP`) and `soracom_beam_destination` (default empty = unset,
+   relay default applies, env `SORACOM_BEAM_DESTINATION`).
+
 ## 7. Build and push the first relay image by hand
 
 ```
