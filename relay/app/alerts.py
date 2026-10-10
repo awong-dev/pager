@@ -79,7 +79,9 @@ def _base_alert(kind: str) -> dict:
     }
 
 
-def new_conversation(sender: User, recipient: User, conv_key: str) -> str | None:
+def new_conversation(
+    sender: User, recipient: User, conv_key: str, body: str | None = None
+) -> str | None:
     """docs/FAMILIES_DESIGN.md §6: fired by `app/routing.py`'s `send()` when
     it creates a DM `conversations` doc, the sender's `policy.out == 'open'`,
     and no `allow/{sender}_{recipient}.message` edge exists (routing.py's
@@ -96,7 +98,14 @@ def new_conversation(sender: User, recipient: User, conv_key: str) -> str | None
     so `/family/alerts`' `new_conversation` card can show it the same way
     `sms_unknown`'s does -- `POST .../approve` (`app/routers/family.py`)
     only needs `peerUid` to write the approving edge, `peerPhone` is display
-    only."""
+    only.
+
+    `preview` is the first message's `body` (truncated to
+    `PREVIEW_MAX_CHARS`), the text the family wants to see; only when there
+    is no body (e.g. a location request) does it fall back to the
+    "@x started a chat with @y" line. `peerName` is the recipient's
+    `displayName`, so an external's card shows a name rather than its hash
+    alias."""
     if sender.familyId is None:
         return None
     peer_phone = recipient.phone if recipient.kind == "external" else None
@@ -108,10 +117,11 @@ def new_conversation(sender: User, recipient: User, conv_key: str) -> str | None
             "subjectAlias": sender.alias,
             "peerUid": recipient.uid,
             "peerAlias": recipient.alias,
+            "peerName": recipient.displayName,
             "peerPhone": peer_phone,
-            "preview": f"@{sender.alias} started a chat with @{recipient.alias}"[
-                :PREVIEW_MAX_CHARS
-            ],
+            "preview": (
+                body or f"@{sender.alias} started a chat with @{recipient.alias}"
+            )[:PREVIEW_MAX_CHARS],
             "convKey": conv_key,
         }
     )

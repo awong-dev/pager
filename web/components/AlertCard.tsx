@@ -47,6 +47,7 @@ import ChatSubscribeDialog from "@/components/ChatSubscribeDialog";
 import { formatPhoneDigits } from "@/components/NewChatDialog";
 import { ApiError, api } from "@/lib/api";
 import { ignoreChat, sourceLabel } from "@/lib/bridges";
+import { isHashAlias } from "@/lib/names";
 import { familyQuery } from "@/lib/family-context";
 import type { AlertDoc } from "@/lib/types";
 import { useFullScreenDialog } from "@/lib/useFullScreenDialog";
@@ -114,6 +115,23 @@ function kindLabel(kind: AlertDoc["kind"], source?: AlertDoc["source"]): string 
         ? sourceLabel(source)
         : "Unknown source";
   }
+}
+
+/** Who a `new_conversation` alert's kid wrote to: never a hash alias. */
+function newConversationPeer(alert: AlertRow): string {
+  const phone = alert.peerPhone
+    ? formatPhoneDigits(alert.peerPhone.replace(/^\+/, ""))
+    : null;
+  const name = alert.peerName?.trim();
+  if (phone) {
+    return name ? `${name} (${phone})` : phone;
+  }
+  if (alert.peerAlias) {
+    const at = isHashAlias(alert.peerAlias) ? null : `@${alert.peerAlias}`;
+    if (at) return name ? `${at} (${name})` : at;
+    return name || "someone";
+  }
+  return name || "someone";
 }
 
 export default function AlertCard({ alert }: { alert: AlertRow }) {
@@ -293,12 +311,11 @@ export default function AlertCard({ alert }: { alert: AlertRow }) {
         {alert.kind === "new_conversation" && (
           <>
             <Typography variant="body1">
-              @{alert.subjectAlias} started a chat with{" "}
-              {alert.peerAlias ? `@${alert.peerAlias}` : (alert.peerPhone ?? "someone")}
+              @{alert.subjectAlias} started a chat with {newConversationPeer(alert)}
             </Typography>
-            {alert.preview && (
+            {alert.preview && !/^@\S+ started a chat with /.test(alert.preview) && (
               <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
-                {alert.preview}
+                &ldquo;{alert.preview}&rdquo;
               </Typography>
             )}
           </>

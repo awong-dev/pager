@@ -202,6 +202,8 @@ def test_open_members_first_dm_to_a_stranger_writes_one_new_conversation_alert(r
     assert alerts[0].subjectAlias == "mom"
     assert alerts[0].peerAlias == "stranger"
     assert alerts[0].peerUid == "stranger"
+    assert alerts[0].preview == "hi"
+    assert alerts[0].peerName == "Stranger"
     assert alerts[0].convKey == messages_store.conv_key("mom", "stranger")
 
     # A second message to the same peer: the conversation already exists,
@@ -215,6 +217,21 @@ def test_open_members_first_dm_to_a_stranger_writes_one_new_conversation_alert(r
     )
     assert result2.ok
     assert len(list_alerts(family.id, "all")) == 1
+
+
+def test_new_conversation_to_an_external_shows_text_name_and_phone():
+    family = _make_family("ExtNC")
+    kid = users_store.create_user(
+        uid="may", alias="may", display_name="May", family_id=family.id, role="admin"
+    )
+    peer = externals_store.get_or_create(family.id, "+15551230000", "Friend")
+    alerts_module.new_conversation(kid, peer, "may_x", "hello there")
+    (a,) = list_alerts(family.id, "all")
+    assert a.preview == "hello there"
+    assert a.peerName == "Friend"
+    assert a.peerPhone == "+15551230000"
+    alerts_module.new_conversation(kid, peer, "may_x2", None)
+    assert any(x.preview.startswith("@may started a chat with") for x in list_alerts(family.id, "all"))
 
 
 def test_send_with_an_existing_edge_writes_no_alert_even_if_open(routing: Routing):

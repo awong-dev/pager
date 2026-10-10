@@ -294,11 +294,13 @@ class Routing:
             if msg is not None:
                 created.append(msg)
                 if not conv_existed:
-                    self._maybe_alert_new_conversation(sender_uid, recipient_uid, msg.convKey)
+                    self._maybe_alert_new_conversation(
+                        sender_uid, recipient_uid, msg.convKey, body
+                    )
         return SendResult(messages=created, rejected=rejected)
 
     def _maybe_alert_new_conversation(
-        self, sender_uid: str, recipient_uid: str, conv_key: str
+        self, sender_uid: str, recipient_uid: str, conv_key: str, body: str | None = None
     ) -> None:
         """docs/FAMILIES_DESIGN.md §6: fires `app/alerts.py`'s
         `new_conversation` exactly when this send just created a DM's
@@ -314,7 +316,7 @@ class Routing:
             return
         if allow_store.is_message_allowed(sender_uid, recipient_uid):
             return
-        alerts_module.new_conversation(sender, recipient, conv_key)
+        alerts_module.new_conversation(sender, recipient, conv_key, body)
 
     # ---- recipient resolution (§5.2 step 1) ----
 
