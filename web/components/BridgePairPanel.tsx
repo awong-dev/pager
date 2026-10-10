@@ -25,15 +25,16 @@ import { useFullScreenDialog } from "@/lib/useFullScreenDialog";
 
 // docs/BRIDGE_PHONE_DESIGN.md decision 13 "Phone setup".
 const CHECKLIST = [
-  "Sign in to Google (the member's own account) and turn notifications on for Google Chat and Google Voice.",
-  "Open the Bridge app, enter the relay address and the code above, and tap Pair.",
-  "Grant Notification access.",
-  "Make the Bridge app the Default SMS app (skip on a Voice-only phone with no SIM).",
+  "Sign in to the member's own Google account (Chat and Voice): notifications on, contacts list empty.",
+  "Open the Bridge app and tap Grant runtime permissions.",
+  "Enable Notification access.",
+  "Make the Bridge app the Default SMS app (SIM phones only).",
   "Exempt the app from battery optimisation.",
   "Enable the Accessibility service.",
-  "Set the screen lock to None (a PIN leaves the phone silent after a power cut).",
-  "Turn Do Not Disturb off, and never leave Chat open on a thread.",
-  "Use a charge limiter or a smart plug duty cycle so the battery lasts.",
+  "Fill in the relay URL (above) and the numbers, then tap Save fields.",
+  "Enter the code above and tap Pair.",
+  "Set the screen lock to None and turn Do Not Disturb off.",
+  "Never leave Chat open on a thread (an open thread suppresses its notifications); use a charge limiter or a smart-plug duty cycle so the battery lasts.",
 ];
 
 function countdown(ms: number): string {
@@ -60,6 +61,8 @@ export default function BridgePairPanel({
   const fullScreen = useFullScreenDialog();
   const [now, setNow] = useState(() => Date.now());
   const [copied, setCopied] = useState(false);
+  // The dialog only mounts after a click, but guard for the static export pass.
+  const [origin] = useState(() => (typeof window === "undefined" ? "" : window.location.origin));
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(t);
@@ -115,6 +118,9 @@ export default function BridgePairPanel({
 
           <Divider />
           <Typography variant="subtitle2">Phone setup</Typography>
+          <Typography variant="body2">
+            Relay URL: <code>{origin}</code> (the app&apos;s default already points here). Code expires in 10 minutes.
+          </Typography>
           <Stack component="ol" spacing={0.5} sx={{ m: 0, pl: 3 }}>
             {CHECKLIST.map((c) => (
               <Typography key={c} component="li" variant="body2">
