@@ -105,7 +105,7 @@ A1–A7 (`714b2c0`). WhatsApp (DMs and groups, both tiers) landed 9 Oct 2026 as 
 bridge_voice` passes; both were re-run on 9 Oct 2026. Not re-run in that check: the web verify
 commands and `./gradlew`. The Android unit-test count (23) is as the commit message reports it.
 
-WhatsApp DMs are keyed by conversation id (LID or phone JID) since 10 Oct 2026 (`fc2bf94`, `docs/BRIDGE_WHATSAPP_LID_DESIGN.md`). The first live DM had been dropped as `dropped_bad_from`. Relay side is landed. TODO(orchestrator): status of Android A10 (LID warning removed, `wa.me` link for phone JIDs) and of the B13 tool and e2e updates; `bridge_whatsapp` asserts the pre-LID path until B13 step 5.
+WhatsApp DMs are keyed by conversation id (LID or phone JID) since 10 Oct 2026 (`fc2bf94`, `docs/BRIDGE_WHATSAPP_LID_DESIGN.md`). The first live DM had been dropped as `dropped_bad_from`. Relay side is landed. Android side landed `3b8bf44` (A10: LID warning removed, `wa.me` link for phone JIDs); tooling landed with B13 step 5 (`bridge_sim` `lid=True`, `bridge_whatsapp` e2e rewritten); the end-to-end WhatsApp retest is pending the owner.
 
 Open:
 - **The Android app has never run on a phone.** No device was attached. The bench steps are in

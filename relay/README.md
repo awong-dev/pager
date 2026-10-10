@@ -178,9 +178,11 @@ Scenarios available (see `tools/e2e_v2.py`'s module docstring for details):
   replied to, inspected by link, and ignored
 - **bridge_voice**: a Voice-only bridge: a cold outbound on gvoice with the Voice thread link, and an
   inbound text delivered
-- **bridge_whatsapp**: WhatsApp as a bridge source: a DM held, approved and answered on `whatsapp` with the
-  JID and the `wa.me` link, a group held behind one alert, subscribed and replied to (conversation id and
-  title in the outbox item), and a `wa.me` inspect refused with 400
+- **bridge_whatsapp**: WhatsApp as a bridge source, DMs keyed by conversation id: a LID DM held as a
+  `chat_unknown` alert, subscribed, and answered with `to.conversationId` + `to.title` and no phone; a
+  phone-JID DM on the same path whose reply also carries the `wa.me` `to.link`; a group held behind one
+  alert, subscribed and replied to (conversation id and title in the outbox item); and a `wa.me` inspect
+  refused with 400
 
 ## Message backends (docs/SERVER_PLAN.md §6.5)
 

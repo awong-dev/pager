@@ -1800,19 +1800,15 @@ def scenario_bridge_voice() -> None:
 
 
 def scenario_bridge_whatsapp() -> None:
-    """WhatsApp as a bridge source (WA1-WA5, 9 Oct 2026).
+    """WhatsApp as a bridge source (WA1-WA5, 9 Oct 2026; DMs by conversation id since B13, 10 Oct 2026).
 
-    10 Oct 2026: the DM steps below are the pre-LID path. WhatsApp DMs now take the chat path
-    keyed by conversation id (docs/BRIDGE_WHATSAPP_LID_DESIGN.md), so the held/approve/wa.me steps
-    are superseded. TODO(orchestrator): the body's assertions need B13 step 5 before this runs green.
-
-    The scenario as written: a DM from an
-    unknown number is held -> approve delivers it (and records the channel
-    from the held row) -> the pager's reply reaches the sim on `whatsapp` with the JID and the wa.me link -> a
-    WhatsApp group is held behind one `chat_unknown` alert -> subscribe
-    delivers the backlog with `sndr` (the `~ ` prefix stripped) -> a pager
-    reply to the group carries conversationId and title -> inspect by a wa.me
-    link is a 400. Runnable as `tools/e2e_v2.py bridge_whatsapp`."""
+    A LID DM (`<digits>@lid`, name only) is held behind a `chat_unknown` alert (source whatsapp) -> subscribe
+    delivers the backlog -> the pager's reply carries `to.conversationId` + `to.title` and no phone -> a
+    phone-JID DM takes the same path and its reply also carries `to.link` (wa.me) -> a WhatsApp group is
+    held behind one `chat_unknown` alert -> subscribe delivers the backlog with `sndr` (the `~ ` prefix
+    stripped) -> a pager reply to the group carries conversationId and title -> inspect by a wa.me link is
+    a 400 (docs/BRIDGE_WHATSAPP_LID_DESIGN.md; relay/tests/test_whatsapp.py). Runnable as
+    `tools/e2e_v2.py bridge_whatsapp`."""
     import bridge_sim
 
     bootstrap_admin()
@@ -1835,38 +1831,53 @@ def scenario_bridge_whatsapp() -> None:
         description="the bridge SIM to become the member's smsNumber",
     )
 
-    # DM from an unknown number -> held -> approved -> delivered.
+    def dm_round(digits_phone: str, name: str, pager_name: str, *, lid: bool) -> tuple[str, dict[str, Any]]:
+        """Hold one DM, subscribe it, check the backlog, send a pager reply; return (conv id, outbox item)."""
+        conv = digits_phone.lstrip("+") + ("@lid" if lid else "@s.whatsapp.net")
+        text, reply = f"hey from {name}", f"hi back {name}"
+        device.inbox.clear()
+        out = sim.inject(bridge_sim.whatsapp_dm_event(digits_phone, text, name=name, lid=lid))
+        assert out["results"][0]["outcome"] == "held", out
+        alerts = [
+            a
+            for a in admin.family_list_alerts(family_id)
+            if a["kind"] == "chat_unknown" and a.get("source") == "whatsapp" and not a.get("isGroup")
+        ]
+        assert len(alerts) == 1, alerts
+        assert not any(a["kind"] == "sms_unknown" for a in admin.family_list_alerts(family_id)), "DM took the SMS path"
+        assert not any(e.data.get("body") == text for e in device.inbox), "held text leaked"
+        tab = admin.family_member_chat(family_id, kid["uid"])
+        (seen,) = [r for r in tab["seen"] if r["conversationId"] == conv]
+        assert seen["source"] == "whatsapp" and seen["title"] == name and not seen.get("isGroup"), seen
+        result = admin.family_chat_subscribe(family_id, bridge_id, seen["ref"], pager_name=pager_name)
+        assert result["delivered"] == 1 and result["undelivered"] == 0, result
+        wait_until(
+            lambda: any(e.data.get("body") == text for e in device.inbox),
+            timeout=10,
+            description="the subscribed WhatsApp DM backlog to reach the pager",
+        )
+        device.publish_msg(reply, to=result["alias"])
+        wait_until(
+            lambda: any(i["text"] == reply for i in _sim_sent(sim)),
+            timeout=15,
+            description="the pager reply to reach the bridge outbox",
+        )
+        item = next(i for i in _sim_sent(sim) if i["text"] == reply)
+        assert item["source"] == "whatsapp" and item["ackState"] == "sent", item
+        assert item["to"]["conversationId"] == conv and item["to"]["title"] == name, item
+        assert "phone" not in item["to"], item
+        return conv, item
+
+    # LID DM (no number): held as chat_unknown -> subscribe -> backlog -> reply by conversation id + title.
+    _, item = dm_round("+9876543210", "WaLid", "WaLid WA", lid=True)
+    assert item["to"].get("link") is None, item
+    print("bridge_whatsapp: LID DM held as chat_unknown, subscribed, reply carried conversationId and title")
+
+    # Phone-JID DM: the same path; the reply also carries the wa.me link from the event.
     friend = "+15550004444"
-    jid = f"{friend.lstrip('+')}@s.whatsapp.net"
-    device.inbox.clear()
-    out = sim.inject(bridge_sim.whatsapp_dm_event(friend, "hey from whatsapp", name="WaFriend"))
-    assert out["results"][0]["outcome"] == "held", out
-    alert = next(
-        a
-        for a in admin.family_list_alerts(family_id)
-        if a["kind"] == "sms_unknown" and a.get("peerPhone") == friend
-    )
-    assert not any(e.data.get("body") == "hey from whatsapp" for e in device.inbox), "held text leaked"
-    decision = admin.family_approve_alert(family_id, alert["id"], name="WaFriend")
-    assert decision["delivered"] == 1 and decision["undelivered"] == 0, decision
-    wait_until(
-        lambda: any(e.data.get("body") == "hey from whatsapp" for e in device.inbox),
-        timeout=10,
-        description="the approved WhatsApp text to reach the pager",
-    )
-    contact = next(c for c in admin.family_list_contacts(family_id) if c["phone"] == friend)
-    device.publish_msg("hi back", to=contact["alias"])
-    wait_until(
-        lambda: any(i["text"] == "hi back" for i in _sim_sent(sim)),
-        timeout=15,
-        description="the pager reply to reach the bridge outbox",
-    )
-    item = next(i for i in _sim_sent(sim) if i["text"] == "hi back")
-    assert item["source"] == "whatsapp" and item["to"]["phone"] == friend, item
-    assert item["to"]["conversationId"] == jid, item
+    _, item = dm_round(friend, "WaFriend", "WaFriend WA", lid=False)
     assert item["to"]["link"] == f"https://wa.me/{friend.lstrip('+')}", item
-    assert item["ackState"] == "sent", item
-    print("bridge_whatsapp: DM held, approved, reply went out on whatsapp with the JID and wa.me link")
+    print("bridge_whatsapp: phone-JID DM took the same path, reply carried the wa.me link")
 
     # Group -> one chat_unknown alert -> subscribe -> backlog with sndr.
     group_jid = "120363999111@g.us"
@@ -1876,7 +1887,9 @@ def scenario_bridge_whatsapp() -> None:
             bridge_sim.whatsapp_group_event("120363999111", "Soccer WA", sender, text)
         )
         assert out["results"][0]["outcome"] == "held", out
-    chat_alerts = [a for a in admin.family_list_alerts(family_id) if a["kind"] == "chat_unknown"]
+    chat_alerts = [
+        a for a in admin.family_list_alerts(family_id) if a["kind"] == "chat_unknown" and a.get("isGroup")
+    ]
     assert len(chat_alerts) == 1 and chat_alerts[0]["people"] == ["Dana P", "Lee"], chat_alerts
     assert chat_alerts[0]["source"] == "whatsapp", chat_alerts[0]
     tab = admin.family_member_chat(family_id, kid["uid"])

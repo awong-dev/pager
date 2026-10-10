@@ -26,10 +26,10 @@ WhatsApp (WA1-WA5): the sim reports `caps.whatsapp` at pair and
 `status.whatsapp` on every heartbeat; `whatsapp_dm_event()` /
 `whatsapp_group_event()` build JID-shaped events (`<digits>@s.whatsapp.net`,
 `<id>@g.us`) for `inject`. As of 10 Oct 2026 a DM is keyed by its conversation id, LID or phone JID
-(docs/BRIDGE_WHATSAPP_LID_DESIGN.md L1); the sim does not build the `@lid` shape yet.
+(docs/BRIDGE_WHATSAPP_LID_DESIGN.md L1); `whatsapp_dm_event(..., lid=True)` builds the `<digits>@lid`
+shape (no sender phone), the default builds the phone-JID shape with the `wa.me` link Android sets.
 `POST /_pair` accepts `whatsapp: false` to pair
 without the cap.
-TODO(orchestrator): BRIDGE_PHONE_TASKS B13 step 5 (`lid=True`) is not done here.
 """
 
 
@@ -46,17 +46,29 @@ DEFAULT_SIM_NUMBER = "+15550007777"
 
 
 def whatsapp_dm_event(
-    phone: str, text: str, *, name: str = "Contact", event_id: str | None = None
+    phone: str,
+    text: str,
+    *,
+    name: str = "Contact",
+    event_id: str | None = None,
+    lid: bool = False,
 ) -> dict[str, Any]:
-    """A WhatsApp DM as the phone reports it, phone-JID shape: the conversation id
-    is the shortcut-id JID. The WA2 number path is gone (10 Oct 2026, docs/BRIDGE_WHATSAPP_LID_DESIGN.md
-    L1-L2): the relay keys this DM by that id, the same as a `@lid` DM."""
-    event: dict[str, Any] = {
-        "source": "whatsapp",
-        "conversation": {"id": f"{phone.lstrip('+')}@s.whatsapp.net", "isGroup": False},
-        "sender": {"name": name, "phone": phone},
-        "text": text,
-    }
+    """A WhatsApp DM as the phone reports it. Default: phone-JID shape, conversation id
+    `<digits>@s.whatsapp.net`, sender phone set, `conversation.link` = `https://wa.me/<digits>` (Android A10).
+    `lid=True`: conversation id `<digits>@lid` (digits of `phone`), no sender phone and no link, only the
+    display name. The relay keys both by conversation id (docs/BRIDGE_WHATSAPP_LID_DESIGN.md L1-L2)."""
+    digits = phone.lstrip("+")
+    event: dict[str, Any] = {"source": "whatsapp", "text": text}
+    if lid:
+        event["conversation"] = {"id": f"{digits}@lid", "isGroup": False}
+        event["sender"] = {"name": name}
+    else:
+        event["conversation"] = {
+            "id": f"{digits}@s.whatsapp.net",
+            "isGroup": False,
+            "link": f"https://wa.me/{digits}",
+        }
+        event["sender"] = {"name": name, "phone": phone}
     if event_id:
         event["id"] = event_id
     return event
