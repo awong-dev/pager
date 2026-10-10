@@ -110,7 +110,9 @@ function kindLabel(kind: AlertDoc["kind"], source?: AlertDoc["source"]): string 
     case "chat_unknown":
       // A bridged conversation: name the app it came from (WhatsApp, Google
       // Voice) rather than assuming Google Chat (seen live 10 Oct 2026).
-      return source ? sourceLabel(source) : "Unknown source";
+      return source === "gchat" || source === "gvoice" || source === "whatsapp"
+        ? sourceLabel(source)
+        : "Unknown source";
   }
 }
 
