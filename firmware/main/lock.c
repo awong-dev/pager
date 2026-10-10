@@ -209,6 +209,16 @@ bool lock_parse_cfg(const uint8_t *buf, uint16_t len, bool sig_pair_present, cha
     return is_cfg && saw_lock;
 }
 
+// Pure auto-lock decision (host-testable): true iff a passcode is set, it is
+// not already locked, `auto_min != 0` and `now_us` is at least `auto_min`
+// minutes past `last_activity_us`.
+bool lock_autolock_due(bool have_hash, bool locked, uint8_t auto_min, int64_t last_activity_us,
+                       int64_t now_us)
+{
+    return have_hash && !locked && auto_min != 0 &&
+           (now_us - last_activity_us) >= (int64_t) auto_min * 60 * 1000000;
+}
+
 #ifdef ESP_PLATFORM
 
 #include "ident.h"
@@ -461,24 +471,27 @@ bool lock_try_passcode(const char *passcode, size_t len)
     return match;
 }
 
-// TASK_ui_round2.md Do #3 (owner feedback, 25 Sep 2:30 am PDT): this is the
-// EARLIER of two independent auto-lock triggers whenever `auto_min` (cfg
-// `lock.auto`) is shorter than PAGER_ATTENTIVE_S (120s, modes.c). The
-// second, later-added trigger is NOT in this file: modes.c's own
-// attentive:true->false edge (modes_run(), the same edge that blanks the
-// status-bar clock to "--:--", TASK_clock.md Do #4) also calls lock_now()
-// directly when `lock_is_set()`, as an upper bound — `auto_min == 0`
-// ("never") or an auto_min longer than 120s would otherwise leave an
-// unattended, passcode-protected pager unlocked past the point it already
-// stopped being "in use". The two never conflict (both call this same
-// lock_now(), which is a no-op once already locked) and neither is ever
-// later than the other: whichever elapses first wins, matching Do #3's own
-// "an additional, earlier trigger if it is shorter; never later" rule. This
-// function's own `now_us` argument is unrelated to modes.c's separate
-// attentive-window clock (s_last_input_us above is this module's own
-// private last-activity timestamp, reset by lock_check_autolock()'s own
-// call site contract — "call on every input event and every UI wake" —
-// not modes.c's wider 120s window).
+// Auto-lock contract (owner, 10 Oct 2026; supersedes the 120 s two-trigger
+// rule of TASK_ui_round2.md Do #3). Auto-lock is decoupled from the attentive
+// window (PAGER_ATTENTIVE_S, 20 s, modes.c):
+//  - `auto_min` (cfg `lock.auto`) > 0: lock_check_autolock() is the ONLY
+//    trigger. It runs on every modes_run() loop iteration, including the 20 s
+//    timer wakes, so the pager locks while asleep too. Precision while asleep
+//    is the wake cadence (up to 20 s late); that is acceptable.
+//  - `auto_min` == 0 ("never"): modes.c's attentive true->false edge calls
+//    lock_now() when the pager falls asleep, so an unattended passcode-
+//    protected pager never stays unlocked indefinitely.
+// lock_note_activity() only stamps the last-activity time (input events and
+// UI wakes); lock_check_autolock() only compares and never touches the stamp.
+// RAM-only, this-boot monotonic; independent of modes.c's own clock.
+
+// Records activity. No modem effect, no RTC/NVS write.
+void lock_note_activity(int64_t now_us)
+{
+    s_last_input_us = now_us;
+}
+
+// Locks if the configured timeout elapsed. Power effect: none (RAM read); an RTC write only on the locking edge.
 void lock_check_autolock(int64_t now_us)
 {
     s_lock();
@@ -487,11 +500,9 @@ void lock_check_autolock(int64_t now_us)
     bool locked = s_rtc->locked != 0;
     s_unlock();
 
-    if (have && !locked && auto_min != 0 &&
-        (now_us - s_last_input_us) >= (int64_t) auto_min * 60 * 1000000) {
+    if (lock_autolock_due(have, locked, auto_min, s_last_input_us, now_us)) {
         lock_now();
     }
-    s_last_input_us = now_us;
 }
 
 void lock_now(void)

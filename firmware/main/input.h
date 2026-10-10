@@ -7,7 +7,7 @@
  * composer. This module is the single owner of both going forward and adds
  * what neither had: the full key table (arrows/esc/tab), `BTN_STUCK`
  * (firmware/README.md R2), a queue instead of direct calls back into
- * modes.c, and the PAGER_UI_AWAKE_S (29 s) UI-awake window that arms on any
+ * modes.c, and the PAGER_UI_AWAKE_S (19 s) UI-awake window that arms on any
  * key or button event.
  *
  * `input_decode_key()` has no ESP-IDF dependency and is compiled on the
@@ -126,7 +126,7 @@ bool input_pending(void);
  * Power effect: none (the task blocks instead of delaying). */
 void input_wait_event(uint32_t ms);
 
-/* True for PAGER_UI_AWAKE_S (29 s, compile-time) after the most recent
+/* True for PAGER_UI_AWAKE_S (19 s, compile-time) after the most recent
  * event armed the window. Independent of the 10-minute modem active
  * window (docs/DEVICE_PLAN.md §5.3) — modes.c's set_mode()/
  * active_until_us own that one. modes_run() uses this to decide the
@@ -211,7 +211,7 @@ void input_note_button_wake(int64_t now_us);
  * awake window. Otherwise it opens the PAGER_UI_HOT_S (15 s) hot window and
  * pushes NO event (nothing is drawn). Power effect: the hot window costs
  * about 0.2 mAh (100 ms keyboard cadence, no light sleep) unless a key
- * follows, which promotes it to the full 29 s window. */
+ * follows, which promotes it to the full 19 s window. */
 void input_note_shake_wake(int64_t now_us);
 
 /* True while the hot window is open: keyboard polled at the 100 ms cadence

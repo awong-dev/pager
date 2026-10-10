@@ -166,8 +166,8 @@ static const char *TAG = "modes";
 // cadence already costs.
 #define PAGER_WAKE_INTERVAL_ATTENTIVE_MS 1000u
 // How long the attentive cadence stays armed after the last input.
-// 10 Oct 2026 (owner): 120 -> 30 s, with input.c PAGER_UI_AWAKE_S 119 -> 29.
-#define PAGER_ATTENTIVE_S 30
+// 10 Oct 2026 (owner): 120 -> 30 -> 20 s (owner, 10 Oct 2026), with input.c PAGER_UI_AWAKE_S 119 -> 19.
+#define PAGER_ATTENTIVE_S 20
 // How long the pager stays awake, with RTS asserted, after each timer wake.
 // Measured on hardware 2026-09-21 (`sleeptest`, GM02SP LR8.2.1.0): while RTS is
 // deasserted the modem HOLDS its URCs (nothing is lost), but with 50 ms awake
@@ -184,7 +184,7 @@ static const char *TAG = "modes";
 // real user input (input_note_button_wake() above already seeds the button
 // FSM with it), and input.c's arm_awake_window() (called from the same wake
 // path, modes_run()'s `input_note_button_wake()` call above and input_poll()'s own
-// resolution below) arms a PAGER_UI_AWAKE_S (29 s, input.c) window in which
+// resolution below) arms a PAGER_UI_AWAKE_S (19 s, input.c) window in which
 // every subsequent loop iteration has ui_awake==true, so skip_sleep is true
 // and the loop never calls net_sleep() again for that whole window --
 // RTS/hardware flow control stays asserted (net.cpp's net_sleep() is the only
@@ -426,7 +426,7 @@ static int64_t s_dbg_looptime_last_log_us = 0;
 // esp_timer_get_time() itself starts near 0 at boot, so a literal 0 here
 // made `now - s_last_input_us` (modes_in_use()/modes_run()'s own `attentive`
 // local, both below) read as a small, in-window value for the whole first
-// PAGER_ATTENTIVE_S (30 s) of every boot, spuriously treating "no input
+// PAGER_ATTENTIVE_S (20 s) of every boot, spuriously treating "no input
 // seen yet" as "attentive" (rail held on, 1s wake cadence) until the first
 // real key/button/ext1 event. This sentinel is far enough in the past
 // that `now - s_last_input_us` already exceeds PAGER_ATTENTIVE_S*1e6 on the
@@ -769,7 +769,7 @@ static void ui_wake_status_refresh(void)
 }
 
 // Round 4 (bug report 25 Sep ~3am PDT, the attentive-edge fix): the single
-// source of truth for "is the pager inside its PAGER_ATTENTIVE_S (30 s)
+// source of truth for "is the pager inside its PAGER_ATTENTIVE_S (20 s)
 // attentive window" - previously duplicated (modes_in_use() below, and a
 // separate `attentive` local in modes_run()'s loop, "kept in sync by hand,
 // not shared" per that comment's own words) - now both call this one
@@ -780,8 +780,8 @@ static bool attentive_now(void)
 }
 
 // TASK_clock.md Do #2: "in use" for the status bar's live clock is the
-// attentive window (PAGER_ATTENTIVE_S = 30 s from the last key/button/ext1
-// event, s_last_input_us above), NOT input.c's shorter PAGER_UI_AWAKE_S (29 s)
+// attentive window (PAGER_ATTENTIVE_S = 20 s from the last key/button/ext1
+// event, s_last_input_us above), NOT input.c's shorter PAGER_UI_AWAKE_S (19 s)
 // input_awake() UI-awake window ui_awake_now/render_now gate off of below --
 // the rail hold task keeps the display/CardKB rail on for the whole of the
 // attentive window (see the `if (attentive) rail_on()` comment further down
@@ -2507,23 +2507,20 @@ static bool attentive_service(void)
             // "--:--" (TASK_clock.md Do #4's "not in use" case) -- it
             // needs no extra handling here.
             //
-            // TASK_ui_round2.md Do #3: auto-lock at this same edge. cfg
-            // `lock.auto` minutes (lock_check_autolock(), called on every
-            // input event/UI wake below, lock.c) is already the EARLIER
-            // trigger whenever it is shorter than PAGER_ATTENTIVE_S
-            // (120s) — see lock.c's own module comment for the two-
-            // trigger contract this documents. This is only the upper
-            // bound: `auto_min == 0` ("never") or an auto_min longer than
-            // 120s would otherwise leave an unattended, passcode-
-            // protected pager unlocked indefinitely past the point it
-            // already stopped being "in use". lock_now() is a no-op if
-            // no passcode is configured or it is already locked (lock.c).
+            // Auto-lock at this edge (owner, 10 Oct 2026): auto-lock is
+            // decoupled from the 20 s attentive window. This edge locks ONLY
+            // when `lock.auto` is 0 ("never"), so an unattended passcode-
+            // protected pager does not stay unlocked forever. With any
+            // configured minutes this does nothing: lock_check_autolock()
+            // (lock.c, called every modes_run() iteration incl. 20 s timer
+            // wakes) is the sole trigger, up to 20 s late while asleep.
+            // lock_now() is a no-op if no passcode is set or already locked.
             // lock_screen_sync() (this file, above set_mode()) must run
             // BEFORE the render below so this frame actually paints Lock
             // — the ordinary per-iteration lock_screen_sync() call
             // further down this same loop runs AFTER this render, too
             // late for this one frame to show it.
-            if (lock_is_set()) {
+            if (lock_is_set() && lock_auto_min() == 0) {
                 lock_now();
                 lock_screen_sync();
             }
@@ -2588,6 +2585,10 @@ void modes_run(void)
         // lines below) already makes the edge action independent of
         // skip_sleep/net_sleep() and every one of skip_sleep's own terms.
         bool attentive = attentive_service();
+        // Timed auto-lock (owner, 10 Oct 2026), every iteration incl. timer wakes (<=20 s late asleep).
+        // Power effect: none (RAM read; RTC write only on the locking edge).
+        lock_check_autolock(esp_timer_get_time());
+        lock_screen_sync(); // follow a lock taken above, same as the attentive-edge path
         if (attentive) {
             interval_ms = PAGER_WAKE_INTERVAL_ATTENTIVE_MS;
         }
@@ -2634,7 +2635,7 @@ void modes_run(void)
         // fixing that needs the net_sleep() release-edge variant firmware/README.md R2 specifies,
         // which touches net.cpp and is out of this task's Files list - see
         // input.h's input_button_stuck() doc comment), OR input_awake()
-        // (docs/DEVICE_PLAN.md §5.3's PAGER_UI_AWAKE_S (29 s) UI-awake window, armed by the
+        // (docs/DEVICE_PLAN.md §5.3's PAGER_UI_AWAKE_S (19 s) UI-awake window, armed by the
         // last key/button event - F6.3 dropped the separate "composer
         // open" carve-out the pre-F6.3 code had here: every screen's text
         // entry now keeps this window armed via input_feed_key() on each
@@ -2729,7 +2730,7 @@ void modes_run(void)
         // attempt just fails cheaply, same as it does today for any other
         // disconnected stretch) -- withholding it would only delay a publish
         // that becomes possible again the moment CONNECTED/SUBSCRIBED lands,
-        // for no benefit. A PAGER_UI_AWAKE_S (29 s) input_awake() window after every keystroke
+        // for no benefit. A PAGER_UI_AWAKE_S (19 s) input_awake() window after every keystroke
         // used to gate msg_pump() off entirely, which is what let a typed
         // reply sit unsent for up to 116s waiting for that window (and the
         // UI-awake busy-poll cadence) to expire. See the rate limit at the
@@ -3066,7 +3067,7 @@ void modes_run(void)
             // which is the mis-attribution §9.1 had to unpick by arithmetic.
             // UI first (25 Sep): skipped entirely on an input wake --
             // PAGER_INPUT_WAKE_YIELD_MS's own comment has the full argument
-            // for why this loses no URC-delivery guarantee (the PAGER_UI_AWAKE_S (29 s)
+            // for why this loses no URC-delivery guarantee (the PAGER_UI_AWAKE_S (19 s)
             // input-awake window this same wake just armed keeps RTS
             // asserted far longer than this wait's own PAGER_PROBE_WAIT_MS
             // bound ever would). Power effect: an input wake never pays this
@@ -3131,10 +3132,9 @@ void modes_run(void)
         input_event_t ievt;
         while (input_get_event(&ievt)) {
             modes_note_activity(); // any resolved key/button event counts as activity
-            // F6.5 (docs/DEVICE_PLAN.md §5.8): "lock_check_autolock(now)
-            // called on every input event". No modem effect; an RTC write
-            // only on the (rare) edge that actually locks.
-            lock_check_autolock(esp_timer_get_time());
+            // F6.5 (docs/DEVICE_PLAN.md §5.8): activity stamp on every input
+            // event. No modem effect, no RTC write (the check is per-iteration).
+            lock_note_activity(esp_timer_get_time());
             switch (ievt.type) {
             case INPUT_EVT_BTN_DOWN:
                 // firmware/README.md: button press enters active mode.
@@ -3176,11 +3176,9 @@ void modes_run(void)
             // right after this pass's ui_render() below (same awake window).
             s_wake_status_pending = true;
             // F6.5: "...and every UI wake" — the other half of
-            // lock_check_autolock()'s call-site contract (docs/DEVICE_PLAN.md
-            // §5.8), covering a UI wake with no fresh input event (should not
-            // normally happen — input.c's own window arms on the same events
-            // that got us here — but keeps the check honest either way).
-            lock_check_autolock(esp_timer_get_time());
+            // lock_note_activity()'s call-site contract (docs/DEVICE_PLAN.md
+            // §5.8), covering a UI wake with no fresh input event.
+            lock_note_activity(esp_timer_get_time());
         }
 
         // F6.3/README R5: renders (if a message arrived) on this task, then
@@ -3221,11 +3219,11 @@ void modes_run(void)
         // nothing changed.
         bool render_now = ui_awake_now;
         // TASK_clock.md Do #3: checked every loop pass, not just while
-        // ui_awake_now (the PAGER_UI_AWAKE_S (29 s) window above) — modes_in_use() (ui_clock_due()'s
+        // ui_awake_now (the PAGER_UI_AWAKE_S (19 s) window above) — modes_in_use() (ui_clock_due()'s
         // own gate) is the wider 120s attentive window, and the rail hold
         // task keeps the display rail on for the whole of it (see
         // modes_in_use()'s own doc comment, modes.h), so a status-bar-only
-        // partial refresh is safe here even after the PAGER_UI_AWAKE_S (29 s) UI-awake window
+        // partial refresh is safe here even after the PAGER_UI_AWAKE_S (19 s) UI-awake window
         // has already lapsed. ui_clock_due() itself is cheap when nothing
         // changed (a string compare, no AT call) and returns false outright
         // whenever not in use, so this costs one extra partial per minute

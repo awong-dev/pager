@@ -60,14 +60,14 @@ static const char *TAG = "input";
 #define PAGER_BTN_DEBOUNCE_MS 30u
 #define PAGER_BTN_STUCK_MS 5000u /* R2: "~5s in BTN_HELD" */
 
-/* 10 Oct 2026 (owner, docs/TASK_ulp_keyboard_eval.md): 119 -> 29 s; the
+/* 10 Oct 2026 (owner, docs/TASK_ulp_keyboard_eval.md): 119 -> 19 s (30 -> 20 s later same day); the
  * keyboard rail switches off 90 s sooner, ~26-44 mAh/day saved. History:
  * 4 Oct 2026 it went 30 -> 119 s (TASK_keylat.md) because the gap between
  * this window and PAGER_ATTENTIVE_S polled the CardKB only once per 1 s
  * wake; both windows now shrink together so that gap stays 1 s. Must stay
- * shorter than modes.c's PAGER_ATTENTIVE_S (30) by at least one attentive
+ * shorter than modes.c's PAGER_ATTENTIVE_S (20) by at least one attentive
  * wake interval (1 s). */
-#define PAGER_UI_AWAKE_S 29
+#define PAGER_UI_AWAKE_S 19
 /* Hot keyboard window opened by a shake from sleep (see input_hot()). */
 #define PAGER_UI_HOT_S 15
 

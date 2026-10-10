@@ -283,8 +283,26 @@ static void test_parse_cfg_vector(void)
           "a cfg envelope with no `lock` sub-map must be rejected");
 }
 
+static void test_autolock_due(void)
+{
+    const int64_t min = 60 * 1000000LL;
+    /* activity resets the timer: a fresh stamp makes the same `now` not due */
+    CHECK(lock_autolock_due(true, false, 2, 0, 2 * min), "2 min after stamp 0 must be due");
+    CHECK(!lock_autolock_due(true, false, 2, 1 * min, 2 * min), "activity at 1 min resets: not due at 2 min");
+    CHECK(lock_autolock_due(true, false, 2, 1 * min, 3 * min), "due 2 min after the new stamp");
+    /* check without activity locks after auto_min; checking does not move the stamp */
+    CHECK(!lock_autolock_due(true, false, 1, 0, min - 1), "just before auto_min: not due");
+    CHECK(lock_autolock_due(true, false, 1, 0, min), "exactly auto_min: due");
+    CHECK(lock_autolock_due(true, false, 1, 0, 10 * min), "stays due on later checks (stamp untouched)");
+    /* never */
+    CHECK(!lock_autolock_due(true, false, 0, 0, 1000 * min), "auto_min 0 never locks via the check");
+    CHECK(!lock_autolock_due(false, false, 1, 0, 10 * min), "no passcode: never");
+    CHECK(!lock_autolock_due(true, true, 1, 0, 10 * min), "already locked: not due");
+}
+
 int main(void)
 {
+    test_autolock_due();
     test_passcode_valid();
     test_pbkdf2_round_trip_and_timing();
     test_parse_cfg_vector();

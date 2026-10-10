@@ -42,9 +42,9 @@ int modes_get_rssi_dbm(void);
 int modes_get_batt_mv(void);
 
 /* TASK_clock.md: true while the attentive window is open (a key, button, or
- * ext0/ext1 wake within PAGER_ATTENTIVE_S = 120s of "now") - the status
+ * ext0/ext1 wake within PAGER_ATTENTIVE_S = 20 s of "now") - the status
  * bar's "in use" test for its live HH:MM clock (ui.c's draw_status_bar()/
- * ui_clock_due()). Deliberately the wider 120s window, not input.c's 30s
+ * ui_clock_due()). Deliberately the wider 20 s window, not input.c's 19 s
  * input_awake() UI-awake window the render cadence itself gates off of -
  * see this function's own definition (modes.c) for why that is safe (the
  * rail hold task keeps the display powered for the whole 120s). Plain RAM

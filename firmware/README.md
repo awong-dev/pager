@@ -201,7 +201,7 @@ each flash (the baseline, then the new build). Capture the `ui: CardKB: 0x..` DE
 
 Expected on the new build: 8 of 8 in A, B and C, and no `input event queue full` lines. The
 baseline is expected to drop about the first and last keys in B and C. Also expect `kbd: task
-started` at boot, `kbd: paused (rail off)` after about 30 s idle, and `kbd: boot guard` then
+started` at boot, `kbd: paused (rail off)` after about 20 s idle, and `kbd: boot guard` then
 `kbd: polling` about 1300 ms after a shake.
 
 ## Measurement checklist: network and power (PENDING_HW unless a row says resolved)
@@ -222,7 +222,7 @@ arithmetic these numbers feed.
 | M7 | Does the modem send PINGREQ autonomously at the configured keepalive? | Resolved by construction per the library API (no ping call exists), but never observed on the wire |
 | M8 | Clean-session behaviour across an ESP32-only reset (modem session survives?) | PROTOCOL.md §12 item 4 - the highest-value follow-up experiment; unresolved and load-bearing for whether §8.3(b) (deep sleep + forced redelivery) is ever worth revisiting |
 | M16 | I²C CardKB polling (the `kbd` task in `ui.c`, which feeds `input_feed_key()`, F6.2) across repeated 100 ms light-sleep cycles | `DEVICE_PLAN.md` §10's own open assumption: whether the CardKB and its I2C bus survive `net_sleep()`'s light-sleep re-entry without a dropped or garbled byte while the composer is open. The plan's own cheapest experiment is "one afternoon with M1's current trace" |
-| M17 | UI-awake window current draw (active mode, composer open, CardKB scanned every 10 ms by the `kbd` task, `PAGER_UI_AWAKE_S`=30s) | Validates `DEVICE_PLAN.md` §5.7's ≈ 7 mAh/day-at-20-interactions estimate and the "one more AT round trip per UI wake (signal + battery), ≈ 100 ms at 40 mA" it is built on |
+| M17 | UI-awake window current draw (active mode, composer open, CardKB scanned every 10 ms by the `kbd` task, `PAGER_UI_AWAKE_S`=19s) | Validates `DEVICE_PLAN.md` §5.7's ≈ 7 mAh/day-at-20-interactions estimate and the "one more AT round trip per UI wake (signal + battery), ≈ 100 ms at 40 mA" it is built on |
 | M18 | `bars_from_rssi_dbm()` bucket thresholds (`ui.c`: dBm ≥ -85/-95/-105/-115 → 4/3/2/1/0 bars) against a real cell | The dBm conversion itself is settled in source (F3.4: `WalterModem::getRSSI()`/AT+CSQ, `dBm = -113 + raw*2`, `raw==99` guarded off as "no reading" — `net.cpp`'s `net_get_rssi()`); the bucket boundaries chosen for the status-bar icon are engineering estimates that have never been seen against a live signal |
 | M19 | `segs_from_batt_mv()` LiPo threshold calibration (`ui.c`: 4000/3850/3700/3550 mV → 4/3/2/1/0 segments) | `DEVICE_PLAN.md` §10: these thresholds were picked, not derived from a real discharge curve under the device's own load; pairs with M15's voltage-reading check |
 

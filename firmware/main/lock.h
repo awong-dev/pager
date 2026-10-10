@@ -134,6 +134,10 @@ bool lock_parse_cfg(const uint8_t *buf, uint16_t len, bool sig_pair_present, cha
                      size_t out_id_cap, bool *out_have_clear, bool *out_clear, bool *out_have_auto,
                      uint8_t *out_auto_min);
 
+/* Pure decision used by lock_check_autolock() (host-testable). */
+bool lock_autolock_due(bool have_hash, bool locked, uint8_t auto_min, int64_t last_activity_us,
+                       int64_t now_us);
+
 #ifdef ESP_PLATFORM
 /* ---------------------------------------------------------------------
  * RTC wiring (modes.c calls this once, before lock_init()) — same pattern as
@@ -196,16 +200,17 @@ void lock_set_auto_min(uint8_t minutes);
  * no lockout to skip it during. */
 bool lock_try_passcode(const char *passcode, size_t len);
 
-/* Auto-lock check (docs/DEVICE_PLAN.md §5.8): call on every input event and
- * every UI wake, with the current esp_timer_get_time(). Locks (RTC `locked`
- * -> 1) iff a passcode is set, `auto_min != 0`, not already locked, and
- * `now_us` is at least `auto_min` minutes past the last call's `now_us`.
- * Always updates the last-activity timestamp afterward (RAM-only, this-boot
- * monotonic — deliberately NOT an RTC field, same reasoning modes.c's own
- * non-RTC `s_last_batt_mv`/`s_last_rssi_dbm` statics give: this design never
- * deep sleeps, only light sleeps, which retain ordinary RAM). No modem
- * effect; an RTC write only on the (rare) edge that actually locks. */
+/* Auto-lock (owner, 10 Oct 2026; docs/DEVICE_PLAN.md §5.8). Split in two:
+ * lock_note_activity(now_us) only stamps the last-activity time (call on every
+ * input event and UI wake); lock_check_autolock(now_us) only compares, locking
+ * (RTC `locked` -> 1) iff a passcode is set, `auto_min != 0`, not already
+ * locked and `now_us` is >= `auto_min` minutes past the stamp. The check never
+ * touches the stamp. Call it on every modes_run() iteration (incl. timer
+ * wakes). Timestamp is RAM-only, this-boot monotonic (light sleep retains
+ * RAM). No modem effect; an RTC write only on the locking edge. */
+void lock_note_activity(int64_t now_us);
 void lock_check_autolock(int64_t now_us);
+
 
 /* Explicit "Lock now" (Home menu, docs/DEVICE_PLAN.md §5.5). No-op if no
  * passcode is configured. */
