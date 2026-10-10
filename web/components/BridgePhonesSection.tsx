@@ -1,7 +1,7 @@
 "use client";
 
 /** "Bridge phones" on `/family/devices` -- docs/BRIDGE_PHONE_DESIGN.md
- * decisions 1-3, 12 and O1 (revised): a table of the family's bridge phones
+ * decisions 1-3, 12 and O1 (revised): a card per bridge phone of the family's bridge phones
  * (polled every 10 s; bridge docs are server-only, so no Firestore listener),
  * Add bridge phone -> pairing panel, Reassign, Edit numbers (SIM and Voice,
  * either optional), Accept SIM, New code, Unpair.
@@ -10,7 +10,10 @@
 import { collection, onSnapshot, query, where } from "firebase/firestore";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Alert from "@mui/material/Alert";
+import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
+import Card from "@mui/material/Card";
+import CardContent from "@mui/material/CardContent";
 import Chip from "@mui/material/Chip";
 import Dialog from "@mui/material/Dialog";
 import DialogActions from "@mui/material/DialogActions";
@@ -19,12 +22,6 @@ import DialogContentText from "@mui/material/DialogContentText";
 import DialogTitle from "@mui/material/DialogTitle";
 import MenuItem from "@mui/material/MenuItem";
 import Stack from "@mui/material/Stack";
-import Table from "@mui/material/Table";
-import TableBody from "@mui/material/TableBody";
-import TableCell from "@mui/material/TableCell";
-import TableContainer from "@mui/material/TableContainer";
-import TableHead from "@mui/material/TableHead";
-import TableRow from "@mui/material/TableRow";
 import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
 
@@ -43,7 +40,6 @@ import { getFirestoreDb } from "@/lib/firebase";
 import { formatRelativeAge } from "@/lib/time";
 import type { ApiTime, BridgeRow } from "@/lib/types";
 import { useFullScreenDialog } from "@/lib/useFullScreenDialog";
-import { responsiveTableSx } from "@/lib/tableSx";
 
 export interface BridgeMember {
   uid: string;
@@ -66,6 +62,119 @@ function errText(e: unknown, fallback: string): string {
 
 function StatusChip({ label, ok }: { label: string; ok: boolean | undefined }) {
   return <Chip size="small" label={label} color={ok ? "success" : "default"} variant={ok ? "filled" : "outlined"} />;
+}
+
+function Fact({ label, children, color }: { label: string; children: React.ReactNode; color?: string }) {
+  return (
+    <>
+      <Typography variant="caption" color="text.secondary" sx={{ lineHeight: "24px" }}>
+        {label}
+      </Typography>
+      <Typography variant="body2" color={color} component="div" sx={{ minHeight: 24, display: "flex", alignItems: "center", flexWrap: "wrap", gap: 0.5, overflowWrap: "anywhere", minWidth: 0 }}>
+        {children}
+      </Typography>
+    </>
+  );
+}
+
+interface BridgePhoneCardProps {
+  bridge: BridgeRow;
+  ownerLabel: string;
+  smsNumber: string | null;
+  seenLabel: string;
+  stale: boolean;
+  simMismatch: boolean;
+  onNewCode: () => void;
+  onNumbers: () => void;
+  onAccept: () => void;
+  onReassign: () => void;
+  onUnpair: () => void;
+}
+
+function BridgePhoneCard(p: BridgePhoneCardProps) {
+  const b = p.bridge;
+  const st = b.status ?? {};
+  const unpaired = !b.paired;
+  const sim = b.simNumber ?? null;
+  const voice = b.voiceNumber ?? null;
+  return (
+    <Card variant="outlined" sx={{ width: "100%" }}>
+      <CardContent sx={{ p: 2, "&:last-child": { pb: 2 } }}>
+        <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", md: "1fr 1fr" }, rowGap: 0.5, columnGap: 3 }}>
+          <Stack
+            direction="row"
+            useFlexGap
+            sx={{ gridColumn: "1 / -1", flexWrap: "wrap", columnGap: 1, rowGap: 0.5, alignItems: "center", minWidth: 0 }}
+          >
+            <Typography variant="h6" sx={{ fontWeight: 700, overflowWrap: "anywhere", lineHeight: 1.3 }}>
+              {b.label}
+            </Typography>
+            <Typography variant="body2" color="text.secondary" sx={{ overflowWrap: "anywhere" }}>
+              {p.ownerLabel}
+            </Typography>
+            <Chip
+              size="small"
+              label={p.seenLabel}
+              color={p.stale ? "error" : "default"}
+              variant="outlined"
+            />
+            <StatusChip label="listener" ok={st.listenerBound} />
+            {sim && <StatusChip label="SMS app" ok={st.smsDefault} />}
+            <StatusChip label="accessibility" ok={st.accessibility} />
+            {b.caps?.whatsapp && <Chip size="small" color="success" label="WhatsApp" />}
+          </Stack>
+
+          <Box sx={{ display: "grid", gridTemplateColumns: "auto 1fr", columnGap: 1.5, alignItems: "center", alignContent: "start", minWidth: 0 }}>
+            <Fact label="Google account">{st.accounts?.join(", ") || "--"}</Fact>
+            <Fact label="SIM number">
+              {sim ?? "--"}
+              {p.simMismatch && (
+                <Typography variant="caption" color="warning.main">
+                  phone reports {st.simNumber}
+                </Typography>
+              )}
+            </Fact>
+            <Fact label="Voice number">
+              {voice ?? "--"}
+              {!sim && <Chip size="small" color="info" label="Voice only" />}
+            </Fact>
+            <Fact label="SMS number">{p.smsNumber ?? "none"}</Fact>
+          </Box>
+
+          <Box sx={{ display: "grid", gridTemplateColumns: "auto 1fr", columnGap: 1.5, alignItems: "center", alignContent: "start", minWidth: 0 }}>
+            <Fact label="Battery">{st.battery != null ? `${st.battery}%` : "--"}</Fact>
+            <Fact label="Tier 2">{st.tier2Count ?? 0}</Fact>
+            {st.error && (
+              <Fact label="Error" color="error.main">
+                {st.error}
+              </Fact>
+            )}
+            <Box sx={{ gridColumn: "1 / -1", display: "flex", flexWrap: "wrap", gap: 0.5, alignItems: "center", pt: 0.5 }}>
+              {unpaired && (
+                <Button size="small" variant="outlined" onClick={p.onNewCode}>
+                  New code
+                </Button>
+              )}
+              <Button size="small" variant="outlined" onClick={p.onNumbers}>
+                Numbers
+              </Button>
+              {p.simMismatch && (
+                <Button size="small" variant="outlined" onClick={p.onAccept}>
+                  Accept SIM
+                </Button>
+              )}
+              <Button size="small" variant="outlined" onClick={p.onReassign}>
+                Reassign
+              </Button>
+              <Button size="small" color="error" onClick={p.onUnpair} disabled={unpaired} sx={{ ml: { md: "auto" } }}>
+                Unpair
+              </Button>
+            </Box>
+          </Box>
+        </Box>
+      </CardContent>
+    </Card>
+  );
 }
 
 export default function BridgePhonesSection({
@@ -214,107 +323,36 @@ export default function BridgePhonesSection({
       </Typography>
       {error && <Alert severity="error">{error}</Alert>}
 
-      <TableContainer sx={responsiveTableSx([3,4,5,7,9])}>
-        {/* Hidden below md: Google account, SIM number, Voice number, Battery, Tier 2 (SIM/Voice numbers via the Numbers dialog). */}
-        <Table size="small">
-          <TableHead>
-            <TableRow>
-              <TableCell>Label</TableCell>
-              <TableCell>Member</TableCell>
-              <TableCell>Google account</TableCell>
-              <TableCell>SIM number</TableCell>
-              <TableCell>Voice number</TableCell>
-              <TableCell>Last seen</TableCell>
-              <TableCell>Battery</TableCell>
-              <TableCell>Status</TableCell>
-              <TableCell>Tier 2</TableCell>
-              <TableCell />
-            </TableRow>
-          </TableHead>
-          <TableBody>
-            {bridges.length === 0 && (
-              <TableRow>
-                <TableCell colSpan={10}>
-                  <Typography variant="body2" color="text.secondary">
-                    No bridge phones yet.
-                  </Typography>
-                </TableCell>
-              </TableRow>
-            )}
-            {bridges.map((b) => {
-              const st = b.status ?? {};
-              const seen = toMs(b.lastSeenAt);
-              const unpaired = !b.paired;
-              const stale = !unpaired && (seen === null || now - seen > STALE_MS);
-              const sim = b.simNumber ?? null;
-              const voice = b.voiceNumber ?? null;
-              const smsNumber = smsByUid[b.ownerUid] ?? null;
-              const simMismatch = st.simNumber && st.simNumber !== sim;
-              return (
-                <TableRow key={b.id}>
-                  <TableCell>{b.label}</TableCell>
-                  <TableCell>
-                    {b.ownerName ? `${b.ownerName} (@${b.ownerAlias})` : memberLabel(b.ownerUid)}
-                    <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
-                      SMS number: {smsNumber ?? "none"}
-                    </Typography>
-                  </TableCell>
-                  <TableCell>{st.accounts?.join(", ") || "--"}</TableCell>
-                  <TableCell>
-                    {sim ?? "--"}
-                    {simMismatch && (
-                      <Typography variant="caption" color="warning.main" sx={{ display: "block" }}>
-                        phone reports {st.simNumber}
-                      </Typography>
-                    )}
-                  </TableCell>
-                  <TableCell>
-                    {voice ?? "--"}
-                    {!sim && <Chip size="small" color="info" label="Voice only" sx={{ ml: 0.5 }} />}
-                  </TableCell>
-                  <TableCell sx={{ color: stale ? "error.main" : undefined }}>
-                    {unpaired ? "unpaired" : seen === null ? "never" : formatRelativeAge(seen)}
-                  </TableCell>
-                  <TableCell>{st.battery != null ? `${st.battery}%` : "--"}</TableCell>
-                  <TableCell>
-                    <Stack direction="row" spacing={0.5} useFlexGap sx={{ flexWrap: "wrap" }}>
-                      <StatusChip label="listener" ok={st.listenerBound} />
-                      {sim && <StatusChip label="SMS app" ok={st.smsDefault} />}
-                      <StatusChip label="accessibility" ok={st.accessibility} />
-                      {b.caps?.whatsapp && <Chip size="small" color="success" label="WhatsApp" />}
-                      {st.error && <Chip size="small" color="error" label={st.error} />}
-                    </Stack>
-                  </TableCell>
-                  <TableCell>{st.tier2Count ?? 0}</TableCell>
-                  <TableCell>
-                    <Stack direction="row" spacing={0.5} useFlexGap sx={{ flexWrap: "wrap" }}>
-                      {unpaired ? (
-                        <Button size="small" onClick={() => void reissue(b)}>
-                          New code
-                        </Button>
-                      ) : null}
-                      <Button size="small" onClick={() => setNumbers({ id: b.id, sim: sim ?? "", voice: voice ?? "" })}>
-                        Numbers
-                      </Button>
-                      {simMismatch && (
-                        <Button size="small" onClick={() => void accept(b)}>
-                          Accept SIM
-                        </Button>
-                      )}
-                      <Button size="small" onClick={() => setReassign({ id: b.id, owner: b.ownerUid })}>
-                        Reassign
-                      </Button>
-                      <Button size="small" color="error" onClick={() => setUnpair(b)} disabled={unpaired}>
-                        Unpair
-                      </Button>
-                    </Stack>
-                  </TableCell>
-                </TableRow>
-              );
-            })}
-          </TableBody>
-        </Table>
-      </TableContainer>
+      {bridges.length === 0 && (
+        <Typography variant="body2" color="text.secondary">
+          No bridge phones yet.
+        </Typography>
+      )}
+      {bridges.map((b) => {
+        const st = b.status ?? {};
+        const seen = toMs(b.lastSeenAt);
+        const unpaired = !b.paired;
+        const stale = !unpaired && (seen === null || now - seen > STALE_MS);
+        const sim = b.simNumber ?? null;
+        const voice = b.voiceNumber ?? null;
+        const simMismatch = Boolean(st.simNumber && st.simNumber !== sim);
+        return (
+          <BridgePhoneCard
+            key={b.id}
+            bridge={b}
+            ownerLabel={b.ownerName ? `${b.ownerName} (@${b.ownerAlias})` : memberLabel(b.ownerUid)}
+            smsNumber={smsByUid[b.ownerUid] ?? null}
+            seenLabel={unpaired ? "unpaired" : seen === null ? "never" : formatRelativeAge(seen)}
+            stale={stale}
+            simMismatch={simMismatch}
+            onNewCode={() => void reissue(b)}
+            onNumbers={() => setNumbers({ id: b.id, sim: sim ?? "", voice: voice ?? "" })}
+            onAccept={() => void accept(b)}
+            onReassign={() => setReassign({ id: b.id, owner: b.ownerUid })}
+            onUnpair={() => setUnpair(b)}
+          />
+        );
+      })}
 
       <Dialog fullScreen={fullScreen} open={addOpen} onClose={() => setAddOpen(false)} fullWidth maxWidth="xs">
         <DialogTitle>Add bridge phone</DialogTitle>
