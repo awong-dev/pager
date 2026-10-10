@@ -5,7 +5,9 @@ package app.kidpager.bridge
  * notification (already flattened into [NotificationSnapshot] by the listener) to
  * `BridgeEvent`s. Unit-tested in app/src/test; the listener only does the Android calls.
  * WhatsApp (WA2/WA3/WA6, 9 Oct 2026): DM phone from the JID, group sender `~ ` stripping,
- * "You" lines skipped, media placeholders mapped to `attachments`.
+ * "You" lines skipped, media placeholders mapped to `attachments`. L8 (10 Oct 2026): a DM is
+ * keyed by its JID whatever the shape (`@s.whatsapp.net` or `@lid`); a phone JID also sets
+ * `conversation.link` to the `wa.me` chat link so the tier-2 send can open the chat directly.
  */
 data class SnapshotMessage(val senderName: String?, val text: String?, val timestamp: Long, val isSelf: Boolean)
 
@@ -25,8 +27,9 @@ data class NotificationSnapshot(
 )
 
 /**
- * `peerPhone`: the DM peer's number when the source is phone-keyed (Voice, WhatsApp), so the
- * listener can map phone -> conversation id for tier-1 replies that arrive with only `to.phone`.
+ * `peerPhone`: the DM peer's number when the source is phone-keyed (Voice, WhatsApp DM). The
+ * listener maps phone -> conversation id for Voice only, whose tier-1 replies can arrive with
+ * just `to.phone`; a WhatsApp send carries the conversation id (and `link` for a phone JID).
  */
 data class Mapped(val events: List<BridgeEvent>, val dedupKeys: List<String>, val peerPhone: String?)
 
@@ -81,11 +84,14 @@ object NotificationMapper {
         // O4 / WA2: the peer's number from the shortcut id / data URI when present, before the title.
         val phoneFromIds = when {
             source == Targets.SOURCE_GVOICE -> PhoneNumbers.extractE164(s.shortcutId) ?: PhoneNumbers.extractE164(s.dataUri)
-            // WA2: `<digits>@s.whatsapp.net` -> +digits; `<digits>@lid` carries no number (the relay drops it).
+            // WA2: `<digits>@s.whatsapp.net` -> +digits; `<digits>@lid` carries no number (L8: that is
+            // normal, the JID is still the conversation id and the relay keys on it).
             phoneKeyed -> Targets.phoneFromWaJid(s.shortcutId) ?: PhoneNumbers.extractE164(s.dataUri)
             else -> null
         }
         val phoneFromTitle = if (phoneKeyed) PhoneNumbers.normalize(s.conversationTitle) else null
+        // L8: a phone-JID DM gets the `wa.me` chat link, the deep-link tier 2 for the send; a LID or a group has none.
+        val link = if (source == Targets.SOURCE_WHATSAPP && !s.isGroup) Targets.phoneFromWaJid(s.shortcutId)?.let { Targets.waLink(it) } else null
         val events = ArrayList<BridgeEvent>()
         val keys = ArrayList<String>()
         var peerPhone: String? = phoneFromIds ?: phoneFromTitle
@@ -116,7 +122,7 @@ object NotificationMapper {
             val event = BridgeEvent(
                 id = eventId(convId, m.timestamp, raw),
                 source = source,
-                conversation = Conversation(id = Bounds.convId(convId), title = s.conversationTitle?.let { Bounds.cp(it, Bounds.NAME_CP) }, isGroup = s.isGroup),
+                conversation = Conversation(id = Bounds.convId(convId), title = s.conversationTitle?.let { Bounds.cp(it, Bounds.NAME_CP) }, isGroup = s.isGroup, link = link),
                 sender = Sender(name = Bounds.cp(name.ifEmpty { s.conversationTitle ?: "?" }, Bounds.NAME_CP), phone = phone),
                 text = Bounds.cp(text, Bounds.TEXT_CP),
                 ts = tsSec,

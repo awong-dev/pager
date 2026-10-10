@@ -60,9 +60,13 @@ object Targets {
     /** WA4: WhatsApp chat link for a peer number; WhatsApp opens the composer for a known number. */
     fun waLink(e164: String): String = "https://wa.me/" + e164.filter { it.isDigit() }
 
-    // ---- WhatsApp JIDs (WA2/WA3): `<digits>@s.whatsapp.net` DM, `<id>@g.us` group, `<digits>@lid` no number ----
+    // ---- WhatsApp JIDs (WA2/WA3): `<digits>@s.whatsapp.net` DM, `<id>@g.us` group, `<digits>@lid` DM (privacy mode) ----
     val WA_DM_JID = Regex("^(\\d{6,15})@s\\.whatsapp\\.net$")
     val WA_GROUP_JID = Regex("^[\\d-]+@g\\.us$")
+    /**
+     * A LID DM (L8, 10 Oct 2026): a normal conversation keyed by this id, with no number and no
+     * `wa.me` link, so its tier 2 is the title search. Nothing warns on it any more.
+     */
     val WA_LID_JID = Regex("^\\d+@lid$")
 
     /** `+<digits>` from a DM JID, null for anything else (groups, LIDs, opaque ids). */

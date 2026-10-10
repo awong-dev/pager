@@ -13,8 +13,9 @@ import androidx.core.app.NotificationCompat
  * notification.actions and NotificationCompat.WearableExtender(notification).actions, rebuilt
  * from getActiveNotifications() on onListenerConnected" and the tier-1 reply:
  * RemoteInput.addResultsToIntent + actionIntent.send; CanceledException -> tier 2.
- * The phone -> conversation map is per source (WA4): Voice and WhatsApp threads for the same
- * number are different conversations.
+ * The phone -> conversation map is keyed `source|phone` and is filled for Google Voice only
+ * (L8, 10 Oct 2026): a `gvoice` send may carry just `to.phone`, while a WhatsApp send always
+ * carries the conversation id (the JID), so WhatsApp no longer uses it.
  */
 object ReplyCache {
     private const val TAG = "reply"
@@ -25,7 +26,7 @@ object ReplyCache {
     }
 
     private val byConversation = HashMap<String, Entry>()
-    /** `source|phone` -> conversation id, so a `gvoice`/`whatsapp` send with only `to.phone` finds its thread. */
+    /** `source|phone` -> conversation id, so a `gvoice` send with only `to.phone` finds its thread (Voice only). */
     private val byPhone = HashMap<String, String>()
 
     @Synchronized fun size() = byConversation.size

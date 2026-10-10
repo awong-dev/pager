@@ -59,16 +59,16 @@ object Dispatcher {
     }
 
     /**
-     * WA4. Tier 1 by `to.conversationId` (JID), else by phone through ReplyCache. Tier 2: a DM
-     * (phone or link known) opens `wa.me/<digits>`; a group (no phone, `to.title`) is found by
-     * searching the chat list for the title; neither -> `no_link`.
+     * WA4 / L6 / L8. Tier 1 by `to.conversationId` (the JID, `@s.whatsapp.net` or `@lid`) through
+     * ReplyCache. Tier 2: a DM with `to.link` (the `wa.me/<digits>` link the listener set for a
+     * phone JID) opens it; otherwise the chat (a LID DM, or a group) is found by searching the
+     * chat list for `to.title`; no title -> `no_link`. A WhatsApp send carries no `to.phone`.
      */
     private suspend fun whatsapp(ctx: Context, to: RelayClient.OutboxTo?, text: String): Outcome {
-        val phone = to?.phone?.let { PhoneNumbers.normalize(it) }
-        val conv = to?.conversationId ?: phone?.let { ReplyCache.conversationForPhone(Targets.SOURCE_WHATSAPP, it) }
+        val conv = to?.conversationId
         if (conv != null && ReplyCache.reply(ctx, conv, text)) return Outcome("sent", null, 1)
         val isGroup = conv?.let { Targets.WA_GROUP_JID.matches(it) } == true
-        if (!isGroup && (to?.link != null || phone != null)) return tier2Send(to?.link ?: Targets.waLink(phone!!), text)
+        if (!isGroup && to?.link != null) return tier2Send(to.link, text)
         val title = to?.title?.trim()
         if (title.isNullOrEmpty()) return Outcome("failed", "no_link", 1)
         val svc = BridgeAccessibilityService.instance ?: return Outcome("failed", "no_accessibility", 2)

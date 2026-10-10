@@ -26,7 +26,6 @@ class ChatNotificationListener : NotificationListenerService() {
         private const val TAG = "listener"
         @Volatile var connected = false
             private set
-        @Volatile private var lidLogged = false
         /** Process-wide so a listener rebind does not forget what was just spooled. */
         private val recent = RecentMessages()
     }
@@ -86,17 +85,14 @@ class ChatNotificationListener : NotificationListenerService() {
         val hadAction = ReplyCache.remember(convId, sbn)
         if (!emitEvents) return
         val source = Targets.sourceFor(snapshot.pkg) ?: return
-        if (source == Targets.SOURCE_WHATSAPP && !snapshot.isGroup && snapshot.shortcutId?.let { Targets.WA_LID_JID.matches(it) } == true && !lidLogged) {
-            lidLogged = true
-            Log.w(TAG, "whatsapp DM with a LID jid (no number); the relay will drop it unless the sender line is a number")
-        }
         val db = AppDb.get(this)
         val mapped = NotificationMapper.map(snapshot, seen = { db.seen().count(it) > 0 }, recentDup = { e ->
             recent.isDuplicate(snapshot.pkg, e).also { dup ->
                 if (dup) Log.d(TAG, "dup message skipped conv=$convId sender=${e.sender.name} ts=${e.ts}")
             }
         })
-        if (mapped.peerPhone != null) ReplyCache.rememberPhone(source, mapped.peerPhone, convId)
+        // L8: only a Voice send can arrive with just `to.phone`; a WhatsApp send carries the conversation id.
+        if (source == Targets.SOURCE_GVOICE && mapped.peerPhone != null) ReplyCache.rememberPhone(source, mapped.peerPhone, convId)
         if (mapped.events.isEmpty()) return
         EventQueue.enqueue(this, mapped.events)
         val now = System.currentTimeMillis()

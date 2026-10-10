@@ -101,8 +101,9 @@ Tier 2 notes:
   forbid automation and its anti-abuse systems have banned accounts for far less; keep this
   account disposable (a second SIM, not the family's main number). Tier 1 (the notification
   reply action) is ordinary and is what runs almost every time.
-- **DM tier 2** opens `https://wa.me/<digits>` in WhatsApp, which lands in the chat composer for
-  a known number, then the usual composer/Send/verify steps.
+- **DM tier 2** opens `to.link` (`https://wa.me/<digits>`, which the listener sets on every DM
+  whose JID is a phone number) in WhatsApp, which lands in the chat composer, then the usual
+  composer/Send/verify steps. A `@lid` DM has no link, so it falls to the title search below.
 - **Group tier 2 is best-effort.** There is no deep link to a WhatsApp group
   (`chat.whatsapp.com/...` is a *join* link), so the service launches WhatsApp, taps the chat-list
   search, types the group title and clicks the first row whose name equals it. Two groups with the
@@ -196,8 +197,10 @@ purge), MMS PDU parsing, the MMS and SMS pure event steps, SMS event shape and J
 Every WhatsApp selector lives in `Targets.kt`; change it there when a bench run disagrees.
 
 - **`shortcutId` is the JID.** DM `<digits>@s.whatsapp.net`, group `<id>@g.us`, privacy-mode
-  `<digits>@lid` (no number; the relay drops the event unless the sender line is a number; a
-  `@lid` DM was seen on the bench 10 Oct 2026). If WhatsApp stops setting `shortcutId` the
+  `<digits>@lid`. Either DM shape is a normal conversation keyed by the JID (a `@lid` DM was seen
+  on the bench 10 Oct 2026; `sender.phone` is null for it and the relay does not need it). A
+  phone JID also carries `conversation.link = https://wa.me/<digits>` for the tier-2 send; a LID
+  has none and its tier 2 is the title search. If WhatsApp stops setting `shortcutId` the
   notification is dropped (no `pkg|id` fallback for WhatsApp since 10 Oct 2026 — see
   "Conversation id" above); add the package to `Targets.PKG_ID_FALLBACK_PACKAGES` if a real
   per-chat notification ever arrives without one.

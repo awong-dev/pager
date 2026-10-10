@@ -247,16 +247,24 @@ class NotificationMapperTest {
         assertEquals("+447700900123", m.events[0].sender.phone)
     }
 
+    /** A10 / L8: a LID DM is a normal conversation keyed by its JID; only a phone JID gets the `wa.me` link. */
     @Test
-    fun whatsappLidJidCarriesNoNumberButSenderLineStillCounts() {
+    fun whatsappDmLinkOnlyForPhoneJid() {
         val lid = NotificationMapper.map(wa(shortcutId = "123456789012345@lid", title = "Grandma", messages = listOf(SnapshotMessage("Grandma", "hello", 1L, false))), noneSeen)
         assertEquals(1, lid.events.size)
-        assertNull(lid.events[0].sender.phone)
-        assertNull(lid.peerPhone)
         assertEquals("123456789012345@lid", lid.events[0].conversation.id)
+        assertNull(lid.events[0].sender.phone)
+        assertNull(lid.events[0].conversation.link)
+        assertEquals("Grandma", lid.events[0].sender.name)
 
-        val fromTitle = NotificationMapper.map(wa(shortcutId = "opaque", title = "+1 555-987-6543", messages = listOf(SnapshotMessage("+1 555-987-6543", "hello", 1L, false))), noneSeen)
-        assertEquals("+15559876543", fromTitle.events[0].sender.phone)
+        val jid = NotificationMapper.map(wa(title = "Grandma", messages = listOf(SnapshotMessage("Grandma", "hello", 1L, false))), noneSeen)
+        assertEquals("https://wa.me/15551234567", jid.events[0].conversation.link)
+
+        val group = NotificationMapper.map(
+            wa(shortcutId = "120363000000000000@g.us", title = "Soccer parents", isGroup = true, messages = listOf(SnapshotMessage("~ Dana P", "hi", 1L, false))),
+            noneSeen,
+        )
+        assertNull(group.events[0].conversation.link)
     }
 
     @Test
