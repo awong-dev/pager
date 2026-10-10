@@ -49,6 +49,7 @@ import { useDirectory } from "@/lib/directory";
 import { useFamily } from "@/lib/family-context";
 import { getFirestoreDb } from "@/lib/firebase";
 import { formatRelativeAge, tsToMillis } from "@/lib/time";
+import { peerLabel } from "@/lib/names";
 import type { ConversationDoc, DeviceDoc } from "@/lib/types";
 
 interface ConversationRow extends ConversationDoc {
@@ -177,7 +178,8 @@ function ChatListInner() {
         if (!alias) return [];
         const kind = participant?.kind ?? directoryEntry?.kind;
         const phone = kind === "external" ? externalDigits(participant?.phone ?? directoryEntry?.phone) : undefined;
-        return [{ ...c, label: alias, routeAlias: alias, phone }];
+        const displayName = participant?.displayName || directoryEntry?.displayName;
+        return [{ ...c, label: peerLabel({ alias, displayName, kind }), routeAlias: alias, phone }];
       }),
     [conversations, byUid]
   );
@@ -204,10 +206,15 @@ function ChatListInner() {
         const peerUid = c.uids.find((u) => u !== kidUid);
         const kidAlias = (kidUid && (participants[kidUid]?.alias ?? byUid(kidUid)?.alias)) ?? "?";
         const peerEntry = peerUid ? participants[peerUid] : undefined;
-        const peerAlias = peerEntry?.alias ?? (peerUid ? byUid(peerUid)?.alias : undefined) ?? "?";
+        const peerDir = peerUid ? byUid(peerUid) : undefined;
+        const peerText = peerLabel({
+          alias: peerEntry?.alias ?? peerDir?.alias ?? "?",
+          displayName: peerEntry?.displayName || peerDir?.displayName,
+          kind: peerEntry?.kind ?? peerDir?.kind,
+        });
         return {
           convKey: c.convKey,
-          label: `@${kidAlias} ↔ @${peerAlias}`,
+          label: `@${kidAlias} ↔ ${peerText}`,
           phone:
             peerEntry?.kind === "external"
               ? externalDigits(peerEntry.phone ?? (peerUid ? byUid(peerUid)?.phone : undefined))
@@ -330,7 +337,7 @@ function ChatListInner() {
                           {isGroup && <GroupsIcon fontSize="small" color="action" />}
                           {c.phone && <PhoneIcon fontSize="small" color="action" />}
                           <Typography sx={{ fontWeight: unread > 0 ? 700 : 400 }}>
-                            {isGroup ? c.label : `@${c.label}`}
+                            {c.label}
                           </Typography>
                           {unread > 0 && <Badge color="primary" badgeContent={unread} />}
                         </Stack>

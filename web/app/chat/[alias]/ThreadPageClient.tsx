@@ -60,6 +60,7 @@ import RequireAuth from "@/components/RequireAuth";
 import { ApiError, api } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { useDirectory } from "@/lib/directory";
+import { peerLabel } from "@/lib/names";
 import { familyQuery, useFamily } from "@/lib/family-context";
 import type { SmsLogEntry, SmsLogResponse } from "@/lib/smsContacts";
 import { getFirestoreDb } from "@/lib/firebase";
@@ -516,7 +517,7 @@ function ThreadInner({ alias }: { alias: string }) {
   return (
     <Stack spacing={2} sx={threadHeightSx}>
       <Stack direction="row" spacing={2} useFlexGap sx={{ alignItems: "center", flexWrap: "wrap" }}>
-        <Typography variant="h6" sx={{ wordBreak: "break-word" }}>{group ? group.name : `@${alias}`}</Typography>
+        <Typography variant="h6" sx={{ wordBreak: "break-word" }}>{group ? group.name : peerLabel({ alias, displayName: peerEntry?.displayName, kind: peerEntry?.kind })}</Typography>
         {group && (
           <Typography variant="caption" color="text.secondary">
             @{alias}

@@ -41,6 +41,7 @@ import RequireAuth from "@/components/RequireAuth";
 import { useDirectory } from "@/lib/directory";
 import { useFamily } from "@/lib/family-context";
 import { getFirestoreDb } from "@/lib/firebase";
+import { peerLabel } from "@/lib/names";
 import type { ConversationDoc, MessageDoc } from "@/lib/types";
 import { threadHeightSx } from "@/lib/layout";
 
@@ -201,11 +202,15 @@ function MonitorThreadInner({ convKey }: { convKey: string }) {
   const peerUid = uids.find((u) => u !== kidUid) ?? null;
   function label(uid: string | null): string {
     if (!uid) return "someone";
-    return participants[uid]?.alias ?? byUid(uid)?.alias ?? "someone";
+    const p = participants[uid];
+    const d = byUid(uid);
+    const alias = p?.alias ?? d?.alias;
+    if (!alias) return "someone";
+    return peerLabel({ alias, displayName: p?.displayName || d?.displayName, kind: p?.kind ?? d?.kind });
   }
   const banner = isGroup
     ? `You're viewing the "${conversation?.name ?? conversation?.alias ?? convKey}" group as a family admin.`
-    : `You're viewing @${label(kidUid)}'s conversation with @${label(peerUid)} as a family admin.`;
+    : `You're viewing ${label(kidUid)}'s conversation with ${label(peerUid)} as a family admin.`;
 
   return (
     <Stack spacing={2} sx={threadHeightSx}>

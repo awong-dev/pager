@@ -43,6 +43,7 @@ import {
   registerForPush,
   showForegroundMessageNotification,
 } from "@/lib/notifications";
+import { peerLabel } from "@/lib/names";
 import type { AlertDoc, ConversationDoc } from "@/lib/types";
 
 /** Alert notifications have no peer alias/thread to link to -- just the
@@ -142,10 +143,15 @@ export default function NotificationWatcher() {
             }
           } else {
             const peerUid = data.uids.find((u) => u !== me.uid) ?? data.uids[0]!;
-            const alias = data.participants?.[peerUid]?.alias ?? byUidRef.current(peerUid)?.alias;
+            const part = data.participants?.[peerUid];
+            const dir = byUidRef.current(peerUid);
+            const alias = part?.alias ?? dir?.alias;
+            const title = alias
+              ? peerLabel({ alias, displayName: part?.displayName || dir?.displayName, kind: part?.kind ?? dir?.kind })
+              : undefined;
             const threadOpen = alias !== undefined && alias === openAlias;
             if (alias !== undefined && (document.visibilityState !== "visible" || !threadOpen)) {
-              showForegroundMessageNotification(alias, data.lastPreview);
+              showForegroundMessageNotification(alias, data.lastPreview, title);
             }
           }
         }
