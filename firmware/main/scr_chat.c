@@ -326,7 +326,7 @@ static int visible_rows(void)
 // ---------------------------------------------------------------------------
 
 typedef struct {
-    char who[MSG_FROM_MAX];
+    char who[BOOK_NICK_MAX]; // fits a book name/nickname, not just an alias
     char ts[6];
     char body[MSG_RAM_BODY_MAX];
     const char *tag; // NULL, or a pointer to one of this file's own string literals
@@ -370,8 +370,11 @@ static void load_row_src(const msg_t *m, const char *newest_unread_id, chat_row_
         // identity) on row 0 only — no extra row, no chat_build_rows()
         // change (wrap_width_row0() measures from this same `who` string).
         // `sndr` is "" on every DM/pre-G7 page, so this is a no-op there.
-        const char *who = (m->sndr[0] != '\0') ? m->sndr : m->from;
-        strncpy(out->who, who, sizeof(out->who) - 1);
+        if (m->sndr[0] != '\0') {
+            strncpy(out->who, m->sndr, sizeof(out->who) - 1);
+        } else {
+            book_display_name(m->from, out->who, sizeof(out->who));
+        }
     }
     out->who[sizeof(out->who) - 1] = '\0';
 
@@ -402,7 +405,7 @@ static void load_row_src(const msg_t *m, const char *newest_unread_id, chat_row_
 // under the right-aligned tag (owner requirement).
 static int wrap_width_row0(gfx_font_t sz, const chat_row_src_t *src)
 {
-    char prefix[MSG_FROM_MAX + 8];
+    char prefix[BOOK_NICK_MAX + 16];
     snprintf(prefix, sizeof(prefix), "%s %s ", src->who, src->ts);
     int avail = GFX_SCREEN_W - gfx_text_width(sz, prefix);
     if (src->tag) {
@@ -954,9 +957,8 @@ static void chat_render(void)
     int pitch = ((sz == GFX_FONT_LARGE) ? 16 : 12) + 2;
     int rows = visible_rows();
 
-    // T4 (docs/CHAT_UI_DESIGN.md §3 "Chat"): "[alias]" (nickname when set,
-    // scr_home.c's own nickname_for_alias() has the same lookup but is
-    // scr_home.c-private, hence the small re-lookup here), or "[alias] ·
+    // T4 (docs/CHAT_UI_DESIGN.md §3 "Chat"): "[alias]" (book_display_name(): nickname,
+    // else book name, else alias), or "[alias] ·
     // group" when the book entry's `type` is "grp" (§0 decision 6: no
     // pager-side member list, just this label — GROUP_CHAT_DESIGN.md §4).
     // An SMS-originated peer (not a book contact at all) falls back to
@@ -975,15 +977,11 @@ static void chat_render(void)
                 continue;
             }
             if (strcmp(c.alias, peer) == 0) {
-                if (c.nickname[0] != '\0') {
-                    strncpy(nick, c.nickname, sizeof(nick) - 1);
-                    nick[sizeof(nick) - 1] = '\0';
-                }
                 is_group = (strcmp(c.type, "grp") == 0);
                 break;
             }
         }
-        const char *disp = (nick[0] != '\0') ? nick : peer;
+        const char *disp = book_display_name(peer, nick, sizeof(nick)); // nickname, else book name, else alias
         char header[BOOK_NICK_MAX + BOOK_ALIAS_MAX + 12];
         snprintf(header, sizeof(header), is_group ? "[%s] \xC2\xB7 group" : "[%s]", disp);
         gfx_text(0, UI_BODY_TOP + 2, sz, header);

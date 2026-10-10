@@ -209,6 +209,13 @@ uint32_t book_get_bv(void);
  * to. Returns false (out untouched) if the current book carries none. */
 bool book_get_default_alias(char *out, size_t cap);
 
+/* Label for a peer alias: the device-local nickname if set, else the book
+ * entry's `name`, else the alias itself (no book entry). Copies into buf
+ * (truncated to n-1 bytes, never splitting a UTF-8 sequence); returns buf.
+ * External contacts have hash aliases (`x`+11 hex) and a human name only in
+ * the book entry, so every pager label for a peer goes through this. */
+const char *book_display_name(const char *alias, char *buf, size_t n);
+
 size_t book_contact_count(void);
 /* Copies a snapshot of contact `index` (0-based, book order) into `out`.
  * False if index is out of range. Same "copy, not a live pointer" discipline

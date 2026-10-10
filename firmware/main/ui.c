@@ -14,6 +14,7 @@
 #include "ui.h"
 #include "pins.h"
 #include "msg.h"
+#include "book.h"
 #include "modes.h"
 #include "net.h"
 #include "disp.h"
@@ -673,7 +674,8 @@ bool ui_incoming(const char *from, bool was_asleep)
 
     if (!steal) {
         char toast[40];
-        snprintf(toast, sizeof(toast), "new: %s", from ? from : "?");
+        char disp[24];
+        snprintf(toast, sizeof(toast), "new: %s", from ? book_display_name(from, disp, sizeof(disp)) : "?");
         ui_show_toast(toast);
         return false;
     }

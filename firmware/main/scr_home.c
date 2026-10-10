@@ -361,23 +361,6 @@ static const char *home_utf8_next(const char *p, uint32_t *cp)
     return p + 1 + extra;
 }
 
-static bool nickname_for_alias(const char *alias, char *out, size_t cap)
-{
-    size_t n = book_contact_count();
-    for (size_t i = 0; i < n; i++) {
-        book_contact_t c;
-        if (!book_contact_at(i, &c)) {
-            continue;
-        }
-        if (strcmp(c.alias, alias) == 0 && c.nickname[0] != '\0') {
-            strncpy(out, c.nickname, cap - 1);
-            out[cap - 1] = '\0';
-            return true;
-        }
-    }
-    return false;
-}
-
 // One line of Home's single scrollable list (docs/CHAT_UI_DESIGN.md §3):
 // peer rows, then (if any peers at all) the double-underline separator, or
 // the "(no chats yet)" placeholder when there are none, then the fixed menu
@@ -474,7 +457,7 @@ static void home_render(void)
                 gfx_text(0, y, sz, ">");
             }
             char nick[BOOK_NICK_MAX];
-            const char *alias_disp = nickname_for_alias(p->alias, nick, sizeof(nick)) ? nick : p->alias;
+            const char *alias_disp = book_display_name(p->alias, nick, sizeof(nick));
             int x = gfx_text(10, y, sz, "[");
             x = gfx_text(x, y, sz, alias_disp);
             x = gfx_text(x, y, sz, "] ");

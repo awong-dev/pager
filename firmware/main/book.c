@@ -549,6 +549,39 @@ uint32_t book_get_bv(void)
     return v;
 }
 
+const char *book_display_name(const char *alias, char *buf, size_t n)
+{
+    if (!buf || n == 0) {
+        return buf;
+    }
+    const char *src = alias ? alias : "";
+    size_t cnt = book_contact_count();
+    for (size_t i = 0; i < cnt; i++) {
+        book_contact_t c;
+        if (!book_contact_at(i, &c)) {
+            continue;
+        }
+        if (strcmp(c.alias, src) == 0) {
+            if (c.nickname[0] != '\0') {
+                src = c.nickname;
+            } else if (c.name[0] != '\0') {
+                src = c.name;
+            }
+            break;
+        }
+    }
+    size_t len = strlen(src);
+    if (len > n - 1) {
+        len = n - 1;
+        while (len > 0 && ((unsigned char) src[len] & 0xC0) == 0x80) {
+            len--; // do not cut inside a UTF-8 sequence
+        }
+    }
+    memcpy(buf, src, len);
+    buf[len] = '\0';
+    return buf;
+}
+
 bool book_get_default_alias(char *out, size_t cap)
 {
     s_lock();
