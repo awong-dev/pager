@@ -83,8 +83,8 @@ starting.
 
 The first admin (`python -m app.bootstrap --admin-email you@example.com`,
 run inside the `relay` container or against the emulators from the host)
-creates a Firebase Auth user + `users/{uid}` doc with `role: 'admin'` + the
-`admin` custom claim — idempotent, safe to re-run.
+creates a Firebase Auth user + `users/{uid}` doc with `role: 'super'` + the
+`{role, fam}` custom claims — idempotent, safe to re-run.
 
 ## OTA firmware (docs/OTA_DESIGN.md)
 

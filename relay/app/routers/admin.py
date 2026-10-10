@@ -857,18 +857,17 @@ class PushCaRequest(BaseModel):
     action: Literal["push", "unpin"]
 
 
-@router.get("/apn-presets")
-def list_apn_presets() -> list[apn_presets.ApnPreset]:
-    """Carrier APN choices for the device forms (app/apn_presets.py)."""
+def _list_apn_presets_impl() -> list[apn_presets.ApnPreset]:
     return apn_presets.PRESETS
 
 
-@router.put("/devices/{device_id}/apn", dependencies=[Depends(require_admin_write_rate_limit)])
-def set_device_apn(device_id: str, req: SetApnRequest) -> dict[str, str | None]:
-    """Stores the carrier APN used for this device's setup codes and bundles.
-    Nothing is pushed to the pager: an APN only changes when the pager is set
-    up again (rotate credentials, then type the new code), because a wrong
-    APN pushed over the air would cut the pager off with no way back."""
+@router.get("/apn-presets")
+def list_apn_presets() -> list[apn_presets.ApnPreset]:
+    """Carrier APN choices for the device forms (app/apn_presets.py)."""
+    return _list_apn_presets_impl()
+
+
+def _set_device_apn_impl(device_id: str, req: SetApnRequest) -> dict[str, str | None]:
     if devices_store.get_device(device_id) is None:
         raise HTTPException(status_code=404, detail="no such device")
     try:
@@ -877,6 +876,15 @@ def set_device_apn(device_id: str, req: SetApnRequest) -> dict[str, str | None]:
         raise HTTPException(status_code=422, detail=str(exc)) from None
     devices_store.set_apn(device_id, apn)
     return {"apn": apn}
+
+
+@router.put("/devices/{device_id}/apn", dependencies=[Depends(require_admin_write_rate_limit)])
+def set_device_apn(device_id: str, req: SetApnRequest) -> dict[str, str | None]:
+    """Stores the carrier APN used for this device's setup codes and bundles.
+    Nothing is pushed to the pager: an APN only changes when the pager is set
+    up again (rotate credentials, then type the new code), because a wrong
+    APN pushed over the air would cut the pager off with no way back."""
+    return _set_device_apn_impl(device_id, req)
 
 
 def _push_ca_impl(
@@ -936,14 +944,9 @@ def _load_firmware_index(settings: Settings) -> firmware.FirmwareIndex:
         raise HTTPException(status_code=502, detail="firmware index unavailable") from None
 
 
-@router.get("/firmware")
-def list_firmware(
-    settings: Annotated[Settings, Depends(get_app_settings)],
-    device: str | None = Query(default=None),
+def _list_firmware_impl(
+    settings: Settings, device: str | None
 ) -> dict[str, list[dict[str, object]]]:
-    """Published builds, newest first, each with the object this device would
-    get (`kind`/`osz`/`estBytes` from `firmware.choose` against the device's
-    reported `img`; full when no device or no `img`)."""
     index = _load_firmware_index(settings)
     img: str | None = None
     if device is not None:
@@ -975,17 +978,24 @@ def list_firmware(
     return {"builds": builds}
 
 
-@router.post("/devices/{device_id}/ota", dependencies=[Depends(require_admin_write_rate_limit)])
-def push_ota(
+@router.get("/firmware")
+def list_firmware(
+    settings: Annotated[Settings, Depends(get_app_settings)],
+    device: str | None = Query(default=None),
+) -> dict[str, list[dict[str, object]]]:
+    """Published builds, newest first, each with the object this device would
+    get (`kind`/`osz`/`estBytes` from `firmware.choose` against the device's
+    reported `img`; full when no device or no `img`)."""
+    return _list_firmware_impl(settings, device)
+
+
+def _push_ota_impl(
     device_id: str,
     req: OtaRequest,
-    authed: Annotated[AuthedUser, Depends(require_super)],
-    broker: Annotated[BrokerClient, Depends(get_broker)],
-    settings: Annotated[Settings, Depends(get_app_settings)],
+    by_uid: str,
+    broker: BrokerClient,
+    settings: Settings,
 ) -> dict[str, object]:
-    """`{"target": "<16 hex>"}` pushes `cfg.ota` for that build (delta when
-    the device's `img` matches a delta base, else full); `{"cancel": true}`
-    pushes `cfg.ota = {cancel: true}`."""
     if (req.target is None) == (not req.cancel):
         raise HTTPException(status_code=422, detail="send exactly one of target or cancel")
     dev = devices_store.get_device(device_id)
@@ -1023,7 +1033,7 @@ def push_ota(
             "osz": choice.obj.osz,
             "estBytes": est,
             "onDemand": choice.on_demand,
-            "by_uid": authed.uid,
+            "by_uid": by_uid,
         },
     )
     resp: dict[str, object] = {
@@ -1035,6 +1045,20 @@ def push_ota(
     if choice.on_demand:
         resp["onDemand"] = True
     return resp
+
+
+@router.post("/devices/{device_id}/ota", dependencies=[Depends(require_admin_write_rate_limit)])
+def push_ota(
+    device_id: str,
+    req: OtaRequest,
+    authed: Annotated[AuthedUser, Depends(require_super)],
+    broker: Annotated[BrokerClient, Depends(get_broker)],
+    settings: Annotated[Settings, Depends(get_app_settings)],
+) -> dict[str, object]:
+    """`{"target": "<16 hex>"}` pushes `cfg.ota` for that build (delta when
+    the device's `img` matches a delta base, else full); `{"cancel": true}`
+    pushes `cfg.ota = {cancel: true}`."""
+    return _push_ota_impl(device_id, req, authed.uid, broker, settings)
 
 
 # ---------------------------------------------------------------------------

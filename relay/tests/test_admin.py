@@ -1563,3 +1563,19 @@ def test_push_ota_full_otherwise_then_cancel(
     assert r.status_code == 200 and r.json() == {"ok": True}
     assert json.loads(broker.published[-1].payload)["cfg"] == {"ota": {"cancel": True}}
     assert devices_store.get_device("pgr-ota-r").otaJob is None
+
+
+def test_ota_routes_stay_super_only_for_family_admin(ota_client: TestClient):
+    fam = families_store.create_family(name="OtaSuperOnly", created_by="root-uid")
+    fb_auth.create_user(uid="fam-adm-ota", email="fam-adm-ota@example.com")
+    users_store.create_user(
+        uid="fam-adm-ota", alias="famadmota", display_name="F", role="admin", family_id=fam.id
+    )
+    fb_auth.set_custom_user_claims("fam-adm-ota", {"role": "admin", "fam": fam.id})
+    h = auth_header("fam-adm-ota")
+    _ota_device()
+    assert ota_client.get("/api/admin/firmware", headers=h).status_code == 403
+    r = ota_client.post(
+        "/api/admin/devices/pgr-ota-r/ota", json={"target": ID_NEW[:16]}, headers=h
+    )
+    assert r.status_code == 403

@@ -23,7 +23,7 @@ from firebase_admin import auth as fb_auth
 from google.api_core.exceptions import AlreadyExists
 from pydantic import BaseModel, ConfigDict, Field
 
-from app import book, chat_subscribe, devcfg, inbound_text, sms_text
+from app import apn_presets, book, chat_subscribe, devcfg, inbound_text, sms_text
 from app import policy as policy_module
 from app.auth import Principal, require_family_admin, set_claims
 from app.book import rederive_family_sms_contacts, rederive_sms_contacts
@@ -373,6 +373,48 @@ def push_ca(
     _, family_id = scope
     _require_family_device(device_id, family_id)
     return admin_router._push_ca_impl(device_id, req, broker, settings)
+
+
+@router.get("/firmware")
+def list_firmware(
+    scope: FamilyScope,
+    settings: Annotated[Settings, Depends(get_app_settings)],
+    device: str,
+) -> dict[str, list[dict[str, object]]]:
+    """docs/OTA_DESIGN.md D10: published builds as seen by one in-family device."""
+    _, family_id = scope
+    _require_family_device(device, family_id)
+    return admin_router._list_firmware_impl(settings, device)
+
+
+@router.post("/devices/{device_id}/ota", dependencies=[Depends(require_family_write_rate_limit)])
+def push_ota(
+    device_id: str,
+    req: admin_router.OtaRequest,
+    scope: FamilyScope,
+    broker: Annotated[BrokerClient, Depends(get_broker)],
+    settings: Annotated[Settings, Depends(get_app_settings)],
+) -> dict[str, object]:
+    """docs/OTA_DESIGN.md D10: push or cancel an OTA for an in-family device."""
+    principal, family_id = scope
+    _require_family_device(device_id, family_id)
+    return admin_router._push_ota_impl(device_id, req, principal.uid, broker, settings)
+
+
+@router.get("/apn-presets")
+def list_apn_presets(scope: FamilyScope) -> list[apn_presets.ApnPreset]:
+    """docs/FAMILIES_DESIGN.md §4: carrier APN choices for the device forms."""
+    return admin_router._list_apn_presets_impl()
+
+
+@router.put("/devices/{device_id}/apn", dependencies=[Depends(require_family_write_rate_limit)])
+def set_device_apn(
+    device_id: str, req: admin_router.SetApnRequest, scope: FamilyScope
+) -> dict[str, str | None]:
+    """docs/FAMILIES_DESIGN.md §4: set the stored APN of an in-family device."""
+    _, family_id = scope
+    _require_family_device(device_id, family_id)
+    return admin_router._set_device_apn_impl(device_id, req)
 
 
 @router.delete("/devices/{device_id}", dependencies=[Depends(require_family_write_rate_limit)])

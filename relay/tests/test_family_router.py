@@ -24,6 +24,13 @@ from app.store import families as families_store
 from app.store import users as users_store
 from tests.fake_transport import FakeBrokerClient
 from tests.firebase_test_utils import auth_header
+from tests.test_firmware import (  # noqa: F401 -- fixture
+    BASE_URL,
+    ID_NEW,
+    ID_OLD,
+    INDEX_URL,
+    index_server,
+)
 
 
 def make_settings(**overrides: object) -> Settings:
@@ -1397,3 +1404,85 @@ def test_create_group_with_external_member_is_400(client: TestClient):
     assert resp.status_code == 400, resp.text
     assert resp.json()["detail"] == "an SMS contact cannot join a group"
     assert users_store.get_uid_for_alias("fam36grp") is None
+
+
+# ---------------------------------------------------------------------------
+# OTA + APN (docs/OTA_DESIGN.md D10, owner decision 9 Oct 2026)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def ota_client(
+    fake_emqx: FakeEmqxAdmin, broker: FakeBrokerClient, index_server: dict  # noqa: F811
+) -> Iterator[TestClient]:
+    settings = make_settings(fw_index_url=INDEX_URL, fw_bucket_base=BASE_URL)
+    app = create_app(settings=settings, broker_client=broker)
+    app.state.emqx_admin = fake_emqx
+    with TestClient(app) as c:
+        yield c
+
+
+def _ota_family_device(device_id: str, family_id: str, *, img: str | None = None) -> None:
+    _make_pager_device(device_id, "owner-ota", family_id)
+    devices_store.update_status(device_id, state="online", img=img, otaCap=1)
+
+
+def test_family_admin_lists_firmware_for_in_family_device(ota_client: TestClient):
+    fam, other = _make_family("OtaA"), _make_family("OtaB")
+    admin = _make_family_admin("ota-adm", "ota-adm", fam.id)
+    _ota_family_device("pgr-ota-in", fam.id, img=ID_OLD[:16])
+    _ota_family_device("pgr-ota-out", other.id)
+
+    r = ota_client.get("/api/family/firmware?device=pgr-ota-in", headers=admin)
+    assert r.status_code == 200, r.text
+    builds = r.json()["builds"]
+    assert [b["id16"] for b in builds] == [ID_NEW[:16], ID_OLD[:16]]
+    assert builds[0]["kind"] == "delta" and builds[1]["kind"] == "full"
+
+    assert ota_client.get("/api/family/firmware?device=pgr-ota-out", headers=admin).status_code == 403
+    assert ota_client.get("/api/family/firmware", headers=admin).status_code == 422
+
+
+def test_family_admin_pushes_and_cancels_ota(ota_client: TestClient, broker: FakeBrokerClient):
+    fam, other = _make_family("OtaC"), _make_family("OtaD")
+    admin = _make_family_admin("ota-adm2", "ota-adm2", fam.id)
+    member = _make_member("ota-mem", "ota-mem", fam.id)
+    _ota_family_device("pgr-ota-in", fam.id, img="9" * 16)
+    _ota_family_device("pgr-ota-out", other.id)
+    body = {"target": ID_NEW[:16]}
+
+    r = ota_client.post("/api/family/devices/pgr-ota-in/ota", json=body, headers=admin)
+    assert r.status_code == 200, r.text
+    assert r.json()["kind"] == "full"
+    assert json.loads(broker.published[-1].payload)["cfg"]["ota"]["fmt"] == "full"
+    job = devices_store.get_device("pgr-ota-in").otaJob
+    assert job is not None and job.by_uid == "ota-adm2" and job.target16 == ID_NEW[:16]
+
+    r = ota_client.post("/api/family/devices/pgr-ota-in/ota", json={"cancel": True}, headers=admin)
+    assert r.status_code == 200 and r.json() == {"ok": True}
+    assert devices_store.get_device("pgr-ota-in").otaJob is None
+
+    assert ota_client.post("/api/family/devices/pgr-ota-out/ota", json=body, headers=admin).status_code == 403
+    assert ota_client.post("/api/family/devices/pgr-ota-in/ota", json=body, headers=member).status_code == 403
+
+    sup = _make_super("ota-sup", "ota-sup")
+    r = ota_client.post(f"/api/family/devices/pgr-ota-in/ota?family={fam.id}", json=body, headers=sup)
+    assert r.status_code == 200, r.text
+    assert devices_store.get_device("pgr-ota-in").otaJob.by_uid == "ota-sup"
+
+
+def test_family_admin_apn_in_and_out_of_family(client: TestClient):
+    fam, other = _make_family("ApnA"), _make_family("ApnB")
+    admin = _make_family_admin("apn-adm", "apn-adm", fam.id)
+    _make_pager_device("pgr-apn-in", "o", fam.id)
+    _make_pager_device("pgr-apn-out", "o", other.id)
+
+    presets = client.get("/api/family/apn-presets", headers=admin)
+    assert presets.status_code == 200 and presets.json()
+    apn = presets.json()[0]["apn"]
+    r = client.put("/api/family/devices/pgr-apn-in/apn", json={"apn": apn}, headers=admin)
+    assert r.status_code == 200, r.text
+    assert r.json() == {"apn": apn}
+    assert devices_store.get_device("pgr-apn-in").apn == apn
+    r = client.put("/api/family/devices/pgr-apn-out/apn", json={"apn": apn}, headers=admin)
+    assert r.status_code == 403

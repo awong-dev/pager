@@ -170,7 +170,7 @@ polls the relay for outbound items and posts inbound messages.
 
 ## Firmware updates
 
-A super admin pushes a build from the web app's Devices page. The relay sends the
+A family admin (or super) pushes a build from the web app's Devices page. The relay sends the
 pager a signed `cfg.ota` job, and the pager downloads the image over HTTPS from a public bucket,
 checks its SHA-256 and switches to it. If the new image does not confirm itself after boot, the
 pager rolls back to the old one (`OTA_DESIGN.md`).
