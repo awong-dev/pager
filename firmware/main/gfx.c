@@ -733,6 +733,17 @@ void gfx_icon(int x, int y, gfx_icon_t id)
     case GFX_ICON_AIRPLANE:
         icon_airplane(x, y);
         break;
+    case GFX_ICON_CHECK:
+        // Two-pixel-thick check: short down stroke, then long up stroke.
+        for (int i = 0; i < 4; i++) {
+            gfx_set_pixel(x + 1 + i, y + 5 + i, true);
+            gfx_set_pixel(x + 2 + i, y + 5 + i, true);
+        }
+        for (int i = 0; i < 7; i++) {
+            gfx_set_pixel(x + 4 + i, y + 8 - i, true);
+            gfx_set_pixel(x + 5 + i, y + 8 - i, true);
+        }
+        break;
     default:
         gfx_rect(x, y, GFX_ICON_W, GFX_ICON_H);
         break;

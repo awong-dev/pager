@@ -63,6 +63,7 @@
 // build_status_cbor() below. book.c has no RTC sub-struct of its own (see
 // book.h's module comment) — it only needs the EXISTING g_rtc.auth binding,
 // wired via book_bind() in modes_boot().
+#include "archive.h"
 #include "book.h"
 #include "ota.h"       // docs/OTA_DESIGN.md: cfg.ota job, status fields, ota_service() below
 #include "cafetch.h"   // cafetch_in_progress() for the OTA start gate
@@ -2348,6 +2349,7 @@ void modes_boot(void)
     // cache. No modem or sleep-state effect: a handful of NVS reads only.
     book_bind(&g_rtc.auth, rtc_lock, rtc_unlock, rtc_save, on_auth_epoch_wrap);
     book_init();
+    archive_init(); // device-local archive table, one NVS read; no modem/sleep effect
 
     // v0.4 §3.7: no RTC sub-struct of its own (bookpull.h's own module
     // comment) — bookpull_bind() only hands over the same cross-task mutex

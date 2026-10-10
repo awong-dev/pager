@@ -114,6 +114,11 @@ void scr_lock_start_entry(void);
  * module comments. */
 extern const ui_screen_t g_scr_pick;
 extern const ui_screen_t g_scr_book;
+extern const ui_screen_t g_scr_archive; /* Home's "Archive Chat" (scr_archive.c) */
+
+/* Home's visible (non-archived) peers, in Home's order: fills aliases[i] and
+ * newest_ts[i], returns the count (<= max). Fresh from the live thread. */
+int scr_home_visible_peers(char (*aliases)[17], int64_t *newest_ts, int max);
 
 /* scr_greeting.c: boot splash screen — see that file's own module comment
  * for the call sites that own its push/pop lifecycle. Not part of

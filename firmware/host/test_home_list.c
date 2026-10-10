@@ -46,6 +46,9 @@ int home_peers_build(const msg_t *msgs, size_t n, bool have_default, const char 
                       home_peer_t *out, int max_peers);
 int home_body_clip(const uint8_t *adv, int n, int avail_px, int marker_px, bool *out_marker);
 
+int home_peers_filter(home_peer_t *p, int n, int max_keep, bool (*hidden)(const char *, int64_t),
+                      void (*unhide)(const char *));
+
 #define TEST_HOME_FIRST_ROW_Y (UI_BODY_TOP + 2) /* ui.h; == 17 */
 
 static int g_failures = 0;
@@ -284,8 +287,54 @@ static void test_row_geometry_matches_photo_fix(void)
           last_row_bottom, sep_first_line_y);
 }
 
+/* Archive filter: a tiny fake table (archived "mom" at ts 20). */
+static int g_unhide_calls = 0;
+static int64_t g_mom_archived_ts = 20;
+static bool fake_hidden(const char *a, int64_t ts)
+{
+    return g_mom_archived_ts >= 0 && strcmp(a, "mom") == 0 && ts <= g_mom_archived_ts;
+}
+static void fake_unhide(const char *a)
+{
+    if (strcmp(a, "mom") == 0) {
+        g_mom_archived_ts = -1;
+        g_unhide_calls++;
+    }
+}
+
+static void test_archive_filter(void)
+{
+    msg_t msgs[3] = {
+        mk_msg(30, "dad", NULL, "c", MSG_DIR_DOWN, MSG_ACK_READ),
+        mk_msg(20, "mom", NULL, "b", MSG_DIR_DOWN, MSG_ACK_READ),
+        mk_msg(10, "kid", NULL, "a", MSG_DIR_DOWN, MSG_ACK_READ),
+    };
+    home_peer_t out[8];
+    int n = home_peers_build(msgs, 3, true, "dad", out, 8);
+    n = home_peers_filter(out, n, 16, fake_hidden, fake_unhide);
+    CHECK(n == 2, "archived peer filtered, got %d", n);
+    CHECK(strcmp(out[0].alias, "dad") == 0 && strcmp(out[1].alias, "kid") == 0, "order kept");
+    CHECK(g_unhide_calls == 0, "hidden peer is not pruned");
+
+    /* new message from mom (ts 40) -> reappears, entry pruned */
+    msg_t msgs2[4] = {
+        mk_msg(40, "mom", NULL, "d", MSG_DIR_DOWN, MSG_ACK_UNSHOWN),
+        msgs[0], msgs[1], msgs[2],
+    };
+    n = home_peers_build(msgs2, 4, true, "dad", out, 8);
+    n = home_peers_filter(out, n, 16, fake_hidden, fake_unhide);
+    CHECK(n == 3 && strcmp(out[0].alias, "mom") == 0, "newer ts unhides, got %d", n);
+    CHECK(g_unhide_calls >= 1 && g_mom_archived_ts < 0, "stale entry pruned lazily");
+
+    /* max_keep truncates after filtering */
+    n = home_peers_build(msgs2, 4, true, "dad", out, 8);
+    n = home_peers_filter(out, n, 2, fake_hidden, fake_unhide);
+    CHECK(n == 2, "max_keep honoured, got %d", n);
+}
+
 int main(void)
 {
+    test_archive_filter();
     test_three_peers_newest_first_unread();
     test_no_book_default_fallback();
     test_up_with_to();
