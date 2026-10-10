@@ -28,7 +28,6 @@
  */
 
 import { collection, onSnapshot } from "firebase/firestore";
-import Link from "next/link";
 import { useEffect, useState } from "react";
 import Alert from "@mui/material/Alert";
 import Button from "@mui/material/Button";
@@ -40,25 +39,15 @@ import DialogTitle from "@mui/material/DialogTitle";
 import MenuItem from "@mui/material/MenuItem";
 import Snackbar from "@mui/material/Snackbar";
 import Stack from "@mui/material/Stack";
-import Table from "@mui/material/Table";
-import TableBody from "@mui/material/TableBody";
-import TableCell from "@mui/material/TableCell";
-import TableContainer from "@mui/material/TableContainer";
-import TableHead from "@mui/material/TableHead";
-import TableRow from "@mui/material/TableRow";
 import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
 
 import AppShell from "@/components/AppShell";
-import Chip from "@mui/material/Chip";
-import DeviceTrustChip from "@/components/DeviceTrustChip";
-import EditDeviceLabelButton from "@/components/EditDeviceLabelDialog";
-import FirmwareChip from "@/components/FirmwareChip";
+import DeviceCard, { type DeviceRow, type PendingCfgDoc, type ProvisionState } from "@/components/DeviceCard";
 import FirmwareUpdateDialog from "@/components/FirmwareUpdateDialog";
 import RequireAuth from "@/components/RequireAuth";
 import SoracomSimsSection from "@/components/SoracomSimsSection";
 import { ApiError, api } from "@/lib/api";
-import { locBackoffLabel } from "@/lib/deviceTrust";
 import { useDirectory } from "@/lib/directory";
 import { useFamily } from "@/lib/family-context";
 import { getFirestoreDb } from "@/lib/firebase";
@@ -66,9 +55,8 @@ import { useNewestBuild } from "@/lib/firmware";
 import type { DeviceDoc, UserDoc } from "@/lib/types";
 
 import SetupCodePanel, { type SetupCodeResult } from "./SetupCodePanel";
-import { DEVICE_LABEL_MAX_CHARS, deviceName } from "@/lib/devices";
+import { DEVICE_LABEL_MAX_CHARS } from "@/lib/devices";
 import { useFullScreenDialog } from "@/lib/useFullScreenDialog";
-import { responsiveTableSx } from "@/lib/tableSx";
 
 // docs/V02_DESIGN.md §4.4: `POST /api/admin/devices/{id}/ca`
 // `{"action":"push"|"unpin"}` (`relay/app/routers/admin.py`'s `push_ca`).
@@ -80,39 +68,9 @@ interface CaConfirmState {
   action: CaAction;
 }
 
-// `devices/{d}.provisionState` (docs/DEVICE_PLAN.md §3.2/§D0.2) is not yet
-// part of `lib/types.ts`'s `DeviceDoc` mirror; declared locally here rather
-// than editing that shared file, which is outside this task's `Files` list.
-type ProvisionState = "issued" | "provisioned" | null | undefined;
-
-// `devices/{d}.pendingCfg` -- `relay/app/devcfg.py`'s `_set_pending` shape,
-// same "not in `DeviceDoc` yet" situation as `ProvisionState` above.
-interface PendingCfgDoc {
-  id: string;
-  obj: { cfg?: { lock?: { auto?: number; clear?: boolean } } };
-  acked: boolean;
-}
-
-interface DeviceRow extends DeviceDoc {
-  id: string;
-  provisionState?: ProvisionState;
-  pendingCfg?: PendingCfgDoc;
-}
-
 const ALL_FAMILIES = "__all__";
 
 const emptyForm = { ownerAlias: "", label: "", defaultToAlias: "", familyId: "" };
-
-// docs/DEVICE_PLAN.md §5.8: `auto_min` is a `u8` minutes value, 0 = never;
-// default 5. This is the same small fixed menu a parent needs, not a free
-// numeric field.
-const AUTO_LOCK_OPTIONS: { value: number; label: string }[] = [
-  { value: 0, label: "Off" },
-  { value: 5, label: "5 min" },
-  { value: 15, label: "15 min" },
-  { value: 30, label: "30 min" },
-  { value: 60, label: "60 min" },
-];
 
 // `relay/app/routers/admin.py`'s `DeviceSetupCodeResponse` (S2.2), shared by
 // `POST /devices` and `POST /devices/{id}/rotate-credentials`; only the
@@ -321,158 +279,26 @@ function DevicesInner() {
       </TextField>
       {error && <Alert severity="error">{error}</Alert>}
 
-      <TableContainer sx={responsiveTableSx([2,3,4,6,7,10])}>
-        {/* Hidden below md: Owner, Family, Default to, Provisioned, Revoked, Battery; CA trust/Firmware/Lock stay reachable by horizontal scroll. */}
-        <Table size="small">
-          <TableHead>
-            <TableRow>
-              <TableCell>Label</TableCell>
-              <TableCell>Owner</TableCell>
-              <TableCell>Family</TableCell>
-              <TableCell>Default to</TableCell>
-              <TableCell>Status</TableCell>
-              <TableCell>Provisioned</TableCell>
-              <TableCell>Revoked</TableCell>
-              <TableCell>CA trust</TableCell>
-              <TableCell>Firmware</TableCell>
-              <TableCell>Battery</TableCell>
-              <TableCell>Lock</TableCell>
-              <TableCell />
-            </TableRow>
-          </TableHead>
-          <TableBody>
-            {visibleDevices.map((d) => {
-              const backoff = locBackoffLabel(d.status?.locBackoffS);
-              return (
-                <TableRow key={d.id}>
-                  <TableCell>
-                    <Stack direction="row" spacing={0.5} sx={{ alignItems: "center" }}>
-                      <Typography variant="body2" sx={{ fontWeight: 500 }}>
-                        {deviceName(d)}
-                      </Typography>
-                      <EditDeviceLabelButton device={d} scope="admin" />
-                    </Stack>
-                    <Typography variant="caption" color="text.secondary" sx={{ fontFamily: "monospace" }}>
-                      {d.id}
-                    </Typography>
-                  </TableCell>
-                  <TableCell>@{uidToAlias(d.ownerUid) ?? d.ownerUid.slice(0, 8)}</TableCell>
-                  <TableCell>{d.familyId ? (familyNameById.get(d.familyId) ?? d.familyId) : "--"}</TableCell>
-                  <TableCell>{d.defaultToUid ? `@${uidToAlias(d.defaultToUid) ?? d.defaultToUid.slice(0, 8)}` : "--"}</TableCell>
-                  <TableCell>
-                    {d.status?.state ?? "unknown"}
-                    {backoff && (
-                      <Typography variant="caption" color="text.secondary" component="div">
-                        {backoff}
-                      </Typography>
-                    )}
-                  </TableCell>
-                  <TableCell>{d.provisionState === "provisioned" ? "online" : d.provisionState ?? "unknown"}</TableCell>
-                  <TableCell>{d.revokedAt ? "yes" : "no"}</TableCell>
-                  <TableCell>
-                    <Stack spacing={0.5} sx={{ alignItems: "flex-start" }}>
-                      <DeviceTrustChip tls={d.status?.tls} caFp={d.status?.caFp} />
-                      {d.status?.car && <Chip size="small" variant="outlined" label={d.status.car} />}
-                      {d.status?.tls !== "proxy" && (
-                      <Stack direction="row" spacing={0.5} useFlexGap sx={{ flexWrap: "wrap" }}>
-                        <Button
-                          size="small"
-                          onClick={() =>
-                            setCaConfirm({ deviceId: d.id, label: d.label, action: "push" })
-                          }
-                        >
-                          Push CA
-                        </Button>
-                        <Button
-                          size="small"
-                          color="warning"
-                          onClick={() =>
-                            setCaConfirm({ deviceId: d.id, label: d.label, action: "unpin" })
-                          }
-                        >
-                          Un-pin CA
-                        </Button>
-                      </Stack>
-                      )}
-                    </Stack>
-                  </TableCell>
-                  <TableCell>
-                    <Stack spacing={0.5} sx={{ alignItems: "flex-start" }}>
-                      <FirmwareChip status={d.status} newest={newestBuild} />
-                      <Button size="small" onClick={() => setFwDeviceId(d.id)}>
-                        Update firmware…
-                      </Button>
-                    </Stack>
-                  </TableCell>
-                  <TableCell>
-                    {d.status?.battMv == null ? (
-                      "–"
-                    ) : (
-                      <Link
-                        href={`/devices/${d.id}#battery`}
-                        style={{ color: "inherit" }}
-                      >
-                        <Typography
-                          component="span"
-                          variant="body2"
-                          color={
-                            d.status.battMv >= 4300
-                              ? "text.primary"
-                              : d.status.battMv < 3550
-                                ? "error"
-                                : d.status.battMv < 3700
-                                  ? "warning.main"
-                                  : "text.primary"
-                          }
-                        >
-                          {d.status.battMv >= 4300 ? "USB" : `${d.status.battMv} mV`}
-                        </Typography>
-                      </Link>
-                    )}
-                  </TableCell>
-                  <TableCell>
-                    <Stack direction="row" spacing={1} useFlexGap sx={{ flexWrap: "wrap", alignItems: "center" }}>
-                      <TextField
-                        select
-                        size="small"
-                        label="Auto-lock"
-                        value={d.pendingCfg?.obj.cfg?.lock?.auto ?? ""}
-                        onChange={(e) => void setAutoLock(d.id, Number(e.target.value))}
-                        sx={{ minWidth: 100 }}
-                      >
-                        {AUTO_LOCK_OPTIONS.map((o) => (
-                          <MenuItem key={o.value} value={o.value}>
-                            {o.label}
-                          </MenuItem>
-                        ))}
-                      </TextField>
-                      <Button size="small" onClick={() => void clearPasscode(d.id)}>
-                        Clear passcode
-                      </Button>
-                    </Stack>
-                  </TableCell>
-                  <TableCell>
-                    <Stack direction="row" spacing={1} sx={{ flexWrap: "wrap" }}>
-                      <Button size="small" component={Link} href={`/devices/${d.id}`}>
-                        SMS
-                      </Button>
-                      <Button size="small" onClick={() => void rotate(d)}>
-                        Rotate
-                      </Button>
-                      <Button size="small" color="warning" onClick={() => void revoke(d.id)}>
-                        Revoke
-                      </Button>
-                      <Button size="small" color="error" onClick={() => void deleteDevice(d.id)}>
-                        Delete
-                      </Button>
-                    </Stack>
-                  </TableCell>
-                </TableRow>
-              );
-            })}
-          </TableBody>
-        </Table>
-      </TableContainer>
+      <Stack spacing={2}>
+        {visibleDevices.map((d) => (
+          <DeviceCard
+            key={d.id}
+            device={d}
+            scope="admin"
+            newestBuild={newestBuild}
+            ownerLabel={`@${uidToAlias(d.ownerUid) ?? d.ownerUid.slice(0, 8)}`}
+            defaultToLabel={d.defaultToUid ? `@${uidToAlias(d.defaultToUid) ?? d.defaultToUid.slice(0, 8)}` : "--"}
+            familyLabel={d.familyId ? (familyNameById.get(d.familyId) ?? d.familyId) : "--"}
+            onRotate={() => void rotate(d)}
+            onRevoke={() => void revoke(d.id)}
+            onDelete={() => void deleteDevice(d.id)}
+            onFirmware={() => setFwDeviceId(d.id)}
+            onCa={(action) => setCaConfirm({ deviceId: d.id, label: d.label, action })}
+            onSetAutoLock={(m) => void setAutoLock(d.id, m)}
+            onClearPasscode={() => void clearPasscode(d.id)}
+          />
+        ))}
+      </Stack>
 
       <SoracomSimsSection />
 
