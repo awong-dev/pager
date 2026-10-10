@@ -452,7 +452,7 @@ bool ui_incoming(const char *from, bool was_asleep);
 void ui_show_toast(const char *text);
 
 /* CardKB reads run on ui.c's own "kbd" task (4096 B stack, priority
- * 2, pinned to CPU1, one read per 10 ms tick), created at the end of
+ * 2, floating (tskNO_AFFINITY), one read per 10 ms tick), created at the end of
  * ui_init(). It is the only read path: the main loop does not poll. Each
  * decoded byte goes to input_feed_key() (input.h), which arms the UI-awake
  * window and queues an INPUT_EVT_KEY event for modes.c's drain loop. Rail

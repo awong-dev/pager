@@ -19,7 +19,7 @@ Built 9 Oct 2026. Where this status and the spec body below disagree, this statu
 - **Survey outcome (Part 2):** do item 1 (move the wake status refresh after the first draw) and
   the follow-up in item 5 (the kbd task wakes the main loop). Measure modem servicing (item 4)
   later. Do not touch the publish-quiet gate (item 2), and do not move the e-ink refresh to a task
-  (item 3). None of these is implemented yet; see `docs/ROADMAP.md`.
+  (item 3). Items 1 and 5 are implemented (10 Oct 2026, see below); the rest are not, see `docs/ROADMAP.md`.
 
 ---
 
@@ -38,11 +38,11 @@ publish-quiet gate (560 to 710 ms seen, 1500 ms cap), and modem servicing.
 - **Location:** `ui.c`, next to the existing CardKB code (ui.c:776-981). All the I2C state is
   already static there, and the raw-key `ESP_LOGD` keeps tag `ui`, which main.c:2575 already raises
   to DEBUG in debug builds. No new file.
-- **Task:** `"kbd"`, static stack 3072 B, priority 2 (main loop is 1), pinned to **CPU1**. In the
+- **Task:** `"kbd"`, static stack 3072 B, priority 2 (main loop is 1), **floating** (`tskNO_AFFINITY`, owner change 9 Oct 2026; first spec pinned it to CPU1). In the
   IDF build all walter-modem tasks are pinned to CPU0 (WalterModem.cpp:5159-5182: rx prio 3, queue
-  2, event 4), so CPU1 is truly idle.
+  2, event 4), so CPU1 is mostly idle; the scheduler may place `kbd` on either core.
 - **Period:** CONFIG_FREERTOS_HZ=100, so 15 ms cannot be expressed. Use **1 tick = 10 ms**.
-  Power: about 100 reads/s x about 0.3 ms at 100 kHz, plus CPU1 waking from WFI. Estimated
+  Power: about 100 reads/s x about 0.3 ms at 100 kHz, plus a core waking from WFI. Estimated
   < 0.1 mA, and only while the rail is on and the chip is awake. At 30 min of awake time per day
   that is about 0.05 mAh/day. CONFIG_PM_ENABLE is off, so the CPU clock does not change either way.
 - **Rail state:** notification, not polling. rail.c calls a new `ui_kb_rail_changed()` as the
@@ -63,7 +63,7 @@ publish-quiet gate (560 to 710 ms seen, 1500 ms cap), and modem servicing.
   today**, so it needs a pause too.
 - **Light sleep:** the task holds no wake lock (there are none with PM off), and esp_light_sleep_start()
   halts both CPUs regardless of ready tasks, so it cannot block sleep. The real hazard is the
-  opposite: an attentive-window sleep (rail stays on) starting in the middle of a CPU1 I2C
+  opposite: an attentive-window sleep (rail stays on) starting in the middle of an I2C
   transaction. With a 0.3 ms read every 10 ms that is about 3% of sleep entries. It would show up as
   a read failure that uses up the once-per-edge re-init. Fix: modes.c parks the task around
   `net_sleep()` (takes the mutex, 100 ms bound, then sleeps anyway with one log line on timeout).
@@ -77,7 +77,7 @@ publish-quiet gate (560 to 710 ms seen, 1500 ms cap), and modem servicing.
   keys/s is about 17 keys, so 8 would turn "key lost at the CardKB" into "key lost at the queue".
   The drop log input.c:105 goes from ESP_LOGD to ESP_LOGW so a drop is visible on the bench.
 - **Cross-task 64-bit reads:** `s_awake_until_us`/`s_hot_until_us` (input.c) are now written on
-  CPU1 and read on CPU0, and `s_restored_us` (rail.c) is read on CPU1. Xtensa int64 accesses can
+  the kbd task's core and read on the main loop's, and `s_restored_us` (rail.c) is read by the kbd task. Xtensa int64 accesses can
   tear, so wrap them in a portMUX.
 
 ## Read
@@ -90,7 +90,7 @@ touch-ups in accel.h:148/160 and rail.h:104).
 
 ## Do
 1. **ui.c:** add `static SemaphoreHandle_t s_kb_bus_mutex` (xSemaphoreCreateMutexStatic) and a
-   static task (xTaskCreateStaticPinnedToCore(kbd_task, "kbd", 3072, NULL, 2, ..., 1)). Create both
+   static task (xTaskCreateStaticPinnedToCore(kbd_task, "kbd", 3072, NULL, 2, ..., tskNO_AFFINITY)). Create both
    at the end of `ui_init()` after `i2c_kb_init()` (ui.c:1090). ui_init's idempotency guard already
    covers setup_run()'s second call. Add `static TaskHandle_t s_kbd_task`.
 2. **ui.c:** replace `ui_poll_keyboard()` (ui.c:909-981) with `static void kbd_task(void *)`. It
@@ -118,7 +118,7 @@ touch-ups in accel.h:148/160 and rail.h:104).
    }
    ```
    `log_state_once()` prints `ESP_LOGI(TAG, "kbd: %s (rail on +%lld ms)")` only when the state string
-   changes. Add one start line, `kbd: task started cpu1 prio2 period 10ms`. That gives one INFO line
+   changes. Add one start line, `kbd: task started float (core N) prio2 period 10ms`. That gives one INFO line
    per rail-gated pause or resume, and none for the per-sleep park.
 3. **ui.c:** move the driver delete+install into `static void kb_reinit_locked(void)`. Public
    `ui_kb_i2c_reinit()`, `ui_kb_bus_release()` and `ui_kb_bus_restore()` take/give `s_kb_bus_mutex`
@@ -178,7 +178,7 @@ stale bench processes, keep one long-lived serial reader, use short captures.
 Once the task is in, keys stop getting lost in any of these stalls. What remains is render latency.
 Assessed with the single-loop preference in mind:
 
-1. **Wake status refresh** (modes.c:752, called on the awake edge before the first render).
+1. **Wake status refresh** (modes.c:752, called on the awake edge before the first render). **IMPLEMENTED 10 Oct 2026:** the awake edge sets `s_wake_status_pending` and `modes_run()` runs the refresh right after that pass's `ui_render()` (debug log `wake status refresh after first draw: N ms`; the `status=` field is gone from `looptime`).
    Measured `status=43` ms (TASK_looptime capture). Worst case is 2 x 5000 ms
    (PAGER_VMON/CSQ_TIMEOUT_MS, net.cpp:1897-1899) when the AT queue is busy (connect in flight,
    publish). Effect: the first key's echo waits for two modem round trips. This breaks the "UI
@@ -202,7 +202,7 @@ Assessed with the single-loop preference in mind:
    `looptime` line, covering everything from `net_get_mqtt_status` through `ota_service`. If any
    call goes over 300 ms during `input_awake()`, defer that non-urgent step while the UI is awake
    (catrust/bookpull/ota/loc are all deferrable). Do not split. **Later**, right after this task lands.
-5. **100 ms awake cadence** (modes.c:3087 `vTaskDelay(100)`). It adds 0-100 ms (mean 50) to every
+5. **100 ms awake cadence** (**IMPLEMENTED 10 Oct 2026:** `input_wait_event(100)` replaces the `vTaskDelay`; `input.c`'s `push_event()` notifies the `modes_run()` task after each enqueue, and `net_sleep()` skips the sleep, returning false, if `input_pending()` after the kbd park.) (modes.c:3087 `vTaskDelay(100)`). It adds 0-100 ms (mean 50) to every
    key echo. With the kbd task, replace it with `ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(100))`, and
    have the task `xTaskNotifyGive(s_modes_run_task)` after `input_feed_key()`. Coupling is one
    handle. grep finds no other task-notification users (NOTIFICATION_ARRAY_ENTRIES=1). Power: none,

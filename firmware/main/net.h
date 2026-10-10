@@ -451,8 +451,11 @@ void net_set_msg_cb(void (*cb)(const char *topic, const char *body, uint16_t len
  * sleep, uart_set_pin()/UART_HW_FLOWCTRL_CTS_RTS restored after.
  * Power effect: ESP32 draws the vendor-documented ~1 mA light-sleep floor
  * for up to `ms`; the modem is not touched and keeps paging on its own
- * eDRX cycle. */
-void net_sleep(uint32_t ms);
+ * eDRX cycle.
+ * Returns false (without sleeping or touching any wake/RTS state) if the
+ * input queue is non-empty after the keyboard task is parked, i.e. a key was
+ * typed at the sleep edge; true after a sleep (or the WiFi-transport delay). */
+bool net_sleep(uint32_t ms);
 
 /* S1 (docs/SLEEP_URC_DESIGN.md §3(a)/§5): per-wake URC drain probe. Issues
  * one asynchronous, fire-and-forget WalterModem::checkComm(NULL, cb, NULL) --

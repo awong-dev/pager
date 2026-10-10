@@ -23,6 +23,7 @@
 #include "net_probe_guard.h"
 #include "publish_quiet.h"
 #include "wifi_sta.h"
+#include "input.h" // input_pending() at the sleep edge
 #include "ui.h" // ui_kb_sleep_park()/unpark() around esp_light_sleep_start()
 extern "C" {
 #include "battstat.h" // battstat_raise(BS_MODEM) in the publish wrappers (BATTERY_STATS_DESIGN.md B3)
@@ -1414,7 +1415,7 @@ extern "C" void net_liveness_ping_now(void)
     }
 }
 
-extern "C" void net_sleep(uint32_t ms)
+extern "C" bool net_sleep(uint32_t ms)
 {
     // docs/WIFI_DESIGN.md §3/§9, docs/WIFI_TASKS.md W5: transport-aware.
     // ESP-IDF documents that a WiFi association is not maintained across a
@@ -1433,7 +1434,19 @@ extern "C" void net_sleep(uint32_t ms)
         wifi_sta_set_ps_sleep();
         vTaskDelay(pdMS_TO_TICKS(ms));
         wifi_sta_set_ps_active();
-        return;
+        return true;
+    }
+
+    // Park the kbd task first (power effect: none; waits <=100 ms for an in-flight
+    // kbd read), then look at the input queue: with the task parked nothing new
+    // can arrive from the keyboard, so a non-empty queue here is a key typed at
+    // the sleep edge. Skip this attempt before any wake source or RTS state is
+    // touched; the caller returns to its loop to handle it.
+    ui_kb_sleep_park();
+    if (input_pending()) {
+        ui_kb_sleep_unpark(); // power effect: none; kbd task resumes polling
+        ESP_LOGD(TAG, "net_sleep: input pending, sleep skipped");
+        return false;
     }
 
     // Power effect: ESP32 draws the vendor-documented ~1 mA light-sleep
@@ -1527,7 +1540,6 @@ extern "C" void net_sleep(uint32_t ms)
         flightrec_event('S', (int32_t) ms, flightrec_cts_level());
     }
 
-    ui_kb_sleep_park(); // power effect: none; waits <=100 ms for an in-flight kbd read
     esp_light_sleep_start();
     ui_kb_sleep_unpark(); // power effect: none; kbd task resumes polling
 
@@ -1576,6 +1588,7 @@ extern "C" void net_sleep(uint32_t ms)
                         (int32_t) net_uart_rx_buffered_bytes());
         flightrec_event('F', flightrec_cts_level(), 0);
     }
+    return true;
 }
 
 extern "C" bool net_check(void)

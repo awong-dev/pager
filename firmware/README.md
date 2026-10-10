@@ -167,7 +167,7 @@ override is read at boot. `carrier` shows what was detected and what is in force
 
 ## Keyboard task (`kbd`, 9 Oct 2026)
 
-The CardKB is scanned by a static FreeRTOS task, `kbd` (`ui.c`; priority 2, pinned to CPU1). It
+The CardKB is scanned by a static FreeRTOS task, `kbd` (`ui.c`; priority 2, floating across both cores). It
 polls every 10 ms while the keyboard rail is on and past the 1300 ms boot guard. While the rail is
 off it blocks on a rail notification. The task is the only CardKB read path: `ui_poll_keyboard()`
 and the refresh-time poll hook are deleted, and the main loop does not touch the CardKB. Keys go
@@ -177,7 +177,15 @@ history: `docs/TASK_kbtask.md`. Why the main loop must not read the CardKB: `doc
 - **Console:** `i2cscan` and `kbtime` pause the task and resume it after. `i2cscan swap` re-inits
   the bus only with the rail on.
 - **Light sleep:** the task is parked around `esp_light_sleep_start()`, so a sleep never starts in
-  the middle of a CPU1 I2C read.
+  the middle of an I2C read.
+- **Main loop wake (10 Oct 2026):** the awake loop's 100 ms wait is `input_wait_event(100)`
+  (`input.c`): a task-notification wait on the `modes_run()` task that `push_event()` signals after
+  every successful enqueue, so a keystroke is seen at once; with nothing happening the period is
+  still 100 ms. At the sleep edge `net_sleep()` parks `kbd`, then returns false (no sleep, no
+  wake/RTS state touched; modes.c re-arms the awake window and loops) if `input_pending()`.
+- **Wake status refresh (10 Oct 2026):** `ui_wake_status_refresh()` (two modem round trips) is
+  deferred: the awake edge sets `s_wake_status_pending`, and `modes_run()` runs it right after that
+  pass's `ui_render()`. The refreshed battery/RSSI show on the next partial.
 - **Status:** built 9 Oct 2026. Burst verification is **pending** (the bench check below). On the
   bench unit sora1, the CardKB currently does not answer at 0x5F (`docs/GOTCHAS.md`), so no
   keystroke result from sora1 counts until that is fixed.

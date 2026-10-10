@@ -51,6 +51,7 @@ input_key_t input_decode_key(uint8_t byte)
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
+#include "freertos/task.h"
 
 static const char *TAG = "input";
 
@@ -67,7 +68,7 @@ static const char *TAG = "input";
 /* Hot keyboard window opened by a shake from sleep (see input_hot()). */
 #define PAGER_UI_HOT_S 15
 
-#define INPUT_QUEUE_DEPTH 32 /* kbd task (CPU1) can queue ~17 keys across a gate + refresh stall */
+#define INPUT_QUEUE_DEPTH 32 /* kbd task can queue ~17 keys across a gate + refresh stall */
 
 typedef enum {
     BTN_IDLE = 0,
@@ -91,6 +92,10 @@ static portMUX_TYPE s_win_mux = portMUX_INITIALIZER_UNLOCKED;
 static StaticQueue_t s_queue_buf;
 static uint8_t s_queue_storage[INPUT_QUEUE_DEPTH * sizeof(input_event_t)];
 static QueueHandle_t s_queue;
+/* Task input_wait_event() blocks in; push_event() notifies it after the
+ * enqueue (notify-after-enqueue: a wait that checks the queue first and then
+ * blocks cannot miss an event, the notification stays pending). */
+static volatile TaskHandle_t s_waiter;
 
 static int64_t s_hot_until_us;
 
@@ -109,6 +114,11 @@ static void push_event(input_event_t evt)
      * context (CLAUDE.md: no busy-wait loops). */
     if (xQueueSend(s_queue, &evt, 0) != pdTRUE) {
         ESP_LOGW(TAG, "input event queue full, dropping event type=%d", (int) evt.type);
+        return;
+    }
+    TaskHandle_t waiter = s_waiter;
+    if (waiter != NULL) {
+        xTaskNotifyGive(waiter);
     }
 }
 
@@ -310,6 +320,22 @@ void input_feed_button_long(void)
 bool input_get_event(input_event_t *out)
 {
     return xQueueReceive(s_queue, out, 0) == pdTRUE;
+}
+
+bool input_pending(void)
+{
+    return uxQueueMessagesWaiting(s_queue) > 0;
+}
+
+void input_wait_event(uint32_t ms)
+{
+    if (s_waiter == NULL) {
+        s_waiter = xTaskGetCurrentTaskHandle();
+    }
+    if (uxQueueMessagesWaiting(s_queue) > 0) {
+        return;
+    }
+    ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(ms));
 }
 
 bool input_awake(void)

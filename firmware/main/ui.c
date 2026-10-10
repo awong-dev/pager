@@ -1008,12 +1008,12 @@ static void log_state_once(const char *state)
 // past the boot guard; blocks on a task notification while the rail is off or
 // the console has paused it. Feeds each decoded byte to input_feed_key()
 // (input.h), which arms the UI-awake window and queues INPUT_EVT_KEY.
-// Power effect: ~100 I2C reads/s on CPU1 while the rail is on and the chip is
+// Power effect: ~100 I2C reads/s (floating core) while the rail is on and the chip is
 // awake; none while the rail is off.
 static void kbd_task(void *arg)
 {
     (void) arg;
-    ESP_LOGI(TAG, "kbd: task started cpu1 prio2 period 10ms");
+    ESP_LOGI(TAG, "kbd: task started float (core %d) prio2 period 10ms", (int) xPortGetCoreID());
     for (;;) {
         if (s_kb_poll_paused || !rail_is_on()) {
             log_state_once(s_kb_poll_paused ? "paused (console)" : "paused (rail off)");
@@ -1159,7 +1159,7 @@ bool ui_init(void)
     s_kb_bus_mutex = xSemaphoreCreateMutexStatic(&s_kb_bus_mutex_buf);
     // Stack+TCB come from the heap, once, here at init (a static 3 KB stack
     // overflowed .dram0.bss by 984 B at link time); never freed.
-    if (xTaskCreatePinnedToCore(kbd_task, "kbd", KBD_STACK_BYTES, NULL, 2, &s_kbd_task, 1) != pdPASS) { // power effect: ~100 reads/s on CPU1 while the rail is on
+    if (xTaskCreatePinnedToCore(kbd_task, "kbd", KBD_STACK_BYTES, NULL, 2, &s_kbd_task, tskNO_AFFINITY) != pdPASS) { // power effect: ~100 reads/s (either core) while the rail is on
         s_kbd_task = NULL;
         ESP_LOGE(TAG, "kbd: task create failed; no keyboard");
     }

@@ -167,7 +167,7 @@ void rail_on(void)
     s_on_since_us = on_edge_us;
     s_restored_us = esp_timer_get_time();
     portEXIT_CRITICAL(&s_on_mux);
-    ui_kb_rail_changed(); // kbd task: guard starts now; power effect: none (wakes CPU1 task)
+    ui_kb_rail_changed(); // kbd task: guard starts now; power effect: none (wakes the kbd task)
 }
 
 void rail_off(void)

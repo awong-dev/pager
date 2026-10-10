@@ -114,6 +114,18 @@ void input_feed_key(uint8_t byte);
  * queue is empty. */
 bool input_get_event(input_event_t *out);
 
+/* True if the queue holds at least one event. Plain queue-length read, no
+ * side effects. modes.c/net.cpp use it at the sleep edge so a key queued
+ * there is handled instead of carried into light sleep. */
+bool input_pending(void);
+
+/* Awake-loop wait (replaces the fixed 100 ms vTaskDelay): blocks the calling
+ * task for up to `ms`, returns early when an event is posted. Returns at once
+ * if the queue is already non-empty. The first call registers the caller as
+ * the task the post path notifies; only that one task may call it.
+ * Power effect: none (the task blocks instead of delaying). */
+void input_wait_event(uint32_t ms);
+
 /* True for PAGER_UI_AWAKE_S (119s, compile-time) after the most recent
  * event armed the window. Independent of the 10-minute modem active
  * window (docs/DEVICE_PLAN.md §5.3) — modes.c's set_mode()/

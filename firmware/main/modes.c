@@ -395,6 +395,7 @@ static void rtc_lock(void) { xSemaphoreTake(s_rtc_mutex, portMAX_DELAY); }
 static void rtc_unlock(void) { xSemaphoreGive(s_rtc_mutex); }
 
 static bool s_was_mqtt_connected = false;
+static bool s_wake_status_pending = false; // ui_wake_status_refresh() owed after the next render
 static bool s_ui_awake_prev = false; // F6.3: edge-detects input_awake() for ui_wake_status_refresh()
 
 #ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
@@ -2847,7 +2848,14 @@ void modes_run(void)
             }
             watchdog_kick(WD_SLEEP_ENTER);
             int64_t bs_t0 = esp_timer_get_time();
-            net_sleep(interval_ms);
+            if (!net_sleep(interval_ms)) {
+                // Input queued at the sleep edge: no sleep happened, so none of the
+                // post-wake handling below applies (stale wake cause). Back to the
+                // loop top. input_arm_awake() guarantees the next pass has ui_awake
+                // set (skip_sleep), so this cannot spin on a non-arming event.
+                input_arm_awake();
+                continue;
+            }
             battstat_note_sleep(esp_timer_get_time() - bs_t0); // time inside light sleep, for `bs.sl`
             // Wake path (TASK_ui_round2.md Do #4, the lazy-rail rewrite —
             // supersedes the old unconditional rail_on() this comment used
@@ -3068,9 +3076,10 @@ void modes_run(void)
             vTaskDelay(pdMS_TO_TICKS(PAGER_WAKE_INTERVAL_SLEEP_MS));
         } else {
             // ui_awake, input_hot() (15 s shake window, nothing drawn) or a
-            // busy/stuck button: docs/DEVICE_PLAN.md §5.3, CardKB polled at
-            // 100ms, no light-sleep.
-            vTaskDelay(pdMS_TO_TICKS(100));
+            // busy/stuck button: docs/DEVICE_PLAN.md §5.3, no light-sleep.
+            // 100 ms period when idle; returns early when the kbd task (or any
+            // other input.c post) queues an event. Power effect: none.
+            input_wait_event(100);
         }
 
         // S4 (docs/SLEEP_URC_DESIGN.md §6 "Ack stall" fix (i)): if the modem
@@ -3109,7 +3118,6 @@ void modes_run(void)
         int64_t dbg_now_us = esp_timer_get_time();
         int64_t dbg_period_us = dbg_now_us - s_dbg_looptime_prev_us;
         s_dbg_looptime_prev_us = dbg_now_us;
-        int64_t dbg_status_us = 0; // set below iff ui_awake_edge_in fires this iteration
 #endif
         input_event_t ievt;
         while (input_get_event(&ievt)) {
@@ -3154,17 +3162,10 @@ void modes_run(void)
         bool ui_awake_edge_out = !ui_awake_now && s_ui_awake_prev;
         s_ui_awake_prev = ui_awake_now;
         if (ui_awake_edge_in) {
-#ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
-            // TASK_looptime.md: ui_wake_status_refresh() is defined right
-            // here in modes.c (not ui.c, despite living next to ui_render()
-            // in the loop below) — so this times it in place instead of
-            // through a ui.c getter.
-            int64_t dbg_status_t0 = esp_timer_get_time();
-#endif
-            ui_wake_status_refresh();
-#ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
-            dbg_status_us = esp_timer_get_time() - dbg_status_t0;
-#endif
+            // UI first (9 Oct 2026): the two modem round trips (5 s timeouts)
+            // no longer run ahead of the first frame. They are deferred to
+            // right after this pass's ui_render() below (same awake window).
+            s_wake_status_pending = true;
             // F6.5: "...and every UI wake" — the other half of
             // lock_check_autolock()'s call-site contract (docs/DEVICE_PLAN.md
             // §5.8), covering a UI wake with no fresh input event (should not
@@ -3265,10 +3266,9 @@ void modes_run(void)
                     (dbg_log_now_us - s_dbg_looptime_last_log_us) >= 1000000) {
                     s_dbg_looptime_last_log_us = dbg_log_now_us;
                     ESP_LOGI(TAG,
-                             "looptime: period=%lld ms paint=%lld refresh=%lld status=%lld rest=%lld",
+                             "looptime: period=%lld ms paint=%lld refresh=%lld rest=%lld",
                              (long long) (dbg_period_us / 1000), (long long) (dbg_paint_us / 1000),
-                             (long long) (dbg_refresh_us / 1000), (long long) (dbg_status_us / 1000),
-                             (long long) (dbg_rest_us / 1000));
+                             (long long) (dbg_refresh_us / 1000), (long long) (dbg_rest_us / 1000));
                 }
             }
 #endif
@@ -3276,6 +3276,22 @@ void modes_run(void)
             // docs/DEVICE_PLAN.md §5.4: the moment the UI-awake window
             // lapses is where a due full refresh is allowed to land.
             ui_on_awake_lapse();
+        }
+
+        // Deferred wake status refresh (see ui_awake_edge_in above): runs after
+        // the render above has completed (never during one), once per awake edge.
+        // The refreshed battery/RSSI show on the next partial. Power effect: two
+        // AT round trips (~43 ms measured, 5 s timeout each).
+        if (s_wake_status_pending) {
+            s_wake_status_pending = false;
+#ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
+            int64_t dbg_status_t0 = esp_timer_get_time();
+#endif
+            ui_wake_status_refresh();
+#ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
+            ESP_LOGI(TAG, "wake status refresh after first draw: %lld ms",
+                     (long long) ((esp_timer_get_time() - dbg_status_t0) / 1000));
+#endif
         }
 
         // Deferred mode-edge /status publish (set_mode()): after this
