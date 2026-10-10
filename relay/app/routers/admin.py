@@ -40,13 +40,14 @@ from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 from firebase_admin import auth as fb_auth
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app import apn_presets, book, ca_resolve, devcfg, devsetup, firmware, soracom
 from app.auth import AuthedUser, principal_for, require_super, set_claims
 from app.broker import BrokerClient
 from app.config import Settings
 from app.db.firestore import get_db
+from app.device_ids import DEVICE_ID_ATTEMPTS, new_device_id
 from app.emqx_admin import EmqxAdmin, EmqxResult
 from app.ingest import Ingest
 from app.store import allow as allow_store
@@ -71,6 +72,7 @@ log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/admin", dependencies=[Depends(require_super)])
 
 MQTT_PASSWORD_BYTES = 24
+LABEL_MAX_BYTES = 32
 
 DEFAULT_ADMIN_WRITE_LIMIT = 60
 DEFAULT_ADMIN_WRITE_WINDOW_S = 60
@@ -452,7 +454,10 @@ def get_allowlist() -> list[AllowEdge]:
 
 
 class CreateDeviceRequest(BaseModel):
-    deviceId: str
+    """No `deviceId`: the relay issues it (`app/device_ids.py`, owner decision
+    9 Oct 2026). An old client that still sends one is not rejected (pydantic's
+    default is `extra="ignore"`); the value is simply ignored."""
+
     ownerAlias: str
     label: str
     defaultToAlias: str | None = None
@@ -538,6 +543,18 @@ def _broker_push_outcome(
     return "manual", _manual_acl_lines(device_id)
 
 
+def _issue_device_id() -> str:
+    """A fresh `pgr-xxxxxxxx` id with no `devices/` or `deviceSecrets/` doc."""
+    for _ in range(DEVICE_ID_ATTEMPTS):
+        candidate = new_device_id()
+        if (
+            devices_store.get_device(candidate) is None
+            and device_secrets_store.get(candidate) is None
+        ):
+            return candidate
+    raise HTTPException(status_code=500, detail="could not allocate a device id")
+
+
 def _create_device_impl(
     req: CreateDeviceRequest,
     broker: BrokerClient,
@@ -562,8 +579,7 @@ def _create_device_impl(
         apn = apn_presets.validate_apn(req.apn)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from None
-    if devices_store.get_device(req.deviceId) is not None:
-        raise HTTPException(status_code=409, detail="device already exists")
+    device_id = _issue_device_id()
 
     # docs/DEVICE_PLAN.md §3.2 step 1: generate the real MQTT password and
     # HMAC key here -- this is the one moment the plaintext password exists,
@@ -574,25 +590,25 @@ def _create_device_impl(
     hmac_key = secrets.token_bytes(HMAC_KEY_BYTES)
 
     devices_store.create_device(
-        device_id=req.deviceId,
+        device_id=device_id,
         owner_uid=owner_uid,
         label=req.label,
         # docs/FAMILIES_DESIGN.md §1 decision 1: a device's family is
         # copied from its owner at creation time, not chosen separately.
         family_id=owner.familyId if owner is not None else None,
-        mqtt_username=req.deviceId,
+        mqtt_username=device_id,
         mqtt_password_hash=password_hash,
         default_to_uid=default_to_uid,
         apn=apn,
     )
-    device_secrets_store.create(req.deviceId, hmac_key=hmac_key, mqtt_password_hash=password_hash)
+    device_secrets_store.create(device_id, hmac_key=hmac_key, mqtt_password_hash=password_hash)
     # docs/SERVER_PLAN.md §2 decision 4: "the pager device is modelled as
     # just another delivery backend of its owner" -- `app/routing.py`'s
     # fan-out finds a device to publish to by looking at the owner's
     # `kind='pager'` backends, not the `devices` collection directly, so
     # creating the device without this would leave it undeliverable.
     backends_store.create_backend(
-        owner_uid, kind="pager", config={"deviceId": req.deviceId}, enabled=True
+        owner_uid, kind="pager", config={"deviceId": device_id}, enabled=True
     )
     # A fresh device always starts at
     # `locatableBy: []` (`devices_store.create_device`); if the owner
@@ -611,20 +627,20 @@ def _create_device_impl(
     # before first status" rather than waiting for one. Best-effort: a push
     # failure (`devcfg.push_book` itself never raises) must never fail
     # device creation.
-    contacts_store.bump_book_version(req.deviceId)
-    devcfg.push_book(req.deviceId, broker)
+    contacts_store.bump_book_version(device_id)
+    devcfg.push_book(device_id, broker)
     # Seed the new device's `cfg.sms` (implied contacts for an open owner).
     book.rederive_sms_contacts(owner_uid, broker)
 
     # docs/DEVICE_PLAN.md §3.2 step 2: push the device's real broker
     # credential + ACL before handing out a setup code that will eventually
     # let a device connect with it.
-    emqx_result = emqx.ensure_device(req.deviceId, password, req.deviceId)
+    emqx_result = emqx.ensure_device(device_id, password, device_id)
     host, ca = _bootstrap_host_and_ca(settings)
     now = datetime.now(UTC)
     try:
         setup_code = devsetup.issue(
-            req.deviceId,
+            device_id,
             mqtt_password=password,
             hmac_key=hmac_key,
             host=host,
@@ -641,9 +657,9 @@ def _create_device_impl(
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     expires_at = now + timedelta(minutes=devsetup.EXPIRY_MINUTES)
 
-    device = devices_store.get_device(req.deviceId)
+    device = devices_store.get_device(device_id)
     assert device is not None
-    broker_push, manual_acl = _broker_push_outcome(req.deviceId, emqx_result)
+    broker_push, manual_acl = _broker_push_outcome(device_id, emqx_result)
     return DeviceSetupCodeResponse(
         device=device,
         setupCode=setup_code,
@@ -661,6 +677,37 @@ def create_device(
     settings: Annotated[Settings, Depends(get_app_settings)],
 ) -> DeviceSetupCodeResponse:
     return _create_device_impl(req, broker, emqx, settings)
+
+
+class PatchDeviceRequest(BaseModel):
+    label: str
+
+    @field_validator("label")
+    @classmethod
+    def _check_label(cls, v: str) -> str:
+        v = v.strip()
+        # The pager's label buffer is 32 bytes (firmware/main/ident.h).
+        if not 1 <= len(v.encode("utf-8")) <= LABEL_MAX_BYTES:
+            raise ValueError(f"label must be 1..{LABEL_MAX_BYTES} bytes of UTF-8")
+        return v
+
+
+def _patch_device_impl(device_id: str, req: PatchDeviceRequest) -> Device:
+    """Rename a device. The pager only learns the new label from the next
+    `rotate-credentials` setup bundle."""
+    if devices_store.get_device(device_id) is None:
+        raise HTTPException(status_code=404, detail="no such device")
+    devices_store.set_label(device_id, req.label)
+    device = devices_store.get_device(device_id)
+    assert device is not None
+    return device
+
+
+@router.patch("/devices/{device_id}", dependencies=[Depends(require_admin_write_rate_limit)])
+def patch_device(device_id: str, req: PatchDeviceRequest) -> Device:
+    """Edit the free-text `label` (the human-facing name). The pager shows the
+    new label only after the next `rotate-credentials`."""
+    return _patch_device_impl(device_id, req)
 
 
 @router.get("/devices")

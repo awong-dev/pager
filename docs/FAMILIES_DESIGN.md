@@ -229,7 +229,7 @@ externals), for members whose rules-visible set is narrower than what they talk 
 | `PATCH /api/family/members/{uid}` | `displayName`, `role` (admin↔member), `disabled`, `policy{out,in}` |
 | `PUT /api/family/members/{uid}/approved` | `{people:[{alias, message, locate}], numbers:[phone…]}` → rewrites that member's outgoing edges; refuses `locate` to another family; unknown number creates an external; re-derives `devices.smsContacts` and pushes `cfg.sms` + the book *(8 Oct 2026: people not listed are removed too; previously only contacts were replace-all, so unchecking a person in the web never stuck.)* |
 | `GET/POST/PATCH /api/family/contacts` | externals used by this family (`{phone, name}`); PATCH renames |
-| `GET/POST /api/family/devices`, `/{id}/rotate-credentials`, `/revoke`, `/cfg`, `/ca`, `DELETE`; `GET /firmware?device=`, `POST /{id}/ota`, `GET /apn-presets`, `PUT /{id}/apn` | today's admin device handlers with an in-family check |
+| `GET/POST /api/family/devices` (the relay issues the device id; the body has no `deviceId`), `PATCH /{id}` (edit `label`), `/{id}/rotate-credentials`, `/revoke`, `/cfg`, `/ca`, `DELETE`; `GET /firmware?device=`, `POST /{id}/ota`, `GET /apn-presets`, `PUT /{id}/apn` | today's admin device handlers with an in-family check |
 | `POST /api/family/groups` | today's group create, members restricted to own family and edge peers |
 | `GET /api/family/alerts`, `POST /api/family/alerts/{id}/{approve\|block\|dismiss}` | approve = create external if needed + edges; block = mark and add to `families.blockedNumbers` |
 | `GET /api/family/conversations` | optional; the web reads Firestore directly by `familyIds` |

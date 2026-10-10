@@ -50,7 +50,7 @@ docs/PROTOCOL.md §3.2's `contact_req`/`book`/`cfg` kinds):
           sms out <phone> <text...> | sms in <phone> <text...>
   Server: login, contacts, chat, say, watch, tick, sweep, locate <alias>,
           locations <alias> [n],
-          admin user-add / allow / deny / device-add / ca push|unpin <device_id> /
+          admin user-add / allow / deny / device-add <label> / ca push|unpin <device_id> /
           settings retention messages=<n><d|w> locations=<n><d|w> /
           alerts <family> [open|all] / approve <family> <alert_id> [link|create] [alias] /
           block <family> <alert_id> / dismiss <family> <alert_id> /
@@ -1297,9 +1297,12 @@ class ServerClient:
         return resp.json()
 
     def admin_device_add(
-        self, device_id: str, owner_alias: str, *, default_to_alias: str | None = None
+        self, label: str, owner_alias: str, *, default_to_alias: str | None = None
     ) -> dict[str, Any]:
-        body = {"deviceId": device_id, "ownerAlias": owner_alias, "label": device_id}
+        """The relay issues the device id (`pgr-` + 8 hex; owner decision
+        9 Oct 2026): the first argument is now only the display `label`. The
+        issued id is `result["device"]["id"]`."""
+        body = {"ownerAlias": owner_alias, "label": label}
         if default_to_alias:
             body["defaultToAlias"] = default_to_alias
         resp = self.api_post("/api/admin/devices", body)
@@ -2218,17 +2221,15 @@ class PagerShell(cmd.Cmd):
 
     def _admin_device_add(self, args: list[str]) -> None:
         parser = argparse.ArgumentParser(prog="admin device-add", add_help=False)
-        parser.add_argument("device_id")
+        parser.add_argument("label", help="display name; the relay issues the device id")
         parser.add_argument("--owner", required=True)
         parser.add_argument("--default-to")
         try:
             ns = parser.parse_args(args)
         except SystemExit:
             return
-        result = self.server.admin_device_add(
-            ns.device_id, ns.owner, default_to_alias=ns.default_to
-        )
-        print(f"device {ns.device_id} created; mqtt password (shown once): {result['mqttPassword']}")
+        result = self.server.admin_device_add(ns.label, ns.owner, default_to_alias=ns.default_to)
+        print(f"device {result['device']['id']} created; setup code: {result['setupCode']}")
         self._out(result)
 
     def _admin_allow(self, args: list[str]) -> None:

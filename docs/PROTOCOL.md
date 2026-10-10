@@ -37,7 +37,7 @@ since the first release is optional, so a device that ignores all of them stays 
 
 | Thing | Format | Max len | Notes |
 |---|---|---|---|
-| `device_id` | `^[a-z0-9][a-z0-9-]{2,23}$` | 24 | lowercase; example `pgr-0001` *(bounds max topic length to 37 bytes so device-side topic buffers are static)* |
+| `device_id` | `^[a-z0-9][a-z0-9-]{2,23}$` | 24 | lowercase; example `pgr-3fa9c01e`; issued by the relay at create time (`pgr-` + 8 hex), never typed by a human; `label` is the display name (owner decision 9 Oct 2026) *(bounds max topic length to 37 bytes so device-side topic buffers are static)* |
 | MQTT client id (device) | exactly `device_id` | 24 | *(stable across reboots is required for `cleanSession=false` session resumption; see §6)* |
 | MQTT client id (relay) | `relay-1` | — | *(fixed id so the relay also resumes a persistent session and does not miss `/up` while restarting.)* *(the relay no longer holds an MQTT session at all; see §2's transport note. The id is retained only for whatever short-lived client the relay or a test harness opens, and nothing on the device depends on it.)* |
 | Message id (relay-originated, down) | `m_` + 8 lowercase hex | 10 | 32 bits of `os.urandom`; UNIQUE in the relay store, regenerate on collision |

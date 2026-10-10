@@ -320,6 +320,17 @@ def create_device(
     return admin_router._create_device_impl(req, broker, emqx, settings)
 
 
+@router.patch("/devices/{device_id}", dependencies=[Depends(require_family_write_rate_limit)])
+def patch_device(
+    device_id: str, req: admin_router.PatchDeviceRequest, scope: FamilyScope
+) -> Device:
+    """Edit the free-text `label`. The pager shows the new label only after the
+    next `rotate-credentials`."""
+    _, family_id = scope
+    _require_family_device(device_id, family_id)
+    return admin_router._patch_device_impl(device_id, req)
+
+
 @router.post(
     "/devices/{device_id}/rotate-credentials",
     dependencies=[Depends(require_family_write_rate_limit)],

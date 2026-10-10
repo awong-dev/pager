@@ -806,7 +806,7 @@ watch <alias>                       poll the thread (Firestore REST has no strea
 tick ; sweep                        call /internal/tick and /internal/sweep (dev auth)
 admin user-add <alias> <name> --email/--phone [--admin]
 admin allow <a> <b> [--no-locate] [--one-way] ; admin deny <a> <b>
-admin device-add <device_id> --owner <alias> [--default-to <alias>]   prints MQTT creds
+admin device-add <label> --owner <alias> [--default-to <alias>]   relay issues the device id (pgr-xxxxxxxx; 9 Oct 2026); prints id + setup code
 admin settings retention messages=4w locations=10d
 ```
 

@@ -16,7 +16,7 @@ other two are the `setup <code>` console command itself,
       done` and reboots. The code contains a literal space (" @ ",
       docs/DEVICE_PLAN.md §3.1's `format_code()`) -- quote it in the shell.
 
-  --from-api --relay <url> --admin-token <token> --device-id <id>
+  --from-api --relay <url> --admin-token <token>
       --owner <alias> --label <text> [--default-to <alias>]
       Calls `POST /api/admin/devices` (docs/DEVICE_TASKS.md S2.2) first,
       with a Firebase ID token for an admin user as a bearer token, and
@@ -83,7 +83,6 @@ def _serial() -> Any:
 def fetch_setup_code(
     relay: str,
     admin_token: str,
-    device_id: str,
     owner: str,
     label: str,
     default_to: str | None,
@@ -93,7 +92,7 @@ def fetch_setup_code(
     the broker push failed, `manualAcl`) to stderr for visibility."""
     httpx = _httpx()
     endpoint = f"{relay.rstrip('/')}/api/admin/devices"
-    body: dict[str, str] = {"deviceId": device_id, "ownerAlias": owner, "label": label}
+    body: dict[str, str] = {"ownerAlias": owner, "label": label}
     if default_to:
         body["defaultToAlias"] = default_to
     try:
@@ -115,7 +114,7 @@ def fetch_setup_code(
         raise SystemExit(f"error: relay response missing 'setupCode': {data!r}") from exc
 
     print(
-        f"setup code issued for {device_id!r} "
+        f"setup code issued for {data.get('device', {}).get('id')!r} "
         f"(brokerPush={data.get('brokerPush')!r}, expiresAt={data.get('expiresAt')!r})",
         file=sys.stderr,
     )
@@ -187,11 +186,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--relay", default=DEFAULT_API_URL, help="relay base URL for --from-api (default: %(default)s)")
     parser.add_argument("--admin-token", help="Firebase ID token for an admin user (required with --from-api)")
-    parser.add_argument(
-        "--device-id",
-        help="new device's id, e.g. its MAC (required with --from-api: "
-        "POST /api/admin/devices' CreateDeviceRequest.deviceId is required)",
-    )
     parser.add_argument("--owner", help="owner's alias (required with --from-api)")
     parser.add_argument("--default-to", help="default recipient's alias (optional, --from-api only)")
     parser.add_argument("--label", help="device label (required with --from-api)")
@@ -207,7 +201,6 @@ def main(argv: list[str] | None = None) -> int:
             name
             for name, value in (
                 ("--admin-token", args.admin_token),
-                ("--device-id", args.device_id),
                 ("--owner", args.owner),
                 ("--label", args.label),
             )
@@ -217,7 +210,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"error: --from-api requires {', '.join(missing)}", file=sys.stderr)
             return 2
         code = fetch_setup_code(
-            args.relay, args.admin_token, args.device_id, args.owner, args.label, args.default_to
+            args.relay, args.admin_token, args.owner, args.label, args.default_to
         )
         print(f"setup code: {code}")
     elif args.code:

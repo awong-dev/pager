@@ -399,6 +399,12 @@ def set_gnss_enabled(device_id: str, enabled: bool) -> None:
     _devices().document(device_id).set({"gnss_enabled": enabled}, merge=True)
 
 
+def set_label(device_id: str, label: str) -> None:
+    """The caller has validated `label`. The pager learns it at the next
+    setup code (`rotate-credentials`)."""
+    _devices().document(device_id).update({"label": label})
+
+
 def set_apn(device_id: str, apn: str | None) -> None:
     """The caller has validated `apn` (app/apn_presets.validate_apn). Takes
     effect at the device's next setup code; nothing is pushed to the pager."""

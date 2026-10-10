@@ -70,7 +70,7 @@ Nothing is flashed per device. An admin creates the device in the web app and ge
 **setup code**, valid for ten minutes: a random token plus `@ broker-host`. It is typed into the
 pager (`setup <code>` on the USB console today). From the token both sides derive, with HKDF, a
 temporary broker login, a topic and an AES-256-GCM key. The pager attaches, connects to the broker
-with that login, and receives a retained, encrypted **bundle**: its device id, broker password,
+with that login, and receives a retained, encrypted **bundle**: its device id (issued by the relay as `pgr-` plus 8 hex digits; the human-facing name is the editable `label`), broker password,
 32-byte signing key, broker host and port, flags, label, and a pointer to the broker's CA (a URL
 and a SHA-256). It stores these in flash, restarts, and comes up as itself. Rotating credentials
 is the same flow with a new code.
