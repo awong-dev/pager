@@ -34,20 +34,49 @@ object NotificationMapper {
     /** WA6: WhatsApp posts the bridge account's own group lines as sender "You". */
     private const val WA_SELF = "You"
 
+    /** What the listener does with a notification, from [conversationKey]. */
+    sealed class ConversationKey {
+        /** Spool under this conversation id. */
+        data class Id(val id: String) : ConversationKey()
+        /** `FLAG_GROUP_SUMMARY` ("N messages from M chats"): never a conversation. */
+        object GroupSummary : ConversationKey()
+        /** No `shortcutId` and the package does not get the `pkg|id` fallback: a roll-up, dropped. */
+        object NoId : ConversationKey()
+    }
+
     /**
-     * `shortcutId` when set, else the key with the account/tag stripped (`pkg|id`), per
-     * decision 13.
+     * The conversation-id rule (decision 13, tightened 10 Oct 2026 after Google Chat posted a
+     * roll-up of several recent messages with no `shortcutId` and id 0, which the `pkg|id`
+     * fallback turned into a new "Untitled conversation" on the relay): group summary -> skip;
+     * `shortcutId` present -> that id; otherwise `pkg|id` only for
+     * [Targets.PKG_ID_FALLBACK_PACKAGES] (Voice), and drop for Chat and WhatsApp.
      */
-    fun conversationId(s: NotificationSnapshot): String =
-        s.shortcutId?.takeIf { it.isNotBlank() } ?: "${s.pkg}|${s.id}"
+    fun conversationKey(pkg: String, id: Int, shortcutId: String?, groupSummary: Boolean): ConversationKey {
+        if (groupSummary) return ConversationKey.GroupSummary
+        shortcutId?.takeIf { it.isNotBlank() }?.let { return ConversationKey.Id(it) }
+        return if (pkg in Targets.PKG_ID_FALLBACK_PACKAGES) ConversationKey.Id("$pkg|$id") else ConversationKey.NoId
+    }
+
+    /** [conversationKey] for a flattened snapshot (never a group summary); null means drop. */
+    fun conversationId(s: NotificationSnapshot): String? =
+        (conversationKey(s.pkg, s.id, s.shortcutId, groupSummary = false) as? ConversationKey.Id)?.id
 
     /**
      * Maps one notification to events for every message not yet seen. `seen(key)` answers the
-     * Room dedup table; the returned `dedupKeys` are inserted after the events are spooled.
+     * Room dedup table (keyed by conversation, 7 days); `recentDup(event)` answers the in-memory
+     * [RecentMessages] window, which catches the same line re-posted under another key (an
+     * edited/updated notification, a roll-up) and is consulted after `seen`. The returned
+     * `dedupKeys` are inserted after the events are spooled. Nothing is mapped when
+     * [conversationId] is null.
      */
-    fun map(s: NotificationSnapshot, seen: (String) -> Boolean, nowSec: Long = System.currentTimeMillis() / 1000): Mapped {
+    fun map(
+        s: NotificationSnapshot,
+        seen: (String) -> Boolean,
+        nowSec: Long = System.currentTimeMillis() / 1000,
+        recentDup: (BridgeEvent) -> Boolean = { false },
+    ): Mapped {
         val source = Targets.sourceFor(s.pkg) ?: return Mapped(emptyList(), emptyList(), null)
-        val convId = conversationId(s)
+        val convId = conversationId(s) ?: return Mapped(emptyList(), emptyList(), null)
         val phoneKeyed = source == Targets.SOURCE_GVOICE || (source == Targets.SOURCE_WHATSAPP && !s.isGroup)
         // O4 / WA2: the peer's number from the shortcut id / data URI when present, before the title.
         val phoneFromIds = when {
@@ -84,7 +113,7 @@ object NotificationMapper {
                 if (phone != null) peerPhone = phone
             }
             val tsSec = if (m.timestamp > 0) m.timestamp / 1000 else nowSec
-            events += BridgeEvent(
+            val event = BridgeEvent(
                 id = eventId(convId, m.timestamp, raw),
                 source = source,
                 conversation = Conversation(id = Bounds.convId(convId), title = s.conversationTitle?.let { Bounds.cp(it, Bounds.NAME_CP) }, isGroup = s.isGroup),
@@ -93,6 +122,8 @@ object NotificationMapper {
                 ts = tsSec,
                 attachments = attachments,
             )
+            if (recentDup(event)) continue
+            events += event
             keys += key
         }
         return Mapped(events, keys, peerPhone)
@@ -126,4 +157,41 @@ object NotificationMapper {
             .digest("$convId|$timestamp|$text".toByteArray())
         return "n_" + digest.take(12).joinToString("") { "%02x".format(it) }
     }
+}
+
+/**
+ * Cross-conversation dedup (10 Oct 2026): a bounded window of `(pkg, sender, text, ts)` tuples
+ * spooled in the last [ttlMs]. The Room table keys on the conversation id, so a message that an
+ * app re-posts under another key (an updated/edited notification, a roll-up that slipped past
+ * [NotificationMapper.conversationKey]) would double-send without this. Pure; unit-tested.
+ */
+class RecentMessages(private val ttlMs: Long = TTL_MS, private val maxEntries: Int = MAX_ENTRIES) {
+    companion object {
+        const val TTL_MS = 5L * 60 * 1000
+        const val MAX_ENTRIES = 256
+    }
+
+    data class Key(val pkg: String, val sender: String, val text: String, val ts: Long)
+
+    /** Insertion-ordered so the eldest tuple is evicted first. */
+    private val seen = LinkedHashMap<Key, Long>()
+
+    /** True when `key` was recorded within the window; otherwise records it (at `now`) and returns false. */
+    @Synchronized
+    fun isDuplicate(key: Key, now: Long = System.currentTimeMillis()): Boolean {
+        val it = seen.entries.iterator()
+        while (it.hasNext()) {
+            if (now - it.next().value >= ttlMs) it.remove() else break
+        }
+        if (seen.containsKey(key)) return true
+        seen[key] = now
+        while (seen.size > maxEntries) seen.remove(seen.keys.first())
+        return false
+    }
+
+    fun isDuplicate(pkg: String, e: BridgeEvent, now: Long = System.currentTimeMillis()): Boolean =
+        isDuplicate(Key(pkg, e.sender.name, e.text, e.ts), now)
+
+    @Synchronized
+    fun size(): Int = seen.size
 }

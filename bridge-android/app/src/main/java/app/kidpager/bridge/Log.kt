@@ -15,6 +15,7 @@ object Log {
     private val lines = ArrayDeque<String>(CAPACITY)
     private val listeners = mutableSetOf<(String) -> Unit>()
 
+    fun d(tag: String, msg: String) = add("D", tag, msg).also { android.util.Log.d(tag, msg) }
     fun i(tag: String, msg: String) = add("I", tag, msg).also { android.util.Log.i(tag, msg) }
     fun w(tag: String, msg: String) = add("W", tag, msg).also { android.util.Log.w(tag, msg) }
     fun e(tag: String, msg: String, t: Throwable? = null) {

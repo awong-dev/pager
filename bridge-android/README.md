@@ -150,20 +150,32 @@ pair again with a new code (Devices → New code).
 - `BridgeService.kt`, `BootReceiver.kt`, `HeartbeatWorker.kt`, `Notifications.kt`, `Status.kt`,
   `Prefs.kt`, `SetupActivity.kt`, `LogActivity.kt`, `FcmTokens.kt`, `src/{fcm,nofcm}/.../FcmService.kt`.
 
-Unit tests (`app/src/test`, JUnit 4, 41 tests): mapper (ids, self-filter, dedup, Voice numbers,
-WhatsApp DM/LID/group/media mapping, bounds), phone normalisation, JID and link helpers
+Unit tests (`app/src/test`, JUnit 4, 46 tests): mapper (conversation-id rule, self-filter, dedup,
+recent-message window, Voice numbers, WhatsApp DM/LID/group/media mapping, bounds), phone normalisation, JID and link helpers
 (`TargetsTest`), `AckTracker` state machine (bounded ack retries, 404-forget, re-issue after
 purge), MMS PDU parsing, the MMS and SMS pure event steps, SMS event shape and JSON.
 
 ## Fields to verify on the bench (design vs. what the apps really emit)
 
-- **Conversation id.** `shortcutId` when set, else `pkg|id` (the `sbn.key` minus user, tag and
-  uid — the design says "account/tag stripped"; if Chat distinguishes threads only by tag this
-  collapses them and the fallback must include the tag). An `inspect` event uses
-  `Targets.conversationIdFromLink` (`room/<id>`, `dm/<id>`, Voice `itemId`), which may **not**
-  equal the notification's `shortcutId`; if the two differ the subscribe-by-link row will not
-  match later messages, and the relay or `Targets` needs one normalisation rule once the real
-  ids are known.
+- **Conversation id — verified for Chat (10 Oct 2026).** The rule is
+  `NotificationMapper.conversationKey` (unit-tested): `FLAG_GROUP_SUMMARY` → skip (logged at
+  DEBUG `skip group summary`); `shortcutId` present → that id; otherwise `pkg|id` **only for
+  Voice** (`Targets.PKG_ID_FALLBACK_PACKAGES`), and **drop** for Chat and WhatsApp (WARN
+  `no conversation id, dropping (pkg=…, id=…, messages=N)`). Seen on the bench: a Chat DM posts
+  with `shortcutId` = the conversation id (`conv=7LRis4AAAAE`) and that works end to end; Chat
+  *also* posts a non-summary MessagingStyle roll-up of the recent messages with **no**
+  `shortcutId` and id 0, which the old fallback spooled as `com.google.android.apps.dynamite|0`
+  — a brand-new "Untitled conversation" on the relay with the same two messages. Still open: an
+  `inspect` event uses `Targets.conversationIdFromLink` (`room/<id>`, `dm/<id>`, Voice `itemId`),
+  which may **not** equal the notification's `shortcutId`; if the two differ the
+  subscribe-by-link row will not match later messages, and the relay or `Targets` needs one
+  normalisation rule once the real ids are known.
+- **Recent-message dedup.** Besides the Room table (keyed by conversation id, 7 days), the
+  listener keeps a process-wide `RecentMessages` window of `(pkg, sender, text, ts)` tuples for
+  5 minutes (256 entries) and skips a line already spooled under *any* key (DEBUG
+  `dup message skipped`), so an updated/edited notification or a roll-up that carried an id
+  cannot double-send. A message with no timestamp (`ts` = now) that repeats the same sender and
+  text within the window would be dropped as well.
 - **Voice sender number.** Tried in order: `shortcutId` / `EXTRA_SUB_TEXT` (O4), the sender line,
   the title. Which of these Voice actually fills is unknown until a text is observed on hardware.
 - **Own-message filter.** A `MessagingStyle` message with `person == null` or whose name equals
@@ -184,9 +196,11 @@ purge), MMS PDU parsing, the MMS and SMS pure event steps, SMS event shape and J
 Every WhatsApp selector lives in `Targets.kt`; change it there when a bench run disagrees.
 
 - **`shortcutId` is the JID.** DM `<digits>@s.whatsapp.net`, group `<id>@g.us`, privacy-mode
-  `<digits>@lid` (no number; the relay drops the event unless the sender line is a number). If
-  WhatsApp stops setting `shortcutId`, the conversation id falls back to `pkg|id` and DMs lose
-  their phone unless the sender line / title is the number.
+  `<digits>@lid` (no number; the relay drops the event unless the sender line is a number; a
+  `@lid` DM was seen on the bench 10 Oct 2026). If WhatsApp stops setting `shortcutId` the
+  notification is dropped (no `pkg|id` fallback for WhatsApp since 10 Oct 2026 — see
+  "Conversation id" above); add the package to `Targets.PKG_ID_FALLBACK_PACKAGES` if a real
+  per-chat notification ever arrives without one.
 - **Group-summary skip.** `FLAG_GROUP_SUMMARY` ("N messages from M chats") is dropped before
   mapping; per-chat notifications are expected to be the `MessagingStyle` ones.
 - **`MessagingStyle.user.name`** for WhatsApp is assumed to be "You"; the sender "You" skip

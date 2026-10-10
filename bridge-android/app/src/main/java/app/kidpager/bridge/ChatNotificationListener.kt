@@ -15,6 +15,9 @@ import kotlinx.coroutines.launch
  * Room, caches the reply action (ReplyCache) and spools events (EventQueue). Rebuilds the cache
  * from getActiveNotifications() on connect. Non-MessagingStyle notifications (calls, "checking
  * for new messages", backups, status) and group summaries (`FLAG_GROUP_SUMMARY`) are ignored.
+ * 10 Oct 2026: the conversation-id rule is [NotificationMapper.conversationKey] (a Chat/WhatsApp
+ * notification without a `shortcutId` is a roll-up and is dropped, not spooled as `pkg|id`), and
+ * [RecentMessages] drops a line already spooled in the last five minutes under any key.
  */
 class ChatNotificationListener : NotificationListenerService() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -24,6 +27,8 @@ class ChatNotificationListener : NotificationListenerService() {
         @Volatile var connected = false
             private set
         @Volatile private var lidLogged = false
+        /** Process-wide so a listener rebind does not forget what was just spooled. */
+        private val recent = RecentMessages()
     }
 
     override fun onListenerConnected() {
@@ -46,8 +51,17 @@ class ChatNotificationListener : NotificationListenerService() {
     }
 
     /** Listened package and not a "N messages from M chats" group summary (WA6). */
-    private fun wanted(sbn: StatusBarNotification): Boolean =
-        sbn.packageName in Targets.LISTEN_PACKAGES && (sbn.notification.flags and Notification.FLAG_GROUP_SUMMARY) == 0
+    private fun wanted(sbn: StatusBarNotification): Boolean {
+        if (sbn.packageName !in Targets.LISTEN_PACKAGES) return false
+        val summary = (sbn.notification.flags and Notification.FLAG_GROUP_SUMMARY) != 0
+        if (NotificationMapper.conversationKey(sbn.packageName, sbn.id, shortcutId(sbn.notification), summary) == NotificationMapper.ConversationKey.GroupSummary) {
+            Log.d(TAG, "skip group summary pkg=${sbn.packageName} key=${sbn.key}")
+            return false
+        }
+        return true
+    }
+
+    private fun shortcutId(n: Notification): String? = if (android.os.Build.VERSION.SDK_INT >= 26) n.shortcutId else null
 
     /** Decision 13: the cache is rebuilt from what is on the shade; messages already seen are dedup'd. */
     fun rebuild() {
@@ -65,6 +79,10 @@ class ChatNotificationListener : NotificationListenerService() {
     private fun handle(sbn: StatusBarNotification, emitEvents: Boolean) {
         val snapshot = snapshot(sbn) ?: return
         val convId = NotificationMapper.conversationId(snapshot)
+        if (convId == null) {
+            Log.w(TAG, "no conversation id, dropping (pkg=${sbn.packageName}, id=${sbn.id}, messages=${snapshot.messages.size})")
+            return
+        }
         val hadAction = ReplyCache.remember(convId, sbn)
         if (!emitEvents) return
         val source = Targets.sourceFor(snapshot.pkg) ?: return
@@ -73,7 +91,11 @@ class ChatNotificationListener : NotificationListenerService() {
             Log.w(TAG, "whatsapp DM with a LID jid (no number); the relay will drop it unless the sender line is a number")
         }
         val db = AppDb.get(this)
-        val mapped = NotificationMapper.map(snapshot, seen = { db.seen().count(it) > 0 })
+        val mapped = NotificationMapper.map(snapshot, seen = { db.seen().count(it) > 0 }, recentDup = { e ->
+            recent.isDuplicate(snapshot.pkg, e).also { dup ->
+                if (dup) Log.d(TAG, "dup message skipped conv=$convId sender=${e.sender.name} ts=${e.ts}")
+            }
+        })
         if (mapped.peerPhone != null) ReplyCache.rememberPhone(source, mapped.peerPhone, convId)
         if (mapped.events.isEmpty()) return
         EventQueue.enqueue(this, mapped.events)
@@ -96,12 +118,11 @@ class ChatNotificationListener : NotificationListenerService() {
                 isSelf = person == null,
             )
         }
-        val shortcut = if (android.os.Build.VERSION.SDK_INT >= 26) n.shortcutId else null
         return NotificationSnapshot(
             pkg = sbn.packageName,
             key = sbn.key,
             id = sbn.id,
-            shortcutId = shortcut,
+            shortcutId = shortcutId(n),
             dataUri = n.extras?.getString("android.intent.extra.TEXT")?.takeIf { it.startsWith("tel:") }
                 ?: n.extras?.getCharSequence(android.app.Notification.EXTRA_SUB_TEXT)?.toString(),
             conversationTitle = style.conversationTitle?.toString(),

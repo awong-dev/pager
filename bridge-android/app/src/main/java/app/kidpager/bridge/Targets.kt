@@ -17,6 +17,16 @@ object Targets {
     /** Packages the notification listener reads (decision 13 listener bullet, WA6). */
     val LISTEN_PACKAGES = setOf(GCHAT_PKG, GVOICE_PKG, WHATSAPP_PKG, WHATSAPP_BUSINESS_PKG)
 
+    /**
+     * Packages whose notifications may still be spooled under the `pkg|id` conversation key when
+     * they carry no `shortcutId`. Chat and WhatsApp key every real conversation by `shortcutId`;
+     * a Chat notification without one is the "recent messages" roll-up (id 0, seen on the bench
+     * 10 Oct 2026) and must be dropped, not spooled as a new conversation. Voice replies are
+     * phone-keyed (ReplyCache phone -> conversation), so its fallback is harmless and stays until
+     * a Voice text has been observed on hardware (bridge-android/README.md).
+     */
+    val PKG_ID_FALLBACK_PACKAGES = setOf(GVOICE_PKG)
+
     const val SOURCE_SMS = "sms"
     const val SOURCE_GCHAT = "gchat"
     const val SOURCE_GVOICE = "gvoice"

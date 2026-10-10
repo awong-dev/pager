@@ -44,10 +44,89 @@ class NotificationMapperTest {
         assertEquals(2, m.dedupKeys.size)
     }
 
+    // ---- conversation-id rule (10 Oct 2026: Chat roll-up with no shortcutId must not become `pkg|0`) ----
+
     @Test
-    fun conversationIdFallsBackToPackageAndId() {
-        assertEquals("${Targets.GCHAT_PKG}|7", NotificationMapper.conversationId(snap(shortcutId = null, messages = emptyList())))
-        assertEquals("${Targets.GCHAT_PKG}|7", NotificationMapper.conversationId(snap(shortcutId = "  ", messages = emptyList())))
+    fun conversationKeyUsesShortcutIdWhenPresent() {
+        assertEquals(NotificationMapper.ConversationKey.Id("7LRis4AAAAE"), NotificationMapper.conversationKey(Targets.GCHAT_PKG, 0, "7LRis4AAAAE", groupSummary = false))
+        assertEquals(NotificationMapper.ConversationKey.Id("15551234567@s.whatsapp.net"), NotificationMapper.conversationKey(Targets.WHATSAPP_PKG, 3, "15551234567@s.whatsapp.net", groupSummary = false))
+        assertEquals(NotificationMapper.ConversationKey.Id("t.+15551234567"), NotificationMapper.conversationKey(Targets.GVOICE_PKG, 3, "t.+15551234567", groupSummary = false))
+        assertEquals("7LRis4AAAAE", NotificationMapper.conversationId(snap(shortcutId = "7LRis4AAAAE", messages = emptyList())))
+    }
+
+    @Test
+    fun conversationKeySkipsGroupSummariesEvenWithAShortcutId() {
+        assertEquals(NotificationMapper.ConversationKey.GroupSummary, NotificationMapper.conversationKey(Targets.GCHAT_PKG, 0, null, groupSummary = true))
+        assertEquals(NotificationMapper.ConversationKey.GroupSummary, NotificationMapper.conversationKey(Targets.WHATSAPP_PKG, 1, "x@g.us", groupSummary = true))
+        assertEquals(NotificationMapper.ConversationKey.GroupSummary, NotificationMapper.conversationKey(Targets.GVOICE_PKG, 1, null, groupSummary = true))
+    }
+
+    @Test
+    fun chatAndWhatsappWithoutShortcutIdAreDropped() {
+        for (pkg in listOf(Targets.GCHAT_PKG, Targets.WHATSAPP_PKG, Targets.WHATSAPP_BUSINESS_PKG)) {
+            assertEquals(pkg, NotificationMapper.ConversationKey.NoId, NotificationMapper.conversationKey(pkg, 0, null, groupSummary = false))
+            assertEquals(pkg, NotificationMapper.ConversationKey.NoId, NotificationMapper.conversationKey(pkg, 7, "  ", groupSummary = false))
+        }
+        assertNull(NotificationMapper.conversationId(snap(shortcutId = null, messages = emptyList())))
+        assertNull(NotificationMapper.conversationId(snap(pkg = Targets.WHATSAPP_PKG, shortcutId = "", messages = emptyList())))
+        // The bench shape: id 0, two recent messages, no shortcut id -> nothing is spooled.
+        val rollUp = NotificationMapper.map(
+            NotificationSnapshot(Targets.GCHAT_PKG, "0|${Targets.GCHAT_PKG}|0|null|10123", 0, null, null, null, false, "Kid", listOf(
+                SnapshotMessage("Dana P", "hello", 1L, false),
+                SnapshotMessage("Dana P", "again", 2L, false))),
+            noneSeen,
+        )
+        assertTrue(rollUp.events.isEmpty())
+        assertTrue(rollUp.dedupKeys.isEmpty())
+    }
+
+    @Test
+    fun voiceWithoutShortcutIdKeepsThePackageIdFallback() {
+        assertEquals(NotificationMapper.ConversationKey.Id("${Targets.GVOICE_PKG}|7"), NotificationMapper.conversationKey(Targets.GVOICE_PKG, 7, null, groupSummary = false))
+        assertEquals("${Targets.GVOICE_PKG}|7", NotificationMapper.conversationId(snap(pkg = Targets.GVOICE_PKG, shortcutId = "  ", messages = emptyList())))
+        val m = NotificationMapper.map(
+            snap(pkg = Targets.GVOICE_PKG, shortcutId = null, title = "Grandma", isGroup = false,
+                messages = listOf(SnapshotMessage("(555) 987-6543", "hello", 1L, false))),
+            noneSeen,
+        )
+        assertEquals("${Targets.GVOICE_PKG}|7", m.events[0].conversation.id)
+        assertEquals("+15559876543", m.events[0].sender.phone)
+    }
+
+    // ---- recent-message dedup across conversation keys (10 Oct 2026) ----
+
+    @Test
+    fun recentDupPredicateDropsTheEventAndItsDedupKey() {
+        val msgs = listOf(SnapshotMessage("Dana P", "hello", 1_700_000_000_000L, false), SnapshotMessage("Lee", "ok", 1_700_000_001_000L, false))
+        val recent = RecentMessages()
+        val first = NotificationMapper.map(snap(messages = msgs), noneSeen, recentDup = { recent.isDuplicate(Targets.GCHAT_PKG, it, now = 0L) })
+        assertEquals(2, first.events.size)
+        assertEquals(2, first.dedupKeys.size)
+        // Same lines re-posted under another conversation key: a different Room key, but the same tuple.
+        val second = NotificationMapper.map(snap(shortcutId = "other", messages = msgs), noneSeen, recentDup = { recent.isDuplicate(Targets.GCHAT_PKG, it, now = 1_000L) })
+        assertTrue(second.events.isEmpty())
+        assertTrue(second.dedupKeys.isEmpty())
+        // A new line in the same post still goes through.
+        val third = NotificationMapper.map(snap(messages = msgs + SnapshotMessage("Lee", "new", 1_700_000_002_000L, false)), noneSeen, recentDup = { recent.isDuplicate(Targets.GCHAT_PKG, it, now = 2_000L) })
+        assertEquals(listOf("new"), third.events.map { it.text })
+    }
+
+    @Test
+    fun recentMessagesExpireAfterTheWindowAndAreBounded() {
+        val r = RecentMessages(ttlMs = 1_000L, maxEntries = 3)
+        val k = RecentMessages.Key("p", "s", "t", 1L)
+        assertFalse(r.isDuplicate(k, now = 0L))
+        assertTrue(r.isDuplicate(k, now = 999L))
+        assertFalse(r.isDuplicate(k, now = 1_000L))
+        // Another package, sender, text or timestamp is a different message.
+        assertFalse(r.isDuplicate(k.copy(pkg = "q"), now = 1_000L))
+        assertFalse(r.isDuplicate(k.copy(sender = "x"), now = 1_000L))
+        assertFalse(r.isDuplicate(k.copy(text = "u"), now = 1_000L))
+        assertEquals(3, r.size())
+        assertFalse(r.isDuplicate(k.copy(ts = 2L), now = 1_000L))
+        assertEquals(3, r.size())
+        // The eldest (k) was evicted by the size cap, so it is new again.
+        assertFalse(r.isDuplicate(k, now = 1_000L))
     }
 
     @Test
