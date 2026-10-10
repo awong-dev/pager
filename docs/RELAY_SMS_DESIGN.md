@@ -43,7 +43,7 @@ each contact appears once and every text goes through the relay.
 - `app/policy.py` `check()` already evaluates the numbers column of both pickers against an
   external peer (`any` / `approved` + edge / `none`). Member default is `people`/`people`
   (numbers: none); admin default `open`/`any`.
-- Alerts (`app/alerts.py`, `families/{fid}/alerts`) push FCM to every family admin with
+- Alerts (`app/alerts.py`, `families/{fid}/alerts`) push FCM to every admin and super of the family (owner decision 9 Oct 2026) with
   `notify.alerts != false` (`backends/webapp.py` `push_alert`). `sms_unknown` exists for the
   modem path (open, nothing held); approve creates the contact + edge + `rederive_family_sms_contacts`.
 - The book (`app/book.py` `entries_for`, `devcfg._approved_contacts`) lists externals from

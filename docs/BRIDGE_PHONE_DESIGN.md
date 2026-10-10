@@ -46,7 +46,7 @@ account); Google Voice has no API; Android's `NotificationListenerService` sees 
   `PagerBackend._from_and_sndr` sets `from` = the group alias and `sndr` = `msg.senderAlias`
   (`docs/PROTOCOL.md` §3.1: `sndr` has the alias regex, ≤16). `firmware/main/msg.c` stores `sndr`
   as a string; `scr_pick.c` labels rows from `type` verbatim.
-- **Alerts.** `app/alerts.py` (`create` = store + `push_alert` FCM to family admins; `_ALERT_TITLES`
+- **Alerts.** `app/alerts.py` (`create` = store + `push_alert` FCM to every admin and super of the family; `_ALERT_TITLES`
   in `backends/webapp.py` raises on an unknown kind); `store/alerts.py` `AlertKind` literal,
   `find_open(family, kind, subject_uid, peer_phone)`; web `AlertCard.tsx` switches on kind.
 - **Setup codes.** `devsetup.issue()` + `store/setup_codes.py` (server-only collection, short

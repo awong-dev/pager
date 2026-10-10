@@ -135,7 +135,7 @@ def patch_me(req: PatchMeRequest, authed: Annotated[AuthedUser, Depends(require_
     """docs/FAMILIES_DESIGN.md §5.6 / task 4.2: today's only field is
     `notify.alerts` (whether this admin's family alerts are pushed,
     `app/backends/webapp.py`'s `push_alert`); a member can toggle it too,
-    it just has no effect since `push_alert` only ever considers admins."""
+    it just has no effect since `push_alert` only considers admins and supers."""
     notify_alerts = req.notify.alerts if req.notify is not None else None
     return users_store.update_user(authed.uid, notify_alerts=notify_alerts)
 

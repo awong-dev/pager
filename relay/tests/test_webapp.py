@@ -271,21 +271,51 @@ def test_push_alert_skips_admin_who_opted_out():
     assert fcm.calls == []
 
 
-def test_push_alert_skips_member_and_super():
-    users_store.create_user(
-        uid="fam5member", alias="fam5member", display_name="Member", role="member", family_id="fam5"
-    )
-    users_store.create_user(
-        uid="fam5super", alias="fam5super", display_name="Super", role="super", family_id="fam5"
-    )
-    push_tokens_store.add_token("fam5member", "tok_member5")
-    push_tokens_store.add_token("fam5super", "tok_super5")
-
+def _alert_push(family: str, *users: tuple[str, str, str | None, bool]) -> _RecordingFCMClient:
+    for uid, role, fam, notify in users:
+        users_store.create_user(
+            uid=uid, alias=uid, display_name=uid, role=role, family_id=fam
+        )
+        if not notify:
+            users_store.update_user(uid, notify_alerts=False)
+        push_tokens_store.add_token(uid, f"tok_{uid}")
     fcm = _RecordingFCMClient()
     push_alert(
-        "fam5",
-        {"kind": "contact_request", "id": "alert5", "subjectAlias": "kid5"},
+        family,
+        {"kind": "contact_request", "id": "alertx", "subjectAlias": "kidx"},
         fcm_client=fcm,
     )
+    return fcm
 
+
+def test_push_alert_reaches_super_of_the_family():
+    fcm = _alert_push("fam5", ("fam5super", "super", "fam5", True))
+    assert [t for t, _ in fcm.calls] == [["tok_fam5super"]]
+
+
+def test_push_alert_skips_super_of_another_family():
+    fcm = _alert_push("fam6", ("fam6super", "super", "other6", True))
     assert fcm.calls == []
+
+
+def test_push_alert_skips_member():
+    fcm = _alert_push("fam7", ("fam7member", "member", "fam7", True))
+    assert fcm.calls == []
+
+
+def test_push_alert_skips_super_who_opted_out():
+    fcm = _alert_push("fam8", ("fam8super", "super", "fam8", False))
+    assert fcm.calls == []
+
+
+def test_push_alert_logs_recipient_count(caplog):
+    import logging
+
+    with caplog.at_level(logging.INFO, logger="relay.backends.webapp"):
+        _alert_push(
+            "fam9",
+            ("fam9admin", "admin", "fam9", True),
+            ("fam9super", "super", "fam9", True),
+            ("fam9member", "member", "fam9", True),
+        )
+    assert "alert push kind=contact_request family=fam9 recipients=2" in caplog.text

@@ -357,8 +357,8 @@ Unchanged, except `/settings/notifications` gains a per-user toggle "Family aler
   recipient; `sms_unknown` from a device `sms_log` of an unlisted number; `contact_request` when a pager
   `contact_req` is stored (wraps today's `contactRequests` write).
 - **Push**: `backends/webapp.py` gains `push_alert(family_id, alert)` sending `{kind: "alert",
-  alertKind, id, title, body, url: "/family/alerts"}` to every token of every admin of that
-  family whose `notify.alerts` is not false. The service worker's `onBackgroundMessage` already
+  alertKind, id, title, body, url: "/family/alerts"}` to every token of every admin and super of that
+  family (owner decision 9 Oct 2026) whose `notify.alerts` is not false. The service worker's `onBackgroundMessage` already
   switches on `kind`; add the `alert` arm and a `pager-alert-{id}` tag.
 - **Foreground**: `NotificationWatcher` listens to open alerts (admins only) and shows a browser
   notification for new ones when the tab is hidden or not on `/family/alerts`.
@@ -421,8 +421,8 @@ Where the overnight build deviated from the sections above; the code is the refe
 4. **`LocateCrossFamily` is enforced at every API writer of `locate` edges** (`PUT
    /api/admin/allowlist`, `PUT /api/family/members/{uid}/approved`) rather than inside
    `store/allow.set_edge`; group create/join and contact approval never write `locate`.
-5. **Super is not pushed alerts** (no single family); family admins only, honouring
-   `notify.alerts`.
+5. **Alerts push every admin and super of the family** (a super whose `familyId` is that family;
+   owner decision 9 Oct 2026, superseding "super is not pushed"), honouring `notify.alerts`.
 6. **The policy gate is mutual**: a DM between two `people`/`people` members needs an edge in each
    direction. The allow-list matrix and the Approved editor write both directions; tests that set
    one edge were updated.

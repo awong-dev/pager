@@ -161,11 +161,11 @@ _ALERT_TITLES = {
 
 
 def push_alert(family_id: str, alert: dict, fcm_client: FCMClient | None = None) -> None:
-    """docs/FAMILIES_DESIGN.md §6 "Push": `alerts.py` (task 4.1, not yet
-    built) calls this once after it creates a `families/{family_id}/
-    alerts/{id}` doc. Every `users/{uid}` with `familyId == family_id` and
-    `role == 'admin'` (never `super`, never `member` -- exactly the family's
-    admins) whose `notify.alerts` is not `False` gets one FCM data message
+    """docs/FAMILIES_DESIGN.md §6 "Push": `alerts.py` calls this once after
+    it creates or re-upserts a `families/{family_id}/alerts/{id}` doc. Every
+    `users/{uid}` with `familyId == family_id` and `role in ('admin',
+    'super')` (never `member`; owner decision 9 Oct 2026: a super whose
+    `familyId` is this family is notified like an admin) whose `notify.alerts` is not `False` gets one FCM data message
     per registered push token, same client/dead-token handling as
     `WebappBackend.deliver`'s message push (`app/backends/fcm.py`'s
     `FirebaseFCMClient` deletes a token the first time FCM reports it dead;
@@ -199,11 +199,15 @@ def push_alert(family_id: str, alert: dict, fcm_client: FCMClient | None = None)
         ),
         "url": ALERT_URL,
     }
-    for user in users_store.list_users():
-        if user.familyId != family_id or user.role != "admin":
-            continue
-        if user.notify.alerts is False:
-            continue
+    recipients = [
+        u
+        for u in users_store.list_users()
+        if u.familyId == family_id and u.role in ("admin", "super") and u.notify.alerts is not False
+    ]
+    logger.info(
+        "alert push kind=%s family=%s recipients=%d", alert["kind"], family_id, len(recipients)
+    )
+    for user in recipients:
         try:
             tokens = push_tokens_store.list_tokens(user.uid)
             if tokens:
