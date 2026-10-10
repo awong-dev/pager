@@ -50,7 +50,7 @@ const familyLinks = [
   { href: "/family/people", label: "People" },
   { href: "/family/devices", label: "Devices" },
   { href: "/family/contacts", label: "Contacts" },
-  { href: "/family/chat", label: "Google Chat" },
+  { href: "/family/chat", label: "Bridged chats" },
   { href: "/family/alerts", label: "Alerts" },
 ];
 

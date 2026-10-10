@@ -116,9 +116,9 @@ function MemberProfileForm({
 
       <Divider />
 
-      <Typography variant="subtitle2">Google Chat</Typography>
+      <Typography variant="subtitle2">Bridged chats</Typography>
       <Button component={Link} href={`/family/chat?uid=${encodeURIComponent(member.uid)}`} variant="outlined">
-        Google Chat…
+        Bridged chats…
       </Button>
 
       <Divider />

@@ -136,7 +136,7 @@ function ChatInner() {
       }
       return t;
     } catch (e) {
-      if (alive.current) setError(errText(e, "Could not load Google Chat conversations"));
+      if (alive.current) setError(errText(e, "Could not load bridged conversations"));
       return null;
     }
   }, [ownerUid]);
@@ -231,7 +231,7 @@ function ChatInner() {
 
   return (
     <Stack spacing={3}>
-      <Typography variant="h5">Google Chat</Typography>
+      <Typography variant="h5">Bridged chats</Typography>
 
       <Autocomplete
         options={owners}
@@ -243,7 +243,7 @@ function ChatInner() {
         sx={{ maxWidth: 480 }}
       />
 
-      {!ownerUid && <Alert severity="info">Pick a member to manage their Google Chat conversations.</Alert>}
+      {!ownerUid && <Alert severity="info">Pick a member to manage the Google Chat, Google Voice and WhatsApp conversations their bridge phone carries.</Alert>}
       {error && <Alert severity="error">{error}</Alert>}
 
       {ownerUid && (
