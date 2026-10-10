@@ -20,7 +20,7 @@ from pydantic import BaseModel, ConfigDict
 
 from app.backends.base import DeliverResult, LinkStep
 from app.backends.bridge import apply_outbox_state
-from app.sms_text import redact_phone, voice_link, wa_link
+from app.sms_text import redact_phone, voice_link
 from app.store import bridge_outbox
 from app.store import bridges as bridges_store
 from app.store import messages as messages_store
@@ -97,13 +97,12 @@ class SmsBackend:
         """Channel per send: the sender's `config.via` entry for this
         external if set, else `gvoice` when the sender's number is the
         bridge's Voice number (and not its SIM), else `sms`; demoted to
-        whatever the bridge's caps allow (WA4: `whatsapp` falls back to sms,
-        then gvoice; the others as before)."""
+        whatever the bridge's caps allow. WhatsApp DMs are not an SMS channel
+        (BRIDGE_WHATSAPP_LID_DESIGN L2); they go through the chat backend."""
         via = (backend.config.get("via") or {}).get(msg.senderUid)
-        if via not in ("sms", "gvoice", "whatsapp"):
+        if via not in ("sms", "gvoice"):
             via = "gvoice" if from_number == bridge.voiceNumber != bridge.simNumber else "sms"
         order = {
-            "whatsapp": ("whatsapp", "sms", "gvoice"),
             "gvoice": ("gvoice", "sms"),
             "sms": ("sms", "gvoice"),
         }[via]
@@ -118,13 +117,12 @@ class SmsBackend:
             return DeliverResult(ok=False, state="failed", error="no_bridge")
         via = chosen
         to: dict[str, str] = {"phone": phone}
-        if via in ("gvoice", "whatsapp"):
-            # `voiceConv` is the generic per-member conversation slot: a Voice
-            # thread id or a WhatsApp JID, whichever channel was used last.
+        if via == "gvoice":
+            # `voiceConv` is the per-member Voice thread id.
             conv = (backend.config.get("voiceConv") or {}).get(msg.senderUid)
             if conv:
                 to["conversationId"] = conv
-            to["link"] = voice_link(phone) if via == "gvoice" else wa_link(phone)
+            to["link"] = voice_link(phone)
         item = bridge_outbox.enqueue_send(
             bridge, msg.id, backend.id, source=via, to=to, text=_render_body(msg)
         )

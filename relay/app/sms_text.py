@@ -20,11 +20,6 @@ def voice_link(e164: str) -> str:
     return f"https://voice.google.com/u/0/messages?itemId=t.{e164}"
 
 
-def wa_link(e164: str) -> str:
-    """WA2/WA4: `wa.me/<digits>` opens a WhatsApp chat composer for a number."""
-    return f"https://wa.me/{e164.lstrip('+')}"
-
-
 def pager_body(raw: str) -> str:
     """docs/PROTOCOL.md §3.1: each control character (U+0000-U+001F, U+007F)
     becomes a space, nothing else is collapsed, then strip."""

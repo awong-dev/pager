@@ -24,7 +24,7 @@ from app import bridge_numbers, chat_subscribe
 from app.bridgeauth import mint_token, require_bridge
 from app.inbound_text import handle_text, placeholder_for
 from app.routers.webhooks import _check_webhook_ip_rate_limit
-from app.sms_text import redact_phone, voice_link, wa_link
+from app.sms_text import redact_phone, voice_link
 from app.store import bridge_conversations, bridge_outbox
 from app.store import bridges as bridges_store
 from app.store import externals as externals_store
@@ -354,7 +354,6 @@ def _handle_text_event(
     caps_ok = {
         "sms": bridge.caps.sms,
         "gvoice": bridge.caps.gvoice,
-        "whatsapp": bridge.caps.whatsapp,
     }.get(event.source, False)
     if not caps_ok:
         return "dropped_cap"
@@ -363,9 +362,9 @@ def _handle_text_event(
     except ValueError:
         return "dropped_bad_from"
     sid = f"br_{bridge.id}_{event.id}"
-    # Voice and WhatsApp DMs both carry a conversation id (thread id / JID)
-    # and a deep link for the tier-2 reply.
-    conv_link = {"gvoice": voice_link, "whatsapp": wa_link}.get(event.source)
+    # Voice carries a conversation id (thread id) and a deep link for the
+    # tier-2 reply. WhatsApp never gets here (BRIDGE_WHATSAPP_LID_DESIGN L2).
+    conv_link = voice_link if event.source == "gvoice" else None
 
     def reply(text: str) -> None:
         bridge_outbox.enqueue_hint(
@@ -396,6 +395,11 @@ def _handle_text_event(
 
 CONVERSATIONS_PER_DAY = 50
 
+# BRIDGE_WHATSAPP_LID_DESIGN L5: a DM is `<digits>@lid` or `<digits>@s.whatsapp.net`,
+# a group `<digits-and-dashes>@g.us`. Anything else (the listener's
+# `pkg|notificationId` fallback) changes per notification.
+WA_CONV_RE = re.compile(r"^(\d+@(lid|s\.whatsapp\.net)|[\d-]+@g\.us)$")
+
 
 def _preview(event: BridgeEvent) -> str:
     return (event.text.strip() or (placeholder_for([a.kind for a in event.attachments]) if event.attachments else ""))
@@ -422,6 +426,10 @@ def _handle_chat_event(
         event = event.model_copy(
             update={"sender": event.sender.model_copy(update={"name": event.sender.name.lstrip("~").strip()})}
         )
+    title = conv.title
+    if not conv.isGroup and not title:
+        # L4: a 1:1 row is titled by the peer's display name.
+        title = event.sender.name or None
     if existing is None:
         since = datetime.now(UTC) - timedelta(days=1)
         if bridge_conversations.count_created_since(bridge.id, since) >= CONVERSATIONS_PER_DAY:
@@ -431,7 +439,7 @@ def _handle_chat_event(
             bridge,
             source=event.source,
             conversation_id=conv.id,
-            title=conv.title,
+            title=title,
             is_group=conv.isGroup,
             link=conv.link,
             speaker=None,
@@ -451,7 +459,7 @@ def _handle_chat_event(
         bridge,
         source=event.source,
         conversation_id=conv.id,
-        title=conv.title,
+        title=title,
         is_group=conv.isGroup,
         link=conv.link,
         speaker=event.sender.name,
@@ -489,9 +497,10 @@ def _handle_chat_event(
 
 def process_event(bridge: bridges_store.Bridge, event: BridgeEvent, routing, broker) -> str:
     if event.source == "whatsapp":
-        # WA2/WA3: DMs are phone-keyed texts, groups are Chat-style conversations.
-        if event.kind == "message" and not event.conversation.isGroup:
-            return _handle_text_event(bridge, event, routing)
+        # L1/L5: every WhatsApp conversation (DM or group) is keyed by its
+        # conversation id and takes the chat path.
+        if not WA_CONV_RE.match(event.conversation.id):
+            return "dropped_bad_conv"
         return _handle_chat_event(bridge, event, routing, broker)
     if event.source in ("sms", "gvoice") and event.kind == "message":
         return _handle_text_event(bridge, event, routing)
@@ -510,9 +519,13 @@ def process_events(
     results = []
     for event in events:
         outcome = process_event(bridge, event, routing, broker)
+        kind = ""
+        if event.source == "whatsapp":
+            cid = event.conversation.id
+            kind = " kind=" + ("lid" if cid.endswith("@lid") else "grp" if cid.endswith("@g.us") else "jid")
         logger.info(
-            "bridge in bridge=%s src=%s conv=%s from=%s outcome=%s",
-            bridge.id, event.source, conv_log_id(event.conversation.id), _from_label(event), outcome,
+            "bridge in bridge=%s src=%s conv=%s from=%s%s outcome=%s",
+            bridge.id, event.source, conv_log_id(event.conversation.id), _from_label(event), kind, outcome,
         )
         results.append({"id": event.id, "outcome": outcome})
     return results

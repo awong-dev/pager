@@ -8,7 +8,6 @@ from fastapi.testclient import TestClient
 
 from app.db.firestore import get_db
 from app.routing import Routing
-from app.sms_text import wa_link
 from app.store import alerts as alerts_store
 from app.store import backends as backends_store
 from app.store import bridge_conversations as conv_store
@@ -109,64 +108,9 @@ def test_number_patch_and_accept_sim_keep_whatsapp(client: TestClient, world: Wo
     assert r.status_code == 200 and r.json()["caps"]["whatsapp"] is True
 
 
-# --- WA2: DMs ----------------------------------------------------------------
+# --- B13: DMs keyed by conversation id (BRIDGE_WHATSAPP_LID_DESIGN) -------------
 
-
-def test_dm_from_known_contact_delivers_records_via_and_reply_goes_back_on_whatsapp(
-    client: TestClient, world: World, broker: FakeBrokerClient
-):
-    _kid_setup(world, broker)
-    bridge, headers = pair_bridge(client, world, caps=WA_CAPS)
-    ext = _mom(world)
-    assert _post(client, headers, _dm(text="hello kid")) == ["delivered"]
-    cfg = _sms_config(ext.uid)
-    assert cfg["via"] == {"kid": "whatsapp"} and cfg["voiceConv"] == {"kid": JID}
-    Routing(broker).send(
-        sender_uid="kid", recipient_alias=ext.alias, kind="text", body="reply",
-        origin_backend_kind="pager", wire_id="u_wa1",
-    )
-    (item,) = bridge_outbox.list_pending(bridge.id)
-    assert item.source == "whatsapp" and item.text == "reply"
-    assert item.to == {"phone": MOM, "conversationId": JID, "link": f"https://wa.me/{MOM[1:]}"}
-
-
-def test_dm_from_unknown_number_is_held_with_an_alert(
-    client: TestClient, world: World, broker: FakeBrokerClient
-):
-    _kid_setup(world, broker)
-    _, headers = pair_bridge(client, world, caps=WA_CAPS)
-    assert _post(client, headers, _dm(phone="+12065550222")) == ["held"]
-    (alert,) = alerts_store.list_alerts(world.family_id, "open")
-    assert alert.kind == "sms_unknown"
-
-
-def test_dm_drop_outcomes(client: TestClient, world: World, broker: FakeBrokerClient):
-    _kid_setup(world, broker)
-    _mom(world)
-    _, no_wa = pair_bridge(client, world, caps={"sms": True})
-    assert _post(client, no_wa, _dm()) == ["dropped_cap"]
-    _, headers = pair_bridge(client, world, sim="+12065550888", caps=WA_CAPS)
-    assert _post(client, headers, _dm(phone=None)) == ["dropped_bad_from"]
-    assert _post(client, headers, _dm(phone="not a number")) == ["dropped_bad_from"]
-
-
-def test_dm_too_long_hint_goes_back_on_whatsapp_with_link(
-    client: TestClient, world: World, broker: FakeBrokerClient
-):
-    _kid_setup(world, broker)
-    bridge, headers = pair_bridge(client, world, caps=WA_CAPS)
-    _mom(world)
-    assert _post(client, headers, _dm(text="x" * 200)) == ["too_long"]
-    (hint,) = bridge_outbox.list_pending(bridge.id)
-    assert hint.source == "whatsapp"
-    assert hint.to == {"phone": MOM, "conversationId": JID, "link": wa_link(MOM)}
-
-
-def test_wa_link_is_digits_only():
-    assert wa_link("+12065550111") == "https://wa.me/12065550111"
-
-
-# --- WA4: backend channel choice ----------------------------------------------
+LID = "9876543210@lid"
 
 
 def _send(broker: FakeBrokerClient, ext, wire: str):
@@ -176,41 +120,100 @@ def _send(broker: FakeBrokerClient, ext, wire: str):
     )
 
 
-def _delivery_state(wire: str) -> dict:
-    (m,) = [x for x in get_db().collection("messages").stream() if x.to_dict().get("wireId") == wire]
-    return m.to_dict()["deliveries"]
+def _lid(text: str = "hi", **extra):
+    return _dm(phone=None, text=text, conv=LID, **{"sender": {"name": "Albert"}, **extra})
 
 
-def test_whatsapp_via_falls_back_to_sms_then_gvoice_then_fails(
+@pytest.fixture
+def env(client: TestClient, world: World, broker: FakeBrokerClient) -> Env:
+    e = Env(client, world, broker)
+    bridges_store.set_caps(e.bridge.id, bridges_store.BridgeCaps(**WA_CAPS))
+    return e
+
+
+def test_lid_dm_without_phone_or_title_is_held_with_a_chat_unknown_alert(env: Env, fcm: RecordingFCM):
+    assert env.events(_lid("hello")) == ["held"]
+    row = conv_store.get(env.bridge.id, LID)
+    assert row.source == "whatsapp" and row.title == "Albert" and row.isGroup is False
+    (alert,) = alerts_store.list_alerts(env.world.family_id, "open")
+    assert alert.kind == "chat_unknown" and alert.source == "whatsapp"
+    assert [a for a in alerts_store.list_alerts(env.world.family_id, "open") if a.kind == "sms_unknown"] == []
+    bodies = [str(p) for p in fcm.sent] if hasattr(fcm, "sent") else []
+    assert not bodies or any("WhatsApp: Albert \u2192" in b for b in bodies)
+
+
+def test_dm_title_prefers_conversation_title_and_empty_sender_is_someone(env: Env):
+    ev = _lid("x")
+    ev["conversation"]["title"] = "Albert W"
+    ev["sender"] = {"name": ""}
+    assert env.events(ev) == ["held"]
+    assert conv_store.get(env.bridge.id, LID).title == "Albert W"
+
+
+def test_same_event_twice_is_duplicate_and_held_once(env: Env):
+    ev = _lid("once")
+    assert env.events(ev, ev) == ["held", "duplicate"]
+    assert conv_store.get(env.bridge.id, LID).heldCount == 1
+
+
+def test_lid_subscribe_delivers_backlog_book_entry_is_chat_and_next_is_delivered(env: Env):
+    env.events(_lid("one"), _lid("two"))
+    out = env.sub(LID, {"pagerName": "Albert WA"})
+    assert out["delivered"] == 2 and out["conversation"]["source"] == "whatsapp"
+    pages = [d for d in env.downs() if d.get("kind") != "book" and "body" in d]
+    assert [p["body"] for p in pages] == ["one", "two"]
+    from app import devcfg
+
+    assert {"a": out["alias"], "n": "Albert WA", "t": "chat"} in devcfg._approved_contacts("kid")
+    assert env.events(_lid("three")) == ["delivered"]
+
+
+def test_lid_pager_reply_outbox_has_conversation_id_and_title_but_no_phone(env: Env):
+    env.events(_lid("hello"))
+    out = env.sub(LID, {"pagerName": "Albert WA"})
+    env.pager_up(out["alias"], "hi back", "u_lid1")
+    (item,) = bridge_outbox.list_pending(env.bridge.id)
+    assert item.source == "whatsapp" and item.text == "hi back"
+    assert item.to["conversationId"] == LID and item.to["title"] == "Albert"
+    assert "phone" not in item.to and item.to.get("link") is None
+
+
+def test_phone_jid_dm_takes_the_chat_path_and_the_reply_carries_the_link(env: Env):
+    link = f"https://wa.me/{MOM.lstrip('+')}"
+    ev = _dm(phone=MOM, conv=JID)
+    ev["conversation"]["link"] = link
+    assert env.events(ev) == ["held"]
+    alerts = alerts_store.list_alerts(env.world.family_id, "open")
+    assert [a.kind for a in alerts] == ["chat_unknown"]
+    out = env.sub(JID, {"pagerName": "Mom WA"})
+    env.pager_up(out["alias"], "yo", "u_jid1")
+    (item,) = bridge_outbox.list_pending(env.bridge.id)
+    assert item.to["link"] == link and item.to["conversationId"] == JID and "phone" not in item.to
+
+
+def test_dm_needs_the_whatsapp_cap(client: TestClient, world: World, broker: FakeBrokerClient):
+    _, no_wa = pair_bridge(client, world, caps={"sms": True})
+    assert _post(client, no_wa, _lid()) == ["dropped_cap"]
+
+
+@pytest.mark.parametrize("conv", ["com.whatsapp|42", "123@c.us", "abc@lid", "@lid", "123@g.us.x"])
+def test_bad_conversation_ids_are_dropped_bad_conv(env: Env, conv: str):
+    assert env.events(_dm(conv=conv)) == ["dropped_bad_conv"]
+    assert conv_store.get(env.bridge.id, conv) is None
+
+
+def test_sms_and_voice_without_a_number_are_still_dropped_bad_from(
     client: TestClient, world: World, broker: FakeBrokerClient
 ):
     _kid_setup(world, broker)
-    bridge, headers = pair_bridge(client, world, voice=VOICE, caps=WA_CAPS)
-    ext = _mom(world)
-    assert _post(client, headers, _dm()) == ["delivered"]
-    assert _sms_config(ext.uid)["via"] == {"kid": "whatsapp"}
-
-    def caps(**kw):
-        base = {"sms": True, "gchat": True, "gvoice": True, "whatsapp": False}
-        bridges_store.set_caps(bridge.id, bridges_store.BridgeCaps(**{**base, **kw}))
-
-    caps()
-    _send(broker, ext, "u_fb1")
-    # Nothing was pending before; the newest item is the sms one.
-    items = bridge_outbox.list_pending(bridge.id)
-    assert [i.source for i in items] == ["sms"]
-    assert items[0].to == {"phone": MOM}
-    caps(sms=False)
-    _send(broker, ext, "u_fb2")
-    assert [i.source for i in bridge_outbox.list_pending(bridge.id)][-1] == "gvoice"
-    caps(sms=False, gvoice=False, gchat=True)
-    # The gate also needs a usable cap; whatsapp is off, so no_bridge.
-    _send(broker, ext, "u_fb3")
-    states = list(_delivery_state("u_fb3").values())
-    assert any(s["state"] == "failed" and s.get("error") == "no_bridge" for s in states)
+    _, headers = pair_bridge(client, world, voice=VOICE, caps=WA_CAPS)
+    for src in ("sms", "gvoice"):
+        ev = _dm(phone=None, conv="thread-1")
+        ev["source"] = src
+        assert _post(client, headers, ev) == ["dropped_bad_from"]
 
 
-def test_whatsapp_via_without_conversation_still_sends_with_link(
+def test_whatsapp_is_not_an_sms_channel_for_a_contact_with_a_stale_via(
     client: TestClient, world: World, broker: FakeBrokerClient
 ):
     _kid_setup(world, broker)
@@ -219,19 +222,12 @@ def test_whatsapp_via_without_conversation_still_sends_with_link(
     bid = externals_store.ensure_sms_backend(ext)
     row = backends_store.get_backend(ext.uid, bid)
     backends_store.update_backend(ext.uid, bid, config={**row.config, "via": {"kid": "whatsapp"}})
-    _send(broker, ext, "u_nc")
+    _send(broker, ext, "u_stale")
     (item,) = bridge_outbox.list_pending(bridge.id)
-    assert item.source == "whatsapp" and item.to == {"phone": MOM, "link": wa_link(MOM)}
+    assert item.source == "sms" and item.to == {"phone": MOM}
 
 
 # --- WA3: groups ---------------------------------------------------------------
-
-
-@pytest.fixture
-def env(client: TestClient, world: World, broker: FakeBrokerClient) -> Env:
-    e = Env(client, world, broker)
-    bridges_store.set_caps(e.bridge.id, bridges_store.BridgeCaps(**WA_CAPS))
-    return e
 
 
 def test_group_unknown_alert_strips_the_tilde_and_needs_the_cap(
@@ -336,20 +332,6 @@ def _held_then_approved(client, world, broker, headers, event, name="Mom"):
     return ext
 
 
-def test_approving_a_held_whatsapp_dm_records_via_and_the_reply_goes_on_whatsapp(
-    client: TestClient, world: World, broker: FakeBrokerClient
-):
-    _kid_setup(world, broker)
-    bridge, headers = pair_bridge(client, world, caps=WA_CAPS)
-    ext = _held_then_approved(client, world, broker, headers, _dm())
-    cfg = _sms_config(ext.uid)
-    assert cfg["via"] == {"kid": "whatsapp"} and cfg["voiceConv"] == {"kid": JID}
-    _send(broker, ext, "u_ap1")
-    (item,) = bridge_outbox.list_pending(bridge.id)
-    assert item.source == "whatsapp" and item.to["conversationId"] == JID
-    assert item.to["link"] == wa_link(MOM)
-
-
 def test_approving_a_held_voice_text_records_via_and_thread(
     client: TestClient, world: World, broker: FakeBrokerClient
 ):
@@ -369,8 +351,10 @@ def test_approving_a_held_row_without_via_changes_nothing(
     client: TestClient, world: World, broker: FakeBrokerClient
 ):
     _kid_setup(world, broker)
-    _, headers = pair_bridge(client, world, caps=WA_CAPS)
-    assert _post(client, headers, _dm()) == ["held"]
+    _, headers = pair_bridge(client, world, voice=VOICE, caps=WA_CAPS)
+    ev = _dm(conv="voice-thread-9")
+    ev["source"] = "gvoice"
+    assert _post(client, headers, ev) == ["held"]
     for snap in get_db().collection("heldSms").stream():  # a pre-B11b row
         snap.reference.update({"via": None, "conv": None})
     (alert,) = alerts_store.list_alerts(world.family_id, "open")

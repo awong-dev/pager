@@ -69,7 +69,7 @@ def handle_text(
 ) -> str:
     """Blocked, duplicate, empty, known contact -> deliver, else held.
     Returns the outcome label. `reply(text)` sends a text back to
-    `from_number` (the `too_long` hint). `via` (`sms`|`gvoice`|`whatsapp`, bridge only)
+    `from_number` (the `too_long` hint). `via` (`sms`|`gvoice`, bridge only; WhatsApp DMs take the chat path)
     is recorded per member on a delivered text."""
     family_id = target.familyId
     assert family_id is not None
