@@ -557,3 +557,54 @@ npm run build`. Android: `cd bridge-android && ./gradlew assembleDebug`.
 ### B12 Entanglement fixes — **done 9 Oct 2026**
 - **Files:** `relay/app/routers/bridge.py` (pair checks numbers before consuming the code), `relay/app/bridge_numbers.py` (`number_taken`), `relay/app/routers/family_bridges.py`, `relay/app/store/bridges.py` (`peek_pair_code`, `get_by_sms_number(prefer_owner=)`), `relay/app/backends/sms.py`, `relay/app/store/backends.py` (`record_member_channel`), `relay/app/inbound_text.py`, `relay/tests/test_bridge_entanglement.py`.
 - **Verify:** `cd relay && .venv/bin/python -m pytest -q tests/test_bridge_entanglement.py`.
+
+### B13 WhatsApp DMs keyed by conversation id (LID) — backend-dev
+- **Read:** `docs/BRIDGE_WHATSAPP_LID_DESIGN.md` (L1–L10); WA2–WA5 in `docs/BRIDGE_PHONE_DESIGN.md`;
+  `relay/app/routers/bridge.py` (`process_event`, `_handle_text_event`, `_handle_chat_event`), `relay/app/alerts.py`
+  (`chat_held_upsert`), `relay/app/backends/sms.py` (`_deliver_via_bridge`), `relay/app/backends/bridge.py`, `relay/tests/test_whatsapp.py`.
+- **Files:** `relay/app/routers/bridge.py`, `relay/app/backends/sms.py`, `relay/app/sms_text.py`, `relay/app/inbound_text.py`
+  (docstring only), `relay/app/alerts.py`, `relay/tests/test_whatsapp.py`, `relay/tests/test_bridge_entanglement.py` (only if
+  a whatsapp `via` assertion breaks), `tools/bridge_sim.py`, `tools/e2e_v2.py`, `docs/BRIDGE_PHONE_DESIGN.md`, `relay/README.md`.
+- **Do:**
+  1. `process_event`: every `whatsapp` event goes to `_handle_chat_event`. Put the L5 shape check first:
+     `^\d+@(lid|s\.whatsapp\.net)$` or `^[\d-]+@g\.us$`, otherwise return `dropped_bad_conv`.
+  2. `_handle_chat_event`: when `not conv.isGroup and not conv.title`, use `event.sender.name` (after the `~`
+     strip) as the title passed to `upsert_seen` (L4, all sources).
+  3. Delete the WA2 number path: `"whatsapp"` from the `_handle_text_event` caps map and `conv_link`; the `whatsapp` entries
+     in `SmsBackend._deliver_via_bridge` (`via` set, `order`, `wa_link`); `sms_text.wa_link` if it has no other caller.
+     `voiceConv` stays (Voice).
+  4. `chat_held_upsert`: for `not row.isGroup`, set `pushBody = f"{label}: {title} → @{alias}: {body}"`, where `label` is
+     WhatsApp / Google Chat / Google Voice by `row.source`. Groups keep the existing format.
+  5. `tools/bridge_sim.py`: `whatsapp_dm_event(..., lid=True)` builds `<digits>@lid` with no phone. The `bridge_whatsapp` e2e
+     scenario uses it (held → subscribe → delivered → reply outbox).
+  6. Docs: in `BRIDGE_PHONE_DESIGN.md`, mark WA2 and WA5's WhatsApp half "superseded 10 Oct 2026 by
+     BRIDGE_WHATSAPP_LID_DESIGN.md" and replace the `@lid` failure-mode row. Runbook outcome list gains `dropped_bad_conv`.
+- **Tests (`relay/tests/test_whatsapp.py`, replacing the WA2 DM tests at :115, :133, :143, :153, :184, :213, :339):**
+  - `@lid` DM with no phone and no title → `held`; row `source=whatsapp`, `title="Albert"`, `isGroup=False`; one open
+    `chat_unknown` with `source="whatsapp"`; pushBody starts `WhatsApp: Albert →`.
+  - Same event id posted twice → second outcome `duplicate`, `heldCount == 1`.
+  - Subscribe → backlog delivered to the owner's pager; book entry `t:"chat"`; next event → `delivered`.
+  - Pager reply → outbox `send` with `source="whatsapp"`, `to.conversationId="<n>@lid"`, `to.title="Albert"`, no `to.phone`.
+  - `@s.whatsapp.net` DM with `sender.phone` and `conversation.link` → the same chat path (held, `chat_unknown`), and no
+    `sms_unknown`; the reply outbox carries `to.link`.
+  - `com.whatsapp|42` conv id → `dropped_bad_conv`; `@g.us` group tests keep passing unchanged.
+  - Regression: `gvoice`/`sms` without a parseable number → still `dropped_bad_from`.
+- **Verify:** `cd relay && ruff check . && ruff format --check . && .venv/bin/python -m pytest -q` (needs `docker compose up -d
+  firebase`); `relay/.venv/bin/python tools/e2e_v2.py bridge_whatsapp`. Live check: one WhatsApp DM from the owner's phone
+  logs `bridge in src=whatsapp ... outcome=held` and a `chat_unknown` card reading "Direct message · WhatsApp".
+
+### A10 WhatsApp DM: drop the LID warning, link for phone JIDs — Android
+- **Read:** L6 and L8 in `docs/BRIDGE_WHATSAPP_LID_DESIGN.md`; `ChatNotificationListener.kt` (`handle`), `NotificationMapper.kt`
+  (`map`), `ReplyCache.kt`, `Dispatcher.kt` (`whatsapp`).
+- **Files:** `ChatNotificationListener.kt`, `NotificationMapper.kt`, `ReplyCache.kt`, `Dispatcher.kt`, `Targets.kt`
+  (comment on `WA_LID_JID`), `NotificationMapperTest.kt`, `bridge-android/README.md` (the `@lid` line at ~187).
+- **Do:** delete `lidLogged` and the LID `Log.w`. In `map`, for a WhatsApp non-group with a phone from the JID, set
+  `Conversation.link = Targets.waLink(phone)`. Drop the WhatsApp use of `rememberPhone`/`conversationForPhone`; Voice keeps
+  it. `Dispatcher.whatsapp` keeps tier 1 by conv id, then `to.link`, then title search for a non-group. No relay-contract
+  change. This task is independent of B13: the relay accepts `link` today.
+- **Tests (`NotificationMapperTest`):** replace `whatsappLidJidCarriesNoNumberButSenderLineStillCounts` with: a LID DM →
+  conv id `<n>@lid`, `sender.phone == null`, `conversation.link == null`, sender name kept. A `@s.whatsapp.net` DM → `link ==
+  "https://wa.me/<digits>"`. A group → no link.
+- **Verify:** `cd bridge-android && JAVA_HOME=$(/usr/libexec/java_home -v 17) ./gradlew assembleDebug testDebugUnitTest`.
+  Bench: a reply from the pager to a subscribed LID DM is sent by tier 1 (`bridge out ... tier=1`). Tier-2 title search for
+  a LID DM stays verify-on-bench.
