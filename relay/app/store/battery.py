@@ -35,7 +35,8 @@ class BattStats(BaseModel):
     x1: U32
     rl: U32
     rf: list[U32] = Field(min_length=3)
-    mvn: int | None = Field(None, ge=2000, le=4500, strict=True)
+    # 5000 mV ceiling: the modem rail reads ~4.5 V on USB.
+    mvn: int | None = Field(None, ge=2000, le=5000, strict=True)
     cn: U32
     md: list[U32] = Field(min_length=3)
     re: U32

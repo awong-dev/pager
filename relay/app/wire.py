@@ -446,7 +446,8 @@ class StatusEnvelope(BaseModel):
     @field_validator("batt_mv")
     @classmethod
     def _check_batt(cls, value: int | None) -> int | None:
-        if value is not None and not (2000 <= value <= 4500):
+        # 5000 mV ceiling: a pager on USB reads its modem rail near 4.5 V.
+        if value is not None and not (2000 <= value <= 5000):
             raise ValueError("batt_mv out of range")
         return value
 

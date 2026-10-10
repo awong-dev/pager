@@ -752,7 +752,7 @@ broker-generated LWT.
 | `v` | int | no (default 1) | `1` | Schema version |
 | `state` | string | **yes** | `online` \| `offline` | See §5.2 for the precise meaning |
 | `mode` | string | yes when `online` | `sleep` \| `active` | Device mode (firmware/README.md) |
-| `batt_mv` | int | yes when `online` | 2000…4500 | Battery millivolts. *(raw mV, not percent; LiPo discharge curve is relatively steep so any percent mapping belongs in the UI where it can be changed without a firmware flash.)* |
+| `batt_mv` | int | yes when `online` | 2000…5000 | Battery millivolts. *(raw mV, not percent; LiPo discharge curve is relatively steep so any percent mapping belongs in the UI where it can be changed without a firmware flash.)* |
 | `rssi` | int | yes when `online` | −140…0 | RSSI in dBm (now published at every `/status` for field debugging and status bar rendering). |
 | `session` | string | **yes** | `^s_[0-9a-f]{8}$` | Cold-boot session id (§1). Lets the relay tell a reboot from a deep-sleep cycle. |
 | `ts` | int | yes when `online` | epoch s, or 0 | Same rule as §3.5 |
@@ -825,7 +825,7 @@ B1–B4.)*
 | `x1` | ext1 (accelerometer) wakes. |
 | `rl` | 3V3 peripheral rail-on seconds (display and CardKB). |
 | `rf` | `[full, partial, upgraded]` display refreshes. |
-| `mvn` | Lowest valid battery reading in the window, mV, 2000…4500; omitted if there was none (airplane). Taken only from readings that already happen. |
+| `mvn` | Lowest valid battery reading in the window, mV, 2000…5000; omitted if there was none (airplane). Taken only from readings that already happen. |
 | `cn` | MQTT session (re)connects, i.e. TLS handshakes. |
 | `md` | `[off, search, gnss]`: modem-state seconds over the whole window, sleep included; registered idle is `dt − off − search − gnss`. |
 | `re` | Radio events: successful publishes, liveness SUBSCRIBEs and inbound MQTT messages (each costs an RRC tail). |

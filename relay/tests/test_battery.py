@@ -198,3 +198,21 @@ def test_model_mah_test_vector():
     m = {**battmodel.PRIORS}
     assert battmodel.model_mah(sample, m) == pytest.approx(3.4242, abs=1e-4)
     assert battmodel.model_mah({"hasBs": False}, m) is None
+
+
+def test_usb_rail_4600_mv_stored_and_listed(client, ingest, dev):
+    # USB rail reads ~4.5 V; the ceiling is 5000 mV.
+    _send(ingest, dev, _status(batt_mv=4600, bs={**BS, "mvn": 4600}), 1)
+    d = _docs()[0].to_dict()
+    assert d["battMv"] == 4600 and d["minMv"] == 4600
+    r = client.get("/api/devices/d/battery", headers=auth_header("student"))
+    assert r.status_code == 200
+    assert [s["battMv"] for s in r.json()["samples"]] == [4600]
+
+
+def test_5001_mv_rejected(ingest, dev):
+    _send(ingest, dev, _status(batt_mv=5001), 1)
+    assert _docs() == []
+    _send(ingest, dev, _status(session="s_00000002", bs={**BS, "mvn": 5001}), 2)
+    d = [x.to_dict() for x in _docs()]
+    assert all(x.get("minMv") != 5001 for x in d)
