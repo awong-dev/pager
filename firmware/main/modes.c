@@ -166,7 +166,8 @@ static const char *TAG = "modes";
 // cadence already costs.
 #define PAGER_WAKE_INTERVAL_ATTENTIVE_MS 1000u
 // How long the attentive cadence stays armed after the last input.
-#define PAGER_ATTENTIVE_S 120
+// 10 Oct 2026 (owner): 120 -> 30 s, with input.c PAGER_UI_AWAKE_S 119 -> 29.
+#define PAGER_ATTENTIVE_S 30
 // How long the pager stays awake, with RTS asserted, after each timer wake.
 // Measured on hardware 2026-09-21 (`sleeptest`, GM02SP LR8.2.1.0): while RTS is
 // deasserted the modem HOLDS its URCs (nothing is lost), but with 50 ms awake
@@ -183,7 +184,7 @@ static const char *TAG = "modes";
 // real user input (input_note_button_wake() above already seeds the button
 // FSM with it), and input.c's arm_awake_window() (called from the same wake
 // path, modes_run()'s `input_note_button_wake()` call above and input_poll()'s own
-// resolution below) arms a PAGER_UI_AWAKE_S (119 s, input.c) window in which
+// resolution below) arms a PAGER_UI_AWAKE_S (29 s, input.c) window in which
 // every subsequent loop iteration has ui_awake==true, so skip_sleep is true
 // and the loop never calls net_sleep() again for that whole window --
 // RTS/hardware flow control stays asserted (net.cpp's net_sleep() is the only
@@ -425,7 +426,7 @@ static int64_t s_dbg_looptime_last_log_us = 0;
 // esp_timer_get_time() itself starts near 0 at boot, so a literal 0 here
 // made `now - s_last_input_us` (modes_in_use()/modes_run()'s own `attentive`
 // local, both below) read as a small, in-window value for the whole first
-// PAGER_ATTENTIVE_S (120s) of every boot, spuriously treating "no input
+// PAGER_ATTENTIVE_S (30 s) of every boot, spuriously treating "no input
 // seen yet" as "attentive" (rail held on, 1s wake cadence) until the first
 // real key/button/ext1 event. This sentinel is far enough in the past
 // that `now - s_last_input_us` already exceeds PAGER_ATTENTIVE_S*1e6 on the
@@ -768,7 +769,7 @@ static void ui_wake_status_refresh(void)
 }
 
 // Round 4 (bug report 25 Sep ~3am PDT, the attentive-edge fix): the single
-// source of truth for "is the pager inside its PAGER_ATTENTIVE_S (120s)
+// source of truth for "is the pager inside its PAGER_ATTENTIVE_S (30 s)
 // attentive window" - previously duplicated (modes_in_use() below, and a
 // separate `attentive` local in modes_run()'s loop, "kept in sync by hand,
 // not shared" per that comment's own words) - now both call this one
@@ -779,8 +780,8 @@ static bool attentive_now(void)
 }
 
 // TASK_clock.md Do #2: "in use" for the status bar's live clock is the
-// attentive window (PAGER_ATTENTIVE_S = 120s from the last key/button/ext1
-// event, s_last_input_us above), NOT input.c's shorter PAGER_UI_AWAKE_S (119 s)
+// attentive window (PAGER_ATTENTIVE_S = 30 s from the last key/button/ext1
+// event, s_last_input_us above), NOT input.c's shorter PAGER_UI_AWAKE_S (29 s)
 // input_awake() UI-awake window ui_awake_now/render_now gate off of below --
 // the rail hold task keeps the display/CardKB rail on for the whole of the
 // attentive window (see the `if (attentive) rail_on()` comment further down
@@ -2633,7 +2634,7 @@ void modes_run(void)
         // fixing that needs the net_sleep() release-edge variant firmware/README.md R2 specifies,
         // which touches net.cpp and is out of this task's Files list - see
         // input.h's input_button_stuck() doc comment), OR input_awake()
-        // (docs/DEVICE_PLAN.md §5.3's PAGER_UI_AWAKE_S (119 s) UI-awake window, armed by the
+        // (docs/DEVICE_PLAN.md §5.3's PAGER_UI_AWAKE_S (29 s) UI-awake window, armed by the
         // last key/button event - F6.3 dropped the separate "composer
         // open" carve-out the pre-F6.3 code had here: every screen's text
         // entry now keeps this window armed via input_feed_key() on each
@@ -2728,7 +2729,7 @@ void modes_run(void)
         // attempt just fails cheaply, same as it does today for any other
         // disconnected stretch) -- withholding it would only delay a publish
         // that becomes possible again the moment CONNECTED/SUBSCRIBED lands,
-        // for no benefit. A PAGER_UI_AWAKE_S (119 s) input_awake() window after every keystroke
+        // for no benefit. A PAGER_UI_AWAKE_S (29 s) input_awake() window after every keystroke
         // used to gate msg_pump() off entirely, which is what let a typed
         // reply sit unsent for up to 116s waiting for that window (and the
         // UI-awake busy-poll cadence) to expire. See the rate limit at the
@@ -3065,7 +3066,7 @@ void modes_run(void)
             // which is the mis-attribution §9.1 had to unpick by arithmetic.
             // UI first (25 Sep): skipped entirely on an input wake --
             // PAGER_INPUT_WAKE_YIELD_MS's own comment has the full argument
-            // for why this loses no URC-delivery guarantee (the PAGER_UI_AWAKE_S (119 s)
+            // for why this loses no URC-delivery guarantee (the PAGER_UI_AWAKE_S (29 s)
             // input-awake window this same wake just armed keeps RTS
             // asserted far longer than this wait's own PAGER_PROBE_WAIT_MS
             // bound ever would). Power effect: an input wake never pays this
@@ -3220,11 +3221,11 @@ void modes_run(void)
         // nothing changed.
         bool render_now = ui_awake_now;
         // TASK_clock.md Do #3: checked every loop pass, not just while
-        // ui_awake_now (the PAGER_UI_AWAKE_S (119 s) window above) — modes_in_use() (ui_clock_due()'s
+        // ui_awake_now (the PAGER_UI_AWAKE_S (29 s) window above) — modes_in_use() (ui_clock_due()'s
         // own gate) is the wider 120s attentive window, and the rail hold
         // task keeps the display rail on for the whole of it (see
         // modes_in_use()'s own doc comment, modes.h), so a status-bar-only
-        // partial refresh is safe here even after the PAGER_UI_AWAKE_S (119 s) UI-awake window
+        // partial refresh is safe here even after the PAGER_UI_AWAKE_S (29 s) UI-awake window
         // has already lapsed. ui_clock_due() itself is cheap when nothing
         // changed (a string compare, no AT call) and returns false outright
         // whenever not in use, so this costs one extra partial per minute

@@ -201,7 +201,7 @@ each flash (the baseline, then the new build). Capture the `ui: CardKB: 0x..` DE
 
 Expected on the new build: 8 of 8 in A, B and C, and no `input event queue full` lines. The
 baseline is expected to drop about the first and last keys in B and C. Also expect `kbd: task
-started` at boot, `kbd: paused (rail off)` after about 120 s idle, and `kbd: boot guard` then
+started` at boot, `kbd: paused (rail off)` after about 30 s idle, and `kbd: boot guard` then
 `kbd: polling` about 1300 ms after a shake.
 
 ## Measurement checklist: network and power (PENDING_HW unless a row says resolved)
