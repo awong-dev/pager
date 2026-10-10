@@ -281,7 +281,7 @@ function FamilyPeopleInner() {
               onChange={(e) => setForm({ ...form, phone: e.target.value })}
               helperText={
                 <>
-                  For signing in only. To text a number from a pager, add it under{" "}
+                  Used to sign in. Texts from this number to a family bridge phone count as this person. To text a number from a pager, add it under{" "}
                   <Link href="/family/contacts">Contacts</Link>.
                 </>
               }
