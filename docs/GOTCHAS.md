@@ -305,6 +305,16 @@ Reading the bars off the glass as a `b w b w ...` list and diffing that against 
 what finally settled it; "looks right except one band" cost a whole round of chasing a defect that
 did not exist.
 
+## Cloud Run has no IPv6 egress: a dual-stack API host costs 30 s per call (10 Oct 2026)
+
+`g.api.soracom.io` publishes AAAA records. From Cloud Run, httpx tries the v6 address first and
+sits in the connect timeout (30 s) before falling back to v4, so the first Soracom SIM listing
+from the relay (auth + groups + subscribers) took 92 s and the admin page looked hung. The fix is
+`httpx.HTTPTransport(local_address="0.0.0.0")` in `relay/app/soracom.py`, which forces IPv4
+(1.8 s for the same three calls). Any new outbound client in the relay that talks to a dual-stack
+host needs the same, or a short connect timeout; the broker, Firebase and GCS clients have not
+shown it because their hosts are v4-only or use Google libraries.
+
 ## Twilio webhook 401s (8 Oct 2026)
 
 *Historical: Twilio was removed 9 Oct 2026 (last at 05ec3ed), so this webhook no longer exists.*
