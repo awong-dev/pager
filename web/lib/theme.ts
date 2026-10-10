@@ -25,11 +25,14 @@ let theme = createTheme({
         }),
       },
     },
-    // Long device ids / IMSIs / hashes wrap instead of widening the page.
+    // Phones: cells never wrap, so a table keeps its natural width and the
+    // TableContainer (lib/tableSx.ts) scrolls it sideways. `overflowWrap:
+    // "anywhere"` here was wrong: it let the table shrink to the viewport
+    // and every cell wrapped one character per line (seen live 9 Oct 2026).
     MuiTableCell: {
       styleOverrides: {
         root: ({ theme }) => ({
-          [theme.breakpoints.down("md")]: { overflowWrap: "anywhere" },
+          [theme.breakpoints.down("md")]: { whiteSpace: "nowrap" },
         }),
       },
     },
