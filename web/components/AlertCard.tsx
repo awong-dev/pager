@@ -17,10 +17,9 @@
  *   (docs/BRIDGE_PHONE_DESIGN.md decision 8). Subscribe opens
  *   `ChatSubscribeDialog` (its endpoint decides the alert), Ignore marks the
  *   conversation ignored, Dismiss drops the held texts; no Block.
- * - `contact_request`: a pager's `contact_req`. One-click Approve: an SMS
- *   request creates an SMS contact for the owner, a link request adds the
- *   owner->peer edge; approval never creates a person
- *   (docs/CONTACT_REQ_DESIGN.md decision 2). Block is offered for SMS only.
+ * - `contact_request`: the owner added someone from the pager and a send was
+ *   refused (docs/BOOK_ADD_ANYONE_DESIGN.md D8, D15). One-click Approve writes
+ *   the owner->peer edge; Dismiss declines. Block is offered for a phone only.
  */
 
 import { useState } from "react";
@@ -305,15 +304,10 @@ export default function AlertCard({ alert }: { alert: AlertRow }) {
           <>
             {isSms ? (
               <>
-                <Typography variant="body1">SMS contact for @{alert.subjectAlias}</Typography>
-                <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
-                  {alert.preview} · {formatPhoneDigits((alert.peerPhone ?? "").replace(/^\+/, ""))}
+                <Typography variant="body1">
+                  @{alert.subjectAlias} wants to text {alert.peerName ?? "a number"} (
+                  {formatPhoneDigits((alert.peerPhone ?? "").replace(/^\+/, ""))}) · added from the pager
                 </Typography>
-                {alert.peerAlias && (
-                  <Typography variant="body2" color="text.secondary">
-                    already known as {alert.peerName ?? alert.peerAlias} (@{alert.peerAlias})
-                  </Typography>
-                )}
                 <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.5 }}>
                   Approve: @{alert.subjectAlias}&apos;s pager can text this number.
                 </Typography>
@@ -321,10 +315,8 @@ export default function AlertCard({ alert }: { alert: AlertRow }) {
             ) : (
               <>
                 <Typography variant="body1">
-                  Link @{alert.subjectAlias} to @{alert.peerAlias} ({alert.peerName ?? "unknown"})
-                </Typography>
-                <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
-                  asked as {alert.preview}
+                  @{alert.subjectAlias} wants to message @{alert.peerAlias} ({alert.peerName ?? "unknown"}) · added
+                  from the pager
                 </Typography>
                 <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.5 }}>
                   Approve: @{alert.subjectAlias} can message @{alert.peerAlias}.

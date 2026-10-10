@@ -32,6 +32,7 @@ import Typography from "@mui/material/Typography";
 import AppShell from "@/components/AppShell";
 import RequireAuth from "@/components/RequireAuth";
 import { ApiError, api } from "@/lib/api";
+import type { BookResponse } from "@/lib/book";
 import { useDirectory } from "@/lib/directory";
 import { familyQuery, useFamily } from "@/lib/family-context";
 import { getFirestoreDb } from "@/lib/firebase";
@@ -61,7 +62,9 @@ const emptyAdd = { phone: "", name: "" };
 function FamilyContactsInner() {
   const fullScreen = useFullScreenDialog();
   const { familyId } = useFamily();
-  const { byUid } = useDirectory();
+  const { byUid, contacts: people } = useDirectory();
+  // contact uid -> member uids whose address book marks it "added from the pager".
+  const [addedBy, setAddedBy] = useState<Record<string, string[]>>({});
   const [contacts, setContacts] = useState<ContactRow[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -91,6 +94,30 @@ function FamilyContactsInner() {
       await loadContacts();
     })();
   }, [familyId]);
+
+  // The contacts API does not say who added a contact, so read each member's
+  // book (`GET /api/book?uid=`, family admins may) and collect the `added` marks.
+  useEffect(() => {
+    if (!familyId) return;
+    let cancelled = false;
+    const members = people.filter((p) => byUid(p.uid)?.familyId === familyId);
+    Promise.all(
+      members.map((m) =>
+        api
+          .get<BookResponse>(`/book?uid=${encodeURIComponent(m.uid)}`)
+          .then((b) => b.entries.filter((e) => e.added && e.uid).map((e) => [e.uid as string, m.uid] as const))
+          .catch(() => [] as (readonly [string, string])[])
+      )
+    ).then((rows) => {
+      if (cancelled) return;
+      const out: Record<string, string[]> = {};
+      for (const [peer, owner] of rows.flat()) (out[peer] ??= []).push(owner);
+      setAddedBy(out);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [familyId, people, byUid, contacts]);
 
   // Linked families -- read-only cross-family `allow` edges (docs/
   // FAMILIES_TASKS.md 3.6): `familyIds` with two distinct entries.
@@ -225,6 +252,9 @@ function FamilyContactsInner() {
                       <Tooltip key={`i-${uid}`} title="On their pager because their policy is Open">
                         <Chip size="small" variant="outlined" label={`${labelFor(uid)} (policy)`} />
                       </Tooltip>
+                    ))}
+                    {(addedBy[c.uid] ?? []).map((uid) => (
+                      <Chip key={`a-${uid}`} size="small" color="info" variant="outlined" label={`added by ${labelFor(uid)}`} />
                     ))}
                   </Stack>
                 </TableCell>

@@ -25,6 +25,8 @@ export interface BookEntry {
   sendable: boolean;
   reason?: string | null;
   onPager: boolean;
+  // docs/BOOK_ADD_ANYONE_DESIGN.md D4: the owner added this entry from the pager.
+  added: boolean;
 }
 
 export interface BookResponse {
@@ -115,6 +117,12 @@ export async function saveNick(owner: string, peer: string, nick: string): Promi
   } else {
     await api.put(path, { nick: t });
   }
+}
+
+/** `DELETE /api/book/{owner}/added/{peer}` (D4): drops the "added from the pager"
+ * marker; returns the refreshed book. 404 when there is no marker. */
+export async function removeAdded(owner: string, peer: string): Promise<BookResponse> {
+  return api.del<BookResponse>(`/book/${encodeURIComponent(owner)}/added/${encodeURIComponent(peer)}`);
 }
 
 export function reasonText(reason?: string | null): string {
