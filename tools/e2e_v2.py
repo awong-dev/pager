@@ -109,6 +109,16 @@ WIRE_MODE: str = "json"
 # new session id, and here also a bumped `n` epoch) models a cold boot.
 _DEVICE_CLIENTS: dict[str, pager_client.DeviceClient] = {}
 
+# The relay issues device ids (`pgr-` + 8 hex; owner decision 9 Oct 2026), so
+# scenarios name their devices by a stable *label* (e.g. "pgr-e2e-1") and look
+# the issued id up here. `_DEVICE_CLIENTS` is keyed by the issued id.
+_ISSUED_IDS: dict[str, str] = {}
+
+
+def issued_id(label: str) -> str:
+    """The relay-issued device id for a device this run created under `label`."""
+    return _ISSUED_IDS[label]
+
 
 def create_device_with_secret(
     admin: pager_client.ServerClient,
@@ -138,10 +148,14 @@ def create_device_with_secret(
     both exist, going through them exercises the same path a real device
     uses instead of hand-writing relay-internal state a real client-facing
     API can't produce."""
-    info = admin.admin_device_add(device_id, owner_alias, default_to_alias=default_to_alias)
+    label = device_id  # the scenario's name for the device; the relay issues the real id
+    info = admin.admin_device_add(label, owner_alias, default_to_alias=default_to_alias)
+    issued = info["device"]["id"]
+    _ISSUED_IDS[label] = issued
+    print(f"device created: label={label!r} issued id={issued}")
     device = pager_client.bootstrap_device(info["setupCode"], port=MQTT_PORT, wire=WIRE_MODE)
-    assert device.device_id == device_id, (device.device_id, device_id)
-    _DEVICE_CLIENTS[device_id] = device
+    assert device.device_id == issued, (device.device_id, issued)
+    _DEVICE_CLIENTS[issued] = device
     return info
 
 
@@ -156,6 +170,7 @@ def make_device(device_id: str) -> pager_client.DeviceClient:
     ever fires for a device id this run never provisioned that way, and
     plays an unsigned v1 device speaking this run's `--wire` encoding
     (`WIRE_MODE`)."""
+    device_id = _ISSUED_IDS.get(device_id, device_id)  # accept a label or an issued id
     existing = _DEVICE_CLIENTS.get(device_id)
     if existing is not None:
         return existing
@@ -475,9 +490,9 @@ def scenario_bootstrap() -> None:
     admin.admin_set_allow("parent", "student", message=True, locate=True, one_way=False)
 
     device_info = create_device_with_secret(admin, "pgr-e2e-1", "student", default_to_alias="parent")
-    assert device_info["device"]["mqttUsername"] == "pgr-e2e-1"
+    assert device_info["device"]["mqttUsername"] == device_info["device"]["id"] == issued_id("pgr-e2e-1")
     assert device_info["setupCode"]
-    print("bootstrap: admin, parent, student, allow-edge and device pgr-e2e-1 created")
+    print(f"bootstrap: admin, parent, student, allow-edge and device pgr-e2e-1 created as {issued_id('pgr-e2e-1')}")
 
 
 def scenario_text_roundtrip() -> None:
@@ -728,12 +743,12 @@ def scenario_location_periodic() -> None:
 
     device.loc_auto(5)
     wait_until(
-        lambda: len(oracle.locations_store.list_locations("pgr-e2e-locp")) >= 2,
+        lambda: len(oracle.locations_store.list_locations(issued_id("pgr-e2e-locp"))) >= 2,
         timeout=25,
         description="at least 2 periodic fixes to land in devices/{d}/locations",
     )
     device.loc_stop_auto()
-    fixes = oracle.locations_store.list_locations("pgr-e2e-locp")
+    fixes = oracle.locations_store.list_locations(issued_id("pgr-e2e-locp"))
     print(f"location_periodic: {len(fixes)} periodic fixes landed in devices/{{d}}/locations")
 
     conv = oracle.messages_store.get_conversation(
@@ -896,7 +911,7 @@ def scenario_location_on_demand() -> None:
     tick_resp.raise_for_status()
     tick_json = tick_resp.json()
     assert tick_json.get("locReqsCleared", 0) >= 1, tick_json
-    assert not oracle.loc_req_exists("pgr-e2e-locd4")
+    assert not oracle.loc_req_exists(issued_id("pgr-e2e-locd4"))
     print(f"location_on_demand: tick() cleared the stale locReqs row -- {tick_json}")
 
     fresh = parent.locate("locdemo4")
@@ -937,15 +952,15 @@ def scenario_retention() -> None:
     create_device_with_secret(admin, "pgr-e2e-retloc", "retloc")
     admin.admin_set_retention(messages="4w", locations="1d")
 
-    fresh_loc_id = _backdate_location("pgr-e2e-retloc", days_ago=0.02)  # ~30 min old
-    stale_loc_id = _backdate_location("pgr-e2e-retloc", days_ago=3)  # well past 1 day
+    fresh_loc_id = _backdate_location(issued_id("pgr-e2e-retloc"), days_ago=0.02)  # ~30 min old
+    stale_loc_id = _backdate_location(issued_id("pgr-e2e-retloc"), days_ago=3)  # well past 1 day
     fresh_msg_id = parent.say("student", "retention: still here after a locations-only sweep")["id"]
 
     sweep_resp = admin.api_post("/internal/sweep", {})
     sweep_resp.raise_for_status()
     print(f"retention: sweep (locations=1d) -> {sweep_resp.json()}")
 
-    remaining_ids = {f.id for f in oracle.locations_store.list_locations("pgr-e2e-retloc", limit=50)}
+    remaining_ids = {f.id for f in oracle.locations_store.list_locations(issued_id("pgr-e2e-retloc"), limit=50)}
     assert stale_loc_id not in remaining_ids, remaining_ids
     assert fresh_loc_id in remaining_ids, remaining_ids
     assert oracle.message(fresh_msg_id) is not None, "messages must be untouched by a locations-only sweep"
@@ -1186,9 +1201,10 @@ def scenario_setup_code() -> None:
 
     # --- happy path: create -> code -> real bootstrap -> provisioned -> boot user gone ---
     result = admin.admin_device_add("pgr-e2e-setup", "scowner")
+    setup_id = result["device"]["id"]
     assert result["brokerPush"] == "pushed", result  # BROKER_MANAGES_AUTH=1 (default) in this stack
     code = result["setupCode"]
-    print(f"setup_code: admin created pgr-e2e-setup, brokerPush={result['brokerPush']}, code={code!r}")
+    print(f"setup_code: admin created pgr-e2e-setup as {setup_id}, brokerPush={result['brokerPush']}, code={code!r}")
 
     token_bytes, _host, _port, _apn = devsetup.parse(code)
     bid, _bpw, _bkey = devsetup.derive(token_bytes)
@@ -1197,15 +1213,15 @@ def scenario_setup_code() -> None:
     print(f"setup_code: bootstrap credential {boot_username} is live on EMQX before the device fetches it")
 
     device = pager_client.bootstrap_device(code, port=MQTT_PORT, wire=WIRE_MODE)
-    assert device.device_id == "pgr-e2e-setup", device.device_id
-    print("setup_code: real §3.2 bootstrap fetch complete, now holding pgr-e2e-setup's real credentials")
+    assert device.device_id == setup_id, (device.device_id, setup_id)
+    print(f"setup_code: real §3.2 bootstrap fetch complete, now holding {setup_id}'s real credentials")
 
     device.connect()
     wait_until(lambda: device.connected, timeout=10, description="bootstrapped device to connect signed")
     device.publish_status(batt_mv=3800, mode="active", rssi=-70)
 
     def _provisioned() -> bool:
-        d = devices_store.get_device("pgr-e2e-setup")
+        d = devices_store.get_device(setup_id)
         return d is not None and d.provisionState == "provisioned"
 
     wait_until(
@@ -1222,6 +1238,7 @@ def scenario_setup_code() -> None:
 
     # --- expired code: patch expiresAt, call devsetup.expire() directly, confirm no retained bundle ---
     result2 = admin.admin_device_add("pgr-e2e-setup-exp", "scowner")
+    setup_exp_id = result2["device"]["id"]
     code2 = result2["setupCode"]
     token_bytes2, _h2, _p2, _a2 = devsetup.parse(code2)
     bid2, _bpw2, _bkey2 = devsetup.derive(token_bytes2)
@@ -1230,7 +1247,7 @@ def scenario_setup_code() -> None:
 
     assert _emqx_user_exists(boot_username2), "boot user should exist before expiry"
     assert _emqx_retained_message_exists(down_topic2), "retained bundle should exist before expiry"
-    print("setup_code: pgr-e2e-setup-exp's bootstrap credential and retained bundle both exist before expiry")
+    print(f"setup_code: pgr-e2e-setup-exp ({setup_exp_id})'s bootstrap credential and retained bundle both exist before expiry")
 
     get_db().collection("setupCodes").document(bid2).update(
         {"expiresAt": datetime.now(UTC) - timedelta(minutes=1)}
@@ -1301,7 +1318,7 @@ def scenario_address_book() -> None:
                 a
                 for a in alerts
                 if a["kind"] == "contact_request"
-                and a.get("contactRequestKey") == f"pgr-e2e-book_{req_id}"
+                and a.get("contactRequestKey") == f"{issued_id('pgr-e2e-book')}_{req_id}"
             ),
             None,
         )
@@ -1342,7 +1359,7 @@ def scenario_address_book() -> None:
     )
 
     wait_until(
-        lambda: _pending_book_or_cfg_acked("pgr-e2e-book", "pendingBook"),
+        lambda: _pending_book_or_cfg_acked(issued_id("pgr-e2e-book"), "pendingBook"),
         timeout=10,
         description="device's book 'shown' ack to land at the relay",
     )
@@ -1363,7 +1380,7 @@ def scenario_address_book() -> None:
     assert oracle.thread("abstudent", contact_alias) == [], "no relay message to an SMS contact"
     print("address_book: message to the SMS contact -> 'sms not set up', no thread written")
 
-    admin.admin_push_cfg("pgr-e2e-book", auto=2)
+    admin.admin_push_cfg(issued_id("pgr-e2e-book"), auto=2)
     wait_until(
         lambda: device.lock_auto_min == 2,
         timeout=10,
@@ -1372,7 +1389,7 @@ def scenario_address_book() -> None:
     print("address_book: device applied cfg lock.auto=2")
 
     wait_until(
-        lambda: _pending_book_or_cfg_acked("pgr-e2e-book", "pendingCfg"),
+        lambda: _pending_book_or_cfg_acked(issued_id("pgr-e2e-book"), "pendingCfg"),
         timeout=10,
         description="device's cfg 'shown' ack to land at the relay",
     )
@@ -1422,7 +1439,7 @@ def scenario_sms_log() -> None:
     print(f"sms_log: device applied sms_contacts={device.sms_contacts}")
 
     wait_until(
-        lambda: _pending_book_or_cfg_acked("pgr-e2e-sms", "pendingCfgSms"),
+        lambda: _pending_book_or_cfg_acked(issued_id("pgr-e2e-sms"), "pendingCfgSms"),
         timeout=10,
         description="device's cfg.sms 'shown' ack to land at the relay",
     )
@@ -1432,7 +1449,7 @@ def scenario_sms_log() -> None:
     in_id = device.sms_receive(stranger_phone, "who is this")
 
     def _log_entries() -> list[dict]:
-        return admin.sms_log_get("pgr-e2e-sms")["entries"]
+        return admin.sms_log_get(issued_id("pgr-e2e-sms"))["entries"]
 
     wait_until(
         lambda: len(_log_entries()) >= 2,
