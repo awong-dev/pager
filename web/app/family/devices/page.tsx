@@ -42,7 +42,6 @@ import FirmwareChip from "@/components/FirmwareChip";
 import FirmwareUpdateDialog from "@/components/FirmwareUpdateDialog";
 import RequireAuth from "@/components/RequireAuth";
 import { ApiError, api } from "@/lib/api";
-import { useAuth } from "@/lib/auth-context";
 import { useNewestBuild } from "@/lib/firmware";
 import { locBackoffLabel } from "@/lib/deviceTrust";
 import { useDirectory } from "@/lib/directory";
@@ -108,10 +107,11 @@ interface DeviceSetupResponse {
 function FamilyDevicesInner() {
   const { byUid, contacts } = useDirectory();
   const { familyId } = useFamily();
-  const { isSuper } = useAuth();
-  const newestBuild = useNewestBuild(isSuper);
   const [fwDeviceId, setFwDeviceId] = useState<string | null>(null);
   const [devices, setDevices] = useState<DeviceRow[]>([]);
+  // The relay requires a device on the family build list; the build list is
+  // the same for every device of the family, so use the first one.
+  const newestBuild = useNewestBuild(true, "family", devices[0]?.id);
   const [error, setError] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [form, setForm] = useState(emptyForm);
@@ -340,11 +340,9 @@ function FamilyDevicesInner() {
                   <TableCell>
                     <Stack spacing={0.5} sx={{ alignItems: "flex-start" }}>
                       <FirmwareChip status={d.status} newest={newestBuild} />
-                      {isSuper && (
-                        <Button size="small" onClick={() => setFwDeviceId(d.id)}>
-                          Update firmware…
-                        </Button>
-                      )}
+                      <Button size="small" onClick={() => setFwDeviceId(d.id)}>
+                        Update firmware…
+                      </Button>
                     </Stack>
                   </TableCell>
                   <TableCell>
@@ -530,6 +528,7 @@ function FamilyDevicesInner() {
       {fwDeviceId !== null && (
         <FirmwareUpdateDialog
           device={devices.find((x) => x.id === fwDeviceId) ?? null}
+          scope="family"
           open
           onClose={() => setFwDeviceId(null)}
         />

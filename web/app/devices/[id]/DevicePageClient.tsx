@@ -158,8 +158,10 @@ function DeviceInner() {
   const id = useDeviceId();
   const router = useRouter();
   const [device, setDevice] = useState<(DeviceDoc & { id: string }) | null>(null);
-  const { isSuper } = useAuth();
-  const newestBuild = useNewestBuild(isSuper);
+  const { isSuper, isFamilyAdmin } = useAuth();
+  // A super uses the account-level admin routes; a family admin the family ones.
+  const fwScope = isSuper ? "admin" : "family";
+  const newestBuild = useNewestBuild(isFamilyAdmin, fwScope, id);
   const [fwOpen, setFwOpen] = useState(false);
   const [deviceError, setDeviceError] = useState<string | null>(null);
 
@@ -290,14 +292,14 @@ function DeviceInner() {
       {device && (
         <Stack direction="row" spacing={1} sx={{ alignItems: "flex-start" }}>
           <FirmwareChip status={device.status} newest={newestBuild} />
-          {isSuper && (
+          {isFamilyAdmin && (
             <Button size="small" onClick={() => setFwOpen(true)}>
               Update firmware…
             </Button>
           )}
         </Stack>
       )}
-      {fwOpen && <FirmwareUpdateDialog device={device} open onClose={() => setFwOpen(false)} />}
+      {fwOpen && <FirmwareUpdateDialog device={device} scope={fwScope} open onClose={() => setFwOpen(false)} />}
 
       {smsLost > 0 && (
         <Alert severity="warning">

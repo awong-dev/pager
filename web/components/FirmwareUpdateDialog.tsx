@@ -19,6 +19,7 @@ import {
   listBuilds,
   pushOta,
   type FirmwareBuild,
+  type FirmwareScope,
 } from "@/lib/firmware";
 import type { DeviceDoc } from "@/lib/types";
 
@@ -26,13 +27,15 @@ function errText(e: unknown): string {
   return e instanceof ApiError ? e.message : "Request failed.";
 }
 
-/** Mount only while open (state starts fresh each time). Super-admin "Update firmware" dialog -- docs/OTA_DESIGN.md §1 D10, §4. */
+/** Mount only while open (state starts fresh each time). "Update firmware" dialog for a super (`admin` scope) or a family admin (`family` scope, own family only) -- docs/OTA_DESIGN.md §1 D10, §4. */
 export default function FirmwareUpdateDialog({
   device,
+  scope,
   open,
   onClose,
 }: {
   device: (DeviceDoc & { id: string }) | null;
+  scope: FirmwareScope;
   open: boolean;
   onClose: () => void;
 }) {
@@ -45,7 +48,7 @@ export default function FirmwareUpdateDialog({
   useEffect(() => {
     if (!open || !deviceId) return;
     let cancelled = false;
-    listBuilds(deviceId)
+    listBuilds(scope, deviceId)
       .then((b) => {
         if (!cancelled) setBuilds([...b].sort((x, y) => y.published - x.published));
       })
@@ -55,7 +58,7 @@ export default function FirmwareUpdateDialog({
     return () => {
       cancelled = true;
     };
-  }, [open, deviceId]);
+  }, [open, deviceId, scope]);
 
   // Same normalisation as the relay's 409 check: trim, lowercase, first 16 hex.
   const running = device?.status?.img ? device.status.img.trim().toLowerCase().slice(0, 16) : null;
@@ -111,7 +114,7 @@ export default function FirmwareUpdateDialog({
                 color="inherit"
                 size="small"
                 disabled={busy || !deviceId}
-                onClick={() => deviceId && void run(() => cancelOta(deviceId))}
+                onClick={() => deviceId && void run(() => cancelOta(scope, deviceId))}
               >
                 Cancel pending update
               </Button>
@@ -166,7 +169,7 @@ export default function FirmwareUpdateDialog({
         <Button
           variant="contained"
           disabled={busy || !capable || !chosen || chosenIsRunning || !deviceId}
-          onClick={() => deviceId && chosen && void run(() => pushOta(deviceId, chosen.id16))}
+          onClick={() => deviceId && chosen && void run(() => pushOta(scope, deviceId, chosen.id16))}
         >
           Send update
         </Button>

@@ -132,7 +132,7 @@ function DevicesInner() {
   const [setupResult, setSetupResult] = useState<SetupCodeResult | null>(null);
   const [caConfirm, setCaConfirm] = useState<CaConfirmState | null>(null);
   const [fwDeviceId, setFwDeviceId] = useState<string | null>(null);
-  const newestBuild = useNewestBuild(true);
+  const newestBuild = useNewestBuild(true, "admin");
   const [caBusy, setCaBusy] = useState(false);
   const [caError, setCaError] = useState<string | null>(null);
   const [caSuccess, setCaSuccess] = useState<string | null>(null);
@@ -583,6 +583,7 @@ function DevicesInner() {
       {fwDeviceId !== null && (
         <FirmwareUpdateDialog
           device={devices.find((x) => x.id === fwDeviceId) ?? null}
+          scope="admin"
           open
           onClose={() => setFwDeviceId(null)}
         />
