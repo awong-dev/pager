@@ -15,39 +15,41 @@ export interface PolicyOption {
   hidden?: boolean;
 }
 
-const PEOPLE_OUT = "Only approved people; only approved contacts on their pager.";
-
 // docs/FAMILIES_DESIGN.md §2 "Outbound" table: `users.policy.out`, "who @kid
-// can start or continue a chat with". The relay sends no SMS
-// (docs/V02_DESIGN.md §6): "contacts" are the pager's own SMS list. The
-// `hidden` codes duplicate a visible one for people and stay only so stored
-// values still get a label.
+// can start or continue a chat with". "Numbers" are external SMS contacts
+// reached through the member's bridge phone (docs/BRIDGE_PHONE_DESIGN.md);
+// the number options were hidden from 7 Oct 2026 (no relay SMS) until the
+// first bridge phone went live on 9 Oct 2026.
 export const OUTBOUND_POLICIES: PolicyOption[] = [
   {
     code: "open",
     label: "Open",
-    description:
-      "Message any person; every family contact is on their pager. Admins are alerted when a new conversation starts.",
+    description: "Message any person or any number. Admins are alerted when a new conversation starts.",
   },
-  { code: "people", label: "People", description: PEOPLE_OUT },
-  { code: "people_sms", label: "People", description: PEOPLE_OUT, hidden: true },
-  { code: "sms", label: "No people", description: "No people; only approved contacts on their pager." },
-  {
-    code: "any_sms",
-    label: "No people",
-    description: "No people; every family contact is on their pager.",
-    hidden: true,
-  },
+  { code: "people", label: "People", description: "Only approved people, no numbers." },
+  { code: "people_sms", label: "People + Numbers", description: "Approved people and approved numbers." },
+  { code: "sms", label: "Numbers", description: "Only approved numbers, no people." },
+  { code: "any_sms", label: "Any number", description: "No people, but any phone number." },
 ];
 
 // docs/FAMILIES_DESIGN.md §2 "Inbound" table: `users.policy.in`, "who may
-// reach @kid".
+// reach @kid". An unknown number is never delivered (docs/RELAY_SMS_DESIGN.md,
+// owner 8 Oct 2026): it is held and raises an alert; approving it there
+// needs a policy whose numbers column is not "none".
 export const INBOUND_POLICIES: PolicyOption[] = [
-  { code: "any", label: "Anyone", description: "Any person may reach them." },
+  { code: "any", label: "Anyone", description: "Any person or any approved number may reach them." },
   { code: "people", label: "People", description: "Only approved people may reach them." },
-  { code: "people_sms", label: "People", description: "Only approved people may reach them.", hidden: true },
-  { code: "sms", label: "No people", description: "No person may reach them." },
-  { code: "any_sms", label: "No people", description: "No person may reach them.", hidden: true },
+  {
+    code: "people_sms",
+    label: "People + Numbers",
+    description: "Approved people and approved numbers may reach them.",
+  },
+  { code: "sms", label: "Numbers", description: "Only approved numbers may reach them, no people." },
+  {
+    code: "any_sms",
+    label: "Any number",
+    description: "No people; approved numbers reach them and unknown numbers are held for your approval.",
+  },
 ];
 
 function labelOf(options: PolicyOption[], code: string): string {
