@@ -1800,7 +1800,13 @@ def scenario_bridge_voice() -> None:
 
 
 def scenario_bridge_whatsapp() -> None:
-    """WhatsApp as a bridge source (WA1-WA5, 9 Oct 2026): a DM from an
+    """WhatsApp as a bridge source (WA1-WA5, 9 Oct 2026).
+
+    10 Oct 2026: the DM steps below are the pre-LID path. WhatsApp DMs now take the chat path
+    keyed by conversation id (docs/BRIDGE_WHATSAPP_LID_DESIGN.md), so the held/approve/wa.me steps
+    are superseded. TODO(orchestrator): the body's assertions need B13 step 5 before this runs green.
+
+    The scenario as written: a DM from an
     unknown number is held -> approve delivers it (and records the channel
     from the held row) -> the pager's reply reaches the sim on `whatsapp` with the JID and the wa.me link -> a
     WhatsApp group is held behind one `chat_unknown` alert -> subscribe

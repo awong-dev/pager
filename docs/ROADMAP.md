@@ -93,12 +93,19 @@ Download, verify, switch and rollback are done (`docs/OTA_DESIGN.md`; verified o
   parser resync for clipped first line. **Ask owner about RI line (modem ring indicator) first** — if
   wired, simpler fix with no clipping risk (`docs/SLEEP_URC_TASKS.md` S9, `docs/SLEEP_URC_DESIGN.md` §8.7).
 
+### Address book: add anyone (`docs/BOOK_ADD_ANYONE_DESIGN.md`, 10 Oct 2026)
+
+- **Relay landed** (`6ca9a89`, 10 Oct 2026): the pager's Add creates the entry (and an `added` marker); a refused send to an added entry gets a named reply and one parent alert; Approve writes the edge; Remove clears the marker. `p[]` is retired. Protocol text is in `docs/PROTOCOL.md` §3.2 and §4.2.
+- **Status (10 Oct 2026):** relay B1-B4 `6ca9a89`, web W1 `99153e7`, firmware F1 `2c377e3` (in v1.2.0, on rc1). The bench acceptance run in `docs/BOOK_ADD_ANYONE_TASKS.md` is still to do.
+
 ### Bridge phones (`docs/BRIDGE_PHONE_DESIGN.md`, 9 Oct 2026)
 
 Built and landed: relay B1–B9 (`f9649f2`..`1bc22f4`), web W1–W5 (`7f3c4fc`..`927a11c`), Android
 A1–A7 (`714b2c0`). WhatsApp (DMs and groups, both tiers) landed 9 Oct 2026 as A9, B11 and W7 (`8209141`). The relay suite passes (1303 tests) and `python3 tools/e2e_v2.py bridge
 bridge_voice` passes; both were re-run on 9 Oct 2026. Not re-run in that check: the web verify
 commands and `./gradlew`. The Android unit-test count (23) is as the commit message reports it.
+
+WhatsApp DMs are keyed by conversation id (LID or phone JID) since 10 Oct 2026 (`fc2bf94`, `docs/BRIDGE_WHATSAPP_LID_DESIGN.md`). The first live DM had been dropped as `dropped_bad_from`. Relay side is landed. TODO(orchestrator): status of Android A10 (LID warning removed, `wa.me` link for phone JIDs) and of the B13 tool and e2e updates; `bridge_whatsapp` asserts the pre-LID path until B13 step 5.
 
 Open:
 - **The Android app has never run on a phone.** No device was attached. The bench steps are in

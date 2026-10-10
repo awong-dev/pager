@@ -25,8 +25,11 @@ without `caps.whatsapp`).
 WhatsApp (WA1-WA5): the sim reports `caps.whatsapp` at pair and
 `status.whatsapp` on every heartbeat; `whatsapp_dm_event()` /
 `whatsapp_group_event()` build JID-shaped events (`<digits>@s.whatsapp.net`,
-`<id>@g.us`) for `inject`. `POST /_pair` accepts `whatsapp: false` to pair
+`<id>@g.us`) for `inject`. As of 10 Oct 2026 a DM is keyed by its conversation id, LID or phone JID
+(docs/BRIDGE_WHATSAPP_LID_DESIGN.md L1); the sim does not build the `@lid` shape yet.
+`POST /_pair` accepts `whatsapp: false` to pair
 without the cap.
+TODO(orchestrator): BRIDGE_PHONE_TASKS B13 step 5 (`lid=True`) is not done here.
 """
 
 
@@ -45,8 +48,9 @@ DEFAULT_SIM_NUMBER = "+15550007777"
 def whatsapp_dm_event(
     phone: str, text: str, *, name: str = "Contact", event_id: str | None = None
 ) -> dict[str, Any]:
-    """A WhatsApp DM as the phone reports it: the conversation id is the
-    shortcut-id JID, the phone is already extracted from it (WA2)."""
+    """A WhatsApp DM as the phone reports it, phone-JID shape: the conversation id
+    is the shortcut-id JID. The WA2 number path is gone (10 Oct 2026, docs/BRIDGE_WHATSAPP_LID_DESIGN.md
+    L1-L2): the relay keys this DM by that id, the same as a `@lid` DM."""
     event: dict[str, Any] = {
         "source": "whatsapp",
         "conversation": {"id": f"{phone.lstrip('+')}@s.whatsapp.net", "isGroup": False},

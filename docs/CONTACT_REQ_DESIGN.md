@@ -7,7 +7,7 @@ follow-ups the same night.)*
 
 **Firmware does not change.** The pager sends `ph` as typed (`scr_book.c` `add_submit`: digits,
 `+digits`, or an alias without `@`), renders `p[]` `s:"no"` as "not approved" (`scr_book.c` ~482),
-and renders any `from:"system"` message in a thread. Family names never reach the pager.
+and renders any `from:"system"` message in a thread. Family names never reach the pager. *(10 Oct 2026: superseded by docs/BOOK_ADD_ANYONE_DESIGN.md decisions 13 and 16: `p[]` is no longer sent, and the request-row rendering is to be deleted (F1). The rest of this paragraph stands.)*
 
 ## Decisions
 **1. Ingest classifies, validates and answers.** `ContactReqEnvelope._check_ph` only requires 1-16
@@ -32,7 +32,7 @@ One body for every alias failure, so a pager cannot probe which aliases exist. R
 `_send_system_reply` (id derived from the request id: a redelivery cannot alert twice). An admin's
 Block/Dismiss is already visible as `p[]` `s:"no"`; a reason is only sent when the user can fix it.
 **Dedup is transactional:** `create_request` writes with `DocumentReference.create()`;
-`AlreadyExists` → return the stored row, and only the winner raises the alert.
+`AlreadyExists` → return the stored row, and only the winner raises the alert. *(10 Oct 2026: superseded by docs/BOOK_ADD_ANYONE_DESIGN.md decisions 1, 2, 6, 13 and 14: there are no pending rows or pending links, the 5-pending row is gone, and a rejected request no longer bumps the book. The wire-id dedup survives.)*
 
 **2. Approval never creates a person.** For `contact_request`, `mode`/`alias` are ignored and
 `mode:"create"` → 400 `new people are added under Family > People`. The logic moves into
@@ -51,7 +51,7 @@ person's verified number. Link alert: `peerUid/peerAlias/peerName`. `preview` = 
 SMS "SMS contact for @kid · Grandma · +1 206 555 0100" ("already known as …" when resolved),
 Approve/Block/Dismiss; link "Link @kid to @gma (Grandma Jo) · asked as Grandma", Approve/Dismiss.
 One-click Approve; the dialog, radio, alias field and the "Also allow location requests" box go
-*(the box was a lie: `ApproveAlertRequest` has no `locate`)*.
+*(the box was a lie: `ApproveAlertRequest` has no `locate`)* *(10 Oct 2026: superseded by docs/BOOK_ADD_ANYONE_DESIGN.md decision 10: approve of a `contact_request` without `contactRequestKey` writes the owner→peer `message` edge (`locate` as it was), rederives the family SMS contacts for an external, bumps the book and marks the alert handled. A legacy alert with `contactRequestKey` gets 409 `superseded; add again from the pager`.)*.
 
 **3. Orphans.** Invariant: `kind:"person"` ⇒ `familyId` names an existing family; `kind:"external"`
 ⇒ `familyId` null, `ownerFamilyId` non-null (decision 7), no Auth account. Enforced in

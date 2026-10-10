@@ -400,7 +400,7 @@ account); Google Voice has no API; Android's `NotificationListenerService` sees 
 | pairing code expired / reused | 404 from `/bridge/pair` | issue a new code |
 | token leaked | holder can inject texts to the owner as any approved contact or subscribed conversation, read and ack (suppress) the owner's outbound texts; cannot change `smsNumber` (decision 3) or reach another bridge | Unpair, pair again (new token); per-bridge limiter bounds the flood |
 | WhatsApp group tier 2 finds no conversation row with the title | outbox row `failed` `no_match` | tier 1 still works while the reply action exists; group tier 2 is best-effort (search by title) |
-| WhatsApp sender is a `@lid` JID (no phone number) | `dropped_bad_from`, one INFO line, nothing stored | none in this change; the message is not bridged |
+| WhatsApp conversation id is not a LID, phone JID or group JID (e.g. `pkg\|notificationId`, no shortcut id) | `dropped_bad_conv`, one INFO line, nothing stored | none; the listener must send a shortcut id (docs/BRIDGE_WHATSAPP_LID_DESIGN.md L5). *(10 Oct 2026: replaces the `@lid` row, which was WA2's and is superseded.)* |
 
 ## What to measure
 - `bridge in … outcome=` per outcome per day; `held` vs `delivered`; `dropped_ignored` volume.
@@ -461,6 +461,8 @@ to Google Chat (`gchat`) and Google Voice (`gvoice`). The `sms` backend is bridg
 DM is a phone-keyed text and a WhatsApp group is a Chat-style conversation. Tasks: A9, B11, W7, D3 in
 `docs/BRIDGE_PHONE_TASKS.md`.)*
 
+*(10 Oct 2026: a WhatsApp DM is no longer a phone-keyed text. It is a chat conversation keyed by its conversation id, a LID (`<digits>@lid`) or a phone JID (`<digits>@s.whatsapp.net`), and takes the chat path. The WA2 number path is deleted. Groups are unchanged. Superseded parts are marked below; see docs/BRIDGE_WHATSAPP_LID_DESIGN.md, L1-L10.)*
+
 **WA1 Source and capability.** `whatsapp` is a new source value wherever `sms|gchat|gvoice` is
 enumerated: `BridgeEvent.source`, outbox `source`, `BridgeCaps.whatsapp`, web `BridgeSource`,
 `ConversationOut.source`, book `chat.source`. `caps.whatsapp` is the phone's report: the pair body's
@@ -471,7 +473,7 @@ requirement: the WhatsApp account's own number is whatever the owner registered 
 the relay never needs it.
 - Rejected: a WhatsApp number field on the bridge. The relay never uses it.
 
-**WA2 DMs are phone-keyed texts (same path as Voice).** A WhatsApp notification with `isGroup=false`
+**WA2 DMs are phone-keyed texts (same path as Voice).** *(10 Oct 2026: superseded by docs/BRIDGE_WHATSAPP_LID_DESIGN.md L1-L2; kept as the record of WA2.)* A WhatsApp notification with `isGroup=false`
 goes to `_handle_text_event`: the target is the bridge owner, the text is held until approved for an
 unknown number (`sms_unknown` alert), and `via: whatsapp` is recorded on the owner's external backend
 `config.via[ownerUid]`, so later sends to that person go back on WhatsApp. The sender phone comes from
@@ -482,9 +484,9 @@ may rename it to `conv` or add `waConv`, whichever is the smaller change, and Vo
 intact. Reply hints (`too_long` and the like) go back with `source: whatsapp`, `to.phone`,
 `to.conversationId` (the JID) and `to.link = https://wa.me/<digits>`.
 - Rejected: LID JIDs (`<digits>@lid`). A LID carries no phone number, so the sender is dropped with
-  `dropped_bad_from` and logged once.
+  `dropped_bad_from` and logged once. *(10 Oct 2026: superseded by docs/BRIDGE_WHATSAPP_LID_DESIGN.md L1: a LID DM is keyed by its conversation id and is not dropped.)*
 
-**WA3 Groups are Chat-style conversations.** `isGroup=true` goes to `_handle_chat_event` with source
+**WA3 Groups are Chat-style conversations.** *(10 Oct 2026: unchanged, except that a group id must match `^[\d-]+@g\.us$`, else `dropped_bad_conv` (docs/BRIDGE_WHATSAPP_LID_DESIGN.md L5).)* `isGroup=true` goes to `_handle_chat_event` with source
 `whatsapp`. The conversation id is the group JID `<id>@g.us` (shortcut id) and the title is the group
 subject. The sender name is the message's Person name, with a leading `~ ` stripped (unsaved members
 appear as `~ Name` or a number). Seen and held rows, one `chat_unknown` alert, and Subscribe, Ignore and
@@ -494,7 +496,7 @@ inspected; wait for a message`, and the web dialog says the same.
 - Rejected: a group deep link. None exists for a WhatsApp group chat; `chat.whatsapp.com/<code>` is a
   join link, not a conversation link.
 
-**WA4 Outbox and tiers (Android).** A `send` with `source: whatsapp` is dispatched as follows.
+**WA4 Outbox and tiers (Android).** A `send` with `source: whatsapp` is dispatched as follows. *(10 Oct 2026: the DM rule below is superseded by BRIDGE_WHATSAPP_LID_DESIGN L6 and L8: tier 1 is by conversation id only, and tier 2 opens `to.link` when the row has one, else searches by title. The relay-side bullet is superseded by L2 and L6: WhatsApp is no longer a `via` channel and `wa_link` is gone.)*
 - DM: tier 1 is the ReplyCache by `conversationId`, else by phone (`rememberVoicePhone` and
   `conversationForPhone` generalised to any source). Tier 2 opens `https://wa.me/<digits>` with package
   `com.whatsapp` (WhatsApp opens the chat composer for a known number), then the existing composer and
@@ -513,7 +515,7 @@ inspected; wait for a message`, and the web dialog says the same.
 - Risk: tier 2 drives the WhatsApp UI, which carries an account-ban risk. Group tier 2 is best-effort: it
   finds the group by searching its title, and a miss fails `no_match`.
 
-**WA5 Channel choice for a phone contact.** Unchanged: the `via` entry for (external, member) wins, and it
+**WA5 Channel choice for a phone contact.** *(10 Oct 2026: the WhatsApp half is superseded by docs/BRIDGE_WHATSAPP_LID_DESIGN.md L2-L3: a WhatsApp DM is a chat external, so WhatsApp does not write `via`.)* Unchanged: the `via` entry for (external, member) wins, and it
 is written by the last inbound channel (`sms`, `gvoice`, now `whatsapp`). No admin override in this change.
 
 **WA6 Notification hygiene (Android).** The listener covers `com.whatsapp` and `com.whatsapp.w4b`

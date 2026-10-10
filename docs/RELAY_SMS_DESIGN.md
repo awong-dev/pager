@@ -67,7 +67,7 @@ each contact appears once and every text goes through the relay.
    runs unchanged (numbers column + edges). Groups, broadcast (no `to`) and a device default
    recipient still exclude externals (unchanged, out of scope). The pager's §4.2 case-3 reply for
    `no_sms_number` is `sms not set up; ask your admin`; the web 403 message is "You have no SMS
-   number; ask your family admin."
+   number; ask your family admin." *(10 Oct 2026: unchanged in substance. A pager add creates the external, but a relay send still needs a numbered person (`no_sms_number`); a refused send to an added entry is named, BOOK_ADD_ANYONE_DESIGN decision 7.)*
 3. *Void 9 Oct 2026 for the Twilio parts (`SmsTwilioBackend`, error codes, retry).* **Delivery to an external is an `sms` backend row on the external.** `externals.get_or_create`
    creates `users/{x}/backends/{bid}` `{kind:"sms", enabled:true, verifiedAt:now, config:{phone}}`;
    `externals.ensure_sms_backend(x)` backfills one for a contact that predates this. `"sms"`
@@ -98,7 +98,7 @@ each contact appears once and every text goes through the relay.
    inbound picker no longer delivers an unknown number** (FAMILIES_DESIGN §2's "delivered and
    alerted" is superseded): it means the family's *contacts* reach this member without an edge.
    No auto-reply is sent to an unknown number *(a reply confirms a live target to a spammer and
-   costs a segment; flag: owner may want "your message is waiting for approval")*.
+   costs a segment; flag: owner may want "your message is waiting for approval")*. *(10 Oct 2026: a pager add creates the family contact X, so an inbound from that number reaches this step with X present. Delivered or held is still the `policy.check` above (docs/BOOK_ADD_ANYONE_DESIGN.md decisions 2 and 11).)*
 5. **Held texts.** `heldSms/{MessageSid}` = `{familyId, toUid, fromPhone, body (≤1600 cp),
    receivedAt, status: "held"|"delivered"|"too_long"|"blocked"|"dismissed", decidedAt, alertId}`,
    server-only. One **open** `sms_unknown` alert per `(familyId, subjectUid=U, peerPhone)`: the
@@ -177,11 +177,12 @@ each contact appears once and every text goes through the relay.
 - A per-family number with `@alias` routing (the 7 Oct model): the owner asked for a number per
   user; aliases typed by grandparents were the failure mode CONTACT_REQ fixed.
 - A person's sign-in `users.phone` as the SMS route: CONTACT_REQ decision 5 stands.
-- Delivering unknown numbers under `any_sms`: owner, 8 Oct 2026: unknown is never delivered.
+- Delivering unknown numbers under `any_sms`: owner, 8 Oct 2026: unknown is never delivered. *(10 Oct 2026: a number the pager adds is no longer unknown (docs/BOOK_ADD_ANYONE_DESIGN.md decisions 6 and 11); the rejection stands for a number nobody added.)*
 - Buying numbers or setting webhooks through Twilio's API: the 10DLC campaign attachment is a
   console step anyway, and a wrong automated purchase costs money.
 - Twilio status callbacks (delivery receipts), MMS media download, externals in groups, a web
   auto-reply to held senders: later.
+- Holding a refused send to an added entry until a parent approves it (10 Oct 2026, docs/BOOK_ADD_ANYONE_DESIGN.md decision 9): the kid resends after approval; a held outbound would need a second delivery path and could arrive hours late.
 
 ## Transaction boundaries
 - `heldSms/{sid}` is written with `create()`; `AlreadyExists` → `duplicate`, no second alert push.

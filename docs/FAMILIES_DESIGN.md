@@ -105,7 +105,7 @@ Where this document differs from them, this document wins. Nothing here changes
     approved-numbers list). `any_sms` cannot be honoured on the device today because the firmware
     shows only listed numbers; the relay-side audit log still records blocked texts. Firmware
     follow-up, not in this plan. *(7 Oct 2026: plus every family contact when the member's numbers rule is `any`, minus explicit
-    denies — CONTACT_REQ decision 7.)*
+    denies — CONTACT_REQ decision 7.)* *(10 Oct 2026: clarified by docs/BOOK_ADD_ANYONE_DESIGN.md decision 12: a pager add writes the `added` marker, and the number reaches `cfg.sms` only through this derivation, so the list is still policy-derived and capped at 8.)*
 
 ## 2. Policies
 
@@ -144,7 +144,7 @@ alert, under `any`/`any_sms` it is **delivered and alerted**. *(8 Oct 2026: `any
 Defaults are applied at user creation from role (`member` → `people`/`people`, `admin`/`super` →
 `open`/`any`) and by the migration for existing users.
 
-*(7 Oct 2026: the numbers column now only decides whether every family contact is implied on the member's pager (`any`) or only approved ones; the relay carries no SMS, so inbound "held/delivered" no longer applies.)* *(8 Oct 2026: inbound SMS are held/delivered again, but with a per-user SMS number and held-to-approval flow, not per-family nor auto-delivery under `any` — see docs/RELAY_SMS_DESIGN.md.)*
+*(7 Oct 2026: the numbers column now only decides whether every family contact is implied on the member's pager (`any`) or only approved ones; the relay carries no SMS, so inbound "held/delivered" no longer applies.)* *(8 Oct 2026: inbound SMS are held/delivered again, but with a per-user SMS number and held-to-approval flow, not per-family nor auto-delivery under `any` — see docs/RELAY_SMS_DESIGN.md.)* *(10 Oct 2026: superseded by docs/BOOK_ADD_ANYONE_DESIGN.md decisions 7 and 12: a pager add puts the number in the book whatever the numbers rule; the rule still decides whether a send delivers, and the modem list still comes only from `sms_contacts_for`.)*
 
 ## 3. Data model changes
 
@@ -414,7 +414,7 @@ Where the overnight build deviated from the sections above; the code is the refe
    details from the `users` doc, not from backends.
 2. **External creation on the message route** happens only when the sender's outbound rule for
    numbers is `any` (`open`, `any_sms`); under `people_sms`/`sms` an unknown number is 404
-   `unknown_alias` (the admin adds it through Approved numbers first).
+   `unknown_alias` (the admin adds it through Approved numbers first). *(10 Oct 2026: resolved by docs/BOOK_ADD_ANYONE_DESIGN.md decision 1: a pager reaches a new number by adding it, whatever the numbers rule, and the add creates the external.)*
 3. **Contact approval in `create` mode** still creates a Firebase Auth user with an `sms` backend
    (today's path) rather than an `external`; switching it to `externals.get_or_create` would rename
    the alias to digits. Both shapes route identically.

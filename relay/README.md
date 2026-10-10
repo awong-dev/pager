@@ -242,17 +242,17 @@ conversations are kept.
 **WhatsApp.** `whatsapp` is a third source next to `gchat` and `gvoice` (docs: WA1-WA9 in
 `docs/BRIDGE_PHONE_DESIGN.md`). It needs no number: `caps.whatsapp` is whatever the phone reports at pair
 (`caps.whatsapp`) and on every heartbeat (`status.whatsapp`, WhatsApp installed and the listener bound).
-A DM (`isGroup=false`) takes the same path as a Voice text (`POST /bridge/events`, `sender.phone` already
-extracted from the `<digits>@s.whatsapp.net` JID; no phone -> `dropped_bad_from`): known contact -> pager,
-unknown -> held with an `sms_unknown` alert, and the member's last channel (`config.via[uid] = whatsapp`,
-JID in `config.voiceConv[uid]`, which is now the generic conversation slot) makes later pager texts to that
-person go out as `source whatsapp`, `to {phone, conversationId, link https://wa.me/<digits>}`. Without
-`caps.whatsapp` the relay falls back to sms, then gvoice, else the delivery fails `no_bridge`. A group
+A DM (`isGroup=false`, LID `<digits>@lid` or phone JID `<digits>@s.whatsapp.net`) is a chat conversation
+keyed by its conversation id, the same path as a Google Chat DM (`POST /bridge/events`; design:
+`docs/BRIDGE_WHATSAPP_LID_DESIGN.md`): unknown -> held with one `chat_unknown` alert; subscribe makes it a chat
+contact, and pager replies go out as `source whatsapp` with `to {conversationId, title}` (plus `link` when the
+row has one). A conversation id of any other shape gets `dropped_bad_conv`. WhatsApp is not an SMS channel, so
+its replies never fall back to sms or gvoice. A group
 (`<id>@g.us`) is a Chat-style conversation: one `chat_unknown` alert, subscribe/ignore/roster as for Google
 Chat, a leading `~ ` stripped from sender names, replies carry `to.conversationId` and `to.title` (the
 phone finds the group by title in tier 2). There is no deep link to a group, so `POST
 /api/family/bridges/{id}/inspect` with a `wa.me` / `whatsapp.com` / `whatsapp://` link returns 400 `whatsapp
-links cannot be inspected; wait for a message`. A held DM (Voice or WhatsApp) stores its channel and conversation on the held row, and approval records
+links cannot be inspected; wait for a message`. A held Voice text stores its channel and conversation on the held row, and approval records
 them as a live inbound would, so the first reply goes back on that channel.
 
 **Phone setup checklist** (copied from `bridge-android/README.md`; the setup screen has a button or
