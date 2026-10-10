@@ -99,7 +99,7 @@ function kindIcon(kind: AlertDoc["kind"]) {
   }
 }
 
-function kindLabel(kind: AlertDoc["kind"]): string {
+function kindLabel(kind: AlertDoc["kind"], source?: AlertDoc["source"]): string {
   switch (kind) {
     case "sms_unknown":
       return "Unknown number";
@@ -108,7 +108,9 @@ function kindLabel(kind: AlertDoc["kind"]): string {
     case "contact_request":
       return "Contact request";
     case "chat_unknown":
-      return "Google Chat";
+      // A bridged conversation: name the app it came from (WhatsApp, Google
+      // Voice) rather than assuming Google Chat (seen live 10 Oct 2026).
+      return source ? sourceLabel(source) : "Google Chat";
   }
 }
 
@@ -213,7 +215,7 @@ export default function AlertCard({ alert }: { alert: AlertRow }) {
     <Card variant="outlined">
       <CardContent>
         <Stack direction="row" spacing={1} useFlexGap sx={{ flexWrap: "wrap", alignItems: "center", mb: 1 }}>
-          <Chip size="small" icon={kindIcon(alert.kind)} label={kindLabel(alert.kind)} />
+          <Chip size="small" icon={kindIcon(alert.kind)} label={kindLabel(alert.kind, alert.source)} />
           <Typography variant="caption" color="text.secondary">
             {formatAge(alert.ts)}
           </Typography>
