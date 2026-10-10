@@ -80,7 +80,6 @@ LOC_REQ_TTL_S = 10
 sys.path.insert(0, str(TOOLS_DIR))
 sys.path.insert(0, str(RELAY_DIR))
 import httpx
-
 import pager_client
 
 _env_backup: str | None = None
@@ -1297,50 +1296,73 @@ def scenario_address_book() -> None:
     admin = pager_client.ServerClient(RELAY_URL, AUTH_URL)
     admin.login("admin")
     family_id = admin.me()["user"]["familyId"] or "default"
-    admin.admin_user_add("abstudent", "ABStudent", email="abstudent@example.com", phone=None)
+    abstudent = admin.admin_user_add(
+        "abstudent", "ABStudent", email="abstudent@example.com", phone=None
+    )
     create_device_with_secret(admin, "pgr-e2e-book", "abstudent")
 
     device = make_device("pgr-e2e-book")
     device.connect()
     wait_until(lambda: device.connected, timeout=10, description="address_book device to connect")
 
+    # docs/BOOK_ADD_ANYONE_DESIGN.md D1/D12: a `contact_req` ADDS the entry
+    # at once (no pending row, no `p[]`). This student has no relay SMS
+    # number (modem path), so the policy gate is `cfg.sms`. The default
+    # policy refuses numbers outright (nothing a parent's click could fix:
+    # "added; settings don't allow texting", no alert); with `out:
+    # people_sms` a parent's edge would fix it, so the add replies "added; needs a parent's OK to text" and raises ONE alert with
+    # the deterministic id `cr_{owner}_{peer}` (D8).
+    resp = admin._http.patch(
+        f"{admin.api_url}/api/family/members/{abstudent['uid']}?family={family_id}",
+        json={"policy": {"out": "people_sms", "in": "people_sms"}},
+        headers=admin._headers(),
+    )
+    assert resp.status_code == 200, resp.text
+    device.inbox.clear()
     req_id = device.publish_contact_req("Grandma", "+15550001111")
 
-    # docs/FAMILIES_TASKS.md 4.1/5.1: `contact_req` now surfaces as an
-    # open `contact_request` alert (`GET /api/family/alerts`), not a row
-    # under the removed `/api/admin/contacts` -- `contactRequestKey` is the
-    # old `contactRequests/{deviceId}_{reqId}` doc id this scenario used to
-    # match on directly.
+    from app.store import contacts as contacts_store
+    from app.store import externals as externals_store
+
+    wait_until(
+        lambda: any(
+            e.data.get("from") == "system" and e.data.get("body") == "Grandma: added; needs a parent's OK to text"
+            for e in device.inbox
+        ),
+        timeout=10,
+        description="the 'Grandma: added; needs a parent's OK to text' system reply",
+    )
+    row = contacts_store.get_by_device_and_req(issued_id("pgr-e2e-book"), req_id)
+    assert row is not None and row.status == "added", row
+    contact_uid, contact_alias = externals_store.contact_ids(family_id, "+15550001111")
+    expected_alert_id = f"cr_{abstudent['uid']}_{contact_uid}"
+
     def _pending_alert() -> dict | None:
         alerts = admin.family_list_alerts(family_id, status="open")
         return next(
-            (
-                a
-                for a in alerts
-                if a["kind"] == "contact_request"
-                and a.get("contactRequestKey") == f"{issued_id('pgr-e2e-book')}_{req_id}"
-            ),
+            (a for a in alerts if a["kind"] == "contact_request" and a["id"] == expected_alert_id),
             None,
         )
 
     wait_until(
         lambda: _pending_alert() is not None,
         timeout=10,
-        description="contact_req to land as an open contact_request alert",
+        description="the refused add to raise the open contact_request alert cr_{owner}_{peer}",
     )
     alert = _pending_alert()
     assert alert is not None
     assert alert["peerPhone"] == "+15550001111", alert
-    print(f"address_book: contact_req landed as an open alert (id={alert['id']})")
+    assert not alert.get("contactRequestKey"), alert
+    print(f"address_book: contact_req added the entry and raised one open alert (id={alert['id']})")
+
+    # Not on cfg.sms until a parent approves: permission is policy, not membership.
+    assert {"name": "Grandma", "phone": "+15550001111"} not in device.sms_contacts, device.sms_contacts
 
     approved = admin.family_approve_alert(family_id, alert["id"])
     assert approved["status"] == "handled", approved
-    from app.store import externals as externals_store
+    print(f"address_book: admin approved in one click (edge written); SMS contact alias={contact_alias}")
 
-    _contact_uid, contact_alias = externals_store.contact_ids(family_id, "+15550001111")
-    print(f"address_book: admin approved in one click; SMS contact alias={contact_alias}")
-
-    # The contact reaches the pager as `cfg.sms`, never in the book's `c[]`.
+    # The contact reaches the pager as `cfg.sms`.
     wait_until(
         lambda: {"name": "Grandma", "phone": "+15550001111"} in device.sms_contacts,
         timeout=10,
@@ -1352,10 +1374,10 @@ def scenario_address_book() -> None:
         description="device to receive and apply a book",
     )
     assert device.book is not None
-    assert contact_alias not in [c["a"] for c in device.book["c"]], device.book
+    assert device.book["p"] == [], device.book  # p[] retired
     print(
         f"address_book: device applied sms_contacts={device.sms_contacts}; book bv={device.book['bv']} "
-        f"contacts={[c['a'] for c in device.book['c']]} (no SMS contact in c[])"
+        f"contacts={[c['a'] for c in device.book['c']]}"
     )
 
     wait_until(
@@ -1821,7 +1843,8 @@ def scenario_bridge_whatsapp() -> None:
     kid, device = _bridge_member(admin, family_id, "wkid", "pgr-e2e-brw")
     wa_sim_number = "+15550003333"  # the default SIM number belongs to the `bridge` scenario's member
     bridge = _pair_sim(
-        admin, sim, family_id, kid["uid"], "WhatsApp phone", simNumber=wa_sim_number, whatsapp=True
+        admin, sim, family_id, kid["uid"], "WhatsApp phone",
+        simNumber=wa_sim_number, voiceNumber=None, whatsapp=True,  # the sim keeps bridge_voice's Voice number otherwise
     )
     assert bridge["caps"]["whatsapp"] is True, bridge
     bridge_id = bridge["id"]
@@ -1844,7 +1867,10 @@ def scenario_bridge_whatsapp() -> None:
             if a["kind"] == "chat_unknown" and a.get("source") == "whatsapp" and not a.get("isGroup")
         ]
         assert len(alerts) == 1, alerts
-        assert not any(a["kind"] == "sms_unknown" for a in admin.family_list_alerts(family_id)), "DM took the SMS path"
+        assert not any(
+            a["kind"] == "sms_unknown" and a.get("subjectUid") == kid["uid"]
+            for a in admin.family_list_alerts(family_id)
+        ), "DM took the SMS path"  # scoped to this kid: earlier scenarios leave their own sms_unknown alerts
         assert not any(e.data.get("body") == text for e in device.inbox), "held text leaked"
         tab = admin.family_member_chat(family_id, kid["uid"])
         (seen,) = [r for r in tab["seen"] if r["conversationId"] == conv]
