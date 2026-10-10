@@ -32,11 +32,17 @@ import { collection, onSnapshot, query, where } from "firebase/firestore";
 import { usePathname } from "next/navigation";
 import { useEffect, useRef } from "react";
 
+import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { useDirectory } from "@/lib/directory";
 import { useFamily } from "@/lib/family-context";
 import { getFirestoreDb } from "@/lib/firebase";
-import { notificationPermission, showForegroundMessageNotification } from "@/lib/notifications";
+import {
+  notificationPermission,
+  notificationsSupported,
+  registerForPush,
+  showForegroundMessageNotification,
+} from "@/lib/notifications";
 import type { AlertDoc, ConversationDoc } from "@/lib/types";
 
 /** Alert notifications have no peer alias/thread to link to -- just the
@@ -95,6 +101,20 @@ export default function NotificationWatcher() {
   useEffect(() => {
     byUidRef.current = byUid;
   }, [byUid]);
+
+  // Refresh the FCM token once per page load so it never goes stale
+  // (docs/SERVER_PLAN.md §7.6: the relay upserts users/{uid}/pushTokens/{token}
+  // via POST /api/me/push-tokens). Only when permission is already "granted",
+  // so registerForPush()'s requestPermission() call cannot show a prompt.
+  const pushRefreshed = useRef(false);
+  useEffect(() => {
+    if (!me || pushRefreshed.current) return;
+    if (!notificationsSupported() || notificationPermission() !== "granted") return;
+    pushRefreshed.current = true;
+    registerForPush()
+      .then((token) => (token ? api.post("/me/push-tokens", { token }) : undefined))
+      .catch((err: unknown) => console.warn("push token refresh failed", err));
+  }, [me]);
 
   useEffect(() => {
     if (!me) return;

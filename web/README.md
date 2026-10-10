@@ -106,6 +106,8 @@ config's `rewrites()` only matters to `next dev`.
   the alias, not the uid.
   The fix is either to loosen `users/{uid}`'s read rule to `registered()`,
   or to add a `GET /api/me/contacts`-shaped endpoint.
+- **The FCM token is refreshed automatically** once per page load by `NotificationWatcher`
+  when notification permission is already granted (no prompt; docs/SERVER_PLAN.md §7.6).
 - **The notifications "test" button is local-only.** There is no relay
   endpoint that sends a real push on demand, so it only proves permission +
   display work in this browser, not the full FCM round trip.
