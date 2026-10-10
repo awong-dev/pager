@@ -245,3 +245,132 @@ def test_log_line_redacts_the_number(
     assert line.startswith(f"bridge in bridge={bridge.id} src=sms conv=")
     assert "from=...0111 outcome=delivered" in line and MOM not in line
     assert messages_store is not None and bridges_store is not None
+
+
+# --- docs/RELAY_SMS_DESIGN.md section 8: sign-in phone as member identity ---
+
+SIS_PHONE = "+12065550333"
+
+
+def _sis(world: World, *, out: str = "open", inn: str = "any", **kw) -> None:
+    users_store.create_user(
+        uid="sis", alias="sis", display_name="Sis", family_id=world.family_id, phone=SIS_PHONE, **kw
+    )
+    get_db().collection("users").document("sis").update({"policy": {"out": out, "in": inn}})
+
+
+def _kid_in(inn: str = "any") -> None:
+    get_db().collection("users").document("kid").update({"policy": {"out": "people_sms", "in": inn}})
+
+
+def _alerts(world: World, kind: str):
+    return [a for a in alerts_store.list_alerts(world.family_id, "open") if a.kind == kind]
+
+
+def test_member_signin_phone_delivers_as_member(
+    client: TestClient, world: World, broker: FakeBrokerClient
+):
+    _kid_setup(world, broker)
+    _kid_in()
+    _sis(world)
+    _, headers = pair_bridge(client, world)
+    assert _post(client, headers, _ev(phone=SIS_PHONE, text="yo")) == ["delivered_member"]
+    (m,) = _inbox()
+    assert m.to_dict()["senderUid"] == "sis" and m.to_dict()["body"] == "yo"
+    down = [p for p in broker.published if p.topic == "pager/pgr-ev/down"]
+    assert down and b"sis" in down[-1].payload
+    assert list(get_db().collection("heldSms").stream()) == []
+    assert _alerts(world, "sms_unknown") == []
+
+
+def test_member_signin_phone_new_conversation_alert(
+    client: TestClient, world: World, broker: FakeBrokerClient
+):
+    _kid_setup(world, broker)
+    _kid_in()
+    _sis(world)
+    _, headers = pair_bridge(client, world)
+    _post(client, headers, _ev(phone=SIS_PHONE))
+    (alert,) = _alerts(world, "new_conversation")
+    assert alert.subjectUid == "sis"
+    _post(client, headers, _ev(phone=SIS_PHONE))
+    assert len(_alerts(world, "new_conversation")) == 1
+
+
+def test_member_signin_phone_policy_refused_not_held(
+    client: TestClient, world: World, broker: FakeBrokerClient
+):
+    _kid_setup(world, broker)
+    _kid_in()
+    _sis(world, out="sms")  # people column: none
+    _, headers = pair_bridge(client, world)
+    (outcome,) = _post(client, headers, _ev(phone=SIS_PHONE))
+    assert outcome.startswith("rejected_")
+    assert list(get_db().collection("heldSms").stream()) == []
+    assert _alerts(world, "sms_unknown") == [] and _alerts(world, "new_conversation") == []
+    assert _inbox() == []
+
+
+def test_other_family_member_phone_is_unknown(
+    client: TestClient, world: World, broker: FakeBrokerClient
+):
+    from app.store import families as families_store
+
+    _kid_setup(world, broker)
+    other = families_store.create_family(name="G", created_by="root")
+    users_store.create_user(
+        uid="far", alias="far", display_name="Far", family_id=other.id, phone=SIS_PHONE
+    )
+    _, headers = pair_bridge(client, world)
+    assert _post(client, headers, _ev(phone=SIS_PHONE)) == ["held"]
+    assert len(_alerts(world, "sms_unknown")) == 1
+
+
+def test_disabled_member_phone_is_unknown(
+    client: TestClient, world: World, broker: FakeBrokerClient
+):
+    _kid_setup(world, broker)
+    _sis(world)
+    users_store.update_user("sis", disabled=True)
+    _, headers = pair_bridge(client, world)
+    assert _post(client, headers, _ev(phone=SIS_PHONE)) == ["held"]
+    assert len(_alerts(world, "sms_unknown")) == 1
+
+
+def test_member_beats_approved_contact_same_number(
+    client: TestClient, world: World, broker: FakeBrokerClient
+):
+    _kid_setup(world, broker)
+    _kid_in()
+    _sis(world)
+    ext = _mom(world, phone=SIS_PHONE)
+    before = _sms_config(ext.uid)
+    _, headers = pair_bridge(client, world)
+    assert _post(client, headers, _ev(phone=SIS_PHONE)) == ["delivered_member"]
+    (m,) = _inbox()
+    assert m.to_dict()["senderUid"] == "sis"
+    assert _sms_config(ext.uid) == before
+
+
+def test_member_texts_own_bridge_dropped_self(
+    client: TestClient, world: World, broker: FakeBrokerClient
+):
+    _kid_setup(world, broker)
+    get_db().collection("users").document("kid").update({"phone": SIS_PHONE})
+    _, headers = pair_bridge(client, world)
+    assert _post(client, headers, _ev(phone=SIS_PHONE)) == ["dropped_self"]
+    assert _inbox() == [] and list(get_db().collection("heldSms").stream()) == []
+    assert list(get_db().collection("messages").stream()) == []
+
+
+def test_member_signin_phone_redelivery_is_duplicate(
+    client: TestClient, world: World, broker: FakeBrokerClient
+):
+    _kid_setup(world, broker)
+    _kid_in()
+    _sis(world)
+    _, headers = pair_bridge(client, world)
+    ev = _ev(phone=SIS_PHONE)
+    assert _post(client, headers, ev) == ["delivered_member"]
+    assert _post(client, headers, ev) == ["duplicate"]
+    assert len(_inbox()) == 1

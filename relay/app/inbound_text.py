@@ -18,6 +18,7 @@ from app.store import externals as externals_store
 from app.store import families as families_store
 from app.store import held_sms as held_sms_store
 from app.store import messages as messages_store
+from app.store import users as users_store
 from app.store.users import User
 
 logger = logging.getLogger("relay.inbound_text")
@@ -36,6 +37,22 @@ def record_channel(
     per member on the external's `sms` backend row (the contact is
     family-wide, so one sibling's Voice thread must not switch another's)."""
     backends_store.record_member_channel(contact_uid, bid, member_uid, via, voice_conv)
+
+
+def _member_by_phone(target: User, from_number: str) -> User | None:
+    """The one enabled same-family person whose `users.phone` is the sender.
+    Several matches is stale data: ERROR and fail closed (no match)."""
+    matches = [
+        u
+        for u in users_store.list_users()
+        if u.kind == "person" and u.familyId == target.familyId and u.phone == from_number
+    ]
+    if len(matches) > 1:
+        logger.error("sign-in phone shared by %d members of family %s", len(matches), target.familyId)
+        return None
+    if len(matches) == 1 and not matches[0].disabled:
+        return matches[0]
+    return None
 
 
 def handle_text(
@@ -71,6 +88,30 @@ def handle_text(
         if not attachments:
             return "dropped_empty"
         raw_body = body = placeholder_for(attachments)
+
+    # docs/RELAY_SMS_DESIGN.md section 8: a same-family member's sign-in
+    # phone is that member, ahead of the contact lookup.
+    member = _member_by_phone(target, from_number)
+    if member is not None:
+        if member.uid == target.uid:
+            return "dropped_self"
+        if sms_text.body_too_long(body):
+            reply(sms_text.too_long_hint())
+            return "too_long"
+        result = routing.send(
+            sender_uid=member.uid,
+            recipient_alias=target.alias,
+            kind="text",
+            body=body,
+            origin_backend_kind="sms",
+            origin_backend_id=None,
+            wire_id=sid,
+        )
+        if result.rejected:
+            return f"rejected_{result.rejected[0].reason}"
+        if not result.messages:
+            return "duplicate"
+        return "delivered_member"
 
     contact = externals_store.get_family_contact(family_id, from_number)
     if (
