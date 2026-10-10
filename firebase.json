@@ -21,6 +21,13 @@
         }
       },
       {
+        "source": "/bridge/**",
+        "run": {
+          "serviceId": "pager-relay",
+          "region": "us-west1"
+        }
+      },
+      {
         "source": "/chat/**",
         "destination": "/chat/_.html"
       },

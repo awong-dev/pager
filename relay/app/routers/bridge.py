@@ -176,10 +176,12 @@ def heartbeat(
     bridges_store.touch(bridge.id, status, req.fcmToken)
     if status.get("whatsapp") is None:
         status.pop("whatsapp", None)
-    if "smsCapable" in status or "whatsapp" in status:
+    if status.get("listenerBound") is None:
+        status.pop("listenerBound", None)
+    if "smsCapable" in status or "whatsapp" in status or "listenerBound" in status:
         caps = bridge_numbers.caps_for(
             status.get("smsCapable", bridge.status.smsCapable or bridge.caps.sms),
-            bridge.caps.gchat,
+            status.get("listenerBound", bridge.caps.gchat),
             bridge.simNumber,
             bridge.voiceNumber,
             whatsapp=status.get("whatsapp", bridge.caps.whatsapp),

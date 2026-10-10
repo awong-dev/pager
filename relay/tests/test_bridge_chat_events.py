@@ -176,3 +176,24 @@ def test_sweep_deletes_old_held_chat(client: TestClient, world: World):
     snap.reference.update({"receivedAt": datetime.now(UTC) - timedelta(days=400)})
     assert jobs.sweep().heldChatDeleted == 1
     assert bridge.id
+
+
+def _beat(client: TestClient, headers, **status):
+    r = client.post("/bridge/heartbeat", json={"status": status}, headers=headers)
+    assert r.status_code == 200, r.text
+
+
+def test_heartbeat_rederives_gchat_from_listener_bound(client: TestClient, world: World):
+    from app.store import bridges as bridges_store
+
+    bridge, headers = pair_bridge(client, world, caps={"sms": True, "gchat": False, "gvoice": False})
+    assert bridges_store.get(bridge.id).caps.gchat is False
+    assert _post(client, headers, _ev()) == ["dropped_cap"]
+    _beat(client, headers, listenerBound=True)
+    assert bridges_store.get(bridge.id).caps.gchat is True
+    assert _post(client, headers, _ev()) == ["held"]
+    _beat(client, headers, battery=50)  # silent on the listener: unchanged
+    assert bridges_store.get(bridge.id).caps.gchat is True
+    _beat(client, headers, listenerBound=False)
+    assert bridges_store.get(bridge.id).caps.gchat is False
+    assert _post(client, headers, _ev()) == ["dropped_cap"]
