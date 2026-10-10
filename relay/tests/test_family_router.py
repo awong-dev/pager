@@ -1486,3 +1486,171 @@ def test_family_admin_apn_in_and_out_of_family(client: TestClient):
     assert devices_store.get_device("pgr-apn-in").apn == apn
     r = client.put("/api/family/devices/pgr-apn-out/apn", json={"apn": apn}, headers=admin)
     assert r.status_code == 403
+
+
+# ---- contact_request alerts: approve an added entry; remove an added entry ----
+# docs/BOOK_ADD_ANYONE_DESIGN.md D10, D15
+
+
+def _added_setup(
+    client: TestClient, policy: tuple[str, str] = ("people_sms", "people_sms")
+) -> tuple[families_store.Family, dict[str, str], str]:
+    """A family with an admin, a kid (relay number, a pager) and an external
+    the kid added from the pager (marker, no edge). Returns the family, the
+    admin's headers and the external's uid."""
+    family = _make_family("AddedFam")
+    admin = _make_family_admin("parent1", "parent1", family.id)
+    _make_member("kid1", "kid1", family.id)
+    get_db().collection("users").document("kid1").update(
+        {"policy": {"out": policy[0], "in": policy[1]}}
+    )
+    users_store.set_sms_number("kid1", "+12065550999")
+    _make_pager_device("pgr-add-1", "kid1", family.id)
+    ext = externals_store.get_or_create(family.id, "+12065550100", "Grandma")
+    get_db().collection("users").document("kid1").collection("book").document(ext.uid).set(
+        {"added": True, "familyId": family.id}
+    )
+    return family, admin, ext.uid
+
+
+def _raise_alert(family_id: str, ext_uid: str) -> str:
+    from app import alerts as alerts_module
+
+    owner = users_store.get_user("kid1")
+    peer = users_store.get_user(ext_uid)
+    assert alerts_module.approval_upsert(owner, peer) == "created"
+    return f"cr_kid1_{ext_uid}"
+
+
+def test_approve_added_writes_edge_and_bumps(client: TestClient, broker: FakeBrokerClient):
+    from app.routing import Routing
+
+    family, admin, ext_uid = _added_setup(client)
+    alert_id = _raise_alert(family.id, ext_uid)
+    bv = devcfg.get_book_version("pgr-add-1")
+    peer = users_store.get_user(ext_uid)
+    # Before approval the send is refused.
+    refused = Routing(broker).send(
+        sender_uid="kid1", recipient_alias=peer.alias, kind="text", body="hi",
+        origin_backend_kind="pager",
+    )
+    assert [r.reason for r in refused.rejected] == ["not_allowed"]
+
+    resp = client.post(f"/api/family/alerts/{alert_id}/approve", json={}, headers=admin)
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "handled"
+    edge = allow_store.get_edge("kid1", ext_uid)
+    assert edge is not None and edge.message is True and edge.locate is False
+    # (the relay-number owner's `rederive_sms_contacts` bumps once more)
+    assert devcfg.get_book_version("pgr-add-1") > bv
+    assert any(json.loads(m.payload).get("kind") == "book" for m in broker.published)
+    # A resend now passes the gate.
+    sent = Routing(broker).send(
+        sender_uid="kid1", recipient_alias=peer.alias, kind="text", body="hi again",
+        origin_backend_kind="pager",
+    )
+    assert sent.rejected == []
+
+
+def test_approve_keeps_existing_locate(client: TestClient):
+    family, admin, ext_uid = _added_setup(client)
+    allow_store.set_edge("kid1", ext_uid, message=False, locate=True)
+    alert_id = _raise_alert(family.id, ext_uid)
+
+    resp = client.post(f"/api/family/alerts/{alert_id}/approve", json={}, headers=admin)
+
+    assert resp.status_code == 200, resp.text
+    edge = allow_store.get_edge("kid1", ext_uid)
+    assert edge is not None and edge.message is True and edge.locate is True
+
+
+def test_approve_legacy_409(client: TestClient):
+    from app.store import alerts as alerts_store
+    from tests.firebase_test_utils import seed_legacy_contact_request
+
+    family, admin, ext_uid = _added_setup(client)
+    key = seed_legacy_contact_request(
+        "pgr-add-1", "kid1", "u_old", "Old", "+12065550177", family_id=family.id
+    )
+    (alert,) = [a for a in alerts_store.list_alerts(family.id, "open") if a.contactRequestKey == key]
+
+    resp = client.post(f"/api/family/alerts/{alert.id}/approve", json={}, headers=admin)
+
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == "superseded; add again from the pager"
+    assert alerts_store.get(family.id, alert.id).status == "open"
+    assert allow_store.get_edge("kid1", ext_uid) is None
+
+
+def test_approve_external_rederives_cfg_sms_for_open_siblings(client: TestClient, broker):
+    """An approved external reaches every family member `sms_contacts_for`
+    derives it for (here a modem-owner sibling with `open`)."""
+    family, admin, ext_uid = _added_setup(client)
+    _make_member("sib1", "sib1", family.id)
+    get_db().collection("users").document("sib1").update(
+        {"policy": {"out": "open", "in": "people"}}
+    )
+    _make_pager_device("pgr-add-sib", "sib1", family.id)
+    alert_id = _raise_alert(family.id, ext_uid)
+
+    resp = client.post(f"/api/family/alerts/{alert_id}/approve", json={}, headers=admin)
+
+    assert resp.status_code == 200, resp.text
+    assert [c.phone for c in devices_store.get_device("pgr-add-sib").smsContacts] == [
+        "+12065550100"
+    ]
+
+
+def _marker(owner: str, peer: str) -> dict | None:
+    snap = get_db().collection("users").document(owner).collection("book").document(peer).get()
+    return snap.to_dict() if snap.exists else None
+
+
+def test_book_entries_carry_added(client: TestClient):
+    _family, admin, ext_uid = _added_setup(client)
+    resp = client.get("/api/book", params={"uid": "kid1"}, headers=admin)
+    assert resp.status_code == 200, resp.text
+    (entry,) = [e for e in resp.json()["entries"] if e["uid"] == ext_uid]
+    assert entry["added"] is True and entry["sendable"] is False
+
+
+def test_remove_added_keeps_nick(client: TestClient, broker: FakeBrokerClient):
+    family, admin, ext_uid = _added_setup(client)
+    get_db().collection("users").document("kid1").collection("book").document(ext_uid).update(
+        {"nick": "Gran"}
+    )
+    bv = devcfg.get_book_version("pgr-add-1")
+    broker.clear()
+
+    resp = client.delete(f"/api/book/kid1/added/{ext_uid}", headers=admin)
+
+    assert resp.status_code == 200, resp.text
+    marker = _marker("kid1", ext_uid)
+    assert marker is not None and marker["nick"] == "Gran" and "added" not in marker
+    assert devcfg.get_book_version("pgr-add-1") == bv + 1
+    assert any(json.loads(m.payload).get("kind") == "book" for m in broker.published)
+    assert ext_uid not in [e["uid"] for e in resp.json()["entries"]]
+    # Edges and the family contact are untouched; a second remove is a 404.
+    assert externals_store.get_family_contact(family.id, "+12065550100") is not None
+    assert client.delete(f"/api/book/kid1/added/{ext_uid}", headers=admin).status_code == 404
+
+
+def test_remove_added_without_nick_deletes_the_doc(client: TestClient):
+    _family, admin, ext_uid = _added_setup(client)
+
+    resp = client.delete(f"/api/book/kid1/added/{ext_uid}", headers=admin)
+
+    assert resp.status_code == 200, resp.text
+    assert _marker("kid1", ext_uid) is None
+
+
+def test_remove_added_other_family_404(client: TestClient):
+    _family, _admin, ext_uid = _added_setup(client)
+    other = _make_family("OtherFam")
+    stranger = _make_family_admin("parent2", "parent2", other.id)
+
+    resp = client.delete(f"/api/book/kid1/added/{ext_uid}", headers=stranger)
+
+    assert resp.status_code == 404
+    assert _marker("kid1", ext_uid)["added"] is True

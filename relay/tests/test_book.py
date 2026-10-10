@@ -615,3 +615,111 @@ def test_policy_change_bumps_family_books(client: TestClient):
     assert resp.status_code == 200, resp.text
     assert _bv("pgr-p") == before + 1
     assert devcfg.build_book_body("pgr-p")["c"] == []
+
+
+# docs/BOOK_ADD_ANYONE_DESIGN.md D4/D5: the `added` marker ----------------------
+
+
+def _mark(owner: str, peer: str, fam: str | None = None, **extra: object) -> None:
+    get_db().collection("users").document(owner).collection("book").document(peer).set(
+        {"added": True, "familyId": fam, **extra}, merge=True
+    )
+
+
+def test_added_external_listed_not_sendable():
+    fam = _family()
+    _user("kid", fam, auth=False)
+    _set_policy("kid", "people_sms", "people_sms")
+    users_store.set_sms_number("kid", "+12065550999")
+    _device("pgr-ad1", "kid", fam)
+    ext = _contact(fam, 7, "Grandma")
+    _mark("kid", ext.uid, fam)
+
+    assert allow_store.get_edge("kid", ext.uid) is None
+    (entry,) = [e for e in book_module.entries_for("kid") if e.kind == "external"]
+    assert entry.added is True and entry.sendable is False and entry.reason == "not_allowed"
+    assert entry.onPager is False
+    c = devcfg.build_book_body("pgr-ad1")["c"]
+    assert [(x["a"], x["t"]) for x in c] == [(ext.alias, "sms")]
+    assert book_module.on_pager(users_store.get_user("kid"), ext.uid) is True
+
+
+def test_implied_unsendable_still_hidden():
+    fam = _family()
+    _user("kid", fam, auth=False)
+    _user("sib", fam, auth=False)
+    _set_policy("kid", "sms", "people_sms")
+    _device("pgr-ad2", "kid", fam)
+
+    (entry,) = book_module.entries_for("kid")
+    assert entry.uid == "sib" and entry.sendable is False and entry.added is False
+    assert devcfg.build_book_body("pgr-ad2")["c"] == []
+    assert book_module.on_pager(users_store.get_user("kid"), "sib") is False
+
+    # The marker is what lists it.
+    _mark("kid", "sib", fam)
+    assert [x["a"] for x in devcfg.build_book_body("pgr-ad2")["c"]] == ["sib"]
+
+
+def test_marker_not_in_sms_contacts_for():
+    fam = _family()
+    _user("kid", fam, auth=False)
+    _set_policy("kid", "people_sms", "people_sms")
+    ext = _contact(fam, 8, "Gran")
+    _mark("kid", ext.uid, fam)
+    owner = users_store.get_user("kid")
+    assert owner is not None
+    assert book_module.sms_contacts_for(owner) == []
+
+
+def test_marker_never_changes_policy_or_routing_checks(broker: FakeBrokerClient):
+    """D4: the marker grants nothing -- routing still refuses it."""
+    fam = _family()
+    _user("kid", fam, auth=False)
+    _set_policy("kid", "people_sms", "people_sms")
+    users_store.set_sms_number("kid", "+12065550999")
+    ext = _contact(fam, 9, "Gran")
+    _mark("kid", ext.uid, fam)
+    result = Routing(broker).send(
+        sender_uid="kid",
+        recipient_alias=ext.alias,
+        kind="text",
+        body="hi",
+        origin_backend_kind="pager",
+    )
+    assert result.messages == [] and result.rejected
+
+
+def test_modem_owner_added_external_listed_but_not_in_c_or_on_pager():
+    fam = _family()
+    _user("kid", fam, auth=False)
+    _set_policy("kid", "people_sms", "people_sms")
+    _device("pgr-ad3", "kid", fam)
+    ext = _contact(fam, 10, "Gran")
+    _mark("kid", ext.uid, fam)
+    (entry,) = [e for e in book_module.entries_for("kid") if e.kind == "external"]
+    assert entry.added is True and entry.onPager is False
+    assert devcfg.build_book_body("pgr-ad3")["c"] == []
+    assert book_module.on_pager(users_store.get_user("kid"), ext.uid) is False
+
+
+def test_other_family_external_marker_not_listed():
+    fam, other = _family("A"), _family("B")
+    _user("kid", fam, auth=False)
+    theirs = _contact(other, 3, "Theirs")
+    _mark("kid", theirs.uid, fam)
+    assert [e for e in book_module.entries_for("kid") if e.kind == "external"] == []
+
+
+def test_set_nick_keeps_and_clears_marker():
+    fam = _family()
+    _user("kid", fam, auth=False)
+    _user("sib", fam, auth=False)
+    _device("pgr-ad4", "kid", fam)
+    _mark("kid", "sib", fam)
+    book_module.set_nick("kid", "sib", "Sis", "kid")
+    doc = book_module._book_docs("kid")["sib"]
+    assert doc["added"] is True and doc["nick"] == "Sis"
+    book_module.set_nick("kid", "sib", None, "kid")
+    doc = book_module._book_docs("kid")["sib"]
+    assert doc["added"] is True and "nick" not in doc

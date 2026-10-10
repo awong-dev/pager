@@ -14,6 +14,7 @@ from app.store import devices as devices_store
 from app.store import families as families_store
 from app.store import users as users_store
 from scripts import cleanup_orphan_persons as script
+from tests.firebase_test_utils import seed_legacy_contact_request
 
 PHONE = "+12065550142"
 
@@ -46,13 +47,12 @@ def _seed() -> tuple[str, str]:
     allow_store.set_edge("kid", uid, message=True, locate=False)
     allow_store.set_edge(uid, "kid", message=True, locate=False)
 
-    contacts_store.create_request(
-        device_id="pgr-o1", owner_uid="kid", req_id="u_o1", name="Aunt", phone=PHONE
+    seed_legacy_contact_request(
+        "pgr-o1", "kid", "u_o1", "Aunt", PHONE, status="approved", family_id=family.id
     )
-    contacts_store.approve(contacts_store.key("pgr-o1", "u_o1"), decided_by="admin")
     # An unrelated pending request and its alert must survive.
-    contacts_store.create_request(
-        device_id="pgr-o1", owner_uid="kid", req_id="u_o2", name="Other", phone="+12065550999"
+    seed_legacy_contact_request(
+        "pgr-o1", "kid", "u_o2", "Other", "+12065550999", family_id=family.id
     )
     return family.id, uid
 

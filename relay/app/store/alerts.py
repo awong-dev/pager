@@ -13,13 +13,18 @@ avoid shadowing the builtin.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Literal
 
-from google.cloud.firestore import SERVER_TIMESTAMP, FieldFilter
+from google.cloud.firestore import SERVER_TIMESTAMP, FieldFilter, Transaction
 from pydantic import BaseModel, ConfigDict
 
-from app.db.firestore import get_db
+from app.db.firestore import get_db, run_transaction
+
+# docs/BOOK_ADD_ANYONE_DESIGN.md D8: a decided approval alert stays decided
+# (the kid is told "not approved") for this long, then a refused send reopens it.
+APPROVAL_REOPEN_AFTER = timedelta(hours=24)
+ApprovalOutcome = Literal["created", "open", "reopened", "declined"]
 
 AlertKind = Literal["new_conversation", "sms_unknown", "contact_request", "chat_unknown"]
 AlertStatus = Literal["open", "handled", "dismissed"]
@@ -150,3 +155,35 @@ def decide(family_id: str, alert_id: str, status: Literal["handled", "dismissed"
     fetched = get(family_id, alert_id)
     assert fetched is not None
     return fetched
+
+
+def approval_alert_id(owner_uid: str, peer_uid: str) -> str:
+    return f"cr_{owner_uid}_{peer_uid}"
+
+
+def upsert_approval(
+    family_id: str, owner_uid: str, peer_uid: str, alert: dict, *, now: datetime | None = None
+) -> ApprovalOutcome:
+    """docs/BOOK_ADD_ANYONE_DESIGN.md D8: the `contact_request` alert
+    `cr_{owner}_{peer}`, read and written in ONE transaction so a race cannot
+    double-alert: absent -> create (`"created"`); `open` -> no-op (`"open"`);
+    decided 24 h ago or more -> reopen (`"reopened"`, `ts` moves up);
+    decided within 24 h -> `"declined"` (no write)."""
+    now = now or datetime.now(UTC)
+    ref = _alerts(family_id).document(approval_alert_id(owner_uid, peer_uid))
+
+    def _txn(transaction: Transaction) -> ApprovalOutcome:
+        snap = ref.get(transaction=transaction)
+        if not snap.exists:
+            transaction.create(ref, {**alert, "ts": SERVER_TIMESTAMP})
+            return "created"
+        data = snap.to_dict() or {}
+        if data.get("status") == "open":
+            return "open"
+        decided_at = data.get("decidedAt")
+        if isinstance(decided_at, datetime) and now - decided_at < APPROVAL_REOPEN_AFTER:
+            return "declined"
+        transaction.set(ref, {**alert, "ts": SERVER_TIMESTAMP})
+        return "reopened"
+
+    return run_transaction(_txn)

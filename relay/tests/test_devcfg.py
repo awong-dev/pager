@@ -43,7 +43,7 @@ from tests.conftest import (
     up_topic,
 )
 from tests.fake_transport import FakeBrokerClient
-from tests.firebase_test_utils import auth_header
+from tests.firebase_test_utils import auth_header, seed_legacy_contact_request
 
 # ---------------------------------------------------------------------------
 # shared helpers
@@ -128,7 +128,7 @@ def test_build_book_basic_shape():
     assert obj["bv"] == 1
     assert obj["d"] == "mom1"
     assert obj["c"] == [{"a": "mom1", "n": "Mom", "t": "web"}]
-    assert obj["p"] == []
+    assert "p" not in obj
     assert obj["ack"] is None
     assert obj["id"].startswith("m_")
 
@@ -204,72 +204,14 @@ def test_build_book_caps_approved_contacts_at_ten():
     assert len(obj["c"]) == 10
 
 
-def test_build_book_caps_and_orders_pending_requests_newest_first():
+def test_build_book_no_longer_carries_p():
+    """docs/BOOK_ADD_ANYONE_DESIGN.md D13: nothing is pending; `p` is gone."""
     _make_user("student5", "student5")
     _make_pager_device("pgr-b-5", "student5")
-    # `contactRequests` rate-limits to 5 *pending* per device (§3.2); reject
-    # one and add a fresh one so there are 5 non-approved requests total
-    # (4 pending + 1 rejected) spanning more than `MAX_LISTED_REQUESTS`.
-    for i in range(5):
-        contacts_store.create_request(
-            device_id="pgr-b-5",
-            owner_uid="student5",
-            req_id=f"u_b5_{i}",
-            name=f"Req{i}",
-            phone=f"+1555000111{i}",
-        )
-    contacts_store.reject(
-        contacts_store.key("pgr-b-5", "u_b5_0"), reason="x", decided_by="admin"
-    )
-    contacts_store.create_request(
-        device_id="pgr-b-5",
-        owner_uid="student5",
-        req_id="u_b5_5",
-        name="Req5",
-        phone="+15550001115",
-    )
+    seed_legacy_contact_request("pgr-b-5", "student5", "u_b5", "Req", "+15550001111")
 
-    obj = devcfg.build_book("pgr-b-5")
-
-    assert len(obj["p"]) == 4
-    # Newest-first: the last four created (Req2..Req5) win over the oldest
-    # (Req0, now rejected, and the only one not selected).
-    names = {p["n"] for p in obj["p"]}
-    assert names == {"Req2", "Req3", "Req4", "Req5"}
-
-
-def test_build_book_lists_rejected_requests_as_no():
-    _make_user("student6", "student6")
-    _make_pager_device("pgr-b-6", "student6")
-    contacts_store.create_request(
-        device_id="pgr-b-6",
-        owner_uid="student6",
-        req_id="u_b6",
-        name="Stranger",
-        phone="+15559990000",
-    )
-    contacts_store.reject(contacts_store.key("pgr-b-6", "u_b6"), reason="x", decided_by="admin")
-
-    obj = devcfg.build_book("pgr-b-6")
-
-    assert obj["p"] == [{"n": "Stranger", "s": "no"}]
-
-
-def test_build_book_excludes_approved_requests_from_pending_list():
-    _make_user("student7", "student7")
-    _make_pager_device("pgr-b-7", "student7")
-    contacts_store.create_request(
-        device_id="pgr-b-7",
-        owner_uid="student7",
-        req_id="u_b7",
-        name="Auntie",
-        phone="+15558880000",
-    )
-    contacts_store.approve(contacts_store.key("pgr-b-7", "u_b7"), decided_by="admin")
-
-    obj = devcfg.build_book("pgr-b-7")
-
-    assert obj["p"] == []
+    assert "p" not in devcfg.build_book("pgr-b-5")
+    assert "p" not in devcfg.build_book_body("pgr-b-5")
 
 
 def test_build_book_lists_owners_group_as_grp_contact():
@@ -825,17 +767,18 @@ def test_admin_push_ca_requires_admin(broker: FakeBrokerClient):
 def test_approve_contact_publishes_book(
     client: TestClient, admin_headers: dict[str, str], broker: FakeBrokerClient
 ):
-    """docs/FAMILIES_TASKS.md 5.1: `POST /api/admin/contacts/{key}/approve`
-    is deleted -- approval now goes through `POST /api/family/alerts/{id}/
-    approve`'s `contact_request` case (`app/routers/family.py`, still backed
-    by the same `admin_router._approve_contact_impl`/`devcfg.push_book`).
-    The device owner needs a `familyId` for the `contact_request` alert
-    `app/store/contacts.py`'s `create_request` raises to even exist; the
-    `admin_headers` fixture is `role: 'super'` with no family, so it acts
-    via `?family=`, same as `require_family_admin` lets any super do."""
+    """`POST /api/family/alerts/{id}/approve` on a `contact_request` alert
+    (docs/BOOK_ADD_ANYONE_DESIGN.md D10) writes the owner's edge, re-derives
+    `cfg.sms` and publishes a fresh book. The device owner needs a `familyId`;
+    the `admin_headers` fixture is `role: 'super'` with no family, so it acts
+    via `?family=`, same as `require_family_admin` lets any super do. The
+    alert is the one a modem owner's refused add raises (D12)."""
     family = families_store.create_family(name="Devcfg20", created_by="root-devcfg20")
     users_store.create_user(
         uid="student20", alias="student20", display_name="student20", family_id=family.id
+    )
+    get_db().collection("users").document("student20").update(
+        {"policy": {"out": "people_sms", "in": "people"}}
     )
     _make_pager_device("pgr-b-20", "student20")
     ingest = Ingest(broker)
@@ -854,6 +797,7 @@ def test_approve_contact_publishes_book(
             separators=(",", ":"),
         ).encode("utf-8"),
     )
+    assert devices_store.get_device("pgr-b-20").smsContacts == []
     broker.clear()
 
     alert = alerts_store.list_alerts(family.id, "open")[0]
@@ -870,10 +814,9 @@ def test_approve_contact_publishes_book(
         json.loads(p.payload) for p in broker.published if json.loads(p.payload).get("kind") == "book"
     ]
     assert len(books) == 1
-    assert books[0]["bv"] == 1
+    assert books[0]["bv"] == 2  # the add's bump, then the approval's
     _uid, alias = externals_store.contact_ids(family.id, "+15550009999")
-    # An SMS contact is never in `c[]`: it reaches the pager as `cfg.sms`.
-    assert books[0]["c"] == []
+    # An SMS contact is never in `c[]` of a modem owner: it reaches the pager as `cfg.sms`.
     assert alias not in [c["a"] for c in books[0]["c"]]
     cfgs = [
         json.loads(p.payload)
@@ -883,63 +826,6 @@ def test_approve_contact_publishes_book(
     assert [c["cfg"] for c in cfgs if "sms" in c["cfg"]] == [
         {"sms": [{"n": "Grandma", "p": "+15550009999"}]}
     ]
-
-
-def test_block_contact_publishes_book(
-    client: TestClient, admin_headers: dict[str, str], broker: FakeBrokerClient
-):
-    """docs/FAMILIES_TASKS.md 5.1: `POST /api/admin/contacts/{key}/reject`
-    is deleted, and docs/FAMILIES_DESIGN.md §10 item 8 replaces
-    Reject-with-reason with Block/Dismiss on the `contact_request` alert
-    (`app/routers/family.py`'s `block_alert`). Rewired onto that real HTTP
-    path (docs/FAMILIES_TASKS.md 4.1 fix): `block_alert` now also calls
-    `contacts_store.reject`/`bump_book_version`/`devcfg.push_book` for the
-    alert's linked `contactRequestKey`, same as the deleted route did --
-    same `client`/`admin_headers`/`broker` fixture shape as
-    `test_approve_contact_publishes_book` above."""
-    family = families_store.create_family(name="Devcfg21", created_by="root-devcfg21")
-    users_store.create_user(
-        uid="student21", alias="student21", display_name="student21", family_id=family.id
-    )
-    _make_pager_device("pgr-b-21", "student21")
-    ingest = Ingest(broker)
-    ingest.handle_up(
-        up_topic("pgr-b-21"),
-        json.dumps(
-            {
-                "v": 1,
-                "id": "u_b21",
-                "ts": int(time.time()),
-                "kind": "contact_req",
-                "name": "Stranger",
-                "ph": "+15550001234",
-                "ack": None,
-            },
-            separators=(",", ":"),
-        ).encode("utf-8"),
-    )
-    broker.clear()
-
-    alert = alerts_store.list_alerts(family.id, "open")[0]
-    assert alert.kind == "contact_request"
-    resp = client.post(
-        f"/api/family/alerts/{alert.id}/block",
-        params={"family": family.id},
-        headers=admin_headers,
-    )
-    assert resp.status_code == 200, resp.text
-
-    key = contacts_store.key("pgr-b-21", "u_b21")
-    request = contacts_store.get_request(key)
-    assert request is not None
-    assert request.status == "rejected"
-    assert request.reason == "blocked"
-
-    books = [
-        json.loads(p.payload) for p in broker.published if json.loads(p.payload).get("kind") == "book"
-    ]
-    assert len(books) == 1
-    assert books[0]["p"] == [{"n": "Stranger", "s": "no"}]
 
 
 # ---------------------------------------------------------------------------
@@ -1114,3 +1000,60 @@ def test_build_book_body_default_first_then_groups_then_people():
     assert aliases_in_order[0] == "zzz-mom"
     assert aliases_in_order[1] == "bbb-grp-body4"  # the group, despite sorting after "aaa-friend"
     assert aliases_in_order[2] == "aaa-friend"
+
+
+# ---------------------------------------------------------------------------
+# pending slots are replaced wholesale (a nudge over a full book must not
+# keep the old c/p/d inside the stored obj)
+# ---------------------------------------------------------------------------
+
+
+def test_nudge_replaces_stored_full_book_wholesale():
+    _make_user("student-pw1", "student-pw1")
+    _make_pager_device("pgr-pw-1", "student-pw1")
+    stale = {
+        "v": 1, "id": "m_stale001", "ts": 1, "kind": "book", "bv": 1, "d": "x",
+        "c": [{"a": "a", "n": "A", "t": "web"}], "p": [{"n": "Q", "s": "pend"}], "ack": None,
+    }
+    devcfg._set_pending("pgr-pw-1", "pendingBook", stale)
+    nudge = {"v": 1, "id": "m_nudge001", "ts": 2, "kind": "book", "bv": 2, "url": "https://x/y", "ack": None}
+
+    devcfg._set_pending("pgr-pw-1", "pendingBook", nudge)
+
+    obj = _raw_device("pgr-pw-1")["pendingBook"]["obj"]
+    assert obj == nudge
+    assert not {"c", "p", "d"} & set(obj)
+
+
+def test_hybrid_stored_nudge_is_republished_clean():
+    _make_user("student-pw2", "student-pw2")
+    _make_pager_device("pgr-pw-2", "student-pw2")
+    hybrid = {
+        "v": 1, "id": "m_hybrid01", "ts": 2, "kind": "book", "bv": 2, "url": "https://x/y",
+        "d": "x", "c": [{"a": "a", "n": "A", "t": "web"}], "p": [], "more": True, "ack": None,
+    }
+    get_db().collection("devices").document("pgr-pw-2").set(
+        {"pendingBook": {"id": hybrid["id"], "obj": hybrid, "acked": False}, "bookVersion": 2},
+        merge=True,
+    )
+    broker = FakeBrokerClient()
+
+    devcfg.republish_pending("pgr-pw-2", broker)
+
+    (sent,) = [json.loads(m.payload) for m in broker.published]
+    assert sent["id"] == "m_hybrid01" and sent["url"] == "https://x/y"
+    assert not {"c", "p", "d", "more"} & set(sent)
+
+
+def test_pending_cfg_replaced_wholesale():
+    _make_user("student-pw3", "student-pw3")
+    _make_pager_device("pgr-pw-3", "student-pw3")
+    devcfg._set_pending(
+        "pgr-pw-3", "pendingCfg",
+        {"v": 1, "id": "m_cfg00001", "kind": "cfg", "cfg": {"lock": {"clear": True}}, "ack": None},
+    )
+    newer = {"v": 1, "id": "m_cfg00002", "kind": "cfg", "cfg": {"ota": {"u": "x"}}, "ack": None}
+
+    devcfg._set_pending("pgr-pw-3", "pendingCfg", newer)
+
+    assert _raw_device("pgr-pw-3")["pendingCfg"]["obj"] == newer

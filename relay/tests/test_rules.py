@@ -33,7 +33,7 @@ from app.store import device_secrets as device_secrets_store
 from app.store import devices as devices_store
 from app.store import messages as messages_store
 from app.store import users as users_store
-from tests.firebase_test_utils import mint_id_token
+from tests.firebase_test_utils import mint_id_token, seed_legacy_contact_request
 
 FIRESTORE_HOST = os.environ.get("FIRESTORE_EMULATOR_HOST", "localhost:8080")
 PROJECT_ID = os.environ.get("GOOGLE_CLOUD_PROJECT", "demo-pager")
@@ -790,12 +790,8 @@ def test_contact_request_readable_by_owner_and_family_admin_not_a_third_party(tw
         mqtt_username="pgr-rules-contacts-1",
         mqtt_password_hash="x",
     )
-    contacts_store.create_request(
-        device_id="pgr-rules-contacts-1",
-        owner_uid="u1",
-        req_id="u_rules1",
-        name="Grandma",
-        phone="+15551230000",
+    seed_legacy_contact_request(
+        "pgr-rules-contacts-1", "u1", "u_rules1", "Grandma", "+15551230000"
     )
     doc_key = contacts_store.key("pgr-rules-contacts-1", "u_rules1")
     _set_family("contactRequests", doc_key, "famA")
@@ -1381,3 +1377,24 @@ def test_book_nick_readable_by_owner_and_family_admin_only_writes_denied(two_pai
     for token in (owner_token, same_family_admin, sibling_token):
         assert _write(path, token, {"nick": "Hacked"}).status_code == 403
         assert _write("users/u1/book/u3", token, {"nick": "New"}).status_code == 403
+
+
+def test_book_added_marker_is_not_client_writable(two_pairs):
+    """docs/BOOK_ADD_ANYONE_DESIGN.md D4: the `added` marker is relay-only,
+    even for its owner and a family admin; the read rule is unchanged."""
+    _set_family("users", "u1", "famA")
+    _set_family("users", "u2", "famA")
+    get_db().collection("users").document("u1").collection("book").document("u2").set(
+        {"added": True, "familyId": "famA", "addedBy": "pgr-1"}
+    )
+    path = "users/u1/book/u2"
+
+    set_claims("u1", fam="famA")
+    owner_token = mint_id_token("u1")
+    assert _get(path, owner_token).status_code == 200
+    admin_token = _make_family_admin("admin-book-c", "adminbookc", "famA")
+    assert _get(path, admin_token).status_code == 200
+
+    for token in (owner_token, admin_token):
+        assert _write(path, token, {"added": False}).status_code == 403
+        assert _write("users/u1/book/u3", token, {"added": True, "familyId": "famA"}).status_code == 403

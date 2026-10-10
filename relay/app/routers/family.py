@@ -949,79 +949,33 @@ def _approve_new_conversation(alert: Alert) -> None:
     allow_store.recompute_locatable_by_for_owner(alert.peerUid)
 
 
-def _approve_contact_request(
-    alert: Alert, req: ApproveAlertRequest, principal_uid: str, broker: BrokerClient
-) -> None:
-    """docs/CONTACT_REQ_DESIGN.md decision 2: approving a pager's contact
-    request never creates a person. The target is resolved again now: a phone
-    number always becomes the owner's family SMS contact (a person's sign-in
-    phone is never a lookup key); an alias is an in-system user, and a link
-    writes only the missing owner -> peer edge (never the peer's own edge to
-    the owner)."""
+def _approve_contact_request(alert: Alert, req: ApproveAlertRequest, broker: BrokerClient) -> None:
+    """docs/BOOK_ADD_ANYONE_DESIGN.md D10: the entry already exists (the pager
+    added it), so approving only grants permission -- the owner's `message`
+    edge to the peer, keeping an existing `locate`. An external changes every
+    family member's `cfg.sms` derivation, and the owner's book is bumped. A
+    legacy alert that wraps a pending `contactRequests` row (before 10 Oct
+    2026) is superseded: the kid adds again from the pager."""
     if req.mode == "create":
         raise HTTPException(status_code=400, detail="new people are added under Family > People")
-    if alert.contactRequestKey is None:
-        raise HTTPException(status_code=400, detail="alert has no linked contact request")
-    request = contacts_store.get_request(alert.contactRequestKey)
-    if request is None:
-        raise HTTPException(status_code=404, detail="no such contact request")
-    if request.status != "pending":
-        raise HTTPException(status_code=409, detail="contact request already decided")
-    owner = users_store.get_user(request.ownerUid)
-    if owner is None:
-        raise HTTPException(status_code=409, detail="the requesting user no longer exists")
-
-    peer: User | None = None
-    if request.phone is not None:
-        peer = None
-    elif request.alias is not None:
-        peer = users_store.get_user_by_alias(request.alias)
-    else:
-        raise HTTPException(status_code=409, detail="contact request has no number or alias")
-
-    if peer is None and request.phone is not None:
-        if owner.familyId is None:
-            raise HTTPException(status_code=409, detail="the requesting user has no family")
-        try:
-            contact = externals_store.get_or_create(
-                owner.familyId, request.phone, req.name or request.name
-            )
-        except externals_store.ContactNameTaken as exc:
-            raise _name_taken(owner.familyId, exc) from exc
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        allow_store.set_edge(owner.uid, contact.uid, message=True, locate=False)
+    if alert.contactRequestKey is not None:
+        raise HTTPException(status_code=409, detail="superseded; add again from the pager")
+    if alert.subjectUid is None or alert.peerUid is None:
+        raise HTTPException(status_code=400, detail="alert has no subject/peer to approve")
+    owner = users_store.get_user(alert.subjectUid)
+    peer = users_store.get_user(alert.peerUid)
+    if owner is None or peer is None:
+        raise HTTPException(status_code=409, detail="the contact no longer exists")
+    existing = allow_store.get_edge(owner.uid, peer.uid)
+    allow_store.set_edge(
+        owner.uid,
+        peer.uid,
+        message=True,
+        locate=existing.locate if existing is not None else False,
+    )
+    if peer.kind == "external" and owner.familyId is not None:
         rederive_family_sms_contacts(owner.familyId, broker)
-    else:
-        if (
-            peer is None
-            or peer.kind != "person"
-            or peer.disabled
-            or not _may_link(owner, peer)
-        ):
-            who = f"@{peer.alias}" if peer is not None else f"@{request.alias}"
-            raise HTTPException(
-                status_code=409, detail=f"{who} no longer has an edge to @{owner.alias}"
-            )
-        existing = allow_store.get_edge(owner.uid, peer.uid)
-        if existing is None or not existing.message:
-            allow_store.set_edge(
-                owner.uid,
-                peer.uid,
-                message=True,
-                locate=existing.locate if existing is not None else False,
-            )
-
-    contacts_store.approve(alert.contactRequestKey, decided_by=principal_uid)
     book.bump_and_push({owner.uid}, broker, reason="contact_approve")
-
-
-def _may_link(owner: User, peer: User) -> bool:
-    """Same family, or `peer` has a `message` edge to `owner`."""
-    if book.same_family_persons(owner, peer):
-        return True
-    inbound = allow_store.get_edge(peer.uid, owner.uid)
-    return inbound is not None and inbound.message
 
 
 class HeldTextOut(BaseModel):
@@ -1076,7 +1030,7 @@ def approve_alert(
             status_code=400, detail="subscribe this conversation under People \u2192 Google Chat"
         )
     else:  # "contact_request"
-        _approve_contact_request(alert, req, principal.uid, broker)
+        _approve_contact_request(alert, req, broker)
 
     return alerts_store.decide(family_id, alert_id, "handled", principal.uid)
 

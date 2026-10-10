@@ -34,3 +34,50 @@ def mint_id_token(uid: str) -> str:
 
 def auth_header(uid: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {mint_id_token(uid)}"}
+
+
+def seed_legacy_contact_request(
+    device_id: str,
+    owner_uid: str,
+    req_id: str,
+    name: str,
+    phone: str,
+    *,
+    status: str = "pending",
+    family_id: str | None = None,
+) -> str:
+    """A `contactRequests` row (and, with `family_id`, its open
+    `contact_request` alert carrying `contactRequestKey`) as written before
+    docs/BOOK_ADD_ANYONE_DESIGN.md retired the pending flow. Nothing creates
+    these any more; tests for the leftovers (cleanup, the 409 on approve,
+    block/dismiss of an old alert) seed them directly. Returns the row key."""
+    from app.db.firestore import get_db
+    from app.store import alerts as alerts_store
+    from app.store import contacts as contacts_store
+
+    doc_key = contacts_store.key(device_id, req_id)
+    get_db().collection("contactRequests").document(doc_key).set(
+        {
+            "deviceId": device_id,
+            "reqId": req_id,
+            "ownerUid": owner_uid,
+            "name": name,
+            "phone": phone,
+            "alias": None,
+            "status": status,
+        }
+    )
+    if family_id is not None:
+        alerts_store.create(
+            family_id,
+            {
+                "kind": "contact_request",
+                "status": "open",
+                "subjectUid": owner_uid,
+                "subjectAlias": owner_uid,
+                "peerPhone": phone,
+                "preview": name,
+                "contactRequestKey": doc_key,
+            },
+        )
+    return doc_key

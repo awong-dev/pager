@@ -32,6 +32,7 @@ import phonenumbers
 from pydantic import BaseModel, ConfigDict, field_validator
 
 from app import alerts, book, devauth, devcfg, devsetup, location, wire
+from app import policy as policy_module
 from app.broker import BrokerClient
 from app.routing import Routing
 from app.store import alerts as alerts_store
@@ -43,6 +44,7 @@ from app.store import devices as devices_store
 from app.store import externals as externals_store
 from app.store import families as families_store
 from app.store import messages as messages_store
+from app.store import rate_limits as rate_limits_store
 from app.store import sms as sms_store
 from app.store import users as users_store
 from app.wire import (
@@ -66,12 +68,13 @@ NO_SMS_NUMBER_BODY = "sms not set up; ask your admin"
 # docs/BRIDGE_PHONE_DESIGN.md decision 9(c).
 NO_BRIDGE_BODY = "bridge not set up; ask your admin"
 
-# S4.1: the one `system` down reply for a `contact_req` beyond the per-device
-# pending cap (docs/PROTOCOL.md §3.2, docs/DEVICE_TASKS.md S4.1's exact
-# wording).
-TOO_MANY_PENDING_BODY = "too many pending requests"
+# docs/BOOK_ADD_ANYONE_DESIGN.md D6: the reply beyond 10 adds per device per hour.
+TOO_MANY_ADDS_BODY = "too many adds; try later"
+# D6: at most 32 `added` entries per owner.
+ADD_RATE_LIMIT = 10
+ADD_RATE_WINDOW_S = 3600
 
-# docs/CONTACT_REQ_DESIGN.md decision 1: the `system` replies for a
+# docs/BOOK_ADD_ANYONE_DESIGN.md D1-D3, D12: the `system` replies for a
 # `contact_req` the relay answers at ingest. `<name>` is the request's name.
 
 
@@ -89,6 +92,32 @@ def in_book_body(name: str) -> str:
 
 def no_contact_body(name: str, alias: str) -> str:
     return f"{name}: no contact @{alias}"
+
+
+def book_full_body(name: str) -> str:
+    return f"{name}: address book full"
+
+
+def added_needs_ok_body(name: str) -> str:
+    return f"{name}: added; needs a parent's OK to text"
+
+
+def added_not_allowed_body(name: str) -> str:
+    return f"{name}: added; settings don't allow texting"
+
+
+# D7/D8: replies to a refused send to an entry the owner added; `<n>` is the
+# entry's book name.
+def refused_needs_ok_body(label: str) -> str:
+    return f"{label}: needs a parent's OK; resend once approved"
+
+
+def refused_declined_body(label: str) -> str:
+    return f"{label}: not approved"
+
+
+def refused_not_allowed_body(label: str) -> str:
+    return f"{label}: not allowed"
 
 
 def record_bad_sig(device_id: str) -> None:
@@ -215,6 +244,60 @@ def classify_ph(ph: str) -> tuple[Literal["phone", "alias", "bad"], str]:
     if wire.ALIAS_RE.match(ph):
         return "alias", ph
     return "bad", ph
+
+
+_ADDED_REFUSALS = {"not_allowed", "policy_out", "policy_in"}
+
+
+def _entry_label(name: str) -> str:
+    """The entry's book name as the pager shows it: `c[].n` is cut at 16 code
+    points; also kept inside the wire's 48 UTF-8 bytes."""
+    label = name[:16]
+    while len(label.encode("utf-8")) > 48:
+        label = label[:-1]
+    return label
+
+
+def _fixable(owner: users_store.User, peer: users_store.User) -> bool:
+    """docs/BOOK_ADD_ANYONE_DESIGN.md D8: the owner's own `message` edge would
+    let the pair through (`policy.check` with `has_out` true and the peer's
+    real inbound edge). When the policy refuses that kind outright, or the
+    peer's side refuses, one parent click cannot fix it."""
+    return policy_module.check(owner, peer, True, book.edge_or_family(peer, owner)) is None
+
+
+def _contact_for_add(
+    family_id: str, e164: str, name: str
+) -> tuple[users_store.User, str | None]:
+    """docs/BOOK_ADD_ANYONE_DESIGN.md D1: the family contact for `e164` and the
+    nickname the owner should see. An existing contact under another name is
+    reused and the typed name becomes the nickname. A new contact takes the
+    typed name; when another number already owns it the contact is named
+    `<name 11cp> <last4>`, then `<name 9cp> <last6>`, then the E.164, and the
+    typed name is the nickname. Never raises `ContactNameTaken` for a clash
+    on the first two candidates."""
+    nick: str | None
+    try:
+        nick = book.validate_nick(name)
+    except ValueError:
+        nick = None
+    existing = externals_store.get_family_contact(family_id, e164)
+    if existing is not None:
+        return existing, (nick if nick != existing.displayName else None)
+    digits = e164.lstrip("+")
+    candidates = [
+        (name, None),
+        (f"{name[:11].rstrip()} {digits[-4:]}", nick),
+        (f"{name[:9].rstrip()} {digits[-6:]}", nick),
+        (e164, nick),
+    ]
+    for index, (candidate, candidate_nick) in enumerate(candidates):
+        try:
+            return externals_store.get_or_create(family_id, e164, candidate), candidate_nick
+        except externals_store.ContactNameTaken:
+            if index == len(candidates) - 1:
+                raise
+    raise AssertionError("unreachable")
 
 
 def _has_open_sms_unknown(family_id: str, e164: str) -> bool:
@@ -435,8 +518,10 @@ class Ingest:
         topic: str,
         payload: bytes,
     ) -> None:
-        """docs/DEVICE_PLAN.md §4.2, docs/PROTOCOL.md §3.2: store a pending
-        `contactRequests/{deviceId}_{id}` row. Same drop rules as any other
+        """docs/BOOK_ADD_ANYONE_DESIGN.md (supersedes docs/DEVICE_PLAN.md §4.2's
+        pending row): a `contact_req` is an *add* -- classify it, then either
+        reply (`in_book`, a rejection) or create the entry (`_add_entry`).
+        Same drop rules as any other
         up message for an unregistered/revoked device (`_handle_up_message`),
         checked here too since this path never reaches that function."""
         if device is None:
@@ -468,6 +553,10 @@ class Ingest:
             logger.warning("contact_req %s: device %s has no owner user", env.id, device_id)
             return
 
+        if owner.familyId is None:
+            logger.warning("contact_req %s: owner of device %s has no family", env.id, device_id)
+            return
+
         outcome, phone, alias = self._classify_contact_req(owner, env)
         logger.info("contact_req outcome=%s device=%s req=%s", outcome, device_id, env.id)
 
@@ -481,6 +570,8 @@ class Ingest:
                 body = blocked_body(env.name)
             else:
                 body = no_contact_body(env.name, alias or "")
+            # D13: a rejection keeps its row and its reply, but no longer
+            # bumps the book (there is no `p[]` to show it in).
             contacts_store.create_rejected(
                 device_id=device_id,
                 owner_uid=device.ownerUid,
@@ -490,38 +581,115 @@ class Ingest:
                 alias=alias,
                 reason=outcome,
             )
-            contacts_store.bump_book_version(device_id)
-            devcfg.push_book(device_id, self._broker)
             self._send_system_reply(device_id, body, cause_id=env.id)
             return
 
-        try:
-            request = contacts_store.create_request(
+        self._add_entry(device_id, device, owner, env, phone, alias)
+
+    def _add_entry(
+        self,
+        device_id: str,
+        device: devices_store.Device,
+        owner: users_store.User,
+        env: ContactReqEnvelope,
+        phone: str | None,
+        alias: str | None,
+    ) -> None:
+        """docs/BOOK_ADD_ANYONE_DESIGN.md D1, D6, D12, D14: an add creates the
+        entry. Rate check, then the peer (a family contact for a phone, the
+        resolved person for an alias), then the one transaction in
+        `contacts_store.add_entry`, then the push. Delivery is never decided
+        here -- except for an owner on the modem (D12)."""
+        if not rate_limits_store.check_and_increment(
+            f"book_add:{device_id}", limit=ADD_RATE_LIMIT, window_s=ADD_RATE_WINDOW_S
+        ):
+            logger.info("contact_req outcome=rate device=%s req=%s", device_id, env.id)
+            self._send_system_reply(device_id, TOO_MANY_ADDS_BODY, cause_id=env.id)
+            return
+        peer: users_store.User | None
+        nick: str | None = None
+        if phone is not None:
+            assert owner.familyId is not None  # checked by the caller
+            try:
+                peer, nick = _contact_for_add(owner.familyId, phone, env.name)
+            except externals_store.ContactNameTaken:
+                logger.warning(
+                    "contact_req device=%s req=%s: no free contact name; dropped", device_id, env.id
+                )
+                return
+        else:
+            assert alias is not None
+            peer = users_store.get_user_by_alias(alias)
+            assert peer is not None
+        result = contacts_store.add_entry(
+            device_id=device_id,
+            owner_uid=owner.uid,
+            family_id=owner.familyId,
+            req_id=env.id,
+            name=env.name,
+            peer_uid=peer.uid,
+            nick=nick,
+            phone=phone,
+            alias=alias,
+        )
+        if result == "dup":
+            logger.info("contact_req %s from device %s is a redelivery", env.id, device_id)
+            return
+        if result == "full":
+            logger.info("contact_req outcome=full device=%s req=%s", device_id, env.id)
+            contacts_store.create_rejected(
                 device_id=device_id,
-                owner_uid=device.ownerUid,
+                owner_uid=owner.uid,
                 req_id=env.id,
                 name=env.name,
                 phone=phone,
                 alias=alias,
+                reason="full",
             )
-        except contacts_store.TooManyPending:
-            logger.info("contact_req outcome=cap device=%s req=%s", device_id, env.id)
-            self._send_system_reply(device_id, TOO_MANY_PENDING_BODY, cause_id=env.id)
+            self._send_system_reply(device_id, book_full_body(env.name), cause_id=env.id)
             return
+        logger.info("book bump reason=add owner=%s", owner.uid)
+        if peer.kind == "external" and not owner.smsNumber:
+            self._modem_gate(device_id, owner, peer, env)
+        else:
+            book.push_only(owner.uid, self._broker)
 
-        if request is None:
-            logger.info(
-                "contact_req %s from device %s is a no-op (already pending/approved)",
-                env.id,
-                device_id,
-            )
+    def _modem_gate(
+        self,
+        device_id: str,
+        owner: users_store.User,
+        peer: users_store.User,
+        env: ContactReqEnvelope,
+    ) -> None:
+        """D12: an owner without a relay number texts through `cfg.sms`, which
+        the relay never sees a send through. The contact reaches it only via
+        `sms_contacts_for`; a refused add is never put on that list. A
+        fixable refusal raises the D8 alert now (the only moment a parent can
+        hear about it) and tells the kid."""
+        book.rederive_sms_contacts(owner.uid, self._broker)
+        book.push_only(owner.uid, self._broker)
+        out_edge = allow_store.get_edge(owner.uid, peer.uid)
+        reason = policy_module.check(owner, peer, bool(out_edge and out_edge.message), False)
+        if reason is None:
+            return
+        fixable = _fixable(owner, peer)
+        outcome = alerts.approval_upsert(owner, peer) if fixable else "none"
+        logger.info(
+            "send_refused_added reason=%s fixable=%d alert=%s", reason, int(fixable), outcome
+        )
+        self._send_system_reply(
+            device_id,
+            added_needs_ok_body(env.name) if fixable else added_not_allowed_body(env.name),
+            cause_id=env.id,
+        )
 
     def _classify_contact_req(
         self, owner: users_store.User, env: ContactReqEnvelope
     ) -> tuple[str, str | None, str | None]:
-        """The decision-1 table, first match wins. Returns `(outcome, phone,
-        alias)`; outcome is `bad_number|blocked|in_book|no_contact|
-        pending_sms|pending_link`."""
+        """docs/BOOK_ADD_ANYONE_DESIGN.md D2/D3, first match wins. Returns
+        `(outcome, phone, alias)`; outcome is `bad_number|blocked|in_book|
+        no_contact|added`. `in_book` only means already on this pager
+        (`book.on_pager`); an entry hidden by policy is added (marked)."""
         if env.ph is None:
             return "bad_number", None, None
         kind, value = classify_ph(env.ph)
@@ -535,30 +703,31 @@ class Ingest:
             if family is not None and value in family.blockedNumbers:
                 return "blocked", value, None
             # A phone is only ever an SMS contact (a person's sign-in phone is
-            # never a lookup key): in the book when the family's contact for
-            # it is on the owner's `cfg.sms` list.
-            if owner.familyId is not None:
-                contact = externals_store.get_family_contact(owner.familyId, value)
-                if contact is not None and contact.uid in {
-                    u.uid for u in book.sms_contacts_for(owner)
-                }:
-                    return "in_book", value, None
-            return "pending_sms", value, None
+            # never a lookup key).
+            contact = externals_store.get_family_contact(owner.familyId, value) if owner.familyId else None
+            if contact is not None and book.on_pager(owner, contact.uid):
+                return "in_book", value, None
+            return "added", value, None
 
         target = users_store.get_user_by_alias(value)
         if target is not None:
             if target.uid == owner.uid:
                 return "in_book", None, value
-            if book.edge_or_family(owner, target):
-                return "in_book", None, value
+            # D2: alias scope is unchanged -- a same-family person, or a
+            # person with a `message` edge to the owner. Anything else gets
+            # the one shared `no contact` reply.
             inbound = allow_store.get_edge(target.uid, owner.uid)
             if (
                 target.kind == "person"
                 and not target.disabled
-                and inbound is not None
-                and inbound.message
+                and (
+                    book.same_family_persons(owner, target)
+                    or (inbound is not None and inbound.message)
+                )
             ):
-                return "pending_link", None, value
+                if book.on_pager(owner, target.uid):
+                    return "in_book", None, value
+                return "added", None, value
         return "no_contact", None, value
 
     def _store_malformed_sms(self, device_id: str, raw: bytes, reason: str) -> None:
@@ -763,14 +932,51 @@ class Ingest:
             # disallowed recipient -> exactly one `system` down reply, never
             # stored as a message (it is not part of any conversation), rate-
             # limited to one per offending up message.
+            first = result.rejected[0]
             body = (
-                NO_SMS_NUMBER_BODY
-                if result.rejected[0].reason == "no_sms_number"
-                else NO_BRIDGE_BODY
-                if result.rejected[0].reason == "no_bridge"
-                else UNKNOWN_RECIPIENT_BODY
+                self._added_refusal_body(device, first.uid, env.to, first.reason)
+                if first.reason in _ADDED_REFUSALS and first.uid is not None
+                else None
             )
+            if body is None:
+                body = (
+                    NO_SMS_NUMBER_BODY
+                    if first.reason == "no_sms_number"
+                    else NO_BRIDGE_BODY
+                    if first.reason == "no_bridge"
+                    else UNKNOWN_RECIPIENT_BODY
+                )
             self._send_system_reply(device.id, body, cause_id=env.id)
+
+    def _added_refusal_body(
+        self, device: devices_store.Device, peer_uid: str, to: str, reason: str
+    ) -> str | None:
+        """docs/BOOK_ADD_ANYONE_DESIGN.md D7-D9: a refused send to an entry the
+        owner added gets a named reply instead of `unknown recipient`, because
+        the pager already lists the entry. `None` when `to` is not an added
+        entry of this owner (the caller keeps today's body). When one parent
+        click would let the send through (`_fixable`) the one open
+        `cr_{owner}_{peer}` alert is raised (or found); a decision within 24 h
+        answers `not approved`. The message itself stays dropped (D9)."""
+        owner = users_store.get_user(device.ownerUid)
+        peer = users_store.get_user(peer_uid)
+        if owner is None or peer is None or peer.alias != to:
+            return None
+        marker = book.added_marker(owner.uid, peer.uid)
+        if marker is None:
+            return None
+        nick = marker.get("nick")
+        label = _entry_label(nick if isinstance(nick, str) and nick else peer.displayName)
+        fixable = _fixable(owner, peer)
+        outcome = alerts.approval_upsert(owner, peer) if fixable else "none"
+        logger.info(
+            "send_refused_added reason=%s fixable=%d alert=%s", reason, int(fixable), outcome
+        )
+        if not fixable:
+            return refused_not_allowed_body(label)
+        if outcome == "declined":
+            return refused_declined_body(label)
+        return refused_needs_ok_body(label)
 
     def _send_system_reply(self, device_id: str, body: str, *, cause_id: str) -> None:
         # The reply's wire `id` is *derived from the offending up message's

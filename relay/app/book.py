@@ -58,6 +58,9 @@ class BookEntry:
     # docs/BRIDGE_PHONE_DESIGN.md decision 7: `{source}` on an external that
     # is a subscribed Google Chat / Voice DM.
     chat: dict | None = None
+    # docs/BOOK_ADD_ANYONE_DESIGN.md D4: the owner added this entry from the
+    # pager (`users/{owner}/book/{peer}.added`). Listing only; grants nothing.
+    added: bool = False
 
     @property
     def label(self) -> str:
@@ -101,13 +104,32 @@ def _book_col(owner_uid: str):
     return get_db().collection("users").document(owner_uid).collection("book")
 
 
+def _book_docs(owner_uid: str) -> dict[str, dict]:
+    """Every `users/{owner}/book/{peer}` doc, by peer uid."""
+    return {snap.id: (snap.to_dict() or {}) for snap in _book_col(owner_uid).stream()}
+
+
 def _nicks(owner_uid: str) -> dict[str, str]:
     out: dict[str, str] = {}
-    for snap in _book_col(owner_uid).stream():
-        nick = (snap.to_dict() or {}).get("nick")
+    for peer, data in _book_docs(owner_uid).items():
+        nick = data.get("nick")
         if isinstance(nick, str) and nick:
-            out[snap.id] = nick
+            out[peer] = nick
     return out
+
+
+def added_marker(owner_uid: str, peer_uid: str) -> dict | None:
+    """`users/{owner}/book/{peer}` when it carries the `added` marker (D4),
+    else `None`."""
+    snap = _book_col(owner_uid).document(peer_uid).get()
+    data = snap.to_dict() if snap.exists else None
+    return data if data and data.get("added") is True else None
+
+
+def added_peers(owner_uid: str) -> set[str]:
+    """Peer uids carrying the `added` marker (D4). Never a permission: only
+    `entries_for` and the add/remove paths read it."""
+    return {p for p, d in _book_docs(owner_uid).items() if d.get("added") is True}
 
 
 def truncate_sms_name(name: str) -> str:
@@ -151,6 +173,27 @@ def sms_contacts_for(owner: User) -> list[User]:
     ]
     out.sort(key=lambda u: (truncate_sms_name(u.displayName).casefold(), u.uid))
     return out
+
+
+def on_pager(owner: User, peer_uid: str) -> bool:
+    """D3: whether `peer_uid` is already on this owner's pager -- in `c[]`
+    (a relay-number owner, and any person) or in `cfg.sms`, the first
+    `MAX_SMS_CONTACTS` of `sms_contacts_for` (a modem owner's externals)."""
+    peer = users_store.get_user(peer_uid)
+    if peer is not None and peer.kind == "external" and not owner.smsNumber:
+        return peer_uid in {
+            u.uid for u in sms_contacts_for(owner)[: devices_store.MAX_SMS_CONTACTS]
+        }
+    return any(
+        e.uid == peer_uid and listed_on_pager(e) for e in entries_for(owner.uid)
+    )
+
+
+def listed_on_pager(entry: BookEntry) -> bool:
+    """`c[]` membership (D5): sendable, or added -- except an external of an
+    owner without a relay number (`no_sms_number`), which is the modem's
+    (`cfg.sms`), never a `c[]` row."""
+    return entry.sendable or (entry.added and entry.reason != "no_sms_number")
 
 
 def rederive_sms_contacts(owner_uid: str, broker: BrokerClient) -> None:
@@ -228,7 +271,12 @@ def entries_for(owner_uid: str) -> list[BookEntry]:
     owner = users_store.get_user(owner_uid)
     if owner is None:
         return []
-    nicks = _nicks(owner_uid)
+    docs = _book_docs(owner_uid)
+    nicks = {
+        p: d["nick"] for p, d in docs.items() if isinstance(d.get("nick"), str) and d["nick"]
+    }
+    # D4/D5: the owner's `added` marker lists an entry; it grants nothing.
+    marked = {p for p, d in docs.items() if d.get("added") is True and p != owner_uid}
     all_edges = allow_store.list_edges()
     edges = [e for e in all_edges if e.message]
     out_edges = {e.toUid for e in edges if e.fromUid == owner_uid}
@@ -267,6 +315,22 @@ def entries_for(owner_uid: str) -> list[BookEntry]:
                 chat_contacts.append(user)
             continue
         peers[uid] = (user, same_family_persons(owner, user))
+    marked_externals: list[User] = []
+    for uid in sorted(marked):
+        if uid in peers:
+            continue
+        user = users_store.get_user(uid)
+        if user is None or user.disabled:
+            continue
+        if user.kind == "person":
+            peers[uid] = (user, same_family_persons(owner, user))
+        elif (
+            user.kind == "external"
+            and user.phone
+            and owner.familyId is not None
+            and user.ownerFamilyId == owner.familyId
+        ):
+            marked_externals.append(user)
 
     entries: list[BookEntry] = []
     for uid, (user, in_family) in peers.items():
@@ -285,13 +349,23 @@ def entries_for(owner_uid: str) -> list[BookEntry]:
                 inFamily=in_family,
                 sendable=reason is None,
                 reason=reason,
+                added=uid in marked,
             )
         )
     # Externals come only from `sms_contacts_for` (the list `cfg.sms` is cut
     # from). With a relay number (docs/RELAY_SMS_DESIGN.md decision 7) the
     # relay texts them: `sendable` follows the same policy gate routing runs;
     # without one they are the modem's, listed as before.
-    for index, contact in enumerate(sms_contacts):
+    listed = {c.uid for c in sms_contacts}
+    # D5: marked externals of the owner's family that `sms_contacts_for` does
+    # not carry (no edge, policy not `any`) are listed after it, not sendable
+    # unless the same policy gate passes.
+    external_rows = [(i, c) for i, c in enumerate(sms_contacts)]
+    external_rows += [
+        (len(sms_contacts) + j, c)
+        for j, c in enumerate(c for c in marked_externals if c.uid not in listed)
+    ]
+    for index, contact in external_rows:
         if not owner.smsNumber:
             sendable, reason = False, "no_sms_number"
         else:
@@ -315,7 +389,10 @@ def entries_for(owner_uid: str) -> list[BookEntry]:
                 inFamily=False,
                 sendable=sendable,
                 reason=reason,
-                onPager=sendable if owner.smsNumber else index < devices_store.MAX_SMS_CONTACTS,
+                onPager=sendable
+                if owner.smsNumber
+                else (contact.uid in listed and index < devices_store.MAX_SMS_CONTACTS),
+                added=contact.uid in marked,
             )
         )
     for contact in chat_contacts:
@@ -386,10 +463,23 @@ def set_nick(owner_uid: str, peer_uid: str, nick: str | None, by_uid: str) -> No
 
     def _txn(transaction: Transaction) -> None:
         # All reads before any write.
+        current = (doc.get(transaction=transaction).to_dict()) or {}
         snaps = list(devices_query.stream(transaction=transaction))
         bumps = [(s.reference, int((s.to_dict() or {}).get("bookVersion", 0) or 0) + 1) for s in snaps]
         if nick is None:
-            transaction.delete(doc)
+            if current.get("added") is True:
+                # D4: the `added` marker outlives the nickname.
+                transaction.set(
+                    doc,
+                    {
+                        "nick": firestore.DELETE_FIELD,
+                        "updatedAt": firestore.SERVER_TIMESTAMP,
+                        "updatedBy": by_uid,
+                    },
+                    merge=True,
+                )
+            else:
+                transaction.delete(doc)
         else:
             transaction.set(
                 doc,
@@ -399,12 +489,56 @@ def set_nick(owner_uid: str, peer_uid: str, nick: str | None, by_uid: str) -> No
                     "updatedAt": firestore.SERVER_TIMESTAMP,
                     "updatedBy": by_uid,
                 },
+                merge=True,
             )
         for ref, bv in bumps:
             transaction.update(ref, {"bookVersion": bv})
 
     run_transaction(_txn)
     logger.info("book bump reason=nick owner=%s", owner_uid)
+
+
+def clear_added(owner_uid: str, peer_uid: str, by_uid: str) -> bool:
+    """D15: ONE transaction that clears the `added` marker (and `addedAt` /
+    `addedBy`) of `users/{owner}/book/{peer}`, deleting the doc when no `nick`
+    is left, and bumps `bookVersion` on every device of the owner. `False`
+    (nothing written) when the peer carries no marker. The push follows
+    outside (`push_only`). Removes the listing only: edges and the family
+    contact stay."""
+    db = get_db()
+    doc = _book_col(owner_uid).document(peer_uid)
+    devices_query = db.collection("devices").where(
+        filter=firestore.FieldFilter("ownerUid", "==", owner_uid)
+    )
+
+    def _txn(transaction: Transaction) -> bool:
+        snap = doc.get(transaction=transaction)
+        current = (snap.to_dict() or {}) if snap.exists else {}
+        if current.get("added") is not True:
+            return False
+        device_snaps = list(devices_query.stream(transaction=transaction))
+        if isinstance(current.get("nick"), str) and current["nick"]:
+            transaction.update(
+                doc,
+                {
+                    "added": firestore.DELETE_FIELD,
+                    "addedAt": firestore.DELETE_FIELD,
+                    "addedBy": firestore.DELETE_FIELD,
+                    "updatedAt": firestore.SERVER_TIMESTAMP,
+                    "updatedBy": by_uid,
+                },
+            )
+        else:
+            transaction.delete(doc)
+        for snap_ in device_snaps:
+            bv = int((snap_.to_dict() or {}).get("bookVersion", 0) or 0) + 1
+            transaction.update(snap_.reference, {"bookVersion": bv})
+        return True
+
+    removed = run_transaction(_txn)
+    if removed:
+        logger.info("book bump reason=remove_added owner=%s", owner_uid)
+    return removed
 
 
 def _device_ids(owner_uid: str) -> list[str]:

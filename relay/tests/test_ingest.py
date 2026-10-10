@@ -1152,11 +1152,14 @@ def test_contact_req_for_contact_implied_by_open_policy_is_in_book():
     ).encode("utf-8")
 
     # Under the default `people` policy the contact is not on the pager's
-    # list, so the request is pending.
+    # list, so the request is an add (the modem owner's settings refuse texting).
     ingest, broker = _ingest()
     ingest.handle_up(up_topic("pgr-v2-imp"), payload)
     row = contacts_store.get_by_device_and_req("pgr-v2-imp", "u_imp1")
-    assert row is not None and row.status == "pending"
+    assert row is not None and row.status == "added"
+    assert [json.loads(p.payload)["body"] for p in broker.published if b"system" in p.payload] == [
+        "Gma: added; settings don't allow texting"
+    ]
 
     # Under `open` the contact is implied: already in the book, no row.
     get_db().collection("users").document("student").update(
@@ -1169,3 +1172,185 @@ def test_contact_req_for_contact_implied_by_open_policy_is_in_book():
     assert contacts_store.get_by_device_and_req("pgr-v2-imp", "u_imp2") is None
     bodies = [json.loads(p.payload)["body"] for p in broker.published]
     assert bodies == ["Gma: already in your book"]
+
+
+# ---- refused send to an entry the owner added (docs/BOOK_ADD_ANYONE_DESIGN.md D7-D9) ----
+
+
+def _added_world(policy: tuple[str, str] = ("people_sms", "people_sms"), device: str = "pgr-ad"):
+    """A kid with a relay number and an added (marked) external, no edge."""
+    from app.db.firestore import get_db
+    from app.store import externals as externals_store
+    from app.store import families as families_store
+
+    fam = families_store.create_family(name="F", created_by="root").id
+    users_store.create_user(uid="student", alias="student", display_name="student", family_id=fam)
+    get_db().collection("users").document("student").update(
+        {"policy": {"out": policy[0], "in": policy[1]}}
+    )
+    users_store.set_sms_number("student", "+12065550999")
+    ext = externals_store.get_or_create(fam, "+12065550100", "Grandma")
+    get_db().collection("users").document("student").collection("book").document(ext.uid).set(
+        {"added": True, "familyId": fam}
+    )
+    _make_pager_device(device, "student")
+    return fam, ext
+
+
+def _send(ingest: Ingest, device: str, msg_id: str, to: str) -> None:
+    ingest.handle_up(
+        up_topic(device),
+        json.dumps(
+            {
+                "v": 1,
+                "id": msg_id,
+                "ts": int(time.time()),
+                "from": "student",
+                "to": to,
+                "body": "hi",
+                "ack": None,
+            }
+        ).encode("utf-8"),
+    )
+
+
+def _system(broker: FakeBrokerClient) -> list[dict]:
+    return [d for d in (json.loads(p.payload) for p in broker.published) if d.get("from") == "system"]
+
+
+def _count_pushes(monkeypatch) -> list[dict]:
+    from app import alerts as alerts_module
+
+    pushed: list[dict] = []
+    monkeypatch.setattr(
+        alerts_module, "_push_alert", lambda family_id, alert, fcm_client=None: pushed.append(alert)
+    )
+    return pushed
+
+
+def test_refused_added_fixable_alerts_once(monkeypatch):
+    from app.store import alerts as alerts_store
+
+    pushed = _count_pushes(monkeypatch)
+    fam, ext = _added_world()
+    ingest, broker = _ingest()
+
+    _send(ingest, "pgr-ad", "u_ad1", ext.alias)
+    _send(ingest, "pgr-ad", "u_ad2", ext.alias)
+
+    replies = _system(broker)
+    assert [r["body"] for r in replies] == ["Grandma: needs a parent's OK; resend once approved"] * 2
+    assert replies[0]["id"] != replies[1]["id"]
+    alerts = alerts_store.list_alerts(fam, "all")
+    assert [a.id for a in alerts] == [f"cr_student_{ext.uid}"]
+    assert alerts[0].status == "open" and alerts[0].kind == "contact_request"
+    assert alerts[0].contactRequestKey is None and alerts[0].peerPhone == "+12065550100"
+    assert len(pushed) == 1
+
+
+def test_refused_added_uses_the_nickname():
+    from app.db.firestore import get_db
+
+    _fam, ext = _added_world()
+    get_db().collection("users").document("student").collection("book").document(ext.uid).update(
+        {"nick": "Gran"}
+    )
+    ingest, broker = _ingest()
+    _send(ingest, "pgr-ad", "u_ad3", ext.alias)
+    assert [r["body"] for r in _system(broker)] == ["Gran: needs a parent's OK; resend once approved"]
+
+
+def test_refused_added_unfixable_no_alert(monkeypatch):
+    from app.store import alerts as alerts_store
+
+    pushed = _count_pushes(monkeypatch)
+    fam, ext = _added_world(policy=("people", "people"))
+    ingest, broker = _ingest()
+
+    _send(ingest, "pgr-ad", "u_ad4", ext.alias)
+
+    assert [r["body"] for r in _system(broker)] == ["Grandma: not allowed"]
+    assert alerts_store.list_alerts(fam, "all") == [] and pushed == []
+
+
+def test_refused_not_added_keeps_unknown_recipient():
+    from app.db.firestore import get_db
+    from app.store import alerts as alerts_store
+
+    fam, ext = _added_world()
+    get_db().collection("users").document("student").collection("book").document(ext.uid).delete()
+    ingest, broker = _ingest()
+
+    _send(ingest, "pgr-ad", "u_ad5", ext.alias)
+
+    assert [r["body"] for r in _system(broker)] == ["unknown recipient"]
+    assert alerts_store.list_alerts(fam, "all") == []
+
+
+def test_dismissed_within_24h_replies_not_approved(monkeypatch):
+    from app.store import alerts as alerts_store
+
+    pushed = _count_pushes(monkeypatch)
+    fam, ext = _added_world()
+    ingest, broker = _ingest()
+    _send(ingest, "pgr-ad", "u_ad6", ext.alias)
+    alerts_store.decide(fam, f"cr_student_{ext.uid}", "dismissed", "parent")
+
+    _send(ingest, "pgr-ad", "u_ad7", ext.alias)
+
+    assert [r["body"] for r in _system(broker)][-1] == "Grandma: not approved"
+    assert alerts_store.get(fam, f"cr_student_{ext.uid}").status == "dismissed"
+    assert len(pushed) == 1
+
+
+def test_dismissed_25h_reopens(monkeypatch):
+    from datetime import UTC, datetime, timedelta
+
+    from app.db.firestore import get_db
+    from app.store import alerts as alerts_store
+
+    pushed = _count_pushes(monkeypatch)
+    fam, ext = _added_world()
+    ingest, broker = _ingest()
+    _send(ingest, "pgr-ad", "u_ad8", ext.alias)
+    alert_id = f"cr_student_{ext.uid}"
+    alerts_store.decide(fam, alert_id, "dismissed", "parent")
+    get_db().collection("families").document(fam).collection("alerts").document(alert_id).update(
+        {"decidedAt": datetime.now(UTC) - timedelta(hours=25)}
+    )
+
+    _send(ingest, "pgr-ad", "u_ad9", ext.alias)
+
+    assert [r["body"] for r in _system(broker)][-1] == (
+        "Grandma: needs a parent's OK; resend once approved"
+    )
+    reopened = alerts_store.get(fam, alert_id)
+    assert reopened.status == "open" and reopened.decidedAt is None
+    assert len(alerts_store.list_alerts(fam, "all")) == 1
+    assert len(pushed) == 2
+
+
+def test_refused_message_not_stored():
+    from app.db.firestore import get_db
+
+    _fam, ext = _added_world()
+    ingest, _broker = _ingest()
+
+    _send(ingest, "pgr-ad", "u_ad10", ext.alias)
+
+    assert messages_store.get_message("u_ad10") is None
+    assert list(get_db().collection("messages").stream()) == []
+    assert messages_store.get_conversation(messages_store.conv_key("student", ext.uid)) is None
+
+
+def test_marker_never_permits():
+    """D4: marker + `people_sms` + no edge is still refused by routing."""
+    _fam, ext = _added_world()
+    result = Routing(FakeBrokerClient()).send(
+        sender_uid="student",
+        recipient_alias=ext.alias,
+        kind="text",
+        body="hi",
+        origin_backend_kind="pager",
+    )
+    assert result.messages == [] and [r.reason for r in result.rejected] == ["not_allowed"]

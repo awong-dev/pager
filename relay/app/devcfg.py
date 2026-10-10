@@ -83,13 +83,14 @@ import time
 from datetime import UTC, datetime
 from typing import Any
 
+from google.api_core.exceptions import NotFound
+
 from app import ca_resolve
 from app.broker import BrokerClient
 from app.config import Settings
 from app.db.firestore import get_db
 from app.ids import new_message_id
 from app.store import backends as backends_store
-from app.store import contacts as contacts_store
 from app.store import conversations as conversations_store
 from app.store import devices as devices_store
 from app.store import users as users_store
@@ -99,11 +100,10 @@ from app.wirecbor import to_json_safe
 
 logger = logging.getLogger("relay.devcfg")
 
-# docs/DEVICE_PLAN.md §4.3 / H6: "Book cap 10 approved + 4 requests." --
+# docs/DEVICE_PLAN.md §4.3 / H6: "Book cap 10 approved" (the 4 requests are gone, BOOK_ADD_ANYONE_DESIGN D13) --
 # still the cap for the legacy full `/down book` envelope (`build_book`,
 # non-bpull devices, docs/PROTOCOL.md §3.7's gate).
 MAX_APPROVED_CONTACTS = 10
-MAX_LISTED_REQUESTS = 4
 # docs/PROTOCOL.md §3.7: the §14.7 fetch response's own `c[]` cap -- "32
 # instead of 10 ... the device's stored capacity", `docs/CHAT_UI_DESIGN.md`
 # §1's `BOOK_MAX_CONTACTS`.
@@ -226,8 +226,8 @@ def _group_contacts(owner_uid: str) -> list[dict[str, Any]]:
 
 
 def _approved_contacts(owner_uid: str) -> list[dict[str, Any]]:
-    """Every contact this owner's device book may list -- the sendable
-    entries of the derived address book (`app/book.py`'s `entries_for`:
+    """Every contact this owner's device book may list -- the sendable or
+    `added` (docs/BOOK_ADD_ANYONE_DESIGN.md D5) entries of the derived address book (`app/book.py`'s `entries_for`:
     same-family persons, the owner's message-edge peers, the owner's groups;
     docs/ADDRESS_BOOK_DESIGN.md decision 1) -- **uncapped and unordered**
     (§3.7's `c[]` order is `_ordered_contacts`' job below, since
@@ -251,7 +251,7 @@ def _approved_contacts(owner_uid: str) -> list[dict[str, Any]]:
             ),
         }
         for e in book.entries_for(owner_uid)
-        if e.sendable
+        if book.listed_on_pager(e)
     ]
 
 
@@ -282,24 +282,6 @@ def _ordered_contacts(owner_uid: str, default_alias: str | None) -> list[dict[st
     contacts = _approved_contacts(owner_uid)
     contacts.sort(key=lambda c: _contact_sort_key(c, default_alias))
     return contacts
-
-
-def _listed_requests(device_id: str) -> list[dict[str, Any]]:
-    """docs/PROTOCOL.md §3.2: `p[]` is "the device's own requests that are
-    not approved" -- pending or rejected, `s` = `pend`/`no`. A device can
-    accumulate more than `MAX_LISTED_REQUESTS` non-approved requests over
-    its lifetime (rejections are unbounded, unlike the 5-pending cap), so
-    this selects the *newest* `MAX_LISTED_REQUESTS` by `createdAt` (falling
-    back to `reqId` for two requests created in the same emulator tick,
-    where `SERVER_TIMESTAMP` resolution can tie) -- the most recently
-    decided/asked-about requests are the ones worth a kid seeing on the
-    device."""
-    requests = [r for r in contacts_store.list_requests(device_id=device_id) if r.status != "approved"]
-    requests.sort(key=lambda r: (r.createdAt or datetime.min.replace(tzinfo=UTC), r.reqId), reverse=True)
-    return [
-        {"n": r.name[:_BOOK_NAME_MAX_CODEPOINTS], "s": "pend" if r.status == "pending" else "no"}
-        for r in requests[:MAX_LISTED_REQUESTS]
-    ]
 
 
 # docs/V02_DESIGN.md §6: `sig` is 11 base64url characters at runtime (8 raw
@@ -370,7 +352,6 @@ def build_book(device_id: str) -> dict[str, Any]:
     if default_alias is not None:
         obj["d"] = default_alias
     obj["c"] = _ordered_contacts(device.ownerUid, default_alias)[:MAX_APPROVED_CONTACTS]
-    obj["p"] = _listed_requests(device_id)
     obj["ack"] = None
     _assert_within_envelope_limit(obj)
     return obj
@@ -409,7 +390,6 @@ def build_book_body(device_id: str) -> dict[str, Any]:
     if default_alias is not None:
         obj["d"] = default_alias
     obj["c"] = contacts[:MAX_PULL_CONTACTS]
-    obj["p"] = _listed_requests(device_id)
     if truncated:
         obj["more"] = True
     return obj
@@ -440,9 +420,23 @@ def build_nudge(device_id: str, url: str) -> dict[str, Any]:
 
 
 def _set_pending(device_id: str, field: str, obj: dict[str, Any]) -> None:
-    _devices().document(device_id).set(
-        {field: {"id": obj["id"], "obj": obj, "acked": False}}, merge=True
-    )
+    """Replaces the whole slot. `set(merge=True)` merges maps recursively, so a
+    nudge stored over an older full book kept the old `c`/`p`/`d` inside `obj`
+    and a republish sent the hybrid; `update` replaces the field wholesale."""
+    value = {field: {"id": obj["id"], "obj": obj, "acked": False}}
+    ref = _devices().document(device_id)
+    try:
+        ref.update(value)
+    except NotFound:
+        ref.set(value, merge=True)
+
+
+def _clean_pending_obj(obj: dict[str, Any]) -> dict[str, Any]:
+    """A stored `book` carrying `url` is a nudge: drop any full-book keys a
+    hybrid left behind (the firmware treats a book with `c` as a full book)."""
+    if obj.get("kind") == "book" and "url" in obj:
+        return {k: v for k, v in obj.items() if k not in ("c", "p", "d", "more")}
+    return obj
 
 
 def push_book(
@@ -538,7 +532,7 @@ def renudge_if_behind(
                 reported_bv,
                 current_bv,
             )
-            return broker.publish_down(device_id, obj)
+            return broker.publish_down(device_id, _clean_pending_obj(obj))
     return push_book(device_id, broker, settings=settings)
 
 
@@ -849,4 +843,4 @@ def republish_pending(device_id: str, broker: BrokerClient) -> None:
         logger.info(
             "re-publishing unacked %s %s to device %s", obj.get("kind"), obj.get("id"), device_id
         )
-        broker.publish_down(device_id, obj)
+        broker.publish_down(device_id, _clean_pending_obj(obj))

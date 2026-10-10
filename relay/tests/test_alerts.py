@@ -20,7 +20,6 @@ from app.main import create_app
 from app.routing import Routing
 from app.store import alerts as alerts_store
 from app.store import allow as allow_store
-from app.store import contacts as contacts_store
 from app.store import devices as devices_store
 from app.store import externals as externals_store
 from app.store import families as families_store
@@ -385,50 +384,70 @@ def test_dismiss_marks_alert_dismissed(client: TestClient):
 
 
 # ---------------------------------------------------------------------------
-# app/store/contacts.py -- contact_request alert
+# app/alerts.py -- approval_upsert (docs/BOOK_ADD_ANYONE_DESIGN.md D8)
 # ---------------------------------------------------------------------------
 
 
-def test_contact_req_write_creates_alert_for_owner_family():
-    family = _make_family("ContactReq")
-    users_store.create_user(uid="owner1", alias="owner1", display_name="Owner", family_id=family.id)
+def _approval_pair(family_id: str):
+    users_store.create_user(uid="owner1", alias="owner1", display_name="Owner", family_id=family_id)
+    peer = externals_store.get_or_create(family_id, "+15551230000", "Friend")
+    owner = users_store.get_user("owner1")
+    assert owner is not None
+    return owner, peer
 
-    req = contacts_store.create_request(
-        device_id="dev1", owner_uid="owner1", req_id="r1", name="Friend", phone="+15551230000"
+
+def test_approval_upsert_creates_one_alert_with_a_fixed_id(monkeypatch):
+    pushed: list[dict] = []
+    monkeypatch.setattr(
+        alerts_module, "_push_alert", lambda fid, alert, fcm_client=None: pushed.append(alert)
     )
-    assert req is not None
+    family = _make_family("ContactReq")
+    owner, peer = _approval_pair(family.id)
+
+    assert alerts_module.approval_upsert(owner, peer) == "created"
+    assert alerts_module.approval_upsert(owner, peer) == "open"
 
     alerts = list_alerts(family.id, "all")
-    assert len(alerts) == 1
-    assert alerts[0].kind == "contact_request"
-    assert alerts[0].contactRequestKey == req.key
-    assert alerts[0].subjectAlias == "owner1"
+    assert [a.id for a in alerts] == [f"cr_owner1_{peer.uid}"]
+    alert = alerts[0]
+    assert alert.kind == "contact_request" and alert.status == "open"
+    assert alert.contactRequestKey is None
+    assert (alert.subjectUid, alert.peerUid, alert.peerPhone) == ("owner1", peer.uid, "+15551230000")
+    assert alert.peerName == "Friend"
+    assert len(pushed) == 1 and pushed[0]["id"] == alert.id
 
-    # A redelivered/dedup'd request (same req_id) is a no-op -- no second alert.
-    req_again = contacts_store.create_request(
-        device_id="dev1", owner_uid="owner1", req_id="r1", name="Friend", phone="+15551230000"
+
+def test_approval_upsert_declined_then_reopened(monkeypatch):
+    pushed: list[dict] = []
+    monkeypatch.setattr(
+        alerts_module, "_push_alert", lambda fid, alert, fcm_client=None: pushed.append(alert)
     )
-    assert req_again == req
-    assert len(list_alerts(family.id, "all")) == 1
+    family = _make_family("ContactReq2")
+    owner, peer = _approval_pair(family.id)
+    alert_id = f"cr_owner1_{peer.uid}"
+    alerts_module.approval_upsert(owner, peer)
+    alerts_store.decide(family.id, alert_id, "dismissed", "parent")
+
+    assert alerts_module.approval_upsert(owner, peer) == "declined"
+    assert alerts_store.get(family.id, alert_id).status == "dismissed"
+
+    get_db().collection("families").document(family.id).collection("alerts").document(
+        alert_id
+    ).update({"decidedAt": datetime.now(UTC) - timedelta(hours=25)})
+    assert alerts_module.approval_upsert(owner, peer) == "reopened"
+    reopened = alerts_store.get(family.id, alert_id)
+    assert reopened.status == "open" and reopened.decidedAt is None
+    assert len(pushed) == 2 and len(list_alerts(family.id, "all")) == 1
 
 
-def test_approve_contact_request_alert_makes_a_family_sms_contact(client: TestClient):
-    """docs/CONTACT_REQ_DESIGN.md decision 2: approving never creates a
-    person; an unknown number becomes the owner's family SMS contact."""
+def test_approve_contact_request_alert_grants_the_edge_only(client: TestClient):
+    """docs/BOOK_ADD_ANYONE_DESIGN.md D10: the entry already exists; approving
+    writes the owner's edge and nothing else (no person, no new contact)."""
     family = _make_family("ContactApprove")
     headers = _make_family_admin("admin6", "admin6", family.id)
-    users_store.create_user(uid="owner2", alias="owner2", display_name="Owner2", family_id=family.id)
-    _make_pager_device("dev2", "owner2")
-
-    req = contacts_store.create_request(
-        device_id="dev2", owner_uid="owner2", req_id="r2", name="New Pal", phone="+15559990000"
-    )
-    assert req is not None
-    alerts = list_alerts(family.id, "all")
-    assert len(alerts) == 1
-    alert_id = alerts[0].id
-    assert alerts[0].peerPhone == "+15559990000"
-    assert alerts[0].preview == "New Pal"
+    owner, peer = _approval_pair(family.id)
+    alerts_module.approval_upsert(owner, peer)
+    alert_id = f"cr_owner1_{peer.uid}"
 
     resp = client.post(
         f"/api/family/alerts/{alert_id}/approve",
@@ -443,15 +462,12 @@ def test_approve_contact_request_alert_makes_a_family_sms_contact(client: TestCl
     assert resp.json()["status"] == "handled"
 
     assert users_store.get_uid_for_alias("newpal") is None
-    ext_uid, _alias = externals_store.contact_ids(family.id, "+15559990000")
-    assert allow_store.is_message_allowed("owner2", ext_uid)
-    assert not allow_store.is_message_allowed(ext_uid, "owner2")
-    # A contact is a user with a phone and one `sms` backend (no web client).
-    ext = users_store.get_user(ext_uid)
-    assert ext is not None and ext.phone == "+15559990000"
+    assert allow_store.is_message_allowed("owner1", peer.uid)
+    assert not allow_store.is_message_allowed(peer.uid, "owner1")
+    assert [u.uid for u in externals_store.list_family_contacts(family.id)] == [peer.uid]
     raw_kinds = [
         snap.to_dict()["kind"]
-        for snap in get_db().collection("users").document(ext_uid).collection("backends").stream()
+        for snap in get_db().collection("users").document(peer.uid).collection("backends").stream()
     ]
     assert raw_kinds == ["sms"]
 

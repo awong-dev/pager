@@ -49,10 +49,12 @@ from app.db.firestore import get_db, run_transaction
 
 logger = logging.getLogger("relay.contacts")
 
-# docs/PROTOCOL.md §3.2: "rate-limited: at most 5 pending requests per device."
-MAX_PENDING_PER_DEVICE = 5
+# docs/BOOK_ADD_ANYONE_DESIGN.md D6: the pager's storage (decision 11).
+MAX_ADDED_PER_OWNER = 32
 
-Status = Literal["pending", "approved", "rejected"]
+# "pending" only exists on rows written before the 10 Oct 2026 add-anyone
+# change (D1, D13); nothing creates one any more.
+Status = Literal["pending", "approved", "rejected", "added"]
 
 
 class ContactRequest(BaseModel):
@@ -65,19 +67,12 @@ class ContactRequest(BaseModel):
     name: str
     phone: str | None = None
     alias: str | None = None
+    peerUid: str | None = None
     status: Status = "pending"
     reason: str | None = None
     createdAt: datetime | None = None
     decidedAt: datetime | None = None
     decidedBy: str | None = None
-
-
-class TooManyPending(Exception):
-    """Raised by `create_request` when `device_id` already has
-    `MAX_PENDING_PER_DEVICE` pending requests -- the caller
-    (`app.ingest.Ingest._handle_contact_req`) turns this into the one
-    `system` down reply `docs/DEVICE_TASKS.md` S4.1 specifies verbatim:
-    "too many pending requests"."""
 
 
 def key(device_id: str, req_id: str) -> str:
@@ -114,65 +109,48 @@ def list_requests(
     return [_decode(snap.id, snap.to_dict() or {}) for snap in query.stream()]
 
 
-def count_pending(device_id: str) -> int:
-    return len(list_requests(status="pending", device_id=device_id))
-
-
-def has_matching_pending_or_approved(
-    device_id: str, *, phone: str | None, alias: str | None
-) -> bool:
-    """docs/PROTOCOL.md §3.2: "A request whose `ph` or implied alias matches
-    an existing pending/approved contact is a no-op." Scoped to this device
-    (a device's book only ever lists *its own* pending/approved contacts,
-    §4.3), not every contact request across every device."""
-    if phone is None and alias is None:
-        return False
-    for existing in list_requests(device_id=device_id):
-        if existing.status not in ("pending", "approved"):
-            continue
-        if phone is not None and existing.phone == phone:
-            return True
-        if alias is not None and existing.alias == alias:
-            return True
-    return False
-
-
-def create_request(
+def add_entry(
     *,
     device_id: str,
     owner_uid: str,
+    family_id: str | None,
     req_id: str,
     name: str,
+    peer_uid: str,
+    nick: str | None,
     phone: str | None = None,
     alias: str | None = None,
-) -> ContactRequest | None:
-    """Idempotent on `req_id` (dedup by `id`, per §3.2/§4.2: any up message,
-    contact_req included, dedups on `id`) -- a redelivered webhook for the
-    same request simply returns the already-stored doc rather than erroring
-    or double-counting against the pending cap.
+) -> Literal["added", "full", "dup"]:
+    """docs/BOOK_ADD_ANYONE_DESIGN.md D14(d): ONE transaction that
 
-    Returns `None` (a no-op, not an error) if `phone`/`alias` already matches
-    an existing pending/approved request for this device.
+    - `create()`s `contactRequests/{device}_{req}` `{status:"added", peerUid}`
+      (the transactional dedup on the wire id -> `"dup"`),
+    - counts the owner's `added` markers (a peer that is already marked does
+      not count again; at `MAX_ADDED_PER_OWNER` -> `"full"`, nothing written),
+    - merges the marker `users/{owner}/book/{peer}` (`added`, `addedAt`,
+      `addedBy` = the device id, `familyId`, and `nick` only when given), and
+    - bumps `bookVersion` on every device of the owner.
 
-    Raises `TooManyPending` if this device already has
-    `MAX_PENDING_PER_DEVICE` pending requests -- checked (and, being a
-    docsize count-then-create, subject to a benign race under concurrent
-    webhook retries for *different* `req_id`s, which is fine: worst case one
-    extra pending request slips in, corrected by the next admin decision;
-    the cap is an abuse/UI-clutter guard, not a security boundary)."""
-    doc_key = key(device_id, req_id)
-    existing = get_request(doc_key)
-    if existing is not None:
-        return existing
+    A lost push is repaired by the `bv` heartbeat, a lost bump never would be
+    (ADDRESS_BOOK_DESIGN decision 7), hence one transaction. The caller pushes
+    afterwards."""
+    db = get_db()
+    row_ref = _contact_requests().document(key(device_id, req_id))
+    book_col = db.collection("users").document(owner_uid).collection("book")
+    marker_ref = book_col.document(peer_uid)
+    markers_query = book_col.where(filter=FieldFilter("added", "==", True))
+    devices_query = db.collection("devices").where(filter=FieldFilter("ownerUid", "==", owner_uid))
 
-    if has_matching_pending_or_approved(device_id, phone=phone, alias=alias):
-        return None
-
-    if count_pending(device_id) >= MAX_PENDING_PER_DEVICE:
-        raise TooManyPending(device_id)
-
-    try:
-        _contact_requests().document(doc_key).create(
+    def _txn(transaction: Transaction) -> Literal["added", "full", "dup"]:
+        # All reads before any write.
+        if row_ref.get(transaction=transaction).exists:
+            return "dup"
+        marked = {s.id for s in markers_query.stream(transaction=transaction)}
+        if peer_uid not in marked and len(marked) >= MAX_ADDED_PER_OWNER:
+            return "full"
+        device_snaps = list(devices_query.stream(transaction=transaction))
+        transaction.create(
+            row_ref,
             {
                 "deviceId": device_id,
                 "reqId": req_id,
@@ -180,31 +158,29 @@ def create_request(
                 "name": name,
                 "phone": phone,
                 "alias": alias,
-                "status": "pending",
+                "peerUid": peer_uid,
+                "status": "added",
                 "reason": None,
                 "createdAt": SERVER_TIMESTAMP,
-                "decidedAt": None,
-                "decidedBy": None,
-            }
+                "decidedAt": SERVER_TIMESTAMP,
+                "decidedBy": "relay",
+            },
         )
-    except AlreadyExists:
-        # A concurrent delivery of the same request won: only the winner
-        # raises the alert (docs/CONTACT_REQ_DESIGN.md decision 1).
-        return get_request(doc_key)
-    fetched = get_request(doc_key)
-    assert fetched is not None
+        marker: dict = {
+            "added": True,
+            "addedAt": SERVER_TIMESTAMP,
+            "addedBy": device_id,
+            "familyId": family_id,
+        }
+        if nick is not None:
+            marker["nick"] = nick
+        transaction.set(marker_ref, marker, merge=True)
+        for snap in device_snaps:
+            bv = int((snap.to_dict() or {}).get("bookVersion", 0) or 0) + 1
+            transaction.update(snap.reference, {"bookVersion": bv})
+        return "added"
 
-    # docs/FAMILIES_DESIGN.md §6 "Alert creation" / docs/FAMILIES_TASKS.md
-    # 4.1: every *new* contactRequests write (not the dedup/no-op returns
-    # above) raises a `contact_request` alert for the device owner's family
-    # admins. Imported inside the function, not at module scope: `app/
-    # alerts.py` imports `app.store.contacts` for its own `ContactRequest`
-    # type, so a top-of-file `from app import alerts` here would be a
-    # circular import at module load time.
-    from app import alerts as alerts_module
-
-    alerts_module.contact_request(fetched)
-    return fetched
+    return run_transaction(_txn)
 
 
 def create_rejected(
