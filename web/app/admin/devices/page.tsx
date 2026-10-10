@@ -52,6 +52,7 @@ import Typography from "@mui/material/Typography";
 import AppShell from "@/components/AppShell";
 import Chip from "@mui/material/Chip";
 import DeviceTrustChip from "@/components/DeviceTrustChip";
+import EditDeviceLabelButton from "@/components/EditDeviceLabelDialog";
 import FirmwareChip from "@/components/FirmwareChip";
 import FirmwareUpdateDialog from "@/components/FirmwareUpdateDialog";
 import RequireAuth from "@/components/RequireAuth";
@@ -65,6 +66,7 @@ import { useNewestBuild } from "@/lib/firmware";
 import type { DeviceDoc, UserDoc } from "@/lib/types";
 
 import SetupCodePanel, { type SetupCodeResult } from "./SetupCodePanel";
+import { DEVICE_LABEL_MAX_CHARS, deviceName } from "@/lib/devices";
 import { useFullScreenDialog } from "@/lib/useFullScreenDialog";
 import { responsiveTableSx } from "@/lib/tableSx";
 
@@ -99,7 +101,7 @@ interface DeviceRow extends DeviceDoc {
 
 const ALL_FAMILIES = "__all__";
 
-const emptyForm = { deviceId: "", ownerAlias: "", label: "", defaultToAlias: "", familyId: "" };
+const emptyForm = { ownerAlias: "", label: "", defaultToAlias: "", familyId: "" };
 
 // docs/DEVICE_PLAN.md §5.8: `auto_min` is a `u8` minutes value, 0 = never;
 // default 5. This is the same small fixed menu a parent needs, not a free
@@ -187,7 +189,6 @@ function DevicesInner() {
     setError(null);
     try {
       const resp = await api.post<DeviceSetupResponse>("/admin/devices", {
-        deviceId: form.deviceId,
         ownerAlias: form.ownerAlias,
         label: form.label,
         defaultToAlias: form.defaultToAlias || null,
@@ -289,7 +290,7 @@ function DevicesInner() {
     }
   }
 
-  const formValid = form.deviceId.trim() && form.ownerAlias.trim() && form.label.trim();
+  const formValid = form.ownerAlias.trim() && form.label.trim();
   const setupResultDevice = setupResult
     ? devices.find((d) => d.id === setupResult.deviceId)
     : undefined;
@@ -320,12 +321,11 @@ function DevicesInner() {
       </TextField>
       {error && <Alert severity="error">{error}</Alert>}
 
-      <TableContainer sx={responsiveTableSx([3,4,5,7,8,11])}>
+      <TableContainer sx={responsiveTableSx([2,3,4,6,7,10])}>
         {/* Hidden below md: Owner, Family, Default to, Provisioned, Revoked, Battery; CA trust/Firmware/Lock stay reachable by horizontal scroll. */}
         <Table size="small">
           <TableHead>
             <TableRow>
-              <TableCell>Device ID</TableCell>
               <TableCell>Label</TableCell>
               <TableCell>Owner</TableCell>
               <TableCell>Family</TableCell>
@@ -345,8 +345,17 @@ function DevicesInner() {
               const backoff = locBackoffLabel(d.status?.locBackoffS);
               return (
                 <TableRow key={d.id}>
-                  <TableCell>{d.id}</TableCell>
-                  <TableCell>{d.label}</TableCell>
+                  <TableCell>
+                    <Stack direction="row" spacing={0.5} sx={{ alignItems: "center" }}>
+                      <Typography variant="body2" sx={{ fontWeight: 500 }}>
+                        {deviceName(d)}
+                      </Typography>
+                      <EditDeviceLabelButton device={d} scope="admin" />
+                    </Stack>
+                    <Typography variant="caption" color="text.secondary" sx={{ fontFamily: "monospace" }}>
+                      {d.id}
+                    </Typography>
+                  </TableCell>
                   <TableCell>@{uidToAlias(d.ownerUid) ?? d.ownerUid.slice(0, 8)}</TableCell>
                   <TableCell>{d.familyId ? (familyNameById.get(d.familyId) ?? d.familyId) : "--"}</TableCell>
                   <TableCell>{d.defaultToUid ? `@${uidToAlias(d.defaultToUid) ?? d.defaultToUid.slice(0, 8)}` : "--"}</TableCell>
@@ -472,15 +481,12 @@ function DevicesInner() {
         <DialogContent>
           <Stack spacing={2} sx={{ mt: 1 }}>
             <TextField
-              label="Device ID"
-              value={form.deviceId}
-              onChange={(e) => setForm({ ...form, deviceId: e.target.value })}
-              fullWidth
-            />
-            <TextField
               label="Label"
               value={form.label}
               onChange={(e) => setForm({ ...form, label: e.target.value })}
+              helperText="Shown on the web and on the pager's device screen"
+              slotProps={{ htmlInput: { maxLength: DEVICE_LABEL_MAX_CHARS } }}
+              autoFocus
               fullWidth
             />
             <TextField

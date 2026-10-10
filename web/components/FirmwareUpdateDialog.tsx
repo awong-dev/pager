@@ -11,6 +11,7 @@ import Radio from "@mui/material/Radio";
 import RadioGroup from "@mui/material/RadioGroup";
 import Typography from "@mui/material/Typography";
 
+import { deviceName } from "@/lib/devices";
 import { ApiError } from "@/lib/api";
 import {
   MONTHLY_TARGET_BYTES,
@@ -85,7 +86,7 @@ export default function FirmwareUpdateDialog({
 
   return (
     <Dialog fullScreen={fullScreen} open={open} onClose={busy ? undefined : onClose} fullWidth maxWidth="sm">
-      <DialogTitle>Update firmware{device ? ` -- ${device.label}` : ""}</DialogTitle>
+      <DialogTitle>Update firmware{device ? ` -- ${deviceName(device)}` : ""}</DialogTitle>
       <DialogContent>
         <Typography variant="body2" sx={{ mb: 2 }}>
           Running:{" "}

@@ -42,6 +42,7 @@ import AppShell from "@/components/AppShell";
 import NewChatDialog from "@/components/NewChatDialog";
 import NewGroupDialog from "@/components/NewGroupDialog";
 import RequireAuth from "@/components/RequireAuth";
+import { deviceName } from "@/lib/devices";
 import { ApiError, api } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { useDirectory } from "@/lib/directory";
@@ -255,7 +256,7 @@ function ChatListInner() {
                 <WifiOffIcon color="disabled" />
               )}
               <Typography variant="body1">
-                Your pager ({device.label}): {device.status.state ?? "unknown"}
+                Your pager ({deviceName(device)}): {device.status.state ?? "unknown"}
               </Typography>
               {device.status.battMv != null && (
                 <Chip

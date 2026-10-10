@@ -31,6 +31,7 @@ import Typography from "@mui/material/Typography";
 import AppShell from "@/components/AppShell";
 import MemberDrawer, { type MemberDrawerMember } from "@/components/MemberDrawer";
 import RequireAuth from "@/components/RequireAuth";
+import { deviceName } from "@/lib/devices";
 import { ApiError, api } from "@/lib/api";
 import { familyQuery, useFamily } from "@/lib/family-context";
 import { getFirestoreDb } from "@/lib/firebase";
@@ -231,7 +232,7 @@ function FamilyPeopleInner() {
                         onClick={(e) => e.stopPropagation()}
                         style={{ textDecoration: "none" }}
                       >
-                        <Chip size="small" label={d.label} clickable />
+                        <Chip size="small" label={deviceName(d)} clickable />
                       </Link>
                     ))}
                   </Stack>

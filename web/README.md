@@ -118,7 +118,7 @@ config's `rewrites()` only matters to `next dev`.
 The **Add device** flow (`/admin/devices` -> click the "Add device" button) walks a
 household admin through creating a new pager:
 
-1. Enter the **Device ID** (e.g. `pgr-0001`), a **Label** (e.g. "Kid's pager"), select the
+1. Enter a **Label** (e.g. "Kid's pager"; the relay generates the device ID, `pgr-` plus 8 hex), select the
    **Owner** (the student who will use it), and optionally a **Default recipient** (where
    messages go if not explicitly addressed).
 2. Click **Create**. The page generates a one-time **setup code** (40–55 characters), displays

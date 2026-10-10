@@ -59,6 +59,7 @@ import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 
 import AppShell from "@/components/AppShell";
 import DeviceTrustChip from "@/components/DeviceTrustChip";
+import EditDeviceLabelButton from "@/components/EditDeviceLabelDialog";
 import FirmwareChip from "@/components/FirmwareChip";
 import FirmwareUpdateDialog from "@/components/FirmwareUpdateDialog";
 import RequireAuth from "@/components/RequireAuth";
@@ -67,6 +68,7 @@ import WifiPanel from "@/components/WifiPanel";
 import GnssPanel from "@/components/GnssPanel";
 import { ApiError, api } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
+import { deviceName } from "@/lib/devices";
 import { useNewestBuild } from "@/lib/firmware";
 import { useDirectory } from "@/lib/directory";
 import { xportChipInfo } from "@/lib/deviceTrust";
@@ -280,9 +282,15 @@ function DeviceInner() {
         <IconButton onClick={() => router.back()} aria-label="back" size="small">
           <ArrowBackIcon fontSize="small" />
         </IconButton>
-        <Typography variant="h5" sx={{ flexGrow: 1 }}>
-          {device?.label ?? id} <Typography component="span" variant="body2" color="text.secondary">({id})</Typography>
-        </Typography>
+        <Stack sx={{ flexGrow: 1 }}>
+          <Stack direction="row" spacing={0.5} sx={{ alignItems: "center" }}>
+            <Typography variant="h5">{device ? deviceName(device) : id}</Typography>
+            {device && isFamilyAdmin && <EditDeviceLabelButton device={device} scope={fwScope} />}
+          </Stack>
+          <Typography variant="caption" color="text.secondary" sx={{ fontFamily: "monospace" }}>
+            {id}
+          </Typography>
+        </Stack>
         <DeviceTrustChip tls={device?.status?.tls} caFp={device?.status?.caFp} />
         {device?.status?.car && <Chip size="small" variant="outlined" label={device.status.car} />}
         {xportChip && <Chip size="small" label={xportChip.label} color={xportChip.color} />}
