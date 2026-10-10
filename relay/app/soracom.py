@@ -109,7 +109,13 @@ class SoracomClient:
     def __init__(self, key_id: str, key: str, *, base_url: str = BASE_URL) -> None:
         self._key_id = key_id
         self._key = key
-        self._http = httpx.Client(base_url=base_url, timeout=TIMEOUT_S, transport=_transport)
+        # g.api.soracom.io publishes AAAA records and Cloud Run has no IPv6
+        # egress: left to itself httpx tries v6 first and sits in the connect
+        # timeout (30 s) on every call before falling back (a 3-call listing
+        # took 92 s live, 10 Oct 2026). Binding the local side to 0.0.0.0
+        # forces IPv4.
+        transport = _transport or httpx.HTTPTransport(local_address="0.0.0.0")
+        self._http = httpx.Client(base_url=base_url, timeout=TIMEOUT_S, transport=transport)
         self._headers: dict[str, str] | None = None
 
     def __enter__(self) -> Self:
