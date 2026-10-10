@@ -28,6 +28,7 @@ import { NICK_MAX_CODEPOINTS, nickError, useBook } from "@/lib/book";
 import { defaultRoster, outboundBlocksPeople, subscribeChat } from "@/lib/bridges";
 import { getFirestoreDb } from "@/lib/firebase";
 import type { RosterEntry, SubscribeResult } from "@/lib/types";
+import { useFullScreenDialog } from "@/lib/useFullScreenDialog";
 
 export interface SubscribeTarget {
   bridgeId: string;
@@ -151,10 +152,11 @@ export default function ChatSubscribeDialog({
   onClose: () => void;
   onSubscribed: (result: SubscribeResult, pagerName: string) => void;
 }) {
+  const fullScreen = useFullScreenDialog();
   // Keyed per conversation so the form state initializes fresh from `target`.
   const key = useMemo(() => (target ? `${target.bridgeId}/${target.ref}` : "none"), [target]);
   return (
-    <Dialog open={target !== null} onClose={onClose} fullWidth maxWidth="sm">
+    <Dialog fullScreen={fullScreen} open={target !== null} onClose={onClose} fullWidth maxWidth="sm">
       {target && <Body key={key} ownerUid={ownerUid} target={target} onClose={onClose} onSubscribed={onSubscribed} />}
     </Dialog>
   );

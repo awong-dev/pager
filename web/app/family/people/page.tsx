@@ -36,6 +36,8 @@ import { familyQuery, useFamily } from "@/lib/family-context";
 import { getFirestoreDb } from "@/lib/firebase";
 import { inboundLabel, outboundLabel } from "@/lib/policy";
 import type { DeviceDoc, FamilyDoc, Role, UserDoc } from "@/lib/types";
+import { useFullScreenDialog } from "@/lib/useFullScreenDialog";
+import { responsiveTableSx } from "@/lib/tableSx";
 
 interface MemberRow extends UserDoc {
   uid: string;
@@ -48,6 +50,7 @@ interface DeviceRow extends DeviceDoc {
 const emptyForm = { alias: "", displayName: "", email: "", phone: "", role: "member" as Role };
 
 function FamilyPeopleInner() {
+  const fullScreen = useFullScreenDialog();
   const { familyId } = useFamily();
   const [members, setMembers] = useState<MemberRow[]>([]);
   const [devices, setDevices] = useState<DeviceRow[]>([]);
@@ -170,7 +173,7 @@ function FamilyPeopleInner() {
 
   return (
     <Stack spacing={2}>
-      <Stack direction="row" sx={{ justifyContent: "space-between", alignItems: "center" }}>
+      <Stack direction="row" sx={{ flexWrap: "wrap", justifyContent: "space-between", alignItems: "center" }}>
         <Typography variant="h5">People</Typography>
         <Button variant="contained" onClick={() => setCreateOpen(true)}>
           Add person
@@ -178,7 +181,7 @@ function FamilyPeopleInner() {
       </Stack>
       {error && <Alert severity="error">{error}</Alert>}
 
-      <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
+      <Stack direction="row" spacing={1} useFlexGap sx={{ flexWrap: "wrap", alignItems: "center" }}>
         <Typography variant="body1">Family: {familyName ?? "--"}</Typography>
         <Button
           size="small"
@@ -192,7 +195,8 @@ function FamilyPeopleInner() {
         </Button>
       </Stack>
 
-      <TableContainer sx={{ overflowX: "auto" }}>
+      <TableContainer sx={responsiveTableSx([4,5,6])}>
+        {/* Hidden below md: Sign-in, Devices, Policy (row click opens the member panel). */}
         <Table size="small">
           <TableHead>
             <TableRow>
@@ -248,7 +252,7 @@ function FamilyPeopleInner() {
         </Table>
       </TableContainer>
 
-      <Dialog open={createOpen} onClose={() => setCreateOpen(false)} fullWidth maxWidth="xs">
+      <Dialog fullScreen={fullScreen} open={createOpen} onClose={() => setCreateOpen(false)} fullWidth maxWidth="xs">
         <DialogTitle>Add person</DialogTitle>
         <DialogContent>
           <Stack spacing={2} sx={{ mt: 1 }}>
@@ -302,7 +306,7 @@ function FamilyPeopleInner() {
         </DialogActions>
       </Dialog>
 
-      <Dialog open={renameOpen} onClose={() => setRenameOpen(false)} fullWidth maxWidth="xs">
+      <Dialog fullScreen={fullScreen} open={renameOpen} onClose={() => setRenameOpen(false)} fullWidth maxWidth="xs">
         <DialogTitle>Rename family</DialogTitle>
         <DialogContent>
           <Stack spacing={2} sx={{ mt: 1 }}>

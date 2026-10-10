@@ -248,7 +248,7 @@ function ChatListInner() {
       {device && (
         <Card variant="outlined">
           <CardContent>
-            <Stack direction="row" spacing={2} sx={{ alignItems: "center" }}>
+            <Stack direction="row" spacing={2} useFlexGap sx={{ flexWrap: "wrap", alignItems: "center" }}>
               {device.status.state === "online" ? (
                 <WifiIcon color="success" />
               ) : (
@@ -283,7 +283,7 @@ function ChatListInner() {
 
       {tab === "mine" ? (
         <>
-          <Stack direction="row" spacing={1}>
+          <Stack direction="row" spacing={1} useFlexGap sx={{ flexWrap: "wrap" }}>
             <Button variant="contained" onClick={() => setNewChatOpen(true)}>
               New chat
             </Button>
@@ -325,7 +325,7 @@ function ChatListInner() {
                   <ListItemButton onClick={() => openConversation(c.routeAlias)}>
                     <ListItemText
                       primary={
-                        <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
+                        <Stack direction="row" spacing={1} useFlexGap sx={{ flexWrap: "wrap", alignItems: "center" }}>
                           {isGroup && <GroupsIcon fontSize="small" color="action" />}
                           {c.phone && <PhoneIcon fontSize="small" color="action" />}
                           <Typography sx={{ fontWeight: unread > 0 ? 700 : 400 }}>
@@ -368,7 +368,7 @@ function ChatListInner() {
                   <VisibilityIcon fontSize="small" color="action" sx={{ mr: 1.5 }} />
                   <ListItemText
                     primary={
-                      <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
+                      <Stack direction="row" spacing={1} useFlexGap sx={{ flexWrap: "wrap", alignItems: "center" }}>
                         {r.phone && <PhoneIcon fontSize="small" color="action" />}
                         <Typography>{r.label}</Typography>
                       </Stack>

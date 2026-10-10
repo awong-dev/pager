@@ -17,6 +17,7 @@ import Switch from "@mui/material/Switch";
 import Table from "@mui/material/Table";
 import TableBody from "@mui/material/TableBody";
 import TableCell from "@mui/material/TableCell";
+import TableContainer from "@mui/material/TableContainer";
 import TableHead from "@mui/material/TableHead";
 import TableRow from "@mui/material/TableRow";
 import Tooltip from "@mui/material/Tooltip";
@@ -28,6 +29,7 @@ import { ApiError, api } from "@/lib/api";
 import { useFamily } from "@/lib/family-context";
 import { getFirestoreDb } from "@/lib/firebase";
 import type { AllowEdgeDoc, UserDoc } from "@/lib/types";
+import { responsiveTableSx } from "@/lib/tableSx";
 
 interface UserRow extends UserDoc {
   uid: string;
@@ -145,7 +147,7 @@ function AllowlistInner() {
 
   return (
     <Stack spacing={2}>
-      <Stack direction="row" sx={{ justifyContent: "space-between", alignItems: "center" }}>
+      <Stack direction="row" sx={{ flexWrap: "wrap", justifyContent: "space-between", alignItems: "center" }}>
         <Typography variant="h5">Allow-list</Typography>
         <Button variant="contained" disabled={!dirty || saving} onClick={() => void save()}>
           {saving ? "Saving..." : "Save"}
@@ -171,60 +173,63 @@ function AllowlistInner() {
       </Typography>
       {error && <Alert severity="error">{error}</Alert>}
 
-      <Table size="small">
-        <TableHead>
-          <TableRow>
-            <TableCell>From \ To</TableCell>
-            {visibleUsers.map((u) => (
-              <TableCell key={u.uid} align="center">
-                @{u.alias}
-              </TableCell>
-            ))}
-          </TableRow>
-        </TableHead>
-        <TableBody>
-          {visibleUsers.map((from) => (
-            <TableRow key={from.uid}>
-              <TableCell>@{from.alias}</TableCell>
-              {visibleUsers.map((to) => {
-                if (from.uid === to.uid) {
-                  return <TableCell key={to.uid} align="center">--</TableCell>;
-                }
-                const cell = cellFor(from.uid, to.uid);
-                const crossFamily = from.familyId !== to.familyId;
-                return (
-                  <TableCell key={to.uid} align="center">
-                    <Stack direction="row" spacing={0} sx={{ justifyContent: "center" }}>
-                      <Checkbox
-                        size="small"
-                        checked={cell.message}
-                        title={`Allow @${from.alias} to message @${to.alias}`}
-                        onChange={(e) => setCell(from.uid, to.uid, { message: e.target.checked })}
-                      />
-                      <Tooltip
-                        title={
-                          crossFamily
-                            ? "Locate stays within a family"
-                            : `Allow @${from.alias} to see @${to.alias}'s pager location`
-                        }
-                      >
-                        <span>
-                          <Checkbox
-                            size="small"
-                            checked={cell.locate}
-                            disabled={crossFamily}
-                            onChange={(e) => setCell(from.uid, to.uid, { locate: e.target.checked })}
-                          />
-                        </span>
-                      </Tooltip>
-                    </Stack>
-                  </TableCell>
-                );
-              })}
+      <TableContainer sx={responsiveTableSx([], true)}>
+        {/* Hidden below md: none hidden; matrix scrolls horizontally with a sticky first column. */}
+        <Table size="small">
+          <TableHead>
+            <TableRow>
+              <TableCell>From \ To</TableCell>
+              {visibleUsers.map((u) => (
+                <TableCell key={u.uid} align="center">
+                  @{u.alias}
+                </TableCell>
+              ))}
             </TableRow>
-          ))}
-        </TableBody>
-      </Table>
+          </TableHead>
+          <TableBody>
+            {visibleUsers.map((from) => (
+              <TableRow key={from.uid}>
+                <TableCell>@{from.alias}</TableCell>
+                {visibleUsers.map((to) => {
+                  if (from.uid === to.uid) {
+                    return <TableCell key={to.uid} align="center">--</TableCell>;
+                  }
+                  const cell = cellFor(from.uid, to.uid);
+                  const crossFamily = from.familyId !== to.familyId;
+                  return (
+                    <TableCell key={to.uid} align="center">
+                      <Stack direction="row" spacing={0} sx={{ justifyContent: "center" }}>
+                        <Checkbox
+                          size="small"
+                          checked={cell.message}
+                          title={`Allow @${from.alias} to message @${to.alias}`}
+                          onChange={(e) => setCell(from.uid, to.uid, { message: e.target.checked })}
+                        />
+                        <Tooltip
+                          title={
+                            crossFamily
+                              ? "Locate stays within a family"
+                              : `Allow @${from.alias} to see @${to.alias}'s pager location`
+                          }
+                        >
+                          <span>
+                            <Checkbox
+                              size="small"
+                              checked={cell.locate}
+                              disabled={crossFamily}
+                              onChange={(e) => setCell(from.uid, to.uid, { locate: e.target.checked })}
+                            />
+                          </span>
+                        </Tooltip>
+                      </Stack>
+                    </TableCell>
+                  );
+                })}
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </TableContainer>
     </Stack>
   );
 }

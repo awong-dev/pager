@@ -42,6 +42,8 @@ import {
 import { getFirestoreDb } from "@/lib/firebase";
 import { formatRelativeAge } from "@/lib/time";
 import type { ApiTime, BridgeRow } from "@/lib/types";
+import { useFullScreenDialog } from "@/lib/useFullScreenDialog";
+import { responsiveTableSx } from "@/lib/tableSx";
 
 export interface BridgeMember {
   uid: string;
@@ -73,6 +75,7 @@ export default function BridgePhonesSection({
   familyId: string | null;
   members: BridgeMember[];
 }) {
+  const fullScreen = useFullScreenDialog();
   const [bridges, setBridges] = useState<BridgeRow[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
@@ -193,7 +196,7 @@ export default function BridgePhonesSection({
 
   return (
     <Stack spacing={2}>
-      <Stack direction="row" sx={{ justifyContent: "space-between", alignItems: "center" }}>
+      <Stack direction="row" sx={{ flexWrap: "wrap", justifyContent: "space-between", alignItems: "center" }}>
         <Typography variant="h5">Bridge phones</Typography>
         <Button
           variant="contained"
@@ -211,7 +214,8 @@ export default function BridgePhonesSection({
       </Typography>
       {error && <Alert severity="error">{error}</Alert>}
 
-      <TableContainer sx={{ overflowX: "auto" }}>
+      <TableContainer sx={responsiveTableSx([3,4,5,7,9])}>
+        {/* Hidden below md: Google account, SIM number, Voice number, Battery, Tier 2 (SIM/Voice numbers via the Numbers dialog). */}
         <Table size="small">
           <TableHead>
             <TableRow>
@@ -283,7 +287,7 @@ export default function BridgePhonesSection({
                   </TableCell>
                   <TableCell>{st.tier2Count ?? 0}</TableCell>
                   <TableCell>
-                    <Stack direction="row" spacing={0.5}>
+                    <Stack direction="row" spacing={0.5} useFlexGap sx={{ flexWrap: "wrap" }}>
                       {unpaired ? (
                         <Button size="small" onClick={() => void reissue(b)}>
                           New code
@@ -312,7 +316,7 @@ export default function BridgePhonesSection({
         </Table>
       </TableContainer>
 
-      <Dialog open={addOpen} onClose={() => setAddOpen(false)} fullWidth maxWidth="xs">
+      <Dialog fullScreen={fullScreen} open={addOpen} onClose={() => setAddOpen(false)} fullWidth maxWidth="xs">
         <DialogTitle>Add bridge phone</DialogTitle>
         <DialogContent>
           {addError && <Alert severity="error" sx={{ mb: 1 }}>{addError}</Alert>}
@@ -350,7 +354,7 @@ export default function BridgePhonesSection({
         />
       )}
 
-      <Dialog open={reassign !== null} onClose={() => setReassign(null)} fullWidth maxWidth="xs">
+      <Dialog fullScreen={fullScreen} open={reassign !== null} onClose={() => setReassign(null)} fullWidth maxWidth="xs">
         <DialogTitle>Reassign bridge phone</DialogTitle>
         <DialogContent>
           {dialogError && <Alert severity="error" sx={{ mb: 1 }}>{dialogError}</Alert>}
@@ -371,7 +375,7 @@ export default function BridgePhonesSection({
         </DialogActions>
       </Dialog>
 
-      <Dialog open={numbers !== null} onClose={() => setNumbers(null)} fullWidth maxWidth="xs">
+      <Dialog fullScreen={fullScreen} open={numbers !== null} onClose={() => setNumbers(null)} fullWidth maxWidth="xs">
         <DialogTitle>Phone numbers</DialogTitle>
         <DialogContent>
           {dialogError && <Alert severity="error" sx={{ mb: 1 }}>{dialogError}</Alert>}
@@ -421,7 +425,7 @@ export default function BridgePhonesSection({
         </DialogActions>
       </Dialog>
 
-      <Dialog open={unpair !== null} onClose={() => setUnpair(null)}>
+      <Dialog fullScreen={fullScreen} open={unpair !== null} onClose={() => setUnpair(null)}>
         <DialogTitle>Unpair {unpair?.label}?</DialogTitle>
         <DialogContent>
           {dialogError && <Alert severity="error" sx={{ mb: 1 }}>{dialogError}</Alert>}

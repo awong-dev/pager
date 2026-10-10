@@ -246,7 +246,7 @@ export default function WifiPanel({ deviceId }: { deviceId: string }) {
                     onChange={(e) => updateRow(i, { ssid: e.target.value })}
                     error={!ssidOk}
                     helperText={`1-${WIFI_SSID_MAX_BYTES} bytes`}
-                    sx={{ minWidth: 160 }}
+                    sx={{ minWidth: { xs: 0, sm: 160 }, flexGrow: { xs: 1, sm: 0 } }}
                   />
                   <TextField
                     size="small"
@@ -261,7 +261,7 @@ export default function WifiPanel({ deviceId }: { deviceId: string }) {
                         ? "re-enter to change; required to keep this network on Save"
                         : `${WIFI_PSK_MIN_BYTES}-${WIFI_PSK_MAX_BYTES} bytes`
                     }
-                    sx={{ minWidth: 200 }}
+                    sx={{ minWidth: { xs: 0, sm: 200 }, flexGrow: { xs: 1, sm: 0 } }}
                   />
                   <IconButton aria-label="remove network" onClick={() => removeRow(i)} sx={{ mt: 0.5 }}>
                     <DeleteIcon fontSize="small" />
@@ -270,7 +270,7 @@ export default function WifiPanel({ deviceId }: { deviceId: string }) {
               );
             })}
 
-            <Stack direction="row" spacing={2} sx={{ mt: 1 }}>
+            <Stack direction="row" spacing={2} useFlexGap sx={{ flexWrap: "wrap", mt: 1 }}>
               <Button size="small" onClick={addRow} disabled={rows.length >= WIFI_NET_MAX}>
                 Add network
               </Button>

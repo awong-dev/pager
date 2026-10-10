@@ -29,6 +29,7 @@ import { ApiError, api } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { useDirectory } from "@/lib/directory";
 import { familyQuery } from "@/lib/family-context";
+import { useFullScreenDialog } from "@/lib/useFullScreenDialog";
 
 // Same shape as `relay/app/store/users.py`'s `ALIAS_RE`, mirrored in
 // `web/app/admin/contacts/page.tsx` -- client-side "is Create enabled yet"
@@ -42,6 +43,7 @@ interface NewGroupDialogProps {
 }
 
 export default function NewGroupDialog({ open, onClose }: NewGroupDialogProps) {
+  const fullScreen = useFullScreenDialog();
   const { me } = useAuth();
   const { contacts } = useDirectory();
   const [name, setName] = useState("");
@@ -101,7 +103,7 @@ export default function NewGroupDialog({ open, onClose }: NewGroupDialogProps) {
   const otherContacts = contacts.filter((c) => c.uid !== me?.uid);
 
   return (
-    <Dialog open={open} onClose={handleClose} fullWidth maxWidth="xs">
+    <Dialog fullScreen={fullScreen} open={open} onClose={handleClose} fullWidth maxWidth="xs">
       <DialogTitle>New group</DialogTitle>
       <DialogContent>
         <Stack spacing={2} sx={{ mt: 1 }}>

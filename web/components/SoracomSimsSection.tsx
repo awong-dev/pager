@@ -21,6 +21,7 @@ import Typography from "@mui/material/Typography";
 
 import { ApiError } from "@/lib/api";
 import { enrollAllSims, enrollSim, listSoracomSims, maskImsi, type SoracomSimsResponse } from "@/lib/soracom";
+import { responsiveTableSx } from "@/lib/tableSx";
 
 function errText(e: unknown, fallback: string): string {
   return e instanceof ApiError ? String(e.detail ?? e.message) : fallback;
@@ -61,9 +62,9 @@ export default function SoracomSimsSection() {
 
   return (
     <Stack spacing={2} sx={{ mt: 4 }}>
-      <Stack direction="row" spacing={1} sx={{ justifyContent: "space-between", alignItems: "center" }}>
+      <Stack direction="row" spacing={1} useFlexGap sx={{ flexWrap: "wrap", justifyContent: "space-between", alignItems: "center" }}>
         <Typography variant="h5">Soracom SIMs</Typography>
-        <Stack direction="row" spacing={1}>
+        <Stack direction="row" spacing={1} useFlexGap sx={{ flexWrap: "wrap" }}>
           <Button onClick={() => void refresh()} disabled={busy}>
             Refresh
           </Button>
@@ -87,7 +88,8 @@ export default function SoracomSimsSection() {
           &quot;Soracom enrollment key&quot;).
         </Alert>
       ) : (
-        <TableContainer sx={{ overflowX: "auto" }}>
+        <TableContainer sx={responsiveTableSx([2,3,5])}>
+          {/* Hidden below md: IMSI, Name, Beam group. */}
           <Table size="small">
             <TableHead>
               <TableRow>

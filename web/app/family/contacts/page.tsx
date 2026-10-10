@@ -36,6 +36,8 @@ import { useDirectory } from "@/lib/directory";
 import { familyQuery, useFamily } from "@/lib/family-context";
 import { getFirestoreDb } from "@/lib/firebase";
 import type { AllowEdgeDoc } from "@/lib/types";
+import { useFullScreenDialog } from "@/lib/useFullScreenDialog";
+import { responsiveTableSx } from "@/lib/tableSx";
 
 interface ContactRow {
   uid: string;
@@ -57,6 +59,7 @@ const NAME_HELP = "Must be unique in the family; the pager shows the first 16 ch
 const emptyAdd = { phone: "", name: "" };
 
 function FamilyContactsInner() {
+  const fullScreen = useFullScreenDialog();
   const { familyId } = useFamily();
   const { byUid } = useDirectory();
   const [contacts, setContacts] = useState<ContactRow[]>([]);
@@ -177,7 +180,7 @@ function FamilyContactsInner() {
 
   return (
     <Stack spacing={3}>
-      <Stack direction="row" sx={{ justifyContent: "space-between", alignItems: "center" }}>
+      <Stack direction="row" sx={{ flexWrap: "wrap", justifyContent: "space-between", alignItems: "center" }}>
         <Typography variant="h5">Contacts</Typography>
         <Button
           variant="contained"
@@ -197,7 +200,8 @@ function FamilyContactsInner() {
       {error && <Alert severity="error">{error}</Alert>}
       {loadError && <Alert severity="error">{loadError}</Alert>}
 
-      <TableContainer sx={{ overflowX: "auto" }}>
+      <TableContainer sx={responsiveTableSx([3])}>
+        {/* Hidden below md: Approved for. */}
         <Table size="small">
           <TableHead>
             <TableRow>
@@ -248,7 +252,8 @@ function FamilyContactsInner() {
             No cross-family links yet.
           </Typography>
         ) : (
-          <TableContainer sx={{ overflowX: "auto" }}>
+          <TableContainer sx={responsiveTableSx([])}>
+            {/* Hidden below md: none hidden. */}
             <Table size="small">
               <TableHead>
                 <TableRow>
@@ -269,7 +274,7 @@ function FamilyContactsInner() {
         )}
       </Stack>
 
-      <Dialog open={addOpen} onClose={() => setAddOpen(false)} fullWidth maxWidth="xs">
+      <Dialog fullScreen={fullScreen} open={addOpen} onClose={() => setAddOpen(false)} fullWidth maxWidth="xs">
         <DialogTitle>Add contact</DialogTitle>
         <DialogContent>
           {dialogError && (
@@ -302,7 +307,7 @@ function FamilyContactsInner() {
         </DialogActions>
       </Dialog>
 
-      <Dialog open={!!renaming} onClose={() => setRenaming(null)} fullWidth maxWidth="xs">
+      <Dialog fullScreen={fullScreen} open={!!renaming} onClose={() => setRenaming(null)} fullWidth maxWidth="xs">
         <DialogTitle>Rename contact</DialogTitle>
         <DialogContent>
           {dialogError && (
@@ -327,7 +332,7 @@ function FamilyContactsInner() {
         </DialogActions>
       </Dialog>
 
-      <Dialog open={!!deleting} onClose={() => setDeleting(null)} fullWidth maxWidth="xs">
+      <Dialog fullScreen={fullScreen} open={!!deleting} onClose={() => setDeleting(null)} fullWidth maxWidth="xs">
         <DialogTitle>Delete contact</DialogTitle>
         <DialogContent>
           <Typography>

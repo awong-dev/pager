@@ -168,7 +168,7 @@ function NotificationsInner() {
       {status && <Alert severity="success">{status}</Alert>}
       {error && <Alert severity="error">{error}</Alert>}
 
-      <Stack direction="row" spacing={2}>
+      <Stack direction="row" spacing={2} useFlexGap sx={{ flexWrap: "wrap" }}>
         <Button variant="contained" disabled={busy || !notificationsSupported()} onClick={() => void handleEnable()}>
           Enable notifications
         </Button>

@@ -51,6 +51,8 @@ import type { DeviceDoc } from "@/lib/types";
 
 import BridgePhonesSection from "@/components/BridgePhonesSection";
 import SetupCodePanel, { type SetupCodeResult } from "../../admin/devices/SetupCodePanel";
+import { useFullScreenDialog } from "@/lib/useFullScreenDialog";
+import { responsiveTableSx } from "@/lib/tableSx";
 
 // docs/V02_DESIGN.md §4.4: `POST /api/family/devices/{id}/ca`
 // `{"action":"push"|"unpin"}` (`relay/app/routers/family.py`, same body as
@@ -105,6 +107,7 @@ interface DeviceSetupResponse {
 }
 
 function FamilyDevicesInner() {
+  const fullScreen = useFullScreenDialog();
   const { byUid, contacts } = useDirectory();
   const { familyId } = useFamily();
   const [fwDeviceId, setFwDeviceId] = useState<string | null>(null);
@@ -263,7 +266,7 @@ function FamilyDevicesInner() {
 
   return (
     <Stack spacing={2}>
-      <Stack direction="row" sx={{ justifyContent: "space-between", alignItems: "center" }}>
+      <Stack direction="row" sx={{ flexWrap: "wrap", justifyContent: "space-between", alignItems: "center" }}>
         <Typography variant="h5">Devices</Typography>
         <Button variant="contained" onClick={() => setCreateOpen(true)}>
           Add device
@@ -271,7 +274,8 @@ function FamilyDevicesInner() {
       </Stack>
       {error && <Alert severity="error">{error}</Alert>}
 
-      <TableContainer sx={{ overflowX: "auto" }}>
+      <TableContainer sx={responsiveTableSx([3,4,6,7,10])}>
+        {/* Hidden below md: Owner, Default to, Provisioned, Revoked, Battery; CA trust/Firmware/Lock stay reachable by horizontal scroll. */}
         <Table size="small">
           <TableHead>
             <TableRow>
@@ -315,7 +319,7 @@ function FamilyDevicesInner() {
                       <DeviceTrustChip tls={d.status?.tls} caFp={d.status?.caFp} />
                       {d.status?.car && <Chip size="small" variant="outlined" label={d.status.car} />}
                       {d.status?.tls !== "proxy" && (
-                      <Stack direction="row" spacing={0.5}>
+                      <Stack direction="row" spacing={0.5} useFlexGap sx={{ flexWrap: "wrap" }}>
                         <Button
                           size="small"
                           onClick={() =>
@@ -372,7 +376,7 @@ function FamilyDevicesInner() {
                     )}
                   </TableCell>
                   <TableCell>
-                    <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
+                    <Stack direction="row" spacing={1} useFlexGap sx={{ flexWrap: "wrap", alignItems: "center" }}>
                       <TextField
                         select
                         size="small"
@@ -415,7 +419,7 @@ function FamilyDevicesInner() {
         </Table>
       </TableContainer>
 
-      <Dialog open={createOpen} onClose={() => setCreateOpen(false)} fullWidth maxWidth="xs">
+      <Dialog fullScreen={fullScreen} open={createOpen} onClose={() => setCreateOpen(false)} fullWidth maxWidth="xs">
         <DialogTitle>Add device</DialogTitle>
         <DialogContent>
           <Stack spacing={2} sx={{ mt: 1 }}>
@@ -483,7 +487,7 @@ function FamilyDevicesInner() {
           .map((c) => ({ uid: c.uid, alias: c.alias, displayName: c.displayName }))}
       />
 
-      <Dialog open={caConfirm !== null} onClose={() => (caBusy ? undefined : setCaConfirm(null))}>
+      <Dialog fullScreen={fullScreen} open={caConfirm !== null} onClose={() => (caBusy ? undefined : setCaConfirm(null))}>
         <DialogTitle>
           {caConfirm?.action === "push" ? "Push CA certificate" : "Un-pin CA certificate"}
         </DialogTitle>

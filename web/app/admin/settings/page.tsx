@@ -34,15 +34,15 @@ function RetentionField({
   onChange: (v: RetentionSettingDoc) => void;
 }) {
   return (
-    <Stack direction="row" spacing={2} sx={{ alignItems: "center" }}>
-      <Typography sx={{ minWidth: 100 }}>{label}</Typography>
+    <Stack direction="row" spacing={2} useFlexGap sx={{ alignItems: "center", flexWrap: "wrap" }}>
+      <Typography sx={{ minWidth: { xs: "100%", sm: 100 } }}>{label}</Typography>
       <TextField
         type="number"
         label="n"
         size="small"
         value={value.n}
         onChange={(e) => onChange({ ...value, n: Math.max(1, Number(e.target.value) || 1) })}
-        sx={{ width: 100 }}
+        sx={{ width: { xs: 90, sm: 100 } }}
         slotProps={{ htmlInput: { min: 1 } }}
       />
       <TextField

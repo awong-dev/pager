@@ -64,6 +64,7 @@ import { familyQuery, useFamily } from "@/lib/family-context";
 import type { SmsLogEntry, SmsLogResponse } from "@/lib/smsContacts";
 import { getFirestoreDb } from "@/lib/firebase";
 import type { DeviceDoc, MessageDoc } from "@/lib/types";
+import { threadHeightSx } from "@/lib/layout";
 
 const BODY_MAX_CODEPOINTS = 160;
 const BODY_MAX_UTF8_BYTES = 320;
@@ -513,9 +514,9 @@ function ThreadInner({ alias }: { alias: string }) {
   }
 
   return (
-    <Stack spacing={2} sx={{ height: "calc(100vh - 140px)" }}>
-      <Stack direction="row" spacing={2} sx={{ alignItems: "center" }}>
-        <Typography variant="h6">{group ? group.name : `@${alias}`}</Typography>
+    <Stack spacing={2} sx={threadHeightSx}>
+      <Stack direction="row" spacing={2} useFlexGap sx={{ alignItems: "center", flexWrap: "wrap" }}>
+        <Typography variant="h6" sx={{ wordBreak: "break-word" }}>{group ? group.name : `@${alias}`}</Typography>
         {group && (
           <Typography variant="caption" color="text.secondary">
             @{alias}
@@ -548,7 +549,7 @@ function ThreadInner({ alias }: { alias: string }) {
       {!peerUid && !group && <Alert severity="info">No conversation with @{alias} yet</Alert>}
 
       {isExternal && (
-        <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
+        <Stack direction="row" spacing={1} useFlexGap sx={{ flexWrap: "wrap", alignItems: "center" }}>
           <Alert severity="info" sx={{ flexGrow: 1 }}>
             Texts with SMS contacts go through the pager&apos;s modem.
           </Alert>

@@ -21,6 +21,7 @@ import Typography from "@mui/material/Typography";
 
 import { toMs } from "@/lib/bridges";
 import type { ApiTime, BridgeRow } from "@/lib/types";
+import { useFullScreenDialog } from "@/lib/useFullScreenDialog";
 
 // docs/BRIDGE_PHONE_DESIGN.md decision 13 "Phone setup".
 const CHECKLIST = [
@@ -56,6 +57,7 @@ export default function BridgePairPanel({
   onEditNumbers: () => void;
   onClose: () => void;
 }) {
+  const fullScreen = useFullScreenDialog();
   const [now, setNow] = useState(() => Date.now());
   const [copied, setCopied] = useState(false);
   useEffect(() => {
@@ -75,7 +77,7 @@ export default function BridgePairPanel({
   }
 
   return (
-    <Dialog open onClose={onClose} fullWidth maxWidth="xs">
+    <Dialog fullScreen={fullScreen} open onClose={onClose} fullWidth maxWidth="xs">
       <DialogTitle>Pair {bridge.label}</DialogTitle>
       <DialogContent>
         <Stack spacing={2}>
@@ -86,7 +88,7 @@ export default function BridgePairPanel({
           <Typography variant="h4" sx={{ fontFamily: "monospace", textAlign: "center", letterSpacing: 4 }}>
             {code}
           </Typography>
-          <Stack direction="row" spacing={2} sx={{ justifyContent: "center", alignItems: "center" }}>
+          <Stack direction="row" spacing={2} useFlexGap sx={{ flexWrap: "wrap", justifyContent: "center", alignItems: "center" }}>
             <Button variant="outlined" onClick={() => void copy()} disabled={remaining <= 0}>
               {copied ? "Copied" : "Copy code"}
             </Button>

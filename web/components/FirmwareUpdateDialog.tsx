@@ -22,6 +22,7 @@ import {
   type FirmwareScope,
 } from "@/lib/firmware";
 import type { DeviceDoc } from "@/lib/types";
+import { useFullScreenDialog } from "@/lib/useFullScreenDialog";
 
 function errText(e: unknown): string {
   return e instanceof ApiError ? e.message : "Request failed.";
@@ -39,6 +40,7 @@ export default function FirmwareUpdateDialog({
   open: boolean;
   onClose: () => void;
 }) {
+  const fullScreen = useFullScreenDialog();
   const [builds, setBuilds] = useState<FirmwareBuild[]>([]);
   const [selected, setSelected] = useState("");
   const [busy, setBusy] = useState(false);
@@ -82,7 +84,7 @@ export default function FirmwareUpdateDialog({
   }
 
   return (
-    <Dialog open={open} onClose={busy ? undefined : onClose} fullWidth maxWidth="sm">
+    <Dialog fullScreen={fullScreen} open={open} onClose={busy ? undefined : onClose} fullWidth maxWidth="sm">
       <DialogTitle>Update firmware{device ? ` -- ${device.label}` : ""}</DialogTitle>
       <DialogContent>
         <Typography variant="body2" sx={{ mb: 2 }}>

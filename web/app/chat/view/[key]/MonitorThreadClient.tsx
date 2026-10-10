@@ -42,6 +42,7 @@ import { useDirectory } from "@/lib/directory";
 import { useFamily } from "@/lib/family-context";
 import { getFirestoreDb } from "@/lib/firebase";
 import type { ConversationDoc, MessageDoc } from "@/lib/types";
+import { threadHeightSx } from "@/lib/layout";
 
 const PAGE_SIZE_STEP = 50;
 // docs/V03_PLAN.md §2: "within 80 px of the bottom" counts as at-bottom for
@@ -207,7 +208,7 @@ function MonitorThreadInner({ convKey }: { convKey: string }) {
     : `You're viewing @${label(kidUid)}'s conversation with @${label(peerUid)} as a family admin.`;
 
   return (
-    <Stack spacing={2} sx={{ height: "calc(100vh - 140px)" }}>
+    <Stack spacing={2} sx={threadHeightSx}>
       <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
         <VisibilityIcon color="action" fontSize="small" />
         <Typography variant="subtitle2" color="text.secondary">

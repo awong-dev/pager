@@ -28,6 +28,7 @@ import PhoneIcon from "@mui/icons-material/Phone";
 import { useAuth } from "@/lib/auth-context";
 import { getFirestoreDb } from "@/lib/firebase";
 import { BOOK_GROUP_ORDER, type BookGroup, bookGroup, useBook } from "@/lib/book";
+import { useFullScreenDialog } from "@/lib/useFullScreenDialog";
 
 interface ChatOption {
   /** Route alias -- what `/chat/{alias}` gets pushed to (E.164 digits for
@@ -81,6 +82,7 @@ interface NewChatDialogProps {
 }
 
 export default function NewChatDialog({ open, onClose }: NewChatDialogProps) {
+  const fullScreen = useFullScreenDialog();
   const router = useRouter();
   const { isFamilyAdmin, me } = useAuth();
   // Live, so an admin setting the number takes effect without a reload.
@@ -162,7 +164,7 @@ export default function NewChatDialog({ open, onClose }: NewChatDialogProps) {
   const canOpen = value !== null || (isFamilyAdmin && inputValue.trim() !== "");
 
   return (
-    <Dialog open={open} onClose={handleClose} fullWidth maxWidth="xs">
+    <Dialog fullScreen={fullScreen} open={open} onClose={handleClose} fullWidth maxWidth="xs">
       <DialogTitle>New chat</DialogTitle>
       <DialogContent>
         {bookEmpty && (

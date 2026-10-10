@@ -16,6 +16,7 @@ import Stack from "@mui/material/Stack";
 import Table from "@mui/material/Table";
 import TableBody from "@mui/material/TableBody";
 import TableCell from "@mui/material/TableCell";
+import TableContainer from "@mui/material/TableContainer";
 import TableHead from "@mui/material/TableHead";
 import TableRow from "@mui/material/TableRow";
 import TextField from "@mui/material/TextField";
@@ -36,6 +37,7 @@ import {
   type BatterySample,
 } from "@/lib/batteryModel";
 import { AwakeStackChart, VoltageChart } from "@/components/BatteryCharts";
+import { responsiveTableSx } from "@/lib/tableSx";
 
 const RANGES = [
   { key: "24h", label: "24 h", days: 1 },
@@ -217,34 +219,37 @@ export default function BatteryCard({ deviceId }: { deviceId: string }) {
                   </Typography>
 
                   <Typography variant="subtitle2">Display refreshes per day</Typography>
-                  <Table size="small">
-                    <TableHead>
-                      <TableRow>
-                        <TableCell>Day</TableCell>
-                        <TableCell align="right">Full</TableCell>
-                        <TableCell align="right">Partial</TableCell>
-                        <TableCell align="right">Upgraded</TableCell>
-                      </TableRow>
-                    </TableHead>
-                    <TableBody>
-                      {refreshDays.map(([d, r]) => (
-                        <TableRow key={d}>
-                          <TableCell>{`${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6)}`}</TableCell>
-                          <TableCell align="right">{r.full}</TableCell>
-                          <TableCell align="right">{r.partial}</TableCell>
-                          <TableCell align="right">{r.upgraded}</TableCell>
+                  <TableContainer sx={responsiveTableSx([])}>
+                    {/* Hidden below md: none hidden. */}
+                    <Table size="small">
+                      <TableHead>
+                        <TableRow>
+                          <TableCell>Day</TableCell>
+                          <TableCell align="right">Full</TableCell>
+                          <TableCell align="right">Partial</TableCell>
+                          <TableCell align="right">Upgraded</TableCell>
                         </TableRow>
-                      ))}
-                      <TableRow>
-                        <TableCell sx={{ fontWeight: "bold" }}>Total</TableCell>
-                        {(["full", "partial", "upgraded"] as const).map((k) => (
-                          <TableCell key={k} align="right" sx={{ fontWeight: "bold" }}>
-                            {refreshDays.reduce((a, [, r]) => a + r[k], 0)}
-                          </TableCell>
+                      </TableHead>
+                      <TableBody>
+                        {refreshDays.map(([d, r]) => (
+                          <TableRow key={d}>
+                            <TableCell>{`${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6)}`}</TableCell>
+                            <TableCell align="right">{r.full}</TableCell>
+                            <TableCell align="right">{r.partial}</TableCell>
+                            <TableCell align="right">{r.upgraded}</TableCell>
+                          </TableRow>
                         ))}
-                      </TableRow>
-                    </TableBody>
-                  </Table>
+                        <TableRow>
+                          <TableCell sx={{ fontWeight: "bold" }}>Total</TableCell>
+                          {(["full", "partial", "upgraded"] as const).map((k) => (
+                            <TableCell key={k} align="right" sx={{ fontWeight: "bold" }}>
+                              {refreshDays.reduce((a, [, r]) => a + r[k], 0)}
+                            </TableCell>
+                          ))}
+                        </TableRow>
+                      </TableBody>
+                    </Table>
+                  </TableContainer>
 
                   <Stack direction="row" spacing={2} sx={{ alignItems: "center", flexWrap: "wrap" }}>
                     <Typography variant="subtitle1">
@@ -261,41 +266,44 @@ export default function BatteryCard({ deviceId }: { deviceId: string }) {
                     />
                   </Stack>
 
-                  <Table size="small">
-                    <TableHead>
-                      <TableRow>
-                        <TableCell>Term</TableCell>
-                        <TableCell align="right">Exposure</TableCell>
-                        <TableCell align="right">Current (mA, or mAh per event)</TableCell>
-                        <TableCell align="right">mAh/day</TableCell>
-                        <TableCell align="right">Share</TableCell>
-                      </TableRow>
-                    </TableHead>
-                    <TableBody>
-                      {rows.map((r, i) => (
-                        <TableRow key={r.key} sx={i === 0 ? { "& td": { fontWeight: "bold" } } : undefined}>
-                          <TableCell>{r.label}</TableCell>
-                          <TableCell align="right">{fmtExposure(r.exposure, r.unit)}</TableCell>
-                          <TableCell align="right">
-                            <TextField
-                              size="small"
-                              type="number"
-                              value={r.current}
-                              onChange={(e) => {
-                                const v = Number(e.target.value);
-                                if (isFinite(v) && v >= 0) setEdited(withTermCurrent(model, r.key, v));
-                              }}
-                              slotProps={{ htmlInput: { step: "any", min: 0, "aria-label": `${r.label} current` } }}
-                              sx={{ width: 110 }}
-                            />
-                          </TableCell>
-                          <TableCell align="right">{r.mAhPerDay.toFixed(2)}</TableCell>
-                          <TableCell align="right">{(r.share * 100).toFixed(1)}%</TableCell>
+                  <TableContainer sx={responsiveTableSx([5])}>
+                    {/* Hidden below md: Share. */}
+                    <Table size="small">
+                      <TableHead>
+                        <TableRow>
+                          <TableCell>Term</TableCell>
+                          <TableCell align="right">Exposure</TableCell>
+                          <TableCell align="right">Current (mA, or mAh per event)</TableCell>
+                          <TableCell align="right">mAh/day</TableCell>
+                          <TableCell align="right">Share</TableCell>
                         </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                  <Stack direction="row" spacing={2} sx={{ alignItems: "center" }}>
+                      </TableHead>
+                      <TableBody>
+                        {rows.map((r, i) => (
+                          <TableRow key={r.key} sx={i === 0 ? { "& td": { fontWeight: "bold" } } : undefined}>
+                            <TableCell>{r.label}</TableCell>
+                            <TableCell align="right">{fmtExposure(r.exposure, r.unit)}</TableCell>
+                            <TableCell align="right">
+                              <TextField
+                                size="small"
+                                type="number"
+                                value={r.current}
+                                onChange={(e) => {
+                                  const v = Number(e.target.value);
+                                  if (isFinite(v) && v >= 0) setEdited(withTermCurrent(model, r.key, v));
+                                }}
+                                slotProps={{ htmlInput: { step: "any", min: 0, "aria-label": `${r.label} current` } }}
+                                sx={{ width: 110 }}
+                              />
+                            </TableCell>
+                            <TableCell align="right">{r.mAhPerDay.toFixed(2)}</TableCell>
+                            <TableCell align="right">{(r.share * 100).toFixed(1)}%</TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </TableContainer>
+                  <Stack direction="row" spacing={2} useFlexGap sx={{ flexWrap: "wrap", alignItems: "center" }}>
                     <Button size="small" disabled={!edited} onClick={() => setEdited(null)}>
                       Reset
                     </Button>

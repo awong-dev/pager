@@ -179,7 +179,7 @@ export default function ApprovedEditor({
           const row = people.get(c.alias);
           const crossFamily = entry?.familyId !== familyId;
           return (
-            <Stack key={c.uid} direction="row" spacing={1} sx={{ alignItems: "center" }}>
+            <Stack key={c.uid} direction="row" spacing={1} useFlexGap sx={{ flexWrap: "wrap", alignItems: "center" }}>
               <FormControlLabel
                 sx={{ flexGrow: 1, mr: 0 }}
                 control={

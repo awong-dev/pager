@@ -11,6 +11,13 @@ import Button from "@mui/material/Button";
 import Chip from "@mui/material/Chip";
 import Container from "@mui/material/Container";
 import Divider from "@mui/material/Divider";
+import Drawer from "@mui/material/Drawer";
+import IconButton from "@mui/material/IconButton";
+import List from "@mui/material/List";
+import ListItemButton from "@mui/material/ListItemButton";
+import ListItemText from "@mui/material/ListItemText";
+import ListSubheader from "@mui/material/ListSubheader";
+import MenuIcon from "@mui/icons-material/Menu";
 import Menu from "@mui/material/Menu";
 import MenuItem from "@mui/material/MenuItem";
 import Toolbar from "@mui/material/Toolbar";
@@ -145,6 +152,110 @@ function FamilySwitcher() {
   );
 }
 
+/** Mobile nav drawer content (below `md`): the same links as the desktop
+ * AppBar, as a flat list. Every link closes the drawer via `onNavigate`. */
+function MobileNavList({
+  onNavigate,
+  showLocation,
+  openAlertCount,
+}: {
+  onNavigate: () => void;
+  showLocation: boolean;
+  openAlertCount: number;
+}) {
+  const { me, isFamilyAdmin, isSuper, signOutUser } = useAuth();
+  const { family, families, setFamilyId } = useFamily();
+  const pathname = usePathname();
+
+  const section = (title: string, links: { href: string; label: string }[]) => (
+    <List
+      dense
+      subheader={<ListSubheader sx={{ lineHeight: "32px" }}>{title}</ListSubheader>}
+    >
+      {links.map((l) => (
+        <ListItemButton
+          key={l.href}
+          component={Link}
+          href={l.href}
+          selected={pathname?.startsWith(l.href)}
+          onClick={onNavigate}
+        >
+          <ListItemText>
+            {l.href === "/family/alerts" ? (
+              <Badge color="error" badgeContent={openAlertCount} sx={{ "& .MuiBadge-badge": { right: -14 } }}>
+                {l.label}
+              </Badge>
+            ) : (
+              l.label
+            )}
+          </ListItemText>
+        </ListItemButton>
+      ))}
+    </List>
+  );
+
+  return (
+    <Box sx={{ width: 280, maxWidth: "85vw" }} role="navigation">
+      {me && (
+        <Box sx={{ px: 2, py: 1.5 }}>
+          <Typography variant="subtitle1" sx={{ wordBreak: "break-word" }}>
+            {me.displayName}
+          </Typography>
+          <Typography variant="body2" color="text.secondary">
+            @{me.alias}
+          </Typography>
+        </Box>
+      )}
+      <Divider />
+      <List dense>
+        <ListItemButton component={Link} href="/chat" selected={pathname?.startsWith("/chat")} onClick={onNavigate}>
+          <ChatIcon fontSize="small" sx={{ mr: 1.5 }} />
+          <ListItemText>Chat</ListItemText>
+        </ListItemButton>
+        {showLocation && (
+          <ListItemButton component={Link} href="/location" selected={pathname?.startsWith("/location")} onClick={onNavigate}>
+            <LocationOnIcon fontSize="small" sx={{ mr: 1.5 }} />
+            <ListItemText>Location</ListItemText>
+          </ListItemButton>
+        )}
+      </List>
+      {isFamilyAdmin && section("Family", familyLinks)}
+      {section("Settings", settingsLinks)}
+      {isSuper && section("Admin", adminLinks)}
+      {isSuper && families.length > 0 && (
+        <List
+          dense
+          subheader={<ListSubheader sx={{ lineHeight: "32px" }}>Active family</ListSubheader>}
+        >
+          {families.map((f) => (
+            <ListItemButton
+              key={f.id}
+              selected={f.id === family?.id}
+              onClick={() => {
+                setFamilyId(f.id);
+                onNavigate();
+              }}
+            >
+              <ListItemText>{f.name}</ListItemText>
+            </ListItemButton>
+          ))}
+        </List>
+      )}
+      <Divider />
+      <List dense>
+        <ListItemButton
+          onClick={() => {
+            onNavigate();
+            void signOutUser();
+          }}
+        >
+          <ListItemText>Sign out</ListItemText>
+        </ListItemButton>
+      </List>
+    </Box>
+  );
+}
+
 /** Live count of `families/{fam}/alerts where status == 'open'` --
  * docs/FAMILIES_TASKS.md 4.4's badge on the Family menu and the Alerts item.
  * `firestore.rules` (task 1.4) gates the `alerts` subcollection to super or
@@ -195,12 +306,43 @@ export default function AppShell({ children }: { children: ReactNode }) {
   // unconditionally (docs/FAMILIES_DESIGN.md §5.3) even before that family's
   // device list has loaded.
   const { devices: locatableDevices } = useLocatableDevices();
+  const showLocation = isFamilyAdmin || locatableDevices.length > 0;
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const pathname = usePathname();
+  // Close the drawer on any route change (links also close it directly).
+  const [lastPath, setLastPath] = useState(pathname);
+  if (lastPath !== pathname) {
+    setLastPath(pathname);
+    setDrawerOpen(false);
+  }
 
   return (
     <Box sx={{ display: "flex", flexDirection: "column", minHeight: "100vh" }}>
       <NotificationWatcher />
       <AppBar position="static" color="primary" enableColorOnDark>
-        <Toolbar sx={{ gap: 1 }}>
+        {/* Below md: hamburger + title (CSS-toggled, no JS media query, so
+            the static export never flashes the wrong layout). */}
+        <Toolbar sx={{ gap: 1, display: { xs: "flex", md: "none" } }}>
+          <IconButton
+            color="inherit"
+            edge="start"
+            aria-label="Open navigation"
+            onClick={() => setDrawerOpen(true)}
+          >
+            <Badge color="error" badgeContent={openAlertCount}>
+              <MenuIcon />
+            </Badge>
+          </IconButton>
+          <Typography
+            variant="h6"
+            component={Link}
+            href="/chat"
+            sx={{ color: "inherit", textDecoration: "none" }}
+          >
+            Pager
+          </Typography>
+        </Toolbar>
+        <Toolbar sx={{ gap: 1, display: { xs: "none", md: "flex" } }}>
           <Typography
             variant="h6"
             component={Link}
@@ -212,7 +354,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
           <Button color="inherit" component={Link} href="/chat" startIcon={<ChatIcon />}>
             Chat
           </Button>
-          {(isFamilyAdmin || locatableDevices.length > 0) && (
+          {showLocation && (
             <Button color="inherit" component={Link} href="/location" startIcon={<LocationOnIcon />}>
               Location
             </Button>
@@ -241,8 +383,20 @@ export default function AppShell({ children }: { children: ReactNode }) {
           </Button>
         </Toolbar>
       </AppBar>
+      <Drawer
+        anchor="left"
+        open={drawerOpen}
+        onClose={() => setDrawerOpen(false)}
+        sx={{ display: { xs: "block", md: "none" } }}
+      >
+        <MobileNavList
+          onNavigate={() => setDrawerOpen(false)}
+          showLocation={showLocation}
+          openAlertCount={openAlertCount}
+        />
+      </Drawer>
       <Divider />
-      <Container maxWidth="md" sx={{ flexGrow: 1, py: 3 }}>
+      <Container maxWidth="md" sx={{ flexGrow: 1, px: { xs: 1.5, md: 3 }, py: { xs: 2, md: 3 } }}>
         {children}
       </Container>
     </Box>

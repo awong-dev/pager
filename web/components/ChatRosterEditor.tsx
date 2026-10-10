@@ -10,6 +10,7 @@ import Stack from "@mui/material/Stack";
 import Table from "@mui/material/Table";
 import TableBody from "@mui/material/TableBody";
 import TableCell from "@mui/material/TableCell";
+import TableContainer from "@mui/material/TableContainer";
 import TableHead from "@mui/material/TableHead";
 import TableRow from "@mui/material/TableRow";
 import TextField from "@mui/material/TextField";
@@ -17,6 +18,7 @@ import Typography from "@mui/material/Typography";
 
 import { NICK_RE } from "@/lib/bridges";
 import type { RosterEntry } from "@/lib/types";
+import { responsiveTableSx } from "@/lib/tableSx";
 
 /** One error (or null) per roster row. */
 export function rosterErrors(roster: RosterEntry[]): (string | null)[] {
@@ -39,40 +41,43 @@ export default function ChatRosterEditor({
   const errors = rosterErrors(roster);
   return (
     <Stack spacing={1}>
-      <Table size="small">
-        <TableHead>
-          <TableRow>
-            <TableCell>Name in Chat</TableCell>
-            <TableCell>Name on the pager</TableCell>
-          </TableRow>
-        </TableHead>
-        <TableBody>
-          {roster.length === 0 && (
+      <TableContainer sx={responsiveTableSx([])}>
+        {/* Hidden below md: none hidden. */}
+        <Table size="small">
+          <TableHead>
             <TableRow>
-              <TableCell colSpan={2}>
-                <Typography variant="body2" color="text.secondary">
-                  Nobody has spoken in this conversation yet.
-                </Typography>
-              </TableCell>
+              <TableCell>Name in Chat</TableCell>
+              <TableCell>Name on the pager</TableCell>
             </TableRow>
-          )}
-          {roster.map((r, i) => (
-            <TableRow key={r.name}>
-              <TableCell>{r.name}</TableCell>
-              <TableCell>
-                <TextField
-                  size="small"
-                  value={r.nick}
-                  error={errors[i] !== null}
-                  helperText={errors[i] ?? undefined}
-                  onChange={(e) => onChange(roster.map((x, j) => (j === i ? { ...x, nick: e.target.value } : x)))}
-                  slotProps={{ htmlInput: { "aria-label": `Pager name for ${r.name}` } }}
-                />
-              </TableCell>
-            </TableRow>
-          ))}
-        </TableBody>
-      </Table>
+          </TableHead>
+          <TableBody>
+            {roster.length === 0 && (
+              <TableRow>
+                <TableCell colSpan={2}>
+                  <Typography variant="body2" color="text.secondary">
+                    Nobody has spoken in this conversation yet.
+                  </Typography>
+                </TableCell>
+              </TableRow>
+            )}
+            {roster.map((r, i) => (
+              <TableRow key={r.name}>
+                <TableCell>{r.name}</TableCell>
+                <TableCell>
+                  <TextField
+                    size="small"
+                    value={r.nick}
+                    error={errors[i] !== null}
+                    helperText={errors[i] ?? undefined}
+                    onChange={(e) => onChange(roster.map((x, j) => (j === i ? { ...x, nick: e.target.value } : x)))}
+                    slotProps={{ htmlInput: { "aria-label": `Pager name for ${r.name}` } }}
+                  />
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </TableContainer>
       <Typography variant="caption" color="text.secondary">
         People who have not spoken yet appear here when they do.
       </Typography>

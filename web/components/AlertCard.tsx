@@ -50,6 +50,7 @@ import { ApiError, api } from "@/lib/api";
 import { ignoreChat, sourceLabel } from "@/lib/bridges";
 import { familyQuery } from "@/lib/family-context";
 import type { AlertDoc } from "@/lib/types";
+import { useFullScreenDialog } from "@/lib/useFullScreenDialog";
 
 /** One row of `GET /api/family/alerts/{id}/held` (docs/RELAY_SMS_DESIGN.md decision 5). */
 interface HeldText {
@@ -113,6 +114,7 @@ function kindLabel(kind: AlertDoc["kind"]): string {
 }
 
 export default function AlertCard({ alert }: { alert: AlertRow }) {
+  const fullScreen = useFullScreenDialog();
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -211,7 +213,7 @@ export default function AlertCard({ alert }: { alert: AlertRow }) {
   return (
     <Card variant="outlined">
       <CardContent>
-        <Stack direction="row" spacing={1} sx={{ alignItems: "center", mb: 1 }}>
+        <Stack direction="row" spacing={1} useFlexGap sx={{ flexWrap: "wrap", alignItems: "center", mb: 1 }}>
           <Chip size="small" icon={kindIcon(alert.kind)} label={kindLabel(alert.kind)} />
           <Typography variant="caption" color="text.secondary">
             {formatAge(alert.ts)}
@@ -253,7 +255,7 @@ export default function AlertCard({ alert }: { alert: AlertRow }) {
                   <Stack spacing={1} sx={{ mt: 0.5 }}>
                     {heldList?.map((h) => (
                       <div key={h.id}>
-                        <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
+                        <Stack direction="row" spacing={1} useFlexGap sx={{ flexWrap: "wrap", alignItems: "center" }}>
                           <Typography variant="caption" color="text.secondary">
                             {formatReceived(h.receivedAt)}
                           </Typography>
@@ -449,7 +451,7 @@ export default function AlertCard({ alert }: { alert: AlertRow }) {
         />
       )}
 
-      <Dialog open={smsOpen} onClose={() => setSmsOpen(false)} fullWidth maxWidth="xs">
+      <Dialog fullScreen={fullScreen} open={smsOpen} onClose={() => setSmsOpen(false)} fullWidth maxWidth="xs">
         <DialogTitle>Approve {alert.peerPhone ?? "number"}</DialogTitle>
         <DialogContent>
           {nameConflict && smsOpen && (
@@ -483,7 +485,7 @@ export default function AlertCard({ alert }: { alert: AlertRow }) {
         </DialogActions>
       </Dialog>
 
-      <Dialog open={nameOpen} onClose={() => setNameOpen(false)} fullWidth maxWidth="xs">
+      <Dialog fullScreen={fullScreen} open={nameOpen} onClose={() => setNameOpen(false)} fullWidth maxWidth="xs">
         <DialogTitle>Choose another name</DialogTitle>
         <DialogContent>
           {nameConflict && (

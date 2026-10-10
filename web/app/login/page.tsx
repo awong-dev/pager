@@ -163,7 +163,7 @@ export default function LoginPage() {
 
   return (
     <Box sx={{ display: "flex", justifyContent: "center", alignItems: "center", minHeight: "100vh", p: 2 }}>
-      <Paper elevation={2} sx={{ p: 4, maxWidth: 420, width: "100%" }}>
+      <Paper elevation={2} sx={{ p: { xs: 2, sm: 4 }, maxWidth: 420, width: "100%" }}>
         <Typography variant="h5" gutterBottom>
           Sign in to Pager
         </Typography>

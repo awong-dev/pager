@@ -19,6 +19,7 @@ import Switch from "@mui/material/Switch";
 import Table from "@mui/material/Table";
 import TableBody from "@mui/material/TableBody";
 import TableCell from "@mui/material/TableCell";
+import TableContainer from "@mui/material/TableContainer";
 import TableHead from "@mui/material/TableHead";
 import TableRow from "@mui/material/TableRow";
 import TextField from "@mui/material/TextField";
@@ -32,6 +33,8 @@ import { ApiError, api } from "@/lib/api";
 import { useFamily } from "@/lib/family-context";
 import { getFirestoreDb } from "@/lib/firebase";
 import type { Role, UserDoc } from "@/lib/types";
+import { useFullScreenDialog } from "@/lib/useFullScreenDialog";
+import { responsiveTableSx } from "@/lib/tableSx";
 
 interface UserRow extends UserDoc {
   uid: string;
@@ -49,6 +52,7 @@ const emptyForm = {
 };
 
 function AdminUsersInner() {
+  const fullScreen = useFullScreenDialog();
   const { familyId: scopeFamilyId, families } = useFamily();
   const [users, setUsers] = useState<UserRow[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -129,7 +133,7 @@ function AdminUsersInner() {
 
   return (
     <Stack spacing={2}>
-      <Stack direction="row" sx={{ justifyContent: "space-between", alignItems: "center" }}>
+      <Stack direction="row" sx={{ flexWrap: "wrap", justifyContent: "space-between", alignItems: "center" }}>
         <Typography variant="h5">Users</Typography>
         <Button variant="contained" onClick={openCreate}>
           Create user
@@ -152,50 +156,53 @@ function AdminUsersInner() {
       </TextField>
       {error && <Alert severity="error">{error}</Alert>}
 
-      <Table size="small">
-        <TableHead>
-          <TableRow>
-            <TableCell>Alias</TableCell>
-            <TableCell>Name</TableCell>
-            <TableCell>Contact</TableCell>
-            <TableCell>SMS number</TableCell>
-            <TableCell>Family</TableCell>
-            <TableCell>Role</TableCell>
-            <TableCell>Enabled</TableCell>
-            <TableCell />
-          </TableRow>
-        </TableHead>
-        <TableBody>
-          {visibleUsers.map((u) => (
-            <TableRow key={u.uid}>
-              <TableCell>@{u.alias}</TableCell>
-              <TableCell>{u.displayName}</TableCell>
-              <TableCell>{u.email ?? (u.phone ? `${u.phone} (sign-in)` : "--")}</TableCell>
-              <TableCell>
-                {u.kind === "external" ? "--" : (u.smsNumber ?? "none")}
-              </TableCell>
-              <TableCell>{u.familyId ? (familyNameById.get(u.familyId) ?? u.familyId) : "--"}</TableCell>
-              <TableCell>
-                <Chip
-                  size="small"
-                  label={u.role}
-                  color={u.role === "super" ? "secondary" : u.role === "admin" ? "primary" : "default"}
-                />
-              </TableCell>
-              <TableCell>
-                <Switch checked={!u.disabled} onChange={() => void toggleDisabled(u)} size="small" />
-              </TableCell>
-              <TableCell>
-                <IconButton size="small" onClick={() => void deleteUser(u)} aria-label="delete">
-                  <DeleteIcon fontSize="small" />
-                </IconButton>
-              </TableCell>
+      <TableContainer sx={responsiveTableSx([3,4,5])}>
+        {/* Hidden below md: Contact, SMS number, Family. */}
+        <Table size="small">
+          <TableHead>
+            <TableRow>
+              <TableCell>Alias</TableCell>
+              <TableCell>Name</TableCell>
+              <TableCell>Contact</TableCell>
+              <TableCell>SMS number</TableCell>
+              <TableCell>Family</TableCell>
+              <TableCell>Role</TableCell>
+              <TableCell>Enabled</TableCell>
+              <TableCell />
             </TableRow>
-          ))}
-        </TableBody>
-      </Table>
+          </TableHead>
+          <TableBody>
+            {visibleUsers.map((u) => (
+              <TableRow key={u.uid}>
+                <TableCell>@{u.alias}</TableCell>
+                <TableCell>{u.displayName}</TableCell>
+                <TableCell>{u.email ?? (u.phone ? `${u.phone} (sign-in)` : "--")}</TableCell>
+                <TableCell>
+                  {u.kind === "external" ? "--" : (u.smsNumber ?? "none")}
+                </TableCell>
+                <TableCell>{u.familyId ? (familyNameById.get(u.familyId) ?? u.familyId) : "--"}</TableCell>
+                <TableCell>
+                  <Chip
+                    size="small"
+                    label={u.role}
+                    color={u.role === "super" ? "secondary" : u.role === "admin" ? "primary" : "default"}
+                  />
+                </TableCell>
+                <TableCell>
+                  <Switch checked={!u.disabled} onChange={() => void toggleDisabled(u)} size="small" />
+                </TableCell>
+                <TableCell>
+                  <IconButton size="small" onClick={() => void deleteUser(u)} aria-label="delete">
+                    <DeleteIcon fontSize="small" />
+                  </IconButton>
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </TableContainer>
 
-      <Dialog open={createOpen} onClose={() => setCreateOpen(false)} fullWidth maxWidth="xs">
+      <Dialog fullScreen={fullScreen} open={createOpen} onClose={() => setCreateOpen(false)} fullWidth maxWidth="xs">
         <DialogTitle>Create user</DialogTitle>
         <DialogContent>
           <Stack spacing={2} sx={{ mt: 1 }}>

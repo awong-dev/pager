@@ -28,6 +28,7 @@ import DialogTitle from "@mui/material/DialogTitle";
 import Divider from "@mui/material/Divider";
 import Stack from "@mui/material/Stack";
 import Typography from "@mui/material/Typography";
+import { useFullScreenDialog } from "@/lib/useFullScreenDialog";
 
 export interface SetupCodeResult {
   deviceId: string;
@@ -55,6 +56,7 @@ export default function SetupCodePanel({
   online: boolean;
   onClose: () => void;
 }) {
+  const fullScreen = useFullScreenDialog();
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [copied, setCopied] = useState(false);
   const [now, setNow] = useState(() => Date.now());
@@ -83,7 +85,7 @@ export default function SetupCodePanel({
   }
 
   return (
-    <Dialog open onClose={onClose} fullWidth maxWidth="xs">
+    <Dialog fullScreen={fullScreen} open onClose={onClose} fullWidth maxWidth="xs">
       <DialogTitle>Setup code for {result.label}</DialogTitle>
       <DialogContent>
         <Stack spacing={2}>
@@ -98,7 +100,7 @@ export default function SetupCodePanel({
             {result.setupCode}
           </Typography>
 
-          <Stack direction="row" spacing={2} sx={{ justifyContent: "center", alignItems: "center" }}>
+          <Stack direction="row" spacing={2} useFlexGap sx={{ flexWrap: "wrap", justifyContent: "center", alignItems: "center" }}>
             <Button variant="outlined" onClick={() => void copyCode()} disabled={expired}>
               {copied ? "Copied" : "Copy code"}
             </Button>

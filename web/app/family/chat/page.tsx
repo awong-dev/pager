@@ -56,6 +56,8 @@ import { useDirectory } from "@/lib/directory";
 import { useFamily } from "@/lib/family-context";
 import { formatRelativeAge } from "@/lib/time";
 import type { BridgeConversationRow, ChatTabOut, RosterEntry } from "@/lib/types";
+import { useFullScreenDialog } from "@/lib/useFullScreenDialog";
+import { responsiveTableSx } from "@/lib/tableSx";
 
 const POLL_MS = 5000;
 const LINK_POLL_MS = 3000;
@@ -85,6 +87,7 @@ function SourceChip({ r }: { r: BridgeConversationRow }) {
 }
 
 function ChatInner() {
+  const fullScreen = useFullScreenDialog();
   const { familyId } = useFamily();
   const { contacts, byUid } = useDirectory();
   const [ownerUid, setOwnerUid] = useState<string | null>(() =>
@@ -247,7 +250,8 @@ function ChatInner() {
         <>
           <Stack spacing={1}>
             <Typography variant="h6">Subscribed</Typography>
-            <TableContainer>
+            <TableContainer sx={responsiveTableSx([3,4])}>
+              {/* Hidden below md: People seen, Last message. */}
               <Table size="small">
                 <TableHead>
                   <TableRow>
@@ -272,7 +276,7 @@ function ChatInner() {
                     <TableRow key={`${r.bridgeId}/${r.ref}`}>
                       <TableCell>
                         {r.pagerName ?? r.title}
-                        <Stack direction="row" spacing={0.5} sx={{ mt: 0.5 }}>
+                        <Stack direction="row" spacing={0.5} useFlexGap sx={{ flexWrap: "wrap", mt: 0.5 }}>
                           {r.onPager === false && <Chip size="small" color="warning" variant="outlined" label="Not on pager" />}
                           {r.status === "paused" && <Chip size="small" label="Paused" />}
                           {r.canReply === false && <Chip size="small" variant="outlined" label="Read only" />}
@@ -296,14 +300,15 @@ function ChatInner() {
           </Stack>
 
           <Stack spacing={1}>
-            <Stack direction="row" sx={{ justifyContent: "space-between", alignItems: "center" }}>
+            <Stack direction="row" sx={{ flexWrap: "wrap", justifyContent: "space-between", alignItems: "center" }}>
               <Typography variant="h6">Seen, not subscribed</Typography>
               <FormControlLabel
                 control={<Switch checked={showIgnored} onChange={(e) => setShowIgnored(e.target.checked)} />}
                 label="Show ignored"
               />
             </Stack>
-            <TableContainer>
+            <TableContainer sx={responsiveTableSx([3,4])}>
+              {/* Hidden below md: People, Last message. */}
               <Table size="small">
                 <TableHead>
                   <TableRow>
@@ -341,7 +346,7 @@ function ChatInner() {
                       <TableCell>{r.people.join(", ") || "--"}</TableCell>
                       <TableCell>{lastSeen(r) || "--"}</TableCell>
                       <TableCell>
-                        <Stack direction="row" spacing={0.5}>
+                        <Stack direction="row" spacing={0.5} useFlexGap sx={{ flexWrap: "wrap" }}>
                           <Button size="small" variant="contained" onClick={() => setSubscribe(targetOf(r))}>
                             Subscribe
                           </Button>
@@ -365,7 +370,7 @@ function ChatInner() {
               To start a conversation nobody has posted in yet, paste its Google Chat or Voice link (WhatsApp chats cannot be added by link). The phone opens it
               and reports back.
             </Typography>
-            <Stack direction="row" spacing={1}>
+            <Stack direction="row" spacing={1} useFlexGap sx={{ flexWrap: "wrap" }}>
               <TextField
                 fullWidth
                 size="small"
@@ -431,7 +436,7 @@ function ChatInner() {
         </MenuItem>
       </Menu>
 
-      <Dialog open={rename !== null} onClose={() => setRename(null)} fullWidth maxWidth="xs">
+      <Dialog fullScreen={fullScreen} open={rename !== null} onClose={() => setRename(null)} fullWidth maxWidth="xs">
         <DialogTitle>Rename on pager</DialogTitle>
         <DialogContent>
           {dialogError && <Alert severity="error" sx={{ mb: 1 }}>{dialogError}</Alert>}
@@ -466,7 +471,7 @@ function ChatInner() {
         </DialogActions>
       </Dialog>
 
-      <Dialog open={rosterEdit !== null} onClose={() => setRosterEdit(null)} fullWidth maxWidth="sm">
+      <Dialog fullScreen={fullScreen} open={rosterEdit !== null} onClose={() => setRosterEdit(null)} fullWidth maxWidth="sm">
         <DialogTitle>Roster for {rosterEdit?.row.pagerName ?? rosterEdit?.row.title}</DialogTitle>
         <DialogContent>
           {dialogError && <Alert severity="error" sx={{ mb: 1 }}>{dialogError}</Alert>}
@@ -492,7 +497,7 @@ function ChatInner() {
         </DialogActions>
       </Dialog>
 
-      <Dialog open={unsub !== null} onClose={() => setUnsub(null)}>
+      <Dialog fullScreen={fullScreen} open={unsub !== null} onClose={() => setUnsub(null)}>
         <DialogTitle>Unsubscribe {unsub?.pagerName ?? unsub?.title}?</DialogTitle>
         <DialogContent>
           {dialogError && <Alert severity="error" sx={{ mb: 1 }}>{dialogError}</Alert>}

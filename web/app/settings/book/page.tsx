@@ -44,6 +44,7 @@ import {
 import { sourceLabel } from "@/lib/bridges";
 import { useDirectory } from "@/lib/directory";
 import { useFamily } from "@/lib/family-context";
+import { useFullScreenDialog } from "@/lib/useFullScreenDialog";
 
 interface Owner {
   uid: string;
@@ -61,6 +62,7 @@ function NickDialog({
   onClose: () => void;
   onSaved: () => void;
 }) {
+  const fullScreen = useFullScreenDialog();
   // Re-keyed by the parent per entry, so the initial value is just the nick.
   const [value, setValue] = useState(entry?.nick ?? "");
   const [busy, setBusy] = useState(false);
@@ -83,7 +85,7 @@ function NickDialog({
   }
 
   return (
-    <Dialog open={entry !== null} onClose={onClose} fullWidth maxWidth="xs">
+    <Dialog fullScreen={fullScreen} open={entry !== null} onClose={onClose} fullWidth maxWidth="xs">
       <DialogTitle>Nickname for {entry?.displayName}</DialogTitle>
       <DialogContent>
         <TextField

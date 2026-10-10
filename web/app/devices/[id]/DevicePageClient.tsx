@@ -80,6 +80,7 @@ import {
   statusColor,
 } from "@/lib/smsContacts";
 import type { DeviceDoc } from "@/lib/types";
+import { responsiveTableSx } from "@/lib/tableSx";
 
 const LOG_PAGE_SIZE = 100;
 
@@ -275,7 +276,7 @@ function DeviceInner() {
 
   return (
     <Stack spacing={2}>
-      <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
+      <Stack direction="row" spacing={1} useFlexGap sx={{ flexWrap: "wrap", alignItems: "center" }}>
         <IconButton onClick={() => router.back()} aria-label="back" size="small">
           <ArrowBackIcon fontSize="small" />
         </IconButton>
@@ -290,7 +291,7 @@ function DeviceInner() {
       {deviceError && <Alert severity="warning">{deviceError}</Alert>}
 
       {device && (
-        <Stack direction="row" spacing={1} sx={{ alignItems: "flex-start" }}>
+        <Stack direction="row" spacing={1} useFlexGap sx={{ flexWrap: "wrap", alignItems: "flex-start" }}>
           <FirmwareChip status={device.status} newest={newestBuild} />
           {isFamilyAdmin && (
             <Button size="small" onClick={() => setFwOpen(true)}>
@@ -344,7 +345,8 @@ function DeviceInner() {
               No approved numbers yet.
             </Typography>
           ) : (
-            <TableContainer>
+            <TableContainer sx={responsiveTableSx([])}>
+              {/* Hidden below md: none hidden. */}
               <Table size="small">
                 <TableHead>
                   <TableRow>
@@ -368,7 +370,7 @@ function DeviceInner() {
 
       <Card variant="outlined">
         <CardContent>
-          <Stack direction="row" sx={{ alignItems: "center", mb: 1 }}>
+          <Stack direction="row" sx={{ flexWrap: "wrap", alignItems: "center", mb: 1 }}>
             <Typography variant="h6" sx={{ flexGrow: 1 }}>
               SMS log
             </Typography>
@@ -387,7 +389,8 @@ function DeviceInner() {
             </Typography>
           )}
           {log !== null && log.length > 0 && (
-            <TableContainer sx={{ overflowX: "auto" }}>
+            <TableContainer sx={responsiveTableSx([2,4])}>
+              {/* Hidden below md: direction arrow, Status (row tint shows blocked/failed). */}
               <Table size="small">
                 <TableHead>
                   <TableRow>

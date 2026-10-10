@@ -25,6 +25,7 @@ import Stack from "@mui/material/Stack";
 import Table from "@mui/material/Table";
 import TableBody from "@mui/material/TableBody";
 import TableCell from "@mui/material/TableCell";
+import TableContainer from "@mui/material/TableContainer";
 import TableHead from "@mui/material/TableHead";
 import TableRow from "@mui/material/TableRow";
 import TextField from "@mui/material/TextField";
@@ -37,6 +38,8 @@ import { useFamily } from "@/lib/family-context";
 import { ApiError, api } from "@/lib/api";
 import { getFirestoreDb } from "@/lib/firebase";
 import type { DeviceDoc, FamilyDoc, Role, UserDoc } from "@/lib/types";
+import { useFullScreenDialog } from "@/lib/useFullScreenDialog";
+import { responsiveTableSx } from "@/lib/tableSx";
 
 interface FamilyRow extends FamilyDoc {
   id: string;
@@ -63,6 +66,7 @@ function formatCreatedAt(f: FamilyRow): string {
 }
 
 function AdminFamiliesInner() {
+  const fullScreen = useFullScreenDialog();
   const router = useRouter();
   const { setFamilyId } = useFamily();
 
@@ -209,7 +213,7 @@ function AdminFamiliesInner() {
 
   return (
     <Stack spacing={2}>
-      <Stack direction="row" sx={{ justifyContent: "space-between", alignItems: "center" }}>
+      <Stack direction="row" sx={{ flexWrap: "wrap", justifyContent: "space-between", alignItems: "center" }}>
         <Typography variant="h5">Families</Typography>
         <Button variant="contained" onClick={() => setCreateOpen(true)}>
           Create family
@@ -217,49 +221,52 @@ function AdminFamiliesInner() {
       </Stack>
       {error && <Alert severity="error">{error}</Alert>}
 
-      <Table size="small">
-        <TableHead>
-          <TableRow>
-            <TableCell>Name</TableCell>
-            <TableCell>Admins</TableCell>
-            <TableCell>Members</TableCell>
-            <TableCell>Devices</TableCell>
-            <TableCell>Created</TableCell>
-            <TableCell />
-          </TableRow>
-        </TableHead>
-        <TableBody>
-          {families.map((f) => (
-            <TableRow key={f.id} hover sx={{ cursor: "pointer" }} onClick={() => openDetail(f)}>
-              <TableCell>{f.name}</TableCell>
-              <TableCell>
-                <Stack direction="row" spacing={0.5} sx={{ flexWrap: "wrap" }}>
-                  {(countsByFamily.admins.get(f.id) ?? []).map((a) => (
-                    <Chip key={a.uid} size="small" label={`@${a.alias}`} />
-                  ))}
-                </Stack>
-              </TableCell>
-              <TableCell>{countsByFamily.members.get(f.id) ?? 0}</TableCell>
-              <TableCell>{countsByFamily.deviceCounts.get(f.id) ?? 0}</TableCell>
-              <TableCell>{formatCreatedAt(f)}</TableCell>
-              <TableCell>
-                <IconButton
-                  size="small"
-                  aria-label="open as family"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    openAsFamily(f);
-                  }}
-                >
-                  <LaunchIcon fontSize="small" />
-                </IconButton>
-              </TableCell>
+      <TableContainer sx={responsiveTableSx([2,5])}>
+        {/* Hidden below md: Admins, Created. */}
+        <Table size="small">
+          <TableHead>
+            <TableRow>
+              <TableCell>Name</TableCell>
+              <TableCell>Admins</TableCell>
+              <TableCell>Members</TableCell>
+              <TableCell>Devices</TableCell>
+              <TableCell>Created</TableCell>
+              <TableCell />
             </TableRow>
-          ))}
-        </TableBody>
-      </Table>
+          </TableHead>
+          <TableBody>
+            {families.map((f) => (
+              <TableRow key={f.id} hover sx={{ cursor: "pointer" }} onClick={() => openDetail(f)}>
+                <TableCell>{f.name}</TableCell>
+                <TableCell>
+                  <Stack direction="row" spacing={0.5} sx={{ flexWrap: "wrap" }}>
+                    {(countsByFamily.admins.get(f.id) ?? []).map((a) => (
+                      <Chip key={a.uid} size="small" label={`@${a.alias}`} />
+                    ))}
+                  </Stack>
+                </TableCell>
+                <TableCell>{countsByFamily.members.get(f.id) ?? 0}</TableCell>
+                <TableCell>{countsByFamily.deviceCounts.get(f.id) ?? 0}</TableCell>
+                <TableCell>{formatCreatedAt(f)}</TableCell>
+                <TableCell>
+                  <IconButton
+                    size="small"
+                    aria-label="open as family"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      openAsFamily(f);
+                    }}
+                  >
+                    <LaunchIcon fontSize="small" />
+                  </IconButton>
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </TableContainer>
 
-      <Dialog open={createOpen} onClose={() => setCreateOpen(false)} fullWidth maxWidth="xs">
+      <Dialog fullScreen={fullScreen} open={createOpen} onClose={() => setCreateOpen(false)} fullWidth maxWidth="xs">
         <DialogTitle>Create family</DialogTitle>
         <DialogContent>
           <Stack spacing={2} sx={{ mt: 1 }}>
@@ -310,7 +317,7 @@ function AdminFamiliesInner() {
         </DialogActions>
       </Dialog>
 
-      <Dialog open={detail !== null} onClose={closeDetail} fullWidth maxWidth="sm">
+      <Dialog fullScreen={fullScreen} open={detail !== null} onClose={closeDetail} fullWidth maxWidth="sm">
         {detail && (
           <>
             <DialogTitle>{detail.name}</DialogTitle>
@@ -322,7 +329,7 @@ function AdminFamiliesInner() {
                   onChange={(e) => setDetailName(e.target.value)}
                   fullWidth
                 />
-                <Stack direction="row" spacing={1}>
+                <Stack direction="row" spacing={1} useFlexGap sx={{ flexWrap: "wrap" }}>
                   <Button
                     variant="contained"
                     onClick={() => void saveDetail()}
@@ -335,43 +342,46 @@ function AdminFamiliesInner() {
 
                 <Divider />
                 <Typography variant="subtitle2">Members</Typography>
-                <Table size="small">
-                  <TableHead>
-                    <TableRow>
-                      <TableCell>Alias</TableCell>
-                      <TableCell>Name</TableCell>
-                      <TableCell>Role</TableCell>
-                      <TableCell />
-                    </TableRow>
-                  </TableHead>
-                  <TableBody>
-                    {detailMembers.map((u) => (
-                      <TableRow key={u.uid}>
-                        <TableCell>@{u.alias}</TableCell>
-                        <TableCell>{u.displayName}</TableCell>
-                        <TableCell>
-                          <Chip size="small" label={u.role} color={u.role === "admin" ? "primary" : "default"} />
-                        </TableCell>
-                        <TableCell>
-                          {u.role === "member" && (
-                            <Button size="small" onClick={() => void setRole(u, "admin")}>
-                              Make admin
-                            </Button>
-                          )}
-                          {u.role === "admin" && (
-                            <Button size="small" onClick={() => void setRole(u, "member")}>
-                              Make member
-                            </Button>
-                          )}
-                        </TableCell>
+                <TableContainer sx={responsiveTableSx([2])}>
+                  {/* Hidden below md: Name (members detail). */}
+                  <Table size="small">
+                    <TableHead>
+                      <TableRow>
+                        <TableCell>Alias</TableCell>
+                        <TableCell>Name</TableCell>
+                        <TableCell>Role</TableCell>
+                        <TableCell />
                       </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
+                    </TableHead>
+                    <TableBody>
+                      {detailMembers.map((u) => (
+                        <TableRow key={u.uid}>
+                          <TableCell>@{u.alias}</TableCell>
+                          <TableCell>{u.displayName}</TableCell>
+                          <TableCell>
+                            <Chip size="small" label={u.role} color={u.role === "admin" ? "primary" : "default"} />
+                          </TableCell>
+                          <TableCell>
+                            {u.role === "member" && (
+                              <Button size="small" onClick={() => void setRole(u, "admin")}>
+                                Make admin
+                              </Button>
+                            )}
+                            {u.role === "admin" && (
+                              <Button size="small" onClick={() => void setRole(u, "member")}>
+                                Make member
+                              </Button>
+                            )}
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </TableContainer>
 
                 <Divider />
                 <Typography variant="subtitle2">Move a user in</Typography>
-                <Stack direction="row" spacing={1}>
+                <Stack direction="row" spacing={1} useFlexGap sx={{ flexWrap: "wrap" }}>
                   <Autocomplete
                     sx={{ flexGrow: 1 }}
                     size="small"

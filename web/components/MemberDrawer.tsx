@@ -139,7 +139,7 @@ export default function MemberDrawer({
 }) {
   return (
     <Drawer anchor="right" open={member !== null} onClose={onClose}>
-      <Stack spacing={2} sx={{ width: 420, maxWidth: "100vw", overflowY: "auto", p: 3 }}>
+      <Stack spacing={2} sx={{ width: { xs: "100vw", sm: 420 }, maxWidth: "100vw", overflowY: "auto", p: 3 }}>
         {member && <MemberProfileForm key={member.uid} member={member} onClose={onClose} />}
       </Stack>
     </Drawer>
