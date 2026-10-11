@@ -1054,8 +1054,14 @@ class Ingest:
 
         previous_status = device.status
         resolved_ts = resolve_ts(env.ts) if env.ts is not None else None
+        # PROTOCOL.md §5.1: `ota_t`/`ota_st` are present only while the device
+        # holds a job, so an online status without them means "no job" -- the
+        # OTA group is cleared rather than left at its last value (a stale
+        # `dl` stuck on the web after a cancel + USB reflash, 10 Oct 2026).
+        ota_clear = ("otaTarget", "otaState", "otaPct", "otaErr") if env.state == "online" and env.ota_t is None and env.ota_st is None else ()
         devices_store.update_status(
             device_id,
+            clear=ota_clear,
             state=env.state,
             mode=env.mode,
             battMv=env.batt_mv,

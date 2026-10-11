@@ -533,14 +533,17 @@ def set_last_cell(
     )
 
 
-def update_status(device_id: str, **fields: object) -> None:
+def update_status(device_id: str, *, clear: tuple[str, ...] = (), **fields: object) -> None:
     """Overwrites `status` wholesale with `fields` + `updatedAt`. Caller
     (ingest.py's Firestore-backed successor) passes exactly the fields it
     has; unset ones are omitted, not defaulted, so a partial `/status`
     payload cannot stomp a previously-known field with a bogus `None` --
-    callers that want that must pass it explicitly."""
-    from google.cloud.firestore import SERVER_TIMESTAMP
+    callers that want that must pass it explicitly. Names in `clear` that
+    have no value in `fields` are deleted from the stored `status`."""
+    from google.cloud.firestore import DELETE_FIELD, SERVER_TIMESTAMP
 
     status = {k: v for k, v in fields.items() if v is not None}
+    for k in clear:
+        status.setdefault(k, DELETE_FIELD)
     status["updatedAt"] = SERVER_TIMESTAMP
     _devices().document(device_id).set({"status": status}, merge=True)

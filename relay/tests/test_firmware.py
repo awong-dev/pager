@@ -313,6 +313,25 @@ def test_ingest_stores_ota_status_fields_and_drops_bad_ones():
     assert st.img == "0123456789abcdef"
 
 
+def test_ingest_clears_stale_ota_state_when_device_reports_no_job():
+    # 10 Oct 2026: rc1 was cancelled mid-download and USB-reflashed; the new
+    # image holds no job and omits ota_t/ota_st, but `dl` stayed on the web.
+    _device()
+    ingest = Ingest(FakeBrokerClient(), None)  # type: ignore[arg-type]
+    ingest.handle_status(
+        status_topic("pgr-ota-1"),
+        online_status_payload("s_00000001", img="0123456789abcdef", ota=1, ota_t="fedcba9876543210",
+                              ota_st="dl", ota_pct=0, ota_err="http"),
+    )
+    ingest.handle_status(
+        status_topic("pgr-ota-1"),
+        online_status_payload("s_00000002", img="1111222233334444", ota=1),
+    )
+    st = devices_store.get_device("pgr-ota-1").status
+    assert (st.otaTarget, st.otaState, st.otaPct, st.otaErr) == (None, None, None, None)
+    assert (st.img, st.otaCap) == ("1111222233334444", 1)
+
+
 def test_ingest_clears_otajob_when_job_finishes():
     _device()
     broker = FakeBrokerClient()
