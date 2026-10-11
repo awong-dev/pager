@@ -99,3 +99,16 @@ def test_dry_run_measured_sizes(tmp_path):
     assert abs(b["deltas"][0]["osz"] - 42513) <= 64
     d = tmp_path / b["deltas"][0]["path"]
     assert hashlib.sha256(d.read_bytes()).hexdigest() == b["deltas"][0]["osha"]
+
+
+def test_withdraw_moves_build_and_merge_keeps_it():
+    def b(v, i, ts):
+        return {"id": i * 64, "version": v, "published": ts, "deltas": []}
+    idx = {"v": 1, "builds": [b("v2", "b", 2), b("v1", "a", 1)]}
+    out = fwpub.withdraw_index(idx, "v2", "broke unlock", 9)
+    assert [x["version"] for x in out["builds"]] == ["v1"]
+    assert out["withdrawn"] == [{"id": "b" * 64, "version": "v2", "reason": "broke unlock", "at": 9}]
+    merged = fwpub.merge_index(out, b("v3", "c", 3))
+    assert [x["version"] for x in merged["builds"]] == ["v3", "v1"] and merged["withdrawn"] == out["withdrawn"]
+    with pytest.raises(KeyError):
+        fwpub.withdraw_index(out, "v2", "again", 10)
