@@ -45,6 +45,37 @@ already installed on the build host" caveat as before; only the Latin/
 Greek/Cyrillic face changed, and that one now IS checked in, so this build
 is reproducible modulo having any Noto Sans CJK file locally.)
 
+Emoji coverage (added 12 Oct 2026, owner decisions; ASSET-ONLY -- the binary
+format and gfx.c are unchanged, so the image works with the published v1.2.3
+app). Enabled by --emoji-font; with it absent the output is byte-identical to
+the command above. Exact command used to build the emoji-capable image
+(build/images/assets-dejavu-emoji.bin):
+  python3 tools/mkassets.py --lang sc \
+      --sans-font tools/fonts/dejavu/DejaVuSans.ttf \
+      --cjk-font <a local Noto Sans CJK .ttc, e.g. ~/Library/Fonts/NotoSansCJK.ttc> \
+      --emoji-font tools/fonts/notoemoji/NotoEmoji-wght.ttf \
+      --emoji-axes "wght=600" --emoji-px "12=10,16=13" \
+      --baseline "12=13,16=18" \
+      -o build/images/assets-dejavu-emoji.bin
+Sources, in priority order (a codepoint is taken from the first that has it):
+  (a) DejaVu Sans's own symbol/emoji glyphs (_DEJAVU_EXTRA_RANGES), rendered
+      at the text size like any text glyph;
+  (b) _EMOJI_ALIASES: a few common emoji DejaVu lacks, recorded under the
+      emoji codepoint with the bitmap of a DejaVu symbol (only if DejaVu has
+      the target and lacks the emoji);
+  (c) Noto Emoji (monochrome outline font, OFL; NOT Noto Color Emoji), every
+      single-codepoint emoji it has that (a)/(b) did not cover
+      (_NOTO_EMOJI_RANGES minus the component codepoints);
+  (d) zero-width blanks (w=0, adv=0, rows=0) for the joiner/selector/
+      skin-tone components, so "heart + VS16" or "thumb + skin tone" draw as
+      the base glyph and no trailing tofu. gfx.c accepts these (blit loops
+      over 0 rows, wrap/width just add 0).
+Emoji pixel size: --emoji-px maps text size -> the pixel size Noto Emoji is
+rasterised at (it is ~1 em tall, so the text size would make emoji far taller
+than the text's ascender). The glyph keeps its own bearing_y relative to the
+same pinned baseline as text, and its advance is tightened to ink width plus
+side bearings (Noto's own advance is 1.3 em).
+
 Variable fonts and the baseline (added 2026-09-20 while trying Literata as
 the text face; it was flashed to a real panel and **rejected — Noto Sans stays**,
 so do not repeat the experiment without a new reason):
@@ -143,11 +174,62 @@ def _open_cjk_face(path, lang, face_index):
     return best
 
 
+# --- emoji coverage (see the docstring; all optional, off unless --emoji-font) ---
+# DejaVu Sans's own glyphs, taken before anything else (inclusive ranges).
+_DEJAVU_EXTRA_RANGES = (
+    (0x2100, 0x214F),    # Letterlike (TM, info)
+    (0x2190, 0x21FF),    # Arrows
+    (0x2300, 0x23FF),    # Misc Technical
+    (0x25A0, 0x25FF),    # Geometric Shapes
+    (0x2600, 0x27BF),    # Misc Symbols + Dingbats
+    (0x2B00, 0x2BFF),    # Misc Symbols and Arrows (stars, arrows)
+    (0x1F300, 0x1F64F),  # Misc Symbols and Pictographs + Emoticons
+)
+# emoji codepoint -> DejaVu symbol whose bitmap it reuses (only where DejaVu
+# lacks the emoji codepoint itself).
+_EMOJI_ALIASES = {
+    0x2705: 0x2714,   # white heavy check mark -> heavy check mark
+    0x274C: 0x2718,   # cross mark -> heavy ballot x
+    0x2B50: 0x2605,   # white medium star -> black star
+}
+# Noto Emoji candidates (inclusive ranges / singles), minus _EMOJI_COMPONENTS.
+_NOTO_EMOJI_RANGES = (
+    (0x00A9, 0x00A9), (0x00AE, 0x00AE), (0x203C, 0x203C), (0x2049, 0x2049),
+    (0x2122, 0x2122), (0x2139, 0x2139), (0x2190, 0x2BFF),
+    (0x3030, 0x3030), (0x303D, 0x303D), (0x3297, 0x3297), (0x3299, 0x3299),
+    (0x1F000, 0x1FAFF),
+)
+# Not drawn: skin tones, regional indicators, ZWJ, variation selectors,
+# keycap, tags. Of these, _EMOJI_BLANKS become zero-width records.
+_EMOJI_BLANKS = (0x200D, 0xFE0E, 0xFE0F, 0x20E3) + tuple(range(0x1F3FB, 0x1F400))
+_EMOJI_COMPONENTS = (set(_EMOJI_BLANKS) | set(range(0x1F1E6, 0x1F200))
+                     | set(range(0xE0020, 0xE0080)))
+
+
+def _collect_emoji(chosen, sans_face, emoji_face):
+    """Adds emoji entries to `chosen` ({cp: kind}); kind is 'dejavu' (DejaVu extras),
+    ('alias', target_cp), 'emoji' or 'blank'. Returns nothing."""
+    for start, end in _DEJAVU_EXTRA_RANGES:
+        for cp in range(start, end + 1):
+            if cp not in chosen and _glyph_coverage(sans_face, cp):
+                chosen[cp] = "dejavu"
+    for cp, target in sorted(_EMOJI_ALIASES.items()):
+        if cp not in chosen and chosen.get(target) in ("sans", "dejavu"):
+            chosen[cp] = ("alias", target)
+    for start, end in _NOTO_EMOJI_RANGES:
+        for cp in range(start, end + 1):
+            if (cp not in chosen and cp not in _EMOJI_COMPONENTS
+                    and _glyph_coverage(emoji_face, cp)):
+                chosen[cp] = "emoji"
+    for cp in _EMOJI_BLANKS:
+        chosen[cp] = "blank"  # overrides: components must never draw ink
+
+
 def _glyph_coverage(face, cp):
     return face.get_char_index(cp) != 0
 
 
-def _collect_codepoints(lang, sans_face, cjk_face):
+def _collect_codepoints(lang, sans_face, cjk_face, emoji_face=None):
     """Returns an ordered list of (codepoint, font) pairs, font in
     {'sans','cjk'}, deduplicated and finally sorted by codepoint (gfx.c's
     binary search requires strictly ascending, unique codepoints — if a
@@ -176,7 +258,13 @@ def _collect_codepoints(lang, sans_face, cjk_face):
                 chosen[cp] = "cjk"
                 cjk_count += 1
 
+    if emoji_face is not None:
+        _collect_emoji(chosen, sans_face, emoji_face)
     return sorted(chosen.items())
+
+
+def _blank_glyph():
+    return {"w": 0, "adv": 0, "bearing_x": 0, "bearing_y": 0, "rows": 0, "bitmap": b""}
 
 
 def _render_glyph(face, size_px, cp):
@@ -240,7 +328,8 @@ def _apply_axes(face, axes):
     face.set_var_design_coords(coords)
 
 
-def _build_size_block(size_px, entries, sans_face, cjk_face, baseline_override=None):
+def _build_size_block(size_px, entries, sans_face, cjk_face, baseline_override=None,
+                      emoji_face=None, emoji_px=None, stats=None):
     """entries: sorted [(codepoint, font), ...]. Returns the block's bytes
     (sub-header + codepoint table + record table + bitmap blob), per
     gfx.h's format doc."""
@@ -258,8 +347,20 @@ def _build_size_block(size_px, entries, sans_face, cjk_face, baseline_override=N
     bitmap_blob = bytearray()
 
     for cp, font in entries:
-        face = sans_face if font == "sans" else cjk_face
-        g = _render_glyph(face, size_px, cp)
+        rec_start = len(bitmap_blob)
+        if font == "blank":
+            g = _blank_glyph()
+        elif font == "emoji":
+            g = _render_glyph(emoji_face, (emoji_px or {}).get(size_px, size_px), cp)
+            # Noto's advance is ~1.3 em; tighten to ink + side bearings.
+            g["adv"] = g["bearing_x"] + g["w"] + max(g["bearing_x"], 1)
+        elif isinstance(font, tuple):  # ("alias", target_cp)
+            g = _render_glyph(sans_face, size_px, font[1])
+        else:
+            g = _render_glyph(sans_face if font in ("sans", "dejavu") else cjk_face, size_px, cp)
+        if stats is not None:
+            key = font[0] if isinstance(font, tuple) else font
+            stats[(size_px, key)] = stats.get((size_px, key), 0) + 14 + len(g["bitmap"])
         codepoints_bytes += struct.pack("<I", cp)
         offset = len(bitmap_blob)
         records_bytes += struct.pack(
@@ -280,14 +381,25 @@ def _build_size_block(size_px, entries, sans_face, cjk_face, baseline_override=N
     return bytes(sub_header) + bytes(codepoints_bytes) + bytes(records_bytes) + bytes(bitmap_blob)
 
 
-def build_assets(lang, sans_font, cjk_font, cjk_face_index, sans_axes=None, baselines=None):
+def build_assets(lang, sans_font, cjk_font, cjk_face_index, sans_axes=None, baselines=None,
+                emoji_font=None, emoji_axes=None, emoji_px=None, stats=None):
     sans_face = freetype.Face(str(sans_font))
     _apply_axes(sans_face, sans_axes)
     cjk_face = _open_cjk_face(cjk_font, lang, cjk_face_index)
+    emoji_face = None
+    if emoji_font:
+        emoji_face = freetype.Face(str(emoji_font))
+        _apply_axes(emoji_face, emoji_axes)
 
-    entries = _collect_codepoints(lang, sans_face, cjk_face)
+    entries = _collect_codepoints(lang, sans_face, cjk_face, emoji_face)
     cjk_count = sum(1 for _, f in entries if f == "cjk")
-    sans_count = len(entries) - cjk_count
+    sans_count = sum(1 for _, f in entries if f in ("sans", "dejavu"))
+    if emoji_face is not None:
+        kinds = {}
+        for _, f in entries:
+            k = f[0] if isinstance(f, tuple) else f
+            kinds[k] = kinds.get(k, 0) + 1
+        print(f"mkassets: kinds {kinds}", file=sys.stderr)
     print(
         f"mkassets: lang={lang} codepoints={len(entries)} (sans={sans_count} cjk={cjk_count}, "
         f"target cjk={_CJK_TARGET_COUNT[lang]})",
@@ -296,7 +408,7 @@ def build_assets(lang, sans_font, cjk_font, cjk_face_index, sans_axes=None, base
 
     blocks = [
         _build_size_block(size_px, entries, sans_face, cjk_face,
-                          (baselines or {}).get(size_px))
+                          (baselines or {}).get(size_px), emoji_face, emoji_px, stats)
         for size_px in SIZES
     ]
 
@@ -325,14 +437,30 @@ def main():
                      help='baseline in px per size, e.g. "12=13,16=18" (default: the text '
                           "face's own ascender). Pin it when changing fonts so the UI's rows "
                           "do not move.")
+    ap.add_argument("--emoji-font", default="",
+                     help="Noto Emoji (monochrome) font file; enables emoji coverage (see "
+                          "docstring). Absent = output byte-identical to the plain build.")
+    ap.add_argument("--emoji-axes", default="", help='axes for --emoji-font, e.g. "wght=500"')
+    ap.add_argument("--emoji-px", default="12=10,16=13",
+                     help="pixel size Noto Emoji is rasterised at per text size")
     args = ap.parse_args()
 
     axes = {k.strip(): float(v) for k, v in
             (kv.split("=") for kv in args.sans_axes.split(",") if kv.strip())}
     baselines = {int(k): int(v) for k, v in
                  (kv.split("=") for kv in args.baseline.split(",") if kv.strip())}
+    def _kv(text, conv):
+        return {k.strip(): conv(v) for k, v in
+                (kv.split("=") for kv in text.split(",") if kv.strip())}
+    stats = {}
     data = build_assets(args.lang, Path(args.sans_font), Path(args.cjk_font), args.cjk_face_index,
-                        axes, baselines)
+                        axes, baselines,
+                        args.emoji_font or None, _kv(args.emoji_axes, float),
+                        {int(k): v for k, v in _kv(args.emoji_px, int).items()}, stats)
+    for (sz, kind), n in sorted(stats.items()):
+        if kind not in ("cjk",):
+            print(f"mkassets: bytes {sz}px {kind}: {n} (14 B/glyph table+record, plus bitmap)",
+                  file=sys.stderr)
 
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
