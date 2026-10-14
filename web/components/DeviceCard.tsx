@@ -23,6 +23,8 @@ import Typography from "@mui/material/Typography";
 import DeviceTrustChip from "@/components/DeviceTrustChip";
 import EditDeviceLabelButton from "@/components/EditDeviceLabelDialog";
 import FirmwareChip from "@/components/FirmwareChip";
+import FontsChip from "@/components/FontsChip";
+import { isAssetJob } from "@/lib/assets";
 import { deviceName } from "@/lib/devices";
 import { locBackoffLabel } from "@/lib/deviceTrust";
 import type { FirmwareBuild, FirmwareScope } from "@/lib/firmware";
@@ -70,6 +72,7 @@ export interface DeviceCardProps {
   onRevoke: () => void;
   onDelete: () => void;
   onFirmware: () => void;
+  onFonts: () => void;
   onCa: (action: "push" | "unpin") => void;
   onSetAutoLock: (minutes: number) => void;
   onClearPasscode: () => void;
@@ -194,9 +197,15 @@ export default function DeviceCard(p: DeviceCardProps) {
           {/* Firmware & actions */}
           <Stack spacing={0.5} sx={{ alignItems: "flex-start", minWidth: 0 }}>
             <Stack direction="row" useFlexGap sx={{ flexWrap: "wrap", gap: 0.5, alignItems: "center" }}>
-              <FirmwareChip status={d.status} newest={p.newestBuild} />
+              <FirmwareChip status={d.status} newest={p.newestBuild} assetJob={isAssetJob(d)} />
               <Button size="small" onClick={p.onFirmware}>
                 Update firmware…
+              </Button>
+            </Stack>
+            <Stack direction="row" useFlexGap sx={{ flexWrap: "wrap", gap: 0.5, alignItems: "center" }}>
+              <FontsChip device={d} scope={p.scope} />
+              <Button size="small" onClick={p.onFonts}>
+                Update fonts…
               </Button>
             </Stack>
             {d.status?.tls !== "proxy" && (

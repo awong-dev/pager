@@ -110,7 +110,7 @@ export default function BatteryCard({ deviceId }: { deviceId: string }) {
   const lastMv = [...samples].reverse().find((s) => s.battMv != null)?.battMv;
 
   const totals = useMemo(() => {
-    const t = { off: 0, search: 0, gnss: 0, ext1: 0, sleeps: 0, connects: 0, dt: 0 };
+    const t = { off: 0, search: 0, gnss: 0, ext1: 0, sleeps: 0, connects: 0, dt: 0, shA: 0, shR: 0, shP: 0, shSeen: false };
     for (const s of withBs) {
       t.off += s.modemS?.off ?? 0;
       t.search += s.modemS?.search ?? 0;
@@ -119,6 +119,10 @@ export default function BatteryCard({ deviceId }: { deviceId: string }) {
       t.sleeps += s.sleeps ?? 0;
       t.connects += s.connects ?? 0;
       t.dt += s.dtS ?? 0;
+      t.shA += s.shakesAccepted ?? 0;
+      t.shR += s.shakesRejected ?? 0;
+      t.shP += s.shakePendingS ?? 0;
+      if (s.shakesAccepted !== undefined || s.shakesRejected !== undefined) t.shSeen = true;
     }
     return t;
   }, [withBs]);
@@ -219,6 +223,13 @@ export default function BatteryCard({ deviceId }: { deviceId: string }) {
                     {(totals.gnss / 60).toFixed(1)} min
                     <br />
                     ext1 wakes {totals.ext1} · sleeps {totals.sleeps} · reconnects {totals.connects}
+                    {totals.shSeen && (
+                      <>
+                        <br />
+                        shakes {totals.shA} accepted · {totals.shR} rejected · pending{" "}
+                        {fmtHours(totals.shP)}
+                      </>
+                    )}
                   </Typography>
 
                   <Typography variant="subtitle2">Display refreshes per day</Typography>

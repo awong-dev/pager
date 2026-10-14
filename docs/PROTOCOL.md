@@ -307,6 +307,22 @@ holding either a job or a cancel:
   `ota_err` (§5.1). A newer `cfg.ota` replaces the stored job. In airplane mode the job stays
   parked and costs nothing. Newest only and re-published on an online edge like any `cfg`.
 
+**`cfg.ast` (relay → device, font OTA).** *(`docs/ASSETS_OTA_DESIGN.md` §3; the font image
+goes to the `assets_ota` partition, never to `assets`.)* A seventh `cfg` member, CFG key 6 (§10),
+the same shape as `cfg.ota` (full image only) plus a required `fv`:
+`{"img":"<64 hex>","isz":736237,"url":"https://storage.googleapis.com/<bucket>/as/<id16>/full.z","osz":379008,"osha":"<64 hex>","fmt":"full","fv":1}`
+(`fv` = the image's format version, uint 1…255, OTA sub-key 9). `img` is the SHA-256 of the whole
+font image; the other members are as `cfg.ota`. `{"cancel":true}` cancels a stored font job only.
+- Device: ack `shown` once the job is stored, or once it is rejected. Rejected with `ota_err`
+  `nopart` (no `assets_ota` partition), `fmt` (`fv` above the firmware's maximum, a delta, or a
+  missing `fv`), `size` (`isz` above partition size − 4 KiB) or `run` (`img` already active).
+  The app-only gates (`nobl`, `pv`, `bad`) do not apply. Firmware without font OTA skips key 6
+  and does not ack it. Progress is the ordinary `ota_t`/`ota_st`/`ota_pct`/`ota_err` (§5.1);
+  states are `wait`, `dl`, `ok`, `fail` (no reboot).
+- Relay: only to a device whose last online `/status` carried `ast` 1 or 2; one job (app or
+  font) at a time. Own pending slot `pendingCfgAst`, re-published on the online edge, dropped
+  when an online `/status` lacks `ast`.
+
 **`cfg.loc` (relay → device, GNSS disable).** *(a module with a damaged GNSS antenna must be able
 to stop powering the receiver while location keeps working from the serving cell;
 `docs/GNSS_DISABLE_DESIGN.md` D1, D3.)* A sixth `cfg` member, CFG key 5 (§10), a map `{gnss}`:
@@ -778,7 +794,9 @@ broker-generated LWT.
 | `ota_t` | string | no | 16 lowercase hex chars | *(OTA)* Short id of the stored job's target image; present only while the device holds a job. **Display only.** |
 | `ota_st` | string | no | `wait` \| `dl` \| `ready` \| `inst` \| `ok` \| `fail` \| `rb` | *(OTA)* Job state: waiting for a download window, downloading, verified and waiting to install, installing, done, failed (see `ota_err`), rolled back. Present with `ota_t`. The relay ends its job record on `ok`, `fail` or `rb` for that target; otherwise **display only.** |
 | `ota_pct` | int | no | 0…100 | *(OTA)* Download progress. **Display only.** |
-| `ota_err` | string | no | 1–8 lowercase letters | *(OTA)* Why the job failed or was rejected: `base`, `hash`, `osha`, `http`, `budget`, `flash`, `nobl`, `pv`, `size`, `expired`. A relay accepts any code in the range, since the list can grow. **Display only.** |
+| `ota_err` | string | no | 1–8 lowercase letters | *(OTA)* Why the job failed or was rejected: `base`, `hash`, `osha`, `http`, `budget`, `flash`, `nobl`, `pv`, `size`, `expired`; font jobs add `nopart`, `fmt`, `run`. A relay accepts any code in the range, since the list can grow. **Display only.** |
+| `ast` | int | no | 0, 1 or 2 | *(font OTA, `docs/ASSETS_OTA_DESIGN.md` §3.)* 0 = firmware with font OTA but no `assets_ota` partition, 1 = factory fonts active, 2 = `assets_ota` active. CBOR key 72. Absent means firmware without font OTA. The relay offers a font update only for 1 or 2. |
+| `ast_id` | string | no | 16 lowercase hex chars | *(font OTA)* Short id of the active `assets_ota` image; present only when `ast` is 2. CBOR key 73. The relay treats it equal to a font job's target as that job done. |
 | `bs` | map | no | sub-map below | *(battery stats, `docs/BATTERY_STATS_DESIGN.md` B5: the board has no fuel gauge, so drain is modelled from time spent in each state.)* The battery-stats window, in every online `/status` once the window holds ≥ 1 s. CBOR only (§3.3). **Display and modelling only.** |
 | `gnss` | int | no | `0` \| `1` | *(GNSS disable, `docs/GNSS_DISABLE_DESIGN.md` D4: shows whether a `cfg.loc` push took effect.)* `1` when the device may power its GNSS receiver, `0` when `cfg.loc` (§3.2) has disabled it. Present in every `/status` from firmware that supports `cfg.loc`; absent means firmware that predates the field, which the relay treats as unknown. **Display only.** |
 | `car` | string | no | ≤24 printable ASCII chars | *(Soracom bearer, `docs/SORACOM_DESIGN.md` §3.4: shows which carrier preset, and so which bearer, the device chose from its SIM.)* Label of the carrier preset in force, e.g. `Soracom`, `US Mobile Dark Star`; absent when no preset is in force (carrier default or typed custom APN) and in firmware that predates the field. A relay drops a malformed value alone, treating it as absent. **Display only.** |
@@ -830,6 +848,9 @@ B1–B4.)*
 | `cn` | MQTT session (re)connects, i.e. TLS handshakes. |
 | `md` | `[off, search, gnss]`: modem-state seconds over the whole window, sleep included; registered idle is `dt − off − search − gnss`. |
 | `re` | Radio events: successful publishes, liveness SUBSCRIBEs and inbound MQTT messages (each costs an RRC tail). |
+| `sa` | Optional (absent on older firmware). Shakes accepted in the window (uint). |
+| `sr` | Optional. Shake candidates rejected in the window (uint). |
+| `sp` | Optional. Whole seconds awake because a shake was pending with no hot window open (uint); a sub-measure of the `aw` `hot` bucket, so the mAh model must not add it again. |
 
 ### 5.2 LWT payload (48 bytes)
 
@@ -1615,6 +1636,8 @@ Devices emit CBOR (§3) with this integer keymap. The relay accepts both JSON (t
 | 69 | `gnss` | uint 0/1 | `/status` (GNSS disable, §5.1 — `cfg.loc` effective state, optional; `docs/GNSS_DISABLE_DESIGN.md` D4) |
 | 70 | `car` | tstr, ≤24 B | `/status` (Soracom bearer, §5.1 — carrier preset label, optional, display only; `docs/SORACOM_DESIGN.md` §3.4) |
 | 71 | `temp_dc` | int | `/status` (modem temperature, tenths of °C, −400…1250, optional) |
+| 72 | `ast` | uint 0–2 | `/status` (font OTA, §5.1 — 0 no `assets_ota` row, 1 factory, 2 `assets_ota` active, optional) |
+| 73 | `ast_id` | tstr, 16 hex | `/status` (font OTA, §5.1 — active `assets_ota` id, only when `ast`=2, optional) |
 
 *(A relay-side task that added `rst`/`stage`/`abn` was briefed with key 52 for `rst`; by the time
 it landed, 52 was already `xport`, both here and in the shipped relay code. Kept `xport=52` as the
@@ -1646,8 +1669,11 @@ book parser.)*
 `ota=4` (map inside `/down` `cfg`, `docs/OTA_DESIGN.md` §5, §3.2): `img=0` (bstr(32)), `isz=1`
 (uint), `url=2` (tstr, `https://`), `osz=3` (uint), `osha=4` (bstr(32)), `fmt=5` (uint, `0` full,
 `1` delta), `base=6` (bstr(32), delta only), `psz=7` (uint, delta only), `cancel=8` (bool; a map
-with `cancel` needs no other key). Unknown sub-keys are ignored. *(listed apart from the `cfg`
+with `cancel` needs no other key), `fv=9` (uint 1…255, required in `cfg.ast`, ignored in `cfg.ota`). Unknown sub-keys are ignored. *(listed apart from the `cfg`
 line above so that line's existing allocation reads unchanged.)*
+
+`ast=6` (map inside `/down` `cfg`, `docs/ASSETS_OTA_DESIGN.md` §3): the same sub-keys as `ota=4`
+including `fv=9`; `base`/`psz` are never sent.
 
 `loc=5` (map inside `/down` `cfg`, `docs/GNSS_DISABLE_DESIGN.md` D1, §3.2): `gnss=0` (bool; absent
 means no change). Unknown sub-keys are ignored. *(listed apart, like `ota=4`, so the `cfg` line's
@@ -1655,7 +1681,7 @@ existing allocation reads unchanged; this is `cfg`'s own namespace, distinct fro
 the `/loc` envelope.)*
 
 `bs` map (inside `/status`, key 68 above, §5.1): `sq=0, dt=1, sl=2, aw=3` (array of 6 uint)`,
-ns=4, x1=5, rl=6, rf=7` (array of 3 uint)`, mvn=8, cn=9, md=10` (array of 3 uint)`, re=11`. Unknown
+ns=4, x1=5, rl=6, rf=7` (array of 3 uint)`, mvn=8, cn=9, md=10` (array of 3 uint)`, re=11`, `sa=12`, `sr=13`, `sp=14` (uint each, optional shake counters). Unknown
 sub-keys are ignored.
 
 `ca` map (inside `/down` `cfg.ca`, v0.2, §4.4): `url=0` (tstr; `""` means un-pin), `sha=1`

@@ -1,6 +1,5 @@
 import hashlib
 import json
-import os
 import re
 import sys
 from pathlib import Path
@@ -8,7 +7,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent))
-import fwpub  # noqa: E402
+import fwpub
 
 IMAGES = Path(__file__).resolve().parent.parent / "build" / "images"
 MAIN = IMAGES / "main-release-app.bin"
@@ -112,3 +111,90 @@ def test_withdraw_moves_build_and_merge_keeps_it():
     assert [x["version"] for x in merged["builds"]] == ["v3", "v1"] and merged["withdrawn"] == out["withdrawn"]
     with pytest.raises(KeyError):
         fwpub.withdraw_index(out, "v2", "again", 10)
+
+
+# --- assets-publish / assets-withdraw (docs/ASSETS_OTA_DESIGN.md §3) ---------
+EMOJI = Path(__file__).resolve().parent.parent / "build" / "images" / "assets-dejavu-emoji.bin"
+
+
+def synth_assets(seed: bytes = b"a", total: int | None = None, ver: int = 1) -> bytes:
+    body = seed * 2000
+    n = 16 + len(body)
+    hdr = b"PGFA" + bytes([ver]) + b"en\0" + (n if total is None else total).to_bytes(4, "little") + b"\2\0\0\0"
+    return hdr + body
+
+
+def validate_assets_index(idx):
+    hx64 = re.compile(r"^[0-9a-f]{64}$")
+    assert idx["v"] == 1 and idx["withdrawn"] is not None
+    for b in idx["builds"]:
+        assert set(b) == {"id", "label", "lang", "fv", "size", "published", "full"}
+        assert hx64.match(b["id"]) and 1 <= b["fv"] <= 255 and 0 < b["size"] <= 0x200000 - 4096
+        assert b["full"]["path"] == f"as/{b['id'][:16]}/full.z"
+        assert hx64.match(b["full"]["osha"]) and 0 < b["full"]["osz"] <= 0x200000
+
+
+def test_check_assets_rules():
+    info = fwpub.check_assets(synth_assets())
+    assert info["fv"] == 1 and info["lang"] == "en" and info["id16"] == info["id"][:16]
+    for bad in (synth_assets(total=99), synth_assets(ver=2), synth_assets(ver=0),
+                b"XXXX" + synth_assets()[4:], synth_assets()[:10]):
+        with pytest.raises(ValueError):
+            fwpub.check_assets(bad)
+    big = synth_assets(b"z")
+    big = big[:8] + (0x200000 - 4095).to_bytes(4, "little") + big[12:16] + b"\0" * (0x200000 - 4095 - 16)
+    with pytest.raises(ValueError):
+        fwpub.check_assets(big)
+
+
+def test_assets_publish_dry_run_synthetic_and_withdraw(tmp_path):
+    p = tmp_path / "a.bin"
+    p.write_bytes(synth_assets(b"a"))
+    q = tmp_path / "b.bin"
+    q.write_bytes(synth_assets(b"b"))
+    out = tmp_path / "out"
+    assert fwpub.main(["assets-publish", str(p), "--bucket", "x", "--label", "one",
+                       "--dry-run", "--out", str(out)]) == 0
+    assert fwpub.main(["assets-publish", str(q), "--bucket", "x", "--label", "two",
+                       "--dry-run", "--out", str(out)]) == 0
+    idx = json.loads((out / "as" / "index.json").read_text())
+    validate_assets_index(idx)
+    assert {b["label"] for b in idx["builds"]} == {"one", "two"}
+    b = idx["builds"][0]
+    assert (out / b["full"]["path"]).exists() and (out / "as" / b["id"][:16] / "manifest.json").exists()
+    assert hashlib.sha256((out / b["full"]["path"]).read_bytes()).hexdigest() == b["full"]["osha"]
+    # republish same bytes ok; tampered object refused
+    assert fwpub.main(["assets-publish", str(p), "--bucket", "x", "--label", "one",
+                       "--dry-run", "--out", str(out)]) == 0
+    assert len(json.loads((out / "as" / "index.json").read_text())["builds"]) == 2
+    # wrong total refused (no write)
+    bad = tmp_path / "bad.bin"
+    bad.write_bytes(synth_assets(b"c", total=5))
+    assert fwpub.main(["assets-publish", str(bad), "--bucket", "x", "--label", "bad",
+                       "--dry-run", "--out", str(out)]) == 1
+    # withdraw by label moves the entry; publish then refuses it
+    assert fwpub.main(["assets-withdraw", "one", "--bucket", "x", "--reason", "oops",
+                       "--dry-run", "--out", str(out)]) == 0
+    idx = json.loads((out / "as" / "index.json").read_text())
+    validate_assets_index(idx)
+    assert [b["label"] for b in idx["builds"]] == ["two"]
+    assert idx["withdrawn"][0]["label"] == "one" and idx["withdrawn"][0]["reason"] == "oops"
+    assert fwpub.main(["assets-publish", str(p), "--bucket", "x", "--label", "one",
+                       "--dry-run", "--out", str(out)]) == 1
+    assert fwpub.main(["assets-withdraw", "nope", "--bucket", "x", "--reason", "r",
+                       "--dry-run", "--out", str(out)]) == 1
+    (out / "as" / "index.json").unlink()
+    full = out / "as" / fwpub.check_assets(q.read_bytes())["id16"] / "full.z"
+    full.write_bytes(b"junk")
+    assert fwpub.main(["assets-publish", str(q), "--bucket", "x", "--label", "two",
+                       "--dry-run", "--out", str(out)]) == 1
+
+
+@pytest.mark.skipif(not EMOJI.exists(), reason="build/images absent")
+def test_assets_publish_real_emoji_image(tmp_path):
+    assert fwpub.main(["assets-publish", str(EMOJI), "--bucket", "x", "--label", "dejavu+emoji",
+                       "--dry-run", "--out", str(tmp_path)]) == 0
+    idx = json.loads((tmp_path / "as" / "index.json").read_text())
+    validate_assets_index(idx)
+    b = idx["builds"][0]
+    assert b["full"]["osz"] == 379008 and b["size"] == 736237 and b["fv"] == 1

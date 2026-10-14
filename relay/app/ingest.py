@@ -325,8 +325,13 @@ def _bid_from_boot_up_topic(topic: str) -> str | None:
     return parts[2]
 
 
-def _ota_job_finished(target16: str, env: StatusEnvelope) -> bool:
-    if env.img == target16:
+def _ota_job_finished(target16: str, env: StatusEnvelope, part: str = "app") -> bool:
+    # docs/ASSETS_OTA_DESIGN.md §3: a font job also finishes when the device
+    # reports the target as its active assets_ota id (e.g. the power loss
+    # between the record write and the `ok` status).
+    if part == "assets" and env.ast_id == target16:
+        return True
+    if part == "app" and env.img == target16:
         return True
     return env.ota_st in ("ok", "fail", "rb") and env.ota_t in (None, target16)
 
@@ -1063,7 +1068,14 @@ class Ingest:
         # an online status without them must not leave the last boot's value.
         if env.state == "online":
             ota_clear += tuple(
-                k for k, v in (("battMv", env.batt_mv), ("tempDc", env.temp_dc)) if v is None
+                k
+                for k, v in (
+                    ("battMv", env.batt_mv),
+                    ("tempDc", env.temp_dc),
+                    ("assetsSrc", env.ast),
+                    ("assetsId", env.ast_id),
+                )
+                if v is None
             )
         devices_store.update_status(
             device_id,
@@ -1098,7 +1110,17 @@ class Ingest:
             otaState=env.ota_st,
             otaPct=env.ota_pct,
             otaErr=env.ota_err,
+            assetsSrc=env.ast,
+            assetsId=env.ast_id,
         )
+
+        # docs/ASSETS_OTA_DESIGN.md §3: an online status without `ast` is
+        # firmware without font OTA (e.g. a rolled-back app), so drop the
+        # pending font job rather than re-send it, and its web job with it.
+        if env.state == "online" and env.ast is None:
+            devcfg.drop_pending_ast(device_id)
+            if device.otaJob is not None and device.otaJob.part == "assets":
+                devcfg.clear_ota_job(device_id)
 
         # docs/BATTERY_STATS_DESIGN.md B6: one time-series sample per online
         # /status; a malformed `bs` is dropped alone, never the status.
@@ -1112,7 +1134,9 @@ class Ingest:
         # docs/OTA_DESIGN.md D5: the web's `otaJob` lives until the device
         # reports the job finished (`ok`/`fail`/`rb` for that target, or the
         # new image running).
-        if device.otaJob is not None and _ota_job_finished(device.otaJob.target16, env):
+        if device.otaJob is not None and _ota_job_finished(
+            device.otaJob.target16, env, device.otaJob.part
+        ):
             devcfg.clear_ota_job(device_id)
 
         # docs/V02_DESIGN.md §4.3: "on a transition

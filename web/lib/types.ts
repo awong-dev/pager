@@ -151,6 +151,11 @@ export interface DeviceStatusDoc {
   otaState?: "wait" | "dl" | "ready" | "inst" | "ok" | "fail" | "rb" | null;
   otaPct?: number | null;
   otaErr?: string | null;
+  // docs/ASSETS_OTA_DESIGN.md §3 (`/status` keys 72/73): 0 = font OTA
+  // supported but no assets_ota row, 1 = factory fonts active, 2 = the OTA
+  // partition is active (`assetsId` = its 16-hex id). Absent on old firmware.
+  assetsSrc?: number | null;
+  assetsId?: string | null;
   // docs/V02_DESIGN.md §6 (device SMS): audit-queue entries dropped on the
   // pager before they could be uploaded. Absent on older firmware.
   smsLost?: number | null;
@@ -196,6 +201,8 @@ export interface OtaJob {
   osz: number;
   estBytes: number;
   onDemand?: boolean;
+  /** "assets" for a font job (docs/ASSETS_OTA_DESIGN.md §3); absent = app. */
+  part?: "assets" | null;
   by_uid: string;
   at: number;
 }

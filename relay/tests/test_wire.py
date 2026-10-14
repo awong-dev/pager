@@ -1186,8 +1186,10 @@ def test_ota_status_keys_on_the_cbor_wire():
     assert wirecbor.CFG_KEYMAP["ota"] == 4
     assert wirecbor.OTA_KEYMAP == {
         "img": 0, "isz": 1, "url": 2, "osz": 3, "osha": 4,
-        "fmt": 5, "base": 6, "psz": 7, "cancel": 8,
+        "fmt": 5, "base": 6, "psz": 7, "cancel": 8, "fv": 9,
     }
+    assert wirecbor.CFG_KEYMAP["ast"] == 6
+    assert (wirecbor.KEYMAP["ast"], wirecbor.KEYMAP["ast_id"]) == (72, 73)
     status = {
         "v": 1, "state": "online", "mode": "sleep", "batt_mv": 3300, "session": "s_00000001",
         "ts": 1_700_000_000, "img": "0123456789abcdef", "ota": 1, "ota_t": "fedcba9876543210",

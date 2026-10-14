@@ -10,16 +10,19 @@ import type { DeviceStatusDoc } from "@/lib/types";
 export default function FirmwareChip({
   status,
   newest,
+  assetJob = false,
 }: {
   status?: DeviceStatusDoc | null;
   newest?: FirmwareBuild;
+  /** A font job owns the ota_* status fields; do not show them as firmware state. */
+  assetJob?: boolean;
 }) {
-  let job = otaStateLabel(status);
-  const bad = status?.otaState === "fail" || status?.otaState === "rb";
+  let job = assetJob ? null : otaStateLabel(status);
+  const bad = !assetJob && status?.otaState === "fail" || status?.otaState === "rb";
   let warn = false;
   // A finished job ("Updated") says nothing about newer builds: compare the
   // running image with the newest published one instead.
-  if (newest && (status?.otaState === "ok" || !status?.otaState)) {
+  if (newest && !assetJob && (status?.otaState === "ok" || !status?.otaState)) {
     if (status?.img && status.img === newest.id16) {
       job = "Up to date";
     } else if (status?.img) {

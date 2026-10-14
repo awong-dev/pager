@@ -42,6 +42,9 @@ export interface BatterySample {
   connects?: number;
   modemS?: { off?: number; search?: number; gnss?: number };
   radioEvents?: number;
+  shakesAccepted?: number;
+  shakesRejected?: number;
+  shakePendingS?: number;
 }
 
 export interface BatteryModel {
@@ -275,7 +278,7 @@ export function bucketAwake(samples: BatterySample[], unit: BucketUnit): AwakeBu
 }
 
 export const CSV_HEADER =
-  "ts,iso,session,sq,battMv,tempDc,minMv,rssi,mode,xport,fw,img,rst,link,hasBs,dtS,sleepS,aw_timer,aw_attn,aw_hot,aw_ui,aw_modem,aw_fetch,sleeps,ext1,railS,rf_full,rf_partial,rf_upgraded,connects,md_off,md_search,md_gnss,radioEvents,model_mAh";
+  "ts,iso,session,sq,battMv,tempDc,minMv,rssi,mode,xport,fw,img,rst,link,hasBs,dtS,sleepS,aw_timer,aw_attn,aw_hot,aw_ui,aw_modem,aw_fetch,sleeps,ext1,railS,rf_full,rf_partial,rf_upgraded,connects,md_off,md_search,md_gnss,radioEvents,shakesAccepted,shakesRejected,shakePendingS,model_mAh";
 
 function cell(v: string | number | boolean | undefined | null): string {
   if (v === undefined || v === null) return "";
@@ -300,6 +303,7 @@ export function toCsv(samples: BatterySample[], m: BatteryModel): string {
       s.connects,
       s.modemS?.off, s.modemS?.search, s.modemS?.gnss,
       s.radioEvents,
+      s.shakesAccepted, s.shakesRejected, s.shakePendingS,
       mah === null ? undefined : mah.toFixed(4),
     ];
     lines.push(row.map(cell).join(","));

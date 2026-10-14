@@ -22,6 +22,7 @@ import {
   type FirmwareBuild,
   type FirmwareScope,
 } from "@/lib/firmware";
+import { isAssetJob } from "@/lib/assets";
 import type { DeviceDoc } from "@/lib/types";
 import { useFullScreenDialog } from "@/lib/useFullScreenDialog";
 
@@ -113,17 +114,21 @@ export default function FirmwareUpdateDialog({
             severity="info"
             sx={{ mb: 2 }}
             action={
-              <Button
-                color="inherit"
-                size="small"
-                disabled={busy || !deviceId}
-                onClick={() => deviceId && void run(() => cancelOta(scope, deviceId))}
-              >
-                Cancel pending update
-              </Button>
+              isAssetJob(device) ? undefined : (
+                <Button
+                  color="inherit"
+                  size="small"
+                  disabled={busy || !deviceId}
+                  onClick={() => deviceId && void run(() => cancelOta(scope, deviceId))}
+                >
+                  Cancel pending update
+                </Button>
+              )
             }
           >
-            An update to {device?.otaJob?.target16} is pending.
+            {isAssetJob(device)
+              ? "A font update is in progress; use Update fonts to cancel it."
+              : `An update to ${device?.otaJob?.target16} is pending.`}
           </Alert>
         )}
         <FormControl fullWidth>

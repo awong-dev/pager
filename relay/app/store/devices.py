@@ -142,6 +142,12 @@ class DeviceStatus(BaseModel):
     otaState: str | None = None
     otaPct: int | None = None
     otaErr: str | None = None
+    # docs/ASSETS_OTA_DESIGN.md §3: last `/status` `ast` (1 = factory fonts,
+    # 2 = assets_ota active, 0 = no assets_ota row; None = firmware without
+    # font OTA) and `ast_id` (16 hex, only when `assetsSrc == 2`). The push
+    # gate for `/assets` is `assetsSrc in (1, 2)`.
+    assetsSrc: int | None = None
+    assetsId: str | None = None
     updatedAt: datetime | None = None
     # docs/DEVICE_PLAN.md §2.6: set once `sigFailures` crosses
     # AUTH_ALARM_THRESHOLD inside AUTH_ALARM_WINDOW_S; cleared on key
@@ -217,6 +223,10 @@ class OtaJob(BaseModel):
     by_uid: str
     onDemand: bool = False
     at: datetime | None = None
+    # docs/ASSETS_OTA_DESIGN.md §3: which partition the job targets. Old
+    # documents have no `part` and are app jobs. For "assets", `kind` is
+    # always "full" and `target16` is the font image id (sha256 prefix).
+    part: Literal["app", "assets"] = "app"
 
 
 class Device(BaseModel):

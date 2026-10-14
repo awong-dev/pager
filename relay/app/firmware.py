@@ -17,19 +17,23 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 import httpx
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
 from app.config import Settings
 
 logger = logging.getLogger("relay.firmware")
 
 MAX_IMAGE_BYTES = 0x200000
+# docs/ASSETS_OTA_DESIGN.md §2: the assets_ota partition is 2 MiB and its last
+# 4 KiB sector holds the commit record.
+MAX_ASSETS_BYTES = 0x200000 - 4096
 INDEX_TTL_S = 60.0
 INDEX_TIMEOUT_S = 10.0
 
 _HEX64 = re.compile(r"[0-9a-f]{64}")
 _PATH_RE = re.compile(
     r"fw/[0-9a-f]{16}/(full\.z|from-[0-9a-f]{16}\.dz)|fw-cache/[0-9a-f]{16}/from-[0-9a-f]{16}\.dz"
+    r"|as/[0-9a-f]{16}/full\.z"
 )
 
 
@@ -133,6 +137,63 @@ class FirmwareIndex(BaseModel):
         return None
 
 
+class AsBuild(BaseModel):
+    """docs/ASSETS_OTA_DESIGN.md §3: one font image in `as/index.json`. `id` is
+    sha256 of the whole (uncompressed) image; `full` is its zlib object."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    id: str
+    label: str
+    lang: str = ""
+    fv: int
+    size: int
+    published: int
+    full: FwObject
+
+    @field_validator("id")
+    @classmethod
+    def _id(cls, v: str) -> str:
+        return _check_hex64(v)
+
+    @field_validator("fv")
+    @classmethod
+    def _fv(cls, v: int) -> int:
+        if not (1 <= v <= 255):
+            raise ValueError("fv must be in 1..255")
+        return v
+
+    @field_validator("size")
+    @classmethod
+    def _size(cls, v: int) -> int:
+        if not (0 < v <= MAX_ASSETS_BYTES):
+            raise ValueError(f"size must be in 1..{MAX_ASSETS_BYTES}")
+        return v
+
+    @model_validator(mode="after")
+    def _own_path(self) -> AsBuild:
+        if self.full.path != f"as/{self.id[:16]}/full.z":
+            raise ValueError("full.path must be as/<id16>/full.z")
+        return self
+
+    @property
+    def id16(self) -> str:
+        return self.id[:16]
+
+
+class AssetsIndex(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    v: Literal[1]
+    builds: list[AsBuild]
+
+    def find(self, id16: str) -> AsBuild | None:
+        for b in self.builds:
+            if b.id16 == id16:
+                return b
+        return None
+
+
 @dataclass(frozen=True)
 class Choice:
     kind: Literal["full", "delta"]
@@ -150,9 +211,10 @@ _cache: tuple[float, str, FirmwareIndex] | None = None
 
 
 def reset_cache() -> None:
-    global _cache
+    global _cache, _as_cache
     with _cache_lock:
         _cache = None
+        _as_cache = None
 
 
 def load_index(settings: Settings) -> FirmwareIndex:
@@ -175,6 +237,54 @@ def load_index(settings: Settings) -> FirmwareIndex:
     with _cache_lock:
         _cache = (now, settings.fw_index_url, index)
     return index
+
+
+_as_cache: tuple[float, str, AssetsIndex] | None = None
+
+
+def assets_index_url(settings: Settings) -> str:
+    if not settings.fw_bucket_base:
+        raise FirmwareNotConfigured("OTA not configured")
+    return settings.fw_bucket_base + "as/index.json"
+
+
+def load_assets_index(settings: Settings) -> AssetsIndex:
+    """Fetches and validates `as/index.json`, cached in-process for 60 s.
+    Same errors as `load_index`; an absent index (404) is
+    `FirmwareIndexUnavailable` too."""
+    global _as_cache
+    url = assets_index_url(settings)
+    now = time.monotonic()
+    with _cache_lock:
+        if _as_cache and _as_cache[1] == url and now - _as_cache[0] < INDEX_TTL_S:
+            return _as_cache[2]
+    try:
+        with httpx.Client(timeout=INDEX_TIMEOUT_S, transport=_transport) as client:
+            resp = client.get(url)
+            resp.raise_for_status()
+            index = AssetsIndex.model_validate_json(resp.content)
+    except Exception as exc:
+        logger.error("assets index unavailable: %s", exc)
+        raise FirmwareIndexUnavailable(str(exc)) from exc
+    with _cache_lock:
+        _as_cache = (now, url, index)
+    return index
+
+
+def build_cfg_ast(build: AsBuild, settings: Settings) -> dict[str, Any]:
+    """The `cfg.ast` JSON shape of docs/ASSETS_OTA_DESIGN.md §3 (full image
+    only, `fv` required)."""
+    if not settings.fw_bucket_base:
+        raise FirmwareNotConfigured("OTA not configured")
+    return {
+        "img": build.id,
+        "isz": build.size,
+        "url": settings.fw_bucket_base + build.full.path,
+        "osz": build.full.osz,
+        "osha": build.full.osha,
+        "fmt": "full",
+        "fv": build.fv,
+    }
 
 
 def choose(index: FirmwareIndex, target_id16: str, device_img16: str | None) -> Choice:

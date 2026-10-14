@@ -45,6 +45,7 @@ import Typography from "@mui/material/Typography";
 import AppShell from "@/components/AppShell";
 import DeviceCard, { type DeviceRow, type PendingCfgDoc, type ProvisionState } from "@/components/DeviceCard";
 import FirmwareUpdateDialog from "@/components/FirmwareUpdateDialog";
+import FontsUpdateDialog from "@/components/FontsUpdateDialog";
 import RequireAuth from "@/components/RequireAuth";
 import SoracomSimsSection from "@/components/SoracomSimsSection";
 import { ApiError, api } from "@/lib/api";
@@ -95,6 +96,7 @@ function DevicesInner() {
   const [setupResult, setSetupResult] = useState<SetupCodeResult | null>(null);
   const [caConfirm, setCaConfirm] = useState<CaConfirmState | null>(null);
   const [fwDeviceId, setFwDeviceId] = useState<string | null>(null);
+  const [fontsDeviceId, setFontsDeviceId] = useState<string | null>(null);
   const newestBuild = useNewestBuild(true, "admin");
   const [caBusy, setCaBusy] = useState(false);
   const [caError, setCaError] = useState<string | null>(null);
@@ -293,6 +295,7 @@ function DevicesInner() {
             onRevoke={() => void revoke(d.id)}
             onDelete={() => void deleteDevice(d.id)}
             onFirmware={() => setFwDeviceId(d.id)}
+            onFonts={() => setFontsDeviceId(d.id)}
             onCa={(action) => setCaConfirm({ deviceId: d.id, label: d.label, action })}
             onSetAutoLock={(m) => void setAutoLock(d.id, m)}
             onClearPasscode={() => void clearPasscode(d.id)}
@@ -415,6 +418,15 @@ function DevicesInner() {
           </Button>
         </DialogActions>
       </Dialog>
+
+      {fontsDeviceId !== null && (
+        <FontsUpdateDialog
+          device={devices.find((x) => x.id === fontsDeviceId) ?? null}
+          scope="admin"
+          open
+          onClose={() => setFontsDeviceId(null)}
+        />
+      )}
 
       {fwDeviceId !== null && (
         <FirmwareUpdateDialog

@@ -412,6 +412,32 @@ def push_ota(
     return admin_router._push_ota_impl(device_id, req, principal.uid, broker, settings)
 
 
+@router.get("/assets")
+def list_assets(
+    scope: FamilyScope,
+    settings: Annotated[Settings, Depends(get_app_settings)],
+    device: str,
+) -> dict[str, object]:
+    """docs/ASSETS_OTA_DESIGN.md §3: published font images as seen by one in-family device."""
+    _, family_id = scope
+    _require_family_device(device, family_id)
+    return admin_router._list_assets_impl(settings, device)
+
+
+@router.post("/devices/{device_id}/assets", dependencies=[Depends(require_family_write_rate_limit)])
+def push_assets(
+    device_id: str,
+    req: admin_router.AssetsRequest,
+    scope: FamilyScope,
+    broker: Annotated[BrokerClient, Depends(get_broker)],
+    settings: Annotated[Settings, Depends(get_app_settings)],
+) -> dict[str, object]:
+    """Push or cancel a font OTA for an in-family device."""
+    principal, family_id = scope
+    _require_family_device(device_id, family_id)
+    return admin_router._push_assets_impl(device_id, req, principal.uid, broker, settings)
+
+
 @router.get("/apn-presets")
 def list_apn_presets(scope: FamilyScope) -> list[apn_presets.ApnPreset]:
     """docs/FAMILIES_DESIGN.md §4: carrier APN choices for the device forms."""

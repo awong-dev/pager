@@ -982,6 +982,134 @@ class OtaRequest(BaseModel):
     cancel: bool | None = None
 
 
+_JOB_BUSY = "another update is in progress"
+_AST_UNSUPPORTED = "needs firmware with font OTA and the new partition table"
+
+
+class AssetsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    target: str | None = Field(default=None, pattern=r"^[0-9a-f]{16}$")
+    cancel: bool | None = None
+
+
+def _load_assets_index(settings: Settings) -> firmware.AssetsIndex:
+    try:
+        return firmware.load_assets_index(settings)
+    except firmware.FirmwareNotConfigured:
+        raise HTTPException(status_code=503, detail="OTA not configured") from None
+    except firmware.FirmwareIndexUnavailable:
+        raise HTTPException(status_code=502, detail="assets index unavailable") from None
+
+
+def _assets_blocked(dev: Device) -> str | None:
+    """The 409 reason for a font push to `dev`, or None."""
+    if dev.status.assetsSrc not in (1, 2):
+        return _AST_UNSUPPORTED
+    if dev.otaJob is not None:
+        return _JOB_BUSY
+    return None
+
+
+def _list_assets_impl(settings: Settings, device: str | None) -> dict[str, object]:
+    index = _load_assets_index(settings)
+    active: str | None = None
+    blocked: str | None = None
+    if device is not None:
+        dev = devices_store.get_device(device)
+        if dev is None:
+            raise HTTPException(status_code=404, detail="no such device")
+        active = dev.status.assetsId if dev.status.assetsSrc == 2 else None
+        blocked = _assets_blocked(dev)
+    builds: list[dict[str, object]] = []
+    for b in sorted(index.builds, key=lambda b: b.published, reverse=True):
+        builds.append(
+            {
+                "id": b.id,
+                "id16": b.id16,
+                "label": b.label,
+                "lang": b.lang,
+                "fv": b.fv,
+                "size": b.size,
+                "published": b.published,
+                "full": {"path": b.full.path, "osz": b.full.osz, "osha": b.full.osha},
+                "osz": b.full.osz,
+                "estBytes": firmware.estimate_bytes(b.full.osz),
+                "active": active is not None and active == b.id16,
+            }
+        )
+    return {"builds": builds, "blocked": blocked}
+
+
+def _push_assets_impl(
+    device_id: str,
+    req: AssetsRequest,
+    by_uid: str,
+    broker: BrokerClient,
+    settings: Settings,
+) -> dict[str, object]:
+    if (req.target is None) == (not req.cancel):
+        raise HTTPException(status_code=422, detail="send exactly one of target or cancel")
+    dev = devices_store.get_device(device_id)
+    if dev is None:
+        raise HTTPException(status_code=404, detail="no such device")
+    if not settings.fw_bucket_base:
+        raise HTTPException(status_code=503, detail="OTA not configured")
+    if req.cancel:
+        if dev.otaJob is not None and dev.otaJob.part != "assets":
+            # The device would only ack it; do not clear the app job's record.
+            raise HTTPException(status_code=409, detail=_JOB_BUSY)
+        return {"ok": devcfg.cancel_ast(device_id, broker)}
+    assert req.target is not None
+    index = _load_assets_index(settings)
+    build = index.find(req.target)
+    if build is None:
+        raise HTTPException(status_code=404, detail="no such font build")
+    blocked = _assets_blocked(dev)
+    if blocked is not None:
+        raise HTTPException(status_code=409, detail=blocked)
+    if dev.status.assetsSrc == 2 and dev.status.assetsId == build.id16:
+        raise HTTPException(status_code=409, detail="already running that font image")
+    est = firmware.estimate_bytes(build.full.osz)
+    ok = devcfg.push_ast(
+        device_id,
+        firmware.build_cfg_ast(build, settings),
+        broker,
+        job={
+            "target16": build.id16,
+            "kind": "full",
+            "osz": build.full.osz,
+            "estBytes": est,
+            "onDemand": False,
+            "by_uid": by_uid,
+        },
+    )
+    return {"ok": ok, "kind": "full", "osz": build.full.osz, "estBytes": est}
+
+
+@router.get("/assets")
+def list_assets(
+    settings: Annotated[Settings, Depends(get_app_settings)],
+    device: str | None = Query(default=None),
+) -> dict[str, object]:
+    """docs/ASSETS_OTA_DESIGN.md §3: published font images, newest first;
+    with `device`, marks the active one and reports why a push would 409."""
+    return _list_assets_impl(settings, device)
+
+
+@router.post("/devices/{device_id}/assets", dependencies=[Depends(require_admin_write_rate_limit)])
+def push_assets(
+    device_id: str,
+    req: AssetsRequest,
+    authed: Annotated[AuthedUser, Depends(require_super)],
+    broker: Annotated[BrokerClient, Depends(get_broker)],
+    settings: Annotated[Settings, Depends(get_app_settings)],
+) -> dict[str, object]:
+    """`{"target": "<16 hex>"}` pushes `cfg.ast` for that font image;
+    `{"cancel": true}` pushes `cfg.ast = {cancel: true}`."""
+    return _push_assets_impl(device_id, req, authed.uid, broker, settings)
+
+
 def _load_firmware_index(settings: Settings) -> firmware.FirmwareIndex:
     try:
         return firmware.load_index(settings)
@@ -1050,6 +1178,10 @@ def _push_ota_impl(
         raise HTTPException(status_code=404, detail="no such device")
     if not (settings.fw_index_url and settings.fw_bucket_base):
         raise HTTPException(status_code=503, detail="OTA not configured")
+    if dev.otaJob is not None and dev.otaJob.part == "assets":
+        # docs/ASSETS_OTA_DESIGN.md §3: one job at a time; the device would
+        # only ack an app cancel while a font job is live.
+        raise HTTPException(status_code=409, detail=_JOB_BUSY)
     if req.cancel:
         return {"ok": devcfg.cancel_ota(device_id, broker)}
     assert req.target is not None

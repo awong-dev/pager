@@ -158,6 +158,10 @@ _PENDING_CFG_LOC_FIELD = "pendingCfgLoc"
 # docs/OTA_DESIGN.md D5/§5: `cfg.ota` (job or cancel) has its own slot for the
 # same reason; a newer push (including a cancel) replaces the older one.
 _PENDING_CFG_OTA_FIELD = "pendingCfgOta"
+# docs/ASSETS_OTA_DESIGN.md §3: `cfg.ast` (font job or cancel) has its own
+# slot. Dropped by ingest when an online `/status` lacks `ast`, so an app
+# rolled back to firmware without font OTA is not re-sent the job.
+_PENDING_CFG_AST_FIELD = "pendingCfgAst"
 # Every field `ack()`/`republish_pending()` iterate over -- see their
 # docstrings for why book/lock/ca/sms/wifi/ota are six independent "newest
 # unacked" slots rather than one.
@@ -169,6 +173,7 @@ _ALL_PENDING_FIELDS = (
     _PENDING_CFG_WIFI_FIELD,
     _PENDING_CFG_LOC_FIELD,
     _PENDING_CFG_OTA_FIELD,
+    _PENDING_CFG_AST_FIELD,
 )
 
 
@@ -639,6 +644,67 @@ def cancel_ota(device_id: str, broker: BrokerClient) -> bool:
     _set_pending(device_id, _PENDING_CFG_OTA_FIELD, obj)
     clear_ota_job(device_id)
     return broker.publish_down(device_id, obj)
+
+
+def push_ast(
+    device_id: str,
+    cfg_ast: dict[str, Any],
+    broker: BrokerClient,
+    *,
+    job: dict[str, Any] | None = None,
+) -> bool:
+    """docs/ASSETS_OTA_DESIGN.md §3: `/down cfg.ast`. `cfg_ast` is the
+    JSON-shaped sub-map `app/firmware.py`'s `build_cfg_ast` builds. `job`, if
+    given, is stored as `devices/{d}.otaJob` with `part: "assets"`. Own pending
+    slot, republished on the online edge until acked `shown`."""
+    if devices_store.get_device(device_id) is None:
+        logger.warning("push_ast: no such device %s", device_id)
+        return False
+    obj: dict[str, Any] = {
+        "v": 1,
+        "id": new_message_id(),
+        "ts": int(time.time()),
+        "kind": "cfg",
+        "cfg": {"ast": cfg_ast},
+        "ack": None,
+    }
+    _assert_within_envelope_limit(obj)
+    _set_pending(device_id, _PENDING_CFG_AST_FIELD, obj)
+    if job is not None:
+        _devices().document(device_id).set(
+            {"otaJob": {**job, "part": "assets", "at": datetime.now(UTC)}}, merge=True
+        )
+    return broker.publish_down(device_id, obj)
+
+
+def cancel_ast(device_id: str, broker: BrokerClient) -> bool:
+    """`cfg.ast = {cancel: true}` and clears `otaJob`."""
+    if devices_store.get_device(device_id) is None:
+        logger.warning("cancel_ast: no such device %s", device_id)
+        return False
+    obj: dict[str, Any] = {
+        "v": 1,
+        "id": new_message_id(),
+        "ts": int(time.time()),
+        "kind": "cfg",
+        "cfg": {"ast": {"cancel": True}},
+        "ack": None,
+    }
+    _assert_within_envelope_limit(obj)
+    _set_pending(device_id, _PENDING_CFG_AST_FIELD, obj)
+    clear_ota_job(device_id)
+    return broker.publish_down(device_id, obj)
+
+
+def drop_pending_ast(device_id: str) -> None:
+    """Deletes `devices/{d}.pendingCfgAst` (a no-op if absent)."""
+    from google.cloud.firestore import DELETE_FIELD
+
+    ref = _devices().document(device_id)
+    try:
+        ref.update({_PENDING_CFG_AST_FIELD: DELETE_FIELD})
+    except NotFound:
+        pass
 
 
 def clear_ota_job(device_id: str) -> None:

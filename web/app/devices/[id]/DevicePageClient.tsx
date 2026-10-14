@@ -62,6 +62,9 @@ import DeviceTrustChip from "@/components/DeviceTrustChip";
 import EditDeviceLabelButton from "@/components/EditDeviceLabelDialog";
 import FirmwareChip from "@/components/FirmwareChip";
 import FirmwareUpdateDialog from "@/components/FirmwareUpdateDialog";
+import FontsChip from "@/components/FontsChip";
+import FontsUpdateDialog from "@/components/FontsUpdateDialog";
+import { isAssetJob } from "@/lib/assets";
 import RequireAuth from "@/components/RequireAuth";
 import BatteryCard from "@/components/BatteryCard";
 import WifiPanel from "@/components/WifiPanel";
@@ -166,6 +169,7 @@ function DeviceInner() {
   const fwScope = isSuper ? "admin" : "family";
   const newestBuild = useNewestBuild(isFamilyAdmin, fwScope, id);
   const [fwOpen, setFwOpen] = useState(false);
+  const [fontsOpen, setFontsOpen] = useState(false);
   const [deviceError, setDeviceError] = useState<string | null>(null);
 
   const [contacts, setContacts] = useState<SmsContact[] | null>(null);
@@ -300,14 +304,21 @@ function DeviceInner() {
 
       {device && (
         <Stack direction="row" spacing={1} useFlexGap sx={{ flexWrap: "wrap", alignItems: "flex-start" }}>
-          <FirmwareChip status={device.status} newest={newestBuild} />
+          <FirmwareChip status={device.status} newest={newestBuild} assetJob={isAssetJob(device)} />
           {isFamilyAdmin && (
             <Button size="small" onClick={() => setFwOpen(true)}>
               Update firmware…
             </Button>
           )}
+          <FontsChip device={device} scope={fwScope} />
+          {isFamilyAdmin && (
+            <Button size="small" onClick={() => setFontsOpen(true)}>
+              Update fonts…
+            </Button>
+          )}
         </Stack>
       )}
+      {fontsOpen && <FontsUpdateDialog device={device} scope={fwScope} open onClose={() => setFontsOpen(false)} />}
       {fwOpen && <FirmwareUpdateDialog device={device} scope={fwScope} open onClose={() => setFwOpen(false)} />}
 
       {smsLost > 0 && (

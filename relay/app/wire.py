@@ -249,6 +249,10 @@ def _ota_field_ok(name: str | None, value: object) -> bool:
         return isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 100
     if name == "ota":
         return isinstance(value, int) and not isinstance(value, bool) and value == 1
+    if name == "ast":
+        return isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 2
+    if name == "ast_id":
+        return isinstance(value, str) and _HEX16_RE.fullmatch(value) is not None
     return False
 
 
@@ -351,11 +355,18 @@ class StatusEnvelope(BaseModel):
     ota_st: str | None = None
     ota_pct: int | None = None
     ota_err: str | None = None
+    # docs/ASSETS_OTA_DESIGN.md §3 (keys 72/73): font-partition state. 0 = no
+    # assets_ota row, 1 = factory fonts, 2 = assets_ota active (`ast_id` = its
+    # 16-hex id). A bad value drops to None; None `ast` = old firmware.
+    ast: int | None = None
+    ast_id: str | None = None
     # §14.2: present on every signed envelope; absent on the unsigned LWT
     # exception (§14.6) and on an unsigned (`authMode: "password"`) device.
     n: int | None = None
 
-    @field_validator("img", "ota", "ota_t", "ota_st", "ota_pct", "ota_err", mode="before")
+    @field_validator(
+        "img", "ota", "ota_t", "ota_st", "ota_pct", "ota_err", "ast", "ast_id", mode="before"
+    )
     @classmethod
     def _drop_bad_ota_field(cls, value: object, info: ValidationInfo) -> object:
         return value if _ota_field_ok(info.field_name, value) else None
