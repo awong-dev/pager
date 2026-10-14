@@ -1,0 +1,104 @@
+menu "Keepalive probe"
+
+    config PROBE_BROKER_HOST
+        string "Broker host (the machine running ../broker)"
+        default "CHANGE_ME"
+
+    config PROBE_BROKER_PORT
+        int "Broker TLS port"
+        default 8883
+
+    config PROBE_CLIENT_ID
+        string "MQTT client id (down topic is probe/<id>/down)"
+        default "kaprobe1"
+
+    config PROBE_KEEPALIVE_S
+        int "MQTT keepalive passed to AT+SQNSMQTTCONNECT (s)"
+        default 60
+
+    config PROBE_APN
+        string "APN (empty = network's choice)"
+        default ""
+
+    config PROBE_APN_USER
+        string "PDP PAP user (empty = no AT+CGAUTH credentials)"
+        default ""
+
+    config PROBE_APN_PASS
+        string "PDP PAP password"
+        default ""
+
+    config PROBE_EDRX
+        bool "Request eDRX (pager values) and PSM off"
+        default y
+        help
+            Off = control run: eDRX disabled (AT+CEDRXS mode 0), PSM still off.
+
+    config PROBE_EDRX_VALUE
+        string "Requested eDRX cycle (PAGER_EDRX_VALUE)"
+        default "0010"
+        depends on PROBE_EDRX
+
+    config PROBE_EDRX_PTW
+        string "Requested paging time window (PAGER_EDRX_PTW)"
+        default "0001"
+        depends on PROBE_EDRX
+
+    config PROBE_LIGHT_SLEEP
+        bool "Light-sleep the ESP32 between slices like net_sleep()"
+        default y
+        help
+            Off = control run: the ESP32 stays awake, RTS stays asserted.
+
+    config PROBE_SLEEP_SLICE_MS
+        int "Light-sleep slice (ms)"
+        default 20000
+        depends on PROBE_LIGHT_SLEEP
+        help
+            Default is the main firmware's sleep-mode cadence
+            (modes.c PAGER_WAKE_INTERVAL_SLEEP_MS, 20000). The old ~2200 ms
+            figure is 2000 ms + 200 ms yield from an earlier design.
+
+    config PROBE_POST_WAKE_YIELD_MS
+        int "Awake yield after each wake (ms)"
+        default 200
+        depends on PROBE_LIGHT_SLEEP
+        help
+            modes.c PAGER_POST_WAKE_YIELD_MS.
+
+    config PROBE_WAKE_PROBE
+        bool "Send the pager's per-wake URC-drain probe (CRLF + bare AT)"
+        default y
+        depends on PROBE_LIGHT_SLEEP
+        help
+            The modem releases URCs it held during sleep only when it accepts
+            a command (docs/SLEEP_URC_DESIGN.md), so the pager sends one bare
+            AT per wake. This is the only AT traffic the probe generates while
+            idle. Turn off to test a fully silent host.
+
+    config PROBE_WAKE_PROBE_WAIT_MS
+        int "Stay awake until the probe is answered, at most (ms)"
+        default 15000
+        depends on PROBE_WAKE_PROBE
+
+    config PROBE_ATTACH_TIMEOUT_S
+        int "Wait for LTE registration (s)"
+        default 300
+
+    config PROBE_RECONNECT
+        bool "Reconnect after a disconnect (muddies the capture)"
+        default n
+
+    config PROBE_AT_TRACE
+        bool "Log raw AT TX/RX (WalterModem tag at DEBUG)"
+        default n
+
+    config PROBE_CA_SLOT
+        int "Modem cert slot for the placeholder CA (not the pager's 12/13)"
+        default 10
+
+    config PROBE_TLS_PROFILE
+        int "Modem TLS profile id (not the pager's 2/3)"
+        default 5
+
+endmenu
