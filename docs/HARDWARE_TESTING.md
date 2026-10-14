@@ -23,6 +23,7 @@ current. Never ship it.
 ```
 idf.py -p /dev/cu.usbmodem101 app-flash                       # application only
 esptool.py --chip esp32s3 write_flash 0x11000 assets.bin      # fonts (tools/mkassets.py)
+# Font OTA images are never USB-flashed to `assets`; see A8 in docs/ASSETS_OTA_TASKS.md for the one-time table migration.
 esptool.py --chip esp32s3 erase_region 0x9000 0x6000          # wipe settings -> Setup mode
 ```
 

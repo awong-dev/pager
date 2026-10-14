@@ -30,6 +30,9 @@ typedef struct {
     uint64_t isz_val, osz_val, psz_val;
     const char *url_val;
     bool extra_key;        /* an unknown key 40 (a nested map) */
+    bool fv;               /* key 9 (cfg.ast only) */
+    uint64_t fv_val;
+    bool cancel;           /* key 8 */
 } spec_t;
 
 static spec_t full_spec(void)
@@ -46,7 +49,7 @@ static size_t build(const spec_t *s, uint8_t *buf, size_t cap)
     for (int i = 0; i < 64; i++) {
         h[i] = (uint8_t) (i + 1);
     }
-    uint32_t n = (uint32_t) (s->img + s->isz + s->url + s->osz + s->osha + s->fmt + s->base + s->psz + s->extra_key);
+    uint32_t n = (uint32_t) (s->img + s->isz + s->url + s->osz + s->osha + s->fmt + s->base + s->psz + s->extra_key + s->fv + s->cancel);
     cbor_w_t w;
     cbor_w_init(&w, buf, cap);
     cbor_w_map(&w, n);
@@ -73,6 +76,12 @@ static size_t build(const spec_t *s, uint8_t *buf, size_t cap)
     }
     if (s->psz) {
         cbor_w_uint(&w, 7, s->psz_val);
+    }
+    if (s->cancel) {
+        cbor_w_bool(&w, 8, true);
+    }
+    if (s->fv) {
+        cbor_w_uint(&w, 9, s->fv_val);
     }
     if (s->extra_key) {
         cbor_w_map_key(&w, 40, 1);
@@ -189,6 +198,86 @@ static void test_parse(void)
     s = full_spec();
     n = build(&s, good, sizeof(good));
     CHECK(!ota_parse_cfg_submap(good, (uint16_t) (n - 3), &c), "truncated input must fail");
+}
+
+static bool parse_ast(const spec_t *s, ota_cfg_t *out, uint8_t *fv)
+{
+    uint8_t buf[700];
+    size_t n = build(s, buf, sizeof(buf));
+    return ota_parse_ast_submap(buf, (uint16_t) n, out, fv);
+}
+
+/* cfg.ast: the cfg.ota keys plus a required `fv` (key 9, uint 1..255). */
+static void test_ast(void)
+{
+    ota_cfg_t c;
+    uint8_t fv = 99;
+    spec_t s = full_spec();
+    s.fv = true;
+    s.fv_val = 1;
+    CHECK(parse_ast(&s, &c, &fv) && fv == 1 && c.isz == 685168 && c.fmt == OTA_FMT_FULL, "ast with fv");
+    s.fv_val = 255;
+    CHECK(parse_ast(&s, &c, &fv) && fv == 255, "ast fv 255");
+    s.fv_val = 0;
+    CHECK(!parse_ast(&s, &c, &fv), "ast fv 0 rejected");
+    s.fv_val = 256;
+    CHECK(!parse_ast(&s, &c, &fv), "ast fv 256 rejected");
+    s = full_spec();
+    CHECK(!parse_ast(&s, &c, &fv), "ast without fv rejected");
+    CHECK(parse_ast(&s, &c, NULL) == false, "ast without fv rejected (NULL fv_out)");
+    s.fv = true;
+    s.fv_val = 1;
+    s.fmt_val = 1;
+    s.base = true;
+    s.psz = true;
+    CHECK(parse_ast(&s, &c, &fv) && c.fmt == OTA_FMT_DELTA, "ast delta parses (rejected by check_accept_assets)");
+    ota_reject_t rj = ota_check_accept_assets(&c, fv, true, 0x200000, NULL);
+    CHECK(rj == OTA_REJECT_FMT && ota_reject_err(rj) == OTA_ERR_FMT, "delta -> fmt");
+    spec_t k = { .cancel = true };
+    fv = 77;
+    CHECK(parse_ast(&k, &c, &fv) && c.cancel && fv == 0, "ast cancel needs no fv");
+    /* cfg.ota is unchanged: key 9 is skipped there, whatever its value */
+    s = full_spec();
+    s.fv = true;
+    s.fv_val = 1;
+    CHECK(parse(&s, &c), "cfg.ota ignores fv");
+    s.fv_val = 9999;
+    CHECK(parse(&s, &c), "cfg.ota ignores any fv value");
+    s = full_spec();
+    CHECK(parse(&s, &c), "cfg.ota without fv still parses");
+}
+
+static void test_accept_assets(void)
+{
+    ota_cfg_t c;
+    memset(&c, 0, sizeof c);
+    c.isz = 736237;
+    c.fmt = OTA_FMT_FULL;
+    memset(c.img, 0xAB, 32);
+    uint8_t other[32], same[32];
+    memset(other, 0x11, 32);
+    memcpy(same, c.img, 32);
+    const uint32_t P = 0x200000;
+    CHECK(ota_check_accept_assets(&c, 1, false, 0, NULL) == OTA_REJECT_NOPART, "no partition");
+    CHECK(ota_check_accept_assets(&c, 1, false, P, same) == OTA_REJECT_NOPART, "nopart wins over run");
+    CHECK(ota_check_accept_assets(&c, 2, true, P, NULL) == OTA_REJECT_FMT, "fv above max");
+    CHECK(ota_check_accept_assets(&c, 1, true, P, NULL) == OTA_ACCEPT_OK, "ok");
+    CHECK(ota_check_accept_assets(&c, 1, true, P, other) == OTA_ACCEPT_OK, "other active image: ok");
+    CHECK(ota_check_accept_assets(&c, 1, true, P, same) == OTA_REJECT_RUNNING, "already active");
+    c.isz = P - 4096;
+    CHECK(ota_check_accept_assets(&c, 1, true, P, NULL) == OTA_ACCEPT_OK, "isz = size - 4096 fits");
+    c.isz = P - 4095;
+    CHECK(ota_check_accept_assets(&c, 1, true, P, NULL) == OTA_REJECT_SIZE, "isz = size - 4095 too big");
+    CHECK(ota_check_accept_assets(&c, 1, true, P, same) == OTA_REJECT_SIZE, "size wins over run");
+    CHECK(ota_check_accept_assets(&c, 1, true, 100, NULL) == OTA_REJECT_SIZE, "tiny partition");
+    c.isz = 736237;
+    c.fmt = OTA_FMT_DELTA;
+    CHECK(ota_check_accept_assets(&c, 1, true, P, same) == OTA_REJECT_FMT, "fmt wins over run");
+    CHECK(ota_reject_err(OTA_REJECT_NOPART) == OTA_ERR_NOPART && ota_reject_err(OTA_REJECT_SIZE) == OTA_ERR_SIZE &&
+              ota_reject_err(OTA_REJECT_RUNNING) == OTA_ERR_RUN,
+          "reject -> err mapping");
+    /* persisted values must not move: the new codes are appended */
+    CHECK(OTA_ERR_BAD == 13 && OTA_ERR_NOPART == 14 && OTA_ERR_FMT == 15, "ota_err_t values are persisted");
 }
 
 static void test_accept(void)
@@ -361,8 +450,8 @@ static void test_strings(void)
               strcmp(ota_state_str(OTA_ST_RB), "rb") == 0 && strcmp(ota_state_str(OTA_ST_NONE), "") == 0,
           "state strings");
     const char *want[] = { "", "base", "hash", "osha", "http", "budget", "flash", "nobl", "pv", "size",
-                           "expired", "mem", "run", "bad" };
-    for (int i = 0; i <= OTA_ERR_BAD; i++) {
+                           "expired", "mem", "run", "bad", "nopart", "fmt" };
+    for (int i = 0; i <= OTA_ERR_FMT; i++) {
         CHECK(strcmp(ota_err_str((ota_err_t) i), want[i]) == 0, "err string %d", i);
         CHECK(strlen(ota_err_str((ota_err_t) i)) <= 8, "err string %d too long for ota_err", i);
     }
@@ -392,6 +481,8 @@ static void test_strings(void)
 int main(void)
 {
     test_parse();
+    test_ast();
+    test_accept_assets();
     test_accept();
     test_should_start();
     test_budget_expiry();

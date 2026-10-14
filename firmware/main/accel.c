@@ -350,6 +350,8 @@ bool accel_poll(void)
     return fired;
 }
 
+uint32_t accel_shake_rejected_total(void) { return s_shake_rejected; }
+
 bool accel_shake_pending(void)
 {
     return s_present && s_shake.n > 0;

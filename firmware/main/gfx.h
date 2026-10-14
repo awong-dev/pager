@@ -155,16 +155,32 @@ typedef enum {
  * Asset loading.
  * --------------------------------------------------------------------- */
 
-/* On-device: mmaps the `assets` partition (esp_partition_mmap, read-only,
- * never unmapped — the mapping lives for the process lifetime) and
- * validates the header. Power/sleep effect: none (flash is
+/* Highest assets format version this build reads (header byte 4). Every future app must keep
+ * reading v1 (the factory partition is never rewritten). == tools/fwpub.py ASSETS_FV_MAX. */
+#define GFX_ASSETS_VER_MAX 1
+
+/* Pure check (device and host): true only if `d` parses as an assets image of version
+ * 1..GFX_ASSETS_VER_MAX and its header `total` == len. *ver_out (optional) gets the version. */
+bool gfx_assets_check(const uint8_t *d, size_t len, uint8_t *ver_out);
+
+/* On-device: gfx_init() = gfx_select(GFX_ASSETS_OTA): maps the `assets_ota` image when its
+ * commit record is valid (docs/ASSETS_OTA_DESIGN.md section 2), else the factory `assets`
+ * partition, and validates the header. Power/sleep effect: none (flash is
  * memory-mapped, not actively read until a glyph is blitted; no peripheral
  * is powered by this call). Returns false (logs once) if the partition is
  * missing/corrupt/oversized for its declared total_bytes — callers must
  * keep running with every codepoint drawing as tofu, mirroring ui.c's
  * existing "headless is not fatal" contract for the display driver. */
 #ifdef ESP_PLATFORM
+typedef enum { GFX_ASSETS_NONE, GFX_ASSETS_FACTORY, GFX_ASSETS_OTA } gfx_assets_src_t;
 bool gfx_init(void);
+/* Switches the live font source (OTA: valid record + check, else factory). Maps the new source,
+ * parses it, swaps, then unmaps the old mapping. Returns true iff the active source == want.
+ * Call only on the modes_run task (the renderer). Power effect: none. */
+bool gfx_select(gfx_assets_src_t want);
+gfx_assets_src_t gfx_assets_source(void);
+bool gfx_assets_ota_present(void);     /* the assets_ota row exists */
+const char *gfx_assets_ota_id16(void); /* 16 hex of the record sha when source==OTA, else "" */
 #else
 /* Host build (firmware/host/render_png.c): no partition table, so the
  * caller names the assets.bin file directly. mmap()'d read-only, same

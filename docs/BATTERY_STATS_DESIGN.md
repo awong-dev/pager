@@ -11,7 +11,7 @@ estimates and are refitted once from a full discharge.
 | # | Decision |
 |---|---|
 | B1 Window | The pager keeps one **window** of counters. It opens at boot, or at the last successful `/status` publish (`net_publish_raw()` returned true). On success the published values are **subtracted** from the counters rather than the counters being zeroed: the ms remainders carry over, and nothing counted between build and publish is lost. If a publish fails, nothing is subtracted and the next `/status` carries a larger window with the **same `sq`**, which the relay overwrites (idempotent, B6). |
-| B2 Storage | One `RTC_NOINIT_ATTR battstat_rtc_t` in a new `battstat.c`, with its own magic and CRC32. It holds 19 u32 accumulators (12 times in **ms**, 7 counts) + `mvn` u16 + `sq` u32 + magic/CRC, **92 B**. Light sleep keeps RAM anyway. RTC_NOINIT also survives software, panic and watchdog resets and the reboot out of airplane mode (that mode only changes at boot, net.h:70), the same way watchdog.c:36 relies on it. After a power-on the struct is garbage: the CRC fails, it is zeroed, and `sq` goes back to 0. It is **not** in `pager_rtc_t`, because writing a field there without `rtc_save()` would fail g_rtc's CRC and cold-boot the whole message state. |
+| B2 Storage | One `RTC_NOINIT_ATTR battstat_rtc_t` in a new `battstat.c`, with its own magic and CRC32. It holds 19 u32 accumulators (12 times in **ms**, 7 counts) + `mvn` u16 + `sq` u32 + magic/CRC, **104 B** (incl. `sa`, `sr`, `sp`; magic "BST2", so an older 92 B layout fails the magic and is zeroed). Light sleep keeps RAM anyway. RTC_NOINIT also survives software, panic and watchdog resets and the reboot out of airplane mode (that mode only changes at boot, net.h:70), the same way watchdog.c:36 relies on it. After a power-on the struct is garbage: the CRC fails, it is zeroed, and `sq` goes back to 0. It is **not** in `pager_rtc_t`, because writing a field there without `rtc_save()` would fail g_rtc's CRC and cold-boot the whole message state. |
 | B3 Attribution | Each loop iteration's awake time goes to **one cause**: `battstat_tick()` at the top of the loop charges the previous iteration's awake time, i.e. wall time minus the time spent inside `net_sleep()`. The cause is the highest-priority one seen during that iteration: **fetch > modem > ui > hot > attn > timer**. It is sampled at the `skip_sleep` computation (modes.c:2562) and again at the bottom of the loop, and `net_publish_raw()` calls `battstat_raise(MODEM)`. Mapping: fetch = `cafetch_in_progress()` (book, CA and OTA); modem = `net_modem_busy`, `connect_in_flight`, `publish_in_flight` or `resub_hold`; ui = `input_awake`, `btn_busy` or `btn_stuck`; hot = `input_hot` or `accel_shake_pending`; attn = the 1 s attentive cadence; timer = everything else (the 200 ms post-wake yield and the probe wait). |
 | B4 GNSS is a modem state, not a cause | The loop light-sleeps during a GNSS attempt: `loc_attempt_in_progress()` is not in `skip_sleep`. ESP32-awake time therefore cannot see GNSS. So **modem-state seconds** are counted over the whole span, sleep included, from the state at each tick: `off` = `net_airplane()` or coverage owns the radio; `search` = not off and `net_unregistered_for_s() > 0`; `gnss` = `loc_attempt_in_progress()`. Registered idle is `dt − off − search − gnss`. |
 | B5 Wire | **One new envelope key, 68 `bs`** (a sub-map), in every online `/status` once the window has at least 1 s. No new message kind and no new publish. `batt_mv` (key 23) stays the reading at publish time. |
@@ -41,6 +41,9 @@ JSON uses the same names). A relay MUST drop an invalid `bs` alone, never the wh
 | 9 | `cn` | MQTT session (re)connects (TLS handshakes) | Δ`s_mqtt_link_counter` |
 | 10 | `md` | `[off, search, gnss]` modem-state seconds (B4) | tick-sampled |
 | 11 | `re` | Radio events: successful publishes + liveness SUBSCRIBEs + inbound MQTT messages (each one costs an RRC tail) | new `net_get_radio_events()` |
+| 12 | `sa` | Shakes accepted (each `accel_poll()` true -> `input_note_shake_wake()`). Always sent, uint | `battstat_note_shake()` |
+| 13 | `sr` | Shake candidates rejected (`s_shake_rejected` delta). Always sent, uint | Δ`accel_shake_rejected_total()` |
+| 14 | `sp` | Seconds awake where `accel_shake_pending()` alone made the iteration HOT (`input_hot()` false). Sub-measure of `aw[2]` (hot), which is unchanged. Always sent, uint | tick-sampled, ms carried in RTC |
 
 `mvn` uses only the readings that already happen (each `/status` and each UI-wake edge); **no new AT reads are added**.
 Whether `AT+SQNVMON` sags under TX is UNVERIFIED. If `batt_mv − mvn` stays under 10 mV for a week, `mvn` gets dropped.
@@ -91,7 +94,7 @@ cutoff at 3.0 V.
 
 ## 5. Costs
 
-- **RTC**: +92 B RTC_NOINIT. `pager_rtc_t` is ≈ 520 B and watchdog NOINIT ≈ 40 B, so about 650 of the 1184 B are used.
+- **RTC**: +104 B RTC_NOINIT. `pager_rtc_t` is ≈ 520 B and watchdog NOINIT ≈ 40 B, so about 650 of the 1184 B are used.
 - **Flash/NVS**: none. **Code**: < 2 KB.
 - **CPU**: one `esp_timer_get_time()`, ~20 adds and a CRC32 over 80 B (< 5 µs) per iteration. At most 86,400 iterations a
   day even at the 1 s attentive cadence, so < 0.5 s of CPU a day: negligible.

@@ -623,7 +623,7 @@ static msg_t *thread_find_locked(const char *id, msg_dir_t dir)
 // ---------------------------------------------------------------------------
 // NVS partition `msghist` (owner task 2026-09-20; msg.h's long comment above
 // MSGHIST_REC_VERSION has the full design rationale). Separate from the
-// main `nvs` partition/namespace `msgq` below on purpose: a 128 KB
+// main `nvs` partition/namespace `msgq` below on purpose: a 1 MiB
 // dedicated partition (firmware/partitions.csv) so this feature can never
 // starve identity/msgq/sms/book's own 24 kB `nvs` partition, and a
 // dedicated nvs_flash_init_partition() so a missing/corrupt partition on a
@@ -645,7 +645,7 @@ static uint32_t s_hist_next_seq = 1;
 
 // Power/flash effect: none by itself — nvs_flash_init_partition() only
 // mounts/validates the NVS page structure already on flash (or, on a
-// factory-blank 128 KB region, recognises it as an empty valid page set;
+// factory-blank 1 MiB region, recognises it as an empty valid page set;
 // no erase needed in that common case). The erase-and-retry fallback below
 // (mirrors main.c's own boilerplate for the main `nvs` partition) only
 // costs a real erase cycle on the rare "wrong NVS version" or genuinely
@@ -653,6 +653,9 @@ static uint32_t s_hist_next_seq = 1;
 // thread.
 static void history_mount(void)
 {
+    int64_t t0 = esp_timer_get_time();
+    size_t int0 = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    size_t ps0 = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
     esp_err_t err = nvs_flash_init_partition(MSGHIST_PART);
     if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         if (nvs_flash_erase_partition(MSGHIST_PART) == ESP_OK) {
@@ -673,6 +676,10 @@ static void history_mount(void)
         return;
     }
     s_hist_available = true;
+    ESP_LOGI(TAG, "msghist mounted in %lld ms, internal free %u->%u, psram free %u->%u",
+             (long long) ((esp_timer_get_time() - t0) / 1000), (unsigned) int0,
+             (unsigned) heap_caps_get_free_size(MALLOC_CAP_INTERNAL), (unsigned) ps0,
+             (unsigned) heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
 }
 
 // Allocates the next persisted-history sequence number, or 0 ("do not

@@ -58,6 +58,8 @@ void bs_core_tick(battstat_rtc_t *r, bs_ram_t *ram, const bs_inputs_t *in)
         ram->last_tick_us = in->now_us;
         ram->slept_us = 0;
         ram->cause_max = BS_TIMER;
+        ram->pend_only = 0;
+        ram->shake_rej = in->shake_rej;
         ram->rail_ms = in->rail_ms;
         ram->ext1 = in->ext1;
         for (int i = 0; i < 3; i++) {
@@ -77,6 +79,9 @@ void bs_core_tick(battstat_rtc_t *r, bs_ram_t *ram, const bs_inputs_t *in)
         c = BS_TIMER;
     }
     r->aw_ms[c] = sat_add(r->aw_ms[c], awake_ms);
+    if (c == BS_HOT && ram->pend_only) {
+        r->sp_ms = sat_add(r->sp_ms, awake_ms);
+    }
     r->dt_ms = sat_add(r->dt_ms, elapsed_ms);
     r->sl_ms = sat_add(r->sl_ms, slept_ms);
     if (in->off) {
@@ -94,7 +99,9 @@ void bs_core_tick(battstat_rtc_t *r, bs_ram_t *ram, const bs_inputs_t *in)
     }
     r->cn = sat_add(r->cn, src_delta(in->link, &ram->link));
     r->re = sat_add(r->re, src_delta(in->radio, &ram->radio));
+    r->sr = sat_add(r->sr, src_delta(in->shake_rej, &ram->shake_rej));
     ram->cause_max = BS_TIMER;
+    ram->pend_only = 0;
     ram->slept_us = 0;
     recrc(r);
 }
@@ -108,11 +115,23 @@ void bs_core_sleep(battstat_rtc_t *r, bs_ram_t *ram, int64_t slept_us)
     recrc(r);
 }
 
-void bs_core_raise(bs_ram_t *ram, bs_cause_t c)
+void bs_core_raise(bs_ram_t *ram, bs_cause_t c, bool pend_only)
 {
-    if ((uint8_t) c > ram->cause_max && c < BS_NCAUSE) {
-        ram->cause_max = (uint8_t) c;
+    if (c >= BS_NCAUSE) {
+        return;
     }
+    if ((uint8_t) c > ram->cause_max) {
+        ram->pend_only = (c == BS_HOT && pend_only) ? 1 : 0;
+        ram->cause_max = (uint8_t) c;
+    } else if ((uint8_t) c == ram->cause_max && c == BS_HOT && !pend_only) {
+        ram->pend_only = 0; /* input_hot() also held it: not shake-pending-only */
+    }
+}
+
+void bs_core_note_shake(battstat_rtc_t *r)
+{
+    r->sa = sat_add(r->sa, 1);
+    recrc(r);
 }
 
 void bs_core_note_mv(battstat_rtc_t *r, int mv)
@@ -145,11 +164,14 @@ void bs_core_snapshot(const battstat_rtc_t *r, bs_snap_t *out)
     out->mvn = r->mvn;
     out->cn = r->cn;
     out->re = r->re;
+    out->sa = r->sa;
+    out->sr = r->sr;
+    out->sp = r->sp_ms / 1000u;
 }
 
 bool bs_core_encode(cbor_w_t *w, const bs_snap_t *s)
 {
-    cbor_w_map_key(w, BATTSTAT_KEY, s->mvn != 0 ? 12 : 11);
+    cbor_w_map_key(w, BATTSTAT_KEY, s->mvn != 0 ? 15 : 14);
     cbor_w_uint(w, 0, s->sq);
     cbor_w_uint(w, 1, s->dt);
     cbor_w_uint(w, 2, s->sl);
@@ -173,6 +195,9 @@ bool bs_core_encode(cbor_w_t *w, const bs_snap_t *s)
         cbor_w_uint_item(w, s->md[i]);
     }
     cbor_w_uint(w, 11, s->re);
+    cbor_w_uint(w, 12, s->sa);
+    cbor_w_uint(w, 13, s->sr);
+    cbor_w_uint(w, 14, s->sp);
     return !w->err;
 }
 
@@ -192,6 +217,9 @@ void bs_core_commit(battstat_rtc_t *r, const bs_snap_t *s)
     r->x1 = clamp_sub(r->x1, s->x1);
     r->cn = clamp_sub(r->cn, s->cn);
     r->re = clamp_sub(r->re, s->re);
+    r->sa = clamp_sub(r->sa, s->sa);
+    r->sr = clamp_sub(r->sr, s->sr);
+    r->sp_ms = clamp_sub(r->sp_ms, (uint64_t) s->sp * 1000u);
     r->sq = sat_add(r->sq, 1);
     r->mvn = 0;
     recrc(r);
@@ -203,6 +231,7 @@ void bs_core_commit(battstat_rtc_t *r, const bs_snap_t *s)
 #include "esp_log.h"
 #include "esp_timer.h"
 
+#include "accel.h"
 #include "disp.h"
 #include "loc.h"
 #include "net.h"
@@ -236,6 +265,7 @@ void battstat_tick(uint32_t link_total, bool radio_off)
     disp_get_refresh_stats(&in.rf[0], &in.rf[1], &in.rf[2]);
     in.link = link_total;
     in.radio = net_get_radio_events();
+    in.shake_rej = accel_shake_rejected_total();
     in.off = radio_off;
     in.search = !radio_off && net_unregistered_for_s() > 0;
     in.gnss = loc_attempt_in_progress();
@@ -245,7 +275,11 @@ void battstat_tick(uint32_t link_total, bool radio_off)
 // Power effect: none.
 void battstat_note_sleep(int64_t slept_us) { bs_core_sleep(&s_bs, &s_ram, slept_us); }
 
-void battstat_raise(bs_cause_t c) { bs_core_raise(&s_ram, c); }
+void battstat_raise(bs_cause_t c) { bs_core_raise(&s_ram, c, false); }
+
+void battstat_raise_ex(bs_cause_t c, bool pend_only) { bs_core_raise(&s_ram, c, pend_only); }
+
+void battstat_note_shake(void) { bs_core_note_shake(&s_bs); }
 
 void battstat_note_mv(int mv) { bs_core_note_mv(&s_bs, mv); }
 
@@ -266,12 +300,12 @@ void battstat_format(char *buf, size_t cap)
     uint32_t per_wake = s.ns ? (uint32_t) (((uint64_t) aw_total * 1000u) / s.ns) : 0u;
     snprintf(buf, cap,
              "battstat sq=%u dt=%u sl=%u aw=[%u %u %u %u %u %u] ns=%u x1=%u rl=%u rf=[%u %u %u] mvn=%u cn=%u "
-             "md=[%u %u %u] re=%u | dt=%u sl+aw=%u | per-wake awake ms=%u",
+             "md=[%u %u %u] re=%u sa=%u sr=%u sp=%u | dt=%u sl+aw=%u | per-wake awake ms=%u",
              (unsigned) s.sq, (unsigned) s.dt, (unsigned) s.sl, (unsigned) s.aw[0], (unsigned) s.aw[1],
              (unsigned) s.aw[2], (unsigned) s.aw[3], (unsigned) s.aw[4], (unsigned) s.aw[5], (unsigned) s.ns,
              (unsigned) s.x1, (unsigned) s.rl, (unsigned) s.rf[0], (unsigned) s.rf[1], (unsigned) s.rf[2],
              (unsigned) s.mvn, (unsigned) s.cn, (unsigned) s.md[0], (unsigned) s.md[1], (unsigned) s.md[2],
-             (unsigned) s.re, (unsigned) s.dt, (unsigned) (s.sl + aw_total), (unsigned) per_wake);
+             (unsigned) s.re, (unsigned) s.sa, (unsigned) s.sr, (unsigned) s.sp, (unsigned) s.dt, (unsigned) (s.sl + aw_total), (unsigned) per_wake);
 }
 
 #endif /* ESP_PLATFORM */

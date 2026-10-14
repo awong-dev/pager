@@ -8,7 +8,7 @@
 # Name,     Type, SubType,  Offset,   Size,      Flags
 nvs,        data, nvs,      ,         0x6000,
 otadata,    data, ota,      ,         0x2000,
-assets,     data, spiffs,   ,         0x100000,
+assets,     data, spiffs,   ,         0x100000, readonly
 ota_0,      app,  ota_0,    ,         0x200000,
 ota_1,      app,  ota_1,    ,         0x200000,
 # msghist: appended at the END of the table (docs request, owner task
@@ -19,10 +19,14 @@ ota_1,      app,  ota_1,    ,         0x200000,
 # module comment for the one-time `idf.py partition-table-flash` a person
 # runs on such a pager, and why that command alone is safe: it writes only
 # the small partition-table binary at CONFIG_PARTITION_TABLE_OFFSET/0x8000,
-# never touching nvs/assets/app flash). 128 KB: MSG_THREAD_DEPTH (32)
+# never touching nvs/assets/app flash). 1 MiB (owner, 14 Oct 2026; was 128 KB): MSG_THREAD_DEPTH (32)
 # records at up to ~400 bytes encoded each (17+17+17+320+small header,
 # msg.c's msghist_record_encode()) is under 13 KB of payload; the rest is
 # NVS page-erase headroom so the wear-leveling driver isn't starved (NVS
 # needs at least 2 free pages beyond the working set to avoid thrashing a
 # single page on every write).
-msghist,    data, nvs,      ,         0x20000,
+msghist,    data, nvs,      ,         0x100000,
+# assets_ota: the font OTA target (docs/ASSETS_OTA_DESIGN.md section 1). `assets` above is
+# the read-only factory default (USB-flashed only); OTA writes only this row. Appended
+# after msghist, so no earlier row moves.
+assets_ota, data, undefined, ,        0x200000,

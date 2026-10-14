@@ -682,6 +682,8 @@ static void on_auth_epoch_wrap(void)
 #define STK_OTA_ST 65  // wait/dl/ready/inst/ok/fail/rb
 #define STK_OTA_PCT 66 // 0-100
 #define STK_OTA_ERR 67 // short error code, omitted when none
+#define STK_AST 72     // font source: 0 = no assets_ota row, 1 = factory, 2 = assets_ota (docs/ASSETS_OTA_DESIGN.md section 3)
+#define STK_AST_ID 73  // 16 hex chars of the active font image, only when ast == 2
 
 #define PAGER_RSSI_UNSET (-1000) // outside net_get_rssi()'s valid [-113,-51] range
 
@@ -908,6 +910,10 @@ static bool build_status_cbor(uint8_t *out, size_t cap, size_t *out_len, const c
     if (ost.gate) {
         nfields += 1;
     }
+    nfields += 1; // key 72 ast: always sent
+    if (ost.ast == 2) {
+        nfields += 1; // key 73 ast_id
+    }
     if (ost.have_job) {
         nfields += 3; // ota_t, ota_st, ota_pct
         nfields += have_ota_err ? 1 : 0;
@@ -975,6 +981,10 @@ static bool build_status_cbor(uint8_t *out, size_t cap, size_t *out_len, const c
     }
     if (ost.gate) {
         cbor_w_uint(&w, STK_OTA, 1);
+    }
+    cbor_w_uint(&w, STK_AST, ost.ast);
+    if (ost.ast == 2) {
+        cbor_w_tstr(&w, STK_AST_ID, ost.ast_id, strlen(ost.ast_id));
     }
     if (ost.have_job) {
         const char *ost_st = ota_state_str(ost.state);
@@ -1052,7 +1062,7 @@ static volatile int64_t s_status_publish_pending_since_us = 0;
 
 static void publish_status_online(void)
 {
-    uint8_t buf[448] /* 7 Oct 2026: OTA fields (278 B max) + bs counters (121 B max) = 399 B; was 384 */; // 256 before the OTA fields (img + ota + ota_t/st/pct/err add up to ~75 B)
+    uint8_t buf[480] /* 14 Oct 2026: 448 -> 480 for bs sa/sr/sp (+18 B worst case = 440 B total); 7 Oct 2026: OTA fields (278 B max) + bs counters (121 B max) = 399 B; was 384; + ast/ast_id 23 B = 422 B */; // 256 before the OTA fields (img + ota + ota_t/st/pct/err add up to ~75 B)
     size_t len = 0;
     if (!build_status_cbor(buf, sizeof(buf), &len, "online")) {
         ESP_LOGI(TAG, "status CBOR build failed (buffer too small or auth_sign failed)");
@@ -2567,6 +2577,13 @@ static bs_cause_t loop_cause(bool attentive, bool btn_busy, bool btn_stuck, bool
     return BS_TIMER;
 }
 
+// Power effect: none. Feeds battstat cause + `sp` (HOT held by accel_shake_pending() alone).
+static void bs_raise_loop(bool attentive, bool btn_busy, bool btn_stuck, bool ui_awake)
+{
+    bs_cause_t c = loop_cause(attentive, btn_busy, btn_stuck, ui_awake);
+    battstat_raise_ex(c, c == BS_HOT && !input_hot());
+}
+
 void modes_run(void)
 {
     uint32_t backoff_index = 0;
@@ -2703,7 +2720,7 @@ void modes_run(void)
         bool skip_sleep = btn_busy || btn_stuck || ui_awake || net_modem_busy() || net_connect_in_flight() ||
                            net_publish_in_flight() || bookpull_fetch_in_progress() || net_resub_hold() ||
                            accel_shake_pending() || input_hot() || ota_transfer_active();
-        battstat_raise(loop_cause(attentive, btn_busy, btn_stuck, ui_awake));
+        bs_raise_loop(attentive, btn_busy, btn_stuck, ui_awake);
         // 5 Oct 2026 diagnostic (all builds; owner: the shake-branch release
         // never slept after boot, no console, USB alive only because it
         // never sleeps): once per 60 s while the loop has gone >= 60 s
@@ -3637,6 +3654,7 @@ void modes_run(void)
         if (accel_poll()) {
             ui_ensure_powered(); // rail on + panel power-loss note so the first render is a correct partial
             input_note_shake_wake(esp_timer_get_time());
+            battstat_note_shake(); // accepted shake -> bs.sa (counter only)
         }
         loc_service();
 
@@ -3695,6 +3713,11 @@ void modes_run(void)
             oe.now_us = esp_timer_get_time();
             oe.epoch = (uint32_t) approx_epoch();
             ota_service(&oe);
+            if (ota_take_redraw_request()) {
+                // The font source changed (font download start / commit): the next refresh of any kind
+                // is a full one (ghosting reset). A flag only: no render, no rail, no panel work here.
+                disp_request_full();
+            }
             if (ota_take_status_request() && st.mqtt_connected) {
                 publish_status_online(); // dl start, 50 %, ready, fail, rb
             }
@@ -3715,7 +3738,7 @@ void modes_run(void)
         rtc_lock();
         rtc_save();
         rtc_unlock();
-        battstat_raise(loop_cause(attentive, input_button_busy(), input_button_stuck(), input_awake()));
+        bs_raise_loop(attentive, input_button_busy(), input_button_stuck(), input_awake());
 #ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
         ST_MARK(7);
         // S0 summary stat: this iteration's total awake work (sum of its own

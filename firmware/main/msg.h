@@ -144,7 +144,7 @@ typedef struct {
  * own comment) and NOT the main `nvs` partition (24 kB total, already
  * carrying identity/msgq/sms/book — firmware/partitions.csv's own header
  * says not to grow it). Instead a dedicated NVS-type data partition
- * `msghist` (128 KB, firmware/partitions.csv, appended at the end of the
+ * `msghist` (1 MiB since 14 Oct 2026, was 128 KB; firmware/partitions.csv, appended at the end of the
  * table so every existing partition keeps its offset), opened
  * independently via nvs_flash_init_partition()/nvs_open_from_partition()
  * in msg.c so a corrupt or full `msghist` can never affect any other NVS
@@ -176,7 +176,7 @@ typedef struct {
  * MSG_ACK_UP_FAILED for an up message) — never on every intermediate
  * ack_state step (a down message's UNSHOWN -> SHOWN transition is never,
  * on its own, worth a second write). At an estimated 20 messages/day this
- * is at most ~40 nvs_set_blob()+nvs_commit() calls/day into a 128 KB
+ * is at most ~40 nvs_set_blob()+nvs_commit() calls/day into a 1 MiB
  * partition; NVS's own wear-levelling amortises that over many flash
  * pages long before any one sector nears a typical NOR sector's ~100k-erase
  * budget (see the final report's arithmetic).

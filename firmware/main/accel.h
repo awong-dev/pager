@@ -118,6 +118,9 @@ accel_shake_verdict_t accel_shake_step(accel_shake_t *s, const accel_shake_cfg_t
  * (accel.c); false if the chip is absent. Power effect: none by itself. */
 bool accel_shake_pending(void);
 
+/* Shake candidates rejected since boot (battstat `sr`). Power effect: none. */
+uint32_t accel_shake_rejected_total(void);
+
 /* Probes WHO_AM_I (register 0x0F, expected 0x33). On success, configures
  * low-power 25 Hz ODR at +-4 g with high-pass-filtered motion (generator 1)
  * and shake-candidate (generator 2) interrupts, both routed to INT1

@@ -326,6 +326,45 @@ static void test_ota_span(void)
     CHECK(cfg_parse(buf, (uint16_t) w.len, false, &d) && !d.have_ota, "have_ota must be false when absent");
 }
 
+/* `ast`=6 (docs/ASSETS_OTA_DESIGN.md section 3): a recognised span next to `ota` that decodes
+ * standalone; have_ast stays false when absent and `ota` alone does not set it. */
+static void test_ast_span(void)
+{
+    uint8_t buf[256];
+    cbor_w_t w;
+    cbor_w_init(&w, buf, sizeof(buf));
+    cbor_w_map(&w, 3);
+    cbor_w_tstr(&w, 1, "m_77777777", 10);
+    cbor_w_tstr(&w, 6, "cfg", 3);
+    cbor_w_map_key(&w, 38, 2);
+    cbor_w_map_key(&w, 4, 1); /* ota: { cancel: true } */
+    cbor_w_bool(&w, 8, true);
+    cbor_w_map_key(&w, 6, 2); /* ast: { isz: 736237, fv: 1 } (shape only) */
+    cbor_w_uint(&w, 1, 736237);
+    cbor_w_uint(&w, 9, 1);
+    CHECK(!w.err, "test setup: encoding the ast fixture must not overflow");
+    cfg_dispatch_t d;
+    CHECK(cfg_parse(buf, (uint16_t) w.len, false, &d), "a cfg envelope with `ast` must be accepted");
+    CHECK(d.have_ast && d.have_ota && !d.have_lock && !d.have_loc, "have_ast and have_ota, nothing else");
+    cbor_r_t r;
+    cbor_r_init(&r, buf + d.ast_off, d.ast_len);
+    uint32_t count, key;
+    uint64_t u;
+    CHECK(cbor_r_map(&r, &count) && count == 2, "captured ast span must decode as a 2-pair map");
+    CHECK(cbor_r_key(&r, &key) && key == 1 && cbor_r_uint(&r, &u) && u == 736237, "first ast pair");
+    CHECK(cbor_r_key(&r, &key) && key == 9 && cbor_r_uint(&r, &u) && u == 1, "second ast pair (fv)");
+    CHECK(d.ast_off + d.ast_len == w.len, "ast span must end at the end of the buffer");
+
+    cbor_w_init(&w, buf, sizeof(buf));
+    cbor_w_map(&w, 3);
+    cbor_w_tstr(&w, 1, "m_66666666", 10);
+    cbor_w_tstr(&w, 6, "cfg", 3);
+    cbor_w_map_key(&w, 38, 1);
+    cbor_w_map_key(&w, 4, 1);
+    cbor_w_bool(&w, 8, true);
+    CHECK(cfg_parse(buf, (uint16_t) w.len, false, &d) && d.have_ota && !d.have_ast, "have_ast false when absent");
+}
+
 /* `loc`=5 (docs/GNSS_DISABLE_DESIGN.md D1): a recognised span next to `wifi`
  * that decodes standalone, and have_loc stays false when absent. */
 static void test_loc_span(void)
@@ -374,6 +413,7 @@ int main(void)
 {
     test_loc_span();
     test_ota_span();
+    test_ast_span();
     test_lock_only();
     test_ca_only();
     test_sms_only();

@@ -463,7 +463,13 @@ static void device_render_normal(void)
              (unsigned) modes_get_memfull_count(), (unsigned) modes_get_oversize_drop_count(),
              (unsigned) modes_get_modem_resets());
     selectable[n++] = false;
-    snprintf(lines[n], DEVICE_LINE_LEN, "tofu glyphs %u", (unsigned) gfx_get_tofu_count());
+    {
+        // Fonts: shares the tofu line (the line buffer is sized for exactly the current row count).
+        ota_status_t fs;
+        ota_get_status(&fs);
+        snprintf(lines[n], DEVICE_LINE_LEN, "tofu glyphs %u  Fonts: %s", (unsigned) gfx_get_tofu_count(),
+                 fs.ast == 2 ? fs.ast_id : "factory");
+    }
     selectable[n++] = false;
 
     int menu_start = n;

@@ -69,13 +69,13 @@ static void test_c_cause_priority(void)
     battstat_rtc_t r;
     bs_ram_t ram;
     fresh(&r, &ram);
-    bs_core_raise(&ram, BS_UI);
-    bs_core_raise(&ram, BS_HOT);
+    bs_core_raise(&ram, BS_UI, false);
+    bs_core_raise(&ram, BS_HOT, false);
     CHECK(ram.cause_max == BS_UI, "c: cause_max=%u want UI", (unsigned) ram.cause_max);
     bs_inputs_t in = at(T0);
     bs_core_tick(&r, &ram, &in);
-    bs_core_raise(&ram, BS_UI);
-    bs_core_raise(&ram, BS_HOT);
+    bs_core_raise(&ram, BS_UI, false);
+    bs_core_raise(&ram, BS_HOT, false);
     in = at(T0 + 2000000);
     bs_core_tick(&r, &ram, &in);
     CHECK(r.aw_ms[BS_UI] == 2000 && r.aw_ms[BS_HOT] == 0, "c: charged to UI");
@@ -186,8 +186,9 @@ static void test_i_encode_bytes(void)
     s.mvn = 3712; s.cn = 1;
     s.md[1] = 12;
     s.re = 45;
-    static const char *want_hex = "1844ac" "0003" "01190e10" "02190dac" "0386" "183c0a05140401" "0418aa"
-                                  "0502" "0619012c" "0783" "01182802" "08190e80" "0901" "0a83" "000c00" "0b182d";
+    s.sa = 2; s.sr = 5; s.sp = 30;
+    static const char *want_hex = "1844af" "0003" "01190e10" "02190dac" "0386" "183c0a05140401" "0418aa"
+                                  "0502" "0619012c" "0783" "01182802" "08190e80" "0901" "0a83" "000c00" "0b182d" "0c02" "0d05" "0e181e";
     uint8_t buf[160];
     cbor_w_t w;
     cbor_w_init(&w, buf, sizeof(buf));
@@ -202,7 +203,7 @@ static void test_i_encode_bytes(void)
 
     s.mvn = 0;
     cbor_w_init(&w, buf, sizeof(buf));
-    CHECK(bs_core_encode(&w, &s) && buf[2] == 0xab && w.len == 51 - 4, "i: mvn omitted -> map(11), %zu B", w.len);
+    CHECK(bs_core_encode(&w, &s) && buf[2] == 0xae && w.len == 58 - 4, "i: mvn omitted -> map(14), %zu B", w.len);
     /* worst case: every counter at 2^32-1 */
     memset(&s, 0xFF, sizeof(s));
     s.mvn = 4500;
@@ -243,6 +244,73 @@ static void test_k_note_mv(void)
     CHECK(r.mvn == 3700, "k: range edges rejected");
 }
 
+static void test_l_shake_counters(void)
+{
+    battstat_rtc_t r;
+    bs_ram_t ram;
+    fresh(&r, &ram);
+    bs_inputs_t in = at(T0);
+    in.shake_rej = 4; /* since-boot baseline */
+    bs_core_tick(&r, &ram, &in);
+    bs_core_note_shake(&r);
+    bs_core_note_shake(&r);
+    CHECK(r.sa == 2 && r.crc == bs_core_crc(&r), "l: sa=%u crc", (unsigned) r.sa);
+    /* 2.5 s HOT held by shake-pending only -> sp; sr delta 3 */
+    bs_core_raise(&ram, BS_HOT, true);
+    in = at(T0 + 2500000);
+    in.shake_rej = 7;
+    bs_core_tick(&r, &ram, &in);
+    CHECK(r.sr == 3 && r.sp_ms == 2500 && r.aw_ms[BS_HOT] == 2500, "l: sr=%u sp_ms=%u", (unsigned) r.sr,
+          (unsigned) r.sp_ms);
+    /* input_hot also true (pend_only false from any raiser) -> aw[hot] only */
+    bs_core_raise(&ram, BS_HOT, true);
+    bs_core_raise(&ram, BS_HOT, false);
+    in = at(T0 + 4500000);
+    in.shake_rej = 7;
+    bs_core_tick(&r, &ram, &in);
+    CHECK(r.sp_ms == 2500 && r.aw_ms[BS_HOT] == 4500 && r.sr == 3, "l: input_hot iteration not in sp");
+    /* a higher cause wins and clears pend_only; reset after tick */
+    bs_core_raise(&ram, BS_HOT, true);
+    bs_core_raise(&ram, BS_UI, false);
+    in = at(T0 + 5500000);
+    in.shake_rej = 7;
+    bs_core_tick(&r, &ram, &in);
+    CHECK(r.sp_ms == 2500 && ram.pend_only == 0, "l: UI wins");
+    /* shake_rej went backwards (reboot-less reset): delta is the value itself */
+    in = at(T0 + 6500000);
+    in.shake_rej = 1;
+    bs_core_tick(&r, &ram, &in);
+    CHECK(r.sr == 4, "l: sr backwards=%u", (unsigned) r.sr);
+    bs_snap_t s;
+    bs_core_snapshot(&r, &s);
+    CHECK(s.sa == 2 && s.sr == 4 && s.sp == 2, "l: snap sa=%u sr=%u sp=%u", (unsigned) s.sa, (unsigned) s.sr,
+          (unsigned) s.sp);
+    bs_core_note_shake(&r); /* arrives between snapshot and commit: kept */
+    bs_core_commit(&r, &s);
+    CHECK(r.sa == 1 && r.sr == 0 && r.sp_ms == 500 && r.crc == bs_core_crc(&r), "l: commit sa=%u sr=%u sp_ms=%u",
+          (unsigned) r.sa, (unsigned) r.sr, (unsigned) r.sp_ms);
+    /* failed publish: no commit keeps counters */
+    bs_core_snapshot(&r, &s);
+    CHECK(s.sa == 1, "l: uncommitted keeps sa");
+}
+
+static void test_m_old_layout_reset(void)
+{
+    /* A previous-version window (magic "BST1") must be zeroed, not misread. */
+    battstat_rtc_t r;
+    memset(&r, 0, sizeof(r));
+    r.magic = 0x42535431u;
+    r.sq = 9; r.dt_ms = 777; r.sa = 5; r.sp_ms = 123;
+    r.crc = bs_core_crc(&r);
+    CHECK(!bs_core_init(&r) && r.magic == BATTSTAT_MAGIC && r.sq == 0 && r.dt_ms == 0 && r.sa == 0 && r.sr == 0 &&
+              r.sp_ms == 0,
+          "m: old magic zeroed");
+    r.sa = 3; r.crc = bs_core_crc(&r);
+    CHECK(bs_core_init(&r) && r.sa == 3, "m: new-layout window kept");
+    r.sa = 4; /* corrupt */
+    CHECK(!bs_core_init(&r) && r.sa == 0, "m: bad crc on sa zeroes");
+}
+
 int main(void)
 {
     test_a_first_tick_baseline();
@@ -256,8 +324,10 @@ int main(void)
     test_i_encode_bytes();
     test_j_init();
     test_k_note_mv();
+    test_l_shake_counters();
+    test_m_old_layout_reset();
     if (g_failures == 0) {
-        printf("PASS: battstat 11 cases, 0 failures\n");
+        printf("PASS: battstat 13 cases, 0 failures\n");
         return 0;
     }
     printf("FAIL: %d failure(s)\n", g_failures);

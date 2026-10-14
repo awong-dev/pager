@@ -69,6 +69,11 @@ typedef struct {
      * Dispatched to loc_apply_cfg_submap(). */
     bool have_loc;
     size_t loc_off, loc_len;
+
+    /* `ast`=6 (docs/ASSETS_OTA_DESIGN.md section 3): the font-image job sub-map.
+     * Dispatched to ota_apply_ast_submap(). */
+    bool have_ast;
+    size_t ast_off, ast_len;
 } cfg_dispatch_t;
 
 /* Decodes `buf`/`len` as a `/down` envelope already reduced to `count` map

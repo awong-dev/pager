@@ -32,6 +32,10 @@ extern "C" {
 #define OTA_FMT_FULL 0
 #define OTA_FMT_DELTA 1
 
+/* Which partition the one job slot targets (NVS ota/jast; absent = app). docs/ASSETS_OTA_DESIGN.md section 3. */
+#define OTA_PART_APP 0
+#define OTA_PART_ASSETS 1
+
 /* D6 numbers. */
 #define OTA_MIN_BATT_MV 3600
 #define OTA_MIN_RSSI (-105)
@@ -55,12 +59,21 @@ typedef struct {
     uint32_t psz;
     bool cancel;
 } ota_cfg_t;
+/* Load-bearing: job_load() drops an NVS blob whose size differs, which would lose an in-flight app job
+ * across the firmware update that introduced font OTA. Never change ota_cfg_t / ota_job_t (nor add a
+ * field to them): per-job extras (part, fv) live in their own NVS key. */
+_Static_assert(sizeof(ota_cfg_t) == 500, "ota_cfg_t size is part of the persisted job blob");
 
 /* Decodes the sub-map. False on: a missing required key, a hash that is not
  * 32 bytes, a URL that is not https://, isz/osz 0 or > OTA_IMG_MAX, a delta
  * without base/psz, or an unknown fmt. Unknown keys are skipped. A map with
  * `cancel:true` needs no other key (out->cancel = true). */
 bool ota_parse_cfg_submap(const uint8_t *cbor, uint16_t len, ota_cfg_t *out);
+
+/* cfg.ast sub-map (CFG_KEYMAP ast 6): the same keys as cfg.ota plus key 9 `fv` (uint 1..255), which is
+ * required unless the map is `cancel:true` (then *fv = 0). Everything else is decoded as above; a delta
+ * parses (so it can be answered with a `fmt` rejection by ota_check_accept_assets()). */
+bool ota_parse_ast_submap(const uint8_t *cbor, uint16_t len, ota_cfg_t *out, uint8_t *fv);
 
 typedef enum {
     OTA_ACCEPT_OK = 0,
@@ -69,11 +82,20 @@ typedef enum {
     OTA_REJECT_PV,      /* the running image is itself still pending verify */
     OTA_REJECT_NOBL,    /* no rollback-capable bootloader */
     OTA_REJECT_BAD,     /* img is on the failed list */
+    OTA_REJECT_NOPART,  /* assets: no assets_ota partition (old table) */
+    OTA_REJECT_FMT,     /* assets: fv above GFX_ASSETS_VER_MAX, or a delta */
+    OTA_REJECT_SIZE,    /* assets: isz does not fit in the partition (minus its commit sector) */
 } ota_reject_t;
 
 /* `bad` is NULL when there is no failed image on record. */
 ota_reject_t ota_check_accept(const ota_cfg_t *cfg, const uint8_t running[32], bool pending_verify,
                               bool rollback_ok, const uint8_t bad[32]);
+
+/* Accept/reject for a cfg.ast job, in this order: no partition -> NOPART; fv > GFX_ASSETS_VER_MAX or a
+ * delta -> FMT; isz > part_size - 4096 -> SIZE; `active_sha` non-NULL and == img -> RUNNING; else OK.
+ * `active_sha` is the sha of the image gfx currently uses from assets_ota (NULL when on factory fonts). */
+ota_reject_t ota_check_accept_assets(const ota_cfg_t *cfg, uint8_t fv, bool have_part, uint32_t part_size,
+                                     const uint8_t *active_sha);
 
 /* ---- job record ---- */
 typedef enum {
@@ -102,6 +124,8 @@ typedef enum {
     OTA_ERR_MEM,
     OTA_ERR_RUN,
     OTA_ERR_BAD,
+    OTA_ERR_NOPART, /* appended: the values are persisted */
+    OTA_ERR_FMT,
 } ota_err_t;
 
 typedef struct {
@@ -173,6 +197,8 @@ typedef struct {
     ota_state_t state;
     ota_err_t err;
     uint8_t pct;
+    uint8_t ast;               /* STK_AST: 0 = no assets_ota row, 1 = factory fonts, 2 = assets_ota fonts */
+    char ast_id[17];           /* STK_AST_ID: 16 hex of the active font image, only when ast == 2 */
 } ota_status_t;
 
 typedef void (*ota_lock_fn)(void);
@@ -189,6 +215,15 @@ void ota_boot(void);
 /* Records a cfg.ota (MQTT event task): decide accept/reject, ack `shown`, stash
  * the result for ota_service(). No modem or sleep effect. */
 void ota_apply_cfg_submap(const uint8_t *cbor, uint16_t len, const char *id);
+
+/* Records a cfg.ast (font image job, same handoff as ota_apply_cfg_submap()); `id` is the cfg message
+ * id acked `shown` on accept or reject. A malformed map (including a missing `fv`) is dropped unacked.
+ * No modem or sleep effect. */
+void ota_apply_ast_submap(const uint8_t *cbor, uint16_t len, const char *id);
+
+/* Set when the active font source changed under the screen (download start, commit); modes.c polls and
+ * clears it, then requests a full refresh. */
+bool ota_take_redraw_request(void);
 
 /* One step per call from modes_run(): drain, poll the socket, start, finish or
  * install. Power: one TLS socket while downloading, nothing otherwise. */

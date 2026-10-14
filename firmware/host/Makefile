@@ -75,7 +75,7 @@ endif
 MAIN_SRC := ../main
 BUILD := build
 
-TESTS := test_cbor test_auth test_setup test_input test_msg test_lock test_loc test_cafetch test_catrust test_cfg test_sms test_carrier test_chat_layout test_home_list test_archive test_coverage test_net_connect_guard test_net_probe_guard test_resub_verdict test_publish_quiet test_accel_rate test_wifi_policy test_wificred test_bookpull test_clock test_disp_flip test_otapipe test_ota test_battstat test_refreshpol test_temp test_devinfo
+TESTS := test_cbor test_auth test_setup test_input test_msg test_lock test_loc test_cafetch test_catrust test_cfg test_sms test_carrier test_chat_layout test_home_list test_archive test_coverage test_net_connect_guard test_net_probe_guard test_resub_verdict test_publish_quiet test_accel_rate test_wifi_policy test_wificred test_bookpull test_clock test_disp_flip test_otapipe test_ota test_astpart test_gfx_assets test_battstat test_refreshpol test_temp test_devinfo
 TEST_BINS := $(TESTS:%=$(BUILD)/%)
 
 # ASSETS: tools/mkassets.py's default output location (docs/DEVICE_TASKS.md
@@ -205,6 +205,23 @@ $(BUILD)/test_cafetch.o: test_cafetch.c $(MAIN_SRC)/cafetch.h | $(BUILD)
 $(BUILD)/test_cafetch: $(BUILD)/cafetch.o $(BUILD)/test_cafetch.o
 	$(CC) $(CFLAGS) -o $@ $(BUILD)/cafetch.o $(BUILD)/test_cafetch.o $(MBEDTLS_LIBS)
 
+# test_gfx_assets: gfx.c's pure gfx_assets_check() (gfx.o is the same object render_png links).
+$(BUILD)/test_gfx_assets.o: test_gfx_assets.c $(MAIN_SRC)/gfx.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ test_gfx_assets.c
+
+$(BUILD)/test_gfx_assets: $(BUILD)/gfx.o $(BUILD)/test_gfx_assets.o
+	$(CC) $(CFLAGS) -o $@ $^
+
+# test_astpart: astpart.c's pure section (commit record crc32/encode/decode). No dependencies.
+$(BUILD)/astpart.o: $(MAIN_SRC)/astpart.c $(MAIN_SRC)/astpart.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $(MAIN_SRC)/astpart.c
+
+$(BUILD)/test_astpart.o: test_astpart.c $(MAIN_SRC)/astpart.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ test_astpart.c
+
+$(BUILD)/test_astpart: $(BUILD)/astpart.o $(BUILD)/test_astpart.o
+	$(CC) $(CFLAGS) -o $@ $^
+
 # test_catrust: catrust.c's pure section (trust-state derivation, TLS-fail
 # fallback policy, daily/cold-boot revalidation gate, cfg `ca` sub-map decode,
 # give-up counter, /status fingerprint) + cbor.c + test_catrust.c. No mbedtls
@@ -240,7 +257,7 @@ $(BUILD)/test_otapipe: $(BUILD)/otapipe.o $(BUILD)/detools.o $(BUILD)/miniz_tinf
 
 # test_ota: ota.c's pure section (cfg.ota decode, accept/reject, start/install gates,
 # budget/expiry, strings) + cbor.c. No mbedtls: ota.h only borrows cafetch.h's sizes.
-$(BUILD)/ota.o: $(MAIN_SRC)/ota.c $(MAIN_SRC)/ota.h $(MAIN_SRC)/cafetch.h $(MAIN_SRC)/cbor.h | $(BUILD)
+$(BUILD)/ota.o: $(MAIN_SRC)/ota.c $(MAIN_SRC)/gfx.h $(MAIN_SRC)/ota.h $(MAIN_SRC)/cafetch.h $(MAIN_SRC)/cbor.h | $(BUILD)
 	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $(MAIN_SRC)/ota.c
 
 $(BUILD)/test_ota.o: test_ota.c $(MAIN_SRC)/ota.h | $(BUILD)
