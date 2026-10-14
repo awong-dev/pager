@@ -648,6 +648,7 @@ static void on_auth_epoch_wrap(void)
 #define STK_LOC_MIN_S 28
 #define STK_LOC_BACKOFF_S 43 // v0.2 §7
 #define STK_CAR 70 // docs/SORACOM_DESIGN.md 3.4: carrier preset label (<= 24 B)
+#define STK_TEMP_DC 71 // modem temperature, tenths of a degree C (signed), omitted until a reading exists
 #define STK_GNSS 69 // docs/GNSS_DISABLE_DESIGN.md D4: cfg.loc.gnss as applied (0/1)
 #define STK_LOC_MOVE_S 61 // LOCATION_TRACKING_DESIGN.md §5 P3, this task: the `locmove` runtime
                           // tunable (0 = GNSS-while-moving off)
@@ -682,23 +683,6 @@ static void on_auth_epoch_wrap(void)
 #define STK_OTA_PCT 66 // 0-100
 #define STK_OTA_ERR 67 // short error code, omitted when none
 
-// PROTOCOL.md §5.1: batt_mv must be in [2000, 5000] when state:"online".
-// The upper bound is 5000, not the LiPo's 4200: AT+SQNVMON measures the
-// modem's own VIN/SYS rail, which sits at about 4.5 V (4.7 V seen) on USB,
-// and a tighter bound threw those readings away (stuck 3700 placeholder,
-// 10 Oct 2026). The web greys samples >= USB_MV (4300).
-#define PAGER_BATT_MV_MIN 2000
-#define PAGER_BATT_MV_MAX 5000
-
-// "Unknown" placeholder returned before any real AT+SQNVMON reading has
-// landed this boot (refresh_batt_mv()/modes_get_batt_mv() below) -- not a
-// threshold, just a value that must sit safely above LOC_BATTERY_FLOOR_MV
-// (loc.h, 3550 mV since the 3 Oct 2026 LiPo rewiring) so an unknown reading
-// never coincidentally straddles the floor the way the old 3300 placeholder
-// did against the old 3300 mV LiFePO4 floor (loc.c's own comment on the
-// coincidence this is retargeted to avoid).
-#define PAGER_BATT_MV_UNKNOWN_PLACEHOLDER 3700
-
 #define PAGER_RSSI_UNSET (-1000) // outside net_get_rssi()'s valid [-113,-51] range
 
 // Last known-good battery/RSSI readings, so a single failed AT command
@@ -706,7 +690,9 @@ static void on_auth_epoch_wrap(void)
 // design never deep sleeps, only light sleeps, and light sleep retains
 // ordinary RAM (same reasoning net.cpp's own module-static state uses).
 // Reset to the fallback below only on a real reboot.
-static int s_last_batt_mv = 0;              // 0 = no good reading yet this boot
+static int s_last_batt_mv = 0;              // 0 = no good reading yet this boot (raw mV, unclamped: ~5200 on USB)
+static int s_last_temp_dc = 0;              // modem temperature, tenths of C; valid only if s_have_temp
+static bool s_have_temp = false;
 static int s_last_rssi_dbm = PAGER_RSSI_UNSET; // unset = no good reading yet this boot
 
 // `v` MUST be non-negative for cbor_w_uint(); dBm readings are not, so
@@ -721,21 +707,26 @@ static bool cbor_w_int(cbor_w_t *w, uint32_t key, int64_t v)
 // the exact same fetch-with-fallback logic instead of duplicating it - one
 // AT round trip each, no RRC of its own beyond net_get_battery_mv()/
 // net_get_rssi()'s own documented cost (net.h).
-static int refresh_batt_mv(void)
+static void refresh_batt_mv(void)
 {
+    // Raw AT+SQNVMON millivolts, reported as measured (owner, 14 Oct 2026). A failed or zero read
+    // is "no reading": it never overwrites the last good value.
     int batt_mv;
-    bool got = net_get_battery_mv(&batt_mv);
-    if (!got || batt_mv < PAGER_BATT_MV_MIN || batt_mv > PAGER_BATT_MV_MAX) {
-        int keep = (s_last_batt_mv != 0) ? s_last_batt_mv : PAGER_BATT_MV_UNKNOWN_PLACEHOLDER;
-        if (got) {
-            ESP_LOGI(TAG, "batt: reading %d mV out of range, keeping %d", batt_mv, keep);
-        }
-        batt_mv = keep;
-    } else {
+    if (net_get_battery_mv(&batt_mv) && batt_mv > 0) {
         s_last_batt_mv = batt_mv;
-        battstat_note_mv(batt_mv); // window minimum for `bs.mvn`
+        battstat_note_mv(batt_mv); // window minimum for `bs.mvn` (battstat ignores values outside 2000..5000)
     }
-    return batt_mv;
+}
+
+// Modem temperature, tenths of C, same cadence and failure rule as the battery (one bounded AT
+// round trip; a failure keeps the last good value, and none yet means key 71 is omitted).
+static void refresh_temp_dc(void)
+{
+    int dc;
+    if (net_get_temp_dc(&dc)) {
+        s_last_temp_dc = dc;
+        s_have_temp = true;
+    }
 }
 
 static int refresh_rssi_dbm(void)
@@ -765,6 +756,7 @@ static int refresh_rssi_dbm(void)
 static void ui_wake_status_refresh(void)
 {
     refresh_batt_mv();
+    refresh_temp_dc();
     refresh_rssi_dbm();
 }
 
@@ -807,14 +799,17 @@ int64_t modes_debug_last_input_age_us(void)
 // F6.3: status-bar/Device-screen getters (modes.h) - plain cache reads, no
 // AT round trip of their own; see modes.h's own doc comment.
 int modes_get_rssi_dbm(void) { return (s_last_rssi_dbm != PAGER_RSSI_UNSET) ? s_last_rssi_dbm : -113; }
-int modes_get_batt_mv(void) { return (s_last_batt_mv != 0) ? s_last_batt_mv : PAGER_BATT_MV_UNKNOWN_PLACEHOLDER; }
-// This task: s_last_batt_mv stays 0 until net_get_battery_mv() (AT+SQNVMON)
-// returns something inside [PAGER_BATT_MV_MIN, PAGER_BATT_MV_MAX] -- see
-// refresh_batt_mv() above. modes_get_batt_mv()'s PAGER_BATT_MV_UNKNOWN_
-// PLACEHOLDER fallback above is a placeholder, not a reading; this accessor
-// is how a caller (loc.c's battery floor) tells the two apart instead of
-// trusting a coincidence between the placeholder and LOC_BATTERY_FLOOR_MV.
+int modes_get_batt_mv(void) { return s_last_batt_mv; } // raw mV; 0 = no reading yet (check modes_batt_mv_known())
+// s_last_batt_mv stays 0 until net_get_battery_mv() (AT+SQNVMON) returns a non-zero reading, see
+// refresh_batt_mv() above; callers must treat 0 as "unknown", not as a voltage.
 bool modes_batt_mv_known(void) { return s_last_batt_mv != 0; }
+bool modes_get_temp_dc(int *temp_dc)
+{
+    if (temp_dc && s_have_temp) {
+        *temp_dc = s_last_temp_dc;
+    }
+    return s_have_temp;
+}
 const char *modes_get_fw_version(void) { return fw_version_str(); }
 const char *modes_get_session_id(void) { return g_rtc.session_id; }
 uint32_t modes_get_memfull_count(void) { return g_rtc.mqtt_memfull_count; }
@@ -846,7 +841,12 @@ static bool build_status_cbor(uint8_t *out, size_t cap, size_t *out_len, const c
     // net.cpp's AT+SQNVMON/AT+CSQ reads, falling back to the last
     // known-good value and finally to a fixed placeholder, never blocking
     // or failing this publish.
-    int batt_mv = refresh_batt_mv();
+    refresh_batt_mv();
+    refresh_temp_dc();
+    const bool have_batt = s_last_batt_mv != 0;
+    const int batt_mv = s_last_batt_mv;
+    const bool have_temp = s_have_temp;
+    const int temp_dc = s_last_temp_dc;
     int rssi_dbm = refresh_rssi_dbm();
 
     bool signed_env = (ident_get_flags() & IDENT_FLAG_REQ_SIG) != 0;
@@ -878,11 +878,17 @@ static bool build_status_cbor(uint8_t *out, size_t cap, size_t *out_len, const c
     // trip of their own beyond what batt_mv/rssi above already cost).
     // LOCATION_TRACKING_DESIGN.md §5 P3: +1 for loc_move_s (key 61), same
     // "plain read" cost class.
-    uint32_t nfields = 9 + 3 + 1 + 1 + 1 + 1 + 1 + 3 + 1; // + gnss (key 69, GNSS_DISABLE_DESIGN.md D4), + tls, + sms_lost, + link, + xport,
+    uint32_t nfields = 8 + 3 + 1 + 1 + 1 + 1 + 1 + 3 + 1; // + gnss (key 69, GNSS_DISABLE_DESIGN.md D4), + tls, + sms_lost, + link, + xport,
                                           // + loc_move_s, + rst/stage/abn;
-                                          // v,state,mode,batt_mv,rssi,
+                                          // v,state,mode,rssi, (batt_mv and temp_dc are optional, counted above)
                                           // session,ts,fw,bv,loc_period_s,loc_min_s,loc_backoff_s,
                                           // tls,sms_lost,link,xport,loc_move_s,rst,stage,abn
+    if (have_batt) {
+        nfields += 1; // key 23 batt_mv: omitted until the modem has returned a reading this boot
+    }
+    if (have_temp) {
+        nfields += 1; // key 71 temp_dc: likewise
+    }
     if (have_ca_fp) {
         nfields += 1;
     }
@@ -924,7 +930,12 @@ static bool build_status_cbor(uint8_t *out, size_t cap, size_t *out_len, const c
     cbor_w_uint(&w, STK_V, 1);
     cbor_w_tstr(&w, STK_STATE, state, strlen(state));
     cbor_w_tstr(&w, STK_MODE, mode_str, strlen(mode_str));
-    cbor_w_uint(&w, STK_BATT_MV, (uint64_t) batt_mv);
+    if (have_batt) {
+        cbor_w_uint(&w, STK_BATT_MV, (uint64_t) batt_mv);
+    }
+    if (have_temp) {
+        cbor_w_int(&w, STK_TEMP_DC, temp_dc);
+    }
     cbor_w_int(&w, STK_RSSI, rssi_dbm);
     cbor_w_tstr(&w, STK_SESSION, g_rtc.session_id, strlen(g_rtc.session_id));
     cbor_w_uint(&w, STK_TS, (uint64_t) ts);
@@ -3304,6 +3315,13 @@ void modes_run(void)
 #endif
         }
 
+        // Device info screen fill (scr_devinfo.c asks via net_devinfo_request()): runs after this
+        // pass's render, never ahead of the first frame. Power effect: up to six bounded AT round
+        // trips (3 s timeouts), no RRC; the next partial shows the values.
+        if (net_devinfo_take_request()) {
+            net_devinfo_refresh();
+        }
+
         // Deferred mode-edge /status publish (set_mode()): after this
         // iteration's render, and only once the UI is idle, or after the cap.
         // Power effect: one small MQTT publish on an already-up session.
@@ -3670,7 +3688,7 @@ void modes_run(void)
             oe.mqtt_usable = st.mqtt_connected;
             oe.other_fetch = (cafetch_in_progress() && !ota_transfer_active()) || catrust_apply_in_progress();
             oe.sleep_mode = g_rtc.mode == (uint8_t) PAGER_MODE_SLEEP;
-            oe.batt_mv = modes_get_batt_mv();
+            oe.batt_mv = modes_batt_mv_known() ? modes_get_batt_mv() : OTA_MIN_BATT_MV; // unknown battery does not block OTA (as before)
             oe.rssi = (s_last_rssi_dbm != PAGER_RSSI_UNSET) ? s_last_rssi_dbm : 0;
             int64_t age_ms = (esp_timer_get_time() - s_last_input_us) / 1000;
             oe.input_age_ms = age_ms < 0 ? 0 : (age_ms > 0xFFFFFFF0LL ? 0xFFFFFFF0u : (uint32_t) age_ms);

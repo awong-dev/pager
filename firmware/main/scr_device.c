@@ -67,6 +67,7 @@
 #include "msg.h"  /* owner task 2026-09-20: msg_history_erase() on factory reset */
 #include "book.h" /* T3: book_get_bv() for the "session ... book v<n>" info line */
 #include "net.h"
+#include "devinfo_fmt.h"
 #include "ota.h" /* docs/OTA_DESIGN.md: the "Update:" line and the "Install now" row */
 #include "disp.h" /* owner request: menu-driven display rotation, disp_get_flip()/
                    * disp_set_flip()/disp_full_refresh() — same setter the console's
@@ -78,7 +79,8 @@
 #include "esp_system.h" /* esp_restart() */
 
 typedef enum {
-    MROW_RESYNC = 0,
+    MROW_INFO = 0, /* opens the Device info screen (scr_devinfo.c) */
+    MROW_RESYNC,
     MROW_TEXTSIZE,
     MROW_ROTATE, /* owner request: menu-driven 180-degree display rotation,
                   * same setter the console's `flip on|off` uses (disp.h) */
@@ -279,6 +281,9 @@ static void device_on_key(input_key_t key)
             break;
         }
         switch ((device_row_t) (s_sel - device_extra_rows())) {
+        case MROW_INFO:
+            ui_push(&g_scr_devinfo);
+            break;
         case MROW_RESYNC:
             ui_show_toast(modes_publish_status_now() ? "re-sync requested" : "not connected");
             break;
@@ -414,7 +419,7 @@ static void device_render_pw(void)
 // heap; single render task per README R5, so no reentrancy hazard) and
 // drawn with a simple scroll-into-view so the whole thing "scrolls"
 // (docs/DEVICE_PLAN.md §5.5: "Read-mostly, one screen, scrolls").
-#define DEVICE_MAX_LINES 19 /* +1 for the Reboot row (6 Oct 2026), +2 for the Update line and the Install-now row (OTA) */
+#define DEVICE_MAX_LINES 20 /* +1 for the Reboot row (6 Oct 2026), +2 for the Update line and the Install-now row (OTA) */
 #define DEVICE_LINE_LEN 72
 // TASK_ui_round2.md Do #2: shared UI_ROW_H pitch (ui.h), not a flat 12px —
 // (UI_FOOTER_Y - (UI_BODY_TOP+2)) / UI_ROW_H == 93/16 == 5.8, floored to 5,
@@ -437,9 +442,12 @@ static void device_render_normal(void)
     snprintf(lines[n], DEVICE_LINE_LEN, "broker %s:%u  sig %s", ident_get_host(),
              (unsigned) ident_get_port(), (ident_get_flags() & IDENT_FLAG_REQ_SIG) ? "on" : "off");
     selectable[n++] = false;
-    snprintf(lines[n], DEVICE_LINE_LEN, "signal %d dBm  batt %d mV", modes_get_rssi_dbm(),
-             modes_get_batt_mv());
-    selectable[n++] = false;
+    {
+        char bv[24];
+        devinfo_fmt_batt(modes_batt_mv_known(), modes_get_batt_mv(), bv, sizeof(bv));
+        snprintf(lines[n], DEVICE_LINE_LEN, "signal %d dBm  batt %s", modes_get_rssi_dbm(), bv);
+        selectable[n++] = false;
+    }
     snprintf(lines[n], DEVICE_LINE_LEN, "session %s  book v%u", modes_get_session_id(),
              (unsigned) book_get_bv());
     selectable[n++] = false;
@@ -466,6 +474,8 @@ static void device_render_normal(void)
     if (s_sel > MROW_COUNT - 1 + device_extra_rows()) {
         s_sel = MROW_COUNT - 1 + device_extra_rows(); // the extra row went away under the cursor
     }
+    snprintf(lines[n], DEVICE_LINE_LEN, "Device info (battery, SIM, cell)");
+    selectable[n++] = true;
     snprintf(lines[n], DEVICE_LINE_LEN, "Re-sync address book");
     selectable[n++] = true;
     snprintf(lines[n], DEVICE_LINE_LEN, "Text size: %s",

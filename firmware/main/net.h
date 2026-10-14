@@ -600,6 +600,44 @@ bool net_get_clock(int64_t *epoch_s);
  * Power effect: one AT round trip, no RRC — same class as net_check(). */
 bool net_get_battery_mv(int *batt_mv);
 
+/* Modem temperature in tenths of a degree C (235 = 23.5 C) via a raw sendCmd of PAGER_TEMP_CMD
+ * (temp_parse.h; AT+SQNTMON?). Same bounded budget as net_get_battery_mv(): 1 attempt, short
+ * timeout, no RRC, false in airplane mode. Returns false (leaving *temp_dc unchanged) on a failed
+ * command or an unparseable / implausible reply. The first raw reply of each boot is logged at INFO.
+ * Power effect: one AT round trip, no RRC. */
+bool net_get_temp_dc(int *temp_dc);
+
+/* Device-info cache for the Device info screen (scr_devinfo.c). Strings are "" until known. */
+typedef struct {
+    char imei[16];
+    char imsi[20];
+    char iccid[24];
+    char msisdn[24]; /* the SIM's own number (AT+CNUM); "" if the SIM/modem does not expose it */
+    char opname[32]; /* AT+COPS? long name */
+    char apn[32];    /* APN the last attach used */
+    bool have_cell;
+    char mcc[4];
+    char mnc[4];
+    uint16_t tac;
+    uint32_t ci;
+    uint8_t band;
+    bool have_rsrp;
+    int rsrp;
+    bool have_rsrq;
+    int rsrq_dtenths;
+} net_devinfo_t;
+
+/* Plain RAM copy of the cache; no AT traffic. IMSI/ICCID/APN are filled by the attach itself. */
+void net_devinfo_get(net_devinfo_t *out);
+/* Asks modes_run() to refresh the cache after its next render (sets a flag; no AT traffic). */
+void net_devinfo_request(void);
+/* True once per request; modes_run() calls it each iteration. */
+bool net_devinfo_take_request(void);
+/* Fills the cache with bounded queries (1 attempt, 3 s each, <= ~6 commands, stops after two
+ * consecutive failures): IMEI, IMSI, ICCID, CNUM (once per boot), COPS?, SQNMONI. Never call it
+ * ahead of a render. Power effect: a few AT round trips, no RRC. Returns false in airplane mode. */
+bool net_devinfo_refresh(void);
+
 /* Signal strength in dBm, via WalterModem::getRSSI() -> AT+CSQ
  * (managed_components/dptechnics__walter-modem/src/WalterModem.h:4334;
  * implementation src/WalterModem.cpp:4478-4482, dBm conversion

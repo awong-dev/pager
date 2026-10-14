@@ -2557,13 +2557,14 @@ struct WalterModemTempData {
   WalterModemTempMonitorMode mode;
   WalterModemTempStatus status;
   int8_t temperature;
+  char raw[48]; // PAGER PATCH: 1.23. The +SQNTMON line verbatim (CR/LF trimmed, truncated), so the caller can parse a decimal
 };
 
 struct WalterModemVoltageData {
   WalterModemVoltageMonitorMode mode;
   WalterModemVoltageStatus status;
-  uint16_t voltage;
-  uint16_t threshold;
+  uint16_t voltage;   // PAGER NOTE: millivolts (bench 13 Oct 2026), not tenths as vendor docs say
+  uint16_t threshold; // tenths of a volt
   uint16_t period;
 };
 
@@ -5879,6 +5880,12 @@ public:
   /* PAGER PATCH: (1.8) the last "+CRSM: ..." response line seen, "" if none. */
   static inline char _lastCrsm[96] = { 0 };
   static const char* simLastCRSM() { return _lastCrsm; }
+  /* PAGER PATCH: (1.24) the last "+COPS: ..." and first "+CNUM: ..." lines seen; clear before asking. */
+  static inline char _lastCops[64] = { 0 };
+  static inline char _lastCnum[64] = { 0 };
+  static const char* lastCOPS() { return _lastCops; }
+  static const char* lastCNUM() { return _lastCnum; }
+  static void clearCOPSCNUM() { _lastCops[0] = '\0'; _lastCnum[0] = '\0'; }
 
   static bool getSIMCardIMSI(WalterModemRsp* rsp = NULL, walterModemCb cb = NULL,
                              void* args = NULL);
@@ -6199,6 +6206,8 @@ public:
    * @brief Get the current voltage configuration and reading from the modem.
    *
    * This function retrieves the current voltage monitor configuration and voltage reading.
+   * PAGER NOTE: the reading is in millivolts (+SQNVMON: 1,30,30,5203 = 3.0 V threshold, 30 s,
+   * 5.203 V); the threshold is in tenths. Sequans/Walter docs give tenths for both (bench 13 Oct 2026).
    *
    * @param[out] rsp Pointer to the response structure to save the result in.
    * @param[in] cb Callback function, if not NULL this function will not block.

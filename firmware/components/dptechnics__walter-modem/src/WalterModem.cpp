@@ -2436,6 +2436,17 @@ void WalterModem::_processModemRSP(WalterModemCmd* cmd, WalterModemBuffer* buff)
     // <mode>,<extreme_low>,<warning_low>,<warning_high>,<extreme_high>,<temperature>
     int parsed = sscanf(rspStr, "+SQNTMON: %d,%d,%d,%d,%d,%d", &mode, &extreme_low, &warning_low,
                         &warning_high, &extreme_high, &temperature);
+    // PAGER PATCH: 1.23. Keep the raw line for the caller even when the field count does not parse.
+    if(cmd != NULL && cmd->rsp != NULL) {
+      cmd->rsp->type = WALTER_MODEM_RSP_DATA_TYPE_TEMPERATURE;
+      size_t rn = 0;
+      while(rspStr[rn] != '\0' && rspStr[rn] != '\r' && rspStr[rn] != '\n' &&
+            rn < sizeof(cmd->rsp->data.temperature.raw) - 1) {
+        cmd->rsp->data.temperature.raw[rn] = rspStr[rn];
+        rn++;
+      }
+      cmd->rsp->data.temperature.raw[rn] = '\0';
+    }
     if(parsed == 6 && cmd != NULL && cmd->rsp != NULL) {
       cmd->rsp->type = WALTER_MODEM_RSP_DATA_TYPE_TEMPERATURE;
       cmd->rsp->data.temperature.mode = (WalterModemTempMonitorMode) mode;
@@ -4157,6 +4168,22 @@ void WalterModem::_processModemRSP(WalterModemCmd* cmd, WalterModemBuffer* buff)
     size_t n = buff->size < sizeof(_lastCrsm) - 1 ? buff->size : sizeof(_lastCrsm) - 1;
     memcpy(_lastCrsm, buff->data, n);
     _lastCrsm[n] = '\0';
+    goto after_processing_logic;
+  }
+
+  /*
+   * PAGER PATCH: (1.24) Keep the "+COPS: ..." and first "+CNUM: ..." response lines so the pager's
+   * Device screen can show the operator name and the SIM's own number. The library parses neither.
+   */
+  if(_buffStartsWith(buff, "+COPS: ") || _buffStartsWith(buff, "+CNUM: ")) {
+    const bool isCops = buff->data[1] == 'C' && buff->data[2] == 'O';
+    char* dst = isCops ? _lastCops : _lastCnum;
+    size_t cap = isCops ? sizeof(_lastCops) : sizeof(_lastCnum);
+    if(isCops || dst[0] == '\0') { // CNUM may list several numbers; keep the first
+      size_t n = buff->size < cap - 1 ? buff->size : cap - 1;
+      memcpy(dst, buff->data, n);
+      dst[n] = '\0';
+    }
     goto after_processing_logic;
   }
 

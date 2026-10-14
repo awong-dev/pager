@@ -768,3 +768,25 @@ transport error and resumes with a Range request from the last good offset; the 
 field. (The task file called this entry 1.10; that number is already taken above.)
 
 **Power effect**: none -- one extra field store per receive; no AT traffic.
+
+## 1.23 Raw `+SQNTMON` line in the temperature response (`src/WalterModem.h`, `src/WalterModem.cpp`)
+
+`WalterModemTempData` gains `char raw[48]`, filled in the `+SQNTMON:` handler with the response line
+verbatim (CR/LF trimmed, truncated to 47 bytes) whenever a command with a response struct is pending,
+even if the six-field `sscanf` does not match. Why: the stock parser reads the temperature with `%d`
+into an `int8_t`, which cannot carry the tenths of a degree the modem may report (`23.5` parses as 23).
+The pager parses `raw` itself (`main/temp_parse.c`) and logs it once per boot so the unit can be settled
+on the bench. The existing `temperature`/`status` fields are unchanged. Used through `sendCmd()` (1.20
+budget), not `getTemperature()`.
+
+**Power effect**: none -- a bounded copy of a line already in RAM; no AT traffic.
+
+## 1.24 Keep the `+COPS:` and `+CNUM:` response lines (`src/WalterModem.h`, `src/WalterModem.cpp`)
+
+Same shape as 1.8's `+CRSM:` capture: `_processModemRSP()` stores the last `+COPS: ...` line and the first
+`+CNUM: ...` line (63 bytes max each) in `_lastCops` / `_lastCnum`, readable with `lastCOPS()` /
+`lastCNUM()` and reset with `clearCOPSCNUM()`. The library parses neither command. The pager sends
+`AT+COPS?` and `AT+CNUM` through `sendCmd()` (1.20 budget) for the Device screen (operator name, the
+SIM's own number).
+
+**Power effect**: none -- a bounded copy of a line already in RAM; no AT traffic.

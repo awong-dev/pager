@@ -93,6 +93,7 @@ typedef struct ui_screen_s {
 extern const ui_screen_t g_scr_home;
 extern const ui_screen_t g_scr_chat;
 extern const ui_screen_t g_scr_device;
+extern const ui_screen_t g_scr_devinfo; /* scr_devinfo.c: battery, temperature, SIM and cell details */
 extern const ui_screen_t g_scr_setup;
 /* F6.5 (docs/DEVICE_PLAN.md §5.8): the Locked screen — lock.c now exists, so
  * this is no longer one of the book.c/lock.c-dependent screens this header's

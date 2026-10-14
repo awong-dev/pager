@@ -75,7 +75,7 @@ endif
 MAIN_SRC := ../main
 BUILD := build
 
-TESTS := test_cbor test_auth test_setup test_input test_msg test_lock test_loc test_cafetch test_catrust test_cfg test_sms test_carrier test_chat_layout test_home_list test_archive test_coverage test_net_connect_guard test_net_probe_guard test_resub_verdict test_publish_quiet test_accel_rate test_wifi_policy test_wificred test_bookpull test_clock test_disp_flip test_otapipe test_ota test_battstat test_refreshpol
+TESTS := test_cbor test_auth test_setup test_input test_msg test_lock test_loc test_cafetch test_catrust test_cfg test_sms test_carrier test_chat_layout test_home_list test_archive test_coverage test_net_connect_guard test_net_probe_guard test_resub_verdict test_publish_quiet test_accel_rate test_wifi_policy test_wificred test_bookpull test_clock test_disp_flip test_otapipe test_ota test_battstat test_refreshpol test_temp test_devinfo
 TEST_BINS := $(TESTS:%=$(BUILD)/%)
 
 # ASSETS: tools/mkassets.py's default output location (docs/DEVICE_TASKS.md
@@ -83,7 +83,7 @@ TEST_BINS := $(TESTS:%=$(BUILD)/%)
 # run from the repo root), resolved relative to this directory.
 ASSETS ?= ../../build/assets.bin
 
-.PHONY: all test png clean
+.PHONY: all test png emoji_png clean
 all: $(TEST_BINS)
 
 test: $(TEST_BINS)
@@ -286,8 +286,18 @@ $(BUILD)/gfx.o: $(MAIN_SRC)/gfx.c $(MAIN_SRC)/gfx.h | $(BUILD)
 $(BUILD)/render_png.o: render_png.c $(MAIN_SRC)/gfx.h | $(BUILD)
 	$(CC) $(CFLAGS) $(INCLUDES) $(ZLIB_CFLAGS) -c -o $@ render_png.c
 
-$(BUILD)/render_png: $(BUILD)/gfx.o $(BUILD)/render_png.o
-	$(CC) $(CFLAGS) -o $@ $(BUILD)/gfx.o $(BUILD)/render_png.o $(ZLIB_LIBS)
+$(BUILD)/render_png: $(BUILD)/gfx.o $(BUILD)/render_png.o $(BUILD)/devinfo_fmt.o
+	$(CC) $(CFLAGS) -o $@ $(BUILD)/gfx.o $(BUILD)/render_png.o $(BUILD)/devinfo_fmt.o $(ZLIB_LIBS)
+
+# render_emoji: emoji test sheet (includes render_png.c); `make emoji_png ASSETS=<emoji image>`.
+$(BUILD)/render_emoji.o: render_emoji.c render_png.c $(MAIN_SRC)/gfx.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) $(ZLIB_CFLAGS) -c -o $@ render_emoji.c
+
+$(BUILD)/render_emoji: $(BUILD)/gfx.o $(BUILD)/render_emoji.o $(BUILD)/devinfo_fmt.o
+	$(CC) $(CFLAGS) -o $@ $(BUILD)/gfx.o $(BUILD)/render_emoji.o $(BUILD)/devinfo_fmt.o $(ZLIB_LIBS)
+
+emoji_png: $(BUILD)/render_emoji
+	./$(BUILD)/render_emoji $(ASSETS)
 
 png: $(BUILD)/render_png
 	./$(BUILD)/render_png $(ASSETS)
@@ -519,3 +529,23 @@ $(BUILD)/test_refreshpol.o: test_refreshpol.c $(MAIN_SRC)/refreshpol.h | $(BUILD
 
 $(BUILD)/test_refreshpol: $(BUILD)/refreshpol.o $(BUILD)/test_refreshpol.o
 	$(CC) $(CFLAGS) -o $@ $(BUILD)/refreshpol.o $(BUILD)/test_refreshpol.o
+
+# test_temp: temp_parse.c (pure) + cbor.c for the optional /status keys 23/71 encoding.
+$(BUILD)/temp_parse.o: $(MAIN_SRC)/temp_parse.c $(MAIN_SRC)/temp_parse.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $(MAIN_SRC)/temp_parse.c
+
+$(BUILD)/test_temp.o: test_temp.c $(MAIN_SRC)/temp_parse.h $(MAIN_SRC)/cbor.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ test_temp.c
+
+$(BUILD)/test_temp: $(BUILD)/temp_parse.o $(BUILD)/cbor.o $(BUILD)/test_temp.o
+	$(CC) $(CFLAGS) -o $@ $(BUILD)/temp_parse.o $(BUILD)/cbor.o $(BUILD)/test_temp.o
+
+# test_devinfo: devinfo_fmt.c (pure row builder and COPS/CNUM parsers).
+$(BUILD)/devinfo_fmt.o: $(MAIN_SRC)/devinfo_fmt.c $(MAIN_SRC)/devinfo_fmt.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $(MAIN_SRC)/devinfo_fmt.c
+
+$(BUILD)/test_devinfo.o: test_devinfo.c $(MAIN_SRC)/devinfo_fmt.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ test_devinfo.c
+
+$(BUILD)/test_devinfo: $(BUILD)/devinfo_fmt.o $(BUILD)/test_devinfo.o
+	$(CC) $(CFLAGS) -o $@ $(BUILD)/devinfo_fmt.o $(BUILD)/test_devinfo.o

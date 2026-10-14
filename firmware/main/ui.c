@@ -361,7 +361,7 @@ static void draw_status_bar(void)
     // padlock moved here from the left on 23 Sep 2026, owner's request: it
     // belongs with the other link indicators.)
     int batt_x = clk_x - UI_STATUS_ICON_GAP - GFX_ICON_W;
-    gfx_icon(batt_x, 0, (gfx_icon_t) (GFX_ICON_BATTERY_0 + segs_from_batt_mv(modes_get_batt_mv())));
+    gfx_icon(batt_x, 0, (gfx_icon_t) (GFX_ICON_BATTERY_0 + segs_from_batt_mv(modes_batt_mv_known() ? modes_get_batt_mv() : 3700) /* unknown: mid icon, as before */));
 
     int bars_x = batt_x - GFX_ICON_W - UI_STATUS_ICON_GAP;
     int bars = bars_from_rssi_dbm(modes_get_rssi_dbm());

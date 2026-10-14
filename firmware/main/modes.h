@@ -62,19 +62,13 @@ uint32_t modes_last_sleep_ext1_wakes(void);
  * sleep-state effect. */
 int64_t modes_debug_last_input_age_us(void);
 
-/* True once at least one good AT+SQNVMON reading has been taken this boot.
- * modes_get_batt_mv() returns a hardcoded "unknown" mV placeholder
- * (PAGER_BATT_MV_UNKNOWN_PLACEHOLDER, modes.c) before that (or if every
- * reading since boot has been out of range) purely so the UI battery icon
- * and the /status `batt_mv` field (PROTOCOL.md §5.1's [2000,5000] range
- * requirement) always have *something* numeric to show — it is NOT a real
- * reading. loc.c's battery floor (LOC_BATTERY_FLOOR_MV, loc.h) must not
- * treat that placeholder as a real "at the floor" reading: callers that
- * gate on the battery floor must check this first (this task, found on
- * hardware bench-logs/08-locreq2.log logging "batt=3300mV" while on USB
- * power with AT+SQNVMON returning an out-of-range value, back when the
- * placeholder and the LiFePO4 floor were both 3300). */
+/* True once at least one non-zero AT+SQNVMON reading has been taken this boot. Until then
+ * modes_get_batt_mv() returns 0, which is "no reading", not a voltage. The reading is raw and
+ * unclamped (~5200 mV on USB); clamp only for display. loc.c's battery floor and the UI/OTA
+ * consumers check this first. */
 bool modes_batt_mv_known(void);
+/* Last modem temperature in tenths of C (net_get_temp_dc()); false until the first reading. */
+bool modes_get_temp_dc(int *temp_dc);
 const char *modes_get_fw_version(void);
 const char *modes_get_session_id(void);
 uint32_t modes_get_memfull_count(void);

@@ -26,6 +26,8 @@
 #include "input.h" // input_pending() at the sleep edge
 #include "ui.h" // ui_kb_sleep_park()/unpark() around esp_light_sleep_start()
 extern "C" {
+#include "devinfo_fmt.h"
+#include "temp_parse.h" // PAGER_TEMP_CMD / temp_parse_dc()
 #include "battstat.h" // battstat_raise(BS_MODEM) in the publish wrappers (BATTERY_STATS_DESIGN.md B3)
 }
 #include "flightrec.h" // docs/SLEEP_PAGE_LOSS_BRIEF.md §6 item A; no-op outside a debug build's sleeptest window
@@ -620,6 +622,7 @@ extern "C" bool net_sim_identity(char *imsi, size_t imsi_cap, char *gid1_hex, si
 // The preset in force from the last effective_apn() (NULL = none: direct, no
 // PDP auth, SMS allowed). F2/F3 read it; the bearer override is applied by
 // carrier_bearer_resolve() at the point of use.
+static net_devinfo_t s_di = {}; // Device info cache (net_devinfo_*), written from the attach and from modes_run()
 static const carrier_preset_t *s_carrier = nullptr;
 static carrier_bearer_t s_bearer = CARRIER_BEARER_DIRECT; // resolved once per attach in effective_apn()
 
@@ -690,6 +693,10 @@ static const char *effective_apn(const char *typed, const char *stored)
             }
         }
     }
+    if (have_sim) {
+        snprintf(s_di.imsi, sizeof(s_di.imsi), "%s", imsi);
+        snprintf(s_di.iccid, sizeof(s_di.iccid), "%s", iccid);
+    }
     const carrier_preset_t *p = carrier_effective(imsi, gid1, iccid, typed);
     s_carrier = p;
     if (typed_set) {
@@ -707,6 +714,7 @@ static const char *effective_apn(const char *typed, const char *stored)
         why = "from the setup bundle";
     }
     s_bearer = carrier_bearer_resolve(p, carrier_bearer_override_get());
+    snprintf(s_di.apn, sizeof(s_di.apn), "%s", apn ? apn : "");
     ESP_LOGI(TAG, "APN: '%s' (%s); carrier %s, bearer %s", apn ? apn : "", why, p ? p->label : "(none)",
              s_bearer == CARRIER_BEARER_BEAM ? "beam" : "direct");
     return apn;
@@ -1933,8 +1941,159 @@ extern "C" bool net_get_battery_mv(int *batt_mv)
         return false;
     }
     if (batt_mv) {
-        *batt_mv = (int) rsp.data.voltage.voltage * 100; // tenths-of-a-volt -> mV
+        // The reading is millivolts, unlike the threshold (tenths) and unlike what the Sequans and
+        // Walter docs say: +SQNVMON: 1,30,30,5203 on USB = 3.0 V threshold, 30 s, 5.203 V (bench
+        // 13 Oct 2026). The old "* 100" pinned every reading out of range (stuck 3700 placeholder).
+        *batt_mv = (int) rsp.data.voltage.voltage;
     }
+    return true;
+}
+
+#define PAGER_TMON_ATTEMPTS 1
+#define PAGER_TMON_TIMEOUT_MS 5000u
+
+extern "C" bool net_get_temp_dc(int *temp_dc)
+{
+    if (net_airplane()) {
+        return false;
+    }
+    // Power effect: one AT round trip (PAGER_TEMP_CMD), no RRC of its own. PATCHES.md 1.23 keeps the
+    // raw "+SQNTMON: ..." line in rsp.data.temperature.raw; the stock int8_t field can't hold tenths.
+    WalterModemRsp rsp = {};
+    if (!WalterModem::sendCmd(PAGER_TEMP_CMD, "OK", &rsp, NULL, NULL, PAGER_TMON_ATTEMPTS,
+                              pdMS_TO_TICKS(PAGER_TMON_TIMEOUT_MS))) {
+        return false;
+    }
+    if (rsp.type != WALTER_MODEM_RSP_DATA_TYPE_TEMPERATURE) {
+        return false;
+    }
+    int dc = 0;
+    const bool parsed = temp_parse_dc(rsp.data.temperature.raw, &dc);
+    static bool s_logged = false;
+    if (!s_logged) {
+        s_logged = true;
+        if (parsed) {
+            ESP_LOGI(TAG, "temp: raw \"%s\" -> %d dC", rsp.data.temperature.raw, dc);
+        } else {
+            ESP_LOGI(TAG, "temp: raw \"%s\" -> unparsed", rsp.data.temperature.raw);
+        }
+    }
+    if (!parsed) {
+        return false;
+    }
+    if (temp_dc) {
+        *temp_dc = dc;
+    }
+    return true;
+}
+
+static bool is_nanp_mcc(uint16_t mcc); // defined with net_get_cell_info() below
+static bool s_di_requested = false;
+static bool s_di_cnum_tried = false;
+
+extern "C" void net_devinfo_get(net_devinfo_t *out)
+{
+    if (out) {
+        *out = s_di;
+    }
+}
+
+extern "C" void net_devinfo_request(void) { s_di_requested = true; }
+
+extern "C" bool net_devinfo_take_request(void)
+{
+    const bool r = s_di_requested;
+    s_di_requested = false;
+    return r;
+}
+
+#define PAGER_DI_TIMEOUT_MS 3000u
+
+// One bounded query: 1 attempt, 3 s, response captured into *rsp / the PATCHES.md 1.8/1.24 line buffers.
+static bool di_cmd(const char *cmd, WalterModemRsp *rsp)
+{
+    return WalterModem::sendCmd(cmd, "OK", rsp, NULL, NULL, 1, pdMS_TO_TICKS(PAGER_DI_TIMEOUT_MS));
+}
+
+extern "C" bool net_devinfo_refresh(void)
+{
+    if (net_airplane()) {
+        return false;
+    }
+    int fails = 0;
+    // Power effect of the whole function: up to six AT round trips, no RRC.
+    if (s_di.imei[0] == '\0' && fails < 2) {
+        WalterModemRsp rsp = {};
+        if (di_cmd("AT+CGSN=2", &rsp) && rsp.type == WALTER_MODEM_RSP_DATA_TYPE_IDENTITY) {
+            snprintf(s_di.imei, sizeof(s_di.imei), "%s", rsp.data.identity.imei);
+            fails = 0;
+        } else {
+            fails++;
+        }
+    }
+    if (s_di.imsi[0] == '\0' && fails < 2) {
+        WalterModemRsp rsp = {};
+        if (di_cmd("AT+CIMI", &rsp) && rsp.data.imsi[0] != '\0') {
+            snprintf(s_di.imsi, sizeof(s_di.imsi), "%s", rsp.data.imsi);
+            fails = 0;
+        } else {
+            fails++;
+        }
+    }
+    if (s_di.iccid[0] == '\0' && fails < 2) {
+        WalterModemRsp rsp = {};
+        if (di_cmd("AT+SQNCCID", &rsp) && rsp.data.simCardID.iccid[0] != '\0') {
+            snprintf(s_di.iccid, sizeof(s_di.iccid), "%s", rsp.data.simCardID.iccid);
+            fails = 0;
+        } else {
+            fails++;
+        }
+    }
+    if (!s_di_cnum_tried && fails < 2) {
+        s_di_cnum_tried = true; // many SIMs have no number; one try per boot, an error is not a fault
+        WalterModem::clearCOPSCNUM();
+        WalterModemRsp rsp = {};
+        if (di_cmd("AT+CNUM", &rsp)) {
+            devinfo_parse_cnum(WalterModem::lastCNUM(), s_di.msisdn, sizeof(s_di.msisdn));
+        }
+    }
+    if (fails < 2) {
+        WalterModem::clearCOPSCNUM();
+        WalterModemRsp rsp = {};
+        if (di_cmd("AT+COPS?", &rsp)) {
+            char nm[sizeof(s_di.opname)];
+            if (devinfo_parse_cops(WalterModem::lastCOPS(), nm, sizeof(nm))) {
+                snprintf(s_di.opname, sizeof(s_di.opname), "%s", nm);
+            }
+            fails = 0;
+        } else {
+            fails++;
+        }
+    }
+    if (fails < 2) {
+        char cmd[20];
+        snprintf(cmd, sizeof(cmd), "AT+SQNMONI=%d", (int) WALTER_MODEM_SQNMONI_REPORTS_SERVING_CELL);
+        WalterModemRsp rsp = {};
+        if (di_cmd(cmd, &rsp) && rsp.type == WALTER_MODEM_RSP_DATA_TYPE_CELL_INFO) {
+            const WalterModemCellInformation &ci = rsp.data.cellInformation;
+            uint8_t nd = ci.ncDigits;
+            if (nd != 2 && nd != 3) {
+                nd = is_nanp_mcc(ci.cc) ? 3 : 2;
+            }
+            snprintf(s_di.mcc, sizeof(s_di.mcc), "%03u", (unsigned) (ci.cc % 1000u));
+            snprintf(s_di.mnc, sizeof(s_di.mnc), "%0*u", (int) nd, (unsigned) (ci.nc % 1000u));
+            s_di.tac = ci.tac;
+            s_di.ci = ci.cid & 0x0FFFFFFFu;
+            s_di.band = ci.band;
+            s_di.have_rsrp = (ci.rsrp <= -30.0f && ci.rsrp >= -156.0f);
+            s_di.rsrp = s_di.have_rsrp ? (int) (ci.rsrp - 0.5f) : 0;
+            s_di.have_rsrq = (ci.rsrq <= 0.0f && ci.rsrq >= -40.0f);
+            s_di.rsrq_dtenths = s_di.have_rsrq ? (int) (ci.rsrq * 10.0f + (ci.rsrq < 0 ? -0.5f : 0.5f)) : 0;
+            s_di.have_cell = true;
+        }
+    }
+    ESP_LOGI(TAG, "devinfo refreshed: imei %s, sim %s, cell %s", s_di.imei[0] ? "ok" : "--",
+             s_di.imsi[0] ? "ok" : "--", s_di.have_cell ? "ok" : "--");
     return true;
 }
 

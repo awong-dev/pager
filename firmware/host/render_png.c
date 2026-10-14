@@ -27,6 +27,7 @@
  * fallback chain makes the same kind of assumption for test_setup).
  */
 #include "gfx.h"
+#include "devinfo_fmt.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -535,6 +536,50 @@ static void render_screen_device(void)
     gfx_text(0, FIXTURE_FOOTER_Y, GFX_FONT_NORMAL, "up/down move  enter select  esc back");
 }
 
+/* scr_devinfo.c: the real row builder (devinfo_rows()) with fixture data, `top` = first visible row. */
+static void render_screen_devinfo_at(int top)
+{
+    gfx_clear();
+    draw_fixture_status_bar(3, true, 0, 0, 3);
+    devinfo_view_t v = {0};
+    v.batt_known = true;
+    v.batt_mv = 5203;
+    v.temp_known = true;
+    v.temp_dc = 235;
+    v.imei = "352656100123456";
+    v.imsi = "310280123456789";
+    v.iccid = "89148000001234567890";
+    v.msisdn = "+15551234567";
+    v.opname = "Verizon Wireless";
+    v.have_cell = true;
+    v.mcc = "311";
+    v.mnc = "480";
+    v.tac = 12345;
+    v.ci = 123456789;
+    v.band = 13;
+    v.have_rsrp = true;
+    v.rsrp = -95;
+    v.have_rsrq = true;
+    v.rsrq_dtenths = -95;
+    v.carrier = "Soracom";
+    v.apn = "soracom.io";
+    v.bearer_known = true;
+    v.beam = true;
+    static char rows[DEVINFO_MAX_ROWS][DEVINFO_ROW_LEN];
+    int n = devinfo_rows(&v, rows, DEVINFO_MAX_ROWS);
+    int y = FIXTURE_BODY_TOP + 2;
+    for (int i = top; i < n && i < top + 5; i++) {
+        gfx_text(0, y, GFX_FONT_NORMAL, rows[i]);
+        y += 16; /* UI_ROW_H */
+    }
+    char foot[40];
+    snprintf(foot, sizeof(foot), "up/down scroll  esc back  %d/%d", top + 1, n - 4);
+    gfx_text(0, FIXTURE_FOOTER_Y, GFX_FONT_NORMAL, foot);
+}
+
+static void render_screen_devinfo(void) { render_screen_devinfo_at(0); }
+static void render_screen_devinfo_end(void) { render_screen_devinfo_at(6); }
+
 static void render_screen_setup(void)
 {
     gfx_clear();
@@ -824,6 +869,8 @@ int main(int argc, char **argv)
         { "screen_chat", render_screen_chat },
         { "screen_chat_long_draft", render_screen_chat_long_draft },
         { "screen_device", render_screen_device },
+        { "screen_devinfo", render_screen_devinfo },
+        { "screen_devinfo_end", render_screen_devinfo_end },
         { "screen_setup", render_screen_setup },
         { "screen_pick", render_screen_pick },
         { "screen_book", render_screen_book },
