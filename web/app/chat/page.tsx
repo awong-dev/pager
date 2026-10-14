@@ -269,7 +269,7 @@ function ChatListInner() {
                 <Chip
                   icon={<BatteryStdIcon />}
                   size="small"
-                  label={`${(device.status.battMv / 1000).toFixed(2)} V`}
+                  label={device.status.battMv >= 4300 ? "USB" : `${(device.status.battMv / 1000).toFixed(2)} V`}
                 />
               )}
               {tsToMillis(device.status.updatedAt) !== null && (

@@ -267,6 +267,8 @@ class StatusEnvelope(BaseModel):
     state: Literal["online", "offline"]
     mode: str | None = None
     batt_mv: int | None = None
+    # PROTOCOL.md §5.1 (key 71): modem temperature, tenths of a degree C.
+    temp_dc: int | None = None
     rssi: int | None = None
     session: str
     ts: int | None = None
@@ -446,9 +448,17 @@ class StatusEnvelope(BaseModel):
     @field_validator("batt_mv")
     @classmethod
     def _check_batt(cls, value: int | None) -> int | None:
-        # 5000 mV ceiling: a pager on USB reads its modem rail near 4.5 V.
-        if value is not None and not (2000 <= value <= 5000):
+        # Raw AT+SQNVMON millivolts, unclamped by the device (~5200 on USB);
+        # sanity range only.
+        if value is not None and not (0 <= value <= 10000):
             raise ValueError("batt_mv out of range")
+        return value
+
+    @field_validator("temp_dc")
+    @classmethod
+    def _check_temp(cls, value: int | None) -> int | None:
+        if value is not None and not (-400 <= value <= 1250):
+            raise ValueError("temp_dc out of range")
         return value
 
     @field_validator("rssi")
@@ -461,7 +471,7 @@ class StatusEnvelope(BaseModel):
     @model_validator(mode="after")
     def _check_online_fields(self) -> StatusEnvelope:
         if self.state == "online" and (
-            self.mode is None or self.batt_mv is None or self.ts is None
+            self.mode is None or self.ts is None
         ):
             raise ValueError("online status missing a required field")
         return self

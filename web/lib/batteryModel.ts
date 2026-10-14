@@ -6,6 +6,11 @@ export type Cause = "timer" | "attn" | "hot" | "ui" | "modem" | "fetch";
 export const CAUSES: Cause[] = ["timer", "attn", "hot", "ui", "modem", "fetch"];
 
 export const USB_MV = 4300;
+
+/** Modem temperature in tenths of a degree C -> "23.5 °C". */
+export function formatTempDc(dc: number): string {
+  return `${(dc / 10).toFixed(1)} °C`;
+}
 export const GNSS_FLOOR_MV = 3550;
 export const OTA_FLOOR_MV = 3600;
 
@@ -17,6 +22,7 @@ export interface BatterySample {
   session?: string;
   sq?: number;
   battMv?: number;
+  tempDc?: number;
   minMv?: number;
   rssi?: number;
   mode?: string;
@@ -269,7 +275,7 @@ export function bucketAwake(samples: BatterySample[], unit: BucketUnit): AwakeBu
 }
 
 export const CSV_HEADER =
-  "ts,iso,session,sq,battMv,minMv,rssi,mode,xport,fw,img,rst,link,hasBs,dtS,sleepS,aw_timer,aw_attn,aw_hot,aw_ui,aw_modem,aw_fetch,sleeps,ext1,railS,rf_full,rf_partial,rf_upgraded,connects,md_off,md_search,md_gnss,radioEvents,model_mAh";
+  "ts,iso,session,sq,battMv,tempDc,minMv,rssi,mode,xport,fw,img,rst,link,hasBs,dtS,sleepS,aw_timer,aw_attn,aw_hot,aw_ui,aw_modem,aw_fetch,sleeps,ext1,railS,rf_full,rf_partial,rf_upgraded,connects,md_off,md_search,md_gnss,radioEvents,model_mAh";
 
 function cell(v: string | number | boolean | undefined | null): string {
   if (v === undefined || v === null) return "";
@@ -285,7 +291,7 @@ export function toCsv(samples: BatterySample[], m: BatteryModel): string {
     const row = [
       s.ts,
       new Date(s.ts * 1000).toISOString(),
-      s.session, s.sq, s.battMv, s.minMv, s.rssi, s.mode, s.xport, s.fw, s.img, s.rst, s.link,
+      s.session, s.sq, s.battMv, s.tempDc, s.minMv, s.rssi, s.mode, s.xport, s.fw, s.img, s.rst, s.link,
       s.hasBs,
       s.dtS, s.sleepS,
       s.awakeS?.timer, s.awakeS?.attn, s.awakeS?.hot, s.awakeS?.ui, s.awakeS?.modem, s.awakeS?.fetch,

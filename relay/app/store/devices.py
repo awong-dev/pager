@@ -81,6 +81,7 @@ class DeviceStatus(BaseModel):
     state: str | None = None
     mode: str | None = None
     battMv: int | None = None
+    tempDc: int | None = None
     rssi: int | None = None
     session: str | None = None
     ts: int | None = None

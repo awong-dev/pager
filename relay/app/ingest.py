@@ -1059,12 +1059,19 @@ class Ingest:
         # OTA group is cleared rather than left at its last value (a stale
         # `dl` stuck on the web after a cancel + USB reflash, 10 Oct 2026).
         ota_clear = ("otaTarget", "otaState", "otaPct", "otaErr") if env.state == "online" and env.ota_t is None and env.ota_st is None else ()
+        # batt_mv/temp_dc are omitted until the modem has a reading this boot;
+        # an online status without them must not leave the last boot's value.
+        if env.state == "online":
+            ota_clear += tuple(
+                k for k, v in (("battMv", env.batt_mv), ("tempDc", env.temp_dc)) if v is None
+            )
         devices_store.update_status(
             device_id,
             clear=ota_clear,
             state=env.state,
             mode=env.mode,
             battMv=env.batt_mv,
+            tempDc=env.temp_dc,
             rssi=env.rssi,
             session=env.session,
             ts=resolved_ts,

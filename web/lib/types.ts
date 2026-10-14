@@ -125,6 +125,7 @@ export interface DeviceStatusDoc {
   state: string | null;
   mode: string | null;
   battMv: number | null;
+  tempDc?: number | null;
   rssi: number | null;
   session: string | null;
   ts: number | null;

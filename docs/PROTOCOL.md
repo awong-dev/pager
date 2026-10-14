@@ -752,7 +752,8 @@ broker-generated LWT.
 | `v` | int | no (default 1) | `1` | Schema version |
 | `state` | string | **yes** | `online` \| `offline` | See §5.2 for the precise meaning |
 | `mode` | string | yes when `online` | `sleep` \| `active` | Device mode (firmware/README.md) |
-| `batt_mv` | int | yes when `online` | 2000…5000 | Battery millivolts. *(raw mV, not percent; LiPo discharge curve is relatively steep so any percent mapping belongs in the UI where it can be changed without a firmware flash.)* |
+| `batt_mv` | int | no | 0…10000 | Raw `AT+SQNVMON` modem-rail millivolts, unclamped (~5200 on USB); omitted until the modem has a reading this boot (no placeholder). *(raw mV, not percent; LiPo discharge curve is relatively steep so any percent mapping belongs in the UI where it can be changed without a firmware flash.)* |
+| `temp_dc` | int | no | −400…1250 | Modem temperature in tenths of a degree Celsius (235 = 23.5 °C). CBOR key 71. Omitted when unknown. |
 | `rssi` | int | yes when `online` | −140…0 | RSSI in dBm (now published at every `/status` for field debugging and status bar rendering). |
 | `session` | string | **yes** | `^s_[0-9a-f]{8}$` | Cold-boot session id (§1). Lets the relay tell a reboot from a deep-sleep cycle. |
 | `ts` | int | yes when `online` | epoch s, or 0 | Same rule as §3.5 |
@@ -1565,7 +1566,7 @@ Devices emit CBOR (§3) with this integer keymap. The relay accepts both JSON (t
 | 20 | `more` | bool | `/down` `book` (reserved for chunking); v0.4: §3.7 fetch response, `true` when `c[]` was truncated at 32 |
 | 21 | `state` | tstr | `/status` (online/offline) |
 | 22 | `mode` | tstr | `/status` (sleep/active) |
-| 23 | `batt_mv` | int | `/status` (battery millivolts) |
+| 23 | `batt_mv` | int | `/status` (raw modem-rail millivolts, optional) |
 | 24 | `rssi` | int | `/status` (signal strength in dBm) |
 | 25 | `session` | tstr | `/status` (session id) |
 | 26 | `fw` | tstr | `/status` (firmware version) |
@@ -1613,6 +1614,7 @@ Devices emit CBOR (§3) with this integer keymap. The relay accepts both JSON (t
 | 68 | `bs` | map | `/status` (battery stats, `docs/BATTERY_STATS_DESIGN.md`; optional, CBOR only, §3.3) |
 | 69 | `gnss` | uint 0/1 | `/status` (GNSS disable, §5.1 — `cfg.loc` effective state, optional; `docs/GNSS_DISABLE_DESIGN.md` D4) |
 | 70 | `car` | tstr, ≤24 B | `/status` (Soracom bearer, §5.1 — carrier preset label, optional, display only; `docs/SORACOM_DESIGN.md` §3.4) |
+| 71 | `temp_dc` | int | `/status` (modem temperature, tenths of °C, −400…1250, optional) |
 
 *(A relay-side task that added `rst`/`stage`/`abn` was briefed with key 52 for `rst`; by the time
 it landed, 52 was already `xport`, both here and in the shipped relay code. Kept `xport=52` as the
@@ -1777,8 +1779,8 @@ the future.
 
   Instead: `walter-modem` v1.5.0 exposes `configVoltageMonitor()` / `getVoltage()`, mapping to the
   Sequans-specific `AT+SQNVMON` command, which reports the GM02SP modem's own supply-rail voltage
-  in tenths of a volt (confirmed directly in `src/WalterModem.h`/`.cpp` — not merely assumed from
-  documentation). Whether that rail tracks the *battery* rather than a fixed regulated rail was
+  in **millivolts** (bench 13 Oct 2026: `+SQNVMON: 1,30,30,5203` on USB; the threshold argument is
+  in tenths of a volt, but the reading is not — the Sequans and Walter docs wrongly say tenths for both). Whether that rail tracks the *battery* rather than a fixed regulated rail was
   checked against Walter's public hardware schematics
   (`https://github.com/QuickSpot/walter-hardware`), not just guessed:
   - the GM02SP's power pins sit on a net explicitly named `VBAT`, distinct from Walter's own
@@ -1794,7 +1796,7 @@ the future.
   Taken together this is strong (not certain — Walter's own internal PCB routing from `VIN` to the
   GM02SP's `VBAT` pins is not published, only inferred by elimination) evidence that `getVoltage()`
   tracks real battery voltage on a battery-powered Walter build, not a fixed 3.3V rail. `net.cpp`
-  now calls it and reports the result as `batt_mv`; §12's unverified-assumptions table below
+  now calls it and reports the result as `batt_mv` (14 Oct 2026: raw and unclamped, no 2000–5000 range or placeholder; omitted when there is no reading yet; the modem temperature rides alongside as `temp_dc`); §12's unverified-assumptions table below
   carries the one open item this rests on. **`UNVERIFIED`, cheap to confirm**: on first hardware
   bring-up, compare `getVoltage()`'s reported value against a multimeter reading of the actual
   battery — 5 minutes, no code change either way.

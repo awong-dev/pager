@@ -26,6 +26,7 @@ import FirmwareChip from "@/components/FirmwareChip";
 import { deviceName } from "@/lib/devices";
 import { locBackoffLabel } from "@/lib/deviceTrust";
 import type { FirmwareBuild, FirmwareScope } from "@/lib/firmware";
+import { formatTempDc } from "@/lib/batteryModel";
 import { formatRelativeAge } from "@/lib/time";
 import type { DeviceDoc } from "@/lib/types";
 
@@ -93,8 +94,8 @@ function Fact({ label, children }: { label: string; children: React.ReactNode })
   );
 }
 
-function Battery({ id, mv, ts }: { id: string; mv: number | null | undefined; ts: number | null | undefined }) {
-  if (mv == null) return <>–</>;
+function Battery({ id, mv, tempDc, ts }: { id: string; mv: number | null | undefined; tempDc?: number | null; ts: number | null | undefined }) {
+  if (mv == null) return <>—</>;
   const age = ts ? ` · ${formatRelativeAge(ts * 1000)}` : "";
   const text = mv >= 4300 ? "USB" : mv === BATT_MV_UNKNOWN_PLACEHOLDER ? "unknown" : `${mv} mV`;
   const color = mv >= 4300 || mv === BATT_MV_UNKNOWN_PLACEHOLDER ? "text.primary" : mv < 3550 ? "error" : mv < 3700 ? "warning.main" : "text.primary";
@@ -102,6 +103,7 @@ function Battery({ id, mv, ts }: { id: string; mv: number | null | undefined; ts
     <Link href={`/devices/${id}#battery`} style={{ color: "inherit" }}>
       <Typography component="span" variant="body2" color={color}>
         {text}
+        {tempDc != null ? ` · ${formatTempDc(tempDc)}` : ""}
         {mv !== BATT_MV_UNKNOWN_PLACEHOLDER ? age : ""}
       </Typography>
     </Link>
@@ -158,7 +160,7 @@ export default function DeviceCard(p: DeviceCardProps) {
             {p.familyLabel !== undefined && <Fact label="Family">{p.familyLabel}</Fact>}
             <Fact label="Default to">{p.defaultToLabel || "--"}</Fact>
             <Fact label="Battery">
-              <Battery id={d.id} mv={d.status?.battMv} ts={ts} />
+              <Battery id={d.id} mv={d.status?.battMv} tempDc={d.status?.tempDc} ts={ts} />
             </Fact>
             <Fact label="Link">
               <DeviceTrustChip tls={d.status?.tls} caFp={d.status?.caFp} />

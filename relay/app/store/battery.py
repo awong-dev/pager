@@ -65,6 +65,7 @@ def add_sample(
         "createdAt": datetime.now(UTC),
         "session": env.session,
         "battMv": env.batt_mv,
+        "tempDc": env.temp_dc,
         "rssi": env.rssi,
         "mode": env.mode,
         "xport": env.xport,

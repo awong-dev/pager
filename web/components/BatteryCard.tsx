@@ -28,6 +28,7 @@ import { ApiError } from "@/lib/api";
 import { fetchBattery } from "@/lib/battery";
 import {
   USB_MV,
+  formatTempDc,
   bucketAwake,
   sampleMah,
   termBreakdown,
@@ -105,6 +106,7 @@ export default function BatteryCard({ deviceId }: { deviceId: string }) {
   const withBs = useMemo(() => samples.filter((s) => s.hasBs), [samples]);
   const buckets = useMemo(() => bucketAwake(samples, bucketUnit), [samples, bucketUnit]);
   const last = samples.length > 0 ? samples[samples.length - 1] : null;
+  const lastTemp = [...samples].reverse().find((s) => s.tempDc != null)?.tempDc;
   const lastMv = [...samples].reverse().find((s) => s.battMv != null)?.battMv;
 
   const totals = useMemo(() => {
@@ -201,6 +203,7 @@ export default function BatteryCard({ deviceId }: { deviceId: string }) {
             <>
               <Typography variant="body2">
                 {lastMv != null ? (lastMv >= USB_MV ? `${lastMv} mV (on USB)` : `${lastMv} mV`) : "no voltage"}
+                {lastTemp != null && ` · ${formatTempDc(lastTemp)}`}
                 {last && ` · last sample ${new Date(last.ts * 1000).toLocaleString()}`}
                 {withBs.length < samples.length &&
                   ` · ${withBs.length} of ${samples.length} samples carry counters`}

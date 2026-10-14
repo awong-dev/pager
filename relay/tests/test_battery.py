@@ -210,8 +210,8 @@ def test_usb_rail_4600_mv_stored_and_listed(client, ingest, dev):
     assert [s["battMv"] for s in r.json()["samples"]] == [4600]
 
 
-def test_5001_mv_rejected(ingest, dev):
-    _send(ingest, dev, _status(batt_mv=5001), 1)
+def test_10001_mv_rejected(ingest, dev):
+    _send(ingest, dev, _status(batt_mv=10001), 1)
     assert _docs() == []
     _send(ingest, dev, _status(session="s_00000002", bs={**BS, "mvn": 5001}), 2)
     d = [x.to_dict() for x in _docs()]

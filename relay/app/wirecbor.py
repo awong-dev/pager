@@ -165,6 +165,8 @@ KEYMAP: dict[str, int] = {
     "gnss": 69,
     # docs/SORACOM_DESIGN.md §4: `/status`'s carrier name (tstr <= 24).
     "car": 70,
+    # PROTOCOL.md §5.1: `/status`'s modem temperature, tenths of a degree C.
+    "temp_dc": 71,
 }
 REVERSE_KEYMAP: dict[int, str] = {v: k for k, v in KEYMAP.items()}
 
