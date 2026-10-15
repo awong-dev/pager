@@ -289,8 +289,86 @@ static void test_shake_backwards_clock(void)
     CHECK(fired == 1, "a fresh shake after the backwards clock still fires, got %d", fired);
 }
 
+// A failed read steps the classifier with ia2=false: a pending chain expires.
+static void test_shake_expires_on_failed_reads(void)
+{
+    accel_shake_t s = { 0 };
+    accel_shake_step(&s, &SHAKE_CFG, MS(1000), true);
+    CHECK(s.n == 1, "chain pending, n=%u", (unsigned) s.n);
+    accel_shake_verdict_t v = ACCEL_SHAKE_PENDING;
+    for (int t = 1020; t <= 1000 + SHAKE_CFG.gap_ms + 40; t += 20) {
+        v = accel_shake_step(&s, &SHAKE_CFG, MS(t), false);
+    }
+    CHECK(s.n == 0, "failed reads (ia2=false) let the chain expire, n=%u", (unsigned) s.n);
+    CHECK(v == ACCEL_SHAKE_REJECTED || v == ACCEL_SHAKE_IDLE, "expired, got %d", (int) v);
+}
+
+static accel_rec_act_t rec_fail(accel_rec_t *r, bool reboot_ok)
+{
+    return accel_rec_step(r, false, reboot_ok);
+}
+
+static void test_rec_ladder(void)
+{
+    accel_rec_t r = { 0 };
+    for (int i = 1; i < ACCEL_REC_FAILS; i++) {
+        CHECK(rec_fail(&r, true) == ACCEL_REC_NONE, "fail %d: no action", i);
+    }
+    CHECK(rec_fail(&r, true) == ACCEL_REC_BUS_RESET, "fail %d: bus reset", ACCEL_REC_FAILS);
+    for (int i = 1; i < ACCEL_REC_FAILS; i++) {
+        CHECK(rec_fail(&r, true) == ACCEL_REC_NONE, "post-reset fail %d: no action", i);
+    }
+    CHECK(rec_fail(&r, true) == ACCEL_REC_REBOOT, "still failing after reset: reboot");
+}
+
+static void test_rec_success_clears(void)
+{
+    accel_rec_t r = { 0 };
+    for (int i = 0; i < ACCEL_REC_FAILS - 1; i++) {
+        rec_fail(&r, true);
+    }
+    CHECK(accel_rec_step(&r, true, true) == ACCEL_REC_NONE, "ok read: no action");
+    CHECK(r.fails == 0 && r.resets == 0, "ok read clears fails/resets");
+    for (int i = 1; i < ACCEL_REC_FAILS; i++) {
+        CHECK(rec_fail(&r, true) == ACCEL_REC_NONE, "fails restart from zero (%d)", i);
+    }
+    CHECK(rec_fail(&r, true) == ACCEL_REC_BUS_RESET, "first rung again after recovery");
+}
+
+static void test_rec_halts_when_budget_spent(void)
+{
+    accel_rec_t r = { 0 };
+    int resets = 0, reboots = 0, halts = 0;
+    for (int i = 0; i < 3 * ACCEL_REC_FAILS; i++) {
+        accel_rec_act_t a = rec_fail(&r, false);
+        resets += a == ACCEL_REC_BUS_RESET;
+        reboots += a == ACCEL_REC_REBOOT;
+        halts += a == ACCEL_REC_HALT;
+        if (a == ACCEL_REC_HALT) {
+            CHECK(i == 2 * ACCEL_REC_FAILS - 1, "halt on failure %d, got %d", 2 * ACCEL_REC_FAILS, i + 1);
+            break;
+        }
+    }
+    CHECK(resets == 1 && reboots == 0 && halts == 1, "one reset, no reboot, then HALT: %d/%d/%d", resets, reboots, halts);
+}
+
+static void test_rec_failed_reconfigure_escalates(void)
+{
+    // accel.c arms fails=ACCEL_REC_FAILS-1 when the reset's reconfigure fails:
+    // the very next failed read reboots, or halts once the budget is spent.
+    accel_rec_t r = { .fails = ACCEL_REC_FAILS - 1, .resets = 1 };
+    CHECK(rec_fail(&r, true) == ACCEL_REC_REBOOT, "next failure after a failed reset reboots");
+    accel_rec_t r2 = { .fails = ACCEL_REC_FAILS - 1, .resets = 1 };
+    CHECK(rec_fail(&r2, false) == ACCEL_REC_HALT, "next failure after a failed reset halts when spent");
+}
+
 int main(void)
 {
+    test_shake_expires_on_failed_reads();
+    test_rec_ladder();
+    test_rec_success_clears();
+    test_rec_halts_when_budget_spent();
+    test_rec_failed_reconfigure_escalates();
     test_first_edge_always_wanted();
     test_refractory_boundary();
     test_refractory_zero_means_off();

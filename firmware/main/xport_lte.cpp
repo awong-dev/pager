@@ -18,6 +18,7 @@
 // All power-effect comments here are PENDING_HW, unchanged from net.cpp.
 
 #include "net.h"
+#include "carrier.h"
 #include "net_xport.h"
 #include "net_internal.h"
 #include "ident.h"
@@ -37,24 +38,25 @@
 
 static const char *TAG = "net";
 
-// MQTT keepalive. Measured 2026-09-21 on AT&T (US Mobile), docs/V02_DESIGN.md
-// §9.1: on this modem firmware (LR8.2.1.0-61488) the AT+SQNSMQTTCONNECT
-// keepalive parameter does NOT make the modem send a PINGREQ -- three idle
-// sessions, zero PINGREQs in 8+ minutes each. This constant only sets the
-// broker's own drop deadline (measured 1.5x keepalive). Keeping the flow/NAT
-// alive and detecting a dead session early is PAGER_MQTT_PING_S's job
-// (net_service_session(), §9.2/§9.4), not this one's. 480 s keeps "broker
-// declares a dead pager offline" at <=12 min.
-static constexpr uint16_t PAGER_MQTT_KEEPALIVE_S = 480;
-
-// §9.2/§9.4: idle-uplink liveness ping interval -- net_service_session()
-// re-SUBSCRIBEs to the down-topic every this-many seconds of uplink silence,
-// which is both what keeps the broker/NAT flow alive (the modem itself does
-// not, see PAGER_MQTT_KEEPALIVE_S's comment above) and the mechanism that
-// repairs a modem-initiated silent resume (§9.1 item 2). 300 s halves the
-// shortest observed idle death (10.5 min) and leaves 420 s of margin to the
-// broker's 720 s timeout -- one whole missed ping is survivable (§9.2).
-static constexpr uint32_t PAGER_MQTT_PING_S = 300;
+// MQTT timing is per carrier (carrier.h mqtt_keepalive_s / mqtt_ping_s), fixed
+// for a session and taken at connect. Findings: PINGREQ.md (14-15 Oct 2026).
+// The Sequans modem DOES send PINGREQ at the AT+SQNSMQTTCONNECT keepalive; the
+// 21 Sep "no PINGREQ" note (V02_DESIGN.md §9.1) was AT&T dropping idle TCP
+// flows. AT&T (US Mobile Dark Star): idle flow survives 240 s, dead (silently,
+// no RST, no URC) by 360 s, so the cut is 240-360 s. Soracom direct: survives
+// >= 900 s. Soracom Beam: keepalive must be 0 or 5..1200 s and Beam drops the
+// device after 1.5 x keepalive of silence.
+//
+// The host liveness re-SUBSCRIBE (net_service_session(), §9.2/§9.4) is the single
+// liveness mechanism: after ping_s of uplink silence it re-SUBSCRIBEs, which
+// keeps the flow alive, resets the modem's own keepalive timer (so the modem
+// never pings), and times out on a missing SUBACK to detect a dead or silently
+// resumed session (§9.1 item 2). Chosen so a dropped subscription goes unnoticed
+// for at most ~15 min and one missed ping is survivable (2 x ping < 1.5 x keepalive):
+//   Soracom (Beam and direct): ping 840, keepalive 1200 (1680 < 1800)
+//   everything else:           ping 240, keepalive 480  (480 < 720)
+static uint16_t s_mqtt_keepalive_s = CARRIER_MQTT_KEEPALIVE_DEFAULT_S;
+static uint32_t s_mqtt_ping_s = CARRIER_MQTT_PING_DEFAULT_S;
 
 // wdt-stage8 (task's own arithmetic, PATCHES.md 1.20): the liveness
 // re-SUBSCRIBE (WalterModem::sendCmd(), both call sites below) can queue
@@ -612,7 +614,15 @@ static bool lte_session_up(void)
     const bool beam = net_bearer_beam();
     const char *conn_host = beam ? PAGER_BEAM_HOST : ident_get_host();
     const uint16_t conn_port = beam ? (uint16_t) PAGER_BEAM_PORT : (uint16_t) ident_get_port();
-    if (!WalterModem::mqttConnect(conn_host, conn_port, PAGER_MQTT_KEEPALIVE_S)) {
+    {
+        uint16_t ka = 0, ping = 0;
+        net_carrier_mqtt_params(&ka, &ping);
+        s_mqtt_keepalive_s = ka;
+        s_mqtt_ping_s = ping;
+        ESP_LOGI(TAG, "mqtt keepalive %u s, liveness ping %u s (carrier %s)", (unsigned) ka, (unsigned) ping,
+                 net_carrier_label()[0] ? net_carrier_label() : "none");
+    }
+    if (!WalterModem::mqttConnect(conn_host, conn_port, s_mqtt_keepalive_s)) {
         ESP_LOGI(TAG, "mqttConnect() call could not be queued");
         // If the modem has lost its client configuration (it answers +CME
         // ERROR), the next attempt redoes it. Cheap, and it is the state that
@@ -758,7 +768,7 @@ static uint32_t lte_publish_quiet_wait_ms(uint32_t max_wait_ms)
 // event callback), guarded there by the same three suppressions the
 // reconnect path already honours. Power effect: none when neither condition
 // below holds; otherwise one AT round trip (RRC time for one subscribe if
-// the modem was idle) at most once per PAGER_MQTT_PING_S.
+// the modem was idle) at most once per the per-carrier ping interval.
 static void lte_service_session(void)
 {
     int64_t now = esp_timer_get_time();
@@ -866,13 +876,13 @@ static void lte_service_session(void)
     // LOCATION_TRACKING_DESIGN.md §4 item 4 (task F2): net_liveness_ping_now()
     // sets s_ping_now_requested to force this early, through the exact same
     // path an ordinary idle-timeout ping already uses -- "a ping replaced,
-    // not added" (the routine PAGER_MQTT_PING_S clock is reset by the send
+    // not added" (the routine the per-carrier ping interval clock is reset by the send
     // below regardless of which condition triggered it). Gated on
     // !s_resub_wait same as idle_ping: if a SUBACK is already outstanding,
     // the caller's own report waits (§4 item 4's own text).
     bool ping_now = s_ping_now_requested && !s_resub_wait;
     bool idle_ping = s_mqtt_connected && !s_resub_wait &&
-                      (now - s_last_uplink_us) >= (int64_t) PAGER_MQTT_PING_S * 1000000LL;
+                      (now - s_last_uplink_us) >= (int64_t) s_mqtt_ping_s * 1000000LL;
     if (!resume_repair && !idle_ping && !ping_now) {
         return;
     }

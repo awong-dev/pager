@@ -113,6 +113,29 @@ typedef enum {
  * calls, no side effects beyond *s. */
 accel_shake_verdict_t accel_shake_step(accel_shake_t *s, const accel_shake_cfg_t *c, int64_t now_us, bool ia2);
 
+/* I2C failure recovery ladder (field bug rc1 13 Oct 2026: reads failed for
+ * 8.5 h, the pending shake chain never expired, the pager never slept).
+ * Pure and host-tested like accel_shake_step(). Fed once per accel_poll()
+ * with whether that poll's register reads all succeeded:
+ *  - ok: fails=0 and resets=0.
+ *  - failure: fails++. At ACCEL_REC_FAILS consecutive failures (4: a lone
+ *    NACK or two is normal bus noise, while 4 at the 20 ms pending cadence
+ *    is 80 ms of a dead bus) the verdict is BUS_RESET the first time
+ *    (fails cleared, resets=1).
+ *  - ACCEL_REC_FAILS more failures after that reset: REBOOT if reboot_ok,
+ *    else HALT (terminal: the caller shows the error screen and powers
+ *    down; only RESET or a power cycle recovers).
+ * Otherwise NONE. No ESP-IDF calls. */
+#define ACCEL_REC_FAILS         4
+
+typedef struct {
+    uint8_t fails, resets;
+} accel_rec_t; /* zero-init = healthy */
+
+typedef enum { ACCEL_REC_NONE, ACCEL_REC_BUS_RESET, ACCEL_REC_REBOOT, ACCEL_REC_HALT } accel_rec_act_t;
+
+accel_rec_act_t accel_rec_step(accel_rec_t *r, bool read_ok, bool reboot_ok);
+
 /* True while the device's shake chain has n>0, i.e. the main loop should
  * keep polling at the fast cadence instead of light-sleeping. Device state
  * (accel.c); false if the chip is absent. Power effect: none by itself. */
@@ -127,7 +150,7 @@ uint32_t accel_shake_rejected_total(void);
  * (docs/SHAKE_WAKE_DESIGN.md) and calls
  * net_enable_accel_wake() so IO16 becomes a light-sleep wake source. On
  * failure (no/wrong response — the expected case if the chip is not wired),
- * logs once at INFO and returns false; every other accel.c/loc.c function
+ * logs once at INFO and returns false (accel_poll() then re-probes every 60 s after a bus clear); every other accel.c/loc.c function
  * then simply never has anything to report, which is this task's own
  * required fail-open behaviour. Call once, from modes_boot(); installs the
  * I2C_NUM_1 driver on its own bus first (see the module comment above --
@@ -242,7 +265,33 @@ bool accel_debug_set_cfg(uint8_t ctrl1, uint8_t ctrl4);
  * to be present. Power effect: none by itself. */
 void accel_debug_set_refractory_s(uint32_t seconds);
 
+/* Debug-only fault injection for the recovery ladder: the next `n` INT1/INT2
+ * _SRC reads in accel_poll() fail (ESP_ERR_TIMEOUT) without touching the bus;
+ * 0 cancels. If `only_pending`, a failure is consumed only while a shake
+ * chain is pending (to watch the chain expire). Power effect: none. */
+void accel_debug_inject_fail(uint32_t n, bool only_pending);
+
+/* Debug-only: mark the accel reboot budget spent (true) or full (false), so
+ * the next ladder run goes bus reset -> HALT without burning real reboots. */
+void accel_debug_set_budget_spent(bool spent);
+
 #ifdef ESP_PLATFORM
+/* Terminal state of the ladder (reboot budget spent, still failing). accel.c
+ * fills this and calls modes_accel_halt() (modes.c), which draws the error
+ * screen, makes one bounded /status attempt, and powers down for good. */
+typedef struct {
+    int err;                   /* esp_err_t of the last failed read */
+    const char *reg;           /* "INT1_SRC" or "INT2_SRC" */
+    uint32_t consec_fails, bus_resets, reboots_used, reboot_budget;
+    int who_err;               /* esp_err_t of the last WHO_AM_I probe */
+    uint8_t who;               /* its value (0x33 expected) */
+    int64_t uptime_us;
+} accel_halt_info_t;
+
+/* Does not return. Power effect: full panel refresh, <= ~5 s of modem
+ * publish, then deep sleep with no wake source. */
+void modes_accel_halt(const accel_halt_info_t *info) __attribute__((noreturn));
+
 /* 5 Oct 2026: esp_err_t of the most recent LIS3DH I2C read (ESP_OK, ESP_FAIL = NACK/no
  * device, ESP_ERR_TIMEOUT = bus held) -- the console's wire-vs-wedge triage. */
 esp_err_t accel_debug_last_err(void);

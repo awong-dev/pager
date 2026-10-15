@@ -4,20 +4,26 @@
 #include <string.h>
 
 static const carrier_preset_t k_presets[] = {
-    { "Automatic", "", NULL, "", CARRIER_BEARER_DIRECT, CARRIER_AUTH_NONE, NULL, NULL, true, NULL },
-    { "Carrier default", "", NULL, "", CARRIER_BEARER_DIRECT, CARRIER_AUTH_NONE, NULL, NULL, true, NULL },
+    { "Automatic", "", NULL, "", CARRIER_BEARER_DIRECT, CARRIER_AUTH_NONE, NULL, NULL, true, NULL, 480, 240 },
+    { "Carrier default", "", NULL, "", CARRIER_BEARER_DIRECT, CARRIER_AUTH_NONE, NULL, NULL, true, NULL, 480, 240 },
     // https://www.usmobile.com/help/docs/troubleshooting-and-setup/apn-settings-android-dark-star
     // ("MCC 310, MNC 410, or 280 if 410 fails to save; MVNO type GID, value 20FF").
     // Bench SIM 2026-09-20: EF_GID1 = 20FF, network reports mnc410.mcc310;
     // TLS MQTT in 5 s and the requested eDRX granted with this APN, neither with a blank one.
-    { "US Mobile Dark Star", "ereseller", "310410 310280", "20FF", CARRIER_BEARER_DIRECT, CARRIER_AUTH_NONE, NULL, NULL, true, NULL },
+    { "US Mobile Dark Star", "ereseller", "310410 310280", "20FF", CARRIER_BEARER_DIRECT, CARRIER_AUTH_NONE, NULL, NULL, true, NULL, 480, 240 },
     // Soracom Air for Cellular (global SIM): APN soracom.io, user/pass sora/sora (owner, 8 Oct 2026),
     // MQTT through Soracom Beam. Bench SIM 8 Oct 2026: IMSI 311588112011642 (home PLMN 311-588),
     // EF_GID1 = FFFF (blank), ICCID 8942310023000016420. Second rule: Soracom's ICCID issuer prefix
     // 8942310 is shared across its plans, so a SIM with another IMSI still detects.
     { "Soracom", "soracom.io", "311588", "", CARRIER_BEARER_BEAM, CARRIER_AUTH_PAP, "sora", "sora", false,
-      "8942310" },
+      "8942310", 1200, 840 },
 };
+
+void carrier_mqtt_params(const carrier_preset_t *p, uint16_t *keepalive_s, uint16_t *ping_s)
+{
+    if (keepalive_s) *keepalive_s = p ? p->mqtt_keepalive_s : CARRIER_MQTT_KEEPALIVE_DEFAULT_S;
+    if (ping_s) *ping_s = p ? p->mqtt_ping_s : CARRIER_MQTT_PING_DEFAULT_S;
+}
 
 size_t carrier_preset_count(void) { return sizeof(k_presets) / sizeof(k_presets[0]); }
 

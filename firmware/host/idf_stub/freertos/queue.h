@@ -39,5 +39,6 @@ QueueHandle_t xQueueCreateStatic(UBaseType_t uxQueueLength, UBaseType_t uxItemSi
                                   uint8_t *pucQueueStorage, StaticQueue_t *pxQueueBuffer);
 BaseType_t xQueueSend(QueueHandle_t xQueue, const void *pvItemToQueue, TickType_t xTicksToWait);
 BaseType_t xQueueReceive(QueueHandle_t xQueue, void *pvBuffer, TickType_t xTicksToWait);
+UBaseType_t uxQueueMessagesWaiting(QueueHandle_t xQueue);
 
 #endif

@@ -8,6 +8,7 @@
 // All power-effect comments are PENDING_HW.
 
 #include "msg.h"
+#include "extram.h"
 
 #include <string.h>
 
@@ -545,7 +546,7 @@ void msg_count_malformed(void)
 // same lock as the RTC struct — see msg.h's header comment for why.
 // ---------------------------------------------------------------------------
 
-static msg_t s_thread[MSG_THREAD_DEPTH];
+static EXT_RAM_BSS_ATTR msg_t s_thread[MSG_THREAD_DEPTH]; /* 13 KB, PSRAM .bss (extram.h): task context only, under s_lock */
 
 static bool s_history_lost_pending = false;
 static char s_last_ingest_id[MSG_ID_MAX] = "";

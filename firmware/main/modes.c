@@ -22,6 +22,8 @@
 #include "pins.h" // PAGER_PIN_WAKE0, the sleeptest wake0_ms experiment (§6 item F)
 #include "battstat.h" // docs/BATTERY_STATS_DESIGN.md: time-in-state counters, /status key 68 `bs`
 #include "refreshpol.h"
+#include "gfx.h"
+#include <time.h>
 #include "rail.h" // docs/ROADMAP.md rail gate (owner, 24 Sep 10:30 pm PDT): rail_on()/rail_off()
 
 // F6.2 (docs/DEVICE_PLAN.md §5.3): CardKB decode + button FSM (+BTN_STUCK)
@@ -1093,6 +1095,94 @@ static void publish_status_online(void)
 // trigger." Refuses (returns false, no publish) if the session is not
 // currently connected, same guard set_mode() already applies before
 // calling publish_status_online() on a real mode edge.
+// Halt screen text lines (see modes_accel_halt()). Power effect: none.
+static void halt_screen_paint(const accel_halt_info_t *h)
+{
+    char l[80];
+    gfx_clear();
+    gfx_text(4, 2, GFX_FONT_LARGE, "Shake sensor failed (I2C)");
+    gfx_hline(0, GFX_SCREEN_W - 1, 21);
+    int y = 25;
+    snprintf(l, sizeof(l), "read %s failed: %s (0x%x)", h->reg, esp_err_to_name((esp_err_t) h->err), (unsigned) h->err);
+    gfx_text(4, y, GFX_FONT_NORMAL, l);
+    y += 13;
+    snprintf(l, sizeof(l), "consecutive fails %u   bus resets %u", (unsigned) h->consec_fails, (unsigned) h->bus_resets);
+    gfx_text(4, y, GFX_FONT_NORMAL, l);
+    y += 13;
+    snprintf(l, sizeof(l), "accel reboots used %u of %u", (unsigned) h->reboots_used, (unsigned) h->reboot_budget);
+    gfx_text(4, y, GFX_FONT_NORMAL, l);
+    y += 13;
+    if (h->who_err == ESP_OK) {
+        snprintf(l, sizeof(l), "last WHO_AM_I 0x%02x (expect 0x33)", (unsigned) h->who);
+    } else {
+        snprintf(l, sizeof(l), "last WHO_AM_I read failed: %s", esp_err_to_name((esp_err_t) h->who_err));
+    }
+    gfx_text(4, y, GFX_FONT_NORMAL, l);
+    y += 13;
+    unsigned up = (unsigned) (h->uptime_us / 1000000);
+    int64_t epoch = approx_epoch();
+    char wall[28] = "clock unknown";
+    if (epoch > 0) {
+        time_t t = (time_t) epoch;
+        struct tm tm;
+        gmtime_r(&t, &tm);
+        strftime(wall, sizeof(wall), "%Y-%m-%d %H:%M UTC", &tm);
+    }
+    snprintf(l, sizeof(l), "up %uh%02um%02us   %s", up / 3600, (up / 60) % 60, up % 60, wall);
+    gfx_text(4, y, GFX_FONT_NORMAL, l);
+    y += 13;
+    snprintf(l, sizeof(l), "fw %s   id %s", fw_version_str(), ident_get_dev_id());
+    gfx_text(4, y, GFX_FONT_NORMAL, l);
+    y += 13;
+    gfx_text(4, y, GFX_FONT_NORMAL, "Press RESET to retry.");
+}
+
+static void halt_publish_task(void *arg)
+{
+    publish_status_online();
+    xSemaphoreGive((SemaphoreHandle_t) arg);
+    vTaskDelete(NULL);
+}
+
+#define HALT_PUBLISH_WAIT_MS 5000
+
+// Accel I2C ladder's last rung (accel.h). Power effect: one full panel
+// refresh (~2-4 s), an optional /status publish capped at 5 s of waiting,
+// then modem radio off, rails off and deep sleep with no wake source (~uA).
+void modes_accel_halt(const accel_halt_info_t *h)
+{
+    ESP_LOGI(TAG, "accel halt: drawing error screen");
+    ui_ensure_powered();
+    halt_screen_paint(h);
+    disp_full_refresh(); // the panel keeps the image unpowered
+    watchdog_feed();
+
+    net_mqtt_status_t st;
+    net_get_mqtt_status(&st);
+    if (st.mqtt_connected) {
+        watchdog_set_reported_stage(WD_ACCEL_RESTART); // /status STK_STAGE shows the accel stage
+        SemaphoreHandle_t done = xSemaphoreCreateBinary();
+        if (done && xTaskCreate(halt_publish_task, "halt_pub", 6144, done, 5, NULL) == pdPASS) {
+            bool sent = xSemaphoreTake(done, pdMS_TO_TICKS(HALT_PUBLISH_WAIT_MS)) == pdTRUE;
+            ESP_LOGI(TAG, "accel halt: /status %s", sent ? "attempted" : "not finished in 5 s, giving up");
+        }
+    }
+    watchdog_feed();
+
+    ESP_LOGI(TAG, "accel halt: powering down (RESET or power cycle to retry)");
+    net_session_down();
+    net_radio_off();
+    rail_off();
+    gpio_hold_en((gpio_num_t) PAGER_PIN_3V3_EN); // keep both rails off through deep sleep; rail_init() releases
+    gpio_hold_en((gpio_num_t) PAGER_PIN_DISP_VCC_EN);
+    gpio_deep_sleep_hold_en();
+    esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
+    esp_deep_sleep_start();
+    for (;;) {
+        vTaskDelay(portMAX_DELAY); // unreachable
+    }
+}
+
 bool modes_publish_status_now(void)
 {
     net_mqtt_status_t st;

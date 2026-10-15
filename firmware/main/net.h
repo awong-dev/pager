@@ -297,7 +297,7 @@ void net_set_uplink_window_cb(net_uplink_window_cb_t cb);
 /* LOCATION_TRACKING_DESIGN.md §4 item 4 (task F2): forces an early liveness
  * SUBSCRIBE through the ordinary verdict path (xport_lte.cpp's
  * lte_service_session(), same code a routine idle-timeout ping already
- * runs) instead of waiting out PAGER_MQTT_PING_S of uplink silence — "a
+ * runs) instead of waiting out the per-carrier liveness ping interval of uplink silence — "a
  * ping replaced, not added": the next routine ping is timed from this one.
  * If a SUBACK is already outstanding (`s_resub_wait`), this call is a
  * no-op — the report that wanted it waits for that one to resolve, same as
@@ -667,7 +667,7 @@ void net_ack_disconnect_edge(void);
  * event callback), guarded by the same three suppressions the reconnect path
  * already honours (coverage duty cycle, a CA-apply trial -- route 2, the third one this comment used to name, is gone: LOCATION_TRACKING_DESIGN.md §7).
  * Sends a raw AT+SQNSMQTTSUBSCRIBE to the down-topic (via WalterModem::sendCmd(),
- * the same path net_debug_at() uses) every PAGER_MQTT_PING_S seconds of
+ * the same path net_debug_at() uses) every the per-carrier liveness ping interval seconds of
  * uplink silence, or immediately after a modem-initiated resume (§9.1 item 2)
  * -- the vendor's mqttSubscribe() would silently no-op that resubscribe
  * (WalterMQTT.cpp:120-123, "Topic already in use") since mqttConnect() is the
@@ -687,7 +687,7 @@ void net_ack_disconnect_edge(void);
  * comment.
  * Power effect: nothing when idle and under the ping interval; otherwise one
  * AT round trip (the RRC time for one subscribe if the modem was idle, ~0
- * extra if it was already active) at most once per PAGER_MQTT_PING_S, or (on
+ * extra if it was already active) at most once per the per-carrier liveness ping interval, or (on
  * either dead-detection edge) one AT+SQNSMQTTDISCONNECT.
  *
  * docs/WIFI_TASKS.md W4: modes.c now calls this unconditionally, every wake
@@ -830,6 +830,9 @@ bool net_check_sim(void);
 bool net_bearer_beam(void);
 /* Label of the carrier preset in force from the last attach ("" if none). */
 const char *net_carrier_label(void);
+/* MQTT keepalive and host liveness re-SUBSCRIBE interval (s) for the carrier in force
+ * (carrier_mqtt_params()); conservative pair when none. Valid after the attach. */
+void net_carrier_mqtt_params(uint16_t *keepalive_s, uint16_t *ping_s);
 
 /* IMSI, EF_GID1 (hex) and ICCID as the firmware reads them, for the `carrier`
  * console. GID1/ICCID are "" when the SIM has none. Needs the modem begun. */

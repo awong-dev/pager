@@ -70,10 +70,18 @@ static void rail_delay_at_least_ms(uint32_t ms)
 // Friend, whose ENA pin is now the rail gate itself; the Friend's SRAM CS
 // joins the list.)
 // During a rail-off sleep only, hand these pads (plus
-// MOSI/SCLK) to the sleep pad config: input with pull-down, so nothing
-// sources current into the panel. The hardware switches back to the normal
-// (driven / SPI) config automatically at wake; rail_on() re-excludes
-// RST/DC/CS so attentive (rail-on) sleeps hold them exactly as before.
+// MOSI/SCLK) to the sleep pad config: input buffer off, no pulls, so nothing
+// sources current into the panel. Not a pull-down: the Friend has 100k
+// pull-ups to VIN (its always-on 3V) on RESET, DISPCS (ECS) and SRAMCS
+// (schematic R2/R3/R5/R6), which hold those lines high for free, while an
+// internal pull-down fought them at ~20 uA per line for the whole sleep.
+// D/C, MOSI and SCK only feed the unpowered 74LVC245, which has Ioff, so
+// floating them costs nothing. BUSY (IO11) is an output of the unpowered
+// panel: its input buffer is switched off too, and rail_on() hands it back
+// (awake config is untouched; only its sleep config changes). The hardware
+// switches back to the normal (driven / SPI) config automatically at wake;
+// rail_on() re-excludes RST/DC/CS/SRCS/BUSY so attentive (rail-on) sleeps
+// hold them exactly as before.
 static const gpio_num_t s_disp_bus_pins[] = {
     (gpio_num_t) PAGER_PIN_DISP_RST, (gpio_num_t) PAGER_PIN_DISP_DC,
     (gpio_num_t) PAGER_PIN_DISP_CS, (gpio_num_t) PAGER_PIN_DISP_MOSI,
@@ -83,10 +91,13 @@ static const gpio_num_t s_disp_bus_pins[] = {
 static void rail_disp_bus_release(void)
 {
     for (size_t i = 0; i < sizeof(s_disp_bus_pins) / sizeof(s_disp_bus_pins[0]); i++) {
-        gpio_sleep_set_direction(s_disp_bus_pins[i], GPIO_MODE_INPUT);
-        gpio_sleep_set_pull_mode(s_disp_bus_pins[i], GPIO_PULLDOWN_ONLY);
+        gpio_sleep_set_direction(s_disp_bus_pins[i], GPIO_MODE_DISABLE);
+        gpio_sleep_set_pull_mode(s_disp_bus_pins[i], GPIO_FLOATING);
         gpio_sleep_sel_en(s_disp_bus_pins[i]);
     }
+    gpio_sleep_set_direction((gpio_num_t) PAGER_PIN_DISP_BUSY, GPIO_MODE_DISABLE);
+    gpio_sleep_set_pull_mode((gpio_num_t) PAGER_PIN_DISP_BUSY, GPIO_FLOATING);
+    gpio_sleep_sel_en((gpio_num_t) PAGER_PIN_DISP_BUSY);
 }
 
 static void rail_disp_bus_restore(void)
@@ -95,6 +106,7 @@ static void rail_disp_bus_restore(void)
     gpio_sleep_sel_dis((gpio_num_t) PAGER_PIN_DISP_DC);
     gpio_sleep_sel_dis((gpio_num_t) PAGER_PIN_DISP_CS);
     gpio_sleep_sel_dis((gpio_num_t) PAGER_PIN_DISP_SRCS);
+    gpio_sleep_sel_dis((gpio_num_t) PAGER_PIN_DISP_BUSY); // back to disp.c's isolation-exempt input
 }
 
 uint32_t rail_debug_get_settle_ms(void) { return s_settle_ms; }
@@ -111,6 +123,9 @@ void rail_init(void)
     //    always-on "3V" rail, never gated by either pin here).
     // Both are driven to their ON level here and toggled together by
     // rail_on()/rail_off() below.
+    // A modes_accel_halt() deep sleep holds both pads; a RESET keeps that hold, so release it first.
+    gpio_hold_dis((gpio_num_t) PAGER_PIN_3V3_EN);
+    gpio_hold_dis((gpio_num_t) PAGER_PIN_DISP_VCC_EN);
     gpio_config_t cfg = {
         .pin_bit_mask = (1ULL << PAGER_PIN_3V3_EN) | (1ULL << PAGER_PIN_DISP_VCC_EN),
         .mode = GPIO_MODE_OUTPUT,

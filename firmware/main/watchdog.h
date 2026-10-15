@@ -39,6 +39,7 @@ typedef enum {
     WD_CATRUST,
     WD_SAVE,
     WD_DELIBERATE_RESTART,
+    WD_ACCEL_RESTART, /* accel.c: LIS3DH I2C still failing after a bus reset */
 } wd_stage_t;
 
 /* Call once, early in app_main(): logs why the chip last reset and where the
@@ -74,6 +75,9 @@ int watchdog_last_reset_reason(void);
  * sleep-state effect: reads a static set at boot. Valid only after
  * watchdog_boot() has run. */
 int watchdog_last_reset_stage(void);
+/* Overrides the value watchdog_last_reset_stage() reports (so a /status
+ * published right after carries it): accel halt uses WD_ACCEL_RESTART. */
+void watchdog_set_reported_stage(wd_stage_t stage);
 /* Abnormal (panic/watchdog/brownout) reset count since power-on, the same
  * counter the boot log's "Abnormal resets since power-on" line prints --
  * for /status's STK_ABN. No modem or sleep-state effect: reads an
@@ -101,6 +105,10 @@ void watchdog_feed(void);
  * after light sleep the USB port was seen to stay dead for hours across
  * esp_restart(). Does not return. */
 void watchdog_hard_reset(void);
+/* As watchdog_hard_reset(), recording `stage` (a deliberate-restart marker:
+ * WD_DELIBERATE_RESTART or WD_ACCEL_RESTART) as the next boot's last-stage
+ * breadcrumb, so the cause shows in its boot log and /status STK_STAGE. */
+void watchdog_hard_reset_as(wd_stage_t stage);
 
 /* PAGER PATCH 1.10: strong override of the walter-modem component's weak
  * `walter_modem_block_tick()` (declared extern "C" there so the C++ component

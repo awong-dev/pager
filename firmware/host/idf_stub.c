@@ -9,6 +9,7 @@
 #include "driver/rtc_io.h"
 #include "esp_timer.h"
 #include "freertos/queue.h"
+#include "freertos/task.h"
 
 #include <string.h>
 
@@ -79,4 +80,33 @@ BaseType_t xQueueReceive(QueueHandle_t xQueue, void *pvBuffer, TickType_t xTicks
     xQueue->head = (xQueue->head + 1) % xQueue->capacity;
     xQueue->count--;
     return pdTRUE;
+}
+
+UBaseType_t uxQueueMessagesWaiting(QueueHandle_t xQueue)
+{
+    return (UBaseType_t) xQueue->count;
+}
+
+/* freertos/task.h stand-ins: see idf_stub/freertos/task.h. */
+static uint32_t s_notify_count;
+
+TaskHandle_t xTaskGetCurrentTaskHandle(void)
+{
+    static int dummy;
+    return &dummy;
+}
+
+BaseType_t xTaskNotifyGive(TaskHandle_t xTaskToNotify)
+{
+    (void) xTaskToNotify;
+    s_notify_count++;
+    return pdTRUE;
+}
+
+uint32_t ulTaskNotifyTake(BaseType_t xClearCountOnExit, TickType_t xTicksToWait)
+{
+    (void) xTicksToWait; /* the host never blocks */
+    uint32_t n = s_notify_count;
+    s_notify_count = xClearCountOnExit ? 0 : (n ? n - 1 : 0);
+    return n;
 }

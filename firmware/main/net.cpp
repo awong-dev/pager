@@ -201,7 +201,7 @@ static constexpr int PAGER_CA_FETCH_SOCKET_ID = 4;
 // silently breaks against.
 static constexpr int PAGER_TLS_BOOTSTRAP_PROFILE_ID = PAGER_TLS_PROFILE_ID;
 
-// docs/WIFI_TASKS.md W4: PAGER_MQTT_KEEPALIVE_S, PAGER_MQTT_PING_S,
+// docs/WIFI_TASKS.md W4: the MQTT keepalive and liveness ping (now per carrier, carrier.h),
 // PAGER_MAX_PAYLOAD, PAGER_BOOT_MAX_PAYLOAD and PAGER_BOOT_TOPIC_PREFIX moved
 // to xport_lte.cpp with the MQTT session code that is their only use.
 
@@ -628,6 +628,10 @@ static carrier_bearer_t s_bearer = CARRIER_BEARER_DIRECT; // resolved once per a
 
 extern "C" bool net_bearer_beam(void) { return s_bearer == CARRIER_BEARER_BEAM; }
 extern "C" const char *net_carrier_label(void) { return s_carrier ? s_carrier->label : ""; }
+extern "C" void net_carrier_mqtt_params(uint16_t *keepalive_s, uint16_t *ping_s)
+{
+    carrier_mqtt_params(s_carrier, keepalive_s, ping_s);
+}
 
 // docs/SORACOM_DESIGN.md 3.2. The library's setPDPAuthParams() never emits
 // (it returns early while the stored auth_proto is NONE), so write AT+CGAUTH

@@ -1240,8 +1240,8 @@ static void disp_gpio_init(void)
     // ENA's level is owned by rail.c (rail_init() turned it on at boot, and the
     // CardKB hangs off the same regulator now): do not power-cycle it here.
     // The Friend's SRAM shares SCK/MOSI with the panel; keep it deselected so
-    // panel traffic can never be taken as SRAM commands. rail.c pulls this
-    // low with the other bus pads during a rail-off sleep.
+    // panel traffic can never be taken as SRAM commands. rail.c floats this
+    // with the other bus pads during a rail-off sleep (the Friend's 100k pull-up holds it high).
     gpio_set_level(PAGER_PIN_DISP_SRCS, 1);
     gpio_sleep_sel_dis((gpio_num_t) PAGER_PIN_DISP_SRCS);
 }

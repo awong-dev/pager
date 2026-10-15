@@ -25,6 +25,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -61,7 +62,20 @@ typedef struct {
      * A SIM whose ICCID starts with one matches this preset whatever its IMSI.
      * NULL = none. */
     const char *iccid_prefixes;
+    /* MQTT timing for the session (PINGREQ.md, 14-15 Oct 2026): the keepalive
+     * passed to the modem's MQTT connect, and the host liveness re-SUBSCRIBE
+     * interval (seconds of uplink silence). ping < keepalive; 2 x ping must stay
+     * under the broker's 1.5 x keepalive cut so one missed ping is survivable. */
+    uint16_t mqtt_keepalive_s;
+    uint16_t mqtt_ping_s;
 } carrier_preset_t;
+
+/* Conservative pair for a custom APN, no preset, or an unknown carrier: ping at
+ * the proven-safe AT&T idle value (flow survived 240 s, died by 360 s). */
+#define CARRIER_MQTT_KEEPALIVE_DEFAULT_S 480
+#define CARRIER_MQTT_PING_DEFAULT_S 240
+/* Values for the preset in force (NULL = the conservative pair). Pure. */
+void carrier_mqtt_params(const carrier_preset_t *p, uint16_t *keepalive_s, uint16_t *ping_s);
 
 /* Preset 0 is always "Automatic" (detect from the SIM, else blank) and preset
  * 1 is always "Carrier default" (force a blank APN). Add a carrier only with a

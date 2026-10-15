@@ -1346,7 +1346,9 @@ static const char *ACCELTEST_USAGE =
     "acceltest shake on|off    -- shake-to-wake on (default) or off (IA2 off the pin, classifier idle)\n"
     "acceltest shake <n 1-50> <gap_ms 20-2000> <span_ms 0-5000> <holdoff_s 0-600> -- classifier settings\n"
     "acceltest cfg <ctrl1> <ctrl4> -- write CTRL_REG1 and CTRL_REG4 (0-255, hex ok, e.g. 0x2F 0x00)\n"
-    "acceltest refr <seconds>  -- set A1's refractory window (0 = off, reproduces the wake storm)\n";
+    "acceltest refr <seconds>  -- set A1's refractory window (0 = off, reproduces the wake storm)\n"
+    "acceltest budget spent|full -- set the accel reboot budget (spent: the ladder ends in the halt screen)\n"
+    "acceltest fail <n> [pend] -- fail the next n INT1/INT2_SRC reads in accel_poll() (recovery ladder test); pend = only while a shake chain is pending; 0 cancels\n";
 
 static int cmd_acceltest(int argc, char **argv)
 {
@@ -1556,6 +1558,25 @@ static int cmd_acceltest(int argc, char **argv)
         }
         accel_debug_set_refractory_s((uint32_t) v);
         printf("acceltest: refractory=%lds\n", v);
+        return 0;
+    }
+
+    if (strcmp(argv[1], "budget") == 0 && argc >= 3) {
+        accel_debug_set_budget_spent(strcmp(argv[2], "spent") == 0);
+        printf("acceltest: accel reboot budget %s\n", strcmp(argv[2], "spent") == 0 ? "spent (2/2)" : "full (0/2)");
+        return 0;
+    }
+    if (strcmp(argv[1], "fail") == 0) {
+        // Debug-only: fail the next n INT1/INT2_SRC reads in accel_poll() (recovery ladder test).
+        char *end = NULL;
+        long v = argc >= 3 ? strtol(argv[2], &end, 10) : -1;
+        if (argc < 3 || !end || *end != '\0' || v < 0 || v > 100000) {
+            printf("acceltest: fail <n 0-100000> [pend]\n");
+            return 1;
+        }
+        accel_debug_inject_fail((uint32_t) v, argc >= 4 && strcmp(argv[3], "pend") == 0);
+        printf("acceltest: next %ld accel_poll() reads will fail%s\n", v,
+               (argc >= 4 && strcmp(argv[3], "pend") == 0) ? " (only while a shake chain is pending)" : "");
         return 0;
     }
 

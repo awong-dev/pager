@@ -161,6 +161,9 @@ CONFIG_SPIRAM_USE_MALLOC=y
 CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=16384
 CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
 CONFIG_SPIRAM_MEMTEST=n
+# Large task-context statics tagged EXT_RAM_BSS_ATTR (main/extram.h) live in PSRAM.
+# Side effect: PSRAM init failure now aborts at boot (cpu_start.c) despite IGNORE_NOTFOUND.
+CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y
 
 # WiFi sanity check: BA window must be <= dynamic RX buffers and <= 2x static (12/6 above).
 CONFIG_ESP_WIFI_RX_BA_WIN=6

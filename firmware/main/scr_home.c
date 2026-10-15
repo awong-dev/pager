@@ -10,6 +10,7 @@
 #include <string.h>
 
 #include "archive.h"
+#include "extram.h"
 #include "msg.h" // msg_t, MSG_DIR_*/MSG_ACK_READ, MSG_FROM_MAX — struct/consts only, no ESP-IDF dep
 
 // ---------------------------------------------------------------------------
@@ -215,7 +216,7 @@ typedef enum {
 
 static int s_sel = 0;
 
-static msg_t s_msg_scratch[MSG_THREAD_DEPTH];
+static EXT_RAM_BSS_ATTR msg_t s_msg_scratch[MSG_THREAD_DEPTH]; /* 13 KB, PSRAM .bss (extram.h) */
 // Build buffer is larger than the visible cap: archived peers occupy slots in
 // the first-N-distinct walk, so build up to HOME_MAX_PEERS + ARCHIVE_MAX and
 // filter down to HOME_MAX_PEERS.

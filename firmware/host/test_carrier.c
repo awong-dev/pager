@@ -115,6 +115,31 @@ int main(void)
     CHECK(carrier_apn_valid("0123456789012345678901234567890"), "31 characters fits");
     CHECK(!carrier_apn_valid(NULL), "NULL");
 
+    // MQTT timing (PINGREQ.md): every preset inside Beam's 5..1200, one missed ping survivable.
+    for (size_t i = 0; i < carrier_preset_count(); i++) {
+        const carrier_preset_t *q = carrier_preset_at(i);
+        CHECK(q->mqtt_keepalive_s >= 5 && q->mqtt_keepalive_s <= 1200, "%s: keepalive %u out of 5..1200", q->label,
+              (unsigned) q->mqtt_keepalive_s);
+        CHECK(q->mqtt_ping_s > 0 && q->mqtt_ping_s < q->mqtt_keepalive_s, "%s: ping %u not below keepalive", q->label,
+              (unsigned) q->mqtt_ping_s);
+        CHECK(2u * q->mqtt_ping_s < 3u * q->mqtt_keepalive_s / 2u, "%s: two pings exceed 1.5 x keepalive", q->label);
+    }
+    {
+        uint16_t ka = 0, pg = 0;
+        p = carrier_detect("311588112011642", "", NULL);
+        carrier_mqtt_params(p, &ka, &pg);
+        CHECK(ka == 1200 && pg == 840, "Soracom 1200/840, got %u/%u", (unsigned) ka, (unsigned) pg);
+        p = carrier_detect("310410123456789", "20FF", NULL);
+        carrier_mqtt_params(p, &ka, &pg);
+        CHECK(ka == 480 && pg == 240, "Dark Star 480/240, got %u/%u", (unsigned) ka, (unsigned) pg);
+        carrier_mqtt_params(carrier_preset_at(CARRIER_PRESET_AUTO), &ka, &pg);
+        CHECK(ka == 480 && pg == 240, "Automatic 480/240");
+        carrier_mqtt_params(carrier_preset_at(CARRIER_PRESET_BLANK), &ka, &pg);
+        CHECK(ka == 480 && pg == 240, "Carrier default 480/240");
+        carrier_mqtt_params(NULL, &ka, &pg);
+        CHECK(ka == 480 && pg == 240, "NULL (custom APN) 480/240");
+    }
+
     if (g_failures == 0) {
         printf("PASS: carrier, 0 failures\n");
         return 0;
