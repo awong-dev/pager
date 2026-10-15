@@ -201,7 +201,10 @@ Dark Star (AT&T) SIMs.
 
 In the order worth testing:
 
-1. **Confirm the 480 s MQTT keepalive keeps a session alive for at least an hour on AT&T.** Reflash
+1. **Confirm the per-carrier timing keeps a session alive for at least an hour**: AT&T (keepalive
+   480, re-SUBSCRIBE 240 s) and Soracom over Beam (1200 / 840 s, never run through Beam). The
+   modem's own PINGREQ is settled (`PINGREQ.md`, 15 Oct 2026); this checks the production
+   re-SUBSCRIBE end to end. Reflash
    production firmware, idle the pager (no pages sent), log to the broker's admin console periodically
    to check that the client remains listed. Minimum overnight run.
 

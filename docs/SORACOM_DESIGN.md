@@ -39,8 +39,9 @@ and through the production relay.
 - Devices authenticate to EMQX with a per-device username/password (username = device id;
   `relay/app/emqx_admin.py`). Beam's MQTT entry point (version 201912) has a credential
   **pass-through** mode (`useClientCredentials`): the pager's own username/password go through to
-  the broker unchanged. Keepalive must be 0 or 5…1200 s (ours is 480; the host-side liveness
-  re-SUBSCRIBE every 300 s is inside Beam's 1.5 × keepalive idle cut). Beam does not limit payload
+  the broker unchanged. Keepalive must be 0 or 5…1200 s (the Soracom preset uses 1200 since 15 Oct 2026, was 480;
+  the host-side liveness re-SUBSCRIBE after 840 s of uplink silence is inside Beam's 1.5 × 1200 =
+  1800 s idle cut; not yet tested through Beam at these values). Beam does not limit payload
   size; it keeps no session state (we already assume clean session).
 - The relay sees only `topic`, `payload`, `qos` from the webhook and authenticates the device by the
   HMAC in the envelope (`ingest.py:225-362`). A Beam-relayed session that publishes the same topics
@@ -113,7 +114,7 @@ In `configure_session()` and the bootstrap path:
 | Host, port | NVS `ident` host/port (from the bundle) | `PAGER_BEAM_HOST "beam.soracom.io"`, `PAGER_BEAM_PORT 1883` (compile-time constants) |
 | TLS profile | 2, slot 12, VALIDATION_CA or NONE per catrust | **none**: `mqttConfig(dev_id, dev_id, mqtt_pw, 0)`; no `tlsConfigProfile`, no CA slot write |
 | Client id / username / password | dev_id / dev_id / mqtt_pw | identical (pass-through) |
-| Keepalive | 480 | 480 |
+| Keepalive / re-SUBSCRIBE | 480 / 240 (Soracom direct: 1200 / 840) | 1200 / 840 (Soracom preset, 15 Oct 2026; was 480 / 300) |
 | catrust / cafetch | as designed in V02 §4 | skipped; a `ca_url`/`ca_sha` in the bundle is ignored (`ident` has no field for the pointer, so it is not stored; the identity is stored unpinned); `/status.tls` = `proxy` |
 | `cfg.ca` push | two-phase apply | refused with a failure ack, nothing fetched: the trial reconnect (`catrust.c:493-592`) would "validate" the scratch-slot CA over a plaintext hop that never uses it and commit it |
 | Bootstrap (`setup <code>`) | TLS none-validation to `host:port` from the code | plain MQTT to Beam as `boot-<bid>`/`bpw`, keepalive 60; same topics; the code's host is logged and ignored (Beam's group destination decides the broker) |
@@ -155,9 +156,11 @@ today; the boot splash's network status line says `via Beam` when the bearer is 
 
 ### 3.6 Sleep, eDRX, latency
 
-Unchanged in design. Liveness: the modem sends no PINGREQ (`xport_lte.cpp:40-47`); the host
-re-SUBSCRIBE every 300 s of uplink silence (`xport_lte.cpp:57`, `:871`) runs from the bounded
-light-sleep timer wake and crosses both Beam legs, inside 1.5 × 480 = 720 s. The bench confirms it
+Unchanged in design. Liveness: the modem does send PINGREQ, but a carrier can kill an idle flow
+silently (`PINGREQ.md`, 15 Oct 2026), so the host re-SUBSCRIBE after 840 s of uplink silence on the
+Soracom preset (`carrier.c`, `xport_lte.cpp` `lte_service_session()`) runs from the bounded
+light-sleep timer wake and crosses both Beam legs, inside 1.5 × 1200 = 1800 s. Soracom direct holds
+an idle flow ≥1800 s; Beam at 1200 / 840 is untested. The bench confirms it
 with a 1 h idle soak through Beam (`link` key 50 must not increment). Modem MO SMS is gated in one
 place, `net_sms_send()` (`net.cpp:2690`), which returns false when `sms_mo` is false; both callers
 (`sms.c:1379` send queue, `sms.c:1600` `smstest`) already audit a failure. The eval's open question is what the visited network grants a roaming LTE-M
@@ -177,7 +180,7 @@ Minimal: the data path is unchanged (§2). What changes:
   column renders `proxy` as "via Beam"; the SMS panel is hidden/annotated for a device whose
   `tls` is `proxy` (device cannot originate SMS; relay SMS still works).
 - PROTOCOL.md §5.1 (`car`, `tls: proxy`), §6.1 (bearer row: Beam plain MQTT, keepalive 480 inside
-  Beam's 5…1200), §10 keymap (70). Server-architect owns this edit.
+  Beam's 5…1200; 1200 since 15 Oct 2026), §10 keymap (70). Server-architect owns this edit.
 - Tools: `tools/pager_client.py` already speaks plain MQTT on 1883 and is the local stand-in for a
   Beam-side client; no change. New `tools/soracom_beam.py` (§5) and the production admin helpers
   `tools/prod_token.py`, `tools/prod_device_purge.py` (used to remove proto3; kept for the next one).

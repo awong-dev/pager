@@ -897,7 +897,7 @@ keeps the TLS+MQTT session up on eDRX while the ESP32 is in deep sleep; that dev
   `id`), otherwise build and publish a new one. Runs after the online-edge re-publish above, as
   the full-book re-push does today.
 - The relay MUST NOT publish anything to `/down` on a timer for liveness. There is no application
-  ping. MQTT keepalive is the only liveness mechanism (§6).
+  ping. Liveness is the device's: MQTT keepalive plus its host re-SUBSCRIBE (§6.2).
 
 ### 5.4 Device publish cadence
 
@@ -932,7 +932,7 @@ Status is **never** published on a plain paging wake or on receipt of a down mes
 | LWT | **NOT SETTABLE from the library** | `mqttConfig()` emits `AT+SQNSMQTTCFG=0,"<clientId>"[,"<user>","<pass>"][,<tlsProfileId>]` and stops there (`src/proto/WalterMQTT.cpp:53-75`) — no will topic, message, QoS or retain argument, and grepping the whole of `src/` for `will`/`lastwill` returns nothing. §5.2's LWT contract therefore has no implementation path through the typed API. Fallback: `WalterModem::sendCmd()` (public) can queue a raw `AT+SQNSMQTTCFG=...` carrying the will parameters *before* `mqttConnect()`. UNVERIFIED against the Sequans AT manual. If that fails, the relay must fall back to inferring offline from keepalive expiry and §5.2's LWT becomes advisory. Tracked in §12. |
 | TLS (production) | TLS 1.2; server certificate validated **only if the bootstrap bundle carried a CA** (`DEVICE_PLAN.md` §3.3, default: none, validation off); username/password per device; profile 2. **The profile MUST name certificate slot 12 even with validation off** — with no slot named the modem's MQTT engine silently sends plaintext MQTT to the TLS port (verified on hardware, `DEVICE_PLAN.md` §3.3). | Pinned mode is the free-tier HiveMQ Cloud model. Provisioning is the vendor's `examples/mqtts` flow: `tlsWriteCredential(false, 12, ca_pem)` → `tlsConfigProfile(2, WALTER_MODEM_TLS_VALIDATION_CA, WALTER_MODEM_TLS_VERSION_12, 12)` → `mqttConfig(client_id, user, pass, 2)`. Both functions are public (`src/WalterModem.h:4147` and `:4404`). **Slot discipline: certificate slots 0–10 and private-key index 1 are reserved for Sequans/BlueCherry — use ≥ 11, and TLS profile ≥ 2 (profile 1 is BlueCherry's).** |
 | TLS (bootstrap) | no server-cert validation; profile 2 (the library caps profile ids at 0–2, and bootstrap and production never share a power cycle) | For the one-time setup fetch (§3.2): `tlsConfigProfile(2, WALTER_MODEM_TLS_VALIDATION_NONE, WALTER_MODEM_TLS_VERSION_12, 12)`. **Verified on hardware:** the slot argument is required — `no_cert` makes the MQTT engine send plaintext (see the production row). The bundle is authenticated and encrypted under a token-derived key, so server authentication on this hop adds only DoS resistance. |
-| Bearer (Soracom Beam) | On a SIM whose carrier preset names the Beam bearer (`docs/SORACOM_DESIGN.md` §3.1, §3.3): **plain MQTT** from the modem to `beam.soracom.io:1883`, TLS profile **0** (`mqttConfig(dev_id, dev_id, mqtt_pw, 0)`, no `tlsConfigProfile`, no CA slot); client id, username and password unchanged and passed through to the broker (Beam `useClientCredentials`); Beam opens MQTTS to EMQX. Keepalive **480 s**, inside Beam's 0 or 5…1200 s; the 300 s host liveness re-SUBSCRIBE (§6.2) crosses both legs and stays inside Beam's 1.5 × keepalive = 720 s idle cut. The bootstrap `boot-<bid>` session (§3.2) also goes through Beam (plain MQTT, keepalive 60); the setup code's `host:port` and the identity's stored `host`/`port` are **not used** on this bearer (Beam's group destination decides the broker) and are kept for a later direct bearer. `cfg.ca` is refused and `/status.tls` is `proxy` (§5.1). The WiFi transport is unaffected. | *(Soracom bearer, 8 Oct 2026: moves TLS off the pager; the topics, QoS, retain flags, envelope and HMAC are unchanged, so the relay cannot tell a Beam session from a direct one.)* Beam's address is in carrier-grade NAT space, so the firmware selects this bearer only when the SIM's preset names it, never on another operator's network. Hop pager → Beam is plaintext inside Soracom's network; envelope authenticity still rests on §14's HMAC. |
+| Bearer (Soracom Beam) | On a SIM whose carrier preset names the Beam bearer (`docs/SORACOM_DESIGN.md` §3.1, §3.3): **plain MQTT** from the modem to `beam.soracom.io:1883`, TLS profile **0** (`mqttConfig(dev_id, dev_id, mqtt_pw, 0)`, no `tlsConfigProfile`, no CA slot); client id, username and password unchanged and passed through to the broker (Beam `useClientCredentials`); Beam opens MQTTS to EMQX. Keepalive **1200 s** (the Soracom preset, §6.2; was 480 s), Beam's ceiling of 0 or 5…1200 s; the 840 s host liveness re-SUBSCRIBE (§6.2) crosses both legs and stays inside Beam's 1.5 × keepalive = 1800 s idle cut. Beam has not yet been tested at 1200 / 840. The bootstrap `boot-<bid>` session (§3.2) also goes through Beam (plain MQTT, keepalive 60); the setup code's `host:port` and the identity's stored `host`/`port` are **not used** on this bearer (Beam's group destination decides the broker) and are kept for a later direct bearer. `cfg.ca` is refused and `/status.tls` is `proxy` (§5.1). The WiFi transport is unaffected. | *(Soracom bearer, 8 Oct 2026: moves TLS off the pager; the topics, QoS, retain flags, envelope and HMAC are unchanged, so the relay cannot tell a Beam session from a direct one.)* *(15 Oct 2026: keepalive 1200 / re-SUBSCRIBE 840 s because Soracom holds an idle flow ≥1200 s; fewer radio wakes.)* Beam's address is in carrier-grade NAT space, so the firmware selects this bearer only when the SIM's preset names it, never on another operator's network. Hop pager → Beam is plaintext inside Soracom's network; envelope authenticity still rests on §14's HMAC. |
 | Reconnect policy | **Only** on detected session loss. Never on a timer. Backoff 5 s, 15 s, 60 s, 300 s, then 300 s steady. | Each reconnect costs a full TLS handshake ≈ 5 kB (§7) — reconnects are the largest single term in the data budget. |
 
 *(scoping note, no behaviour change.)* Every row above describes the **device's**
@@ -945,33 +945,49 @@ it. The broker must therefore still support an LWT and QoS 1 in both directions 
 
 | Parameter | Value |
 |---|---|
-| MQTT keepalive | **480 s (8 min)**, passed as the third argument of `mqttConnect(host, port, keepAlive)`. It buys **nothing** on the device side (see below); it only sets the broker's "this client is dead" deadline at 1.5 × 480 s = 12 min. |
-| Host-driven liveness ping | **Required, every 300 s of uplink silence**: a raw `AT+SQNSMQTTSUBSCRIBE` to `pager/{id}/down`, issued from the 5 s wake-and-drain cycle (§8). The SUBACK proves the round trip and re-arms the subscription after a silent modem resume. Specified in `V02_DESIGN.md` §9; ~28.8 mAh/day (estimate). |
+| MQTT keepalive | **Per carrier preset, fixed per session at connect** (`carrier.h` `mqtt_keepalive_s`), passed as the third argument of `mqttConnect(host, port, keepAlive)`: **1200 s** on Soracom (Beam and direct); **480 s** on US Mobile Dark Star, Automatic, Carrier default and any custom or unknown APN. Bootstrap stays 60 s; Wi-Fi is unchanged. The modem does send PINGREQ at this interval when nothing else went up (measured, below), but the host ping normally pre-empts it; its main effect is the broker's "this client is dead" deadline at 1.5 × keepalive = 30 min (Soracom) or 12 min (others). |
+| Host-driven liveness ping | **Required, after `mqtt_ping_s` of uplink silence: 840 s on Soracom, 240 s on every other preset** (300 s for all until 15 Oct 2026): a raw `AT+SQNSMQTTSUBSCRIBE` to `pager/{id}/down`, issued from the 5 s wake-and-drain cycle (§8). The SUBACK proves the round trip and re-arms the subscription after a silent modem resume; a missing SUBACK is the only way a flow the carrier killed silently is detected. Specified in `V02_DESIGN.md` §9; ~10 mAh/day on Soracom, ~36 mAh/day on AT&T (estimate). |
 | ESP32 RTC-timer wake for the ping | **None** — it rides the existing 5 s wake (§8), so it adds no wake source. The library exposes no `mqttPing()`, and there is no ping in the Sequans MQTT AT command set at all. |
-| Server Keep Alive override | If the broker documents a lower cap, the **smaller** value wins. Note `WALTER_MODEM_MQTT_MIN_PREF_KEEP_ALIVE` (`src/WalterModem.h:236`, value 20) is still declared but referenced nowhere in v1.5.0, so the library imposes no floor of its own. Whether the modem or broker silently clamps 480 s is UNVERIFIED. |
+| Server Keep Alive override | If the broker documents a lower cap, the **smaller** value wins. Note `WALTER_MODEM_MQTT_MIN_PREF_KEEP_ALIVE` (`src/WalterModem.h:236`, value 20) is still declared but referenced nowhere in v1.5.0, so the library imposes no floor of its own. EMQX granted 480 s (21 Sep 2026) and mosquitto took 60–1200 s as sent (14-15 Oct 2026); whether Beam or EMQX clamps 1200 s is UNVERIFIED. |
 
-**MEASURED (2026-09-21, AT&T via US Mobile Dark Star): the modem sends no PINGREQ, so the
-keepalive value is not a cure.** Three idle sessions with `keepalive=480` negotiated: EMQX's
-`recv_pkt` for the client stayed at 1 (the CONNECT alone) through and past the 8-minute mark, then
-the broker dropped the client at 1.5 × keepalive (`build/bench-logs/r2-keepalive-poll.log`). The
-Monarch 2 AT manual says the fourth argument of `AT+SQNSMQTTCONNECT` "controls the rate at which
-the client sends ping messages to the broker"; on `LR8.2.1.0-61488` it does not. Independently, a
-second killer exists: at `keepalive=1800` idle sessions still died in **10–13 min**, far short of
-45 min — assumed carrier NAT idle timeout (INFERRED, not yet isolated). And after the modem
-resumes a session by itself it emits `+SQNSMQTTONCONNECT` with no `+SQNSMQTTONDISCONNECT` first,
-and the host **must** re-subscribe or receive nothing.
+*(per-carrier timing, 15 Oct 2026: AT&T kills idle flows between 240 and 360 s and Soracom keeps them ≥1200 s, so one value cannot serve both.)*
 
-Hence the host-driven ping in the table above. `V02_DESIGN.md` §9 is the specification: the
-mechanism, the numbers, the failure modes and the four measurements still outstanding. It also
-supersedes §7.3's "48 keepalives 48 × 0.07 kB" line (now 288 × ~0.17 kB ≈ 49 kB/day) and §8.4's
-0.75 mA keepalive row (now ~1.2 mA), both of which assumed pings that never happened.
+**MEASURED (14-15 Oct 2026, `PINGREQ.md`): the modem DOES send PINGREQ at the keepalive; the
+carrier kills idle flows.** Probe firmware on the bench pager (modem `UE8.2.1.0`, eDRX 0010/0001,
+ESP32 light sleep, idle after SUBSCRIBE) against mosquitto behind a TLS terminator, with a capture:
+
+| Carrier | Keepalive | Result |
+|---|---|---|
+| AT&T (US Mobile Dark Star) | 60, 240 s | PINGREQ every keepalive, answered |
+| AT&T | 360 s (twice), 480 s | no PINGREQ reached the broker; broker drop at 1.5 × keepalive. The capture shows the flow already dead: close_notify retransmitted, no ACK, no RST. Idle cut between 240 and 360 s |
+| Soracom direct (`soracom.io`) | 360, 600, 900, 1200, 1800 s | PINGREQ on the same connection at keepalive, PINGRESP ACKed. Idle survival ≥1800 s |
+
+The 21 Sep 2026 "no PINGREQ" result (`keepalive=480` on AT&T, EMQX `recv_pkt` stuck at 1,
+`build/bench-logs/r2-keepalive-poll.log`) was real, but the cause was AT&T's network dropping the
+idle flow before the ping: no RST reaches the modem and it raises no URC, so it never notices the
+flow is dead. The 10–13 min deaths seen then at `keepalive=1800` are the same cut. Still true from
+that run: after the modem resumes a session by itself it emits `+SQNSMQTTONCONNECT` with no
+`+SQNSMQTTONDISCONNECT` first, and the host **must** re-subscribe or receive nothing.
+
+Hence the host-driven ping stays the single liveness mechanism even though the modem pings: only a
+host-level round trip (SUBSCRIBE → SUBACK) detects a dead flow, and it also repairs a silent resume.
+Each re-SUBSCRIBE resets the modem's keepalive timer, so the modem's own PINGREQ fires only after a
+missed host ping. Per-carrier values: the ping sits under the carrier's idle cut, and
+2 × ping < 1.5 × keepalive so one missed ping is survivable (Soracom 2 × 840 < 1800; others
+2 × 240 < 720). 840 s on Soracom keeps an unnoticed dead session under ~15 min. A custom or unknown
+APN gets the AT&T pair, the smallest cut measured. `V02_DESIGN.md` §9 is the specification. It also
+supersedes §7.3's "48 keepalives 48 × 0.07 kB" line (now ≤360 × ~0.17 kB ≈ 61 kB/day on AT&T,
+~103 × ~0.17 kB ≈ 18 kB/day on Soracom) and §8.4's 0.75 mA keepalive row.
 
 Energy arithmetic, unchanged in form: an uplink packet needs an RRC connection, roughly 3 s at
-~120 mA ≈ 0.1 mAh (estimate, the weakest number in the chain — measure it). 288 pings/day
-≈ 28.8 mAh/day. `PAGER_MQTT_KEEPALIVE_S` and `PAGER_MQTT_PING_S` are compile-time constants.
+~120 mA ≈ 0.1 mAh (estimate, the weakest number in the chain — measure it). Worst case, no other
+uplink: Soracom 86400/840 ≈ 103 pings/day ≈ 10 mAh/day (was 288 ≈ 29 mAh/day at 300 s); AT&T
+86400/240 = 360 pings/day ≈ 36 mAh/day. Both values are per-preset constants in `carrier.c`.
 
-UNVERIFIED: the per-ping energy, the carrier's true idle timeout, and behaviour on other carriers
-such as T-Mobile (Google Fi).
+UNVERIFIED: the per-ping energy, Soracom idle survival beyond 1800 s, the new
+values through Beam, and behaviour on other carriers such as T-Mobile (Google Fi).
+
+*(corrected 15 Oct 2026: the 21 Sep "no PINGREQ" was AT&T's silent idle cut, not the modem.)*
 
 ### 6.3 eDRX (sleep mode)
 
@@ -989,7 +1005,7 @@ The MQTT session lives **inside the modem** and survives ESP32 deep sleep. There
 1. ESP32 deep sleep MUST NOT power-cycle or reset the modem. Any power-gating of the modem
   would destroy the session and force a ~5 kB TLS handshake on every wake — that alone would be
   ~150 kB/day at 30 wakes/day and would dominate everything else in §7.
-2. eDRX is what makes an 8-minute keepalive compatible with 30-second delivery: the network pages
+2. eDRX is what makes an 8–20-minute keepalive (§6.2) compatible with 30-second delivery: the network pages
   the modem within one eDRX cycle (≤20.48 s), independent of the keepalive timer.
 3. The ESP32 does **not** wake for the keepalive (§6.2). The only periodic ESP32 wake in sleep mode
   is the **5 s wake-and-drain cycle** of §8 — which exists because the library's incoming-message
@@ -1064,11 +1080,11 @@ every 15 min plus 2 on-demand location requests.
 ```
 20 down msgs fully acked 20 x 0.43 kB = 8.6 kB
  5 replies 5 x 0.14 kB = 0.7 kB
-288 host pings 288 x 0.17 kB = 49.0 kB (§6.2: SUBSCRIBE + SUBACK with TLS and IP framing)
+360 host pings 360 x 0.17 kB = 61.2 kB (§6.2: SUBSCRIBE + SUBACK with TLS and IP framing; AT&T 240 s worst case, Soracom 840 s ~103 x 0.17 = 17.5 kB)
 34 status publishes 34 x 0.16 kB = 5.4 kB (24 heartbeat + ~10 event-driven)
  4 reconnects 4 x 5.00 kB = 20.0 kB
   ---------
-  83.7 kB/day -> 2.5 MB / 30 days (signed CBOR)
+  95.9 kB/day -> 2.9 MB / 30 days (signed CBOR)
 96 periodic /loc @15 min 96 x 0.19 kB = 18.2 kB
  2 location requests 2 x 0.33 kB = 0.7 kB
   ---------
@@ -1141,7 +1157,7 @@ bridge network. Traffic sent, matching the "measurable, non-modem" slice of §7.
 over a fixed synthetic load: **20 down messages, each fully acked `shown` then `read`, plus 5
 student replies** (the modem-side keepalives are not reproducible here — there is no modem, and the
 relay's own keepalive is a plain 60 s service keepalive per `RELAY_KEEPALIVE_S`
-(`relay/app/mqtt_transport.py`), not the device's 480 s figure — so keepalive/status traffic is
+(`relay/app/mqtt_transport.py`), not the device's per-carrier 480 / 1200 s figure (§6.2) — so keepalive/status traffic is
 excluded from this measurement, not estimated).
 
 **How.** `docker stats --no-stream --format '{{.NetIO}}' relay-broker-1` before and after the run,
@@ -1385,7 +1401,7 @@ real hardware (`firmware/README.md`, M1).
 | Wake-and-drain overhead, `T` = 5 s | 1.60 mA (estimate) | 200 ms awake at an assumed 40 mA every 5 s (§8.2); the 200 ms is measured, the current is not |
 | Modem eDRX paging | 0.2–0.5 mA (estimate) | 2 paging occasions per 20.48 s cycle, ~50 ms each at ~50 mA RX, plus warm-up |
 | Modem idle floor | 0.01–0.05 mA (estimate) | Sequans GM02SP deep-sleep-between-paging |
-| Host liveness ping, amortised | ~1.2 mA (estimate) | 288 pings/day × ~0.1 mAh (§6.2); the modem sends no PINGREQ of its own, so the ESP32 re-subscribes every 300 s from a wake it takes anyway |
+| Host liveness ping, amortised | ~1.5 mA AT&T, ~0.43 mA Soracom (estimate; the total below was computed at 1.2 mA) | 360 or ~103 pings/day × ~0.1 mAh (§6.2); the ESP32 re-subscribes after 240 s (840 s on Soracom) of uplink silence from a wake it takes anyway, because only a host round trip detects a flow the carrier killed silently |
 | Display (gated off via the eInk Friend's ENA, IO12) | ~0 mA | e-paper VCC gated between refreshes |
 | **Sleep-mode total** | **≈ 4.0–4.5 mA → 95–107 mAh/day** | On a ~2500 mAh LiPo cell: **~23–26 days idle** |
 
@@ -1767,8 +1783,8 @@ the future.
 
 2. **`NEEDS HUMAN DECISION` — broker free-tier limits.** This contract needs,
   per device: QoS 1 both directions, a retained `/status`, an LWT, `cleanSession=false` with a
-  persistent session that outlives a coverage gap, and a 480 s keepalive. If the chosen free tier
-  caps session expiry below a useful window, caps keepalive below 480 s, or limits
+  persistent session that outlives a coverage gap, and the §6.2 keepalive (480 s, 1200 s on Soracom). If the chosen free tier
+  caps session expiry below a useful window, caps keepalive below those values, or limits
   credentials/connections such that a second device needs a paid plan, that is a paid-service
   decision. There is a wrinkle: two of those five properties (LWT, clean session) may be
   unreachable from the device side regardless of what the broker allows — see item 3.
@@ -1780,7 +1796,7 @@ the future.
   **(a)** send a raw `AT+SQNSMQTTCFG` with the will parameters via the public `sendCmd()` before
   connecting — free if the Sequans AT manual supports it, needs the manual to confirm;
   **(b)** upgrade the component if a future release exposes them; **(c)** drop the LWT and have the
-  relay infer offline from keepalive expiry, which costs up to 720 s (1.5 × the 480 s keepalive) of staleness in the parent UI;
+  relay infer offline from keepalive expiry, which costs up to 720 s (1.5 × the 480 s keepalive), or 1800 s on Soracom (1.5 × 1200 s), of staleness in the parent UI;
   **(d)** patch the managed component, which this project's dependency rule argues against.
   Someone should pick between (a)-(c). Default if nobody picks: (a) attempted, (c) as the
   fallback, and §5.2 is then advisory rather than binding.
@@ -1885,9 +1901,9 @@ the future.
 | 6.1 | A CA can be provisioned from application code | **RESOLVED — yes**, `tlsWriteCredential()` is public in v1.5.0; cert slot ≥ 11, TLS profile ≥ 2 | — |
 | 6.1 | The modem's MQTT session is `cleanSession=false` | **OPEN, load-bearing.** Not settable, so it is whatever the Sequans defaults to — and `mqttConnect()` clearing the subscription table hints at "clean" | §12 item 4, ~20 min on hardware |
 | 6.1 | An LWT can be registered | **OPEN** — no typed API | Raw `AT+SQNSMQTTCFG` with will parameters via `sendCmd()`; check the Sequans AT manual first, 30 min, no hardware |
-| 6.2 | Modem issues PINGREQ autonomously | **RESOLVED by construction** — there is no ping API, so it must; the ESP32 keepalive wake is deleted | — |
-| 6.2 | 480 s keepalive is not silently clamped by modem or broker | OPEN | Read the granted value from the broker's connection view |
-| 6.2 | Carrier NAT tolerates the idle TCP flow | **No at 1800 s**: on AT&T the session died 10–13 min after the last traffic, 3 of 3. OPEN at 480 s | Idle the pager for an hour and poll the broker's client list each minute |
+| 6.2 | Modem issues PINGREQ autonomously | **RESOLVED, measured 14-15 Oct 2026**: yes, at the keepalive (60–1200 s seen, `PINGREQ.md`); the ESP32 keepalive wake stays deleted | — |
+| 6.2 | The per-carrier keepalive (480 / 1200 s) is not silently clamped by modem or broker | **Partly**: EMQX granted 480 s (21 Sep); mosquitto took 60–1200 s as sent. OPEN for 1200 s through Beam to EMQX | Read the granted value from EMQX's connection view on a Soracom pager |
+| 6.2 | Carrier NAT tolerates the idle TCP flow | **AT&T: no beyond 240 s** (survives 240, silently dead by 360; the 21 Sep 10–13 min deaths were this cut). **Soracom direct: ≥1800 s**. Beam and T-Mobile untested | Probe at the keepalive in question against the capture broker (`PINGREQ.md`) |
 | 6.3 | eDRX API takes seconds vs. the raw 3GPP nibble | **RESOLVED** — raw 4-bit binary nibble strings, spliced verbatim into `AT+SQNEDRX` | — |
 | 6.3 | The granted eDRX/PTW values are readable | **RESOLVED — yes**, `setNetworkEventHandler()` → `WALTER_MODEM_NETWORK_EVENT_EDRX_RECEIVED` → `data.edrx.nwProvidedEdrx` | — |
 | 6.3 | Carrier grants the requested 20.48 s / 2.56 s | OPEN, and §6.5 breaks if it grants 40.96 s | Assert on `nwProvidedEdrx` at attach — free, first bring-up |

@@ -36,7 +36,7 @@ Soracom can all read it.
 
 Why the data drops: the dominant term in §7.3 is the ~5 kB TLS handshake on every reconnect (20 of
 38 kB/day nominal, 120 of 179 kB pessimistic). A plain MQTT connect is about 0.4 kB, and every
-record loses its 29-byte TLS framing. Beam's 1200 s keepalive ceiling is above our 480 s, so it changes nothing, and PINGREQs are not billed in version 201912.
+record loses its 29-byte TLS framing. Beam's 1200 s keepalive ceiling is above our 480 s, so it changes nothing, and PINGREQs are not billed in version 201912. *(15 Oct 2026: the Soracom preset now uses exactly 1200 s, re-SUBSCRIBE 840 s; Soracom direct holds an idle flow ≥1200 s, `PINGREQ.md`; Beam untested at these values.)*
 The handshake saving is also radio time, so it helps the battery more than the bill.
 
 Funk's first 50,000 requests a month are free, then $0.18 per 10,000. Money is not what rules
@@ -86,8 +86,8 @@ What breaks or needs care:
   SIM tried so far the network overrode it and registration took about two minutes. Soracom's US
   plans roam on AT&T and T-Mobile; which one a pager lands on, and what it grants to a roaming
   LTE-M device, is unknown until a Soracom SIM is in the pager.
-- Keepalive drops to ≤ 1200 s; Soracom also ends an idle data session after about an hour, which
-  the keepalive prevents.
+- Keepalive drops to ≤ 1200 s (the preset uses 1200 s with an 840 s re-SUBSCRIBE); Soracom also
+  ends an idle data session after about an hour, which the keepalive prevents.
 - Beam keeps no session state. The design already assumes a clean session and re-publishes unacked
   messages on the online edge, so nothing changes.
 - The modem library cannot set an MQTT Last Will today; that is unchanged.

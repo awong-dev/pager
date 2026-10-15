@@ -188,7 +188,8 @@ From `docs/HARDWARE_TESTING.md` "Not yet seen working," in order:
   300 s interval set at half the shortest observed death; measured 13 min timeout would allow 540 s and
   nearly halve the power cost. Measure and set by owner decision (SLEEP_URC_TASKS S14).
 - **Battery budget current trace:** design assumed ~1% awake, 48 pings/day (43–50 mAh/day, ~34 days on 1500 mAh LiFePO4).
-  Now 4% awake, 288 pings/day (95–107 mAh/day, ~23–26 days on 2500 mAh LiPo). Every term still an estimate. Current trace and
+  Now 4% awake, 288 pings/day (95–107 mAh/day, ~23–26 days on 2500 mAh LiPo); from 15 Oct 2026 the liveness
+  ping is per carrier (~103/day on Soracom, ~360/day on AT&T; PINGREQ.md), totals not yet recomputed. Every term still an estimate. Current trace and
   wake-window shrink next (docs/PROTOCOL.md §8.4).
 
 ### Decisions waiting on the owner

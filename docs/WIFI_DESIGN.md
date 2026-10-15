@@ -85,8 +85,8 @@ guard, the 30 s no-SUBACK death detector, the 300 s re-SUBSCRIBE, `s_disconnect_
 
 | LTE mechanism | WiFi equivalent |
 |---|---|
-| `PAGER_MQTT_KEEPALIVE_S` 480 s, modem sends no PINGREQ | `esp_mqtt_client_config_t.session.keepalive = 60`, `disable_keepalive = false`. esp-mqtt really does ping. 60 s also survives any home NAT. |
-| 300 s raw re-SUBSCRIBE liveness ping | **not implemented.** `service()` on WiFi only runs the policy tick and the connect timeout. |
+| Per-carrier keepalive (`carrier.c`: 1200 s Soracom, 480 s others); the modem does ping, but carrier NATs can kill an idle flow silently (PINGREQ.md, 15 Oct 2026) | `esp_mqtt_client_config_t.session.keepalive = 60`, `disable_keepalive = false`. esp-mqtt really does ping. 60 s also survives any home NAT. |
+| Raw re-SUBSCRIBE liveness ping (per carrier: 840 s Soracom, 240 s others) | **not implemented.** `service()` on WiFi only runs the policy tick and the connect timeout. |
 | `net_connect_guard` 30 s "no CONNECTED/SUBSCRIBED" | keep it, verbatim — same struct, armed on `esp_mqtt_client_start()`, cleared on `MQTT_EVENT_SUBSCRIBED`. |
 | `WALTER_MODEM_MQTT_EVENT_CONNECTED` → subscribe from the handler | `MQTT_EVENT_CONNECTED` → `esp_mqtt_client_subscribe(pager/{id}/down, 1)`. Same "connected is not usable, SUBSCRIBED is" rule: `mqtt_connected` is set only in `MQTT_EVENT_SUBSCRIBED`. |
 | `NET_MQTT_RC_TRANSIENT` | `MQTT_EVENT_DISCONNECTED`; `MQTT_ERROR_TYPE_CONNECTION_REFUSED` with `connect_return_code` 0x01/0x02/0x03. |

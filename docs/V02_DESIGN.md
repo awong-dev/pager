@@ -292,9 +292,19 @@ are used; `ca_sha`/`sha` are base64url without padding, like `sig`.
 - Web: `npm run build`, lint.
 - Hardware, by a person: everything marked `UNVERIFIED`, using the debug console.
 
-## 9. Session liveness: the modem sends no PINGREQ
+## 9. Session liveness: the modem sends no PINGREQ (corrected 15 Oct 2026, see §9.1)
 
 ### 9.1 The finding (measured 2026-09-21, AT&T via US Mobile Dark Star)
+
+> **Correction (15 Oct 2026, `PINGREQ.md`).** The modem does send PINGREQ at the keepalive. Idle
+> probe sessions (modem `UE8.2.1.0`, eDRX, light sleep) against a capture broker: on AT&T it pinged
+> at 60 and 240 s; at 360 s (twice) and 480 s no PINGREQ reached the broker and the capture showed
+> the flow already dead (close_notify retransmitted, no ACK, no RST). On Soracom direct it pinged on
+> the same connection at 360, 600, 900, 1200 and 1800 s. So the 21 Sep result below is
+> real, but its cause is AT&T's network silently dropping idle TCP flows somewhere in 240–360 s,
+> before the 480 s ping; the modem gets no RST and raises no URC. Item 1's 10–13 min "second
+> killer" is the same cut. Items 2–4 stand. The host re-SUBSCRIBE (§9.2) stays the only liveness
+> check, now with per-carrier timing.
 
 `AT+SQNSMQTTCONNECT`'s fourth argument is documented as "Maximum period (in seconds) allowed
 between communications with the broker. If no other messages are being exchanged, this parameter
@@ -336,8 +346,12 @@ Consequences, in order of severity:
 
 ### 9.2 Decision
 
-The host must keep the flow warm itself. **Every `PAGER_MQTT_PING_S` = 300 s of uplink silence,
-re-SUBSCRIBE to `pager/{id}/down`** via a raw `AT+SQNSMQTTSUBSCRIBE`. MQTT keepalive stays 480 s.
+The host must keep the flow warm itself. **After `N` seconds of uplink silence, re-SUBSCRIBE to
+`pager/{id}/down`** via a raw `AT+SQNSMQTTSUBSCRIBE`. Since 15 Oct 2026 `N` and the MQTT keepalive
+are per carrier preset (`carrier.h` `mqtt_ping_s` / `mqtt_keepalive_s`), fixed per session at
+connect: **Soracom (Beam and direct) `N` = 840 s, keepalive 1200 s; US Mobile Dark Star, Automatic,
+Carrier default and custom or unknown APNs `N` = 240 s, keepalive 480 s.** Bootstrap keepalive stays
+60 s; Wi-Fi is unchanged. (Originally `PAGER_MQTT_PING_S` = 300 s and keepalive 480 s for all.)
 
 Why a re-SUBSCRIBE and not a publish: the SUBACK proves the round trip (a QoS 0 publish proves
 nothing), it needs no ACL change and no relay-side tolerance (the broker rule forwards `/up`,
@@ -350,22 +364,26 @@ Rejected: TCP keepalive (the library's socket `keep_alive` is "currently unused"
 a modem firmware upgrade (a forum report of RF loss after `LR8.2.1.0` → `LR8.2.2.1` makes that a
 bench experiment, not a plan).
 
-`N` = 300 s halves the shortest observed death (10.5 min) and leaves 420 s of margin to the
-broker's 720 s timeout, i.e. one whole missed ping is survivable. Keeping keepalive at 480 s also
-keeps "broker declares a truly dead pager offline" at ≤12 min, unchanged.
+Originally `N` = 300 s halved the shortest observed death (10.5 min) and left 420 s of margin to the
+broker's 720 s timeout. **Updated 15 Oct 2026:** AT&T's measured idle cut is 240–360 s, so 300 s was
+not proven safe; 240 s is the longest proven AT&T value, and 2 × 240 < 720 keeps one missed ping
+survivable. Soracom holds idle flows ≥1200 s, so it gets Beam's ceiling, keepalive 1200 s, with
+`N` = 840 s: 2 × 840 < 1800, and a dead session goes unnoticed for at most ~15 min. An unknown
+carrier gets the AT&T pair. "Broker declares a truly dead pager offline" is ≤12 min (AT&T and
+others) or ≤30 min (Soracom).
 
 ### 9.3 Cost
 
 | Term | Number | Assumption |
 |---|---|---|
 | Per ping | ~0.1 mAh (estimate) | §6.2's RRC figure: ~3 s at ~120 mA. **The weakest number here** — an RRC release tail of 10 s instead of 3 s would make it 0.28 mAh |
-| Pings/day | 288 worst case | 86400/300 with no other uplink; every publish resets the timer, so a school day is ~250 |
-| **Energy** | **~28.8 mAh/day → 1.2 mA** | replaces `PROTOCOL.md` §8.4's 0.75 mA keepalive line, which assumed pings that never happened |
-| Sleep-mode total | 3.95–4.45 mA → **95–107 mAh/day** → 23–26 days on 2500 mAh LiPo | §8.4's other terms unchanged |
-| Data | 288 × ~0.17 kB ≈ **49 kB/day** (+1.5 MB/month) | SUBSCRIBE ~28 B + SUBACK 5 B, each +29 B TLS +40 B TCP/IP (§7.1). Nominal day goes 57 → 106 kB; the 10 MB bar holds |
+| Pings/day | ~103 (Soracom) / 360 (AT&T) worst case | 86400/840 and 86400/240 with no other uplink (was 288 at 300 s); every publish resets the timer |
+| **Energy** | **~10 mAh/day → 0.43 mA (Soracom); ~36 mAh/day → 1.5 mA (AT&T)** | was ~28.8 mAh/day → 1.2 mA at 300 s; replaces `PROTOCOL.md` §8.4's 0.75 mA keepalive line |
+| Sleep-mode total | 3.95–4.45 mA → **95–107 mAh/day** → 23–26 days on 2500 mAh LiPo | computed at the old 1.2 mA ping term; §8.4's other terms unchanged |
+| Data | 360 × ~0.17 kB ≈ **61 kB/day** (AT&T); ~103 × ~0.17 kB ≈ 18 kB/day (Soracom, less over Beam with no TLS framing) | SUBSCRIBE ~28 B + SUBACK 5 B, each +29 B TLS +40 B TCP/IP (§7.1); the 10 MB bar holds |
 
-If the per-ping measurement comes back at ≥0.25 mAh, raise `N` to whatever the §9.6 NAT
-measurement allows (420–540 s) rather than accepting 70+ mAh/day.
+If the per-ping measurement comes back at ≥0.25 mAh, raise Soracom's `N` toward its measured idle
+survival; AT&T has no headroom above 240 s (cut at 240–360 s).
 
 ### 9.4 Mechanism
 
@@ -403,13 +421,15 @@ changed `link` exactly like a changed `session`. Optional field, so an older rel
 
 ### 9.6 What to measure
 
-1. **The ping works.** 2 h idle with the change: broker `recv_pkt` rises every ~300 s, `connected_at`
+1. **The ping works.** 2 h idle with the change: broker `recv_pkt` rises every ~`N` s, `connected_at`
    never changes, and a page sent at t+90 min arrives. This is the acceptance test.
 2. **Per-ping energy.** Current trace across one ping: peak, duration to RRC release, mAh. Feeds
-   §9.3 and decides whether `N` = 300 s survives.
+   §9.3 and decides whether the per-carrier `N` values survive.
 3. **The real idle-death time.** `keepalive=1800` (removes the broker as a killer), no host ping,
    poll the broker every 10 s: gives the carrier's timeout directly, and with it the largest `N`
-   that is safe. Run per carrier (AT&T today, T-Mobile/Google Fi next).
+   that is safe. Run per carrier (AT&T today, T-Mobile/Google Fi next). **Done 14-15 Oct 2026 for
+   AT&T (cut 240–360 s) and Soracom direct (≥1800 s)** with a capture broker
+   (`PINGREQ.md`); Beam and T-Mobile remain.
 4. **The resume repair.** Force a drop (broker-side kick), confirm `AT+SQNSMQTTSUBSCRIBE` goes out
    within one wake cycle, `+SQNSMQTTONSUBSCRIBE` returns, `/status online` is published, and a page
    sent 10 s later arrives.

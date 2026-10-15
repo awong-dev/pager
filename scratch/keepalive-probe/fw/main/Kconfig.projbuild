@@ -16,6 +16,14 @@ menu "Keepalive probe"
         int "MQTT keepalive passed to AT+SQNSMQTTCONNECT (s)"
         default 60
 
+    config PROBE_KEEPALIVE_SWEEP
+        string "Keepalive sweep, comma-separated seconds (empty = PROBE_KEEPALIVE_S only)"
+        default ""
+        help
+            Each value gets its own session: connect, stay idle for 1.6 x keepalive + 30 s (long enough
+            for a PINGREQ at 1 x or the broker's drop at 1.5 x), then AT+SQNSMQTTDISCONNECT and the next.
+            The last value stays connected.
+
     config PROBE_APN
         string "APN (empty = network's choice)"
         default ""

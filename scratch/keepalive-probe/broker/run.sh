@@ -8,7 +8,10 @@ iface="${1:-$(ip route show default | awk '/default/ {print $5; exit}')}"
 [ -n "$iface" ] || { echo "cannot determine interface; pass it as arg" >&2; exit 1; }
 run="$here/runs/$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$run"
-sudo -v
+# tcpdump needs root or capabilities. With `sudo setcap cap_net_raw,cap_net_admin=eip $(command -v tcpdump)`
+# done once, the whole run needs no sudo and can be started detached (tmux/ssh). Otherwise sudo, asked once here.
+getcap=$(command -v getcap || echo /usr/sbin/getcap)
+if "$getcap" "$(command -v tcpdump)" 2>/dev/null | grep -q cap_net_raw; then SUDO=""; else SUDO="sudo"; sudo -v; fi
 cat > "$run/mosquitto.conf" <<CONF
 listener 1883 127.0.0.1
 allow_anonymous true
@@ -22,21 +25,21 @@ CONF
 chmod 666 "$run/mosquitto.log"
 pids=()
 cleanup() {
-  trap - INT TERM EXIT
+  trap - INT TERM HUP EXIT
   echo; echo "stopping..."
-  for p in "${pids[@]}"; do sudo kill "$p" 2>/dev/null || true; done
+  for p in "${pids[@]}"; do $SUDO kill "$p" 2>/dev/null || true; done
   wait 2>/dev/null || true
-  sudo chown -R "$(id -u):$(id -g)" "$run" 2>/dev/null || true
+  $SUDO chown -R "$(id -u):$(id -g)" "$run" 2>/dev/null || true
   echo "done. run dir: $run"
 }
-trap cleanup INT TERM EXIT
+trap cleanup INT TERM HUP EXIT
 # Debian/Armbian install the broker in /usr/sbin, which a normal user's PATH lacks.
 mosq=$(command -v mosquitto || ls /usr/sbin/mosquitto 2>/dev/null || true)
 [ -n "$mosq" ] || { echo "mosquitto not installed -- run ./setup.sh first" >&2; exit 1; }
 "$mosq" -c "$run/mosquitto.conf" & pids+=($!)
 sleep 1
-sudo tcpdump -i "$iface" -U -n -w "$run/ext-8883.pcap" 'tcp port 8883' 2>"$run/tcpdump-ext.err" & pids+=($!)
-sudo tcpdump -i lo -U -n -w "$run/lo-1883.pcap" 'tcp port 1883' 2>"$run/tcpdump-lo.err" & pids+=($!)
+$SUDO tcpdump -i "$iface" -U -n -w "$run/ext-8883.pcap" 'tcp port 8883' 2>"$run/tcpdump-ext.err" & pids+=($!)
+$SUDO tcpdump -i lo -U -n -w "$run/lo-1883.pcap" 'tcp port 1883' 2>"$run/tcpdump-lo.err" & pids+=($!)
 python3 -u "$here/tlsterm.py" --cert "$here/certs/server.crt" --key "$here/certs/server.key" \
   --keylog "$run/keylog.txt" >> "$run/tlsterm.log" 2>&1 & pids+=($!)
 sleep 1

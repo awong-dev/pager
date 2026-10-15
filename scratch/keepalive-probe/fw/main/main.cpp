@@ -4,6 +4,7 @@
 // Sequence mirrors firmware/main/net.cpp (net_bringup, net_sleep). See README.md.
 
 #include <stdarg.h>
+#include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
@@ -153,6 +154,8 @@ static bool modem_bringup(void)
 {
     PLOG("modem bring-up starting");
     if (!WalterModem::begin(MODEM_UART)) { PLOG("WalterModem::begin failed"); return false; }
+    // Record the modem firmware next to the result (21 Sep ran LR8.2.1.0-61488); AT_TRACE prints the reply.
+    WalterModem::sendCmd("AT+CGMR");
     WalterModem::setMQTTEventHandler(mqtt_handler, nullptr);
     WalterModem::setNetworkEventHandler(network_handler, nullptr);
     if (!WalterModem::setOpState(WALTER_MODEM_OPSTATE_NO_RF)) { PLOG("setOpState(NO_RF) failed"); return false; }
@@ -216,7 +219,7 @@ static void seed_clock(void)
 }
 
 // TLS profile (mandatory, else the modem sends plaintext), MQTT config, connect. Power effect: one TLS handshake.
-static bool mqtt_start(void)
+static bool mqtt_start(int keepalive_s)
 {
     // The modem needs a real certificate in the slot the profile names, even with VALIDATION_NONE. Use the
     // pager's slot 12 and, only if it is empty, write the pager's own placeholder CA there, exactly as
@@ -264,12 +267,12 @@ static bool mqtt_start(void)
     }
     s_disc_edge = false;
     s_state = 1;
-    if (!WalterModem::mqttConnect(CONFIG_PROBE_BROKER_HOST, CONFIG_PROBE_BROKER_PORT, CONFIG_PROBE_KEEPALIVE_S)) {
+    if (!WalterModem::mqttConnect(CONFIG_PROBE_BROKER_HOST, CONFIG_PROBE_BROKER_PORT, keepalive_s)) {
         PLOG("mqttConnect could not be queued");
         return false;
     }
     PLOG("mqttConnect issued to %s:%d client=%s keepalive=%d s", CONFIG_PROBE_BROKER_HOST,
-         CONFIG_PROBE_BROKER_PORT, CONFIG_PROBE_CLIENT_ID, CONFIG_PROBE_KEEPALIVE_S);
+         CONFIG_PROBE_BROKER_PORT, CONFIG_PROBE_CLIENT_ID, keepalive_s);
     return true;
 }
 
@@ -352,21 +355,53 @@ extern "C" void app_main(void)
     if (!modem_bringup()) { PLOG("bring-up failed, halting"); vTaskSuspend(NULL); }
     seed_clock();
     PLOG("modem clock %s", s_epoch_base ? "seeded" : "unavailable (uptime-only stamps)");
-    if (!mqtt_start()) { PLOG("MQTT start failed, halting"); vTaskSuspend(NULL); }
-    xEventGroupWaitBits(s_ev, EV_CONNECT_RESULT, pdFALSE, pdFALSE, pdMS_TO_TICKS(60000));
-    xEventGroupWaitBits(s_ev, EV_SUBSCRIBED, pdFALSE, pdFALSE, pdMS_TO_TICKS(30000));
-    PLOG("idle phase begins: state=%s. No publishes, no re-subscribes from here on.", STATE_NAME[s_state]);
+    // Keepalive sweep (PROBE_KEEPALIVE_SWEEP): one session per value, each idle long enough for either a
+    // PINGREQ at 1 x keepalive or the broker's drop at 1.5 x; the broker log gives the verdict.
+    int sweep[16];
+    int nsweep = 0;
+    {
+        const char *p = CONFIG_PROBE_KEEPALIVE_SWEEP;
+        while (*p && nsweep < 16) {
+            int v = atoi(p);
+            if (v > 0) sweep[nsweep++] = v;
+            while (*p && *p != ',') p++;
+            if (*p == ',') p++;
+        }
+        if (nsweep == 0) sweep[nsweep++] = CONFIG_PROBE_KEEPALIVE_S;
+    }
+    int stage = 0;
+    int keepalive_s = sweep[0];
+    int64_t stage_end = 0;
+    auto start_stage = [&](void) {
+        keepalive_s = sweep[stage];
+        xEventGroupClearBits(s_ev, EV_CONNECT_RESULT | EV_SUBSCRIBED);
+        if (!mqtt_start(keepalive_s)) { PLOG("MQTT start failed, halting"); vTaskSuspend(NULL); }
+        xEventGroupWaitBits(s_ev, EV_CONNECT_RESULT, pdFALSE, pdFALSE, pdMS_TO_TICKS(60000));
+        xEventGroupWaitBits(s_ev, EV_SUBSCRIBED, pdFALSE, pdFALSE, pdMS_TO_TICKS(30000));
+        stage_end = (stage + 1 < nsweep) ? esp_timer_get_time() + (int64_t) (keepalive_s * 16 / 10 + 30) * 1000000LL : 0;
+        PLOG("SWEEP stage %d/%d keepalive=%d s: idle phase begins, state=%s, next stage in %d s", stage + 1, nsweep,
+             keepalive_s, STATE_NAME[s_state], stage_end ? keepalive_s * 16 / 10 + 30 : -1);
+    };
+    start_stage();
 
     int64_t next_hb = esp_timer_get_time() + HEARTBEAT_US;
     bool reported_disc = false;
     for (;;) {
+        if (stage_end && esp_timer_get_time() >= stage_end) {
+            PLOG("SWEEP stage %d done (keepalive %d s): disconnecting", stage + 1, keepalive_s);
+            WalterModem::mqttDisconnect(); // same as mqtt_start(): app_main's own AT calls run awake, unlocked
+            vTaskDelay(pdMS_TO_TICKS(5000));
+            stage++;
+            reported_disc = false;
+            start_stage();
+        }
         if (s_disc_edge && !reported_disc) {
             reported_disc = true;
-            PLOG("SESSION DEAD rc=%d (uptime above; compare to keepalive %d s)", s_last_rc, CONFIG_PROBE_KEEPALIVE_S);
+            PLOG("SESSION DEAD rc=%d (uptime above; compare to keepalive %d s)", s_last_rc, keepalive_s);
             if (kReconnect) {
                 PLOG("reconnecting (PROBE_RECONNECT=y)");
                 reported_disc = false;
-                if (!mqtt_start()) reported_disc = true;
+                if (!mqtt_start(keepalive_s)) reported_disc = true;
             }
         }
         if (esp_timer_get_time() >= next_hb) {

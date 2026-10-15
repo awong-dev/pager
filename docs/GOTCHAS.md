@@ -52,13 +52,13 @@ UNVERIFIED: the exact minimum (not bisected between 50 and 150 ms), why one deli
 
 **Symptom:** the web app shows the pager online; new pages vanish; the pager's log shows no disconnect; the session comes back by itself several minutes later.
 
-**Cause (measured 2026-09-21):** **the modem never sends PINGREQ**, whatever keepalive is configured. Three idle sessions at keepalive 480 s: the broker's `recv_pkt` for the client stayed at 1 (the CONNECT) for the whole session, so nothing arrived at the 8-minute mark (`build/bench-logs/r2-keepalive-poll.log`). The AT manual says the keepalive argument "controls the rate at which the client sends ping messages"; on `LR8.2.1.0-61488` it does not. So **lowering the keepalive is not a cure** — it only moves the broker's own 1.5 × keepalive deadline. On top of that, something in the carrier path kills an idle flow after 10-13 minutes regardless: at keepalive 1800 s sessions still died in 10-13 min, not 45 (assumed NAT, INFERRED).
+**Cause (measured 2026-09-21, explained 2026-10-15 in `PINGREQ.md`):** the modem pings at the keepalive, but **a carrier NAT can silently kill an idle flow first** (AT&T: between 240 and 360 s idle). No RST reaches the modem and it raises no URC, so it never notices; only a host-level round trip detects it. On 21 Sep at keepalive 480 s the broker's `recv_pkt` stayed at 1 (the CONNECT) because the 480 s PINGREQ went into a flow AT&T had already dropped; at 1800 s sessions died in 10-13 min for the same reason. Soracom direct keeps an idle flow ≥1200 s. So the keepalive alone is not a cure: nothing tells the pager its flow is gone.
 
 Worse, after the modem resumes the session by itself (`+SQNSMQTTONCONNECT:0,0`, no connect command from us) the pager is **subscribed to nothing**: the AT manual requires the host to re-subscribe, and `mqttSubscribe()` silently does nothing when the topic is still in its local table. No `AT+SQNSMQTTSUBSCRIBE` was sent for either resume in a 40-minute log. No `+SQNSMQTTONDISCONNECT` is ever raised either, so the firmware never notices any of it.
 
-**Rule:** the host keeps the flow warm. Every 300 s of uplink silence the ESP32 re-subscribes to `pager/{id}/down` with a raw `AT+SQNSMQTTSUBSCRIBE` — the SUBACK proves the round trip and re-arms the subscription after a silent resume. No SUBACK in 30 s means the session is dead: reconnect. Cost about 28.8 mAh/day (288 pings x ~0.1 mAh, estimate). See `V02_DESIGN.md` §9.
+**Rule:** the host keeps the flow warm. After 240 s of uplink silence (840 s on the Soracom preset; keepalive 480 / 1200 s) the ESP32 re-subscribes to `pager/{id}/down` with a raw `AT+SQNSMQTTSUBSCRIBE` — the SUBACK proves the round trip and re-arms the subscription after a silent resume. No SUBACK in 30 s means the session is dead: reconnect. Cost about 36 mAh/day on AT&T (360 pings x ~0.1 mAh), ~10 on Soracom (~103 pings), estimate. See `V02_DESIGN.md` §9.
 
-UNVERIFIED: the per-ping energy, the carrier's true idle timeout (and the largest safe interval), and behaviour on other carriers such as T-Mobile.
+UNVERIFIED: the per-ping energy, the new values through Beam, and behaviour on other carriers such as T-Mobile.
 
 ## The pager dies after losing signal
 

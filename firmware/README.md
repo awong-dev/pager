@@ -219,7 +219,7 @@ arithmetic these numbers feed.
 | M4 | Granted eDRX/PTW from `WALTER_MODEM_NETWORK_EVENT_EDRX_RECEIVED` | Assert granted eDRX == requested `"0010"` (20.48s); logged by `net.cpp`'s network event handler, and now confirmed on a real SIM and carrier. **Resolved 8 Oct 2026:** granted on AT&T 310410 (Soracom SIM on `sora1`): `+CEDRXRDP: 4,"0010","0010","0001"` (`docs/SORACOM_DESIGN.md` §6 B). |
 | M5 | RTS hold-off: does the Sequans queue URCs while CTS is deasserted, or drop them? | The single riskiest assumption in the whole sleep design (§8.3); `net_sleep()`'s RTS choreography was unverified end to end. **Resolved 23-24 Sep 2026:** the modem queues URCs while CTS is deasserted and releases them only when the host speaks (23 Sep 17:50). The RTS pin was excluded from light-sleep pad isolation (`gpio_sleep_sel_dis()`, ab5927c); a `sleeptest 3` window then delivered a page 9 s after the relay stamped it, and the release build acked through sleep. See `docs/SLEEP_URC_DESIGN.md` §1 and `docs/RCA_SLEEP_URC.md`. |
 | M6 | `MEMORY_FULL` event count over 24h | Direct evidence the wake-and-drain cycle is losing messages; counted in RTC (`mqtt_memfull_count`) but never exercised against real traffic |
-| M7 | Does the modem send PINGREQ autonomously at the configured keepalive? | Resolved by construction per the library API (no ping call exists), but never observed on the wire |
+| M7 | Does the modem send PINGREQ autonomously at the configured keepalive? | **Resolved on the wire 14-15 Oct 2026** (`PINGREQ.md`): yes, at 60-1200 s. AT&T silently drops idle flows between 240 and 360 s, so a longer keepalive's PINGREQ never arrives there |
 | M8 | Clean-session behaviour across an ESP32-only reset (modem session survives?) | PROTOCOL.md §12 item 4 - the highest-value follow-up experiment; unresolved and load-bearing for whether §8.3(b) (deep sleep + forced redelivery) is ever worth revisiting |
 | M16 | I²C CardKB polling (the `kbd` task in `ui.c`, which feeds `input_feed_key()`, F6.2) across repeated 100 ms light-sleep cycles | `DEVICE_PLAN.md` §10's own open assumption: whether the CardKB and its I2C bus survive `net_sleep()`'s light-sleep re-entry without a dropped or garbled byte while the composer is open. The plan's own cheapest experiment is "one afternoon with M1's current trace" |
 | M17 | UI-awake window current draw (active mode, composer open, CardKB scanned every 10 ms by the `kbd` task, `PAGER_UI_AWAKE_S`=30s) | Validates `DEVICE_PLAN.md` §5.7's ≈ 7 mAh/day-at-20-interactions estimate and the "one more AT round trip per UI wake (signal + battery), ≈ 100 ms at 40 mA" it is built on |
@@ -228,7 +228,9 @@ arithmetic these numbers feed.
 
 Also unresolved and not measurable without hardware: whether the modem/broker silently clamp
 a 1800s MQTT keepalive, and whether the carrier's NAT tolerates a 1800s idle TCP flow
-(PROTOCOL.md §6.2).
+(PROTOCOL.md §6.2). Partly measured since (`PINGREQ.md`, 15 Oct 2026): AT&T drops an idle flow
+between 240 and 360 s; Soracom direct holds ≥1800 s; a 1200 s clamp through
+Beam/EMQX is still open.
 
 ## Measurement checklist: display and input (PENDING_HW unless a row says resolved)
 
@@ -458,6 +460,6 @@ Low impact on its own; listed because it interacts with R1 and R2.
   confirmed fact about Walter's own unpublished internal routing — compare `getVoltage()`'s reading
   against a multimeter on first hardware bring-up (5 min, M15 in the checklist above).
 - **§12 item 2 (broker free-tier limits): overtaken by production, not re-checked.** Production runs on
-  EMQX Cloud Serverless (`infra/README.md` §10), and the firmware keepalive is 480 s
-  (`docs/SORACOM_DESIGN.md` §3.3). Whether the free tier gives QoS 1 both ways, a retained topic and a
+  EMQX Cloud Serverless (`infra/README.md` §10), and the firmware keepalive is 480 s, 1200 s on the
+  Soracom preset (`carrier.c`, PROTOCOL.md §6.2). Whether the free tier gives QoS 1 both ways, a retained topic and a
   persistent session is not recorded in the sources; confirm before relying on it.
