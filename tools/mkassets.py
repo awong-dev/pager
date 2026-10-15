@@ -94,14 +94,15 @@ it was before they existed.
 
 CJK repertoire note (docs/DEVICE_PLAN.md §5.2 names four legacy standards —
 GB2312, Big5, JIS X 0208, KS X 1001 — as the exact repertoire per language).
-This script does NOT embed those legacy code tables (not available in this
-environment without network access to fetch them); instead it selects the
-first N codepoints of the relevant modern Unicode block(s) that the chosen
-CJK font actually has a glyph for, where N matches the character count
-DEVICE_PLAN.md §5.2 cites for that language. This is a documented
-approximation of the repertoire, not the authentic legacy mapping — swap
-_cjk_ranges()/_CJK_TARGET_COUNT below for a real GB2312/Big5/JIS/KS table
-when one is available, no other part of the pipeline needs to change.
+`sc` and `tc` use the real tables, decoded from Python's own gb2312/big5
+codecs (stdlib, no download): `sc` = all 6763 GB2312 hanzi + Big5 level 1's
+5401 (0xA440-0xC67E), merged by Unicode codepoint into 8836 (owner, 15 Oct
+2026: the old codepoint-order stand-in stopped at U+6749 and missed 57 % of
+GB2312 level 1, e.g. 的 这 说 爱), plus 365 frequent Cantonese characters
+from tools/fonts/cantonese_extra.txt (嘅 喺 佢 咗 啲 ...; some are outside the
+BMP) = 9201; `tc` = Big5 level 1 alone. `jp`/`kr` still
+take the first N codepoints of their Unicode blocks that the CJK font has a
+glyph for (N from DEVICE_PLAN.md §5.2) — an approximation, not JIS/KS.
 """
 import argparse
 import struct
@@ -129,15 +130,61 @@ _COMMON_RANGES = (
     (0xFF00, 0xFFEF, "cjk"),   # Halfwidth and Fullwidth Forms
 )
 
-# Per-language CJK repertoire ranges (see the module docstring's caveat) and
-# the target glyph count DEVICE_PLAN.md §5.2 cites for that language.
+# jp/kr: Unicode ranges + target count, an approximation (module docstring).
+# sc/tc use _legacy_hanzi() instead and never read these two tables.
 _CJK_RANGES = {
-    "sc": ((0x4E00, 0x9FFF),),  # stand-in for GB2312's 6763 hanzi
-    "tc": ((0x4E00, 0x9FFF),),  # stand-in for Big5's 5401 hanzi
     "jp": ((0x3040, 0x309F), (0x30A0, 0x30FF), (0x4E00, 0x9FFF)),  # kana + stand-in for JIS X 0208
     "kr": ((0xAC00, 0xD7A3), (0x4E00, 0x9FFF)),  # Hangul syllables + stand-in for KS X 1001 hanja
 }
-_CJK_TARGET_COUNT = {"sc": 6763, "tc": 5401, "jp": 6879, "kr": 7238}
+_CJK_TARGET_COUNT = {"jp": 6879, "kr": 7238}
+
+
+def _gb2312_hanzi():
+    """All 6763 GB2312 hanzi (rows 16-87) as Unicode codepoints."""
+    out = set()
+    for row in range(16, 88):
+        for cell in range(0xA1, 0xFF):
+            try:
+                out.add(ord(bytes([row + 0xA0, cell]).decode("gb2312")))
+            except UnicodeDecodeError:
+                pass
+    return out
+
+
+def _big5_level1_hanzi():
+    """Big5 level 1, the 5401 common hanzi at 0xA440-0xC67E."""
+    out = set()
+    for lead in range(0xA4, 0xC7):
+        for trail in list(range(0x40, 0x7F)) + list(range(0xA1, 0xFF)):
+            if (lead << 8 | trail) > 0xC67E:
+                break
+            try:
+                out.add(ord(bytes([lead, trail]).decode("big5")))
+            except UnicodeDecodeError:
+                pass
+    return out
+
+
+_CANTONESE_EXTRA = Path(__file__).resolve().parent / "fonts" / "cantonese_extra.txt"
+
+
+def _cantonese_extra():
+    """The ~370 frequent Cantonese characters outside GB2312 + Big5 level 1
+    (tools/fonts/cantonese_extra.txt says how the list was derived)."""
+    out = set()
+    for line in _CANTONESE_EXTRA.read_text(encoding="utf-8").splitlines():
+        if not line.startswith("#"):
+            out.update(ord(ch) for ch in line if not ch.isspace())
+    return out
+
+
+def _legacy_hanzi(lang):
+    """The real legacy repertoire for sc/tc, else None (jp/kr use ranges)."""
+    if lang == "sc":
+        return _gb2312_hanzi() | _big5_level1_hanzi() | _cantonese_extra()
+    if lang == "tc":
+        return _big5_level1_hanzi()
+    return None
 
 _CJK_FACE_NAME_HINT = {"sc": "SC", "tc": "TC", "jp": "JP", "kr": "KR"}
 
@@ -244,19 +291,33 @@ def _collect_codepoints(lang, sans_face, cjk_face, emoji_face=None):
             if _glyph_coverage(face, cp):
                 chosen[cp] = font
 
-    target = _CJK_TARGET_COUNT[lang]
-    cjk_count = sum(1 for f in chosen.values() if f == "cjk")
-    for start, end in _CJK_RANGES[lang]:
-        if cjk_count >= target:
-            break
-        for cp in range(start, end + 1):
-            if cjk_count >= target:
-                break
+    legacy = _legacy_hanzi(lang)
+    if legacy is not None:
+        missing = []
+        for cp in sorted(legacy):
             if cp in chosen:
                 continue
             if _glyph_coverage(cjk_face, cp):
                 chosen[cp] = "cjk"
-                cjk_count += 1
+            else:
+                missing.append(cp)
+        if missing:
+            print(f"mkassets: {len(missing)} {lang} hanzi have no glyph in the CJK face, "
+                  f"e.g. {''.join(chr(c) for c in missing[:20])}", file=sys.stderr)
+    else:
+        target = _CJK_TARGET_COUNT[lang]
+        cjk_count = sum(1 for f in chosen.values() if f == "cjk")
+        for start, end in _CJK_RANGES[lang]:
+            if cjk_count >= target:
+                break
+            for cp in range(start, end + 1):
+                if cjk_count >= target:
+                    break
+                if cp in chosen:
+                    continue
+                if _glyph_coverage(cjk_face, cp):
+                    chosen[cp] = "cjk"
+                    cjk_count += 1
 
     if emoji_face is not None:
         _collect_emoji(chosen, sans_face, emoji_face)
@@ -402,7 +463,7 @@ def build_assets(lang, sans_font, cjk_font, cjk_face_index, sans_axes=None, base
         print(f"mkassets: kinds {kinds}", file=sys.stderr)
     print(
         f"mkassets: lang={lang} codepoints={len(entries)} (sans={sans_count} cjk={cjk_count}, "
-        f"target cjk={_CJK_TARGET_COUNT[lang]})",
+        f"target cjk={_CJK_TARGET_COUNT.get(lang, 'legacy table')})",
         file=sys.stderr,
     )
 
@@ -421,7 +482,7 @@ def build_assets(lang, sans_font, cjk_font, cjk_face_index, sans_axes=None, base
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--lang", choices=sorted(_CJK_RANGES), default="sc",
+    ap.add_argument("--lang", choices=("jp", "kr", "sc", "tc"), default="sc",
                      help="CJK repertoire (default: sc, docs/DEVICE_PLAN.md §9)")
     ap.add_argument("-o", "--out", default="build/assets.bin", help="output assets.bin path")
     ap.add_argument("--sans-font", required=True, help="Noto Sans (or substitute) font file")

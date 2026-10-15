@@ -1,0 +1,19 @@
+# Cantonese characters added to `mkassets.py --lang sc` on top of GB2312 + Big5 level 1
+# (owner, 15 Oct 2026). Derived once, not at build time:
+#   - HKCanCor (PyCantonese 2026 copy, 161,138 hanzi of transcribed Hong Kong conversation):
+#     its 129 most frequent characters outside GB2312+Big5 L1 -> 83.3 % -> 99.993 % coverage.
+#   - Cantonese Wikipedia (zh_yuewiki-latest-pages-articles, 15 Oct 2026, 54.7 M hanzi):
+#     its 300 most frequent characters outside the same set -> 94.7 % -> 99.27 % coverage.
+#     The tail beyond ~99.3 % (rare names, Japanese kanji) is deliberately left out.
+#     Three of those (U+21CDE, U+245F2, U+24605) have no glyph in Noto Sans CJK and are dropped.
+# Union, HKCanCor order first, then Wikipedia. Whitespace and lines starting with # are ignored.
+噉啲佢嗰𡃉嘅囖嘢冇喎哋咗誒嚹喺𠻺咁𠸏諗揾啫𠺢啱靚攞𡁵嗱裏吔𠻹㗎𠺝舖瞓啩黐唓嘥冚𠿪
+咓噏慳嚿揦舋焗𡃓唥拃啝嫲鮓孭戇鑊𦧲𡁜掹攰摷㗳讕𠝹噚𠮨㧬餸㷫踎冧燶趷漚蚚掯抌櫈䟴蕎
+喼掟扱躝搣擝脷奀𡀔啋𥊙嘜覮嚟埗糴卌孖腍𠻗閹羣噠鯁剒癐簜曱甴𠮩𠹌扺摀搲𧕴埲轕迾唞嫺
+𤓓樖掅嘺劏𠵇𠺫鰂𥄫綫攷搵爲邨衞嗮磡峯滘鄺麪瑋凈栃氹乸煒嬅埼滙灝栢蒨敎燊鱇鮟啓轆旻
+躄掕鈺婭尐薈偲唨塱枱喆菓鵰𨋢峇瀬蔴騮砵嘸喐殭眞鈎衆説諡煇暐寛発燁鬅囍孲戸鷄驊硤戦
+瀧跩嶋璠県鱲埞逳駅楽産卽揼飆瀅沢饋俬屌鎧総鄔頴関麿驄畑恵烴鉄鵐咲気緋廸膥巻謚𤒹
+両輋売円𡃁経戙騏墻窰閲踭荳鎌牀叡堃櫟滸辻実図奬㞗鍶歴褦団覧幪羥豊丼粧鑭広鷲鰲鴞軚
+紓錒韞㚻佮孻欒蔵鈦囧萩徳脇対鰕駖櫳獴碁竉脧撣歳紘𢆡穂黒沚歩鏇伝梘瑄嚙緡瑠舘㩒旼
+挙畧読槤謳権鼩乂桜顳詏閪笹竜銦軫糭縄綟変梶倶銫餬潁獣拏観閆撃鱈郷稲蛺褔鍺粿絶齶
+鏞姫鼆氼録骹禕査
