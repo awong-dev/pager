@@ -56,21 +56,22 @@ def main(route=False):
         "Q1": (9.0, 44.0, 0),
         "J1": (34.0, 5.0, 0), "D4": (30.5, 10.3, 0),
         "SW1": (47.5, 5.0, 0),
-        "J3": (58.5, 4.3, 180), "J5": (67.5, 4.3, 180), "J2": (75.0, 5.3, 180),
-        "J4": (34.5, 47.0, 0), "J6": (45.0, 48.8, 0), "J7": (51.5, 48.8, 0), "D5": (25.5, 5.6, 90),
+        "J3": (60.0, 4.3, 180), "J2": (75.0, 5.3, 180),
+        "SW2": (72.6, 47.8, 0),
+        "J4": (34.5, 47.0, 0), "J6": (44.5, 48.8, 0), "J7": (50.8, 48.8, 0), "D5": (25.5, 5.6, 90),
         "U3": (33.0, 16.0, 0), "L2": (37.5, 16.0, 0),
         "U4": (32.0, 26.0, 0),
         "U7": (52.0, 20.0, 0),
         "U10": (45.0, 27.0, 0),
-        "U8": (44.0, 11.5, 0), "Q4": (48.5, 11.5, 0),
+        "Q4": (46.0, 11.5, 0),
         "U9": (56.0, 11.5, 0),
-        "H1": (17.0, 2.5, 0), "H2": (82.8, 2.2, 0), "H3": (82.5, 47.0, 0), "H4": (2.5, 49.5, 0),
+        "H1": (17.0, 2.5, 0), "H2": (82.8, 2.2, 0), "H3": (82.8, 49.8, 0), "H4": (2.5, 49.5, 0),
     }
     for ref, (x, y, r) in P.items():
         b.place(ref, x, y, r)
     # test pads along the bottom strip
-    for i in range(14):
-        b.place("TP%d" % (i + 1), 56.5 + i * 2.0, 50.6, 0)
+    for i in range(14):  # two rows of seven in the bottom strip
+        b.place("TP%d" % (i + 1), 55.1 + (i % 7) * 2.0, 48.9 if i < 7 else 50.9, 0)
 
     # ---- passives packed next to their anchors --------------------------
     groups = groups_by_tag(prj)
@@ -88,19 +89,15 @@ def main(route=False):
         "U4": (27.5, 28.5, 40.0, 31.5, 90), "J3": (36.0, 32.5, 44.0, 35.0, 90),
         "U7": (47.0, 22.5, 60.0, 25.0, 90),
         "U10": (42.0, 29.5, 48.0, 31.5, 90),
-        "U8": (41.0, 13.5, 52.5, 16.5, 90),
+        "Q4": (41.0, 13.5, 52.5, 16.5, 90),
+        "SW2": (76.9, 45.5, 80.0, 49.2, 0),
         "U9": (53.0, 14.0, 61.0, 17.5, 90),
         "J4": (27.5, 38.3, 34.0, 42.0, 90),
         "D5": (24.2, 0.7, 27.8, 3.8, 90),
         "J2": (27.5, 33.0, 33.5, 36.0, 90), "F1": (27.5, 33.0, 33.5, 36.0, 90),
     }
-    # Walter bulk: 100uF 1210 + 10uF at x 6.9..10.1 next to pin 28
-    y = 7.7
-    for ref in walter_caps:
-        b.place(ref, 8.5, 0, 90)
-        w, h = b.fp_size(ref)
-        b.place(ref, 8.5, y + h / 2, 90)
-        y += h + 0.4
+    # Walter bulk: 2 x 100uF 0805 + 10uF in a row just below the notch, next to pin 28 (4.6, 8.2)
+    b.pack(walter_caps, 6.6, 7.6, 20.0, 9.9, rot=0)
     for a, refs in groups.items():
         if not refs:
             continue
@@ -126,6 +123,7 @@ def main(route=False):
     b.text("SIM loads from this edge (Walter beneath)", 13.5, 51.2, pcbnew.Cmts_User, 0.8)
     b.text("pager-carrier rev A", 44, 46.0, pcbnew.F_SilkS, 1.0)
     b.text("accel X ->", 52.0, 26.2, pcbnew.F_SilkS, 0.8)
+    b.text("LIGHT", 81.3, 46.6, pcbnew.F_SilkS, 0.8)
     b.text("WALTER UNDERNEATH, header side up", 13.5, 6.9, pcbnew.B_SilkS, 0.8)
 
     if route:

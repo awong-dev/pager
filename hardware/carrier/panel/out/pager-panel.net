@@ -2,7 +2,7 @@
 	(version "E")
 	(design
 		(source "/Users/albert/src/pager/hardware/carrier/panel/pager-panel.kicad_sch")
-		(date "2026-10-17T01:21:23")
+		(date "2026-10-17T08:16:48")
 		(tool "Eeschema 10.0.6")
 		(sheet
 			(number "1")
@@ -1157,21 +1157,21 @@
 		(comp
 			(ref "J1")
 			(value "GDEY029T94 FPC")
-			(footprint "Connector_FFC-FPC:Hirose_FH12-24S-0.5SH_1x24-1MP_P0.50mm_Horizontal")
+			(footprint "pager-carrier:Hirose_FH34SRJ-24S-0.5SH_1x24-1MP_P0.50mm_Horizontal")
 			(datasheet "~")
 			(description "Generic connector, single row, 01x24, script generated (kicad-library-utils/schlib/autogen/connector/)")
 			(fields
 				(field
-					(name "MPN") "FH12-24S-0.5SH(55)")
+					(name "MPN") "FH34SRJ-24S-0.5SH(50)")
 				(field
-					(name "LCSC") "C202112")
+					(name "LCSC") "C324726")
 				(field
 					(name "DNP")
 				)
 				(field
-					(name "Note") "bottom contact; FPC folded 180 deg under the glass")
+					(name "Note") "1.0 mm high, top+bottom contact; FPC folded 180 deg under the glass; confirm pin-1 side on a panel")
 				(field
-					(name "Footprint") "Connector_FFC-FPC:Hirose_FH12-24S-0.5SH_1x24-1MP_P0.50mm_Horizontal")
+					(name "Footprint") "pager-carrier:Hirose_FH34SRJ-24S-0.5SH_1x24-1MP_P0.50mm_Horizontal")
 				(field
 					(name "Datasheet") "~")
 				(field
@@ -1184,11 +1184,11 @@
 			)
 			(property
 				(name "MPN")
-				(value "FH12-24S-0.5SH(55)")
+				(value "FH34SRJ-24S-0.5SH(50)")
 			)
 			(property
 				(name "LCSC")
-				(value "C202112")
+				(value "C324726")
 			)
 			(property
 				(name "DNP")
@@ -1196,7 +1196,7 @@
 			)
 			(property
 				(name "Note")
-				(value "bottom contact; FPC folded 180 deg under the glass")
+				(value "1.0 mm high, top+bottom contact; FPC folded 180 deg under the glass; confirm pin-1 side on a panel")
 			)
 			(property
 				(name "Sheetname")
@@ -1302,38 +1302,38 @@
 		(comp
 			(ref "J2")
 			(value "CARRIER")
-			(footprint "Connector_JST:JST_SH_SM08B-SRSS-TB_1x08-1MP_P1.00mm_Horizontal")
+			(footprint "Connector_JST:JST_SH_SM10B-SRSS-TB_1x10-1MP_P1.00mm_Horizontal")
 			(datasheet "~")
-			(description "Generic connector, single row, 01x08, script generated (kicad-library-utils/schlib/autogen/connector/)")
+			(description "Generic connector, single row, 01x10, script generated (kicad-library-utils/schlib/autogen/connector/)")
 			(fields
 				(field
-					(name "MPN") "SM08B-SRSS-TB")
+					(name "MPN") "SM10B-SRSS-TB")
 				(field
-					(name "LCSC") "C160407")
+					(name "LCSC") "C160409")
 				(field
 					(name "DNP")
 				)
 				(field
-					(name "Note") "to carrier J3, 1:1 8-way SH cable")
+					(name "Note") "to carrier J3, 1:1 10-way SH cable")
 				(field
-					(name "Footprint") "Connector_JST:JST_SH_SM08B-SRSS-TB_1x08-1MP_P1.00mm_Horizontal")
+					(name "Footprint") "Connector_JST:JST_SH_SM10B-SRSS-TB_1x10-1MP_P1.00mm_Horizontal")
 				(field
 					(name "Datasheet") "~")
 				(field
-					(name "Description") "Generic connector, single row, 01x08, script generated (kicad-library-utils/schlib/autogen/connector/)")
+					(name "Description") "Generic connector, single row, 01x10, script generated (kicad-library-utils/schlib/autogen/connector/)")
 			)
 			(libsource
 				(lib "Connector_Generic")
-				(part "Conn_01x08")
-				(description "Generic connector, single row, 01x08, script generated (kicad-library-utils/schlib/autogen/connector/)")
+				(part "Conn_01x10")
+				(description "Generic connector, single row, 01x10, script generated (kicad-library-utils/schlib/autogen/connector/)")
 			)
 			(property
 				(name "MPN")
-				(value "SM08B-SRSS-TB")
+				(value "SM10B-SRSS-TB")
 			)
 			(property
 				(name "LCSC")
-				(value "C160407")
+				(value "C160409")
 			)
 			(property
 				(name "DNP")
@@ -1341,7 +1341,7 @@
 			)
 			(property
 				(name "Note")
-				(value "to carrier J3, 1:1 8-way SH cable")
+				(value "to carrier J3, 1:1 10-way SH cable")
 			)
 			(property
 				(name "Sheetname")
@@ -1391,6 +1391,103 @@
 						)
 						(pin
 							(num "8")
+						)
+						(pin
+							(num "9")
+						)
+						(pin
+							(num "10")
+						)
+					)
+				)
+			)
+		)
+		(comp
+			(ref "J3")
+			(value "FRONTLIGHT FPC")
+			(footprint "pager-carrier:Hirose_FH34SRJ-6S-0.5SH_1x06-1MP_P0.50mm_Horizontal")
+			(datasheet "~")
+			(description "Generic connector, single row, 01x06, script generated (kicad-library-utils/schlib/autogen/connector/)")
+			(fields
+				(field
+					(name "MPN") "FH34SRJ-6S-0.5SH(50)")
+				(field
+					(name "LCSC") "C224194")
+				(field
+					(name "DNP")
+				)
+				(field
+					(name "Note") "1.0 mm high; flex tail is ~30 mm long, folds under with the display tail")
+				(field
+					(name "Footprint") "pager-carrier:Hirose_FH34SRJ-6S-0.5SH_1x06-1MP_P0.50mm_Horizontal")
+				(field
+					(name "Datasheet") "~")
+				(field
+					(name "Description") "Generic connector, single row, 01x06, script generated (kicad-library-utils/schlib/autogen/connector/)")
+			)
+			(libsource
+				(lib "Connector_Generic")
+				(part "Conn_01x06")
+				(description "Generic connector, single row, 01x06, script generated (kicad-library-utils/schlib/autogen/connector/)")
+			)
+			(property
+				(name "MPN")
+				(value "FH34SRJ-6S-0.5SH(50)")
+			)
+			(property
+				(name "LCSC")
+				(value "C224194")
+			)
+			(property
+				(name "DNP")
+				(value "")
+			)
+			(property
+				(name "Note")
+				(value "1.0 mm high; flex tail is ~30 mm long, folds under with the display tail")
+			)
+			(property
+				(name "Sheetname")
+				(value "panel")
+			)
+			(property
+				(name "Sheetfile")
+				(value "panel_main.kicad_sch")
+			)
+			(property
+				(name "ki_keywords")
+				(value "connector")
+			)
+			(property
+				(name "ki_fp_filters")
+				(value "Connector*:*_1x??_*")
+			)
+			(sheetpath
+				(names "/panel/")
+				(tstamps "/4abcc5ec-0e62-56fc-ae53-06c7680dbff6/")
+			)
+			(tstamps "4413278c-a825-53d1-89bd-98812cc2deef")
+			(units
+				(unit
+					(name "A")
+					(pins
+						(pin
+							(num "1")
+						)
+						(pin
+							(num "2")
+						)
+						(pin
+							(num "3")
+						)
+						(pin
+							(num "4")
+						)
+						(pin
+							(num "5")
+						)
+						(pin
+							(num "6")
 						)
 					)
 				)
@@ -1869,8 +1966,8 @@
 	(libparts
 		(libpart
 			(lib "Connector_Generic")
-			(part "Conn_01x08")
-			(description "Generic connector, single row, 01x08, script generated (kicad-library-utils/schlib/autogen/connector/)")
+			(part "Conn_01x06")
+			(description "Generic connector, single row, 01x06, script generated (kicad-library-utils/schlib/autogen/connector/)")
 			(footprints
 				(fp "Connector*:*_1x??_*")
 			)
@@ -1878,7 +1975,7 @@
 				(field
 					(name "Reference") "J")
 				(field
-					(name "Value") "Conn_01x08")
+					(name "Value") "Conn_01x06")
 				(field
 					(name "Footprint")
 				)
@@ -1886,7 +1983,61 @@
 					(name "Datasheet")
 				)
 				(field
-					(name "Description") "Generic connector, single row, 01x08, script generated (kicad-library-utils/schlib/autogen/connector/)")
+					(name "Description") "Generic connector, single row, 01x06, script generated (kicad-library-utils/schlib/autogen/connector/)")
+			)
+			(pins
+				(pin
+					(num "1")
+					(name "Pin_1")
+					(type "passive")
+				)
+				(pin
+					(num "2")
+					(name "Pin_2")
+					(type "passive")
+				)
+				(pin
+					(num "3")
+					(name "Pin_3")
+					(type "passive")
+				)
+				(pin
+					(num "4")
+					(name "Pin_4")
+					(type "passive")
+				)
+				(pin
+					(num "5")
+					(name "Pin_5")
+					(type "passive")
+				)
+				(pin
+					(num "6")
+					(name "Pin_6")
+					(type "passive")
+				)
+			)
+		)
+		(libpart
+			(lib "Connector_Generic")
+			(part "Conn_01x10")
+			(description "Generic connector, single row, 01x10, script generated (kicad-library-utils/schlib/autogen/connector/)")
+			(footprints
+				(fp "Connector*:*_1x??_*")
+			)
+			(fields
+				(field
+					(name "Reference") "J")
+				(field
+					(name "Value") "Conn_01x10")
+				(field
+					(name "Footprint")
+				)
+				(field
+					(name "Datasheet")
+				)
+				(field
+					(name "Description") "Generic connector, single row, 01x10, script generated (kicad-library-utils/schlib/autogen/connector/)")
 			)
 			(pins
 				(pin
@@ -1927,6 +2078,16 @@
 				(pin
 					(num "8")
 					(name "Pin_8")
+					(type "passive")
+				)
+				(pin
+					(num "9")
+					(name "Pin_9")
+					(type "passive")
+				)
+				(pin
+					(num "10")
+					(name "Pin_10")
 					(type "passive")
 				)
 			)
@@ -2657,6 +2818,52 @@
 		)
 		(net
 			(code "19")
+			(name "FL_ANODE")
+			(class "Default")
+			(node
+				(ref "J2")
+				(pin "9")
+				(pinfunction "Pin_9_9")
+				(pintype "passive")
+			)
+			(node
+				(ref "J3")
+				(pin "1")
+				(pinfunction "Pin_1_1")
+				(pintype "passive")
+			)
+			(node
+				(ref "J3")
+				(pin "2")
+				(pinfunction "Pin_2_2")
+				(pintype "passive")
+			)
+		)
+		(net
+			(code "20")
+			(name "FL_CATHODE")
+			(class "Default")
+			(node
+				(ref "J2")
+				(pin "10")
+				(pinfunction "Pin_10_10")
+				(pintype "passive")
+			)
+			(node
+				(ref "J3")
+				(pin "5")
+				(pinfunction "Pin_5_5")
+				(pintype "passive")
+			)
+			(node
+				(ref "J3")
+				(pin "6")
+				(pinfunction "Pin_6_6")
+				(pintype "passive")
+			)
+		)
+		(net
+			(code "21")
 			(name "GND")
 			(class "Default")
 			(node
@@ -2745,7 +2952,7 @@
 			)
 		)
 		(net
-			(code "20")
+			(code "22")
 			(name "unconnected-(J1-Pin_1-Pad1)")
 			(class "Default")
 			(node
@@ -2756,7 +2963,7 @@
 			)
 		)
 		(net
-			(code "21")
+			(code "23")
 			(name "unconnected-(J1-Pin_4-Pad4)")
 			(class "Default")
 			(node
@@ -2767,7 +2974,7 @@
 			)
 		)
 		(net
-			(code "22")
+			(code "24")
 			(name "unconnected-(J1-Pin_6-Pad6)")
 			(class "Default")
 			(node
@@ -2778,7 +2985,7 @@
 			)
 		)
 		(net
-			(code "23")
+			(code "25")
 			(name "unconnected-(J1-Pin_7-Pad7)")
 			(class "Default")
 			(node
@@ -2789,13 +2996,35 @@
 			)
 		)
 		(net
-			(code "24")
+			(code "26")
 			(name "unconnected-(J1-Pin_19-Pad19)")
 			(class "Default")
 			(node
 				(ref "J1")
 				(pin "19")
 				(pinfunction "Pin_19_19")
+				(pintype "passive+no_connect")
+			)
+		)
+		(net
+			(code "27")
+			(name "unconnected-(J3-Pin_3-Pad3)")
+			(class "Default")
+			(node
+				(ref "J3")
+				(pin "3")
+				(pinfunction "Pin_3_3")
+				(pintype "passive+no_connect")
+			)
+		)
+		(net
+			(code "28")
+			(name "unconnected-(J3-Pin_4-Pad4)")
+			(class "Default")
+			(node
+				(ref "J3")
+				(pin "4")
+				(pinfunction "Pin_4_4")
 				(pintype "passive+no_connect")
 			)
 		)

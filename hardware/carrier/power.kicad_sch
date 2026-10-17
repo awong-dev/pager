@@ -5904,7 +5904,7 @@
 		)
 		(uuid "038a3f8e-2c25-5f6d-870c-f5f3bd1a4a35")
 	)
-	(text "Battery: J2 (pin 1 = +) through F1 2 A PTC to VBAT. Switch: SW1 drives only the Q1 gate; SYS_SW = SYS when on.\n100k gate pull-up = off when floating; 10k + 22nF soft-start limits inrush into the Walter bulk caps."
+	(text "Battery: J2 (pin 1 = +) through F1 2 A PTC to VBAT. Switch: SW1 drives only the Q1 gate; SYS_SW = SYS when on.\n2.2M gate pull-up = off when floating (1.9 uA through the ON switch, was 38 uA with 100k); 10k + 22nF soft-start limits inrush into the Walter bulk caps."
 		(exclude_from_sim no)
 		(at 20 232 0)
 		(effects
@@ -5914,7 +5914,7 @@
 			)
 			(justify left top)
 		)
-		(uuid "f5ffddec-51d9-517f-810d-9025c48d3b75")
+		(uuid "14bc07ae-cc72-5b69-ab3c-b43cb9457499")
 	)
 	(wire
 		(pts
@@ -13213,7 +13213,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "100k"
+		(property "Value" "2.2M"
 			(at 143.51 250.19 0)
 			(effects
 				(font
@@ -13252,7 +13252,7 @@
 				(justify left)
 			)
 		)
-		(property "MPN" "0603WAF1003T5E"
+		(property "MPN" "0603WAF2204T5E"
 			(at 142.24 266.7 0)
 			(hide yes)
 			(effects
@@ -13261,7 +13261,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C25803"
+		(property "LCSC" "C22938"
 			(at 142.24 269.24 0)
 			(hide yes)
 			(effects
@@ -13272,6 +13272,15 @@
 		)
 		(property "DNP" ""
 			(at 142.24 271.78 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Note" "sleep current: 2.2M, not 100k (SW1 ON pulls it to GND through 10k)"
+			(at 142.24 274.32 0)
 			(hide yes)
 			(effects
 				(font

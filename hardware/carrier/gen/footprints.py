@@ -237,6 +237,41 @@ def usb4235(spec):
     return name, n
 
 
+def fh34srj(n):
+    """Hirose FH34SRJ-nS-0.5SH(50): 0.5 mm pitch, 1.0 mm high, top+bottom contact,
+    back-flip actuator. Land pattern from the Hirose catalog (Nov 2018), page 4:
+    contact pads 0.3 x 0.8 on 0.5 pitch (span B = 0.5(n-1)), metal-fitting pads
+    (F-E)/2 = 0.4 wide x 0.8 tall with inner span E = B + 1.6 and outer span
+    F = B + 2.4, fitting row 3.3 mm behind the contact row. Body D = B + 1.88
+    wide (page 3 table), 3.8 deep incl. the actuator. Contacts at -Y (the FPC
+    enters from -Y), pin 1 at -X, same convention as KiCad's FH12 footprints."""
+    B = 0.5 * (n - 1)
+    E, F = B + 1.6, B + 2.4
+    D = B + 1.88
+    name = "Hirose_FH34SRJ-%dS-0.5SH_1x%02d-1MP_P0.50mm_Horizontal" % (n, n)
+    node = _hdr(name, "Hirose FH34SRJ-%dS-0.5SH(50), 0.5 mm pitch FPC ZIF, 1.0 mm above board, "
+                      "top and bottom contact, back-flip actuator; land pattern from the Hirose catalog" % n,
+                "FPC ZIF 0.5mm FH34SRJ Hirose low-profile", attr="smd")
+    node.append(_text("Reference", "J", 0, -1.6, "F.SilkS"))
+    node.append(_text("Value", name, 0, 4.8, "F.Fab"))
+    for i in range(n):
+        node.append(_pad(i + 1, "smd", "roundrect", -B / 2 + 0.5 * i, 0, 0.3, 0.8, ["F.Cu", "F.Paste", "F.Mask"], rr=0.25))
+    for sx in (-1, 1):
+        node.append(_pad("MP", "smd", "roundrect", sx * (E + F) / 4, 3.3, 0.4, 0.8, ["F.Cu", "F.Paste", "F.Mask"], rr=0.25))
+    y0, y1 = -0.15, 3.65
+    node.append(_rect(-D / 2, y0, D / 2, y1, "F.Fab", 0.1))
+    # silk: back and sides, open at the FPC entry; pin 1 arrow
+    node.append(_line(-D / 2 - 0.1, y1 + 0.1, D / 2 + 0.1, y1 + 0.1, "F.SilkS"))
+    node.append(_line(-D / 2 - 0.1, 1.2, -D / 2 - 0.1, y1 + 0.1, "F.SilkS"))
+    node.append(_line(D / 2 + 0.1, 1.2, D / 2 + 0.1, y1 + 0.1, "F.SilkS"))
+    node.append(_line(-B / 2 - 0.5, -0.7, -B / 2 - 0.2, -0.7, "F.SilkS"))
+    node.append(_line(-B / 2 - 0.5, -0.7, -B / 2 - 0.5, -0.4, "F.SilkS"))
+    node.append(_rect(-F / 2 - 0.25, -0.65, F / 2 + 0.25, 3.95, "F.CrtYd", 0.05))
+    node.append(_fp_text("FPC enters here", 0, -1.0, "F.Fab", 0.5))
+    node.append(["embedded_fonts", "no"])
+    return name, node
+
+
 def write_pretty(dirpath, fps):
     import os
     os.makedirs(dirpath, exist_ok=True)

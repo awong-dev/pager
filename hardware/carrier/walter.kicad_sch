@@ -2288,7 +2288,7 @@
 		)
 		(uuid "300a928d-7554-5835-9a62-c7bb8af777ce")
 	)
-	(global_label "TP_IO4"
+	(global_label "FL_BTN"
 		(shape passive)
 		(at 101.6 106.68 0)
 		(fields_autoplaced yes)
@@ -2298,7 +2298,7 @@
 			)
 			(justify left)
 		)
-		(uuid "71dac2c7-9d35-5314-acfd-4a8864e1dfba")
+		(uuid "334c1b33-4f64-576f-ade8-44c74dcff453")
 	)
 	(wire
 		(pts
@@ -2607,7 +2607,29 @@
 		)
 		(uuid "d7450489-7a91-5c21-96eb-d823e6350d6b")
 	)
-	(text "Bulk at Walter VIN (pin 28): 100uF 1210 + 10uF 0603, within 5 mm of the pin."
+	(wire
+		(pts
+			(xy 175.26 45.72)
+			(xy 175.26 43.18)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "d231760f-44ba-5f31-9427-ab097218492f")
+	)
+	(wire
+		(pts
+			(xy 175.26 53.34)
+			(xy 175.26 55.88)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "3555fc47-3d87-5908-87dd-b7a6c8fb3f4a")
+	)
+	(text "Bulk at Walter VIN (pin 28): 2 x 100uF 0805 + 10uF 0603, within 5 mm of the pin."
 		(exclude_from_sim no)
 		(at 150 85 0)
 		(effects
@@ -2616,7 +2638,7 @@
 			)
 			(justify left top)
 		)
-		(uuid "dcdb7f51-c237-5240-9d96-dd5b5b5e9f6a")
+		(uuid "2de6245a-e595-502f-93af-b70a707c6202")
 	)
 	(text "Test pads, 1.0 mm, top side."
 		(exclude_from_sim no)
@@ -2639,7 +2661,7 @@
 			(width 0)
 			(type default)
 		)
-		(uuid "4e4b2ffb-d7e0-5206-b1ff-4643a56ec634")
+		(uuid "b04e4178-0899-5f52-b172-4827296f692a")
 	)
 	(wire
 		(pts
@@ -2650,7 +2672,7 @@
 			(width 0)
 			(type default)
 		)
-		(uuid "bde4ec11-15ca-5734-a450-6f6047726467")
+		(uuid "6cc779be-5c9b-5805-ac79-d311e120f691")
 	)
 	(wire
 		(pts
@@ -2661,7 +2683,7 @@
 			(width 0)
 			(type default)
 		)
-		(uuid "e3754125-e6f1-5ea6-ba7f-5482545b6605")
+		(uuid "068c2011-f760-5e32-b2a8-58a7aef98906")
 	)
 	(wire
 		(pts
@@ -2672,7 +2694,7 @@
 			(width 0)
 			(type default)
 		)
-		(uuid "95cce47c-5fa6-5985-a946-d8defab3fdcb")
+		(uuid "60dad678-f4fd-59dd-a2dd-bf78adc246e1")
 	)
 	(wire
 		(pts
@@ -2683,7 +2705,7 @@
 			(width 0)
 			(type default)
 		)
-		(uuid "3ef33e20-d085-5faf-a2a3-a20008437e3d")
+		(uuid "40d658fd-8ddb-5f20-8969-f037754c4da9")
 	)
 	(wire
 		(pts
@@ -2694,7 +2716,7 @@
 			(width 0)
 			(type default)
 		)
-		(uuid "736a8bb3-57eb-53a1-97bf-90391588d746")
+		(uuid "91f5fbd5-872a-5ed3-bd19-e8fb9f349197")
 	)
 	(wire
 		(pts
@@ -2705,7 +2727,7 @@
 			(width 0)
 			(type default)
 		)
-		(uuid "2deea944-1044-5aa1-ba5a-0f04b8f7eecf")
+		(uuid "19f0ae17-71b7-5ff5-8f2d-b8e0e774730c")
 	)
 	(wire
 		(pts
@@ -2716,7 +2738,7 @@
 			(width 0)
 			(type default)
 		)
-		(uuid "b50f5495-e9cc-59e2-9ae5-cfb8e42e9dab")
+		(uuid "638cabbc-c30d-576c-9a4e-9ac64e61c056")
 	)
 	(global_label "ESP_TX0"
 		(shape passive)
@@ -2739,7 +2761,7 @@
 			(width 0)
 			(type default)
 		)
-		(uuid "daae9a33-ddae-5a76-922d-05f82f97a18b")
+		(uuid "9200c50d-da09-54e7-b865-cba5116b32dd")
 	)
 	(global_label "ESP_RX0"
 		(shape passive)
@@ -2762,7 +2784,7 @@
 			(width 0)
 			(type default)
 		)
-		(uuid "19902a0b-6f2b-51e6-8c7a-19d37339b9dc")
+		(uuid "ca3cfe5d-bca7-56a8-a698-952d59d8d897")
 	)
 	(global_label "ESP_EN"
 		(shape passive)
@@ -2785,7 +2807,7 @@
 			(width 0)
 			(type default)
 		)
-		(uuid "7430329f-8304-58fb-a938-25e896a927fd")
+		(uuid "bfa9fcc4-cd15-56de-88b5-56588853311e")
 	)
 	(global_label "KBD_PWR_N"
 		(shape passive)
@@ -2808,7 +2830,7 @@
 			(width 0)
 			(type default)
 		)
-		(uuid "aa461a74-52ca-5644-9e71-2d23993d4f12")
+		(uuid "68e02832-108c-596e-889a-d17052e9b063")
 	)
 	(global_label "TP_IO1"
 		(shape passive)
@@ -2831,9 +2853,9 @@
 			(width 0)
 			(type default)
 		)
-		(uuid "b7d90369-64b6-55c4-8c6c-b1f8710ad31c")
+		(uuid "ecd533f0-c1d6-50db-ae6a-5798733d1257")
 	)
-	(global_label "TP_IO4"
+	(global_label "FL_BTN"
 		(shape passive)
 		(at 213.36 142.24 270)
 		(fields_autoplaced yes)
@@ -2843,7 +2865,7 @@
 			)
 			(justify right)
 		)
-		(uuid "27936949-2bd5-5f2d-b74e-d6a301c6ee46")
+		(uuid "d1ca079c-1de7-58c3-9a92-19b3af0cd8c8")
 	)
 	(wire
 		(pts
@@ -2854,7 +2876,7 @@
 			(width 0)
 			(type default)
 		)
-		(uuid "adbd3a9a-960c-5d1a-914d-a19bc2ad4e35")
+		(uuid "5882302c-a5f6-5b5b-968c-ca66e4c5736e")
 	)
 	(global_label "TP_IO5"
 		(shape passive)
@@ -2879,7 +2901,7 @@
 		)
 		(uuid "c11d6bf8-4b7b-5b34-bbf3-28f431bd21b3")
 	)
-	(text "Spare IO1/IO4/IO5 go to test pads only (TP_IO1 = ADC1_CH0). IO5 also has a DNP 0R to the charger CE."
+	(text "Spare IO1/IO5 go to test pads only (TP_IO1 = ADC1_CH0). IO5 also has a DNP 0R to the charger CE. IO4 (RTC GPIO) = FL_BTN, the front-light button, see peripherals."
 		(exclude_from_sim no)
 		(at 20 195 0)
 		(effects
@@ -2888,7 +2910,7 @@
 			)
 			(justify left top)
 		)
-		(uuid "dfddfcba-7a33-5634-afbf-b3db71fcb1e1")
+		(uuid "ca25dd8f-ef9b-5cb4-a464-91767c88d446")
 	)
 	(symbol
 		(lib_id "pager-carrier:Walter")
@@ -3309,7 +3331,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "Capacitor_SMD:C_1210_3225Metric"
+		(property "Footprint" "Capacitor_SMD:C_0805_2012Metric"
 			(at 151.13 50.8 0)
 			(hide yes)
 			(effects
@@ -3339,7 +3361,7 @@
 				(justify left)
 			)
 		)
-		(property "MPN" "CL32A107MQVNNNE"
+		(property "MPN" "GRM21BR60J107ME15L"
 			(at 149.86 64.77 0)
 			(hide yes)
 			(effects
@@ -3348,7 +3370,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C49066"
+		(property "LCSC" "C141660"
 			(at 149.86 67.31 0)
 			(hide yes)
 			(effects
@@ -3366,7 +3388,7 @@
 				)
 			)
 		)
-		(property "Note" "Walter VIN bulk; LTE burst"
+		(property "Note" "Walter VIN bulk; LTE burst; 0805 1.25 mm tall (the 1210 was 2.5 mm, over the glass limit)"
 			(at 149.86 72.39 0)
 			(hide yes)
 			(effects
@@ -3551,7 +3573,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "10uF"
+		(property "Value" "100uF"
 			(at 163.83 48.26 0)
 			(effects
 				(font
@@ -3560,7 +3582,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "Capacitor_SMD:C_0603_1608Metric"
+		(property "Footprint" "Capacitor_SMD:C_0805_2012Metric"
 			(at 163.83 50.8 0)
 			(hide yes)
 			(effects
@@ -3590,7 +3612,7 @@
 				(justify left)
 			)
 		)
-		(property "MPN" "CL10A106KP8NNNC"
+		(property "MPN" "GRM21BR60J107ME15L"
 			(at 162.56 64.77 0)
 			(hide yes)
 			(effects
@@ -3599,7 +3621,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C19702"
+		(property "LCSC" "C141660"
 			(at 162.56 67.31 0)
 			(hide yes)
 			(effects
@@ -3610,6 +3632,15 @@
 		)
 		(property "DNP" ""
 			(at 162.56 69.85 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Note" "second 100uF makes up for 0805 DC bias loss"
+			(at 162.56 72.39 0)
 			(hide yes)
 			(effects
 				(font
@@ -3775,6 +3806,248 @@
 		)
 	)
 	(symbol
+		(lib_id "Device:C")
+		(at 175.26 49.53 0)
+		(unit 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp no)
+		(uuid "cc1c14a8-0e84-5ac8-9579-bb66d97d5174")
+		(property "Reference" "C14"
+			(at 176.53 45.72 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Value" "10uF"
+			(at 176.53 48.26 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Footprint" "Capacitor_SMD:C_0603_1608Metric"
+			(at 176.53 50.8 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Datasheet" "~"
+			(at 176.53 53.34 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Description" "Unpolarized capacitor"
+			(at 176.53 55.88 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "MPN" "CL10A106KP8NNNC"
+			(at 175.26 64.77 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "LCSC" "C19702"
+			(at 175.26 67.31 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "DNP" ""
+			(at 175.26 69.85 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(pin "1"
+			(uuid "50fb8da9-4b93-5274-b310-00955eed946c")
+		)
+		(pin "2"
+			(uuid "00b9b7b6-21af-5a14-a1f8-5eef7ea04577")
+		)
+		(instances
+			(project "pager-carrier"
+				(path "/10ec5e8c-30f8-50c5-8dd4-a077611d8ec6/6f93263e-1dbf-5cc0-a024-77796d87bf0e"
+					(reference "C14")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "pager-carrier:PWR_SYS_SW")
+		(at 175.26 43.18 0)
+		(unit 1)
+		(exclude_from_sim no)
+		(in_bom no)
+		(on_board no)
+		(in_pos_files yes)
+		(dnp no)
+		(uuid "c02578a5-5b35-5e4c-987b-3110c4d5ab96")
+		(property "Reference" "#PWR083"
+			(at 175.26 43.18 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Value" "SYS_SW"
+			(at 175.26 39.37 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Footprint" ""
+			(at 175.26 43.18 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Datasheet" "~"
+			(at 175.26 43.18 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Description" "Power symbol"
+			(at 175.26 43.18 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(pin "1"
+			(uuid "1150a148-3aca-52d2-b0ef-ff1918fb88f3")
+		)
+		(instances
+			(project "pager-carrier"
+				(path "/10ec5e8c-30f8-50c5-8dd4-a077611d8ec6/6f93263e-1dbf-5cc0-a024-77796d87bf0e"
+					(reference "#PWR083")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "power:GND")
+		(at 175.26 55.88 0)
+		(unit 1)
+		(exclude_from_sim no)
+		(in_bom no)
+		(on_board no)
+		(in_pos_files yes)
+		(dnp no)
+		(uuid "8cd6900d-8101-525a-9069-9a0b1d3ec587")
+		(property "Reference" "#PWR084"
+			(at 175.26 55.88 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Value" "GND"
+			(at 175.26 59.69 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Footprint" ""
+			(at 175.26 55.88 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Datasheet" "~"
+			(at 175.26 55.88 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Description" "Power symbol"
+			(at 175.26 55.88 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(pin "1"
+			(uuid "f976ac6b-5575-5860-b8b6-ac7c8995c65f")
+		)
+		(instances
+			(project "pager-carrier"
+				(path "/10ec5e8c-30f8-50c5-8dd4-a077611d8ec6/6f93263e-1dbf-5cc0-a024-77796d87bf0e"
+					(reference "#PWR084")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
 		(lib_id "Connector:TestPoint")
 		(at 149.86 124.46 0)
 		(unit 1)
@@ -3889,8 +4162,8 @@
 		(on_board no)
 		(in_pos_files yes)
 		(dnp no)
-		(uuid "c02578a5-5b35-5e4c-987b-3110c4d5ab96")
-		(property "Reference" "#PWR083"
+		(uuid "21c13d84-b384-5678-883d-cf88252dd575")
+		(property "Reference" "#PWR085"
 			(at 149.86 127 0)
 			(hide yes)
 			(effects
@@ -3940,12 +4213,12 @@
 			)
 		)
 		(pin "1"
-			(uuid "1150a148-3aca-52d2-b0ef-ff1918fb88f3")
+			(uuid "d3150826-3913-5f4c-8fcc-2b3655614287")
 		)
 		(instances
 			(project "pager-carrier"
 				(path "/10ec5e8c-30f8-50c5-8dd4-a077611d8ec6/6f93263e-1dbf-5cc0-a024-77796d87bf0e"
-					(reference "#PWR083")
+					(reference "#PWR085")
 					(unit 1)
 				)
 			)
@@ -4066,8 +4339,8 @@
 		(on_board no)
 		(in_pos_files yes)
 		(dnp no)
-		(uuid "8cd6900d-8101-525a-9069-9a0b1d3ec587")
-		(property "Reference" "#PWR084"
+		(uuid "dd56cb7a-1af8-5bef-86b7-292333c3890d")
+		(property "Reference" "#PWR086"
 			(at 162.56 127 0)
 			(hide yes)
 			(effects
@@ -4117,12 +4390,12 @@
 			)
 		)
 		(pin "1"
-			(uuid "f976ac6b-5575-5860-b8b6-ac7c8995c65f")
+			(uuid "73bab2e5-e65c-5b38-ac3d-5b95711347ae")
 		)
 		(instances
 			(project "pager-carrier"
 				(path "/10ec5e8c-30f8-50c5-8dd4-a077611d8ec6/6f93263e-1dbf-5cc0-a024-77796d87bf0e"
-					(reference "#PWR084")
+					(reference "#PWR086")
 					(unit 1)
 				)
 			)
@@ -4243,8 +4516,8 @@
 		(on_board no)
 		(in_pos_files yes)
 		(dnp no)
-		(uuid "21c13d84-b384-5678-883d-cf88252dd575")
-		(property "Reference" "#PWR085"
+		(uuid "86993327-2c7d-58d8-85f8-dbacd7f881a2")
+		(property "Reference" "#PWR087"
 			(at 175.26 127 0)
 			(hide yes)
 			(effects
@@ -4294,12 +4567,12 @@
 			)
 		)
 		(pin "1"
-			(uuid "d3150826-3913-5f4c-8fcc-2b3655614287")
+			(uuid "995bf85d-1385-58c0-9719-f6771c4659dc")
 		)
 		(instances
 			(project "pager-carrier"
 				(path "/10ec5e8c-30f8-50c5-8dd4-a077611d8ec6/6f93263e-1dbf-5cc0-a024-77796d87bf0e"
-					(reference "#PWR085")
+					(reference "#PWR087")
 					(unit 1)
 				)
 			)
@@ -4420,8 +4693,8 @@
 		(on_board no)
 		(in_pos_files yes)
 		(dnp no)
-		(uuid "dd56cb7a-1af8-5bef-86b7-292333c3890d")
-		(property "Reference" "#PWR086"
+		(uuid "f3a24385-ec2a-5884-a2e2-e807e7ab581d")
+		(property "Reference" "#PWR088"
 			(at 187.96 127 0)
 			(hide yes)
 			(effects
@@ -4471,12 +4744,12 @@
 			)
 		)
 		(pin "1"
-			(uuid "73bab2e5-e65c-5b38-ac3d-5b95711347ae")
+			(uuid "775222f7-d597-5e11-930c-88c25c769440")
 		)
 		(instances
 			(project "pager-carrier"
 				(path "/10ec5e8c-30f8-50c5-8dd4-a077611d8ec6/6f93263e-1dbf-5cc0-a024-77796d87bf0e"
-					(reference "#PWR086")
+					(reference "#PWR088")
 					(unit 1)
 				)
 			)
@@ -4597,8 +4870,8 @@
 		(on_board no)
 		(in_pos_files yes)
 		(dnp no)
-		(uuid "86993327-2c7d-58d8-85f8-dbacd7f881a2")
-		(property "Reference" "#PWR087"
+		(uuid "b7ad3239-ba4e-513d-9354-f0d2971857ad")
+		(property "Reference" "#PWR089"
 			(at 200.66 127 0)
 			(hide yes)
 			(effects
@@ -4648,12 +4921,12 @@
 			)
 		)
 		(pin "1"
-			(uuid "995bf85d-1385-58c0-9719-f6771c4659dc")
+			(uuid "0d3c5892-0ab6-59f7-8620-8041e1e5c461")
 		)
 		(instances
 			(project "pager-carrier"
 				(path "/10ec5e8c-30f8-50c5-8dd4-a077611d8ec6/6f93263e-1dbf-5cc0-a024-77796d87bf0e"
-					(reference "#PWR087")
+					(reference "#PWR089")
 					(unit 1)
 				)
 			)
@@ -4774,8 +5047,8 @@
 		(on_board no)
 		(in_pos_files yes)
 		(dnp no)
-		(uuid "f3a24385-ec2a-5884-a2e2-e807e7ab581d")
-		(property "Reference" "#PWR088"
+		(uuid "9e74c479-b660-5791-9e42-44e043aaedac")
+		(property "Reference" "#PWR090"
 			(at 213.36 127 0)
 			(hide yes)
 			(effects
@@ -4825,12 +5098,12 @@
 			)
 		)
 		(pin "1"
-			(uuid "775222f7-d597-5e11-930c-88c25c769440")
+			(uuid "2f0aca0b-097e-51f3-9147-0de853848c81")
 		)
 		(instances
 			(project "pager-carrier"
 				(path "/10ec5e8c-30f8-50c5-8dd4-a077611d8ec6/6f93263e-1dbf-5cc0-a024-77796d87bf0e"
-					(reference "#PWR088")
+					(reference "#PWR090")
 					(unit 1)
 				)
 			)
@@ -4951,8 +5224,8 @@
 		(on_board no)
 		(in_pos_files yes)
 		(dnp no)
-		(uuid "b7ad3239-ba4e-513d-9354-f0d2971857ad")
-		(property "Reference" "#PWR089"
+		(uuid "01fae84e-f722-5d45-a09d-30216617c514")
+		(property "Reference" "#PWR091"
 			(at 226.06 127 0)
 			(hide yes)
 			(effects
@@ -5002,12 +5275,12 @@
 			)
 		)
 		(pin "1"
-			(uuid "0d3c5892-0ab6-59f7-8620-8041e1e5c461")
+			(uuid "11d74c30-a87c-533e-b144-8767e0c04447")
 		)
 		(instances
 			(project "pager-carrier"
 				(path "/10ec5e8c-30f8-50c5-8dd4-a077611d8ec6/6f93263e-1dbf-5cc0-a024-77796d87bf0e"
-					(reference "#PWR089")
+					(reference "#PWR091")
 					(unit 1)
 				)
 			)
@@ -5562,7 +5835,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "TP_IO4"
+		(property "Value" "FL_BTN"
 			(at 214.63 140.97 0)
 			(effects
 				(font

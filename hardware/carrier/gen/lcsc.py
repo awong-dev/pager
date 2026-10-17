@@ -65,6 +65,13 @@ LCSC = {
     "S4B-PH-SM4-TB": ("C265102", "E"),
     "SM02B-SRSS-TB": ("C160402", "E"),
     "SM08B-SRSS-TB": ("C160407", "E"),
+    "SM10B-SRSS-TB": ("C160409", "E"),       # JLC stock 83k, 17 Oct 2026
+    "FH34SRJ-24S-0.5SH(50)": ("C324726", "E"),  # 1.0 mm high ZIF, JLC stock 13k
+    "FH34SRJ-6S-0.5SH(50)": ("C224194", "E"),   # front-light ZIF, JLC stock 101k
+    "SKQGAFE010": ("C202424", "E"),           # Alps 5.2 mm tactile, 1.5 mm high, JLC stock 24k
+    "GRM21BR60J107ME15L": ("C141660", "E"),   # 100uF 6.3V X5R 0805, T 1.25 mm, JLC stock 170k
+    "1206W4F330JT5E": ("C18005", "E"),        # 33R 1206 0.25 W
+    "0603WAF2204T5E": ("C22938", "E"),        # 2.2M 0603
     "FH12-24S-0.5SH(55)": ("C202112", "E"),
     "USB4235-03-C": ("", "-"),             # not stocked at JLC/LCSC; hand-place
     "USB4235-GF-A": ("", "-"),

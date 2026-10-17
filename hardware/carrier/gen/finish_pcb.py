@@ -30,6 +30,26 @@ for fp in board.GetFootprints():
     for f in fp.GetFields():
         if f.GetName() in ("Datasheet", "Description", "MPN", "LCSC", "DNP", "Note"):
             f.SetVisible(False)
+# Freerouting's optimizer leaves vias that only F.Cu (or only B.Cu) tracks touch;
+# drop any via whose other layer has no track end and no zone of its net.
+tracks = [t for t in board.GetTracks() if t.GetClass() == "PCB_TRACK"]
+zone_layers = {}
+for z in board.Zones():
+    if not z.GetIsRuleArea():
+        for l in (pcbnew.F_Cu, pcbnew.B_Cu):
+            if z.IsOnLayer(l):
+                zone_layers.setdefault(z.GetNetname(), set()).add(l)
+dropped = 0
+for v in [t for t in board.GetTracks() if t.GetClass() == "PCB_VIA"]:
+    p = v.GetPosition()
+    touched = set(t.GetLayer() for t in tracks if t.GetStart() == p or t.GetEnd() == p)
+    for l in (pcbnew.F_Cu, pcbnew.B_Cu):
+        if l in zone_layers.get(v.GetNetname(), ()):
+            touched.add(l)
+    if len(touched) == 1:
+        board.Remove(v)
+        dropped += 1
+print("dangling vias removed:", dropped)
 for z in board.Zones():
     if not z.GetIsRuleArea():
         try:

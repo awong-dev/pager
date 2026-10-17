@@ -12,6 +12,9 @@ C0805 = "Capacitor_SMD:C_0805_2012Metric"
 C1210 = "Capacitor_SMD:C_1210_3225Metric"
 SH2 = "Connector_JST:JST_SH_SM02B-SRSS-TB_1x02-1MP_P1.00mm_Horizontal"
 SH8 = "Connector_JST:JST_SH_SM08B-SRSS-TB_1x08-1MP_P1.00mm_Horizontal"
+SH10 = "Connector_JST:JST_SH_SM10B-SRSS-TB_1x10-1MP_P1.00mm_Horizontal"
+R1206 = "Resistor_SMD:R_1206_3216Metric"
+PANEL_CABLE = ["3V3_EPD", "GND", "EPD_SCK", "EPD_MOSI", "EPD_CS", "EPD_DC", "EPD_RST", "EPD_BUSY", "FL_ANODE", "FL_CATHODE"]
 PH2 = "Connector_JST:JST_PH_S2B-PH-SM4-TB_1x02-1MP_P2.00mm_Horizontal"
 PH4 = "Connector_JST:JST_PH_S4B-PH-SM4-TB_1x04-1MP_P2.00mm_Horizontal"
 TP_FP = "TestPoint:TestPoint_Pad_1.0x1.0mm"
@@ -180,7 +183,7 @@ def power_sheet(prj, lib, cnt):
 
     # --- battery switch ---------------------------------------------------
     grp("Q1")
-    sh.text("Battery: J2 (pin 1 = +) through F1 2 A PTC to VBAT. Switch: SW1 drives only the Q1 gate; SYS_SW = SYS when on.\n100k gate pull-up = off when floating; 10k + 22nF soft-start limits inrush into the Walter bulk caps.", (20, 232), 1.5, True)
+    sh.text("Battery: J2 (pin 1 = +) through F1 2 A PTC to VBAT. Switch: SW1 drives only the Q1 gate; SYS_SW = SYS when on.\n2.2M gate pull-up = off when floating (1.9 uA through the ON switch, was 38 uA with 100k); 10k + 22nF soft-start limits inrush into the Walter bulk caps.", (20, 232), 1.5, True)
     sw1 = sh.place("SW1", "Switch:SW_SPDT", 40, 262, value="JS102011SAQN",
                    footprint="Button_Switch_SMD:SW_SPDT_CK_JS102011SAQN", fields=fields("JS102011SAQN"))
     sh.net(sw1, 2, "SW_COM"); sh.net(sw1, 1, "GND"); sh.net(sw1, 3, "SYS")
@@ -190,7 +193,7 @@ def power_sheet(prj, lib, cnt):
     sh.net(q1, 1, "PWR_GATE"); sh.net(q1, 2, "SYS"); sh.net(q1, 3, "SYS_SW")
     g = Grid(130, 252, 12.7, 20.32, 4)
     res(sh, cnt, "10k", "SW_COM", "PWR_GATE", g.next(), mpn="0603WAF1002T5E")
-    res(sh, cnt, "100k", "PWR_GATE", "SYS", g.next(), mpn="0603WAF1003T5E")
+    res(sh, cnt, "2.2M", "PWR_GATE", "SYS", g.next(), mpn="0603WAF2204T5E", fields={"Note": "sleep current: 2.2M, not 100k (SW1 ON pulls it to GND through 10k)"})
     cap(sh, cnt, "22nF", "PWR_GATE", "SYS", g.next(), mpn="CL10B223KB8NNNC")
     sh.pwr_flag("SYS_SW", (360, 25))
 
@@ -253,12 +256,12 @@ def power_sheet(prj, lib, cnt):
 WALTER_NETS = {
     1: "ESP_EN", 2: "ESP_RX0", 3: "ESP_TX0", 4: "KBD_PWR_N", 5: "EPD_ENA", 6: "EPD_BUSY", 7: "EPD_RST",
     8: "CHG_STAT1", 9: "EPD_DC", 10: "EPD_CS", 11: "EPD_MOSI", 12: "CHG_STAT2", 13: "EPD_SCK", 14: "TP_IO1",
-    15: "TP_IO4", 16: "TP_IO5", 17: "HAPTIC_EN", 18: "FL_PWM", 19: "VBUS_DET", 20: "ACC_INT1", 21: "ACC_SDA",
+    15: "FL_BTN", 16: "TP_IO5", 17: "HAPTIC_EN", 18: "FL_PWM", 19: "VBUS_DET", 20: "ACC_INT1", 21: "ACC_SDA",
     22: "ACC_SCL", 23: "MSG_LED", 24: "KBD_SCL", 25: "KBD_SDA", 26: "3V3_OUT", 27: "GND", 28: "SYS_SW",
 }
 
 TEST_PADS = ["GND", "GND", "SYS", "SYS_SW", "VBAT", "3V3", "3V3_EPD", "ESP_TX0", "ESP_RX0", "ESP_EN",
-             "KBD_PWR_N", "TP_IO1", "TP_IO4", "TP_IO5"]
+             "KBD_PWR_N", "TP_IO1", "FL_BTN", "TP_IO5"]
 
 
 def walter_sheet(prj, lib, cnt):
@@ -270,10 +273,12 @@ def walter_sheet(prj, lib, cnt):
     for pin, net in WALTER_NETS.items():
         sh.net(m1, pin, net, stub=2)
     g = Grid(150, 50, 12.7, 20.32, 4)
-    cap(sh, cnt, "100uF", "SYS_SW", "GND", g.next(), fp=C1210, mpn="CL32A107MQVNNNE",
-        fields={"Note": "Walter VIN bulk; LTE burst"})
+    cap(sh, cnt, "100uF", "SYS_SW", "GND", g.next(), fp=C0805, mpn="GRM21BR60J107ME15L",
+        fields={"Note": "Walter VIN bulk; LTE burst; 0805 1.25 mm tall (the 1210 was 2.5 mm, over the glass limit)"})
+    cap(sh, cnt, "100uF", "SYS_SW", "GND", g.next(), fp=C0805, mpn="GRM21BR60J107ME15L",
+        fields={"Note": "second 100uF makes up for 0805 DC bias loss"})
     cap(sh, cnt, "10uF", "SYS_SW", "GND", g.next(), mpn="CL10A106KP8NNNC")
-    sh.text("Bulk at Walter VIN (pin 28): 100uF 1210 + 10uF 0603, within 5 mm of the pin.", (150, 85), 1.27)
+    sh.text("Bulk at Walter VIN (pin 28): 2 x 100uF 0805 + 10uF 0603, within 5 mm of the pin.", (150, 85), 1.27)
     # test pads
     sh.text("Test pads, 1.0 mm, top side.", (150, 110), 1.5, True)
     g = Grid(150, 125, 12.7, 15.24, 7)
@@ -287,7 +292,7 @@ def walter_sheet(prj, lib, cnt):
         sh.place("H%d" % (i + 1), "Mechanical:MountingHole", *g.next(), value="M2",
                  footprint="MountingHole:MountingHole_2.2mm_M2", fields=fields("", Note="M2 mounting hole"))
     sh.text("IO0 (pin 4, KBD_PWR_N) is a strap, the keyboard-rail gate and the auto-reset boot target; see usb_serial.", (20, 190), 1.27)
-    sh.text("Spare IO1/IO4/IO5 go to test pads only (TP_IO1 = ADC1_CH0). IO5 also has a DNP 0R to the charger CE.", (20, 195), 1.27)
+    sh.text("Spare IO1/IO5 go to test pads only (TP_IO1 = ADC1_CH0). IO5 also has a DNP 0R to the charger CE. IO4 (RTC GPIO) = FL_BTN, the front-light button, see peripherals.", (20, 195), 1.27)
     return sh
 
 
@@ -343,7 +348,7 @@ def usb_serial_sheet(prj, lib, cnt, cp2102n="GQFN24"):
 
     # --- U6 isolation buffer --------------------------------------------
     grp("U6")
-    sh.text("U6 SN74LVC2G126: both OE from VBUS_DET. A: ESP_TX0 -> BRG_RXD. B: BRG_TXD -> ESP_RX0. 10k keeps ESP_RX0 high with no cable.", (20, 150), 1.5, True)
+    sh.text("U6 SN74LVC2G126: both OE from VBUS_DET. A: ESP_TX0 -> BRG_RXD. B: BRG_TXD -> ESP_RX0. 10k keeps ESP_RX0 high with no cable.\nU6 VCC is BRG_VDD (bus-powered): with no cable the buffer is unpowered (Ioff outputs), so no LVC quiescent/float current on the battery.", (20, 150), 1.5, True)
     u6a = sh.place("U6", "74xGxx:74LVC2G126", 60, 180, unit=1, value="SN74LVC2G126DCUR",
                    footprint="Package_SO:VSSOP-8_2.3x2mm_P0.5mm", fields=fields("SN74LVC2G126DCUR"))
     sh.net(u6a, 1, "VBUS_DET"); sh.net(u6a, 2, "ESP_TX0"); sh.net(u6a, 6, "BRG_RXD")
@@ -352,9 +357,9 @@ def usb_serial_sheet(prj, lib, cnt, cp2102n="GQFN24"):
     sh.net(u6b, 7, "VBUS_DET"); sh.net(u6b, 5, "BRG_TXD"); sh.net(u6b, 3, "ESP_RX0")
     u6c = sh.place("U6", "74xGxx:74LVC2G126", 120, 195, unit=3, value="SN74LVC2G126DCUR",
                    footprint="Package_SO:VSSOP-8_2.3x2mm_P0.5mm", fields=fields("SN74LVC2G126DCUR"))
-    sh.net(u6c, 8, "3V3"); sh.net(u6c, 4, "GND")
+    sh.net(u6c, 8, "BRG_VDD"); sh.net(u6c, 4, "GND")
     g = Grid(150, 180, 12.7, 20.32, 4)
-    cap(sh, cnt, "100nF", "3V3", "GND", g.next(), mpn="CL10B104KB8NNNC")
+    cap(sh, cnt, "100nF", "BRG_VDD", "GND", g.next(), mpn="CL10B104KB8NNNC")
     res(sh, cnt, "10k", "ESP_RX0", "3V3", g.next(), mpn="0603WAF1002T5E")
 
     # --- auto-reset -------------------------------------------------------
@@ -380,15 +385,15 @@ def usb_serial_sheet(prj, lib, cnt, cp2102n="GQFN24"):
 def display_sheet(prj, lib, cnt):
     sh = prj.add_sheet("display", "display.kicad_sch", paper="A4",
                        title="Display cable to the panel board")
-    sh.text("The SSD1680 ZIF and boost/charge-pump cluster live on the separate panel board (hardware/carrier/panel). The carrier carries only the 8-pin JST SH cable connector J3.", (20, 20), 1.27, True)
+    sh.text("The SSD1680 ZIF, boost/charge-pump cluster and the front-light 6-pin ZIF live on the separate panel board (hardware/carrier/panel). The carrier carries only the 10-pin JST SH cable connector J3.", (20, 20), 1.27, True)
     grp("J3")
-    j3 = sh.place("J3", "Connector_Generic:Conn_01x08", 60, 80, value="PANEL", footprint=SH8,
-                  fields=fields("SM08B-SRSS-TB", Note="to panel board J2, 1:1 cable"))
-    for p, n in enumerate(["3V3_EPD", "GND", "EPD_SCK", "EPD_MOSI", "EPD_CS", "EPD_DC", "EPD_RST", "EPD_BUSY"], 1):
+    j3 = sh.place("J3", "Connector_Generic:Conn_01x10", 60, 80, value="PANEL", footprint=SH10,
+                  fields=fields("SM10B-SRSS-TB", Note="to panel board J2, 1:1 10-way SH cable"))
+    for p, n in enumerate(PANEL_CABLE, 1):
         sh.net(j3, p, n, stub=2)
     g = Grid(110, 70, 12.7, 20.32, 4)
     cap(sh, cnt, "10uF", "3V3_EPD", "GND", g.next(), mpn="CL10A106KP8NNNC")
-    sh.text("Pinout: 1 3V3_EPD, 2 GND, 3 EPD_SCK, 4 EPD_MOSI, 5 EPD_CS, 6 EPD_DC, 7 EPD_RST, 8 EPD_BUSY. The panel board carries the RST/CS pull-ups and the VCI decoupling.", (20, 110), 1.27)
+    sh.text("Pinout: 1 3V3_EPD, 2 GND, 3 EPD_SCK, 4 EPD_MOSI, 5 EPD_CS, 6 EPD_DC, 7 EPD_RST, 8 EPD_BUSY, 9 FL_ANODE, 10 FL_CATHODE. The panel board carries the RST/CS pull-ups, the VCI decoupling and the front-light ZIF.", (20, 110), 1.27)
     return sh
 
 
@@ -428,15 +433,11 @@ def peripherals_sheet(prj, lib, cnt):
     cap(sh, cnt, "10uF", "3V3_OUT", "GND", g.next(), mpn="CL10A106KP8NNNC")
 
     # --- front light ------------------------------------------------------
-    grp("U8")
-    sh.text("Front light: U8 20 mA CCR (anode pin 2 from SYS_SW, cathode pin 1 -> J5 pin 1); Q4 low-side switch on J5 pin 2, PWM from FL_PWM (IO7). R-FL DNP alt.\nNSI45020 needs ~1.8 V overhead: with a ~3 V white LED it only regulates above ~4.8 V on SYS_SW, i.e. on USB; on battery it passes less than 20 mA.", (20, 170), 1.5, True)
-    j5 = sh.place("J5", "Connector_Generic:Conn_01x02", 60, 200, value="FRONTLIGHT", footprint=SH2,
-                  fields=fields("SM02B-SRSS-TB"))
-    sh.net(j5, 1, "FL_ANODE", stub=2); sh.net(j5, 2, "FL_CATHODE", stub=2)
-    u8 = sh.place("U8", "pager-carrier:NSI45020AT1G", 120, 190, lib_path=lib, fields=fields("NSI45020AT1G", Note="20 mA placeholder until the accessory is chosen"))
-    sh.net(u8, 2, "SYS_SW"); sh.net(u8, 1, "FL_ANODE")
-    g = Grid(160, 185, 12.7, 20.32, 4)
-    res(sh, cnt, "DNP", "SYS_SW", "FL_ANODE", g.next(), dnp=True, mpn="", fields={"Note": "R-FL: series resistor alternative to U8"})
+    grp("Q4")
+    sh.text("Front light GDEY029T94-FL03: 4 white LEDs in parallel on its own 6-pin 0.5 mm flex (1-2 anode, 3-4 NC, 5-6 cathode), Vf 2.75-3.3 V, 60 mA max.\nThe 6-pin ZIF sits on the panel board; anode/cathode ride the panel cable (J3 pins 9/10). R-FL 33R from SYS_SW sets 18 mA at a 3.4 V cell, 42 mA at 4.2 V, 50 mA on USB (SYS 4.45 V).\nQ4 low-side switch, PWM from FL_PWM (IO7) for dimming / battery compensation. The brief's NSI45020 CCR is gone: it needs 1.8 V of headroom and was a 20 mA part.", (20, 170), 1.5, True)
+    g = Grid(120, 185, 12.7, 20.32, 4)
+    two_pin(sh, cnt, "R", "Device:R", "33R", R1206, "SYS_SW", "FL_ANODE", g.next(), mpn="1206W4F330JT5E",
+            fields={"Note": "R-FL, 1206 for 0.1 W at 50 mA; lower for a brighter light, 27R max (60 mA)"})
     q4 = sh.place("Q4", "Transistor_FET:2N7002", 120, 225, value="2N7002", footprint="Package_TO_SOT_SMD:SOT-23",
                   fields=fields("2N7002"))
     sh.net(q4, 1, "FL_G"); sh.net(q4, 2, "GND"); sh.net(q4, 3, "FL_CATHODE")
@@ -444,13 +445,23 @@ def peripherals_sheet(prj, lib, cnt):
     res(sh, cnt, "100R", "FL_PWM", "FL_G", g.next(), mpn="0603WAF1000T5E")
     res(sh, cnt, "100k", "FL_G", "GND", g.next(), mpn="0603WAF1003T5E")
 
+    # --- front-light button ---------------------------------------------
+    grp("SW2")
+    sh.text("SW2 front-light button: FL_BTN (IO4, RTC GPIO, ext1 wake-capable) to GND, 100k pull-up to the always-on 3V3, 100nF debounce. No current while idle.", (20, 245), 1.5, True)
+    sw2 = sh.place("SW2", "Switch:SW_Push", 60, 275, value="SKQGAFE010", footprint="Button_Switch_SMD:SW_SPST_SKQG_WithoutStem",
+                   fields=fields("SKQGAFE010", Note="Alps 5.2 x 5.2 x 1.5 mm, 1 N, top actuated"))
+    sh.net(sw2, 1, "FL_BTN"); sh.net(sw2, 2, "GND")
+    g = Grid(120, 265, 12.7, 20.32, 4)
+    res(sh, cnt, "100k", "FL_BTN", "3V3", g.next(), mpn="0603WAF1003T5E")
+    cap(sh, cnt, "100nF", "FL_BTN", "GND", g.next(), mpn="CL10B104KB8NNNC")
+
     # --- message LED ----------------------------------------------------
     grp("D5")
-    sh.text("Message LED (DNP): MSG_LED (IO8, RTC GPIO) -> 330R -> J6 pin 1; J6 pin 2 GND. D5 + 1k on-board bench LED on the same net (DNP).", (20, 250), 1.5, True)
-    j6 = sh.place("J6", "Connector_Generic:Conn_01x02", 60, 280, value="MSG_LED", footprint=SH2,
+    sh.text("Message LED (DNP): MSG_LED (IO8, RTC GPIO) -> 330R -> J6 pin 1; J6 pin 2 GND. D5 + 1k on-board bench LED on the same net (DNP).", (20, 300), 1.5, True)
+    j6 = sh.place("J6", "Connector_Generic:Conn_01x02", 60, 330, value="MSG_LED", footprint=SH2,
                   fields=fields("SM02B-SRSS-TB", dnp=True), dnp=True)
     sh.net(j6, 1, "LED_A", stub=2); sh.net(j6, 2, "GND", stub=2)
-    g = Grid(120, 270, 12.7, 20.32, 4)
+    g = Grid(120, 320, 12.7, 20.32, 4)
     res(sh, cnt, "330R", "MSG_LED", "LED_A", g.next(), mpn="0603WAF3300T5E", dnp=True)
     res(sh, cnt, "1k", "MSG_LED", "LED_D5", g.next(), mpn="0603WAF1001T5E", dnp=True)
     d5 = sh.place("D5", "Device:LED", *g.next(), rot=90, value="RED", footprint="LED_SMD:LED_0603_1608Metric",

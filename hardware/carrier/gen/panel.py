@@ -3,9 +3,12 @@ battery. Carries the GDEY029T94 FPC ZIF, the SSD1680 boost/charge-pump
 cluster from the Good Display reference circuit, and the 8-pin JST SH cable
 connector to the carrier."""
 
-from carrier import Grid, Counter, res, cap, fields, two_pin, grp, C_FP, C0805, SH8
+from carrier import Grid, Counter, res, cap, fields, two_pin, grp, C_FP, C0805, SH10, PANEL_CABLE
 
-ZIF_FP = "Connector_FFC-FPC:Hirose_FH12-24S-0.5SH_1x24-1MP_P0.50mm_Horizontal"
+ZIF_FP = "pager-carrier:Hirose_FH34SRJ-24S-0.5SH_1x24-1MP_P0.50mm_Horizontal"
+FL_ZIF_FP = "pager-carrier:Hirose_FH34SRJ-6S-0.5SH_1x06-1MP_P0.50mm_Horizontal"
+# GDEY029T94-FL03 drawing (2023-08-09): front-light flex 6 pins 0.5 mm, 3.5 mm wide, ~30 mm long
+FL_PINS = {1: "FL_ANODE", 2: "FL_ANODE", 3: "NC", 4: "NC", 5: "FL_CATHODE", 6: "FL_CATHODE"}
 
 # GDEY029T94 spec (24.10.22) FPC pin table
 FPC_PINS = {
@@ -28,16 +31,23 @@ def build(prj, lib):
     sh.text("Panel board for the Good Display GDEY029T94 (2.9\" 296x128, SSD1680). Reference circuit from the GDEY029T94 specification (24.10.22): RESE 2.2R, L 47uH, MBR0530 x3, 25 V caps.", (20, 20), 1.5, True)
     # --- J1 ZIF -----------------------------------------------------------
     j1 = sh.place("J1", "Connector_Generic:Conn_01x24", 60, 110, value="GDEY029T94 FPC", footprint=ZIF_FP,
-                  fields=fields("FH12-24S-0.5SH(55)", Note="bottom contact; FPC folded 180 deg under the glass"))
+                  fields=fields("FH34SRJ-24S-0.5SH(50)", Note="1.0 mm high, top+bottom contact; FPC folded 180 deg under the glass; confirm pin-1 side on a panel"))
     for p, n in FPC_PINS.items():
         sh.net(j1, p, n, stub=2)
     sh.text("TSCL/TSDA (6/7) open: internal temperature sensor. BS1 (8) low: 4-wire SPI. VPP (19) open, OTP only. VDD (18) is the internal 1.8 V LDO output, cap only.", (20, 175), 1.27)
 
     # --- J2 cable to carrier ------------------------------------------
-    j2 = sh.place("J2", "Connector_Generic:Conn_01x08", 60, 220, value="CARRIER", footprint=SH8,
-                  fields=fields("SM08B-SRSS-TB", Note="to carrier J3, 1:1 8-way SH cable"))
-    for p, n in enumerate(["3V3_EPD", "GND", "EPD_SCK", "EPD_MOSI", "EPD_CS", "EPD_DC", "EPD_RST", "EPD_BUSY"], 1):
+    j2 = sh.place("J2", "Connector_Generic:Conn_01x10", 60, 220, value="CARRIER", footprint=SH10,
+                  fields=fields("SM10B-SRSS-TB", Note="to carrier J3, 1:1 10-way SH cable"))
+    for p, n in enumerate(PANEL_CABLE, 1):
         sh.net(j2, p, n, stub=2)
+
+    # --- J3 front-light ZIF ------------------------------------------
+    sh.text("J3: GDEY029T94-FL03 front-light flex (6 pins, 0.5 mm): 1-2 anode, 3-4 NC, 5-6 cathode. 4 LEDs in parallel, Vf 2.8 V typ, 60 mA max. Driven from the carrier (R-FL + Q4) over cable pins 9/10.", (20, 262), 1.27)
+    j3 = sh.place("J3", "Connector_Generic:Conn_01x06", 60, 290, value="FRONTLIGHT FPC", footprint=FL_ZIF_FP,
+                  fields=fields("FH34SRJ-6S-0.5SH(50)", Note="1.0 mm high; flex tail is ~30 mm long, folds under with the display tail"))
+    for p, n in FL_PINS.items():
+        sh.net(j3, p, n, stub=2)
     sh.pwr_flag("3V3_EPD", (200, 30))
     sh.pwr_flag("GND", (210, 30))
 

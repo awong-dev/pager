@@ -11,7 +11,7 @@
 		(company "awong-dev/pager")
 	)
 	(lib_symbols
-		(symbol "Connector_Generic:Conn_01x08"
+		(symbol "Connector_Generic:Conn_01x10"
 			(pin_names
 				(offset 1.016)
 				(hide yes)
@@ -22,7 +22,7 @@
 			(in_pos_files yes)
 			(duplicate_pin_numbers_are_jumpers no)
 			(property "Reference" "J"
-				(at 0 10.16 0)
+				(at 0 12.7 0)
 				(show_name no)
 				(do_not_autoplace no)
 				(effects
@@ -31,8 +31,8 @@
 					)
 				)
 			)
-			(property "Value" "Conn_01x08"
-				(at 0 -12.7 0)
+			(property "Value" "Conn_01x10"
+				(at 0 -15.24 0)
 				(show_name no)
 				(do_not_autoplace no)
 				(effects
@@ -63,7 +63,7 @@
 					)
 				)
 			)
-			(property "Description" "Generic connector, single row, 01x08, script generated (kicad-library-utils/schlib/autogen/connector/)"
+			(property "Description" "Generic connector, single row, 01x10, script generated (kicad-library-utils/schlib/autogen/connector/)"
 				(at 0 0 0)
 				(show_name no)
 				(do_not_autoplace no)
@@ -96,16 +96,27 @@
 					)
 				)
 			)
-			(symbol "Conn_01x08_1_1"
+			(symbol "Conn_01x10_1_1"
 				(rectangle
-					(start -1.27 8.89)
-					(end 1.27 -11.43)
+					(start -1.27 11.43)
+					(end 1.27 -13.97)
 					(stroke
 						(width 0.254)
 						(type default)
 					)
 					(fill
 						(type background)
+					)
+				)
+				(rectangle
+					(start -1.27 10.287)
+					(end 0 10.033)
+					(stroke
+						(width 0.1524)
+						(type default)
+					)
+					(fill
+						(type none)
 					)
 				)
 				(rectangle
@@ -196,8 +207,19 @@
 						(type none)
 					)
 				)
+				(rectangle
+					(start -1.27 -12.573)
+					(end 0 -12.827)
+					(stroke
+						(width 0.1524)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
 				(pin passive line
-					(at -5.08 7.62 0)
+					(at -5.08 10.16 0)
 					(length 3.81)
 					(name "Pin_1"
 						(effects
@@ -215,7 +237,7 @@
 					)
 				)
 				(pin passive line
-					(at -5.08 5.08 0)
+					(at -5.08 7.62 0)
 					(length 3.81)
 					(name "Pin_2"
 						(effects
@@ -233,7 +255,7 @@
 					)
 				)
 				(pin passive line
-					(at -5.08 2.54 0)
+					(at -5.08 5.08 0)
 					(length 3.81)
 					(name "Pin_3"
 						(effects
@@ -251,7 +273,7 @@
 					)
 				)
 				(pin passive line
-					(at -5.08 0 0)
+					(at -5.08 2.54 0)
 					(length 3.81)
 					(name "Pin_4"
 						(effects
@@ -269,7 +291,7 @@
 					)
 				)
 				(pin passive line
-					(at -5.08 -2.54 0)
+					(at -5.08 0 0)
 					(length 3.81)
 					(name "Pin_5"
 						(effects
@@ -287,7 +309,7 @@
 					)
 				)
 				(pin passive line
-					(at -5.08 -5.08 0)
+					(at -5.08 -2.54 0)
 					(length 3.81)
 					(name "Pin_6"
 						(effects
@@ -305,7 +327,7 @@
 					)
 				)
 				(pin passive line
-					(at -5.08 -7.62 0)
+					(at -5.08 -5.08 0)
 					(length 3.81)
 					(name "Pin_7"
 						(effects
@@ -323,7 +345,7 @@
 					)
 				)
 				(pin passive line
-					(at -5.08 -10.16 0)
+					(at -5.08 -7.62 0)
 					(length 3.81)
 					(name "Pin_8"
 						(effects
@@ -333,6 +355,42 @@
 						)
 					)
 					(number "8"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+				)
+				(pin passive line
+					(at -5.08 -10.16 0)
+					(length 3.81)
+					(name "Pin_9"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+					(number "9"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+				)
+				(pin passive line
+					(at -5.08 -12.7 0)
+					(length 3.81)
+					(name "Pin_10"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+					(number "10"
 						(effects
 							(font
 								(size 1.27 1.27)
@@ -763,7 +821,7 @@
 			(embedded_fonts no)
 		)
 	)
-	(text "The SSD1680 ZIF and boost/charge-pump cluster live on the separate panel board (hardware/carrier/panel). The carrier carries only the 8-pin JST SH cable connector J3."
+	(text "The SSD1680 ZIF, boost/charge-pump cluster and the front-light 6-pin ZIF live on the separate panel board (hardware/carrier/panel). The carrier carries only the 10-pin JST SH cable connector J3."
 		(exclude_from_sim no)
 		(at 20 20 0)
 		(effects
@@ -773,7 +831,18 @@
 			)
 			(justify left top)
 		)
-		(uuid "68f7515e-effe-5f8e-b688-77e09c88d857")
+		(uuid "3c9935a7-c14e-571d-b916-aa0d8c701906")
+	)
+	(wire
+		(pts
+			(xy 54.61 69.85)
+			(xy 49.53 69.85)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "e009fa99-ba0a-5466-b1dc-12a89a857cdd")
 	)
 	(wire
 		(pts
@@ -784,7 +853,7 @@
 			(width 0)
 			(type default)
 		)
-		(uuid "055ea3d4-d8fb-5db2-95b7-00722e10c513")
+		(uuid "c1b13f04-eca3-562a-be9c-70660a8de72e")
 	)
 	(wire
 		(pts
@@ -795,7 +864,19 @@
 			(width 0)
 			(type default)
 		)
-		(uuid "d166dcc1-edf7-5c4a-822a-7bfdd7f271ea")
+		(uuid "256d25d8-b3b4-5812-a6ae-40e054023437")
+	)
+	(global_label "EPD_SCK"
+		(shape passive)
+		(at 49.53 74.93 180)
+		(fields_autoplaced yes)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify right)
+		)
+		(uuid "c88e7869-4a13-50dc-95d3-a8d48270ba76")
 	)
 	(wire
 		(pts
@@ -806,9 +887,9 @@
 			(width 0)
 			(type default)
 		)
-		(uuid "3485eba2-b99b-57d8-83be-46d916482711")
+		(uuid "0101a70a-13d5-5152-af27-3a9c1d5d4319")
 	)
-	(global_label "EPD_SCK"
+	(global_label "EPD_MOSI"
 		(shape passive)
 		(at 49.53 77.47 180)
 		(fields_autoplaced yes)
@@ -818,7 +899,7 @@
 			)
 			(justify right)
 		)
-		(uuid "aa3a4fa8-69cf-5162-84e6-87d67b065a0d")
+		(uuid "5a6c3915-2064-5a18-bc35-18c7f490debb")
 	)
 	(wire
 		(pts
@@ -829,9 +910,9 @@
 			(width 0)
 			(type default)
 		)
-		(uuid "86f029f2-dd13-516c-b04b-efe4e355503d")
+		(uuid "c353e3b5-5c75-535d-88ce-9ed7e951e42f")
 	)
-	(global_label "EPD_MOSI"
+	(global_label "EPD_CS"
 		(shape passive)
 		(at 49.53 80.01 180)
 		(fields_autoplaced yes)
@@ -841,7 +922,7 @@
 			)
 			(justify right)
 		)
-		(uuid "4ced2896-2013-5728-9044-53ee21d1cdb0")
+		(uuid "539377e2-0bd3-54a5-8522-c3f9780ed577")
 	)
 	(wire
 		(pts
@@ -852,9 +933,9 @@
 			(width 0)
 			(type default)
 		)
-		(uuid "c17006ee-92eb-58fa-9dbb-880e79609677")
+		(uuid "a5874566-c65e-5d6d-889f-6fc117ded815")
 	)
-	(global_label "EPD_CS"
+	(global_label "EPD_DC"
 		(shape passive)
 		(at 49.53 82.55 180)
 		(fields_autoplaced yes)
@@ -864,7 +945,7 @@
 			)
 			(justify right)
 		)
-		(uuid "8ea1dda2-4f19-5264-b15f-3a5ec9930792")
+		(uuid "6375e15a-3fb9-5be3-84da-3bcc99c7b12c")
 	)
 	(wire
 		(pts
@@ -875,9 +956,9 @@
 			(width 0)
 			(type default)
 		)
-		(uuid "bcf9ddfe-16a0-5003-9119-e3f94096c058")
+		(uuid "2f6f75a7-9916-5f9f-9f14-6d45e29f0f2b")
 	)
-	(global_label "EPD_DC"
+	(global_label "EPD_RST"
 		(shape passive)
 		(at 49.53 85.09 180)
 		(fields_autoplaced yes)
@@ -887,7 +968,7 @@
 			)
 			(justify right)
 		)
-		(uuid "ee1c769c-dbdc-56f3-a20b-b5902426a747")
+		(uuid "7d16af18-0220-5944-bbf0-86f6ad0089ac")
 	)
 	(wire
 		(pts
@@ -898,9 +979,9 @@
 			(width 0)
 			(type default)
 		)
-		(uuid "d5a811b6-a6a6-5121-8316-fa305922f525")
+		(uuid "54a322e0-a526-5aea-a8dc-45e1bc4f9cc4")
 	)
-	(global_label "EPD_RST"
+	(global_label "EPD_BUSY"
 		(shape passive)
 		(at 49.53 87.63 180)
 		(fields_autoplaced yes)
@@ -910,7 +991,7 @@
 			)
 			(justify right)
 		)
-		(uuid "af0ad585-8154-50b0-ae81-b2ed54169fc6")
+		(uuid "b0791847-e427-5be0-9072-1f4da7a74166")
 	)
 	(wire
 		(pts
@@ -921,9 +1002,9 @@
 			(width 0)
 			(type default)
 		)
-		(uuid "f7d5161b-a8b6-5860-a753-b710234ed6d3")
+		(uuid "d2a2eafd-2553-54be-ae22-ff9157b54386")
 	)
-	(global_label "EPD_BUSY"
+	(global_label "FL_ANODE"
 		(shape passive)
 		(at 49.53 90.17 180)
 		(fields_autoplaced yes)
@@ -933,7 +1014,30 @@
 			)
 			(justify right)
 		)
-		(uuid "9ee2ca6f-88c0-5255-97b9-67be3b92669f")
+		(uuid "f7208780-bf8c-5aca-b2ca-32d6928ead6a")
+	)
+	(wire
+		(pts
+			(xy 54.61 92.71)
+			(xy 49.53 92.71)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "d939ef02-7e60-57ad-91d6-eaf41eb78182")
+	)
+	(global_label "FL_CATHODE"
+		(shape passive)
+		(at 49.53 92.71 180)
+		(fields_autoplaced yes)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify right)
+		)
+		(uuid "a118dfbc-6db7-5998-9f57-5717af1bcbff")
 	)
 	(wire
 		(pts
@@ -944,7 +1048,7 @@
 			(width 0)
 			(type default)
 		)
-		(uuid "5a7aeec1-0742-574e-9f5d-52f6aacc7af1")
+		(uuid "67aa8f24-1b26-58d9-9075-8b846d0cb25c")
 	)
 	(wire
 		(pts
@@ -955,9 +1059,9 @@
 			(width 0)
 			(type default)
 		)
-		(uuid "4ba00450-4c21-52c0-aae2-3003d75f802e")
+		(uuid "cd4db0c8-c332-5141-8315-e5aaa0e292a2")
 	)
-	(text "Pinout: 1 3V3_EPD, 2 GND, 3 EPD_SCK, 4 EPD_MOSI, 5 EPD_CS, 6 EPD_DC, 7 EPD_RST, 8 EPD_BUSY. The panel board carries the RST/CS pull-ups and the VCI decoupling."
+	(text "Pinout: 1 3V3_EPD, 2 GND, 3 EPD_SCK, 4 EPD_MOSI, 5 EPD_CS, 6 EPD_DC, 7 EPD_RST, 8 EPD_BUSY, 9 FL_ANODE, 10 FL_CATHODE. The panel board carries the RST/CS pull-ups, the VCI decoupling and the front-light ZIF."
 		(exclude_from_sim no)
 		(at 20 110 0)
 		(effects
@@ -966,10 +1070,10 @@
 			)
 			(justify left top)
 		)
-		(uuid "606f2231-cb3f-59ce-85bb-ad2054379d61")
+		(uuid "07e334ff-377a-53d5-a370-6740e7f5a8bd")
 	)
 	(symbol
-		(lib_id "Connector_Generic:Conn_01x08")
+		(lib_id "Connector_Generic:Conn_01x10")
 		(at 59.69 80.01 0)
 		(unit 1)
 		(exclude_from_sim no)
@@ -979,7 +1083,7 @@
 		(dnp no)
 		(uuid "4413278c-a825-53d1-89bd-98812cc2deef")
 		(property "Reference" "J3"
-			(at 55.88 72.39 0)
+			(at 55.88 69.85 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -988,7 +1092,7 @@
 			)
 		)
 		(property "Value" "PANEL"
-			(at 55.88 74.93 0)
+			(at 55.88 72.39 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -996,8 +1100,8 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "Connector_JST:JST_SH_SM08B-SRSS-TB_1x08-1MP_P1.00mm_Horizontal"
-			(at 55.88 77.47 0)
+		(property "Footprint" "Connector_JST:JST_SH_SM10B-SRSS-TB_1x10-1MP_P1.00mm_Horizontal"
+			(at 55.88 74.93 0)
 			(hide yes)
 			(effects
 				(font
@@ -1007,6 +1111,16 @@
 			)
 		)
 		(property "Datasheet" "~"
+			(at 55.88 77.47 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Description" "Generic connector, single row, 01x10, script generated (kicad-library-utils/schlib/autogen/connector/)"
 			(at 55.88 80.01 0)
 			(hide yes)
 			(effects
@@ -1016,17 +1130,7 @@
 				(justify left)
 			)
 		)
-		(property "Description" "Generic connector, single row, 01x08, script generated (kicad-library-utils/schlib/autogen/connector/)"
-			(at 55.88 82.55 0)
-			(hide yes)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-		(property "MPN" "SM08B-SRSS-TB"
+		(property "MPN" "SM10B-SRSS-TB"
 			(at 59.69 95.25 0)
 			(hide yes)
 			(effects
@@ -1035,7 +1139,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C160407"
+		(property "LCSC" "C160409"
 			(at 59.69 97.79 0)
 			(hide yes)
 			(effects
@@ -1053,7 +1157,7 @@
 				)
 			)
 		)
-		(property "Note" "to panel board J2, 1:1 cable"
+		(property "Note" "to panel board J2, 1:1 10-way SH cable"
 			(at 59.69 102.87 0)
 			(hide yes)
 			(effects
@@ -1086,6 +1190,12 @@
 		(pin "8"
 			(uuid "f0a4b929-271f-5a11-bf01-f81304c4b68b")
 		)
+		(pin "9"
+			(uuid "85534463-a5ef-5678-8437-9bb109fe2008")
+		)
+		(pin "10"
+			(uuid "e89dbd69-1139-55c4-98ff-5cbb82fd4c2c")
+		)
 		(instances
 			(project "pager-carrier"
 				(path "/10ec5e8c-30f8-50c5-8dd4-a077611d8ec6/4f9993a7-c2ec-5512-8944-2a1ee7e389ea"
@@ -1097,7 +1207,7 @@
 	)
 	(symbol
 		(lib_id "pager-carrier:PWR_3V3_EPD")
-		(at 49.53 72.39 90)
+		(at 49.53 69.85 90)
 		(unit 1)
 		(exclude_from_sim no)
 		(in_bom no)
@@ -1106,7 +1216,7 @@
 		(dnp no)
 		(uuid "1713564a-bccf-57a1-b257-c64b1c7442f0")
 		(property "Reference" "#PWR109"
-			(at 49.53 72.39 0)
+			(at 49.53 69.85 0)
 			(hide yes)
 			(effects
 				(font
@@ -1116,6 +1226,77 @@
 			)
 		)
 		(property "Value" "3V3_EPD"
+			(at 45.72 69.85 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify right)
+			)
+		)
+		(property "Footprint" ""
+			(at 49.53 69.85 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Datasheet" "~"
+			(at 49.53 69.85 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Description" "Power symbol"
+			(at 49.53 69.85 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(pin "1"
+			(uuid "bc6656cf-e0a0-5719-b67a-5bcaa7c7a58b")
+		)
+		(instances
+			(project "pager-carrier"
+				(path "/10ec5e8c-30f8-50c5-8dd4-a077611d8ec6/4f9993a7-c2ec-5512-8944-2a1ee7e389ea"
+					(reference "#PWR109")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "power:GND")
+		(at 49.53 72.39 270)
+		(unit 1)
+		(exclude_from_sim no)
+		(in_bom no)
+		(on_board no)
+		(in_pos_files yes)
+		(dnp no)
+		(uuid "56494618-8ebe-51a3-8beb-6e6c7ce3d2a9")
+		(property "Reference" "#PWR110"
+			(at 49.53 72.39 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Value" "GND"
 			(at 45.72 72.39 0)
 			(effects
 				(font
@@ -1155,77 +1336,6 @@
 			)
 		)
 		(pin "1"
-			(uuid "bc6656cf-e0a0-5719-b67a-5bcaa7c7a58b")
-		)
-		(instances
-			(project "pager-carrier"
-				(path "/10ec5e8c-30f8-50c5-8dd4-a077611d8ec6/4f9993a7-c2ec-5512-8944-2a1ee7e389ea"
-					(reference "#PWR109")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
-		(lib_id "power:GND")
-		(at 49.53 74.93 270)
-		(unit 1)
-		(exclude_from_sim no)
-		(in_bom no)
-		(on_board no)
-		(in_pos_files yes)
-		(dnp no)
-		(uuid "56494618-8ebe-51a3-8beb-6e6c7ce3d2a9")
-		(property "Reference" "#PWR110"
-			(at 49.53 74.93 0)
-			(hide yes)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-		(property "Value" "GND"
-			(at 45.72 74.93 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify right)
-			)
-		)
-		(property "Footprint" ""
-			(at 49.53 74.93 0)
-			(hide yes)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-		(property "Datasheet" "~"
-			(at 49.53 74.93 0)
-			(hide yes)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-		(property "Description" "Power symbol"
-			(at 49.53 74.93 0)
-			(hide yes)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-		(pin "1"
 			(uuid "e108a32d-0cd8-5bbb-a84b-eb221925cdc6")
 		)
 		(instances
@@ -1246,8 +1356,8 @@
 		(on_board yes)
 		(in_pos_files yes)
 		(dnp no)
-		(uuid "a832e9db-5de0-51be-b9e5-ebb399eb98da")
-		(property "Reference" "C19"
+		(uuid "ce163ff6-a395-53b8-865c-9462fe00bfab")
+		(property "Reference" "C20"
 			(at 111.76 66.04 0)
 			(effects
 				(font
@@ -1323,15 +1433,15 @@
 			)
 		)
 		(pin "1"
-			(uuid "053f3648-3c36-58c8-bf3f-000b51241a2a")
+			(uuid "aff7d365-2708-5d34-9fce-7ed57527ff52")
 		)
 		(pin "2"
-			(uuid "3d8069d3-7349-52e0-bbcd-73b8b5804569")
+			(uuid "cad1e1e8-09fc-58a1-bcd9-bd164863854e")
 		)
 		(instances
 			(project "pager-carrier"
 				(path "/10ec5e8c-30f8-50c5-8dd4-a077611d8ec6/4f9993a7-c2ec-5512-8944-2a1ee7e389ea"
-					(reference "C19")
+					(reference "C20")
 					(unit 1)
 				)
 			)

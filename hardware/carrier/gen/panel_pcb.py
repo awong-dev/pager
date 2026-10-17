@@ -25,7 +25,8 @@ def main(route=False):
     b.outline_polyline([(0, 0), (W, 0), (W, H), (0, H)], radius=1.0)
     b.edge_keepout([(0, 0), (W, 0), (W, H), (0, H)])
     P = {
-        "J1": (20.0, 16.3, 0),      # ZIF, FPC enters from the bottom edge (the glass side)
+        "J1": (20.0, 17.6, 180),    # display ZIF, contacts toward the bottom edge: the FPC enters from there (glass side)
+        "J3": (33.0, 17.6, 180),    # front-light ZIF, same edge, on the side where the FL tail leaves the glass
         "J2": (8.0, 3.3, 180),      # SH8 to the carrier, opening at the top edge
         "L1": (18.0, 4.5, 0),
         "Q5": (23.0, 4.0, 90),
@@ -44,7 +45,8 @@ def main(route=False):
         x0, y0, x1, y1, rot = rects[a]
         b.pack(sorted(refs), x0, y0, x1, y1, rot=rot)
     b.text("pager-panel rev A", 20, 9.6, pcbnew.F_SilkS, 0.8)
-    b.text("FPC from glass", 30, 19.1, pcbnew.F_SilkS, 0.8)
+    b.text("display FPC", 5.5, 17.0, pcbnew.F_SilkS, 0.8)
+    b.text("front light", 37.6, 14.0, pcbnew.F_SilkS, 0.8, rot=90)
     if route:
         b.route(passes=20)
     outline = [(0, 0), (W, 0), (W, H), (0, H)]

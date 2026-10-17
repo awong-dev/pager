@@ -17,7 +17,7 @@ sys.path.insert(0, HERE)
 from sch import Project  # noqa: E402
 from customlib import write_lib  # noqa: E402
 from symbols import all_symbols  # noqa: E402
-from footprints import walter_module, bq25185_wson10, tps62840_dlc, usb4235, write_pretty  # noqa: E402
+from footprints import walter_module, bq25185_wson10, tps62840_dlc, usb4235, fh34srj, write_pretty  # noqa: E402
 import carrier  # noqa: E402
 import panel  # noqa: E402
 
@@ -125,7 +125,8 @@ def build_carrier(cli=True):
     lib = os.path.join(d, "pager-carrier.kicad_sym")
     write_lib(lib, all_symbols())
     write_pretty(os.path.join(d, "pager-carrier.pretty"),
-                 [walter_module(), bq25185_wson10(), tps62840_dlc(), fix_quotes(usb4235_footprint())])
+                 [walter_module(), bq25185_wson10(), tps62840_dlc(), fix_quotes(usb4235_footprint()),
+                  fh34srj(24), fh34srj(6)])
     prj = Project("pager-carrier", DATE, rev="A", company="awong-dev/pager")
     prj.custom_lib = lib
     carrier.build(prj, lib)
