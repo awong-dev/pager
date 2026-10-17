@@ -1,0 +1,4 @@
+(fp_lib_table
+  (version 7)
+  (lib (name "pager-carrier")(type "KiCad")(uri "${KIPRJMOD}/../pager-carrier.pretty")(options "")(descr "pager carrier custom footprints"))
+)

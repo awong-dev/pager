@@ -1,0 +1,230 @@
+(kicad_sch
+	(version 20260306)
+	(generator "eeschema")
+	(generator_version "10.0")
+	(uuid "10ec5e8c-30f8-50c5-8dd4-a077611d8ec6")
+	(paper "A4")
+	(title_block
+		(title "pager-carrier")
+		(date "2026-10-17")
+		(rev "A")
+		(company "awong-dev/pager")
+	)
+	(lib_symbols)
+	(sheet
+		(at 25.4 25.4)
+		(size 40.64 20.32)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(stroke
+			(width 0.1524)
+			(type solid)
+		)
+		(fill
+			(color 0 0 0 0)
+		)
+		(uuid "31e52e04-2b5d-5e66-b710-cff9d8dcb170")
+		(property "Sheetname" "power"
+			(at 25.4 24.6884 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left bottom)
+			)
+		)
+		(property "Sheetfile" "power.kicad_sch"
+			(at 25.4 46.3046 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left top)
+			)
+		)
+		(instances
+			(project "pager-carrier"
+				(path "/10ec5e8c-30f8-50c5-8dd4-a077611d8ec6"
+					(page "2")
+				)
+			)
+		)
+	)
+	(sheet
+		(at 25.4 55.88)
+		(size 40.64 20.32)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(stroke
+			(width 0.1524)
+			(type solid)
+		)
+		(fill
+			(color 0 0 0 0)
+		)
+		(uuid "6f93263e-1dbf-5cc0-a024-77796d87bf0e")
+		(property "Sheetname" "walter"
+			(at 25.4 55.1684 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left bottom)
+			)
+		)
+		(property "Sheetfile" "walter.kicad_sch"
+			(at 25.4 76.7846 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left top)
+			)
+		)
+		(instances
+			(project "pager-carrier"
+				(path "/10ec5e8c-30f8-50c5-8dd4-a077611d8ec6"
+					(page "3")
+				)
+			)
+		)
+	)
+	(sheet
+		(at 25.4 86.36)
+		(size 40.64 20.32)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(stroke
+			(width 0.1524)
+			(type solid)
+		)
+		(fill
+			(color 0 0 0 0)
+		)
+		(uuid "4dcf5f11-b7c7-5378-87ee-cd80f033995e")
+		(property "Sheetname" "usb_serial"
+			(at 25.4 85.6484 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left bottom)
+			)
+		)
+		(property "Sheetfile" "usb_serial.kicad_sch"
+			(at 25.4 107.2646 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left top)
+			)
+		)
+		(instances
+			(project "pager-carrier"
+				(path "/10ec5e8c-30f8-50c5-8dd4-a077611d8ec6"
+					(page "4")
+				)
+			)
+		)
+	)
+	(sheet
+		(at 25.4 116.84)
+		(size 40.64 20.32)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(stroke
+			(width 0.1524)
+			(type solid)
+		)
+		(fill
+			(color 0 0 0 0)
+		)
+		(uuid "4f9993a7-c2ec-5512-8944-2a1ee7e389ea")
+		(property "Sheetname" "display"
+			(at 25.4 116.1284 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left bottom)
+			)
+		)
+		(property "Sheetfile" "display.kicad_sch"
+			(at 25.4 137.7446 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left top)
+			)
+		)
+		(instances
+			(project "pager-carrier"
+				(path "/10ec5e8c-30f8-50c5-8dd4-a077611d8ec6"
+					(page "5")
+				)
+			)
+		)
+	)
+	(sheet
+		(at 25.4 147.32)
+		(size 40.64 20.32)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(stroke
+			(width 0.1524)
+			(type solid)
+		)
+		(fill
+			(color 0 0 0 0)
+		)
+		(uuid "7d8dcb51-122c-5e3d-8864-71bd8f714bb8")
+		(property "Sheetname" "peripherals"
+			(at 25.4 146.6084 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left bottom)
+			)
+		)
+		(property "Sheetfile" "peripherals.kicad_sch"
+			(at 25.4 168.2246 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left top)
+			)
+		)
+		(instances
+			(project "pager-carrier"
+				(path "/10ec5e8c-30f8-50c5-8dd4-a077611d8ec6"
+					(page "6")
+				)
+			)
+		)
+	)
+	(sheet_instances
+		(path "/"
+			(page "1")
+		)
+	)
+	(embedded_fonts no)
+)

@@ -1,0 +1,4 @@
+(sym_lib_table
+  (version 7)
+  (lib (name "pager-carrier")(type "KiCad")(uri "${KIPRJMOD}/pager-carrier.kicad_sym")(options "")(descr "pager carrier custom symbols"))
+)
