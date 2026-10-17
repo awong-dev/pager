@@ -93,17 +93,20 @@ def walter_module():
         y = round(y0 + i * pitch, 4)
         # pins 1-14 on +X (mirrored), 15-28 return on -X
         shape = "rect" if i == 0 else "circle"
-        n.append(_pad(i + 1, "thru_hole", shape, 8.89, y, 2.0, 2.0, ["*.Cu", "*.Mask"], drill=1.02))
-        n.append(_pad(28 - i, "thru_hole", "circle", -8.89, y, 2.0, 2.0, ["*.Cu", "*.Mask"], drill=1.02))
+        n.append(_pad(i + 1, "thru_hole", shape, 8.89, y, 1.7, 1.7, ["*.Cu", "*.Mask"], drill=1.02))
+        n.append(_pad(28 - i, "thru_hole", "circle", -8.89, y, 1.7, 1.7, ["*.Cu", "*.Mask"], drill=1.02))
     # module outline (55 x 24.8) on B.CrtYd and F.Fab: USB-C end at y=-26.23, antenna end at +28.77
     yu, ya, hx = -26.23, 28.77, 12.4
-    for layer, w in (("B.CrtYd", 0.05), ("F.Fab", 0.1)):
+    for layer, w in (("B.Fab", 0.1), ("F.Fab", 0.1)):
         n.append(_rect(-hx, yu, hx, ya, layer, w))
+    # courtyard: the two header housings only (the module body is beneath the board, by design)
+    for x in (8.89, -8.89):
+        n.append(_rect(x - 1.6, -18.1, x + 1.6, 18.1, "F.CrtYd", 0.05))
     # header housings (3.3 mm tall plastic, 35.56 long, 2.54 wide) on F.Fab
     for x in (8.89, -8.89):
         n.append(_rect(x - 1.27, -17.78, x + 1.27, 17.78, "F.Fab", 0.1))
     # silkscreen: pin 1 marker and module outline ends
-    n.append(_circle(11.0, -16.51, 0.3, "F.SilkS", 0.3, fill=True))
+    n.append(_circle(10.6, -16.51, 0.25, "F.SilkS", 0.3, fill=True))
     n.append(_line(-hx, yu, hx, yu, "F.SilkS", 0.15))
     n.append(_line(-hx, ya, hx, ya, "F.SilkS", 0.15))
     n.append(_line(-hx, yu, -hx, -19.0, "F.SilkS", 0.15))

@@ -30,7 +30,7 @@ Regenerate: `python3 gen/build.py` (schematics, ERC, PDF, BOM, netlist), then
 
 - `Walter_Module_2x14_THT`: datasheet rev 1.1 (hw 1.6) section 6 plus the
   vendor `walter-solder.kicad_mod` in `~/src/walter-hardware`. Rows 17.78 mm
-  apart, 2.54 pitch, pin 1 at 9.72 mm from the USB-C end, 1.02 drill / 2.0 pad.
+  apart, 2.54 pitch, pin 1 at 9.72 mm from the USB-C end, 1.02 drill / 1.7 pad.
   The carrier sits above a header-side-up Walter, so the pattern is the
   **mirror** of the vendor's: pin 1 is on the +X row as seen from the carrier
   top. SIM holder, u.FL jacks and USB-C are marked on User.Comments.
@@ -62,7 +62,7 @@ Regenerate: `python3 gen/build.py` (schematics, ERC, PDF, BOM, netlist), then
   D5, the 14 test pads.
 - Walter region, top side only, between the header rows: CP2102N cluster,
   SN74LVC2G126 + UMH3N auto-reset, BQ25185 cluster, P-FET switch parts.
-- Mounting holes H1–H4 at (17, 2.5), (82.5, 2.5), (82.5, 49.5), (2.5, 49.5).
+- Mounting holes H1–H4 at (17, 2.5), (82.8, 2.2), (82.5, 47), (2.5, 49.5).
 
 ## Deviations from the brief and interpretations
 
@@ -104,8 +104,13 @@ Regenerate: `python3 gen/build.py` (schematics, ERC, PDF, BOM, netlist), then
     LCSC/JLCPCB (hand-place; DCTR is MSOP-8 0.65 mm, a different footprint).
     LCSC numbers in the BOM were verified on jlcpcb.com/lcsc.com on 16–17 Oct
     2026; basic parts preferred.
-15. **Routing** is Freerouting's output with GND pours on both layers; the
-    boost loop on the panel and the USB D+/D− pair deserve a manual pass.
+15. **Routing** is Freerouting's output (GND routed as tracks, then pours on
+    both layers). Panel: fully routed, DRC shows only silkscreen warnings.
+    Carrier: one connection left unrouted (USB_DM between J1 pad B7 and the
+    0.5 mm-pitch pad row), plus one 0.107 mm pad clearance and two courtyard
+    overlaps at C13 next to the bulk caps, one edge-clearance nit, and
+    silkscreen-over-pad warnings. These need a manual pass in KiCad; the
+    boost loop on the panel and the USB D+/D− pair deserve one anyway.
 
 ## Open questions (still open after this pass)
 

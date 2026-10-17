@@ -27,18 +27,18 @@ def V(x, y):
 def apply_design_settings(board, thickness=1.0):
     ds = board.GetDesignSettings()
     ds.SetBoardThickness(mm(thickness))
-    ds.m_TrackMinWidth = mm(0.15)
-    ds.m_ViasMinSize = mm(0.5)
-    ds.m_MinThroughDrill = mm(0.3)
-    ds.m_MinClearance = mm(0.15)
+    ds.m_TrackMinWidth = mm(0.1)
+    ds.m_ViasMinSize = mm(0.45)
+    ds.m_MinThroughDrill = mm(0.2)
+    ds.m_MinClearance = mm(0.127)
     ds.m_CopperEdgeClearance = mm(0.3)
     ds.m_SolderMaskExpansion = mm(0.05)
     try:
         nc = ds.m_NetSettings.GetDefaultNetclass()
-        nc.SetTrackWidth(mm(0.25))
+        nc.SetTrackWidth(mm(0.2))
         nc.SetClearance(mm(0.15))
-        nc.SetViaDiameter(mm(0.6))
-        nc.SetViaDrill(mm(0.3))
+        nc.SetViaDiameter(mm(0.5))
+        nc.SetViaDrill(mm(0.25))
     except Exception as e:  # noqa: BLE001
         print("netclass setup skipped:", e)
 
@@ -96,8 +96,14 @@ class Board:
                 if f.GetName() in user_fields and f.GetName() not in ("Datasheet", "Description"):
                     f.SetVisible(False)
                     f.SetLayer(pcbnew.F_Fab)
+            attr = fp.GetAttributes()
             if inst.dnp:
-                fp.SetAttributes(fp.GetAttributes() | pcbnew.FP_DNP)
+                attr |= pcbnew.FP_DNP
+            if inst.in_bom:
+                attr &= ~pcbnew.FP_EXCLUDE_FROM_BOM
+            else:
+                attr |= pcbnew.FP_EXCLUDE_FROM_BOM
+            fp.SetAttributes(attr)
             # nets: collect from every unit of this reference
             pinnets = {}
             for r2, (i2, s2) in self.prj.components.items():
@@ -117,7 +123,7 @@ class Board:
                         pname = inst.sym.pin(num).name
                     except KeyError:
                         pname = num
-                    ncname = "unconnected-(%s-%s-Pad%s)" % (ref, pname, num)
+                    ncname = "unconnected-(%s-%s-Pad%s)" % (ref, pname.replace("/", "{slash}"), num)
                     if ncname not in self.nets:
                         ni = pcbnew.NETINFO_ITEM(self.board, ncname)
                         self.board.Add(ni)
@@ -221,8 +227,24 @@ class Board:
         t.SetTextSize(pcbnew.VECTOR2I(mm(size), mm(size)))
         t.SetTextThickness(mm(thickness))
         t.SetTextAngleDegrees(rot)
+        if layer in (pcbnew.B_SilkS, pcbnew.B_Fab, pcbnew.B_Cu):
+            t.SetMirrored(True)
         self.board.Add(t)
         return t
+
+    def edge_keepout(self, pts, width=0.45):
+        """Track/via keep-out band just inside a closed outline (list of points),
+        so the autorouter honours the copper-to-edge clearance."""
+        n = len(pts)
+        for i in range(n):
+            a, b = pts[i], pts[(i + 1) % n]
+            dx, dy = b[0] - a[0], b[1] - a[1]
+            L = (dx * dx + dy * dy) ** 0.5
+            if L == 0:
+                continue
+            nx, ny = -dy / L, dx / L  # inward normal for a clockwise outline (y down)
+            quad = [(a[0], a[1]), (b[0], b[1]), (b[0] + nx * width, b[1] + ny * width), (a[0] + nx * width, a[1] + ny * width)]
+            self.keepout(quad, tracks=True, vias=True, pour=False, fps=False, name="edge")
 
     def zone(self, net, pts, layer, name=""):
         z = pcbnew.ZONE(self.board)
@@ -252,6 +274,7 @@ class Board:
         z.SetDoNotAllowTracks(tracks)
         z.SetDoNotAllowVias(vias)
         z.SetDoNotAllowZoneFills(pour)
+        z.SetDoNotAllowPads(False)
         try:
             z.SetDoNotAllowFootprints(fps)
         except AttributeError:

@@ -23,6 +23,7 @@ def main(route=False):
     b = Board(prj, d, "pager-panel", thickness=1.0)
     b.load_all()
     b.outline_polyline([(0, 0), (W, 0), (W, H), (0, H)], radius=1.0)
+    b.edge_keepout([(0, 0), (W, 0), (W, H), (0, H)])
     P = {
         "J1": (20.0, 16.3, 0),      # ZIF, FPC enters from the bottom edge (the glass side)
         "J2": (8.0, 3.3, 180),      # SH8 to the carrier, opening at the top edge

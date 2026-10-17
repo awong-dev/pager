@@ -32,11 +32,19 @@
             635.927 -774.88  774.88 -635.927  884.054 -472.537  959.255 -290.987
             997.592 -98.254  1000 0  39000 0  39002.4 -98.254)
     )
-    (via "Via[0-1]_600:300_um")
+    (keepout "" (polygon F.Cu 0  0 0  40000 0  40000 -450  0 -450  0 0))
+    (keepout "" (polygon B.Cu 0  0 0  40000 0  40000 -450  0 -450  0 0))
+    (keepout "" (polygon F.Cu 0  40000 0  40000 -20000  39550 -20000  39550 0  40000 0))
+    (keepout "" (polygon B.Cu 0  40000 0  40000 -20000  39550 -20000  39550 0  40000 0))
+    (keepout "" (polygon F.Cu 0  40000 -20000  0 -20000  0 -19550  40000 -19550  40000 -20000))
+    (keepout "" (polygon B.Cu 0  40000 -20000  0 -20000  0 -19550  40000 -19550  40000 -20000))
+    (keepout "" (polygon F.Cu 0  0 -20000  0 0  450 0  450 -20000  0 -20000))
+    (keepout "" (polygon B.Cu 0  0 -20000  0 0  450 0  450 -20000  0 -20000))
+    (via "Via[0-1]_500:250_um")
     (rule
-      (width 250)
-      (clearance 150)
-      (clearance 37.5 (type smd_smd))
+      (width 200)
+      (clearance 200)
+      (clearance 50 (type smd_smd))
     )
   )
   (placement
@@ -308,9 +316,9 @@
       (shape (rect F.Cu -900 -1100 900 1100))
       (attach off)
     )
-    (padstack "Via[0-1]_600:300_um"
-      (shape (circle F.Cu 600))
-      (shape (circle B.Cu 600))
+    (padstack "Via[0-1]_500:250_um"
+      (shape (circle F.Cu 500))
+      (shape (circle B.Cu 500))
       (attach off)
     )
   )
@@ -393,11 +401,11 @@
       EPD_VSH2 EPD_VSL GND "unconnected-(J1-Pin_1-Pad1)" "unconnected-(J1-Pin_19-Pad19)"
       "unconnected-(J1-Pin_4-Pad4)" "unconnected-(J1-Pin_6-Pad6)" "unconnected-(J1-Pin_7-Pad7)"
       (circuit
-        (use_via "Via[0-1]_600:300_um")
+        (use_via "Via[0-1]_500:250_um")
       )
       (rule
-        (width 250)
-        (clearance 150)
+        (width 200)
+        (clearance 200)
       )
     )
   )
