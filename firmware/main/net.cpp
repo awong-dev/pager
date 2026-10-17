@@ -22,7 +22,6 @@
 #include "net_connect_guard.h"
 #include "net_probe_guard.h"
 #include "publish_quiet.h"
-#include "wifi_sta.h"
 #include "input.h" // input_pending() at the sleep edge
 #include "ui.h" // ui_kb_sleep_park()/unpark() around esp_light_sleep_start()
 extern "C" {
@@ -201,7 +200,7 @@ static constexpr int PAGER_CA_FETCH_SOCKET_ID = 4;
 // silently breaks against.
 static constexpr int PAGER_TLS_BOOTSTRAP_PROFILE_ID = PAGER_TLS_PROFILE_ID;
 
-// docs/WIFI_TASKS.md W4: the MQTT keepalive and liveness ping (now per carrier, carrier.h),
+// the MQTT keepalive and liveness ping (now per carrier, carrier.h),
 // PAGER_MAX_PAYLOAD, PAGER_BOOT_MAX_PAYLOAD and PAGER_BOOT_TOPIC_PREFIX moved
 // to xport_lte.cpp with the MQTT session code that is their only use.
 
@@ -225,9 +224,8 @@ static constexpr uint16_t PAGER_BOOT_MQTT_KEEPALIVE_S = 60;
 // concurrently written, only set once at net_init()).
 // ---------------------------------------------------------------------------
 
-// Registers one callback that both transports call (docs/WIFI_DESIGN.md §1):
-// a single, transport-independent slot rather than per-transport state, so a
-// caller's registration survives a future net_xport_switch(). Not `static`:
+// Registers one callback the transport calls: a single, transport-independent slot
+// rather than per-transport state. Not `static`:
 // xport_lte.cpp's pager_mqtt_event_handler() (net_internal.h) invokes it
 // directly, exactly as it did when both lived in this file.
 void (*s_msg_cb)(const char *, const char *, uint16_t) = nullptr;
@@ -237,26 +235,21 @@ void (*s_msg_cb)(const char *, const char *, uint16_t) = nullptr;
 static net_uplink_window_cb_t s_uplink_window_cb = nullptr;
 
 // ---------------------------------------------------------------------------
-// The transport seam (docs/WIFI_DESIGN.md §1, docs/WIFI_TASKS.md W4).
-// s_xport_ops is the only thing every dispatcher (below, past net_tls_configure())
-// touches; s_active_xport is only ever written here (net_init(), today's sole
-// writer -- W5's net_xport_switch() becomes the only other one). Every net.h
-// entry point in docs/WIFI_DESIGN.md §1's "dispatched through the seam" list
-// is one of those thin wrappers; the real logic is the unmodified code moved
-// to xport_lte.cpp (see that file's own module comment).
+// The transport seam. s_xport_ops is the only thing every dispatcher (below,
+// past net_tls_configure()) touches; the real logic is the code in
+// xport_lte.cpp (see that file's own module comment).
 // ---------------------------------------------------------------------------
 // Defaults to the LTE implementation at load, NOT in net_init(): modes_boot()
 // paints the boot screen (draw_status_bar() -> net_get_mqtt_status()) before
 // net_init() runs, and a null vtable here boot-looped the pager on 23 Sep
 // (LoadProhibited at net.cpp's status dispatcher, phaseU-inject.log).
 static const net_xport_ops_t *s_xport_ops = xport_lte_ops();
-static net_xport_t s_active_xport = NET_XPORT_LTE;
 // v0.2 §9.4's three suppressions (coverage duty cycle, location route 2, a CA
 // -apply trial), moved here from modes.c's net_service_session() call site --
 // see net_set_lte_suppressed()'s own doc comment in net.h for why.
 static bool s_lte_suppressed = false;
 
-// docs/WIFI_TASKS.md W4: moved to xport_lte.cpp with the rest of the MQTT
+// Moved to xport_lte.cpp with the rest of the MQTT
 // session state (net_internal.h re-declares what net.cpp still needs).
 // s_down_topic is the one piece of LTE bringup state configure_session()
 // (below) and net_bootstrap_connect() write and xport_lte.cpp's MQTT event
@@ -273,7 +266,7 @@ static char s_granted_edrx[16] = { 0 };
 static bool s_ca_written = false;
 static uint8_t s_ca_written_hash[IDENT_CA_HASH_LEN];
 
-// docs/WIFI_TASKS.md W4: s_mqtt_rx_buf moved to xport_lte.cpp (its only
+// s_mqtt_rx_buf moved to xport_lte.cpp (its only
 // reader/writer, pager_mqtt_event_handler's MESSAGE case, moved with it).
 
 static int64_t s_clock_epoch = 0;    // 0 = no network time yet (§3.5)
@@ -366,9 +359,9 @@ static bool s_cell_info_stale = true;
 // net_enable_accel_wake()'s own doc comment in net.h).
 static bool s_accel_wake_enabled = false;
 
-// docs/WIFI_TASKS.md W4: classify_mqtt_rc() and pager_mqtt_event_handler()
-// moved to xport_lte.cpp, unmodified, with the rest of the MQTT session code
-// (docs/WIFI_DESIGN.md §1). pager_mqtt_event_handler() is still registered
+// classify_mqtt_rc() and pager_mqtt_event_handler()
+// moved to xport_lte.cpp, unmodified, with the rest of the MQTT session code.
+// pager_mqtt_event_handler() is still registered
 // from net_bringup()/net_bootstrap_attach() below via
 // WalterModem::setMQTTEventHandler() -- net_internal.h declares it so those
 // two call sites keep compiling unchanged.
@@ -461,7 +454,7 @@ static void pager_socket_event_handler(WMSocketEventType event, const WMSocketEv
 
 // note_registration() is declared in net_internal.h (defined with the
 // coverage-tracking state below; not `static` since xport_lte.cpp's
-// net_session_up() also calls it -- docs/WIFI_TASKS.md W4).
+// net_session_up() also calls it).
 
 static void pager_network_event_handler(WMNetworkEventType event, const WMNetworkEventData *data, void *args)
 {
@@ -740,8 +733,7 @@ static const char *effective_apn(const char *typed, const char *stored)
 // (COPS=0) and net_session_up() (re)configures whatever is missing the next
 // time it runs while registered. A modem reset only clears a flag.
 // ---------------------------------------------------------------------------
-// Not `static` (net_internal.h declares both): docs/WIFI_TASKS.md W4 moved
-// net_session_up() to xport_lte.cpp, and it still reads s_registered and
+// Not `static` (net_internal.h declares both): net_session_up() moved to xport_lte.cpp, and it still reads s_registered and
 // calls note_registration() exactly as it did in this file.
 volatile bool s_registered = false;        // tracked from +CEREG URCs and polls
 static volatile bool s_reg_regained_edge = false; // not registered -> registered
@@ -906,9 +898,7 @@ extern "C" bool net_init(void)
     if (net_airplane()) {
         return false;
     }
-    // docs/WIFI_TASKS.md W4: wire the transport seam to its one implementation.
-    // LTE always, in this task -- W5's net_xport_switch() is the only future
-    // writer of s_active_xport (already NET_XPORT_LTE by its static initializer).
+    // Wire the transport seam to its one implementation (LTE).
     s_xport_ops = xport_lte_ops();
     s_session_configured = false;
     net_connect_guard_init(&s_connect_guard); // v0.2 M1/M3: fresh boot, nothing outstanding
@@ -920,8 +910,7 @@ extern "C" bool net_init(void)
 // Clock, CA, TLS profile and MQTT client configuration: everything a modem
 // reset wipes. Needs the network only for the clock. Power effect: a handful of
 // AT commands, one NVRAM write if the CA changed.
-// Not `static` (net_internal.h's own forward declaration): docs/WIFI_TASKS.md
-// W4 moved net_session_up() to xport_lte.cpp, and it still calls this.
+// Not `static` (net_internal.h's own forward declaration): moved net_session_up() to xport_lte.cpp, and it still calls this.
 bool configure_session(void)
 {
 
@@ -1315,90 +1304,14 @@ extern "C" uint32_t net_publish_quiet_wait_ms(uint32_t max_wait_ms)
     return s_xport_ops->publish_quiet_wait_ms(max_wait_ms);
 }
 
-extern "C" net_xport_t net_xport_active(void)
-{
-    return s_active_xport;
-}
-
 extern "C" void net_set_lte_suppressed(bool suppressed)
 {
     s_lte_suppressed = suppressed;
 }
 
-// docs/WIFI_DESIGN.md §2/§1, docs/WIFI_TASKS.md W5: the only writer of
-// s_active_xport besides net_init()'s own static initializer. Tears the old
-// transport's session down, waits (bounded) for its own DISCONNECTED, then
-// brings the new one up -- "at most one MQTT client object exists at a
-// time" is the hard invariant this function exists to hold (design §2/§8:
-// EMQX kicks the older session on a client-id collision otherwise, which
-// looks exactly like "pages stopped arriving").
-//
-// Deviation from docs/WIFI_TASKS.md W5's literal wording ("asserted"): a
-// real assert()/abort() here would let a console typo or a slow broker
-// crash a device that is otherwise fine on its old transport. This logs at
-// ERROR and proceeds with the switch instead -- the new transport's own
-// .up() starts a fresh client regardless, so a slow-to-disconnect old one
-// costs at most an EMQX-side kick (a delivery gap on the transport being
-// abandoned anyway), never a crash. Flagged for the architect.
-#define NET_XPORT_SWITCH_WAIT_US ((int64_t) 2 * 1000000)
-
-static const char *xport_name(net_xport_t x)
-{
-    return (x == NET_XPORT_WIFI) ? "WIFI" : "LTE";
-}
-
-extern "C" void net_xport_switch(net_xport_t to)
-{
-    if (to == s_active_xport) {
-        return;
-    }
-    net_xport_t from = s_active_xport;
-    const net_xport_ops_t *old_ops = s_xport_ops;
-
-    old_ops->down();
-
-    net_mqtt_status_t st = {};
-    int64_t deadline = esp_timer_get_time() + NET_XPORT_SWITCH_WAIT_US;
-    do {
-        old_ops->status(&st);
-        if (!st.mqtt_connected) {
-            break;
-        }
-        vTaskDelay(pdMS_TO_TICKS(50));
-    } while (esp_timer_get_time() < deadline);
-    if (st.mqtt_connected) {
-        ESP_LOGE(TAG, "xport switch %s -> %s: old transport still reports connected after %llds, "
-                      "switching anyway",
-                 xport_name(from), xport_name(to), (long long) (NET_XPORT_SWITCH_WAIT_US / 1000000));
-    }
-
-    s_active_xport = to;
-    s_xport_ops = (to == NET_XPORT_WIFI) ? xport_wifi_ops() : xport_lte_ops();
-    // Power effect: logged once per transport change (docs/WIFI_TASKS.md
-    // W5's own verify step) -- LTE keeps the modem's MQTT session (a TLS
-    // handshake, ~5kB); WIFI brings up esp-mqtt over the STA (a second,
-    // independent TLS handshake, no modem involvement at all).
-    ESP_LOGI(TAG, "xport: %s -> %s", xport_name(from), xport_name(to));
-
-    if (!s_xport_ops->up()) {
-        ESP_LOGI(TAG, "xport switch %s -> %s: new transport's up() failed (see its own log line)",
-                 xport_name(from), xport_name(to));
-    }
-}
-
 extern "C" void net_set_msg_cb(void (*cb)(const char *topic, const char *body, uint16_t len))
 {
     s_msg_cb = cb;
-}
-
-// docs/WIFI_TASKS.md W5: xport_wifi.c's own trampoline to s_msg_cb -- see
-// net_xport.h's doc comment on this function for why it exists instead of a
-// direct net_internal.h include from that file.
-extern "C" void net_dispatch_msg(const char *topic, const char *body, uint16_t len)
-{
-    if (s_msg_cb) {
-        s_msg_cb(topic, body, len);
-    }
 }
 
 // LOCATION_TRACKING_DESIGN.md §4 (task F2): see net.h's own doc comment on
@@ -1408,8 +1321,7 @@ extern "C" void net_set_uplink_window_cb(net_uplink_window_cb_t cb)
     s_uplink_window_cb = cb;
 }
 
-// xport_wifi.c's own trampoline to s_uplink_window_cb, same reason
-// net_dispatch_msg() exists (net_internal.h is off-limits to that file).
+// xport_lte.cpp's trampoline to s_uplink_window_cb (a static in this file).
 extern "C" void net_dispatch_uplink_window(void)
 {
     if (s_uplink_window_cb) {
@@ -1429,26 +1341,6 @@ extern "C" void net_liveness_ping_now(void)
 
 extern "C" bool net_sleep(uint32_t ms)
 {
-    // docs/WIFI_DESIGN.md §3/§9, docs/WIFI_TASKS.md W5: transport-aware.
-    // ESP-IDF documents that a WiFi association is not maintained across a
-    // manual esp_light_sleep_start() (sleep_modes.rst:49-51); the supported
-    // way to keep one is Modem-sleep + *automatic* light sleep
-    // (CONFIG_PM_ENABLE, W9), which phase 1 does not enable. So on WiFi this
-    // is a plain, bounded vTaskDelay(): CPU/USB/log stay up, current stays
-    // at the ~38-40 mA WiFi-associated floor (docs/WIFI_DESIGN.md §0's
-    // table, row (a)) for `ms` -- known and accepted for phase 1 (USB/bench
-    // power only, §3's own framing); battery viability is W9/W10's job, not
-    // this function's. wifi_sta_set_ps_sleep()/_active() around the delay
-    // is the one power lever phase 1 has without PM_ENABLE: WIFI_PS_MAX_MODEM
-    // (listen_interval 10) for the duration of the delay, back to
-    // WIFI_PS_MIN_MODEM once it returns.
-    if (s_active_xport == NET_XPORT_WIFI) {
-        wifi_sta_set_ps_sleep();
-        vTaskDelay(pdMS_TO_TICKS(ms));
-        wifi_sta_set_ps_active();
-        return true;
-    }
-
     // Park the kbd task first (power effect: none; waits <=100 ms for an in-flight
     // kbd read), then look at the input queue: with the task parked nothing new
     // can arrive from the keyboard, so a non-empty queue here is a key typed at
@@ -1709,8 +1601,8 @@ extern "C" bool net_urc_probe(void)
     if (net_airplane()) {
         return false;
     }
-    if (s_active_xport == NET_XPORT_WIFI || !s_modem_begun) {
-        // no bare AT over WiFi; nothing to probe before begin()/mid-reset.
+    if (!s_modem_begun) {
+        // nothing to probe before begin()/mid-reset.
         // Counted (23 Sep S7b post-mortem, phaseAI-report.log:30): a window
         // whose whole report reads `probe_issued=0 probe_answered=2
         // probe_stuck=1` could not say whether the probe was never reached or
@@ -2140,17 +2032,15 @@ extern "C" bool net_get_rssi(int *dbm)
     return true;
 }
 
-// docs/WIFI_TASKS.md W4: net_service_session() moved to xport_lte.cpp with
-// the rest of the MQTT session code. This wrapper applies the LTE-only
-// suppression (net_set_lte_suppressed() above, net.h's own doc comment)
-// before dispatching -- a future WiFi transport's service tick must not be
-// silenced by suppressions that are only about the modem.
+// net_service_session() lives in xport_lte.cpp with the rest of the MQTT
+// session code. This wrapper applies the LTE suppression
+// (net_set_lte_suppressed() above, net.h's own doc comment) before dispatching.
 extern "C" void net_service_session(void)
 {
     if (net_airplane()) {
         return;
     }
-    if (s_active_xport == NET_XPORT_LTE && s_lte_suppressed) {
+    if (s_lte_suppressed) {
         return;
     }
     s_xport_ops->service();
@@ -2232,7 +2122,7 @@ extern "C" net_pager_counters_t net_get_pager_counters(void)
     // RCA_SLEEP_PUBLISH.md §3 instrumentation: the vendored component's
     // counters (WalterDefines.h/PATCHES.md 1.12) are transport-independent
     // (they live inside the WalterModem C++ class this file always links
-    // against, whatever net_xport_active() reports), so this reads them
+    // against), so this reads them
     // directly rather than through the xport ops vtable. Power effect: none.
     walter_modem_pager_counters_t c = walter_modem_pager_counters();
     net_pager_counters_t out;

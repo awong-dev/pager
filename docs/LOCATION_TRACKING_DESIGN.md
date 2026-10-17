@@ -134,8 +134,7 @@ Rule: **the SUBSCRIBE stays the liveness proof. `/loc` rides the same RRC connec
 replaces or delays it.**
 
 1. `net_set_uplink_window_cb(cb)` fires on `modes_run()`'s task right after a liveness SUBSCRIBE
-   is sent (both send sites) and after any successful QoS 1 publish (`/status`, `/up`). The WiFi
-   xport fires it the same way.
+   is sent (both send sites) and after any successful QoS 1 publish (`/status`, `/up`).
 2. If a report is due, `loc` forces an `AT+SQNMONI` refresh (to catch a lost `+CEREG`) and
    publishes at once, inside the RRC inactivity tail, so there is no new radio wake.
 3. **Unsolicited QoS 0 publishes leave `s_last_uplink_us` alone.** QoS 0 proves nothing about the

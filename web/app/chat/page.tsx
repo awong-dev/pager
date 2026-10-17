@@ -35,8 +35,8 @@ import GroupsIcon from "@mui/icons-material/Groups";
 import LogoutIcon from "@mui/icons-material/Logout";
 import PhoneIcon from "@mui/icons-material/Phone";
 import VisibilityIcon from "@mui/icons-material/Visibility";
-import WifiIcon from "@mui/icons-material/Wifi";
-import WifiOffIcon from "@mui/icons-material/WifiOff";
+import SignalIcon from "@mui/icons-material/SignalCellularAlt";
+import SignalOffIcon from "@mui/icons-material/SignalCellularOff";
 
 import AppShell from "@/components/AppShell";
 import NewChatDialog from "@/components/NewChatDialog";
@@ -258,9 +258,9 @@ function ChatListInner() {
           <CardContent>
             <Stack direction="row" spacing={2} useFlexGap sx={{ flexWrap: "wrap", alignItems: "center" }}>
               {device.status.state === "online" ? (
-                <WifiIcon color="success" />
+                <SignalIcon color="success" />
               ) : (
-                <WifiOffIcon color="disabled" />
+                <SignalOffIcon color="disabled" />
               )}
               <Typography variant="body1">
                 Your pager ({deviceName(device)}): {device.status.state ?? "unknown"}

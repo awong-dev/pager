@@ -67,14 +67,12 @@ import FontsUpdateDialog from "@/components/FontsUpdateDialog";
 import { isAssetJob } from "@/lib/assets";
 import RequireAuth from "@/components/RequireAuth";
 import BatteryCard from "@/components/BatteryCard";
-import WifiPanel from "@/components/WifiPanel";
 import GnssPanel from "@/components/GnssPanel";
 import { ApiError, api } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { deviceName } from "@/lib/devices";
 import { useNewestBuild } from "@/lib/firmware";
 import { useDirectory } from "@/lib/directory";
-import { xportChipInfo } from "@/lib/deviceTrust";
 import { getFirestoreDb } from "@/lib/firebase";
 import {
   type SmsContact,
@@ -278,7 +276,6 @@ function DeviceInner() {
   // alias -- resolved from the directory the same way every other peer name
   // in this app is (`lib/directory.tsx`), not a second Firestore read.
   const ownerAlias = useDirectory().byUid(device?.ownerUid ?? "")?.alias;
-  const xportChip = xportChipInfo(device?.status?.xport);
 
   return (
     <Stack spacing={2}>
@@ -297,7 +294,6 @@ function DeviceInner() {
         </Stack>
         <DeviceTrustChip tls={device?.status?.tls} caFp={device?.status?.caFp} />
         {device?.status?.car && <Chip size="small" variant="outlined" label={device.status.car} />}
-        {xportChip && <Chip size="small" label={xportChip.label} color={xportChip.color} />}
       </Stack>
 
       {deviceError && <Alert severity="warning">{deviceError}</Alert>}
@@ -327,8 +323,6 @@ function DeviceInner() {
           they could be uploaded.
         </Alert>
       )}
-
-      {id && id !== "_" && <WifiPanel deviceId={id} />}
 
       {id && id !== "_" && <GnssPanel deviceId={id} />}
 

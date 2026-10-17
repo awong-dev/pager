@@ -413,7 +413,7 @@ static void ack_apply(const char *id, bool shown)
 
 static void begin_unpin(const char *id)
 {
-    // W13 (WIFI_DESIGN.md §10.3): ident_scratch() is the one shared 4,460 B
+    // ident_scratch() is the one shared 4,460 B
     // buffer, not a private static; released on every exit path below.
     ident_t *snap = ident_scratch();
     strncpy(snap->dev_id, ident_get_dev_id(), sizeof(snap->dev_id) - 1);
@@ -524,7 +524,7 @@ static void service_fetching(void)
 
 static void commit_apply(void)
 {
-    // W13 (WIFI_DESIGN.md §10.3): ident_scratch() is the one shared 4,460 B
+    // ident_scratch() is the one shared 4,460 B
     // buffer, not a private static; released as soon as ident_store() has
     // consumed it below, before anything else that could re-enter it.
     ident_t *snap = ident_scratch();

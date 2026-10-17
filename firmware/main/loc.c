@@ -1796,7 +1796,7 @@ void loc_apply_cfg_submap(const uint8_t *buf, uint16_t len, const char *id)
     ESP_LOGI(TAG, "cfg.loc applied: gnss=%s (id=%s)",
              cfg.have_gnss ? (cfg.gnss ? "on" : "off") : "unchanged", id ? id : "");
     if (id && id[0] != '\0') {
-        msg_mark_shown(id); // D1: apply-and-ack-`shown` immediately, like cfg.wifi
+        msg_mark_shown(id); // D1: apply-and-ack-`shown` immediately, like cfg.lock
     }
 }
 

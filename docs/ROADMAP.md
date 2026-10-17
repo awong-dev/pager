@@ -157,10 +157,8 @@ Open:
 - **PWA installability polish (v0.3 item 3b):** manifest (icons, maskable variant), install prompt handling,
   service worker (`onMessage` foreground, caching/fetch handler). See `docs/V03_PLAN.md` §3.2,
   `docs/SERVER_PLAN.md` §15 (status unverified, 8 Oct 2026).
-- **WiFi phase 1 completion:** the WiFi transport (W5), the device WiFi API and the web WiFi panel with
-  transport chip are committed (`c33a07f`, `7aad6ae`, `0ac1bf0`). Still open: first WiFi session on
-  hardware (W6-attempt-2), no double session, heap margin ≥10 kB (W13 if needed), catrust
-  transport-blind (W15). See `docs/WIFI_TASKS.md` (status unverified, 8 Oct 2026).
+- **Wi-Fi: removed 16 Oct 2026 (owner).** LTE-M is the only transport; the design and tasks
+  (`docs/WIFI_DESIGN.md`, `docs/WIFI_TASKS.md`) are in git history before this change.
 
 ### Hardware tests
 

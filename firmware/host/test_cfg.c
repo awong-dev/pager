@@ -146,12 +146,9 @@ static void test_sms_only(void)
     CHECK(cbor_r_array(&r, &count) && count == 2, "captured sms span must decode as a 2-item array");
 }
 
-/* docs/WIFI_TASKS.md W3: a cfg envelope carrying only `wifi` -- cfg.c's own
- * job is just the byte-span hand-off (wificred.c's own
- * wificred_parse_cfg_submap(), tested in firmware/host/test_wificred.c, does
- * the real decode/validation); this only proves cfg_parse() extracts the
- * right span. */
-static void test_wifi_only(void)
+/* Key 3 (`wifi`) is retired: a stale cfg.wifi from an old relay must be a
+ * well-formed cfg that sets no have_* flag (skipped by the unknown-key default). */
+static void test_retired_key3(void)
 {
     uint8_t buf[192];
     cbor_w_t w;
@@ -160,21 +157,16 @@ static void test_wifi_only(void)
     cbor_w_tstr(&w, 1, "m_77777777", 10);
     cbor_w_tstr(&w, 6, "cfg", 3);
     cbor_w_map_key(&w, 38, 1);
-    cbor_w_map_key(&w, 3, 1); /* wifi: { en: true } */
+    cbor_w_map_key(&w, 3, 1); /* retired key 3: { en: true } */
     cbor_w_bool(&w, 0, true);
-    CHECK(!w.err, "test setup: encoding the wifi-only fixture must not overflow");
+    CHECK(!w.err, "test setup: encoding the retired-key fixture must not overflow");
 
     cfg_dispatch_t d;
     bool ok = cfg_parse(buf, (uint16_t) w.len, false, &d);
-    CHECK(ok, "a cfg envelope with only `wifi` must be accepted");
+    CHECK(ok, "a cfg envelope with only the retired key 3 must still be accepted as cfg");
     CHECK(strcmp(d.id, "m_77777777") == 0, "id mismatch: %s", d.id);
-    CHECK(d.have_wifi, "have_wifi must be true");
-    CHECK(!d.have_lock && !d.have_ca && !d.have_sms, "have_lock/have_ca/have_sms must all be false");
-
-    cbor_r_t r;
-    cbor_r_init(&r, buf + d.wifi_off, d.wifi_len);
-    uint32_t count;
-    CHECK(cbor_r_map(&r, &count) && count == 1, "captured wifi span must decode as a 1-pair map");
+    CHECK(!d.have_lock && !d.have_ca && !d.have_sms && !d.have_ota && !d.have_loc && !d.have_ast,
+          "the retired key must set no have_* flag");
 }
 
 /* An empty `sms` array (V02_DESIGN.md §6: clearing the allow-list) must be
@@ -282,7 +274,7 @@ static void test_not_cfg_rejected(void)
     CHECK(!cfg_parse(buf, (uint16_t) w.len, false, &d), "a kind:\"msg\" envelope must not be accepted as cfg");
 }
 
-/* `ota`=4 (docs/OTA_DESIGN.md D5): a recognised span next to `wifi`, and the
+/* `ota`=4 (docs/OTA_DESIGN.md D5): a recognised span next to a stale retired key 3, and the
  * span must decode standalone. */
 static void test_ota_span(void)
 {
@@ -293,7 +285,7 @@ static void test_ota_span(void)
     cbor_w_tstr(&w, 1, "m_88888888", 10);
     cbor_w_tstr(&w, 6, "cfg", 3);
     cbor_w_map_key(&w, 38, 2);
-    cbor_w_map_key(&w, 3, 1); /* wifi: { en: true } */
+    cbor_w_map_key(&w, 3, 1); /* retired key 3 (was wifi): { en: true } */
     cbor_w_bool(&w, 0, true);
     cbor_w_map_key(&w, 4, 2); /* ota: { isz: 685168, cancel: true } (shape only) */
     cbor_w_uint(&w, 1, 685168);
@@ -303,7 +295,7 @@ static void test_ota_span(void)
     cfg_dispatch_t d;
     CHECK(cfg_parse(buf, (uint16_t) w.len, false, &d), "a cfg envelope with `ota` must be accepted");
     CHECK(strcmp(d.id, "m_88888888") == 0, "id mismatch: %s", d.id);
-    CHECK(d.have_ota && d.have_wifi, "have_ota and have_wifi must both be true");
+    CHECK(d.have_ota, "have_ota must be true");
     CHECK(!d.have_lock && !d.have_ca && !d.have_sms, "no other sub-map");
 
     cbor_r_t r;
@@ -312,7 +304,7 @@ static void test_ota_span(void)
     uint64_t u;
     CHECK(cbor_r_map(&r, &count) && count == 2, "captured ota span must decode as a 2-pair map");
     CHECK(cbor_r_key(&r, &key) && key == 1 && cbor_r_uint(&r, &u) && u == 685168, "first ota pair");
-    /* the span ends exactly at the end of the ota map (wifi comes first, so it is the last bytes) */
+    /* the span ends exactly at the end of the ota map (the stale key 3 comes first, so ota is the last bytes) */
     CHECK(d.ota_off + d.ota_len == w.len, "ota span must end at the end of the buffer");
 
     /* without ota: have_ota stays false */
@@ -365,7 +357,7 @@ static void test_ast_span(void)
     CHECK(cfg_parse(buf, (uint16_t) w.len, false, &d) && d.have_ota && !d.have_ast, "have_ast false when absent");
 }
 
-/* `loc`=5 (docs/GNSS_DISABLE_DESIGN.md D1): a recognised span next to `wifi`
+/* `loc`=5 (docs/GNSS_DISABLE_DESIGN.md D1): a recognised span next to a stale retired key 3
  * that decodes standalone, and have_loc stays false when absent. */
 static void test_loc_span(void)
 {
@@ -376,7 +368,7 @@ static void test_loc_span(void)
     cbor_w_tstr(&w, 1, "m_77777777", 10);
     cbor_w_tstr(&w, 6, "cfg", 3);
     cbor_w_map_key(&w, 38, 2);
-    cbor_w_map_key(&w, 3, 1); /* wifi: { en: true } */
+    cbor_w_map_key(&w, 3, 1); /* retired key 3 (was wifi): { en: true } */
     cbor_w_bool(&w, 0, true);
     cbor_w_map_key(&w, 5, 1); /* loc: { gnss: false } */
     cbor_w_bool(&w, 0, false);
@@ -385,7 +377,7 @@ static void test_loc_span(void)
     cfg_dispatch_t d;
     CHECK(cfg_parse(buf, (uint16_t) w.len, false, &d), "a cfg envelope with `loc` must be accepted");
     CHECK(strcmp(d.id, "m_77777777") == 0, "id mismatch: %s", d.id);
-    CHECK(d.have_loc && d.have_wifi, "have_loc and have_wifi must both be true");
+    CHECK(d.have_loc, "have_loc must be true");
     CHECK(!d.have_lock && !d.have_ca && !d.have_sms && !d.have_ota, "no other sub-map");
 
     cbor_r_t r;
@@ -395,7 +387,6 @@ static void test_loc_span(void)
     CHECK(cbor_r_map(&r, &count) && count == 1, "captured loc span must decode as a 1-pair map");
     CHECK(cbor_r_key(&r, &key) && key == 0 && cbor_r_bool(&r, &b) && !b, "loc.gnss must be false");
     CHECK(d.loc_off + d.loc_len == w.len, "loc span must end at the end of the buffer");
-    CHECK(d.wifi_off + d.wifi_len + 1 == d.loc_off, "wifi span must be intact and precede loc (1 key byte between)");
 
     /* without loc: have_loc stays false */
     cbor_w_init(&w, buf, sizeof(buf));
@@ -405,7 +396,7 @@ static void test_loc_span(void)
     cbor_w_map_key(&w, 38, 1);
     cbor_w_map_key(&w, 3, 1);
     cbor_w_bool(&w, 0, true);
-    CHECK(cfg_parse(buf, (uint16_t) w.len, false, &d) && !d.have_loc && d.have_wifi,
+    CHECK(cfg_parse(buf, (uint16_t) w.len, false, &d) && !d.have_loc,
           "have_loc must be false when absent");
 }
 
@@ -418,7 +409,7 @@ int main(void)
     test_ca_only();
     test_sms_only();
     test_sms_empty_array();
-    test_wifi_only();
+    test_retired_key3();
     test_both_lock_and_ca();
     test_unknown_key_skipped();
     test_unpin_form();

@@ -2,7 +2,7 @@
  * request 24 Sep ~11pm PDT: "do live clock when in use and replace with
  * --:-- when sleeping so there's no stale time"). No ESP-IDF/modem/RTC
  * dependency of its own — same "whole file, no ESP-IDF dependency" pattern
- * coverage.c/wifi_policy.c/publish_quiet.c use, split out from ui.c (which
+ * coverage.c/publish_quiet.c use, split out from ui.c (which
  * is not itself host-buildable: driver/i2c.h, esp_log.h, FreeRTOS) purely so
  * this piece is (firmware/host/Makefile's test_clock rule). ui.c
  * (draw_status_bar()/ui_clock_due()) is the one production caller: it

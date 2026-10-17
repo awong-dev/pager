@@ -749,7 +749,7 @@ bool setup_run(const char *code)
         return fail(ui_ok, "code damaged"); /* bad tag: wrong key or corrupted bundle */
     }
 
-    /* W13 (WIFI_DESIGN.md §10.3): ident_scratch() is the one shared 4,460 B
+    /* ident_scratch() is the one shared 4,460 B
      * buffer, not a private static. This function's own task ends in
      * esp_restart() below, so "release on every exit path" only matters for
      * the early-return failure branches between here and the last use of

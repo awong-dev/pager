@@ -41,9 +41,7 @@ import cbor2
 # (docs/V02_DESIGN.md §9.5/§7, this task -- MQTT-session generation counter),
 # 51 is `/down msg`'s group-author field `sndr` (docs/GROUP_CHAT_DESIGN.md
 # §4, docs/PROTOCOL.md §3.1/§10 -- the next free integer after `link=50`),
-# 52 is `/status`'s `xport` (docs/WIFI_DESIGN.md §6/§7, docs/WIFI_TASKS.md
-# W7 -- which physical transport carried this session, the next free
-# integer after `sndr=51`).
+# 52 was `/status`'s `xport`: retired (owner, 16 Oct 2026), do not reuse.
 #
 # **Discrepancy, flagged rather than silently resolved:** the task that
 # added `rst`/`stage`/`abn` (crash diagnostics, firmware's new `/status`
@@ -120,9 +118,7 @@ KEYMAP: dict[str, int] = {
     # docs/GROUP_CHAT_DESIGN.md §4 (v0.3): `/down msg`'s group-author alias,
     # absent on every one-to-one page.
     "sndr": 51,
-    # docs/WIFI_DESIGN.md §6/§7, docs/WIFI_TASKS.md W7: `/status`'s
-    # transport-in-use field, `lte`/`wifi`, optional.
-    "xport": 52,
+    # 52 (`xport`) retired (owner, 16 Oct 2026), do not reuse.
     # Crash diagnostics (this task, optional, absent = older firmware):
     # `rst` = ESP-IDF esp_reset_reason_t of the last reset, `stage` = index
     # into the firmware's main-loop stage table, `abn` = count of abnormal
@@ -196,10 +192,10 @@ CA_KEYMAP: dict[str, int] = {"url": 0, "sha": 1}
 # a JSON key name.
 SMS_CONTACT_KEYMAP: dict[str, int] = {"n": 0, "p": 1}
 # PROTOCOL.md §10's own `cfg` sub-map allocation (see module docstring):
-# `lock=0`, `ca=1`, `sms=2`, `wifi=3` (docs/WIFI_DESIGN.md §4/§6,
-# docs/WIFI_TASKS.md W7).
+# `lock=0`, `ca=1`, `sms=2`; 3 (`wifi`) is retired (owner, 16 Oct 2026),
+# do not reuse.
 CFG_KEYMAP: dict[str, int] = {
-    "lock": 0, "ca": 1, "sms": 2, "wifi": 3, "ota": 4, "loc": 5,
+    "lock": 0, "ca": 1, "sms": 2, "ota": 4, "loc": 5,
     # docs/ASSETS_OTA_DESIGN.md §3: `cfg.ast`, the font-image job.
     "ast": 6,
 }  # fmt: skip
@@ -223,15 +219,6 @@ OTA_KEYMAP: dict[str, int] = {
 _OTA_HASH_KEYS = ("img", "osha", "base")
 _OTA_FMT_TO_INT: dict[str, int] = {"full": 0, "delta": 1}
 _OTA_FMT_FROM_INT: dict[int, str] = {v: k for k, v in _OTA_FMT_TO_INT.items()}
-# docs/WIFI_DESIGN.md §4/§6, docs/PROTOCOL.md §10 (this task): `cfg.wifi =
-# {en, nets}`. `en` toggles WiFi on/off; `nets` (absent = "leave stored
-# networks alone, apply en only") is an array of at most two
-# `WIFI_NET_KEYMAP` entries -- matches `firmware/main/wificred.c`'s
-# `wificred_parse_cfg_submap` byte for byte (WIFICK_EN/WIFICK_NETS).
-WIFI_KEYMAP: dict[str, int] = {"en": 0, "nets": 1}
-# docs/WIFI_DESIGN.md §4: one `cfg.wifi.nets[]` entry, `{s, p}` = SSID, WPA2
-# PSK -- matches `wificred.c`'s WIFI_NETK_S/WIFI_NETK_P.
-WIFI_NET_KEYMAP: dict[str, int] = {"s": 0, "p": 1}
 # docs/PROTOCOL.md §13.2 (this task): `cell = {mcc, mnc, tac, ci, rsrp}`.
 CELL_KEYMAP: dict[str, int] = {"mcc": 0, "mnc": 1, "tac": 2, "ci": 3, "rsrp": 4}
 
@@ -247,8 +234,6 @@ _REVERSE_OTA = {v: k for k, v in OTA_KEYMAP.items()}
 # docs/GNSS_DISABLE_DESIGN.md D1: `cfg.loc = {gnss}`, `gnss` is a bool.
 CFG_LOC_KEYMAP: dict[str, int] = {"gnss": 0}
 _REVERSE_CFG_LOC = {v: k for k, v in CFG_LOC_KEYMAP.items()}
-_REVERSE_WIFI = {v: k for k, v in WIFI_KEYMAP.items()}
-_REVERSE_WIFI_NET = {v: k for k, v in WIFI_NET_KEYMAP.items()}
 
 
 def _ota_to_int(v: dict[str, Any]) -> dict[int, Any]:
@@ -307,19 +292,6 @@ def _value_to_int_keys(name: str, value: Any) -> Any:
                 out[CFG_KEYMAP["ota"]] = _ota_to_int(v)
             elif k == "ast" and isinstance(v, dict):
                 out[CFG_KEYMAP["ast"]] = _ota_to_int(v)
-            elif k == "wifi" and isinstance(v, dict):
-                # docs/WIFI_DESIGN.md §4/§6: `cfg.wifi = {en, nets}` -- `nets`
-                # (a list of `{s, p}` entries) is only translated if present,
-                # since its absence is itself meaningful ("leave the stored
-                # networks alone, apply en only").
-                wifi_out: dict[int, Any] = {}
-                if "en" in v:
-                    wifi_out[WIFI_KEYMAP["en"]] = v["en"]
-                if "nets" in v:
-                    wifi_out[WIFI_KEYMAP["nets"]] = [
-                        {WIFI_NET_KEYMAP[nk]: nv for nk, nv in item.items()} for item in v["nets"]
-                    ]
-                out[CFG_KEYMAP["wifi"]] = wifi_out
             elif k == "loc" and isinstance(v, dict):
                 out[CFG_KEYMAP["loc"]] = {CFG_LOC_KEYMAP[lk]: lv for lk, lv in v.items()}
             else:
@@ -361,16 +333,6 @@ def _value_to_names(name: str, value: Any) -> Any:
                 out["ota"] = _ota_to_names(v)
             elif k == CFG_KEYMAP["ast"] and isinstance(v, dict):
                 out["ast"] = _ota_to_names(v)
-            elif k == CFG_KEYMAP["wifi"] and isinstance(v, dict):
-                wifi_out: dict[str, Any] = {}
-                for wk, wv in v.items():
-                    if wk == WIFI_KEYMAP["nets"] and isinstance(wv, list):
-                        wifi_out["nets"] = [
-                            {_REVERSE_WIFI_NET[nk]: nv for nk, nv in item.items()} for item in wv
-                        ]
-                    elif wk in _REVERSE_WIFI:
-                        wifi_out[_REVERSE_WIFI[wk]] = wv
-                out["wifi"] = wifi_out
             elif k == CFG_KEYMAP["loc"] and isinstance(v, dict):
                 # Unknown sub-keys are ignored (GNSS_DISABLE_DESIGN.md D1).
                 out["loc"] = {_REVERSE_CFG_LOC[lk]: lv for lk, lv in v.items() if lk in _REVERSE_CFG_LOC}

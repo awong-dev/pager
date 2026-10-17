@@ -140,7 +140,7 @@ Base envelope:
 | `c` | array of objects | `book` only | ≤10 contacts | Approved contacts; each has `a` (alias), `n` (name ≤16 cp), `t` (type: `web`/`sms`/`chat`/`grp`, the last for a group conversation) (§4.3). *(8 Oct 2026: a member with a relay SMS number (`users.smsNumber`, docs/RELAY_SMS_DESIGN.md) gets their SMS contacts in `c[]` with `t:"sms"` and an empty `cfg.sms`; a text to such an entry is an ordinary `/up to:<alias>` the relay forwards by SMS. Members without a number keep the 7 Oct behaviour.)* *(9 Oct 2026: a bridged Google Chat DM is also `t:"chat"` (docs/BRIDGE_PHONE_DESIGN.md); a bridged group is an ordinary `t:"grp"` group; nothing else changes.)* |
 | `p` | array of objects | `book` only | ≤4 pending requests | Pending `contact_req`; each has `n` (name), `s` (status: `pend`/`no`) (§4.3). *(10 Oct 2026: no longer sent, §3.2; an absent `p` is empty.)* |
 | `more` | bool | `book` only | — | Reserved for chunking if the cap moves (§4.3). |
-| `cfg` | object | `/down` `cfg` kind only | — | Configuration map carrying `lock` (object with `clear` bool and `auto` int minutes; a dangling cross-reference to "§5.8" for its full shape predates this table's current section numbering and is flagged, not fixed, here), `ca` (v0.2, §4.4), `sms` (v0.2, §3.6 — the SMS contact allow-list) and `wifi` (`docs/WIFI_DESIGN.md` §4/§6, §10 below — the WiFi enable flag and up to two credential pairs). *(GNSS disable, 8 Oct 2026: also `loc`, §3.2 `cfg.loc`, §10 — `{gnss}`, the GNSS enable flag.)* |
+| `cfg` | object | `/down` `cfg` kind only | — | Configuration map carrying `lock` (object with `clear` bool and `auto` int minutes; a dangling cross-reference to "§5.8" for its full shape predates this table's current section numbering and is flagged, not fixed, here), `ca` (v0.2, §4.4), and `sms` (v0.2, §3.6 — the SMS contact allow-list). *(Wi-Fi removed, owner 16 Oct 2026: the former `wifi` member, CFG key 3, is retired and never reused, §10.)* *(GNSS disable, 8 Oct 2026: also `loc`, §3.2 `cfg.loc`, §10 — `{gnss}`, the GNSS enable flag.)* |
 | `peer` | string | `sms_log` only | E.164 | The other party's phone number (§3.6). |
 | `dir` | string | `sms_log` only | `out` \| `in` | Direction of the SMS this entry audits (§3.6). |
 | `st` | string | `sms_log` only | `sent` \| `failed` \| `recv` \| `blocked` | Outcome of the SMS this entry audits (§3.6). |
@@ -186,7 +186,7 @@ Additional rules:
 | Group request (device → relay, v0.4) | `/up` | `{"v":1,"id":"u_…","ts":…,"kind":"grp_req","name":"Cousins","m":["mom","ben"],"ack":null,"n":…,"sig":"…"}` — ≤380 bytes signed JSON, ≤250 signed CBOR; no `from`/`to`/`body` | Asks the relay to create a group with the owner as creator (§3.8); deduped on `id`, 1 per minute per device; no reply on the wire. *(owner decision 1 of `docs/CHAT_UI_DESIGN.md`.)* |
 | Config (relay → device) | `/down` | `{"v":1,"id":"m_…","ts":…,"kind":"cfg","cfg":{"lock":{"clear":true,"auto":5}},"ack":null,"n":…,"sig":"…"}` | Not a thread entry; carries device settings; acked `shown` on apply (§5.8); only newest re-published. |
 | Config, OTA job (relay → device) | `/down` | `{"v":1,"id":"m_…","ts":…,"kind":"cfg","cfg":{"ota":{"img":"<64 hex>","isz":685168,"url":"https://storage.googleapis.com/<bucket>/fw/<id16>/full.z","osz":338784,"osha":"<64 hex>","fmt":"full"}},"ack":null,"n":…,"sig":"…"}` — ≤523 bytes signed JSON, ≤296 signed CBOR with the default bucket name (§3.3) | A `cfg` carrying `ota` (below). Sent only to a device whose last online `/status` carried `ota:1`; acked `shown` on acceptance **or** rejection; progress travels in `/status` (§5.1), not in acks. *(OTA firmware update, `docs/OTA_DESIGN.md` D5.)* |
-| Config, GNSS disable (relay → device) | `/down` | `{"v":1,"id":"m_…","ts":…,"kind":"cfg","cfg":{"loc":{"gnss":false}},"ack":null,"n":…,"sig":"…"}` — ≤141 bytes signed JSON | A `cfg` carrying `loc` (below). Applied and acked `shown` at once, like `wifi`; the device's resulting state travels in `/status` `gnss` (§5.1). *(GNSS disable, `docs/GNSS_DISABLE_DESIGN.md` D1.)* |
+| Config, GNSS disable (relay → device) | `/down` | `{"v":1,"id":"m_…","ts":…,"kind":"cfg","cfg":{"loc":{"gnss":false}},"ack":null,"n":…,"sig":"…"}` — ≤141 bytes signed JSON | A `cfg` carrying `loc` (below). Applied and acked `shown` at once, like `lock`; the device's resulting state travels in `/status` `gnss` (§5.1). *(GNSS disable, `docs/GNSS_DISABLE_DESIGN.md` D1.)* |
 | Ack (device → relay) | `/up` | `{"v":1,"id":"m_7f3a","ts":…,"ack":"shown"}` — **51 bytes**; no `from`, no `body` | — |
 | Up message (device reply) | `/up` | `{"v":1,"id":"u_91c0","ts":…,"from":"student","body":"ok coming","ack":null}` — **84 bytes** | Thread entry, routed to default recipient. |
 | Up message, addressed | `/up` | `{"v":1,"id":"u_91c0","ts":…,"from":"student","to":"mom","body":"ok coming","ack":null}` — **95 bytes** | Thread entry, routed to named recipient. |
@@ -266,15 +266,9 @@ carrying the approved contacts and pending requests for this device:
 timing, CA trust, the SMS contact allow-list, etc.). Fields: `cfg` is an object that currently
 holds `lock` (see §5.8 for structure), `ca` (v0.2, §4.4), `sms` (v0.2, §3.6/§10 — an array of
 `{n, p}` objects, the device's *whole* SMS contact allow-list, replaced wholesale on every push;
-`[]` is a legal push meaning "no SMS contacts") and `wifi` (`docs/WIFI_DESIGN.md` §4, §10 below —
-`{en, nets}`: `en` toggles WiFi on/off, `nets` is up to two `{s, p}` (SSID, WPA2-PSK) credential
-pairs; `nets` absent leaves the device's stored networks alone and applies `en` only, letting the
-web app toggle WiFi without re-sending a PSK; `nets: []` clears the stored networks). Unknown
-members of `cfg` are ignored, making this the home for future settings. **The relay MUST refuse to
-push `cfg.wifi.nets`** (`en` alone is always allowed) to a device whose last `/status` reported
-`tls` other than `pinned` (§5.1) — WiFi requires a CA-pinned TLS connection (`docs/WIFI_DESIGN.md`
-§5), and pushing credentials to a device running without certificate validation would send a PSK
-over a connection that cannot verify who is on the other end.
+`[]` is a legal push meaning "no SMS contacts"). Unknown members of `cfg` are ignored, making
+this the home for future settings. *(Wi-Fi removed, owner 16 Oct 2026: the former `wifi` member, CFG key 3, and its
+credential-push rule are gone; key 3 stays retired, §10.)*
 - **Not a thread entry:** the device MUST NOT render it in the message thread, and MUST NOT
   `shown`- or `read`-ack it in the normal sense. Instead, the device acks with `shown` **once the
   config has been applied**.
@@ -328,7 +322,7 @@ to stop powering the receiver while location keeps working from the serving cell
 `docs/GNSS_DISABLE_DESIGN.md` D1, D3.)* A sixth `cfg` member, CFG key 5 (§10), a map `{gnss}`:
 - `gnss` (bool): `false` stops the device from ever powering its GNSS receiver; `true` re-enables
   it. Absent means no change, so `{}` is a legal no-op. Unknown sub-keys are ignored.
-- Device: persist the flag, then ack `shown` immediately, like `lock` and `wifi`. While it is
+- Device: persist the flag, then ack `shown` immediately, like `lock`. While it is
   `false`, every location attempt (on-demand `loc_req` or scheduled) skips GNSS and sends a cell
   report (§13.2), and the scheduled GNSS-while-moving attempt never starts; `loc_move_s` (§5.1) is
   still reported as configured. A device that has never received `cfg.loc` behaves as `gnss:true`.
@@ -782,7 +776,7 @@ broker-generated LWT.
 | `loc_backoff_s` | int | no | 0…86400 | *(v0.2, §13.3)* Seconds until the device's own growing location-attempt backoff next allows a fresh fix attempt; `0` = an attempt is allowed now. See §13.3's amendment for how this relates to `loc_min_s`. |
 | `sms_lost` | int | no | ≥ 0 | *(v0.2, §3.6 — device-direct SMS)* Count of `sms_log` audit entries dropped from the device's NVS queue for lack of space; normally 0. |
 | `link` | int | no | ≥ 0 | *(v0.2, §9.5 — MQTT session liveness)* Counter incremented on every MQTT session restart within the current boot (starts at 1 per boot); `session` alone cannot tell a silent modem-initiated resume from an unbroken session. Absent means firmware older than §9. The relay treats a changed `link` exactly like a changed `session` for §5.3's online-edge re-publish. |
-| `xport` | string | no | `lte` \| `wifi` | *(WiFi transport, `docs/WIFI_DESIGN.md` §6)* Which physical transport carried this MQTT session: the Sequans LTE-M modem or the ESP32-S3's own WiFi station (§4 of that design). Absent means firmware that predates the WiFi transport, or a device with WiFi never enabled. **Display and diagnosis only** — the relay stores whatever the device reports and never writes it back; a transport switch already bumps `link` (§9.5), which the relay already treats as a re-publish edge (§5.3), so `xport` itself carries no additional relay logic. |
+| `xport` | string | no | — | *(retired, Wi-Fi removed, owner 16 Oct 2026: LTE-M is the only transport, so there is nothing to report.)* Formerly `lte` \| `wifi`, the transport carrying the session. Firmware that predates the removal may still send it; a relay ignores it (§3.1). The name and CBOR key 52 are not reused. |
 | `rst` | int | no | 0…255 | *(crash diagnostics, added 24 Sep 2026, pending server-architect review)* ESP-IDF `esp_reset_reason_t` of the device's last reset: `1` poweron, `2` ext, `3` sw, `4` panic, `5` int_wdt, `6` task_wdt, `7` wdt, `8` deepsleep, `9` brownout. Absent means firmware that predates this field. **Display and diagnosis only.** |
 | `stage` | int | no | 0…255 | *(crash diagnostics, added 24 Sep 2026, pending server-architect review)* Index into the firmware's main-loop stage table, naming where execution was when this status was sent (or, after a crash, roughly where it last got to): `0` "?", `1` boot, `2` network init, `3` loop top, `4` entering light sleep, `5` just woke from light sleep, `6` input/ui, `7` render, `8` mqtt status/retry, `9` message pump, `10` modem health check, `11` location, `12` sms, `13` ca trust, `14` saving state, `15` deliberate restart. An index outside this table (future firmware) is logged as the raw int. Absent means firmware that predates this field. **Display and diagnosis only.** |
 | `bpull` | int | no | `1` | *(v0.4, §3.7: the gate that keeps a book nudge away from firmware that would read it as an empty book.)* Present with value `1` when the firmware fetches its book over HTTPS; absent means it takes the full `/down` `book`. The relay stores it and sends nudges only while the last online `/status` carried it. |
@@ -801,8 +795,8 @@ broker-generated LWT.
 | `gnss` | int | no | `0` \| `1` | *(GNSS disable, `docs/GNSS_DISABLE_DESIGN.md` D4: shows whether a `cfg.loc` push took effect.)* `1` when the device may power its GNSS receiver, `0` when `cfg.loc` (§3.2) has disabled it. Present in every `/status` from firmware that supports `cfg.loc`; absent means firmware that predates the field, which the relay treats as unknown. **Display only.** |
 | `car` | string | no | ≤24 printable ASCII chars | *(Soracom bearer, `docs/SORACOM_DESIGN.md` §3.4: shows which carrier preset, and so which bearer, the device chose from its SIM.)* Label of the carrier preset in force, e.g. `Soracom`, `US Mobile Dark Star`; absent when no preset is in force (carrier default or typed custom APN) and in firmware that predates the field. A relay drops a malformed value alone, treating it as absent. **Display only.** |
 
-*(`loc_period_s`, `loc_min_s`, `tls`, `ca_fp`, `loc_backoff_s`, `sms_lost`, `xport`, `rst`, `stage`,
-`abn`, `stallcmd` and `loc_move_s` — twelve fields — are **display and diagnosis only**; the relay stores the reported
+*(`loc_period_s`, `loc_min_s`, `tls`, `ca_fp`, `loc_backoff_s`, `sms_lost`, `rst`, `stage`,
+`abn`, `stallcmd` and `loc_move_s` — eleven fields — are **display and diagnosis only**; the relay stores the reported
 values and never writes them back. The device owns its location duty cycle because the cost being
 traded is GNSS power on its battery (§12 item 8), which the server cannot see. Making these
 server-settable would need a `/cfg` topic, which §11 still only reserves. `link` is the one
@@ -811,7 +805,7 @@ whether to re-publish unacked `/down` messages, exactly as it already does for `
 *(8 Oct 2026: `gnss` is the one server-set location control, because it is an on/off
 hardware-fitness switch for a damaged or unwanted antenna rather than duty-cycle tuning.)* It is
 carried by `kind:"cfg"` (`cfg.loc`, §3.2) like every other device setting, so the `/cfg` topic
-remark above applies to the location tuning fields only. `gnss` is in addition to the twelve fields
+remark above applies to the location tuning fields only. `gnss` is in addition to the eleven fields
 above and is likewise **display only** in `/status`: it reports the state the device applied.
 They are optional, so
 a `/status` without them remains valid, and a relay MUST treat their absence as "unknown", not as `0`.
@@ -820,8 +814,7 @@ included — is optional, and an *older* relay MUST NOT reject a `/status` merel
 a field the relay predates (§3.1's "unknown fields MUST be ignored" already covers this; called out
 again here because it is the exact case v0.2 shipped the relay's own acceptance of these fields
 ahead of any firmware sending them, per the "add the relay's acceptance ... before any firmware
-that sends them is flashed" rule — `xport` is the same shape of change, applied ahead of W6's
-firmware, docs/WIFI_TASKS.md W7).
+that sends them is flashed" rule).
 
 *(OTA and battery stats, 7 Oct 2026: a malformed field must cost only itself.)* A relay drops a
 malformed OTA field (`img` … `ota_err`) or a malformed `bs` alone, treating it as absent, and never
@@ -932,7 +925,7 @@ Status is **never** published on a plain paging wake or on receipt of a down mes
 | LWT | **NOT SETTABLE from the library** | `mqttConfig()` emits `AT+SQNSMQTTCFG=0,"<clientId>"[,"<user>","<pass>"][,<tlsProfileId>]` and stops there (`src/proto/WalterMQTT.cpp:53-75`) — no will topic, message, QoS or retain argument, and grepping the whole of `src/` for `will`/`lastwill` returns nothing. §5.2's LWT contract therefore has no implementation path through the typed API. Fallback: `WalterModem::sendCmd()` (public) can queue a raw `AT+SQNSMQTTCFG=...` carrying the will parameters *before* `mqttConnect()`. UNVERIFIED against the Sequans AT manual. If that fails, the relay must fall back to inferring offline from keepalive expiry and §5.2's LWT becomes advisory. Tracked in §12. |
 | TLS (production) | TLS 1.2; server certificate validated **only if the bootstrap bundle carried a CA** (`DEVICE_PLAN.md` §3.3, default: none, validation off); username/password per device; profile 2. **The profile MUST name certificate slot 12 even with validation off** — with no slot named the modem's MQTT engine silently sends plaintext MQTT to the TLS port (verified on hardware, `DEVICE_PLAN.md` §3.3). | Pinned mode is the free-tier HiveMQ Cloud model. Provisioning is the vendor's `examples/mqtts` flow: `tlsWriteCredential(false, 12, ca_pem)` → `tlsConfigProfile(2, WALTER_MODEM_TLS_VALIDATION_CA, WALTER_MODEM_TLS_VERSION_12, 12)` → `mqttConfig(client_id, user, pass, 2)`. Both functions are public (`src/WalterModem.h:4147` and `:4404`). **Slot discipline: certificate slots 0–10 and private-key index 1 are reserved for Sequans/BlueCherry — use ≥ 11, and TLS profile ≥ 2 (profile 1 is BlueCherry's).** |
 | TLS (bootstrap) | no server-cert validation; profile 2 (the library caps profile ids at 0–2, and bootstrap and production never share a power cycle) | For the one-time setup fetch (§3.2): `tlsConfigProfile(2, WALTER_MODEM_TLS_VALIDATION_NONE, WALTER_MODEM_TLS_VERSION_12, 12)`. **Verified on hardware:** the slot argument is required — `no_cert` makes the MQTT engine send plaintext (see the production row). The bundle is authenticated and encrypted under a token-derived key, so server authentication on this hop adds only DoS resistance. |
-| Bearer (Soracom Beam) | On a SIM whose carrier preset names the Beam bearer (`docs/SORACOM_DESIGN.md` §3.1, §3.3): **plain MQTT** from the modem to `beam.soracom.io:1883`, TLS profile **0** (`mqttConfig(dev_id, dev_id, mqtt_pw, 0)`, no `tlsConfigProfile`, no CA slot); client id, username and password unchanged and passed through to the broker (Beam `useClientCredentials`); Beam opens MQTTS to EMQX. Keepalive **1200 s** (the Soracom preset, §6.2; was 480 s), Beam's ceiling of 0 or 5…1200 s; the 840 s host liveness re-SUBSCRIBE (§6.2) crosses both legs and stays inside Beam's 1.5 × keepalive = 1800 s idle cut. Beam has not yet been tested at 1200 / 840. The bootstrap `boot-<bid>` session (§3.2) also goes through Beam (plain MQTT, keepalive 60); the setup code's `host:port` and the identity's stored `host`/`port` are **not used** on this bearer (Beam's group destination decides the broker) and are kept for a later direct bearer. `cfg.ca` is refused and `/status.tls` is `proxy` (§5.1). The WiFi transport is unaffected. | *(Soracom bearer, 8 Oct 2026: moves TLS off the pager; the topics, QoS, retain flags, envelope and HMAC are unchanged, so the relay cannot tell a Beam session from a direct one.)* *(15 Oct 2026: keepalive 1200 / re-SUBSCRIBE 840 s because Soracom holds an idle flow ≥1200 s; fewer radio wakes.)* Beam's address is in carrier-grade NAT space, so the firmware selects this bearer only when the SIM's preset names it, never on another operator's network. Hop pager → Beam is plaintext inside Soracom's network; envelope authenticity still rests on §14's HMAC. |
+| Bearer (Soracom Beam) | On a SIM whose carrier preset names the Beam bearer (`docs/SORACOM_DESIGN.md` §3.1, §3.3): **plain MQTT** from the modem to `beam.soracom.io:1883`, TLS profile **0** (`mqttConfig(dev_id, dev_id, mqtt_pw, 0)`, no `tlsConfigProfile`, no CA slot); client id, username and password unchanged and passed through to the broker (Beam `useClientCredentials`); Beam opens MQTTS to EMQX. Keepalive **1200 s** (the Soracom preset, §6.2; was 480 s), Beam's ceiling of 0 or 5…1200 s; the 840 s host liveness re-SUBSCRIBE (§6.2) crosses both legs and stays inside Beam's 1.5 × keepalive = 1800 s idle cut. Beam has not yet been tested at 1200 / 840. The bootstrap `boot-<bid>` session (§3.2) also goes through Beam (plain MQTT, keepalive 60); the setup code's `host:port` and the identity's stored `host`/`port` are **not used** on this bearer (Beam's group destination decides the broker) and are kept for a later direct bearer. `cfg.ca` is refused and `/status.tls` is `proxy` (§5.1). | *(Soracom bearer, 8 Oct 2026: moves TLS off the pager; the topics, QoS, retain flags, envelope and HMAC are unchanged, so the relay cannot tell a Beam session from a direct one.)* *(15 Oct 2026: keepalive 1200 / re-SUBSCRIBE 840 s because Soracom holds an idle flow ≥1200 s; fewer radio wakes.)* Beam's address is in carrier-grade NAT space, so the firmware selects this bearer only when the SIM's preset names it, never on another operator's network. Hop pager → Beam is plaintext inside Soracom's network; envelope authenticity still rests on §14's HMAC. |
 | Reconnect policy | **Only** on detected session loss. Never on a timer. Backoff 5 s, 15 s, 60 s, 300 s, then 300 s steady. | Each reconnect costs a full TLS handshake ≈ 5 kB (§7) — reconnects are the largest single term in the data budget. |
 
 *(scoping note, no behaviour change.)* Every row above describes the **device's**
@@ -945,7 +938,7 @@ it. The broker must therefore still support an LWT and QoS 1 in both directions 
 
 | Parameter | Value |
 |---|---|
-| MQTT keepalive | **Per carrier preset, fixed per session at connect** (`carrier.h` `mqtt_keepalive_s`), passed as the third argument of `mqttConnect(host, port, keepAlive)`: **1200 s** on Soracom (Beam and direct); **480 s** on US Mobile Dark Star, Automatic, Carrier default and any custom or unknown APN. Bootstrap stays 60 s; Wi-Fi is unchanged. The modem does send PINGREQ at this interval when nothing else went up (measured, below), but the host ping normally pre-empts it; its main effect is the broker's "this client is dead" deadline at 1.5 × keepalive = 30 min (Soracom) or 12 min (others). |
+| MQTT keepalive | **Per carrier preset, fixed per session at connect** (`carrier.h` `mqtt_keepalive_s`), passed as the third argument of `mqttConnect(host, port, keepAlive)`: **1200 s** on Soracom (Beam and direct); **480 s** on US Mobile Dark Star, Automatic, Carrier default and any custom or unknown APN. Bootstrap stays 60 s. The modem does send PINGREQ at this interval when nothing else went up (measured, below), but the host ping normally pre-empts it; its main effect is the broker's "this client is dead" deadline at 1.5 × keepalive = 30 min (Soracom) or 12 min (others). |
 | Host-driven liveness ping | **Required, after `mqtt_ping_s` of uplink silence: 840 s on Soracom, 240 s on every other preset** (300 s for all until 15 Oct 2026): a raw `AT+SQNSMQTTSUBSCRIBE` to `pager/{id}/down`, issued from the 5 s wake-and-drain cycle (§8). The SUBACK proves the round trip and re-arms the subscription after a silent modem resume; a missing SUBACK is the only way a flow the carrier killed silently is detected. Specified in `V02_DESIGN.md` §9; ~10 mAh/day on Soracom, ~36 mAh/day on AT&T (estimate). |
 | ESP32 RTC-timer wake for the ping | **None** — it rides the existing 5 s wake (§8), so it adds no wake source. The library exposes no `mqttPing()`, and there is no ping in the Sequans MQTT AT command set at all. |
 | Server Keep Alive override | If the broker documents a lower cap, the **smaller** value wins. Note `WALTER_MODEM_MQTT_MIN_PREF_KEEP_ALIVE` (`src/WalterModem.h:236`, value 20) is still declared but referenced nowhere in v1.5.0, so the library imposes no floor of its own. EMQX granted 480 s (21 Sep 2026) and mosquitto took 60–1200 s as sent (14-15 Oct 2026); whether Beam or EMQX clamps 1200 s is UNVERIFIED. |
@@ -1632,7 +1625,7 @@ Devices emit CBOR (§3) with this integer keymap. The relay accepts both JSON (t
 | 49 | `cell` | map | `/loc` envelope, optional (§13.2 — cell-tower location fallback) |
 | 50 | `link` | int | `/status` (v0.2, §9.5 — MQTT-session generation within a boot, optional) |
 | 51 | `sndr` | tstr | `/down` `msg` in a group conversation (v0.3, §3.1 — the author's alias when `from` names the group) |
-| 52 | `xport` | tstr | `/status` (WiFi transport, §5.1 — `lte`/`wifi`, optional) |
+| 52 | — | — | **retired** (Wi-Fi removed, owner 16 Oct 2026), do not reuse — was `/status` `xport` (`lte`/`wifi`), §5.1 |
 | 53 | `rst` | uint, 0…255 | `/status` (crash diagnostics, §5.1 — `esp_reset_reason_t`, optional; added 24 Sep 2026, pending server-architect review) |
 | 54 | `stage` | uint, 0…255 | `/status` (crash diagnostics, §5.1 — main-loop stage index, optional; added 24 Sep 2026, pending server-architect review) |
 | 55 | `abn` | uint, 0…65535 | `/status` (crash diagnostics, §5.1 — abnormal-reset count since power-on, optional; added 24 Sep 2026, pending server-architect review) |
@@ -1656,7 +1649,7 @@ Devices emit CBOR (§3) with this integer keymap. The relay accepts both JSON (t
 | 73 | `ast_id` | tstr, 16 hex | `/status` (font OTA, §5.1 — active `assets_ota` id, only when `ast`=2, optional) |
 
 *(A relay-side task that added `rst`/`stage`/`abn` was briefed with key 52 for `rst`; by the time
-it landed, 52 was already `xport`, both here and in the shipped relay code. Kept `xport=52` as the
+it landed, 52 was already `xport` (retired since, above), both here and in the shipped relay code. Kept `xport=52` as the
 documented, already-shipped allocation and gave the three new fields the next free integers, 53-55,
 instead — flagged here rather than silently resolved so firmware agrees on 53/54/55, not 52/53/54.)*
 
@@ -1678,7 +1671,7 @@ book parser.)*
 `cfg` object (inside `/down` `cfg`, key 38 above): `lock=0` (map, existing — see below), `ca=1`
 (map, v0.2 — §4.4: `{url=0 tstr, sha=1 bstr(32)}`; `sha` absent on an un-pin push, `url=""`),
 `sms=2` (array, v0.2 — §3.6: the device's whole SMS contact allow-list, `[{n=0 tstr, p=1 tstr}, …]`),
-`wifi=3` (map, `docs/WIFI_DESIGN.md` §4/§6 — see below).
+key `3` **retired** (Wi-Fi removed, owner 16 Oct 2026), do not reuse — was `wifi`, the Wi-Fi enable flag and credentials.
 
 `lock` map (inside `/down` `cfg.lock`): `clear=0` (bool), `auto=1` (int minutes).
 
@@ -1708,19 +1701,6 @@ sub-keys are ignored.
 bytes — tighter than `book`/`contact_req`'s 48-byte name cap; see §3.6 for why), `p=1` (tstr,
 E.164 phone number). Note this is its own small namespace, distinct from `c[]`'s `{a, n, t}` above,
 even though both happen to use `n` for a display name.
-
-`wifi` map (inside `/down` `cfg.wifi`, key 3 above, `docs/WIFI_DESIGN.md` §4/§6): `en=0` (bool,
-WiFi on/off), `nets=1` (array, ≤2 entries, `[{s=0 tstr, p=1 tstr}, …]` — see below). `nets` absent
-means "leave the stored networks alone, apply `en` only"; `nets: []` clears the stored networks.
-WPA2-PSK only, one SSID/PSK pair per entry.
-
-`cfg.wifi.nets[]` item (`docs/WIFI_DESIGN.md` §4): `s=0` (tstr, SSID, 1-32 bytes), `p=1` (tstr,
-WPA2 PSK, 8-63 bytes). Both fields are required in every entry that is present at all — a partial
-entry (`s` without `p` or vice versa) is malformed and the whole `cfg.wifi.nets` push is rejected,
-not truncated (`firmware/main/wificred.c`'s `wificred_parse_cfg_submap`, which this sub-map matches
-byte for byte, applies the same all-or-nothing rule). **The relay MUST NOT log a PSK value at any
-level** (info, debug, or error) — see §4/§5.1's `tls`-guard rule above for the security reason this
-matters.
 
 **JSON note (§3, §14.3):** the CBOR sub-map keys above are integers; in JSON the same *names* are
 used (`{"lock":{...}}`, `{"ca":{"url":...,"sha":...}}`), and, exactly like `sig`, a `bstr`-typed

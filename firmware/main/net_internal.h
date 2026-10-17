@@ -1,9 +1,9 @@
 /* net_internal.h — private wiring between net.cpp and xport_lte.cpp only.
  *
- * Never included by modes.c, net.h's other callers, or a future xport_wifi.c
+ * Never included by modes.c or net.h's other callers
  * (see net.h's own "what modes.c must not know" rule -- this header is the
  * mechanical seam behind it, not part of that contract). It exists purely
- * because docs/WIFI_TASKS.md W4 moved the MQTT session code out of net.cpp
+ * because the MQTT session code moved out of net.cpp
  * into its own translation unit while its callers ("Stay in net.cpp,
  * LTE-only, untouched": net_init, net_bringup, net_recover_modem, the
  * PAGER_DEBUG_NO_LIGHT_SLEEP mqtttest/nettest diagnostics, net_bootstrap_*)
@@ -28,8 +28,7 @@
 #include "WalterModem.h"
 
 /* ---------------------------------------------------------------------
- * Owned by net.cpp (LTE bringup/registration state, docs/WIFI_DESIGN.md
- * §1's "stay in net.cpp" list): net_bringup()/net_init()/net_recover_modem()
+ * Owned by net.cpp (LTE bringup/registration state): net_bringup()/net_init()/net_recover_modem()
  * define and drive these. xport_lte.cpp's net_session_up() (now lte_session_up())
  * reads/writes s_registered and s_session_configured and calls
  * configure_session()/note_registration(), exactly as it did when they were
@@ -42,8 +41,7 @@ bool configure_session(void);
 void note_registration(bool registered);
 
 /* ---------------------------------------------------------------------
- * Owned by xport_lte.cpp (the moved MQTT session state,
- * docs/WIFI_DESIGN.md §1's "moved verbatim" list): net.cpp's net_init()
+ * Owned by xport_lte.cpp (the moved MQTT session state): net.cpp's net_init()
  * and net_recover_modem() reset these fresh on boot/F4 recovery, and the
  * PAGER_DEBUG_NO_LIGHT_SLEEP-only mqtttest/nettest diagnostics (net_check_tcp(),
  * net_check_mqtt()) read s_mqtt_connected/s_disconnect_edge directly, exactly
@@ -71,8 +69,7 @@ uint32_t lte_get_resub_swallowed_count(void);
  * still awaited within xport_lte.cpp's own PAGER_RESUB_HOLD_MS window.
  * net.cpp's net_resub_hold() (net.h) forwards to this directly -- always
  * safe to call regardless of the active transport, same as
- * lte_get_resub_swallowed_count() above (false/0 on WiFi, where these
- * statics are never touched). */
+ * lte_get_resub_swallowed_count() above. */
 bool lte_resub_hold(void);
 
 /* Same fix's sleeptest-report counters (Task step 4). net.cpp's
@@ -86,9 +83,7 @@ void lte_get_resub_hold_stats(uint32_t *holds, uint32_t *max_hold_ms, uint32_t *
 void pager_mqtt_event_handler(WMMQTTEventType event, const WMMQTTEventData *data, void *args);
 
 /* ---------------------------------------------------------------------
- * Owned by net.cpp (net_set_msg_cb(): "registers one callback that both
- * transports call", docs/WIFI_DESIGN.md §1 -- a single registration that
- * outlives any one transport, not per-transport state). xport_lte.cpp's
+ * Owned by net.cpp (net_set_msg_cb(): the one MQTT message callback). xport_lte.cpp's
  * MESSAGE case invokes it exactly as it did before the move.
  * --------------------------------------------------------------------- */
 extern void (*s_msg_cb)(const char *topic, const char *body, uint16_t len);

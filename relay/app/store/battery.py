@@ -74,7 +74,6 @@ def add_sample(
         "tempDc": env.temp_dc,
         "rssi": env.rssi,
         "mode": env.mode,
-        "xport": env.xport,
         "fw": env.fw,
         "img": env.img,
         "rst": env.rst,

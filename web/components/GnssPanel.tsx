@@ -1,7 +1,7 @@
 "use client";
 
 /** GNSS on/off panel on `/devices/[id]` -- docs/GNSS_DISABLE_DESIGN.md D6.
- * One switch, saved immediately; mirrors `WifiPanel.tsx`'s load/error shape. */
+ * One switch, saved immediately. */
 
 import { useCallback, useEffect, useState } from "react";
 import Alert from "@mui/material/Alert";

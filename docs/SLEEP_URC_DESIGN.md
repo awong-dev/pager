@@ -117,8 +117,7 @@ entirely; run it before spending firmware time on (c).
 `mqttConnect` → `mqttSubscribe`). Per wake, first statement after `net_sleep()` returns (flow
 control restored by then, `net.cpp:1195-1207`): `WalterModem::checkComm(NULL, probe_cb, NULL)` —
 one `AT`, queued and returned. Skipped when: a probe is still outstanding; `net_publish_in_flight()`
-(a modem parked at a `>` prompt would eat `AT\r\n` as payload — RCA_SLEEP_PUBLISH §1); transport is
-WiFi; the modem is not begun or is in a reset. `probe_cb` only sets a flag and a timestamp — no
+(a modem parked at a `>` prompt would eat `AT\r\n` as payload — RCA_SLEEP_PUBLISH §1); the modem is not begun or is in a reset. `probe_cb` only sets a flag and a timestamp — no
 logging, no AT calls, it runs on the library's own task. Then the existing 200 ms yield, during
 which `_uartRxTask` parses the flush burst and the event task runs the unchanged
 `+SQNSMQTTONMESSAGE` → `mqttReceive()` path. Then input/UI, `net_service_session()`, `msg_pump()`.
@@ -412,7 +411,7 @@ S7b **fails 3, 5 and 7 and cannot be scored on 1-2**: the pager did not deliver 
 −152 s and −54 s), and **no page received** for two pages sent at +92 s and +250 s (never acked at
 the relay, no SECURITY lines). `asleep 253 s (70%)` is not a sleep-policy reading at all — §9.1
 shows 93 s of it was not sleep. The image was also never a complete S7b image: S12 and S13 were not
-in it, only S11 plus 9c9f506 and W13.
+in it, only S11 plus 9c9f506 and W13 (the shared ident scratch from the since-removed Wi-Fi tasks, `docs/WIFI_TASKS.md` in git history).
 
 ### 9.1 The arithmetic that names the event: 93 s of "sleep" that was not sleep
 

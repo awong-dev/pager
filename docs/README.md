@@ -50,7 +50,6 @@ Design notes and task lists, one per feature (scope from each file's opening lin
 | [CONTACT_REQ_DESIGN.md](CONTACT_REQ_DESIGN.md) | Contact requests from the pager, SMS contacts per family, and family rename |
 | [CHAT_UI_DESIGN.md](CHAT_UI_DESIGN.md) | Pager chat UI and address-book design: all chats, new chat, new group from the book (24 Sep 2026) |
 | [GROUP_CHAT_DESIGN.md](GROUP_CHAT_DESIGN.md) | Group chat basics: conversation store, routing, `sndr` on the pager, web UI |
-| [WIFI_DESIGN.md](WIFI_DESIGN.md) | WiFi as an alternate MQTT transport carrying the same session; LTE-M stays the default. Tasks in [WIFI_TASKS.md](WIFI_TASKS.md) |
 | [V03_PLAN.md](V03_PLAN.md) | v0.3 plan: composer overflow, web auto-scroll, push and geofence. Tasks in [V03_TASKS.md](V03_TASKS.md) |
 | [DEVICE_NEXT_TASKS.md](DEVICE_NEXT_TASKS.md) | Next device tasks: group `sndr`, accelerometer, SMS |
 | [TASK_cores_eval.md](TASK_cores_eval.md) | Architect evaluation (9 Oct 2026): network work in worker tasks, floating affinity, UI on CPU1. Recommendation: neither now; triggers and the pinned-worker design if a measurement ever justifies it |

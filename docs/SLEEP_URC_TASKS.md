@@ -91,7 +91,7 @@ cb, NULL)` — asynchronous, one `AT`, no retries, no `net_check()` registration
 watchdog interaction, no logging in the callback (it runs on the library's task: it may only set a
 flag and a timestamp). Guards, all cheap RAM reads: skip if a probe is still outstanding; skip if
 `net_publish_in_flight()` (a modem parked at a `>` prompt would consume `AT\r\n` as payload); skip
-on the WiFi transport; skip if the modem is not begun. Never queue more than one probe at a time.
+if the modem is not begun. Never queue more than one probe at a time.
 If the probe has been outstanding for more than 3 wake intervals, count `probe_stuck`, clear the
 flag and allow probing again; after 6 consecutive stuck probes, report it through the existing F4
 path (`rate_limited_modem_recover()` via `run_modem_health_check()`'s owner) — do not add a second

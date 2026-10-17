@@ -222,7 +222,6 @@ int chat_composer_viewport(const uint8_t *adv, int n, int avail_px, int marker_p
 #ifdef ESP_PLATFORM
 
 #include "ui.h"
-#include "extram.h"
 #include "msg.h"
 #include "book.h"
 #include "ime.h"
@@ -334,7 +333,7 @@ typedef struct {
     char id[MSG_ID_MAX];
 } chat_row_src_t;
 
-static EXT_RAM_BSS_ATTR chat_row_src_t s_src[MSG_THREAD_DEPTH]; /* 12.4 KB, PSRAM .bss (extram.h) */
+static chat_row_src_t s_src[MSG_THREAD_DEPTH];
 static int s_rows[MSG_THREAD_DEPTH];
 // T4: the msg_t copies chat_build_rows() collected via msg_iter_peer() for
 // the CURRENT peer, parallel to s_src[]/s_rows[] above — mark_visible_read()
@@ -343,7 +342,7 @@ static int s_rows[MSG_THREAD_DEPTH];
 // msg_thread_at(i) walk, row index `i` here no longer indexes msg.c's own
 // s_thread ring directly (msg_iter_peer() skips every OTHER peer's entries),
 // so mark_visible_read() cannot just re-fetch by index the way it used to.
-static EXT_RAM_BSS_ATTR msg_t s_entries[MSG_THREAD_DEPTH]; /* 13 KB, PSRAM .bss (extram.h) */
+static msg_t s_entries[MSG_THREAD_DEPTH];
 
 // One reusable scratch buffer for wrap CONTENT — sized for the worst-case
 // row count (CHAT_MAX_ROWS_PER_MSG) but only ever holding ONE message's
@@ -351,7 +350,7 @@ static EXT_RAM_BSS_ATTR msg_t s_entries[MSG_THREAD_DEPTH]; /* 13 KB, PSRAM .bss 
 // row of (get_wrapped_line() below re-wraps on a cache miss). Row-COUNTING
 // (chat_build_rows()) also reuses it as pure scratch — its content is
 // discarded there, only the returned count matters.
-static EXT_RAM_BSS_ATTR char s_wrap_scratch[CHAT_MAX_ROWS_PER_MSG][64]; /* 4 KB, PSRAM .bss (extram.h) */
+static char s_wrap_scratch[CHAT_MAX_ROWS_PER_MSG][64];
 static int s_wrap_cached_msg = -1; // which s_src[] index s_wrap_scratch currently holds lines for
 
 static void load_row_src(const msg_t *m, const char *newest_unread_id, chat_row_src_t *out)

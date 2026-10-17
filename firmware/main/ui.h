@@ -473,7 +473,7 @@ void ui_show_toast(const char *text);
  * guard, or parks). Safe before ui_init() (no-op). Power effect: none. */
 void ui_kb_rail_changed(void);
 
-/* net.cpp's net_sleep() brackets only esp_light_sleep_start() with these (the WiFi vTaskDelay path never parks). Park takes the kbd bus mutex
+/* net.cpp's net_sleep() brackets only esp_light_sleep_start() with these. Park takes the kbd bus mutex
  * (100 ms bound; logs and sleeps anyway on timeout) so a light sleep never
  * starts in the middle of a CardKB I2C transaction; unpark releases it if it
  * was taken. Power effect: none. */

@@ -305,18 +305,14 @@ class StatusEnvelope(BaseModel):
     # `session` (ingest.py's `handle_status`), because a resume drops any
     # QoS 1 `/down` published into the ≤10 s gap before the re-subscribe.
     link: int | None = None
-    # docs/WIFI_DESIGN.md §6/§7, docs/PROTOCOL.md §5.1 (this task): which
-    # physical transport carried this session -- display/diagnosis only, the
-    # relay stores it and never writes it back. Absent means firmware that
-    # predates the WiFi transport, or WiFi never enabled on this device.
-    xport: Literal["lte", "wifi"] | None = None
+    # /status key 52 (`xport`) retired (owner, 16 Oct 2026), do not reuse.
     # Crash diagnostics (this task, docs/PROTOCOL.md §5.1, optional, absent =
     # firmware that predates them): `rst` is the ESP-IDF esp_reset_reason_t
     # of the device's last reset, `stage` is an index into the firmware's
     # main-loop stage table (`STAGE_NAMES` below), `abn` is the count of
     # abnormal resets since power-on. Display/diagnosis only -- the relay
     # stores whatever the device reports and never writes it back, same as
-    # `xport`/`link` and the other status-only fields above.
+    # `link` and the other status-only fields above.
     rst: int | None = None
     stage: int | None = None
     abn: int | None = None

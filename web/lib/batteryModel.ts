@@ -26,7 +26,6 @@ export interface BatterySample {
   minMv?: number;
   rssi?: number;
   mode?: string;
-  xport?: string;
   fw?: string;
   img?: string;
   rst?: string | number;
@@ -278,7 +277,7 @@ export function bucketAwake(samples: BatterySample[], unit: BucketUnit): AwakeBu
 }
 
 export const CSV_HEADER =
-  "ts,iso,session,sq,battMv,tempDc,minMv,rssi,mode,xport,fw,img,rst,link,hasBs,dtS,sleepS,aw_timer,aw_attn,aw_hot,aw_ui,aw_modem,aw_fetch,sleeps,ext1,railS,rf_full,rf_partial,rf_upgraded,connects,md_off,md_search,md_gnss,radioEvents,shakesAccepted,shakesRejected,shakePendingS,model_mAh";
+  "ts,iso,session,sq,battMv,tempDc,minMv,rssi,mode,fw,img,rst,link,hasBs,dtS,sleepS,aw_timer,aw_attn,aw_hot,aw_ui,aw_modem,aw_fetch,sleeps,ext1,railS,rf_full,rf_partial,rf_upgraded,connects,md_off,md_search,md_gnss,radioEvents,shakesAccepted,shakesRejected,shakePendingS,model_mAh";
 
 function cell(v: string | number | boolean | undefined | null): string {
   if (v === undefined || v === null) return "";
@@ -294,7 +293,7 @@ export function toCsv(samples: BatterySample[], m: BatteryModel): string {
     const row = [
       s.ts,
       new Date(s.ts * 1000).toISOString(),
-      s.session, s.sq, s.battMv, s.tempDc, s.minMv, s.rssi, s.mode, s.xport, s.fw, s.img, s.rst, s.link,
+      s.session, s.sq, s.battMv, s.tempDc, s.minMv, s.rssi, s.mode, s.fw, s.img, s.rst, s.link,
       s.hasBs,
       s.dtS, s.sleepS,
       s.awakeS?.timer, s.awakeS?.attn, s.awakeS?.hot, s.awakeS?.ui, s.awakeS?.modem, s.awakeS?.fetch,

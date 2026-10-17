@@ -6,8 +6,8 @@ that led here is `SORACOM_EVAL.md`; this document is the shape that is actually 
 "Beam MQTT entry point in front of EMQX" option, not the broker-free UDP design. The eval's
 step 3 (UDP downlink) is explicitly out of scope.
 
-Terms: **transport** (`xport`) stays what it is today: `lte` or `wifi`, the radio. **Bearer** is new
-and only meaningful on `lte`: *how the MQTT session reaches the broker*, `direct` (TLS from the
+Terms: **transport** is the radio, LTE-M, the only one (Wi-Fi removed 16 Oct 2026). **Bearer** is
+new: *how the MQTT session reaches the broker*, `direct` (TLS from the
 modem to EMQX, today's path) or `beam` (plain MQTT from the modem to `beam.soracom.io:1883`;
 Soracom Beam opens the MQTTS leg to EMQX). The bearer is a property of the SIM, so it is picked by
 the carrier detection the firmware already does (`firmware/main/carrier.[ch]`), not by a build.
@@ -132,8 +132,6 @@ clears a previously configured one without a modem reset; check `AT+SQNSMQTTCFG?
 The bundle's `host`/`port` are still stored in `ident` so a later SIM swap back to a direct bearer
 works without re-provisioning; on `beam` they are simply not used. The GOTCHAS.md hazard ("a TLS
 profile naming no CA sends plaintext") is unaffected: the direct path still always names slot 12.
-
-The WiFi transport (`xport_wifi.c`) is unchanged: TLS to `ident` host/port regardless of SIM.
 
 ### 3.4 Reporting
 

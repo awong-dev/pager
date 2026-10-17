@@ -1098,7 +1098,6 @@ class Ingest:
             car=env.car,
             smsLost=env.sms_lost,
             link=env.link,
-            xport=env.xport,
             rst=env.rst,
             stage=env.stage,
             abn=env.abn,

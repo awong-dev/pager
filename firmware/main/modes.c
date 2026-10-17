@@ -57,7 +57,6 @@
 // own wake-and-drain loop, alongside loc_service()/accel_poll().
 #include "cfg.h"
 #include "catrust.h"
-#include "wificred.h"
 
 // F7.1 (docs/DEVICE_PLAN.md §4.3): book.c's NVS-backed address book — the
 // `kind:"book"` dispatch ahead of msg_ingest_down_cbor() (alongside lock.c's
@@ -111,7 +110,7 @@
 #include "esp_random.h"
 #include "esp_rom_crc.h"
 #include "esp_sleep.h"
-#include "esp_system.h" /* esp_get_free_heap_size()/esp_get_minimum_free_heap_size(), W0/W5 boot heap log */
+#include "esp_system.h"
 #include "nvs.h"
 #include "esp_private/esp_clk.h" /* esp_clk_rtc_time() */
 #include "esp_timer.h"
@@ -604,7 +603,7 @@ static void on_auth_epoch_wrap(void)
     // ident_t has no per-field setter, so this snapshots every getter into a
     // scratch copy, bumps n_epoch, and writes the whole struct back via
     // ident_store() (same contract setup.c's own first-time write uses).
-    // W13 (WIFI_DESIGN.md §10.3): ident_scratch() is the one shared 4,460 B
+    // ident_scratch() is the one shared 4,460 B
     // buffer, not a private static; released before every return below.
     ident_t *snap = ident_scratch();
     strncpy(snap->dev_id, ident_get_dev_id(), sizeof(snap->dev_id) - 1);
@@ -658,12 +657,12 @@ static void on_auth_epoch_wrap(void)
 #define STK_CA_FP 42         // v0.2 §4.3/§7: absent when unpinned
 #define STK_SMS_LOST 48      // v0.2 §6/§7: sms_log audit entries dropped for lack of NVS space
 #define STK_LINK 50           // v0.2 §9.5/§7: MQTT-session generation within this boot
-#define STK_XPORT 52          // docs/WIFI_DESIGN.md §5.1/§6, docs/WIFI_TASKS.md W4: "lte"/"wifi"
+// /status key 52 (`xport`) retired (Wi-Fi removed, owner 16 Oct 2026), do not reuse.
 // Crash diagnostics so a crash can be read off the relay when the USB port
 // stays dead after a watchdog/panic reset (it only re-enumerates after a
 // power cycle) -- watchdog.c's watchdog_boot() computes all three. NOTE: the
-// task that requested these asked for keys 52/53/54, but 52 is already
-// STK_XPORT above (PROTOCOL.md §9.5's key table); using it again would put
+// task that requested these asked for keys 52/53/54, but 52 was already
+// the retired xport key above (PROTOCOL.md §9.5's key table); using it again would put
 // two different fields under the same CBOR map key. Took the next free keys,
 // 53/54/55, instead -- flagged for server-architect review alongside the
 // PROTOCOL.md rows below.
@@ -861,7 +860,7 @@ static bool build_status_cbor(uint8_t *out, size_t cap, size_t *out_len, const c
     // cached ca_len/ca_hash and catrust.c's own RAM-cached broken flag), no
     // AT round trip or NVS I/O of their own.
     // SORACOM_DESIGN 3.4: on the LTE xport over the Beam bearer TLS ends at Beam ("proxy").
-    const bool via_beam = net_xport_active() != NET_XPORT_WIFI && net_bearer_beam();
+    const bool via_beam = net_bearer_beam();
     const char *tls_str = via_beam ? "proxy" : catrust_state_name(catrust_get_state());
     char ca_fp[17];
     bool have_ca_fp = !via_beam && catrust_get_ca_fp(ca_fp);
@@ -882,11 +881,11 @@ static bool build_status_cbor(uint8_t *out, size_t cap, size_t *out_len, const c
     // trip of their own beyond what batt_mv/rssi above already cost).
     // LOCATION_TRACKING_DESIGN.md §5 P3: +1 for loc_move_s (key 61), same
     // "plain read" cost class.
-    uint32_t nfields = 8 + 3 + 1 + 1 + 1 + 1 + 1 + 3 + 1; // + gnss (key 69, GNSS_DISABLE_DESIGN.md D4), + tls, + sms_lost, + link, + xport,
+    uint32_t nfields = 8 + 3 + 1 + 1 + 1 + 1 + 3 + 1; // + gnss (key 69, GNSS_DISABLE_DESIGN.md D4), + tls, + sms_lost, + link,
                                           // + loc_move_s, + rst/stage/abn;
                                           // v,state,mode,rssi, (batt_mv and temp_dc are optional, counted above)
                                           // session,ts,fw,bv,loc_period_s,loc_min_s,loc_backoff_s,
-                                          // tls,sms_lost,link,xport,loc_move_s,rst,stage,abn
+                                          // tls,sms_lost,link,loc_move_s,rst,stage,abn
     if (have_batt) {
         nfields += 1; // key 23 batt_mv: omitted until the modem has returned a reading this boot
     }
@@ -1002,11 +1001,6 @@ static bool build_status_cbor(uint8_t *out, size_t cap, size_t *out_len, const c
         }
     }
 
-    // docs/WIFI_DESIGN.md §5.1/§6, docs/WIFI_TASKS.md W4 item 1: which
-    // physical transport carried this session — display/diagnosis only
-    // (PROTOCOL.md §5.1), no modem or sleep-state effect of its own.
-    const char *xport_str = (net_xport_active() == NET_XPORT_WIFI) ? "wifi" : "lte";
-    cbor_w_tstr(&w, STK_XPORT, xport_str, strlen(xport_str));
     if (have_car) {
         cbor_w_tstr(&w, STK_CAR, car, strlen(car));
     }
@@ -2429,26 +2423,6 @@ void modes_boot(void)
     catrust_bind(rtc_lock, rtc_unlock);
     catrust_init();
 
-    // docs/WIFI_TASKS.md W5: wificred_init() had no caller anywhere in the
-    // tree before this task (W2/W3 built the module and its cfg.wifi
-    // dispatch but never wired the boot-time NVS load) -- without it, every
-    // reboot would start with wificred_enabled()/wificred_count() reading
-    // the module's zero-initialized RAM cache instead of whatever was
-    // actually stored, silently forgetting a `wifi set`/`cfg.wifi` push
-    // across a reset. Same slot as catrust_init() above: a couple of NVS
-    // reads, no modem or sleep-state effect, never logs a PSK (wificred.c's
-    // own hard rule).
-    wificred_init();
-
-    // docs/WIFI_TASKS.md W5 addendum: W0 never measured a real heap
-    // watermark on this branch (no wifi_probe.c commit exists), so log it
-    // here instead -- one INFO line at boot, before any WiFi code has run,
-    // for W6's bench to diff against the second line main.c's `wifi on`
-    // handler logs once the WiFi station + TLS + esp-mqtt session is up.
-    // Power effect: none -- a read of the heap allocator's own counters.
-    ESP_LOGI(TAG, "heap at boot: free=%u minimum_free=%u",
-             (unsigned) esp_get_free_heap_size(), (unsigned) esp_get_minimum_free_heap_size());
-
     // F7.1 (docs/DEVICE_PLAN.md §4.3): book.c has no RTC sub-struct of its
     // own (book.h's module comment) — book_bind() hands it the EXISTING
     // g_rtc.auth plus the same cross-task lock/unlock/save trio and
@@ -3696,11 +3670,9 @@ void modes_run(void)
         // doc comment, and the coverage duty-cycle reasoning at
         // s_coverage_owns_radio above): neither wants an extra AT
         // transaction landing while it deliberately owns the radio/session.
-        // docs/WIFI_TASKS.md W4: these are about the *modem*, so they now
-        // gate the LTE transport internally (net_set_lte_suppressed(),
-        // net.h) instead of this call site -- net_service_session() itself
-        // is called unconditionally, every wake cycle, so a future WiFi
-        // transport's tick is never silenced by them.
+        // These are about the *modem*, so they gate the LTE transport
+        // internally (net_set_lte_suppressed(), net.h); net_service_session()
+        // itself is called unconditionally, every wake cycle.
         net_set_lte_suppressed(s_coverage_owns_radio || s_ca_apply_suppress);
         net_service_session();
 

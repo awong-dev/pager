@@ -629,7 +629,7 @@ bool loc_set_gnss_enabled(bool enabled);
 
 /* `cfg.loc` apply (docs/GNSS_DISABLE_DESIGN.md D1), called from cfg.c on
  * modes_run()'s MQTT-event path: parses, applies `gnss` if present, and acks
- * `shown` immediately on success -- same timing as wificred_apply_cfg_submap().
+ * `shown` immediately on success -- same timing as lock_apply_cfg_submap().
  * A malformed sub-map is dropped without an ack. One NVS write at most. */
 void loc_apply_cfg_submap(const uint8_t *buf, uint16_t len, const char *id);
 

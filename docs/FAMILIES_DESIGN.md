@@ -320,7 +320,7 @@ hidden for super unless they hold an edge (§1.5, flagged §9).
 - **Devices** (`/family/devices`): today's `/admin/devices` table scoped to the family (owner
   picker = family members), `SetupCodePanel` unchanged, plus link to `/devices/{id}`. On
   `/devices/[id]` the SMS-contacts editor becomes read-only ("managed from People → @kid →
-  Approved numbers"), the log and Wi-Fi panel stay.
+  Approved numbers"), the log stays.
 - **Contacts** (`/family/contacts`): the family's externals (name, number, approved for which
   members, last message), rename, add; and a read-only "Linked families" list of cross-family
   edges with "ask your superadmin to link a person from another family".

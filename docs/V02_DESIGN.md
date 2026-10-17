@@ -351,7 +351,7 @@ The host must keep the flow warm itself. **After `N` seconds of uplink silence, 
 are per carrier preset (`carrier.h` `mqtt_ping_s` / `mqtt_keepalive_s`), fixed per session at
 connect: **Soracom (Beam and direct) `N` = 840 s, keepalive 1200 s; US Mobile Dark Star, Automatic,
 Carrier default and custom or unknown APNs `N` = 240 s, keepalive 480 s.** Bootstrap keepalive stays
-60 s; Wi-Fi is unchanged. (Originally `PAGER_MQTT_PING_S` = 300 s and keepalive 480 s for all.)
+60 s. (Originally `PAGER_MQTT_PING_S` = 300 s and keepalive 480 s for all.)
 
 Why a re-SUBSCRIBE and not a publish: the SUBACK proves the round trip (a QoS 0 publish proves
 nothing), it needs no ACL change and no relay-side tolerance (the broker rule forwards `/up`,

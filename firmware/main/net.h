@@ -32,17 +32,6 @@ typedef enum {
     NET_MQTT_RC_TLS_FAIL,      /* WALTER_MODEM_MQTT_TLS(-8) -> provisioning bug, 300s steady */
 } net_mqtt_rc_class_t;
 
-/* The MQTT session transport (docs/WIFI_DESIGN.md §1, docs/WIFI_TASKS.md W4).
- * Declared here, not in net_xport.h, so this header stays includable from
- * modes.c (a plain C file) without pulling in the ops-vtable header that
- * only net.cpp's dispatcher and the xport_*.c(pp) implementations need.
- * Today (W4) NET_XPORT_LTE is the only implementation that exists; WIFI is a
- * named placeholder for W5. */
-typedef enum {
-    NET_XPORT_LTE = 0,
-    NET_XPORT_WIFI,
-} net_xport_t;
-
 typedef struct {
     bool                 mqtt_connected;   /* true from SUBSCRIBED(rc==0) until the next DISCONNECTED */
     bool                 disconnect_edge;  /* set once per fresh loss; caller must ack it */
@@ -279,13 +268,7 @@ bool net_publish_raw(const char *topic, uint8_t *buf, uint16_t len, uint8_t qos)
  * the routine idle-ping/resume-repair one and the RESUB_VERDICT_RETRY one —
  * fire it right after the send succeeds, not after the SUBACK) and after any
  * successful QoS 1 publish (`/status`, `/up`; §4 item 3: a QoS 0 publish
- * proves nothing about the session and must NOT fire this). The WiFi xport
- * fires it the same way: right after MQTT_EVENT_SUBSCRIBED (its own
- * closest analogue to a liveness proof — esp-mqtt owns its PINGREQ cadence
- * itself, so there is no separate "SUBSCRIBE sent" moment there) and after
- * any QoS 1 PUBLISHED event. One callback for both transports, same
- * "registers one callback that both transports call" pattern
- * net_set_msg_cb() already uses. loc.c's device section (F3) is the one
+ * proves nothing about the session and must NOT fire this). loc.c's device section (F3) is the one
  * caller: it uses this window to check whether a tracking report is due
  * and, if so, publish inside the RRC inactivity tail this call proves is
  * open, at zero extra radio-wake cost (§4's own "rides the same RRC
@@ -302,8 +285,7 @@ void net_set_uplink_window_cb(net_uplink_window_cb_t cb);
  * If a SUBACK is already outstanding (`s_resub_wait`), this call is a
  * no-op — the report that wanted it waits for that one to resolve, same as
  * §4 item 4's own text ("If a SUBACK is outstanding, the report waits").
- * No-op on the WiFi xport (esp-mqtt owns its own PINGREQ cadence; there is
- * no raw re-SUBSCRIBE to send early). Power effect: same as an ordinary
+ * Power effect: same as an ordinary
  * liveness ping (net_service_session()'s own doc comment) — one AT round
  * trip, RRC time for one subscribe if the modem was idle. */
 void net_liveness_ping_now(void);
@@ -415,10 +397,7 @@ uint32_t net_get_resub_swallowed_count(void);
  * retry) until its SUBACK is handled or 3s (PAGER_RESUB_HOLD_MS,
  * xport_lte.cpp) elapses, whichever comes first -- modes.c's skip_sleep ORs
  * this in so the loop stays awake long enough for the URC without waiting
- * anywhere near resub_verdict.h's own 30s dead-session bound. False on the
- * WiFi transport (net_get_resub_swallowed_count()'s own "always safe to
- * call" reasoning applies here too -- the underlying counters are simply
- * never touched when LTE is not the active transport).
+ * anywhere near resub_verdict.h's own 30s dead-session bound.
  * Power effect: none of its own -- it only decides whether the caller is
  * allowed to light-sleep this iteration. */
 bool net_resub_hold(void);
@@ -454,7 +433,7 @@ void net_set_msg_cb(void (*cb)(const char *topic, const char *body, uint16_t len
  * eDRX cycle.
  * Returns false (without sleeping or touching any wake/RTS state) if the
  * input queue is non-empty after the keyboard task is parked, i.e. a key was
- * typed at the sleep edge; true after a sleep (or the WiFi-transport delay). */
+ * typed at the sleep edge; true after a sleep. */
 bool net_sleep(uint32_t ms);
 
 /* S1 (docs/SLEEP_URC_DESIGN.md §3(a)/§5): per-wake URC drain probe. Issues
@@ -471,7 +450,7 @@ bool net_sleep(uint32_t ms);
  * Single-slot in-flight guard: returns false without issuing anything if a
  * previous probe is still outstanding, if net_publish_in_flight() (a modem
  * parked at a "> " prompt would consume this probe's "AT\r\n" as payload --
- * RCA_SLEEP_PUBLISH.md §1), on the WiFi transport, or if the modem is not
+ * RCA_SLEEP_PUBLISH.md §1), or if the modem is not
  * begun / is mid-reset. An outstanding probe not answered within 3 further
  * calls to this function (3 wake intervals) is declared stuck (counted,
  * flag cleared so probing resumes) -- see net_get_probe_counters(). This
@@ -501,8 +480,7 @@ bool net_urc_probe(void);
  *             flight, or the MQTT event handler inside its own AT
  *             transaction. See net_urc_probe()'s call site for why this is
  *             not a failure but the fix for a probe backlog.
- * skip_down - wakes where there was no modem to probe at all (the WiFi
- *             transport, or WalterModem::begin()/a failed net_recover_modem()
+ * skip_down - wakes where there was no modem to probe at all (WalterModem::begin()/a failed net_recover_modem()
  *             left the modem not begun). A large number here with
  *             issued == 0 means the drain probe is OFF, which is the one
  *             reading of `probe_issued=0` the report could not previously
@@ -690,34 +668,19 @@ void net_ack_disconnect_edge(void);
  * extra if it was already active) at most once per the per-carrier liveness ping interval, or (on
  * either dead-detection edge) one AT+SQNSMQTTDISCONNECT.
  *
- * docs/WIFI_TASKS.md W4: modes.c now calls this unconditionally, every wake
+ * modes.c calls this unconditionally, every wake
  * cycle; the two suppressions (coverage duty cycle, a
  * CA-apply trial -- a third, location route 2, is gone: LOCATION_TRACKING_DESIGN.md §7)
  * that used to gate the call site instead gate the LTE
  * transport internally via net_set_lte_suppressed() below -- they are about
- * the *modem*, so they must not also silence a future WiFi transport's
- * service tick. */
+ * the *modem*. */
 void net_service_session(void);
 
-/* docs/WIFI_TASKS.md W4: the transport seam's read side. Always
- * NET_XPORT_LTE until W5 adds a second transport; exists now so a future
- * `/status` `xport` field (docs/WIFI_DESIGN.md §6) has something to read. */
-net_xport_t net_xport_active(void);
-
-/* docs/WIFI_TASKS.md W5: the only writer of the transport seam's active
- * transport (see net.cpp's own doc comment on this function for the full
- * teardown/wait/bring-up contract). A no-op if `to` is already active.
- * Callers today: main.c's debug-build `wifi on`/`wifi off` console commands
- * only -- no automatic policy calls this in phase 1 (docs/WIFI_DESIGN.md
- * §3: "nothing turns it on by itself"). */
-void net_xport_switch(net_xport_t to);
-
-/* docs/WIFI_TASKS.md W4: the suppressions that used to gate
+/* The suppressions that used to gate
  * modes.c's net_service_session() call site (coverage duty cycle, a
  * CA-apply trial -- all about the *modem*; a third, location route 2, is
  * gone, LOCATION_TRACKING_DESIGN.md §7) now gate the LTE
- * transport's service tick from inside net_service_session() instead, so a
- * future WiFi transport's tick is never silenced by them. modes.c calls this
+ * transport's service tick from inside net_service_session() instead. modes.c calls this
  * with the same boolean expression it used to guard the call site with,
  * every wake cycle, before calling net_service_session() unconditionally.
  * Power effect: none of its own -- it only decides whether the next

@@ -134,7 +134,7 @@ bool ident_set_slot12_populated(void);
 bool ident_get_tls_broken(void);
 bool ident_set_tls_broken(bool broken);
 
-/* WIFI_DESIGN.md §10.3 (W13): the one shared `ident_t`-sized scratch buffer,
+/* The one shared `ident_t`-sized scratch buffer,
  * replacing five per-call-site static copies (ident.c's own ident_load()
  * `tmp`, modes.c's on_auth_epoch_wrap() `snap`, setup.c's setup bundle `id`,
  * catrust.c's begin_unpin()/commit_apply() `snap`s) that each cost 4,460 B.

@@ -2,9 +2,8 @@
  * §3.2/§10).
  *
  * A single `cfg` push can now carry more than one sub-map (`lock`=0,
- * existing; `ca`=1; `sms`=2; `wifi`=3, docs/WIFI_DESIGN.md §4/docs/WIFI_TASKS.md
- * W3; `ota`=4, docs/OTA_DESIGN.md D5; `loc`=5, docs/GNSS_DISABLE_DESIGN.md D1) in one envelope, and each sub-map has its own apply/ack timing (`lock`/
- * `sms`/`wifi` all apply and ack immediately; `ca`'s two-phase apply,
+ * existing; `ca`=1; `sms`=2; key 3 is retired (was `wifi`, owner 16 Oct 2026, never reuse); `ota`=4, docs/OTA_DESIGN.md D5; `loc`=5, docs/GNSS_DISABLE_DESIGN.md D1) in one envelope, and each sub-map has its own apply/ack timing (`lock`/
+ * `sms` both apply and ack immediately; `ca`'s two-phase apply,
  * catrust.c, may defer the ack for several modes_run() cycles or never ack
  * at all if the apply is rejected). That ruled out the old design, where
  * lock_ingest_cfg_cbor() decoded the *whole* envelope itself and returned
@@ -12,7 +11,7 @@
  * `lock` and `ca` would have been entirely swallowed by whichever consumer
  * ran first. This module decodes the envelope exactly once, extracts the raw
  * CBOR byte span of every sub-map it recognises, and hands each span to its
- * own owning module (lock.c / catrust.c / sms.c / wificred.c) — teaching
+ * own owning module (lock.c / catrust.c / sms.c) — teaching
  * none of those modules about each other, or about `cfg`'s own envelope
  * shape.
  *
@@ -54,11 +53,6 @@ typedef struct {
      * not yet consumed — cfg_ingest_cbor() does nothing with this span. */
     bool have_sms;
     size_t sms_off, sms_len;
-
-    /* `wifi`=3 (docs/WIFI_DESIGN.md §4, docs/WIFI_TASKS.md W3): the WiFi
-     * `{en, nets}` sub-map. Dispatched to wificred_apply_cfg_submap(). */
-    bool have_wifi;
-    size_t wifi_off, wifi_len;
 
     /* `ota`=4 (docs/OTA_DESIGN.md D5): the firmware-update job sub-map.
      * Dispatched to ota_apply_cfg_submap(). */
@@ -106,12 +100,11 @@ bool cfg_parse(const uint8_t *buf, uint16_t len, bool sig_pair_present, cfg_disp
  * pre-existing behaviour) and `ca`'s span to catrust_apply_cfg_submap()
  * (records the request only — the two-phase apply itself runs from
  * catrust_service(), modes_run()'s own task, never from this MQTT-event-task
- * call). `sms`'s span goes to sms_apply_cfg_submap() and `wifi`'s span
- * (docs/WIFI_TASKS.md W3) goes to wificred_apply_cfg_submap() — both apply +
- * ack `shown` immediately, same timing as `lock`; so does `loc`'s span
+ * call). `sms`'s span goes to sms_apply_cfg_submap(), applying +
+ * acking `shown` immediately, same timing as `lock`; so does `loc`'s span
  * (docs/GNSS_DISABLE_DESIGN.md D1), to loc_apply_cfg_submap(). No modem or sleep-state
- * effect of its own beyond whatever lock.c's/catrust.c's/sms.c's/
- * wificred.c's own handlers already document. */
+ * effect of its own beyond whatever lock.c's/catrust.c's/sms.c's
+ * own handlers already document. */
 bool cfg_ingest_cbor(const uint8_t *buf, uint16_t len);
 #endif /* ESP_PLATFORM */
 

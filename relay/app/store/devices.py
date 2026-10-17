@@ -111,15 +111,8 @@ class DeviceStatus(BaseModel):
     # republish (ingest.py) treats a changed `link` exactly like a changed
     # `session`.
     link: int | None = None
-    # docs/WIFI_DESIGN.md §6/§7, docs/PROTOCOL.md §5.1 (docs/WIFI_TASKS.md
-    # W7): which physical transport carried this session -- display/
-    # diagnosis only, same as `tls`/`ca_fp` above. Also read by
-    # `app/routers/devices.py`'s `PUT /api/devices/{id}/wifi` guard, which
-    # refuses to push `cfg.wifi.nets` unless `tls == "pinned"` (not `xport`
-    # -- `xport` itself gates nothing, `tls` is the security-relevant field).
-    xport: Literal["lte", "wifi"] | None = None
     # Crash diagnostics (docs/PROTOCOL.md §5.1, this task): display/
-    # diagnosis only, same as `xport`/`tls` above -- the relay stores
+    # diagnosis only, same as `tls` above -- the relay stores
     # whatever the device reports and never writes it back or acts on it.
     rst: int | None = None
     stage: int | None = None
@@ -286,14 +279,13 @@ class Device(BaseModel):
     bookVersion: int = 0
     # docs/DEVICE_PLAN.md §4.3/§5.8, app/devcfg.py's module docstring: each
     # of the five independent "newest unacked" pending-push slots
-    # (book/lock/ca/sms/wifi), written directly via `get_db()` by
+    # (book/lock/ca/sms/loc/ota/ast), written directly via `get_db()` by
     # `app/devcfg.py`, same "not modelled, so silently dropped on read"
     # story as `bookVersion` above.
     pendingBook: PendingPush | None = None
     pendingCfg: PendingPush | None = None
     pendingCfgCa: PendingPush | None = None
     pendingCfgSms: PendingPush | None = None
-    pendingCfgWifi: PendingPush | None = None
     pendingCfgLoc: PendingPush | None = None
     # docs/GNSS_DISABLE_DESIGN.md D2: desired GNSS state, pushed as
     # `cfg.loc.gnss`. Not a secret; default enabled.

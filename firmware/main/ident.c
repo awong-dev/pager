@@ -15,7 +15,7 @@ static const char *NVS_NS = "ident";
 
 static ident_t s_ident;
 
-/* W13 (WIFI_DESIGN.md §10.3): the one shared scratch, see ident.h's doc
+/* the one shared scratch, see ident.h's doc
  * comment on ident_scratch(). This is the "keep one of them" copy — the
  * ident.c one is the natural home since ident_load() already needed a
  * static, off-the-stack ident_t before this task. */
@@ -146,7 +146,7 @@ bool ident_load(void)
         return false;
     }
 
-    /* W13 (WIFI_DESIGN.md §10.3): the shared scratch, not a private static —
+    /* the shared scratch, not a private static —
      * ident_t carries a 4 kB `ca` buffer and this runs on the main task; as a
      * plain stack local it overflowed that stack on the first boot that
      * actually had an identity in NVS (confirmed on hardware: reset loop

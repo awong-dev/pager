@@ -1,5 +1,4 @@
-// xport_lte.cpp — the LTE-M MQTT transport (docs/WIFI_DESIGN.md §1,
-// docs/WIFI_TASKS.md W4). This is the MQTT session code that used to live in
+// xport_lte.cpp — the LTE-M MQTT transport (split out of net.cpp). This is the MQTT session code that used to live in
 // net.cpp, moved here **verbatim** behind net_xport.h's ops vtable: every
 // function body below is byte-identical to its pre-move counterpart in
 // net.cpp except for (a) its name, prefixed `lte_` to match the vtable field
@@ -283,9 +282,8 @@ static void lte_resub_hold_note_suback(int64_t now)
 // time and has not yet had its SUBACK handled (lte_resub_hold_note_suback()
 // above). False once the SUBACK lands, once the hold window itself elapses
 // (the loop gives up and reverts to its ordinary sleep policy), or when
-// nothing is outstanding -- s_resub_hold_sent_us is 0 on the WiFi transport
-// (this file's send sites never run), so this is false there too, matching
-// net_resub_hold()'s own doc comment. Power effect: none of its own -- it
+// nothing is outstanding -- s_resub_hold_sent_us is 0 until the first send,
+// so this is false then too, matching net_resub_hold()'s own doc comment. Power effect: none of its own -- it
 // only decides whether the *caller* (modes.c) is allowed to light-sleep this
 // iteration.
 bool lte_resub_hold(void)

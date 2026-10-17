@@ -8,7 +8,6 @@
 // All power-effect comments are PENDING_HW.
 
 #include "msg.h"
-#include "extram.h"
 
 #include <string.h>
 
@@ -546,7 +545,7 @@ void msg_count_malformed(void)
 // same lock as the RTC struct — see msg.h's header comment for why.
 // ---------------------------------------------------------------------------
 
-static EXT_RAM_BSS_ATTR msg_t s_thread[MSG_THREAD_DEPTH]; /* 13 KB, PSRAM .bss (extram.h): task context only, under s_lock */
+static msg_t s_thread[MSG_THREAD_DEPTH];
 
 static bool s_history_lost_pending = false;
 static char s_last_ingest_id[MSG_ID_MAX] = "";
@@ -751,7 +750,7 @@ static void history_restore(void)
         return; // namespace not created yet: msghist mounted fine but nothing was ever written
     }
 
-    // W13 (WIFI_DESIGN.md §10.3): heap, not `static` — this ran once at boot
+    // heap, not `static` — this ran once at boot
     // anyway, so a 13,056 B buffer parked in .bss for the rest of the boot
     // bought nothing. Freed on every exit path below, including the early
     // returns. If the allocation fails, skip the restore rather than fail

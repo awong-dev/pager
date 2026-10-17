@@ -1,6 +1,5 @@
 """docs/GNSS_DISABLE_DESIGN.md: `cfg.loc.gnss` wire shapes, push/ack/pending
-(`app/devcfg.py`), and `GET`/`PUT /api/devices/{id}/gnss`. Fixtures mirror
-`tests/test_wifi.py`."""
+(`app/devcfg.py`), and `GET`/`PUT /api/devices/{id}/gnss`. """
 
 from __future__ import annotations
 
@@ -12,6 +11,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import devcfg, wirecbor
+from app.config import Settings
 from app.main import create_app
 from app.store import backends as backends_store
 from app.store import devices as devices_store
@@ -19,7 +19,19 @@ from app.store import users as users_store
 from app.wire import StatusEnvelope
 from tests.fake_transport import FakeBrokerClient
 from tests.firebase_test_utils import auth_header
-from tests.test_wifi import make_settings
+
+
+def make_settings() -> Settings:
+    return Settings(
+        broker_api_url="http://unused.invalid/api/v5",
+        broker_api_key=None,
+        broker_api_secret=None,
+        webhook_key="test-webhook-key",
+        dev_mode=True,
+        google_cloud_project=None,
+        firestore_emulator_host=None,
+        firebase_auth_emulator_host=None,
+    )
 
 
 def _make_user(uid: str) -> None:
@@ -53,12 +65,6 @@ def test_cfg_loc_cbor_shape_and_round_trip():
     raw = wirecbor.encode(obj)
     assert cbor2.loads(raw)[wirecbor.KEYMAP["cfg"]] == {5: {0: False}}
     assert wirecbor.decode(raw)["cfg"] == {"loc": {"gnss": False}}
-
-
-def test_cfg_loc_alongside_wifi_round_trips():
-    obj = {"v": 1, "id": "m_aabbccdd", "ts": 1_700_000_000, "kind": "cfg",
-           "cfg": {"wifi": {"en": True}, "loc": {"gnss": True}}, "ack": None}  # fmt: skip
-    assert wirecbor.decode(wirecbor.encode(obj))["cfg"] == obj["cfg"]
 
 
 def test_status_gnss_key_69_round_trips():

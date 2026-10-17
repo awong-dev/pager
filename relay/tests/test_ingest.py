@@ -690,38 +690,21 @@ def test_status_with_loc_move_s_stores_loc_move_s():
     assert devices_store.get_device("pgr-locmove-1").status.locMoveS == 3600
 
 
-# ---- docs/WIFI_DESIGN.md §6/§7, docs/WIFI_TASKS.md W7: `xport` ----
+# ---- retired /status key 52 `xport` (owner, 16 Oct 2026) ----
 
 
-def test_status_persists_xport():
-    _make_user("wifiuser1", "wifiuser1")
-    _make_pager_device("pgr-xport-1", "wifiuser1")
+def test_status_with_retired_xport_is_accepted_and_not_stored():
+    _make_user("xportuser1", "xportuser1")
+    _make_pager_device("pgr-xport-1", "xportuser1")
     ingest, _broker = _ingest()
 
     ingest.handle_status(
         status_topic("pgr-xport-1"), online_status_payload("s_00000001", xport="wifi")
     )
-    assert devices_store.get_device("pgr-xport-1").status.xport == "wifi"
 
-    ingest.handle_status(
-        status_topic("pgr-xport-1"), online_status_payload("s_00000002", xport="lte")
-    )
-    assert devices_store.get_device("pgr-xport-1").status.xport == "lte"
-
-
-def test_status_without_xport_still_validates_and_leaves_it_unknown():
-    """Absent-field compatibility (docs/PROTOCOL.md §0): a `/status` from
-    firmware that predates the WiFi transport must still validate, and
-    `xport` is reported as unknown (`None`), not defaulted to `lte`."""
-    _make_user("wifiuser2", "wifiuser2")
-    _make_pager_device("pgr-xport-2", "wifiuser2")
-    ingest, _broker = _ingest()
-
-    ingest.handle_status(status_topic("pgr-xport-2"), online_status_payload("s_00000001"))
-
-    assert devices_store.get_device("pgr-xport-2").status.xport is None
-    # No malformed-payload drop: the status was accepted and stored.
-    assert devices_store.get_device("pgr-xport-2").status.state == "online"
+    dev = devices_store.get_device("pgr-xport-1")
+    assert dev.status.state == "online"
+    assert not hasattr(dev.status, "xport")
 
 
 # ---- Crash diagnostics (this task, docs/PROTOCOL.md §5.1): `rst`/`stage`/`abn` ----

@@ -15,7 +15,8 @@
 #define CFG_KEY_LOCK 0
 #define CFG_KEY_CA 1
 #define CFG_KEY_SMS 2
-#define CFG_KEY_WIFI 3
+/* cfg key 3 (`wifi`) is retired: never reuse it. A stale cfg.wifi falls into parse_cfg_submap()'s
+ * skip-unknown default, unacked (owner, 16 Oct 2026). */
 #define CFG_KEY_OTA 4
 #define CFG_KEY_LOC 5 /* docs/GNSS_DISABLE_DESIGN.md D1 */
 #define CFG_KEY_AST 6 /* docs/ASSETS_OTA_DESIGN.md section 3: font image job */
@@ -63,12 +64,6 @@ static bool parse_cfg_submap(cbor_r_t *r, cfg_dispatch_t *out)
                 return false;
             }
             out->have_sms = true;
-            break;
-        case CFG_KEY_WIFI:
-            if (!skip_capture(r, &out->wifi_off, &out->wifi_len)) {
-                return false;
-            }
-            out->have_wifi = true;
             break;
         case CFG_KEY_OTA:
             if (!skip_capture(r, &out->ota_off, &out->ota_len)) {
@@ -172,7 +167,6 @@ bool cfg_parse(const uint8_t *buf, uint16_t len, bool sig_pair_present, cfg_disp
 #include "msg.h"
 #include "ota.h"
 #include "sms.h"
-#include "wificred.h"
 
 bool cfg_ingest_cbor(const uint8_t *buf, uint16_t len)
 {
@@ -194,12 +188,6 @@ bool cfg_ingest_cbor(const uint8_t *buf, uint16_t len)
          * immediate-apply-and-ack timing `cfg.lock` already uses. */
         sms_apply_cfg_submap(buf + d.sms_off, (uint16_t) d.sms_len, d.id);
     }
-    if (d.have_wifi) {
-        /* docs/WIFI_TASKS.md W3: applies + acks `shown` immediately (see
-         * wificred_apply_cfg_submap()'s own doc comment) — same
-         * immediate-apply-and-ack timing `cfg.lock`/`cfg.sms` already use. */
-        wificred_apply_cfg_submap(buf + d.wifi_off, (uint16_t) d.wifi_len, d.id);
-    }
     if (d.have_ota) {
         /* docs/OTA_DESIGN.md D5: acks `shown` on acceptance or rejection; the
          * download itself is driven from ota_service() in modes_run(). */
@@ -213,7 +201,7 @@ bool cfg_ingest_cbor(const uint8_t *buf, uint16_t len)
     if (d.have_loc) {
         /* docs/GNSS_DISABLE_DESIGN.md D1: applies + acks `shown` immediately
          * (see loc_apply_cfg_submap()'s own doc comment) -- same timing as
-         * `cfg.wifi`. */
+         * `cfg.lock`. */
         loc_apply_cfg_submap(buf + d.loc_off, (uint16_t) d.loc_len, d.id);
     }
 
