@@ -2,9 +2,19 @@
 
 KiCad 10 projects for the carrier board that replaces the Adafruit breakouts
 around the Walter module, and for the small panel board that drives the
-2.9" SSD1680 e-ink glass. Both are generated from Python under `gen/`; the
-generated `.kicad_*` files are committed and can be edited in KiCad from here
-on (re-running the generator overwrites them).
+2.9" SSD1680 e-ink glass. Both started as Python under `gen/`.
+
+**Carrier: hand-edited since 19 Oct 2026** (commit "Manually review and fix
+carrier board schematic"). The carrier `.kicad_sch` files are the source of
+truth; `gen/carrier.py` / `gen/carrier_pcb.py` / `gen/build.py` describe the
+17 Oct version and must NOT be re-run (they overwrite the hand edits). The
+carrier `.kicad_pcb` still matches the 17 Oct netlist and needs "Update PCB
+from schematic" after the schematic rework.
+
+**Panel: still generated.** `gen/panel.py` + `gen/panel_pcb.py` are current;
+regenerate only the panel with a driver that calls `build.build_panel(True)`
+(never `build.py`'s main, which rebuilds the carrier too), then
+`panel_pcb.py --route` and `finish_pcb.py panel` with KiCad's python.
 
 Brief: the "Pager Carrier Board — KiCad Handoff" doc (17 Oct 2026). The owner
 added two changes on 17 Oct: the fuel gauge is populated, and the e-ink ZIF and
@@ -117,6 +127,23 @@ tail end), and the USB-C at 6.5 is the only thing taller than 3.5 mm.
    is dropped (needs 1.8 V headroom, and was a 20 mA part): R-FL is a 33 Ω 1206
    from SYS_SW (18 mA at a 3.4 V cell, 42 mA at 4.2 V, 50 mA on USB); dim or
    compensate with FL_PWM. 27 Ω is the brightest safe value (60 mA on USB).
+   *19 Oct (owner):* the ballast is 0 Ω and Q4 (now AO3400A) carries a 15 Ω
+   source resistor with an MMBT3904 base-emitter across it, a ~45 mA clamp that
+   is independent of SYS and of firmware; the 1 k gate resistor lets the BJT
+   pull the gate down. Fits both the FL03 (60 mA max) and the Orient
+   AEZ122250A00 light (3 LEDs, 45 mA at Vf 3.3 V).
+8b. **Two front-light ZIF positions on the panel board** (19 Oct). The 6-pin
+   light flex pinout (1-2 anode, 3-4 NC, 5-6 cathode) is the same on every
+   panel seen, but where the tail leaves the glass is not. J3 "FL-A" (fitted)
+   is for the FL03 corner tail; J4 "FL-B" (DNP, x = 9.2 mm, 10.8 mm from J1 on
+   its pin-24 side) is for the Orient AEZ122250A00-2.13ENRWS tail that runs
+   beside the display tail. The Orient light's pin numbers run opposite to its
+   display tail's, so J4 is wired 1-2 cathode / 5-6 anode. The cable's FL_P /
+   FL_N reach FL_A / FL_K through four 0 Ω links: R1/R2 straight (fitted),
+   R3/R5 crossover (DNP), so a tail whose polarity turns out mirrored is a
+   resistor swap. The display ZIF J1 and its reference circuit (47 µH, 2.2 Ω,
+   MBR0530, 1 µF/25 V, BS1 low) are identical in the Good Display and Orient
+   sheets, so the same panel board takes either glass.
 9. **Front-light button** SW2 (owner, 17 Oct): FL_BTN on IO4 (header pin 15,
    RTC GPIO so it can be an ext1 wake), 100 k pull-up to 3V3, 100 nF, switch to
    GND. IO4 was a spare test-pad pin; TP13 still touches it. Firmware needs a
@@ -179,7 +206,11 @@ VSET resistor; there is no fixed-3.3 V code. The 267 k 0603 stays.
   face mirrors the pin order (1↔24). The footprint keeps the FH12
   bottom-contact convention from the first pass; confirm on a physical panel
   before ordering. Same for the 6-pin front-light tail (a mirror there only
-  swaps anode and cathode: no light, no damage).
+  swaps anode and cathode: no light, no damage; fix = move the 0 Ω links
+  R1/R2 to R3/R5 on the panel board).
+- UC8151 / IL0373 panels (Good Display GDEW series, Waveshare non-V2) use a
+  different RESE value; if those must fit, give R4 a second parallel 0603
+  footprint and confirm the value from a specific sheet.
 - Walter header geometry against a physical module before ordering.
 - Battery lead polarity (Adafruit 328) versus J2 pin 1.
 - LTE peak current at VIN on the bench, to confirm 100 µF + 10 µF and the

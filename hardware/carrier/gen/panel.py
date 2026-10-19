@@ -3,17 +3,35 @@ battery. Carries the GDEY029T94 FPC ZIF, the SSD1680 boost/charge-pump
 cluster from the Good Display reference circuit, and the 8-pin JST SH cable
 connector to the carrier."""
 
-from carrier import Grid, Counter, res, cap, fields, two_pin, grp, C_FP, C0805, SH10, PANEL_CABLE
+from carrier import Grid, Counter, res, cap, fields, two_pin, grp, C_FP, C0805
+
+SH10 = "Connector_JST:JST_SH_SM10B-SRSS-TB_1x10-1MP_P1.00mm_Horizontal"
+# 10-way SH cable to the carrier's J3, 1:1. Signal names follow the carrier
+# schematic (hand-edited 19 Oct 2026): EINK_* and FL_P/FL_N.
+PANEL_CABLE = ["3V3_EPD", "GND", "EINK_SCK", "EINK_MOSI", "EINK_CS", "EINK_DC", "EINK_RST", "EINK_BUSY",
+               "FL_P", "FL_N"]
 
 ZIF_FP = "pager-carrier:Hirose_FH34SRJ-24S-0.5SH_1x24-1MP_P0.50mm_Horizontal"
 FL_ZIF_FP = "pager-carrier:Hirose_FH34SRJ-6S-0.5SH_1x06-1MP_P0.50mm_Horizontal"
-# GDEY029T94-FL03 drawing (2023-08-09): front-light flex 6 pins 0.5 mm, 3.5 mm wide, ~30 mm long
-FL_PINS = {1: "FL_ANODE", 2: "FL_ANODE", 3: "NC", 4: "NC", 5: "FL_CATHODE", 6: "FL_CATHODE"}
+# Front-light flex: 6 pins 0.5 mm, 3.5 mm wide, 1-2 anode, 3-4 NC, 5-6 cathode on
+# every panel seen so far. Where the tail leaves the glass differs per panel, so
+# the board carries two ZIF positions and only one is fitted:
+#   J3 "FL-A": GDEY029T94-FL03 drawing (2023-08-09), tail leaves at the corner
+#        next to the display tail, ~30 mm long, pin numbering assumed to run
+#        the same way as the display tail.
+#   J4 "FL-B": Orient AEZ122250A00-2.13ENRWS drawing (28 Apr 2024), tail runs
+#        parallel to the display tail on its pin-24 side, 10.8 mm centre to
+#        centre, 17.8 mm long; its pin numbers run OPPOSITE to the display
+#        tail's, so pins 1-2 are the cathode once both ZIFs sit the same way.
+# Either way the cable's FL_P/FL_N reach the ZIFs through a 0R crossover
+# (R1-R3, R5) so a mirrored tail is a resistor swap, not a respin.
+FL_PINS_A = {1: "FL_A", 2: "FL_A", 3: "NC", 4: "NC", 5: "FL_K", 6: "FL_K"}
+FL_PINS_B = {1: "FL_K", 2: "FL_K", 3: "NC", 4: "NC", 5: "FL_A", 6: "FL_A"}
 
-# GDEY029T94 spec (24.10.22) FPC pin table
+# GDEY029T94 spec (24.10.22) FPC pin table; identical on the Orient AEZ122250A00
 FPC_PINS = {
     1: "NC", 2: "EPD_GDR", 3: "EPD_RESE", 4: "NC", 5: "EPD_VSH2", 6: "NC", 7: "NC", 8: "GND",
-    9: "EPD_BUSY", 10: "EPD_RST", 11: "EPD_DC", 12: "EPD_CS", 13: "EPD_SCK", 14: "EPD_MOSI",
+    9: "EINK_BUSY", 10: "EINK_RST", 11: "EINK_DC", 12: "EINK_CS", 13: "EINK_SCK", 14: "EINK_MOSI",
     15: "3V3_EPD", 16: "3V3_EPD", 17: "GND", 18: "EPD_VDD", 19: "NC", 20: "EPD_VSH1", 21: "EPD_VGH",
     22: "EPD_VSL", 23: "EPD_VGL", 24: "EPD_VCOM",
 }
@@ -28,7 +46,8 @@ def build(prj, lib):
         cnt.use(r)
     sh = prj.add_sheet("panel", "panel_main.kicad_sch", paper="A3",
                        title="SSD1680 panel board: ZIF, boost and charge pump, cable to carrier")
-    sh.text("Panel board for the Good Display GDEY029T94 (2.9\" 296x128, SSD1680). Reference circuit from the GDEY029T94 specification (24.10.22): RESE 2.2R, L 47uH, MBR0530 x3, 25 V caps.", (20, 20), 1.5, True)
+    sh.text("Panel board for 24-pin 0.5 mm SSD1680/SSD1681 e-paper (Good Display GDEY029T94 2.9\" 296x128, Orient AEZ122250A00 2.13\" 122x250, ...). "
+            "Reference circuit identical in both sheets: RESE 2.2R, L 47uH, MBR0530 x3, 25 V caps, BS1 low (4-wire SPI).", (20, 20), 1.5, True)
     # --- J1 ZIF -----------------------------------------------------------
     j1 = sh.place("J1", "Connector_Generic:Conn_01x24", 60, 110, value="GDEY029T94 FPC", footprint=ZIF_FP,
                   fields=fields("FH34SRJ-24S-0.5SH(50)", Note="1.0 mm high, top+bottom contact; FPC folded 180 deg under the glass; confirm pin-1 side on a panel"))
@@ -42,20 +61,33 @@ def build(prj, lib):
     for p, n in enumerate(PANEL_CABLE, 1):
         sh.net(j2, p, n, stub=2)
 
-    # --- J3 front-light ZIF ------------------------------------------
-    sh.text("J3: GDEY029T94-FL03 front-light flex (6 pins, 0.5 mm): 1-2 anode, 3-4 NC, 5-6 cathode. 4 LEDs in parallel, Vf 2.8 V typ, 60 mA max. Driven from the carrier (R-FL + Q4) over cable pins 9/10.", (20, 262), 1.27)
-    j3 = sh.place("J3", "Connector_Generic:Conn_01x06", 60, 290, value="FRONTLIGHT FPC", footprint=FL_ZIF_FP,
-                  fields=fields("FH34SRJ-6S-0.5SH(50)", Note="1.0 mm high; flex tail is ~30 mm long, folds under with the display tail"))
-    for p, n in FL_PINS.items():
+    # --- front-light ZIFs, two positions, one fitted ------------------
+    sh.text("Front light: 6-pin 0.5 mm flex, 1-2 anode, 3-4 NC, 5-6 cathode (GDEY029T94-FL03: 4 LEDs, Vf 2.8 V typ, 60 mA max; Orient AEZ122250A00: 3 LEDs, 45 mA at 3.3 V).\n"
+            "Driven from the carrier (Q4 + 15R clamp, ~45 mA) over cable pins 9/10. Two ZIF positions, fit ONE: J3 FL-A for a tail leaving at the glass corner (FL03), "
+            "J4 FL-B for a tail running beside the display tail on its pin-24 side (Orient; its pin numbers run opposite, so 1-2 = cathode).\n"
+            "R1/R2 (fit) pass FL_P->FL_A, FL_N->FL_K; R3/R5 (DNP) cross them over for a tail whose polarity turns out mirrored.", (20, 262), 1.27)
+    j3 = sh.place("J3", "Connector_Generic:Conn_01x06", 60, 295, value="FL-A FPC (FL03)", footprint=FL_ZIF_FP,
+                  fields=fields("FH34SRJ-6S-0.5SH(50)", Note="1.0 mm high; GDEY029T94-FL03 corner tail (~30 mm); fit this OR J4"))
+    for p, n in FL_PINS_A.items():
         sh.net(j3, p, n, stub=2)
+    j4 = sh.place("J4", "Connector_Generic:Conn_01x06", 110, 295, value="FL-B FPC (Orient)", footprint=FL_ZIF_FP,
+                  fields=fields("FH34SRJ-6S-0.5SH(50)", dnp=True, Note="1.0 mm high; Orient AEZ122250A00 parallel tail (17.8 mm); fit this OR J3"), dnp=True)
+    for p, n in FL_PINS_B.items():
+        sh.net(j4, p, n, stub=2)
+    grp("FL")
+    g = Grid(150, 285, 12.7, 20.32, 4)
+    res(sh, cnt, "0R", "FL_P", "FL_A", g.next(), mpn="0603WAF0000T5E", fields={"Note": "FL straight (fit)"})
+    res(sh, cnt, "0R", "FL_N", "FL_K", g.next(), mpn="0603WAF0000T5E", fields={"Note": "FL straight (fit)"})
+    res(sh, cnt, "0R", "FL_P", "FL_K", g.next(), mpn="0603WAF0000T5E", dnp=True, fields={"Note": "FL crossover (DNP)"})
+    res(sh, cnt, "0R", "FL_N", "FL_A", g.next(), mpn="0603WAF0000T5E", dnp=True, fields={"Note": "FL crossover (DNP)"})
     sh.pwr_flag("3V3_EPD", (200, 30))
     sh.pwr_flag("GND", (210, 30))
 
     # --- pull-ups and decoupling ----------------------------------------
     grp("J1")
     g = Grid(130, 60, 12.7, 20.32, 4)
-    res(sh, cnt, "10k", "EPD_RST", "3V3_EPD", g.next(), mpn="0603WAF1002T5E")
-    res(sh, cnt, "10k", "EPD_CS", "3V3_EPD", g.next(), mpn="0603WAF1002T5E")
+    res(sh, cnt, "10k", "EINK_RST", "3V3_EPD", g.next(), mpn="0603WAF1002T5E")
+    res(sh, cnt, "10k", "EINK_CS", "3V3_EPD", g.next(), mpn="0603WAF1002T5E")
     cap(sh, cnt, "10uF", "3V3_EPD", "GND", g.next(), mpn="CL10A106KP8NNNC", fields={"Note": "VCI"})
     cap(sh, cnt, "1uF", "3V3_EPD", "GND", g.next(), mpn="CL10A105KA8NNNC", fields={"Note": "VCI"})
     cap(sh, cnt, "1uF", "EPD_VDD", "GND", g.next(), mpn="CL10A105KA8NNNC", fields={"Note": "VDD 1.8 V LDO out"})

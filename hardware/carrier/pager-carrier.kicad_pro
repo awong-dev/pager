@@ -667,12 +667,60 @@
           "label": "Datasheet",
           "name": "Datasheet",
           "show": true
+        },
+        {
+          "group_by": false,
+          "label": "Note",
+          "name": "Note",
+          "show": false
+        },
+        {
+          "group_by": false,
+          "label": "Sim.Device",
+          "name": "Sim.Device",
+          "show": false
+        },
+        {
+          "group_by": false,
+          "label": "Sim.Pins",
+          "name": "Sim.Pins",
+          "show": false
+        },
+        {
+          "group_by": false,
+          "label": "MPN",
+          "name": "MPN",
+          "show": false
+        },
+        {
+          "group_by": false,
+          "label": "Description",
+          "name": "Description",
+          "show": false
+        },
+        {
+          "group_by": false,
+          "label": "LCSC",
+          "name": "LCSC",
+          "show": false
+        },
+        {
+          "group_by": false,
+          "label": "#",
+          "name": "${ITEM_NUMBER}",
+          "show": false
+        },
+        {
+          "group_by": false,
+          "label": "DNP",
+          "name": "DNP",
+          "show": false
         }
       ],
       "filter_string": "",
       "group_symbols": true,
       "include_excluded_from_bom": true,
-      "name": "Default Editing",
+      "name": "",
       "sort_asc": true,
       "sort_field": "Reference"
     },
@@ -733,9 +781,19 @@
         "filename": "pager-carrier.kicad_sch",
         "name": "pager-carrier",
         "uuid": "10ec5e8c-30f8-50c5-8dd4-a077611d8ec6"
+      },
+      {
+        "filename": "core_components.kicad_sch",
+        "name": "Core",
+        "uuid": "4c77a02c-35a9-4533-b036-187d3e0c67ce"
+      },
+      {
+        "filename": "power_components.kicad_sch",
+        "name": "Power",
+        "uuid": "ab8ee99e-0f89-4d3d-ba18-cf2cd7eb7e8f"
       }
     ],
-    "used_designators": "#FLG1-7,SW2,TP1-6,TP11,U7-9,U11,JP2,R20,R27-49,Q3-5,#PWR27,#PWR68,#PWR85-90,#PWR103,#PWR109-113,#PWR121,#PWR126-127,#PWR132-138,#PWR140,#PWR145-147,#PWR150,C20-32,J3-4,J6-8",
+    "used_designators": "L3,#FLG1-14,C2,C9-10,C15-48,U2,U4,U7-9,U11-16,SW2-4,TP1-6,TP11-22,JP2-3,R6-7,R10,R20-76,Q2-8,D5,#PWR2,#PWR4,#PWR18-19,#PWR24,#PWR26-27,#PWR45,#PWR49,#PWR52,#PWR61,#PWR68,#PWR77,#PWR79,#PWR85-96,#PWR103-104,#PWR109-116,#PWR121-122,#PWR126-129,#PWR132-141,#PWR145-148,#PWR150-151,M2,J3-14",
     "variants": []
   },
   "sheets": [
@@ -750,6 +808,14 @@
     [
       "6f93263e-1dbf-5cc0-a024-77796d87bf0e",
       "core"
+    ],
+    [
+      "4c77a02c-35a9-4533-b036-187d3e0c67ce",
+      "Core"
+    ],
+    [
+      "ab8ee99e-0f89-4d3d-ba18-cf2cd7eb7e8f",
+      "Power"
     ]
   ],
   "text_variables": {},

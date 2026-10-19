@@ -2837,7 +2837,7 @@
 			(embedded_fonts no)
 		)
 	)
-	(text "Panel board for the Good Display GDEY029T94 (2.9\" 296x128, SSD1680). Reference circuit from the GDEY029T94 specification (24.10.22): RESE 2.2R, L 47uH, MBR0530 x3, 25 V caps."
+	(text "Panel board for 24-pin 0.5 mm SSD1680/SSD1681 e-paper (Good Display GDEY029T94 2.9\" 296x128, Orient AEZ122250A00 2.13\" 122x250, ...). Reference circuit identical in both sheets: RESE 2.2R, L 47uH, MBR0530 x3, 25 V caps, BS1 low (4-wire SPI)."
 		(exclude_from_sim no)
 		(at 20 20 0)
 		(effects
@@ -2847,7 +2847,7 @@
 			)
 			(justify left top)
 		)
-		(uuid "9b509afd-60b8-56a2-a6fe-2711f48efcbf")
+		(uuid "c44d308f-e1cd-5881-a960-7ee68d1838ce")
 	)
 	(no_connect
 		(at 54.61 82.55)
@@ -2956,7 +2956,7 @@
 		)
 		(uuid "c2a25883-ba90-5bc2-a950-bc3a7ca18d32")
 	)
-	(global_label "EPD_BUSY"
+	(global_label "EINK_BUSY"
 		(shape passive)
 		(at 49.53 102.87 180)
 		(fields_autoplaced yes)
@@ -2966,7 +2966,7 @@
 			)
 			(justify right)
 		)
-		(uuid "edcc3399-e90d-5eb1-a0d2-df108eae62b0")
+		(uuid "a28e6bb5-07e7-5444-93fd-4c0150c53934")
 	)
 	(wire
 		(pts
@@ -2979,7 +2979,7 @@
 		)
 		(uuid "2493639b-88e3-5611-a7b5-998c55b8adad")
 	)
-	(global_label "EPD_RST"
+	(global_label "EINK_RST"
 		(shape passive)
 		(at 49.53 105.41 180)
 		(fields_autoplaced yes)
@@ -2989,7 +2989,7 @@
 			)
 			(justify right)
 		)
-		(uuid "8344a1da-c220-5755-8b98-219e6814771e")
+		(uuid "77b77cda-7647-545e-8757-8ca6d6a46949")
 	)
 	(wire
 		(pts
@@ -3002,7 +3002,7 @@
 		)
 		(uuid "0c428da5-d0f8-5f9b-8b2e-b34a380d78cc")
 	)
-	(global_label "EPD_DC"
+	(global_label "EINK_DC"
 		(shape passive)
 		(at 49.53 107.95 180)
 		(fields_autoplaced yes)
@@ -3012,7 +3012,7 @@
 			)
 			(justify right)
 		)
-		(uuid "2cc9d91f-3c37-5a91-90a9-5f679726b663")
+		(uuid "82327130-6eff-5ae9-bf8f-e5779f79eec0")
 	)
 	(wire
 		(pts
@@ -3025,7 +3025,7 @@
 		)
 		(uuid "fc1c5f84-0559-5cfb-8aaa-dff17828399d")
 	)
-	(global_label "EPD_CS"
+	(global_label "EINK_CS"
 		(shape passive)
 		(at 49.53 110.49 180)
 		(fields_autoplaced yes)
@@ -3035,7 +3035,7 @@
 			)
 			(justify right)
 		)
-		(uuid "c7e85ccc-a55c-5db0-a8b7-a8f069d02acf")
+		(uuid "f23f1c05-5697-55e2-8268-e02d2a2cefb8")
 	)
 	(wire
 		(pts
@@ -3048,7 +3048,7 @@
 		)
 		(uuid "30531dc2-44ef-57a9-bc4a-ca52d1f56f0a")
 	)
-	(global_label "EPD_SCK"
+	(global_label "EINK_SCK"
 		(shape passive)
 		(at 49.53 113.03 180)
 		(fields_autoplaced yes)
@@ -3058,7 +3058,7 @@
 			)
 			(justify right)
 		)
-		(uuid "dbbf2831-0930-5d69-b36c-d93f6fe24354")
+		(uuid "98594a7f-f5e9-5473-a795-cef9c7f04e69")
 	)
 	(wire
 		(pts
@@ -3071,7 +3071,7 @@
 		)
 		(uuid "42bec293-d6a6-5b85-9e61-1c68be3b988c")
 	)
-	(global_label "EPD_MOSI"
+	(global_label "EINK_MOSI"
 		(shape passive)
 		(at 49.53 115.57 180)
 		(fields_autoplaced yes)
@@ -3081,7 +3081,7 @@
 			)
 			(justify right)
 		)
-		(uuid "74bce5b8-5274-564c-82dd-73c703d52027")
+		(uuid "62abc96b-2e14-5a30-81a5-d46edbb78296")
 	)
 	(wire
 		(pts
@@ -3302,7 +3302,7 @@
 		)
 		(uuid "27d4c73e-423e-5987-86ab-d7e58bfe803f")
 	)
-	(global_label "EPD_SCK"
+	(global_label "EINK_SCK"
 		(shape passive)
 		(at 49.53 214.63 180)
 		(fields_autoplaced yes)
@@ -3312,7 +3312,7 @@
 			)
 			(justify right)
 		)
-		(uuid "8e98b1bd-c6ae-5fce-90f5-83c05d014e5d")
+		(uuid "a982f79d-7a48-50b5-91cb-93336719d2d1")
 	)
 	(wire
 		(pts
@@ -3325,7 +3325,7 @@
 		)
 		(uuid "293f3e51-c593-5142-b63e-d01b9a2b8d15")
 	)
-	(global_label "EPD_MOSI"
+	(global_label "EINK_MOSI"
 		(shape passive)
 		(at 49.53 217.17 180)
 		(fields_autoplaced yes)
@@ -3335,7 +3335,7 @@
 			)
 			(justify right)
 		)
-		(uuid "a1968307-99a1-5c18-90c4-1aecdbf69add")
+		(uuid "999a1b9f-200a-53fc-9395-b0b72222af8a")
 	)
 	(wire
 		(pts
@@ -3348,7 +3348,7 @@
 		)
 		(uuid "d43a1da8-9df8-5d8c-b0e7-7475658c1536")
 	)
-	(global_label "EPD_CS"
+	(global_label "EINK_CS"
 		(shape passive)
 		(at 49.53 219.71 180)
 		(fields_autoplaced yes)
@@ -3358,7 +3358,7 @@
 			)
 			(justify right)
 		)
-		(uuid "4e3a6750-d074-5da1-b6d0-74aa36aee69b")
+		(uuid "1c3981f2-4d8e-546e-8d0e-b3eea2b62230")
 	)
 	(wire
 		(pts
@@ -3371,7 +3371,7 @@
 		)
 		(uuid "4b0fa8f9-40a5-5c19-9020-6c9670fc8b96")
 	)
-	(global_label "EPD_DC"
+	(global_label "EINK_DC"
 		(shape passive)
 		(at 49.53 222.25 180)
 		(fields_autoplaced yes)
@@ -3381,7 +3381,7 @@
 			)
 			(justify right)
 		)
-		(uuid "77877a58-08b2-561d-a6a6-ee3715103e56")
+		(uuid "32e106fb-bf6e-5930-af02-ed076016a8b4")
 	)
 	(wire
 		(pts
@@ -3394,7 +3394,7 @@
 		)
 		(uuid "a1198036-21ff-59c5-ab41-aa1c15734c67")
 	)
-	(global_label "EPD_RST"
+	(global_label "EINK_RST"
 		(shape passive)
 		(at 49.53 224.79 180)
 		(fields_autoplaced yes)
@@ -3404,7 +3404,7 @@
 			)
 			(justify right)
 		)
-		(uuid "2e0501f1-dd89-5d78-b32a-39f8fd479b9a")
+		(uuid "4bfec106-91f3-59b3-9643-ce395a878cc5")
 	)
 	(wire
 		(pts
@@ -3417,7 +3417,7 @@
 		)
 		(uuid "39894fe1-f986-529d-8e7f-8f7f4dba3e32")
 	)
-	(global_label "EPD_BUSY"
+	(global_label "EINK_BUSY"
 		(shape passive)
 		(at 49.53 227.33 180)
 		(fields_autoplaced yes)
@@ -3427,7 +3427,7 @@
 			)
 			(justify right)
 		)
-		(uuid "01719400-6c0e-5e9f-91f5-3311bb568c28")
+		(uuid "8406a563-72df-5cb0-9a35-d323ce939fdc")
 	)
 	(wire
 		(pts
@@ -3440,7 +3440,7 @@
 		)
 		(uuid "a93814cb-e581-5478-9f51-4ad8282ec2c2")
 	)
-	(global_label "FL_ANODE"
+	(global_label "FL_P"
 		(shape passive)
 		(at 49.53 229.87 180)
 		(fields_autoplaced yes)
@@ -3450,7 +3450,7 @@
 			)
 			(justify right)
 		)
-		(uuid "1e659c9b-1beb-5cd9-8f97-889832b41c63")
+		(uuid "7515a717-2e9b-5d13-a34a-a080ab0ef403")
 	)
 	(wire
 		(pts
@@ -3463,7 +3463,7 @@
 		)
 		(uuid "8c66cf68-5d1a-5c5d-a1f5-a43ffad57591")
 	)
-	(global_label "FL_CATHODE"
+	(global_label "FL_N"
 		(shape passive)
 		(at 49.53 232.41 180)
 		(fields_autoplaced yes)
@@ -3473,9 +3473,9 @@
 			)
 			(justify right)
 		)
-		(uuid "1497042a-c8f0-5884-a61d-afa64a7ab904")
+		(uuid "aaeeb1c6-6684-5e5f-b941-e119df9f8413")
 	)
-	(text "J3: GDEY029T94-FL03 front-light flex (6 pins, 0.5 mm): 1-2 anode, 3-4 NC, 5-6 cathode. 4 LEDs in parallel, Vf 2.8 V typ, 60 mA max. Driven from the carrier (R-FL + Q4) over cable pins 9/10."
+	(text "Front light: 6-pin 0.5 mm flex, 1-2 anode, 3-4 NC, 5-6 cathode (GDEY029T94-FL03: 4 LEDs, Vf 2.8 V typ, 60 mA max; Orient AEZ122250A00: 3 LEDs, 45 mA at 3.3 V).\nDriven from the carrier (Q4 + 15R clamp, ~45 mA) over cable pins 9/10. Two ZIF positions, fit ONE: J3 FL-A for a tail leaving at the glass corner (FL03), J4 FL-B for a tail running beside the display tail on its pin-24 side (Orient; its pin numbers run opposite, so 1-2 = cathode).\nR1/R2 (fit) pass FL_P->FL_A, FL_N->FL_K; R3/R5 (DNP) cross them over for a tail whose polarity turns out mirrored."
 		(exclude_from_sim no)
 		(at 20 262 0)
 		(effects
@@ -3484,22 +3484,22 @@
 			)
 			(justify left top)
 		)
-		(uuid "94f15379-94de-52bb-8781-a632369e1026")
+		(uuid "0bcd52b8-008a-5ebc-a9b3-3f69c2886b4e")
 	)
 	(wire
 		(pts
-			(xy 54.61 284.48)
-			(xy 49.53 284.48)
+			(xy 54.61 289.56)
+			(xy 49.53 289.56)
 		)
 		(stroke
 			(width 0)
 			(type default)
 		)
-		(uuid "f14af7d5-b496-58ac-9b6f-fcabdbbf3214")
+		(uuid "33867a6e-c28e-5d93-9909-d67d3c665c27")
 	)
-	(global_label "FL_ANODE"
+	(global_label "FL_A"
 		(shape passive)
-		(at 49.53 284.48 180)
+		(at 49.53 289.56 180)
 		(fields_autoplaced yes)
 		(effects
 			(font
@@ -3507,22 +3507,22 @@
 			)
 			(justify right)
 		)
-		(uuid "cb4dae91-1d32-5f9c-9b90-dec02282075f")
+		(uuid "3b8f7a3a-7a6e-5313-a07c-1c7c65b9da2d")
 	)
 	(wire
 		(pts
-			(xy 54.61 287.02)
-			(xy 49.53 287.02)
+			(xy 54.61 292.1)
+			(xy 49.53 292.1)
 		)
 		(stroke
 			(width 0)
 			(type default)
 		)
-		(uuid "67234cd9-4371-5de7-8fb3-b3f8944b5ef3")
+		(uuid "330f0032-70a7-5ad9-8ca1-dda53a49195f")
 	)
-	(global_label "FL_ANODE"
+	(global_label "FL_A"
 		(shape passive)
-		(at 49.53 287.02 180)
+		(at 49.53 292.1 180)
 		(fields_autoplaced yes)
 		(effects
 			(font
@@ -3530,30 +3530,30 @@
 			)
 			(justify right)
 		)
-		(uuid "b79a3554-28ac-57d0-bf80-fff7c8ce6e25")
+		(uuid "b7ae843a-d5af-53a8-aef5-a3477bc2bf37")
 	)
 	(no_connect
-		(at 54.61 289.56)
+		(at 54.61 294.64)
 		(uuid "aa816463-36d3-50fe-b952-5eaca62bf2f5")
 	)
 	(no_connect
-		(at 54.61 292.1)
+		(at 54.61 297.18)
 		(uuid "7e832f52-1579-5dc8-a0cd-6959ab22e678")
 	)
 	(wire
 		(pts
-			(xy 54.61 294.64)
-			(xy 49.53 294.64)
+			(xy 54.61 299.72)
+			(xy 49.53 299.72)
 		)
 		(stroke
 			(width 0)
 			(type default)
 		)
-		(uuid "c2364a23-38dc-56d7-a34a-a0774d189b80")
+		(uuid "84e28d8c-48d1-518f-ad72-0dca6b447bb6")
 	)
-	(global_label "FL_CATHODE"
+	(global_label "FL_K"
 		(shape passive)
-		(at 49.53 294.64 180)
+		(at 49.53 299.72 180)
 		(fields_autoplaced yes)
 		(effects
 			(font
@@ -3561,22 +3561,22 @@
 			)
 			(justify right)
 		)
-		(uuid "67a28323-14ad-5047-b04b-8a68d0f4a41e")
+		(uuid "261d06ec-2820-539c-9d69-db96b704e841")
 	)
 	(wire
 		(pts
-			(xy 54.61 297.18)
-			(xy 49.53 297.18)
+			(xy 54.61 302.26)
+			(xy 49.53 302.26)
 		)
 		(stroke
 			(width 0)
 			(type default)
 		)
-		(uuid "580c8c9b-e272-5c01-a886-2b0358507404")
+		(uuid "838156b5-f27f-57dc-a89a-a0cc0337a366")
 	)
-	(global_label "FL_CATHODE"
+	(global_label "FL_K"
 		(shape passive)
-		(at 49.53 297.18 180)
+		(at 49.53 302.26 180)
 		(fields_autoplaced yes)
 		(effects
 			(font
@@ -3584,7 +3584,291 @@
 			)
 			(justify right)
 		)
-		(uuid "34663852-8a54-5b24-acf2-b39e6e52e4dc")
+		(uuid "f34aeb0b-87fd-5b2e-b11a-53189bd66950")
+	)
+	(wire
+		(pts
+			(xy 105.41 289.56)
+			(xy 100.33 289.56)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "969f8c28-c014-5ab0-a794-ea928472e15a")
+	)
+	(global_label "FL_K"
+		(shape passive)
+		(at 100.33 289.56 180)
+		(fields_autoplaced yes)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify right)
+		)
+		(uuid "dbe99868-394f-5cfe-be1a-e1d39c868913")
+	)
+	(wire
+		(pts
+			(xy 105.41 292.1)
+			(xy 100.33 292.1)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "f09ff3c6-94c9-5597-ad07-c786e2120630")
+	)
+	(global_label "FL_K"
+		(shape passive)
+		(at 100.33 292.1 180)
+		(fields_autoplaced yes)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify right)
+		)
+		(uuid "06e74633-7712-511a-8441-5ab57e230772")
+	)
+	(no_connect
+		(at 105.41 294.64)
+		(uuid "d306d039-36a2-53d6-9b56-44d9cf73f29b")
+	)
+	(no_connect
+		(at 105.41 297.18)
+		(uuid "232fe39b-731c-5026-9422-ca7799f34f4f")
+	)
+	(wire
+		(pts
+			(xy 105.41 299.72)
+			(xy 100.33 299.72)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "71a8af23-1fab-5cbb-8de8-9be36cea3635")
+	)
+	(global_label "FL_A"
+		(shape passive)
+		(at 100.33 299.72 180)
+		(fields_autoplaced yes)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify right)
+		)
+		(uuid "1fc06dfd-e5f2-5954-8e1c-7cacdde148bd")
+	)
+	(wire
+		(pts
+			(xy 105.41 302.26)
+			(xy 100.33 302.26)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "fb117d3e-b61d-5751-a6d4-89c6f0096ce3")
+	)
+	(global_label "FL_A"
+		(shape passive)
+		(at 100.33 302.26 180)
+		(fields_autoplaced yes)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify right)
+		)
+		(uuid "86705711-5a7a-5299-a37e-5e352338c99c")
+	)
+	(wire
+		(pts
+			(xy 149.86 280.67)
+			(xy 149.86 278.13)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "59ffeea5-78a6-5f36-959f-cfe93e1bed84")
+	)
+	(global_label "FL_P"
+		(shape passive)
+		(at 149.86 278.13 90)
+		(fields_autoplaced yes)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify left)
+		)
+		(uuid "f81070cc-c4ac-523b-9c7e-d79ef267bdf2")
+	)
+	(wire
+		(pts
+			(xy 149.86 288.29)
+			(xy 149.86 290.83)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "98a392d7-366d-5c86-8825-e56138da658b")
+	)
+	(global_label "FL_A"
+		(shape passive)
+		(at 149.86 290.83 270)
+		(fields_autoplaced yes)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify right)
+		)
+		(uuid "549ed042-9a69-5a6c-94fd-e1b7be1931d8")
+	)
+	(wire
+		(pts
+			(xy 162.56 280.67)
+			(xy 162.56 278.13)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "fc256f49-2617-5a58-b176-c8cc312320ca")
+	)
+	(global_label "FL_N"
+		(shape passive)
+		(at 162.56 278.13 90)
+		(fields_autoplaced yes)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify left)
+		)
+		(uuid "02bbf07c-139f-544b-9e17-29093c8b1ff8")
+	)
+	(wire
+		(pts
+			(xy 162.56 288.29)
+			(xy 162.56 290.83)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "812f4ea2-95f1-5d7a-b0be-f0508c84cdc0")
+	)
+	(global_label "FL_K"
+		(shape passive)
+		(at 162.56 290.83 270)
+		(fields_autoplaced yes)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify right)
+		)
+		(uuid "b373097e-066e-5bd4-a83f-e235788bb9b9")
+	)
+	(wire
+		(pts
+			(xy 175.26 280.67)
+			(xy 175.26 278.13)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "f68eb984-8b34-5113-b622-93448fb3df39")
+	)
+	(global_label "FL_P"
+		(shape passive)
+		(at 175.26 278.13 90)
+		(fields_autoplaced yes)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify left)
+		)
+		(uuid "02adc3ed-7aff-5cc4-be18-2c6c192b604f")
+	)
+	(wire
+		(pts
+			(xy 175.26 288.29)
+			(xy 175.26 290.83)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "dddebcc5-efdc-59e9-92e7-b2afd19a5e2c")
+	)
+	(global_label "FL_K"
+		(shape passive)
+		(at 175.26 290.83 270)
+		(fields_autoplaced yes)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify right)
+		)
+		(uuid "47d51236-f969-51de-b340-e66b922f4443")
+	)
+	(wire
+		(pts
+			(xy 187.96 280.67)
+			(xy 187.96 278.13)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "12875538-149f-50a6-9d3b-492e820177fd")
+	)
+	(global_label "FL_N"
+		(shape passive)
+		(at 187.96 278.13 90)
+		(fields_autoplaced yes)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify left)
+		)
+		(uuid "e63b5bcd-5d25-5bd2-8b08-50de1b99f505")
+	)
+	(wire
+		(pts
+			(xy 187.96 288.29)
+			(xy 187.96 290.83)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "89fa942b-03c4-5671-8002-bc4442130e37")
+	)
+	(global_label "FL_A"
+		(shape passive)
+		(at 187.96 290.83 270)
+		(fields_autoplaced yes)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify right)
+		)
+		(uuid "71dd00f4-af9e-5878-b7a1-4dbfe222c591")
 	)
 	(wire
 		(pts
@@ -3595,7 +3879,7 @@
 			(width 0)
 			(type default)
 		)
-		(uuid "48ed3815-35da-5b52-a306-ae8930037b01")
+		(uuid "0500cf2a-69b3-514a-bed8-447296a19a91")
 	)
 	(wire
 		(pts
@@ -3606,7 +3890,7 @@
 			(width 0)
 			(type default)
 		)
-		(uuid "f1442bc8-89b1-5d83-9ecc-c7590e8289c2")
+		(uuid "581b7716-3e19-5f1a-a40d-a674dd9e3178")
 	)
 	(wire
 		(pts
@@ -3617,9 +3901,9 @@
 			(width 0)
 			(type default)
 		)
-		(uuid "3a6d9b8f-b6d2-5d31-bbfb-1fa8c5c08a0e")
+		(uuid "7abf559b-a627-5b2f-9d64-b56f96fef6a6")
 	)
-	(global_label "EPD_RST"
+	(global_label "EINK_RST"
 		(shape passive)
 		(at 129.54 53.34 90)
 		(fields_autoplaced yes)
@@ -3629,7 +3913,7 @@
 			)
 			(justify left)
 		)
-		(uuid "c35acf7b-a3b4-5cf1-81f2-d0a5da0482b8")
+		(uuid "c9ca7b88-9e00-5074-92d4-0eabc6a916af")
 	)
 	(wire
 		(pts
@@ -3640,7 +3924,7 @@
 			(width 0)
 			(type default)
 		)
-		(uuid "020a9835-d054-53e6-be8e-e6dd52685ec2")
+		(uuid "88176af6-21c1-5389-b3ff-7e4100bff882")
 	)
 	(wire
 		(pts
@@ -3651,9 +3935,9 @@
 			(width 0)
 			(type default)
 		)
-		(uuid "de1e5d5e-4af2-5728-aef0-4e26a59719cd")
+		(uuid "07362592-9978-5e44-b86b-764d16b1400a")
 	)
-	(global_label "EPD_CS"
+	(global_label "EINK_CS"
 		(shape passive)
 		(at 142.24 53.34 90)
 		(fields_autoplaced yes)
@@ -3663,7 +3947,7 @@
 			)
 			(justify left)
 		)
-		(uuid "6f09cfb6-cfc3-5a50-8bce-ac0683a8b348")
+		(uuid "1849417e-4080-5ce0-aaab-fe99cdca42ac")
 	)
 	(wire
 		(pts
@@ -3674,7 +3958,7 @@
 			(width 0)
 			(type default)
 		)
-		(uuid "d4e59791-b8af-5176-8166-e44910d6ddc8")
+		(uuid "9357fde5-379e-5be8-989c-816b307e7d7a")
 	)
 	(wire
 		(pts
@@ -3685,7 +3969,7 @@
 			(width 0)
 			(type default)
 		)
-		(uuid "c22e9af1-a751-5925-80b9-aae59aa9dd5a")
+		(uuid "4f536390-4a1f-5955-a316-970f9295cf7d")
 	)
 	(wire
 		(pts
@@ -3696,7 +3980,7 @@
 			(width 0)
 			(type default)
 		)
-		(uuid "70f372db-8ded-5842-abb5-8ad7c56a5ec1")
+		(uuid "1ee5e601-edf6-5079-833d-d4b3f0dae669")
 	)
 	(wire
 		(pts
@@ -3707,7 +3991,7 @@
 			(width 0)
 			(type default)
 		)
-		(uuid "402c852d-f046-59fb-a782-945f5cef7db5")
+		(uuid "a5d33f19-18e6-5128-8813-01916050cd8e")
 	)
 	(wire
 		(pts
@@ -3718,7 +4002,7 @@
 			(width 0)
 			(type default)
 		)
-		(uuid "84c5591c-f618-5a78-9ceb-024499c54350")
+		(uuid "2ac91179-a052-5a27-822e-c8d1d14c6eca")
 	)
 	(wire
 		(pts
@@ -3729,7 +4013,7 @@
 			(width 0)
 			(type default)
 		)
-		(uuid "cf6109ce-d098-526e-be8e-99207b5d6a31")
+		(uuid "eebcfb58-63a1-5a59-9168-ffa2062ada6c")
 	)
 	(global_label "EPD_VDD"
 		(shape passive)
@@ -3752,7 +4036,7 @@
 			(width 0)
 			(type default)
 		)
-		(uuid "c2be3e2f-94c5-5130-960e-5f8812b71d79")
+		(uuid "7cbba7e6-d8ee-5db4-8a70-776981f4eea3")
 	)
 	(wire
 		(pts
@@ -3763,7 +4047,7 @@
 			(width 0)
 			(type default)
 		)
-		(uuid "93d1f216-4a6d-5023-b28a-22ddd196f5a8")
+		(uuid "ed0ce1ca-0e87-50e4-a4bf-3519babe9c5c")
 	)
 	(global_label "EPD_VSH1"
 		(shape passive)
@@ -3786,7 +4070,7 @@
 			(width 0)
 			(type default)
 		)
-		(uuid "b62052bf-43ab-513f-803e-d8776ae4be37")
+		(uuid "2b582f6e-8a82-505c-84ed-73035f15bbc2")
 	)
 	(wire
 		(pts
@@ -3797,7 +4081,7 @@
 			(width 0)
 			(type default)
 		)
-		(uuid "585617f0-2d3b-574b-a142-95a95001931f")
+		(uuid "5d458faf-0fb6-508e-82cd-294358e4f82c")
 	)
 	(global_label "EPD_VSH2"
 		(shape passive)
@@ -3820,7 +4104,7 @@
 			(width 0)
 			(type default)
 		)
-		(uuid "be298024-5265-5214-b750-9326931f6d10")
+		(uuid "f8e7f82d-696b-5340-aac2-fb89e5f820db")
 	)
 	(wire
 		(pts
@@ -3831,7 +4115,7 @@
 			(width 0)
 			(type default)
 		)
-		(uuid "34ae32bf-7741-52e6-b6f0-daa385c4464b")
+		(uuid "65ffb561-5d3c-5534-b6c7-32aff38d9574")
 	)
 	(global_label "EPD_VSL"
 		(shape passive)
@@ -3854,7 +4138,7 @@
 			(width 0)
 			(type default)
 		)
-		(uuid "77cc0fd2-865a-5949-b07b-ab72434bab5f")
+		(uuid "f3f18511-d6d3-5def-a4c0-eb591f8b3f78")
 	)
 	(wire
 		(pts
@@ -3865,7 +4149,7 @@
 			(width 0)
 			(type default)
 		)
-		(uuid "eca89279-2093-57a6-8d11-5c108f174a32")
+		(uuid "12c914a9-3f8e-5521-b6c1-3ced661ab710")
 	)
 	(global_label "EPD_VCOM"
 		(shape passive)
@@ -3888,7 +4172,7 @@
 			(width 0)
 			(type default)
 		)
-		(uuid "eed4331b-9279-513b-aeba-e0de056aa8fa")
+		(uuid "52a5859e-1418-5844-b6bc-5aba54e38b16")
 	)
 	(text "Boost: 3V3_EPD -> L1 -> SW node; Q5 (gate GDR) switches SW to GND through R4 (RESE sense). D3 SW->VGH into C3. C5 flies SW->PUMP; D2 clamps PUMP to GND (anode PUMP); D1 pumps PUMP into VGL (anode VGL) with C4."
 		(exclude_from_sim no)
@@ -3911,7 +4195,7 @@
 			(width 0)
 			(type default)
 		)
-		(uuid "17567280-daf9-55cd-a934-97fda5f942bb")
+		(uuid "9cbcfab3-d724-5beb-abfc-3638771587d0")
 	)
 	(wire
 		(pts
@@ -3922,7 +4206,7 @@
 			(width 0)
 			(type default)
 		)
-		(uuid "5fd32482-1a9f-57f3-8003-bcd3b151740f")
+		(uuid "9e449d01-b0ca-5971-94c9-85b56d9ee498")
 	)
 	(wire
 		(pts
@@ -3933,7 +4217,7 @@
 			(width 0)
 			(type default)
 		)
-		(uuid "e22a905d-f2b2-55aa-8259-8b55a63b3b8a")
+		(uuid "e969a3bb-c382-5858-be47-548326496b90")
 	)
 	(wire
 		(pts
@@ -3944,7 +4228,7 @@
 			(width 0)
 			(type default)
 		)
-		(uuid "98586442-4874-5dff-a7c2-377ef2627c98")
+		(uuid "ba9ee961-e70d-564e-bd91-36bd87176238")
 	)
 	(global_label "EPD_SW"
 		(shape passive)
@@ -3967,7 +4251,7 @@
 			(width 0)
 			(type default)
 		)
-		(uuid "64d30588-6a09-5137-b618-83a36024c2cc")
+		(uuid "0c652cc5-59d6-5fc1-8cdb-6d7aa1876ae7")
 	)
 	(global_label "EPD_GDR"
 		(shape passive)
@@ -3990,7 +4274,7 @@
 			(width 0)
 			(type default)
 		)
-		(uuid "47c308da-2a74-5041-aff9-9190db02229c")
+		(uuid "8b93079c-7665-5a50-b2d5-30f899be24d3")
 	)
 	(global_label "EPD_RESE"
 		(shape passive)
@@ -4013,7 +4297,7 @@
 			(width 0)
 			(type default)
 		)
-		(uuid "8f05f5bc-9f15-5d75-aa7b-2c7b141c0a61")
+		(uuid "04124abc-d60d-573d-b180-ab04708375fd")
 	)
 	(global_label "EPD_SW"
 		(shape passive)
@@ -4036,7 +4320,7 @@
 			(width 0)
 			(type default)
 		)
-		(uuid "dc3b47c1-eb28-50f0-9265-d188d0617021")
+		(uuid "e7d9f6d7-7037-5acc-89e0-1de40a14291b")
 	)
 	(global_label "EPD_RESE"
 		(shape passive)
@@ -4059,7 +4343,7 @@
 			(width 0)
 			(type default)
 		)
-		(uuid "61db6ab0-1f96-51fc-9434-df57fde226ba")
+		(uuid "8e53a446-c0b9-50b5-aa37-034f409925fb")
 	)
 	(wire
 		(pts
@@ -4070,7 +4354,7 @@
 			(width 0)
 			(type default)
 		)
-		(uuid "4a29f934-b3a4-579e-8f8b-8e30bc04bc24")
+		(uuid "6328953e-1842-5b1b-8822-286578cad0d1")
 	)
 	(global_label "EPD_GDR"
 		(shape passive)
@@ -4093,7 +4377,7 @@
 			(width 0)
 			(type default)
 		)
-		(uuid "0c39720a-40f7-5732-9c41-f717bcb3b1ee")
+		(uuid "8bcbf9d2-a8fd-511e-a53a-0430fe978a20")
 	)
 	(wire
 		(pts
@@ -4104,7 +4388,7 @@
 			(width 0)
 			(type default)
 		)
-		(uuid "4716c6c0-5907-5f71-8105-04ac7bb49433")
+		(uuid "59a70e80-943b-59e4-b179-f43278dacc58")
 	)
 	(global_label "EPD_SW"
 		(shape passive)
@@ -4127,7 +4411,7 @@
 			(width 0)
 			(type default)
 		)
-		(uuid "8294fc7f-8aa6-528f-861e-9aa3c45c3b76")
+		(uuid "d8cf2dc5-7b65-50da-a908-aa7fd611e9df")
 	)
 	(global_label "EPD_VGH"
 		(shape passive)
@@ -4150,7 +4434,7 @@
 			(width 0)
 			(type default)
 		)
-		(uuid "cceee5b7-d1a9-5115-982f-6080195d7e24")
+		(uuid "b6eb32b3-aee1-5762-a96f-0173104b73c0")
 	)
 	(global_label "EPD_VGH"
 		(shape passive)
@@ -4173,7 +4457,7 @@
 			(width 0)
 			(type default)
 		)
-		(uuid "838554c1-91d0-5b9c-86f3-2cabdb99967a")
+		(uuid "09c5a517-c083-502c-be14-d7883b84d785")
 	)
 	(wire
 		(pts
@@ -4184,7 +4468,7 @@
 			(width 0)
 			(type default)
 		)
-		(uuid "3a42ebcc-4b46-573b-91e4-b7ebd372ffa5")
+		(uuid "3bd1fa93-db1c-5acf-8b3a-44e2089fcf6d")
 	)
 	(global_label "EPD_SW"
 		(shape passive)
@@ -4207,7 +4491,7 @@
 			(width 0)
 			(type default)
 		)
-		(uuid "03f60968-45bb-5d78-b979-2cc6b2a98b83")
+		(uuid "6e51ab0b-bd5c-589f-abe6-2d9775f79164")
 	)
 	(global_label "EPD_PUMP"
 		(shape passive)
@@ -4230,7 +4514,7 @@
 			(width 0)
 			(type default)
 		)
-		(uuid "ff972ede-7dba-5590-a078-693280a5a163")
+		(uuid "d261dd3f-8484-5252-9837-89de3714eeea")
 	)
 	(global_label "EPD_PUMP"
 		(shape passive)
@@ -4253,7 +4537,7 @@
 			(width 0)
 			(type default)
 		)
-		(uuid "1d6e1a70-36f0-5c7d-8ea0-bb7ff75ab70b")
+		(uuid "d9c13063-c699-5476-ac7b-5a886e26f8e6")
 	)
 	(wire
 		(pts
@@ -4264,7 +4548,7 @@
 			(width 0)
 			(type default)
 		)
-		(uuid "f5bedd4e-511b-507d-ad90-eda889b0499d")
+		(uuid "13b82606-3fba-5b46-8ffd-58cc781174cb")
 	)
 	(global_label "EPD_VGL"
 		(shape passive)
@@ -4287,7 +4571,7 @@
 			(width 0)
 			(type default)
 		)
-		(uuid "247d72b9-940d-5935-9779-3e2c17617ee1")
+		(uuid "a01329ea-dc00-57aa-903e-c4545013ba73")
 	)
 	(global_label "EPD_PUMP"
 		(shape passive)
@@ -4310,7 +4594,7 @@
 			(width 0)
 			(type default)
 		)
-		(uuid "54ff7e92-e924-5af1-a23f-4909c1866f4f")
+		(uuid "96c3781c-0ad3-5388-afe1-dca8e044e710")
 	)
 	(global_label "EPD_VGL"
 		(shape passive)
@@ -4333,7 +4617,7 @@
 			(width 0)
 			(type default)
 		)
-		(uuid "a2174085-dce2-5671-a410-368ded11cbe0")
+		(uuid "ee832710-a07f-5b7c-9c02-4dbdcb454deb")
 	)
 	(text "Layout: L1-Q5-R4-GND and L1-D3-C3-GND loops under 10 mm; RESE a short guarded trace; the 25 V caps in a row behind J1 pins 18-24; ground pour under the cluster."
 		(exclude_from_sim no)
@@ -5093,7 +5377,7 @@
 	)
 	(symbol
 		(lib_id "Connector_Generic:Conn_01x06")
-		(at 59.69 289.56 0)
+		(at 59.69 294.64 0)
 		(unit 1)
 		(exclude_from_sim no)
 		(in_bom yes)
@@ -5102,7 +5386,7 @@
 		(dnp no)
 		(uuid "4413278c-a825-53d1-89bd-98812cc2deef")
 		(property "Reference" "J3"
-			(at 55.88 284.48 0)
+			(at 55.88 289.56 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -5110,8 +5394,8 @@
 				(justify left)
 			)
 		)
-		(property "Value" "FRONTLIGHT FPC"
-			(at 55.88 287.02 0)
+		(property "Value" "FL-A FPC (FL03)"
+			(at 55.88 292.1 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -5120,26 +5404,6 @@
 			)
 		)
 		(property "Footprint" "pager-carrier:Hirose_FH34SRJ-6S-0.5SH_1x06-1MP_P0.50mm_Horizontal"
-			(at 55.88 289.56 0)
-			(hide yes)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-		(property "Datasheet" "~"
-			(at 55.88 292.1 0)
-			(hide yes)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-		(property "Description" "Generic connector, single row, 01x06, script generated (kicad-library-utils/schlib/autogen/connector/)"
 			(at 55.88 294.64 0)
 			(hide yes)
 			(effects
@@ -5149,25 +5413,27 @@
 				(justify left)
 			)
 		)
+		(property "Datasheet" "~"
+			(at 55.88 297.18 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Description" "Generic connector, single row, 01x06, script generated (kicad-library-utils/schlib/autogen/connector/)"
+			(at 55.88 299.72 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
 		(property "MPN" "FH34SRJ-6S-0.5SH(50)"
-			(at 59.69 304.8 0)
-			(hide yes)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "LCSC" "C224194"
-			(at 59.69 307.34 0)
-			(hide yes)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "DNP" ""
 			(at 59.69 309.88 0)
 			(hide yes)
 			(effects
@@ -5176,8 +5442,26 @@
 				)
 			)
 		)
-		(property "Note" "1.0 mm high; flex tail is ~30 mm long, folds under with the display tail"
+		(property "LCSC" "C224194"
 			(at 59.69 312.42 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "DNP" ""
+			(at 59.69 314.96 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Note" "1.0 mm high; GDEY029T94-FL03 corner tail (~30 mm); fit this OR J4"
+			(at 59.69 317.5 0)
 			(hide yes)
 			(effects
 				(font
@@ -5207,6 +5491,563 @@
 			(project "pager-panel"
 				(path "/a764166a-207c-5736-a7df-1b396ea4a3e6/4abcc5ec-0e62-56fc-ae53-06c7680dbff6"
 					(reference "J3")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "Connector_Generic:Conn_01x06")
+		(at 110.49 294.64 0)
+		(unit 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp yes)
+		(uuid "43e31351-e78d-54ec-8bb1-fcf80f317cd7")
+		(property "Reference" "J4"
+			(at 106.68 289.56 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Value" "FL-B FPC (Orient)"
+			(at 106.68 292.1 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Footprint" "pager-carrier:Hirose_FH34SRJ-6S-0.5SH_1x06-1MP_P0.50mm_Horizontal"
+			(at 106.68 294.64 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Datasheet" "~"
+			(at 106.68 297.18 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Description" "Generic connector, single row, 01x06, script generated (kicad-library-utils/schlib/autogen/connector/)"
+			(at 106.68 299.72 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "MPN" "FH34SRJ-6S-0.5SH(50)"
+			(at 110.49 309.88 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "LCSC" "C224194"
+			(at 110.49 312.42 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "DNP" "DNP"
+			(at 110.49 314.96 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Note" "1.0 mm high; Orient AEZ122250A00 parallel tail (17.8 mm); fit this OR J3"
+			(at 110.49 317.5 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(pin "1"
+			(uuid "8e03e0d3-ed7c-5b84-938e-f2579720d7ed")
+		)
+		(pin "2"
+			(uuid "f4696f9c-5a27-5e67-8fcf-13c04b946b3d")
+		)
+		(pin "3"
+			(uuid "095d5eda-32e6-504b-bf03-5cf7ffa71a9c")
+		)
+		(pin "4"
+			(uuid "31eda977-1230-5388-8c93-68920e8e00af")
+		)
+		(pin "5"
+			(uuid "dade968e-3132-56d6-8c99-007b56bf6465")
+		)
+		(pin "6"
+			(uuid "4ebf9ae6-7ac6-5d8c-8d59-c89dd5f46242")
+		)
+		(instances
+			(project "pager-panel"
+				(path "/a764166a-207c-5736-a7df-1b396ea4a3e6/4abcc5ec-0e62-56fc-ae53-06c7680dbff6"
+					(reference "J4")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "Device:R")
+		(at 149.86 284.48 0)
+		(unit 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp no)
+		(uuid "23db295d-1370-5f67-877a-964f3f0a6973")
+		(property "Reference" "R1"
+			(at 151.13 280.67 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Value" "0R"
+			(at 151.13 283.21 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Footprint" "Resistor_SMD:R_0603_1608Metric"
+			(at 151.13 285.75 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Datasheet" "~"
+			(at 151.13 288.29 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Description" "Resistor"
+			(at 151.13 290.83 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "MPN" "0603WAF0000T5E"
+			(at 149.86 299.72 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "LCSC" "C21189"
+			(at 149.86 302.26 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "DNP" ""
+			(at 149.86 304.8 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Note" "FL straight (fit)"
+			(at 149.86 307.34 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(pin "1"
+			(uuid "27938824-2b72-5d57-999e-d4d95a3daa57")
+		)
+		(pin "2"
+			(uuid "a95f36ac-ff66-5cc8-8d5f-1f7e6cf93412")
+		)
+		(instances
+			(project "pager-panel"
+				(path "/a764166a-207c-5736-a7df-1b396ea4a3e6/4abcc5ec-0e62-56fc-ae53-06c7680dbff6"
+					(reference "R1")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "Device:R")
+		(at 162.56 284.48 0)
+		(unit 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp no)
+		(uuid "5084632f-67ea-5aac-9b3b-9045c3fcca6d")
+		(property "Reference" "R2"
+			(at 163.83 280.67 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Value" "0R"
+			(at 163.83 283.21 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Footprint" "Resistor_SMD:R_0603_1608Metric"
+			(at 163.83 285.75 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Datasheet" "~"
+			(at 163.83 288.29 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Description" "Resistor"
+			(at 163.83 290.83 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "MPN" "0603WAF0000T5E"
+			(at 162.56 299.72 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "LCSC" "C21189"
+			(at 162.56 302.26 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "DNP" ""
+			(at 162.56 304.8 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Note" "FL straight (fit)"
+			(at 162.56 307.34 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(pin "1"
+			(uuid "740e6f1e-48c8-5bf4-b759-57ae6d5a1aa6")
+		)
+		(pin "2"
+			(uuid "e75d9ed3-1b26-51d0-a0e6-ac5f0dc99379")
+		)
+		(instances
+			(project "pager-panel"
+				(path "/a764166a-207c-5736-a7df-1b396ea4a3e6/4abcc5ec-0e62-56fc-ae53-06c7680dbff6"
+					(reference "R2")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "Device:R")
+		(at 175.26 284.48 0)
+		(unit 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp yes)
+		(uuid "da6987a1-69c3-5888-9df5-af45296f3f7e")
+		(property "Reference" "R3"
+			(at 176.53 280.67 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Value" "0R"
+			(at 176.53 283.21 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Footprint" "Resistor_SMD:R_0603_1608Metric"
+			(at 176.53 285.75 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Datasheet" "~"
+			(at 176.53 288.29 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Description" "Resistor"
+			(at 176.53 290.83 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "MPN" "0603WAF0000T5E"
+			(at 175.26 299.72 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "LCSC" "C21189"
+			(at 175.26 302.26 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "DNP" "DNP"
+			(at 175.26 304.8 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Note" "FL crossover (DNP)"
+			(at 175.26 307.34 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(pin "1"
+			(uuid "8999a429-a3dd-5913-95e6-71817bafaee2")
+		)
+		(pin "2"
+			(uuid "5f293e35-b86c-5b81-9719-55ce54e1e813")
+		)
+		(instances
+			(project "pager-panel"
+				(path "/a764166a-207c-5736-a7df-1b396ea4a3e6/4abcc5ec-0e62-56fc-ae53-06c7680dbff6"
+					(reference "R3")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "Device:R")
+		(at 187.96 284.48 0)
+		(unit 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp yes)
+		(uuid "1404b0f5-4c2b-5bcd-8e60-4f8046821fee")
+		(property "Reference" "R5"
+			(at 189.23 280.67 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Value" "0R"
+			(at 189.23 283.21 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Footprint" "Resistor_SMD:R_0603_1608Metric"
+			(at 189.23 285.75 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Datasheet" "~"
+			(at 189.23 288.29 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Description" "Resistor"
+			(at 189.23 290.83 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "MPN" "0603WAF0000T5E"
+			(at 187.96 299.72 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "LCSC" "C21189"
+			(at 187.96 302.26 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "DNP" "DNP"
+			(at 187.96 304.8 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Note" "FL crossover (DNP)"
+			(at 187.96 307.34 0)
+			(hide yes)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(pin "1"
+			(uuid "b6e0b5af-970b-551a-a69e-0169226e7305")
+		)
+		(pin "2"
+			(uuid "3bf079a8-273b-5f62-aaa5-3997d46ca382")
+		)
+		(instances
+			(project "pager-panel"
+				(path "/a764166a-207c-5736-a7df-1b396ea4a3e6/4abcc5ec-0e62-56fc-ae53-06c7680dbff6"
+					(reference "R5")
 					(unit 1)
 				)
 			)
@@ -5505,8 +6346,8 @@
 		(on_board yes)
 		(in_pos_files yes)
 		(dnp no)
-		(uuid "23db295d-1370-5f67-877a-964f3f0a6973")
-		(property "Reference" "R1"
+		(uuid "dd040614-4062-5234-9ea0-c38eb5f4ceaf")
+		(property "Reference" "R6"
 			(at 130.81 55.88 0)
 			(effects
 				(font
@@ -5582,15 +6423,15 @@
 			)
 		)
 		(pin "1"
-			(uuid "27938824-2b72-5d57-999e-d4d95a3daa57")
+			(uuid "93acf21a-6b23-5f76-bca4-be9748d74b11")
 		)
 		(pin "2"
-			(uuid "a95f36ac-ff66-5cc8-8d5f-1f7e6cf93412")
+			(uuid "f01c31fe-3450-5def-a7cd-ca920276a926")
 		)
 		(instances
 			(project "pager-panel"
 				(path "/a764166a-207c-5736-a7df-1b396ea4a3e6/4abcc5ec-0e62-56fc-ae53-06c7680dbff6"
-					(reference "R1")
+					(reference "R6")
 					(unit 1)
 				)
 			)
@@ -5676,8 +6517,8 @@
 		(on_board yes)
 		(in_pos_files yes)
 		(dnp no)
-		(uuid "5084632f-67ea-5aac-9b3b-9045c3fcca6d")
-		(property "Reference" "R2"
+		(uuid "5d776318-16c9-5f56-b5fc-a148da3a0727")
+		(property "Reference" "R7"
 			(at 143.51 55.88 0)
 			(effects
 				(font
@@ -5753,15 +6594,15 @@
 			)
 		)
 		(pin "1"
-			(uuid "740e6f1e-48c8-5bf4-b759-57ae6d5a1aa6")
+			(uuid "3a6f7fc4-3bf0-5006-a81f-44be1b495c1e")
 		)
 		(pin "2"
-			(uuid "e75d9ed3-1b26-51d0-a0e6-ac5f0dc99379")
+			(uuid "feca3f9e-e6f5-5e14-8e17-a62761b8baf7")
 		)
 		(instances
 			(project "pager-panel"
 				(path "/a764166a-207c-5736-a7df-1b396ea4a3e6/4abcc5ec-0e62-56fc-ae53-06c7680dbff6"
-					(reference "R2")
+					(reference "R7")
 					(unit 1)
 				)
 			)
@@ -7936,8 +8777,8 @@
 		(on_board yes)
 		(in_pos_files yes)
 		(dnp no)
-		(uuid "da6987a1-69c3-5888-9df5-af45296f3f7e")
-		(property "Reference" "R3"
+		(uuid "18ba0a98-df26-5c44-ae03-f34e28e2cb7a")
+		(property "Reference" "R8"
 			(at 336.55 111.76 0)
 			(effects
 				(font
@@ -8022,15 +8863,15 @@
 			)
 		)
 		(pin "1"
-			(uuid "8999a429-a3dd-5913-95e6-71817bafaee2")
+			(uuid "36ad05c3-bda8-5430-9f6f-0970ea36c61d")
 		)
 		(pin "2"
-			(uuid "5f293e35-b86c-5b81-9719-55ce54e1e813")
+			(uuid "f5d44524-9ded-5e4a-a8b6-7af830299798")
 		)
 		(instances
 			(project "pager-panel"
 				(path "/a764166a-207c-5736-a7df-1b396ea4a3e6/4abcc5ec-0e62-56fc-ae53-06c7680dbff6"
-					(reference "R3")
+					(reference "R8")
 					(unit 1)
 				)
 			)

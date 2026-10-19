@@ -7167,7 +7167,7 @@
 				(justify left)
 			)
 		)
-		(property "MPN" "DMG2305UX-7"
+		(property "MPN" "AO3401A"
 			(at 80.01 130.81 0)
 			(hide yes)
 			(show_name no)
@@ -7178,7 +7178,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C150470"
+		(property "LCSC" "C15127"
 			(at 77.47 130.81 0)
 			(hide yes)
 			(show_name no)
@@ -7200,7 +7200,7 @@
 				)
 			)
 		)
-		(property "Note" "or AO3401A"
+		(property "Note" "or DMG2305UX-7 / C150470"
 			(at 72.39 130.81 0)
 			(hide yes)
 			(show_name no)

@@ -2,7 +2,7 @@
 	(version "E")
 	(design
 		(source "/Users/albert/src/pager/hardware/carrier/panel/pager-panel.kicad_sch")
-		(date "2026-10-17T08:16:48")
+		(date "2026-10-19T11:43:48")
 		(tool "Eeschema 10.0.6")
 		(sheet
 			(number "1")
@@ -1404,7 +1404,7 @@
 		)
 		(comp
 			(ref "J3")
-			(value "FRONTLIGHT FPC")
+			(value "FL-A FPC (FL03)")
 			(footprint "pager-carrier:Hirose_FH34SRJ-6S-0.5SH_1x06-1MP_P0.50mm_Horizontal")
 			(datasheet "~")
 			(description "Generic connector, single row, 01x06, script generated (kicad-library-utils/schlib/autogen/connector/)")
@@ -1417,7 +1417,7 @@
 					(name "DNP")
 				)
 				(field
-					(name "Note") "1.0 mm high; flex tail is ~30 mm long, folds under with the display tail")
+					(name "Note") "1.0 mm high; GDEY029T94-FL03 corner tail (~30 mm); fit this OR J4")
 				(field
 					(name "Footprint") "pager-carrier:Hirose_FH34SRJ-6S-0.5SH_1x06-1MP_P0.50mm_Horizontal")
 				(field
@@ -1444,7 +1444,7 @@
 			)
 			(property
 				(name "Note")
-				(value "1.0 mm high; flex tail is ~30 mm long, folds under with the display tail")
+				(value "1.0 mm high; GDEY029T94-FL03 corner tail (~30 mm); fit this OR J4")
 			)
 			(property
 				(name "Sheetname")
@@ -1467,6 +1467,99 @@
 				(tstamps "/4abcc5ec-0e62-56fc-ae53-06c7680dbff6/")
 			)
 			(tstamps "4413278c-a825-53d1-89bd-98812cc2deef")
+			(units
+				(unit
+					(name "A")
+					(pins
+						(pin
+							(num "1")
+						)
+						(pin
+							(num "2")
+						)
+						(pin
+							(num "3")
+						)
+						(pin
+							(num "4")
+						)
+						(pin
+							(num "5")
+						)
+						(pin
+							(num "6")
+						)
+					)
+				)
+			)
+		)
+		(comp
+			(ref "J4")
+			(value "FL-B FPC (Orient)")
+			(footprint "pager-carrier:Hirose_FH34SRJ-6S-0.5SH_1x06-1MP_P0.50mm_Horizontal")
+			(datasheet "~")
+			(description "Generic connector, single row, 01x06, script generated (kicad-library-utils/schlib/autogen/connector/)")
+			(fields
+				(field
+					(name "MPN") "FH34SRJ-6S-0.5SH(50)")
+				(field
+					(name "LCSC") "C224194")
+				(field
+					(name "DNP") "DNP")
+				(field
+					(name "Note") "1.0 mm high; Orient AEZ122250A00 parallel tail (17.8 mm); fit this OR J3")
+				(field
+					(name "Footprint") "pager-carrier:Hirose_FH34SRJ-6S-0.5SH_1x06-1MP_P0.50mm_Horizontal")
+				(field
+					(name "Datasheet") "~")
+				(field
+					(name "Description") "Generic connector, single row, 01x06, script generated (kicad-library-utils/schlib/autogen/connector/)")
+			)
+			(libsource
+				(lib "Connector_Generic")
+				(part "Conn_01x06")
+				(description "Generic connector, single row, 01x06, script generated (kicad-library-utils/schlib/autogen/connector/)")
+			)
+			(property
+				(name "MPN")
+				(value "FH34SRJ-6S-0.5SH(50)")
+			)
+			(property
+				(name "LCSC")
+				(value "C224194")
+			)
+			(property
+				(name "DNP")
+				(value "DNP")
+			)
+			(property
+				(name "Note")
+				(value "1.0 mm high; Orient AEZ122250A00 parallel tail (17.8 mm); fit this OR J3")
+			)
+			(property
+				(name "Sheetname")
+				(value "panel")
+			)
+			(property
+				(name "Sheetfile")
+				(value "panel_main.kicad_sch")
+			)
+			(property
+				(name "dnp")
+			)
+			(property
+				(name "ki_keywords")
+				(value "connector")
+			)
+			(property
+				(name "ki_fp_filters")
+				(value "Connector*:*_1x??_*")
+			)
+			(sheetpath
+				(names "/panel/")
+				(tstamps "/4abcc5ec-0e62-56fc-ae53-06c7680dbff6/")
+			)
+			(tstamps "43e31351-e78d-54ec-8bb1-fcf80f317cd7")
 			(units
 				(unit
 					(name "A")
@@ -1657,18 +1750,20 @@
 		)
 		(comp
 			(ref "R1")
-			(value "10k")
+			(value "0R")
 			(footprint "Resistor_SMD:R_0603_1608Metric")
 			(datasheet "~")
 			(description "Resistor")
 			(fields
 				(field
-					(name "MPN") "0603WAF1002T5E")
+					(name "MPN") "0603WAF0000T5E")
 				(field
-					(name "LCSC") "C25804")
+					(name "LCSC") "C21189")
 				(field
 					(name "DNP")
 				)
+				(field
+					(name "Note") "FL straight (fit)")
 				(field
 					(name "Footprint") "Resistor_SMD:R_0603_1608Metric")
 				(field
@@ -1683,15 +1778,19 @@
 			)
 			(property
 				(name "MPN")
-				(value "0603WAF1002T5E")
+				(value "0603WAF0000T5E")
 			)
 			(property
 				(name "LCSC")
-				(value "C25804")
+				(value "C21189")
 			)
 			(property
 				(name "DNP")
 				(value "")
+			)
+			(property
+				(name "Note")
+				(value "FL straight (fit)")
 			)
 			(property
 				(name "Sheetname")
@@ -1730,18 +1829,20 @@
 		)
 		(comp
 			(ref "R2")
-			(value "10k")
+			(value "0R")
 			(footprint "Resistor_SMD:R_0603_1608Metric")
 			(datasheet "~")
 			(description "Resistor")
 			(fields
 				(field
-					(name "MPN") "0603WAF1002T5E")
+					(name "MPN") "0603WAF0000T5E")
 				(field
-					(name "LCSC") "C25804")
+					(name "LCSC") "C21189")
 				(field
 					(name "DNP")
 				)
+				(field
+					(name "Note") "FL straight (fit)")
 				(field
 					(name "Footprint") "Resistor_SMD:R_0603_1608Metric")
 				(field
@@ -1756,15 +1857,19 @@
 			)
 			(property
 				(name "MPN")
-				(value "0603WAF1002T5E")
+				(value "0603WAF0000T5E")
 			)
 			(property
 				(name "LCSC")
-				(value "C25804")
+				(value "C21189")
 			)
 			(property
 				(name "DNP")
 				(value "")
+			)
+			(property
+				(name "Note")
+				(value "FL straight (fit)")
 			)
 			(property
 				(name "Sheetname")
@@ -1803,20 +1908,19 @@
 		)
 		(comp
 			(ref "R3")
-			(value "1M")
+			(value "0R")
 			(footprint "Resistor_SMD:R_0603_1608Metric")
 			(datasheet "~")
 			(description "Resistor")
 			(fields
 				(field
-					(name "MPN") "0603WAF1004T5E")
+					(name "MPN") "0603WAF0000T5E")
 				(field
-					(name "LCSC") "C22935")
+					(name "LCSC") "C21189")
 				(field
-					(name "DNP")
-				)
+					(name "DNP") "DNP")
 				(field
-					(name "Note") "GDR pull-down")
+					(name "Note") "FL crossover (DNP)")
 				(field
 					(name "Footprint") "Resistor_SMD:R_0603_1608Metric")
 				(field
@@ -1831,19 +1935,19 @@
 			)
 			(property
 				(name "MPN")
-				(value "0603WAF1004T5E")
+				(value "0603WAF0000T5E")
 			)
 			(property
 				(name "LCSC")
-				(value "C22935")
+				(value "C21189")
 			)
 			(property
 				(name "DNP")
-				(value "")
+				(value "DNP")
 			)
 			(property
 				(name "Note")
-				(value "GDR pull-down")
+				(value "FL crossover (DNP)")
 			)
 			(property
 				(name "Sheetname")
@@ -1852,6 +1956,9 @@
 			(property
 				(name "Sheetfile")
 				(value "panel_main.kicad_sch")
+			)
+			(property
+				(name "dnp")
 			)
 			(property
 				(name "ki_keywords")
@@ -1946,6 +2053,312 @@
 				(tstamps "/4abcc5ec-0e62-56fc-ae53-06c7680dbff6/")
 			)
 			(tstamps "20025ec5-d454-54ba-91e4-b9385104aaf2")
+			(units
+				(unit
+					(name "A")
+					(pins
+						(pin
+							(num "1")
+						)
+						(pin
+							(num "2")
+						)
+					)
+				)
+			)
+		)
+		(comp
+			(ref "R5")
+			(value "0R")
+			(footprint "Resistor_SMD:R_0603_1608Metric")
+			(datasheet "~")
+			(description "Resistor")
+			(fields
+				(field
+					(name "MPN") "0603WAF0000T5E")
+				(field
+					(name "LCSC") "C21189")
+				(field
+					(name "DNP") "DNP")
+				(field
+					(name "Note") "FL crossover (DNP)")
+				(field
+					(name "Footprint") "Resistor_SMD:R_0603_1608Metric")
+				(field
+					(name "Datasheet") "~")
+				(field
+					(name "Description") "Resistor")
+			)
+			(libsource
+				(lib "Device")
+				(part "R")
+				(description "Resistor")
+			)
+			(property
+				(name "MPN")
+				(value "0603WAF0000T5E")
+			)
+			(property
+				(name "LCSC")
+				(value "C21189")
+			)
+			(property
+				(name "DNP")
+				(value "DNP")
+			)
+			(property
+				(name "Note")
+				(value "FL crossover (DNP)")
+			)
+			(property
+				(name "Sheetname")
+				(value "panel")
+			)
+			(property
+				(name "Sheetfile")
+				(value "panel_main.kicad_sch")
+			)
+			(property
+				(name "dnp")
+			)
+			(property
+				(name "ki_keywords")
+				(value "R res resistor")
+			)
+			(property
+				(name "ki_fp_filters")
+				(value "R_*")
+			)
+			(sheetpath
+				(names "/panel/")
+				(tstamps "/4abcc5ec-0e62-56fc-ae53-06c7680dbff6/")
+			)
+			(tstamps "1404b0f5-4c2b-5bcd-8e60-4f8046821fee")
+			(units
+				(unit
+					(name "A")
+					(pins
+						(pin
+							(num "1")
+						)
+						(pin
+							(num "2")
+						)
+					)
+				)
+			)
+		)
+		(comp
+			(ref "R6")
+			(value "10k")
+			(footprint "Resistor_SMD:R_0603_1608Metric")
+			(datasheet "~")
+			(description "Resistor")
+			(fields
+				(field
+					(name "MPN") "0603WAF1002T5E")
+				(field
+					(name "LCSC") "C25804")
+				(field
+					(name "DNP")
+				)
+				(field
+					(name "Footprint") "Resistor_SMD:R_0603_1608Metric")
+				(field
+					(name "Datasheet") "~")
+				(field
+					(name "Description") "Resistor")
+			)
+			(libsource
+				(lib "Device")
+				(part "R")
+				(description "Resistor")
+			)
+			(property
+				(name "MPN")
+				(value "0603WAF1002T5E")
+			)
+			(property
+				(name "LCSC")
+				(value "C25804")
+			)
+			(property
+				(name "DNP")
+				(value "")
+			)
+			(property
+				(name "Sheetname")
+				(value "panel")
+			)
+			(property
+				(name "Sheetfile")
+				(value "panel_main.kicad_sch")
+			)
+			(property
+				(name "ki_keywords")
+				(value "R res resistor")
+			)
+			(property
+				(name "ki_fp_filters")
+				(value "R_*")
+			)
+			(sheetpath
+				(names "/panel/")
+				(tstamps "/4abcc5ec-0e62-56fc-ae53-06c7680dbff6/")
+			)
+			(tstamps "dd040614-4062-5234-9ea0-c38eb5f4ceaf")
+			(units
+				(unit
+					(name "A")
+					(pins
+						(pin
+							(num "1")
+						)
+						(pin
+							(num "2")
+						)
+					)
+				)
+			)
+		)
+		(comp
+			(ref "R7")
+			(value "10k")
+			(footprint "Resistor_SMD:R_0603_1608Metric")
+			(datasheet "~")
+			(description "Resistor")
+			(fields
+				(field
+					(name "MPN") "0603WAF1002T5E")
+				(field
+					(name "LCSC") "C25804")
+				(field
+					(name "DNP")
+				)
+				(field
+					(name "Footprint") "Resistor_SMD:R_0603_1608Metric")
+				(field
+					(name "Datasheet") "~")
+				(field
+					(name "Description") "Resistor")
+			)
+			(libsource
+				(lib "Device")
+				(part "R")
+				(description "Resistor")
+			)
+			(property
+				(name "MPN")
+				(value "0603WAF1002T5E")
+			)
+			(property
+				(name "LCSC")
+				(value "C25804")
+			)
+			(property
+				(name "DNP")
+				(value "")
+			)
+			(property
+				(name "Sheetname")
+				(value "panel")
+			)
+			(property
+				(name "Sheetfile")
+				(value "panel_main.kicad_sch")
+			)
+			(property
+				(name "ki_keywords")
+				(value "R res resistor")
+			)
+			(property
+				(name "ki_fp_filters")
+				(value "R_*")
+			)
+			(sheetpath
+				(names "/panel/")
+				(tstamps "/4abcc5ec-0e62-56fc-ae53-06c7680dbff6/")
+			)
+			(tstamps "5d776318-16c9-5f56-b5fc-a148da3a0727")
+			(units
+				(unit
+					(name "A")
+					(pins
+						(pin
+							(num "1")
+						)
+						(pin
+							(num "2")
+						)
+					)
+				)
+			)
+		)
+		(comp
+			(ref "R8")
+			(value "1M")
+			(footprint "Resistor_SMD:R_0603_1608Metric")
+			(datasheet "~")
+			(description "Resistor")
+			(fields
+				(field
+					(name "MPN") "0603WAF1004T5E")
+				(field
+					(name "LCSC") "C22935")
+				(field
+					(name "DNP")
+				)
+				(field
+					(name "Note") "GDR pull-down")
+				(field
+					(name "Footprint") "Resistor_SMD:R_0603_1608Metric")
+				(field
+					(name "Datasheet") "~")
+				(field
+					(name "Description") "Resistor")
+			)
+			(libsource
+				(lib "Device")
+				(part "R")
+				(description "Resistor")
+			)
+			(property
+				(name "MPN")
+				(value "0603WAF1004T5E")
+			)
+			(property
+				(name "LCSC")
+				(value "C22935")
+			)
+			(property
+				(name "DNP")
+				(value "")
+			)
+			(property
+				(name "Note")
+				(value "GDR pull-down")
+			)
+			(property
+				(name "Sheetname")
+				(value "panel")
+			)
+			(property
+				(name "Sheetfile")
+				(value "panel_main.kicad_sch")
+			)
+			(property
+				(name "ki_keywords")
+				(value "R res resistor")
+			)
+			(property
+				(name "ki_fp_filters")
+				(value "R_*")
+			)
+			(sheetpath
+				(names "/panel/")
+				(tstamps "/4abcc5ec-0e62-56fc-ae53-06c7680dbff6/")
+			)
+			(tstamps "18ba0a98-df26-5c44-ae03-f34e28e2cb7a")
 			(units
 				(unit
 					(name "A")
@@ -2476,19 +2889,19 @@
 				(pintype "passive")
 			)
 			(node
-				(ref "R1")
+				(ref "R6")
 				(pin "2")
 				(pintype "passive")
 			)
 			(node
-				(ref "R2")
+				(ref "R7")
 				(pin "2")
 				(pintype "passive")
 			)
 		)
 		(net
 			(code "2")
-			(name "EPD_BUSY")
+			(name "EINK_BUSY")
 			(class "Default")
 			(node
 				(ref "J1")
@@ -2505,7 +2918,7 @@
 		)
 		(net
 			(code "3")
-			(name "EPD_CS")
+			(name "EINK_CS")
 			(class "Default")
 			(node
 				(ref "J1")
@@ -2520,14 +2933,14 @@
 				(pintype "passive")
 			)
 			(node
-				(ref "R2")
+				(ref "R7")
 				(pin "1")
 				(pintype "passive")
 			)
 		)
 		(net
 			(code "4")
-			(name "EPD_DC")
+			(name "EINK_DC")
 			(class "Default")
 			(node
 				(ref "J1")
@@ -2544,29 +2957,7 @@
 		)
 		(net
 			(code "5")
-			(name "EPD_GDR")
-			(class "Default")
-			(node
-				(ref "J1")
-				(pin "2")
-				(pinfunction "Pin_2_2")
-				(pintype "passive")
-			)
-			(node
-				(ref "Q5")
-				(pin "1")
-				(pinfunction "G_1")
-				(pintype "input")
-			)
-			(node
-				(ref "R3")
-				(pin "1")
-				(pintype "passive")
-			)
-		)
-		(net
-			(code "6")
-			(name "EPD_MOSI")
+			(name "EINK_MOSI")
 			(class "Default")
 			(node
 				(ref "J1")
@@ -2582,7 +2973,68 @@
 			)
 		)
 		(net
+			(code "6")
+			(name "EINK_RST")
+			(class "Default")
+			(node
+				(ref "J1")
+				(pin "10")
+				(pinfunction "Pin_10_10")
+				(pintype "passive")
+			)
+			(node
+				(ref "J2")
+				(pin "7")
+				(pinfunction "Pin_7_7")
+				(pintype "passive")
+			)
+			(node
+				(ref "R6")
+				(pin "1")
+				(pintype "passive")
+			)
+		)
+		(net
 			(code "7")
+			(name "EINK_SCK")
+			(class "Default")
+			(node
+				(ref "J1")
+				(pin "13")
+				(pinfunction "Pin_13_13")
+				(pintype "passive")
+			)
+			(node
+				(ref "J2")
+				(pin "3")
+				(pinfunction "Pin_3_3")
+				(pintype "passive")
+			)
+		)
+		(net
+			(code "8")
+			(name "EPD_GDR")
+			(class "Default")
+			(node
+				(ref "J1")
+				(pin "2")
+				(pinfunction "Pin_2_2")
+				(pintype "passive")
+			)
+			(node
+				(ref "Q5")
+				(pin "1")
+				(pinfunction "G_1")
+				(pintype "input")
+			)
+			(node
+				(ref "R8")
+				(pin "1")
+				(pintype "passive")
+			)
+		)
+		(net
+			(code "9")
 			(name "EPD_PUMP")
 			(class "Default")
 			(node
@@ -2604,7 +3056,7 @@
 			)
 		)
 		(net
-			(code "8")
+			(code "10")
 			(name "EPD_RESE")
 			(class "Default")
 			(node
@@ -2622,45 +3074,6 @@
 			(node
 				(ref "R4")
 				(pin "1")
-				(pintype "passive")
-			)
-		)
-		(net
-			(code "9")
-			(name "EPD_RST")
-			(class "Default")
-			(node
-				(ref "J1")
-				(pin "10")
-				(pinfunction "Pin_10_10")
-				(pintype "passive")
-			)
-			(node
-				(ref "J2")
-				(pin "7")
-				(pinfunction "Pin_7_7")
-				(pintype "passive")
-			)
-			(node
-				(ref "R1")
-				(pin "1")
-				(pintype "passive")
-			)
-		)
-		(net
-			(code "10")
-			(name "EPD_SCK")
-			(class "Default")
-			(node
-				(ref "J1")
-				(pin "13")
-				(pinfunction "Pin_13_13")
-				(pintype "passive")
-			)
-			(node
-				(ref "J2")
-				(pin "3")
-				(pinfunction "Pin_3_3")
 				(pintype "passive")
 			)
 		)
@@ -2818,14 +3231,8 @@
 		)
 		(net
 			(code "19")
-			(name "FL_ANODE")
+			(name "FL_A")
 			(class "Default")
-			(node
-				(ref "J2")
-				(pin "9")
-				(pinfunction "Pin_9_9")
-				(pintype "passive")
-			)
 			(node
 				(ref "J3")
 				(pin "1")
@@ -2838,17 +3245,33 @@
 				(pinfunction "Pin_2_2")
 				(pintype "passive")
 			)
+			(node
+				(ref "J4")
+				(pin "5")
+				(pinfunction "Pin_5_5")
+				(pintype "passive")
+			)
+			(node
+				(ref "J4")
+				(pin "6")
+				(pinfunction "Pin_6_6")
+				(pintype "passive")
+			)
+			(node
+				(ref "R1")
+				(pin "2")
+				(pintype "passive")
+			)
+			(node
+				(ref "R5")
+				(pin "2")
+				(pintype "passive")
+			)
 		)
 		(net
 			(code "20")
-			(name "FL_CATHODE")
+			(name "FL_K")
 			(class "Default")
-			(node
-				(ref "J2")
-				(pin "10")
-				(pinfunction "Pin_10_10")
-				(pintype "passive")
-			)
 			(node
 				(ref "J3")
 				(pin "5")
@@ -2861,9 +3284,73 @@
 				(pinfunction "Pin_6_6")
 				(pintype "passive")
 			)
+			(node
+				(ref "J4")
+				(pin "1")
+				(pinfunction "Pin_1_1")
+				(pintype "passive")
+			)
+			(node
+				(ref "J4")
+				(pin "2")
+				(pinfunction "Pin_2_2")
+				(pintype "passive")
+			)
+			(node
+				(ref "R2")
+				(pin "2")
+				(pintype "passive")
+			)
+			(node
+				(ref "R3")
+				(pin "2")
+				(pintype "passive")
+			)
 		)
 		(net
 			(code "21")
+			(name "FL_N")
+			(class "Default")
+			(node
+				(ref "J2")
+				(pin "10")
+				(pinfunction "Pin_10_10")
+				(pintype "passive")
+			)
+			(node
+				(ref "R2")
+				(pin "1")
+				(pintype "passive")
+			)
+			(node
+				(ref "R5")
+				(pin "1")
+				(pintype "passive")
+			)
+		)
+		(net
+			(code "22")
+			(name "FL_P")
+			(class "Default")
+			(node
+				(ref "J2")
+				(pin "9")
+				(pinfunction "Pin_9_9")
+				(pintype "passive")
+			)
+			(node
+				(ref "R1")
+				(pin "1")
+				(pintype "passive")
+			)
+			(node
+				(ref "R3")
+				(pin "1")
+				(pintype "passive")
+			)
+		)
+		(net
+			(code "23")
 			(name "GND")
 			(class "Default")
 			(node
@@ -2941,18 +3428,18 @@
 				(pintype "passive")
 			)
 			(node
-				(ref "R3")
+				(ref "R4")
 				(pin "2")
 				(pintype "passive")
 			)
 			(node
-				(ref "R4")
+				(ref "R8")
 				(pin "2")
 				(pintype "passive")
 			)
 		)
 		(net
-			(code "22")
+			(code "24")
 			(name "unconnected-(J1-Pin_1-Pad1)")
 			(class "Default")
 			(node
@@ -2963,7 +3450,7 @@
 			)
 		)
 		(net
-			(code "23")
+			(code "25")
 			(name "unconnected-(J1-Pin_4-Pad4)")
 			(class "Default")
 			(node
@@ -2974,7 +3461,7 @@
 			)
 		)
 		(net
-			(code "24")
+			(code "26")
 			(name "unconnected-(J1-Pin_6-Pad6)")
 			(class "Default")
 			(node
@@ -2985,7 +3472,7 @@
 			)
 		)
 		(net
-			(code "25")
+			(code "27")
 			(name "unconnected-(J1-Pin_7-Pad7)")
 			(class "Default")
 			(node
@@ -2996,7 +3483,7 @@
 			)
 		)
 		(net
-			(code "26")
+			(code "28")
 			(name "unconnected-(J1-Pin_19-Pad19)")
 			(class "Default")
 			(node
@@ -3007,7 +3494,7 @@
 			)
 		)
 		(net
-			(code "27")
+			(code "29")
 			(name "unconnected-(J3-Pin_3-Pad3)")
 			(class "Default")
 			(node
@@ -3018,11 +3505,33 @@
 			)
 		)
 		(net
-			(code "28")
+			(code "30")
 			(name "unconnected-(J3-Pin_4-Pad4)")
 			(class "Default")
 			(node
 				(ref "J3")
+				(pin "4")
+				(pinfunction "Pin_4_4")
+				(pintype "passive+no_connect")
+			)
+		)
+		(net
+			(code "31")
+			(name "unconnected-(J4-Pin_3-Pad3)")
+			(class "Default")
+			(node
+				(ref "J4")
+				(pin "3")
+				(pinfunction "Pin_3_3")
+				(pintype "passive+no_connect")
+			)
+		)
+		(net
+			(code "32")
+			(name "unconnected-(J4-Pin_4-Pad4)")
+			(class "Default")
+			(node
+				(ref "J4")
 				(pin "4")
 				(pinfunction "Pin_4_4")
 				(pintype "passive+no_connect")
