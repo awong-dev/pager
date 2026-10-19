@@ -29,6 +29,8 @@
 		(uuid "4abcc5ec-0e62-56fc-ae53-06c7680dbff6")
 		(property "Sheetname" "panel"
 			(at 25.4 24.6884 0)
+			(show_name no)
+			(do_not_autoplace no)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -38,6 +40,8 @@
 		)
 		(property "Sheetfile" "panel_main.kicad_sch"
 			(at 25.4 46.3046 0)
+			(show_name no)
+			(do_not_autoplace no)
 			(effects
 				(font
 					(size 1.27 1.27)
