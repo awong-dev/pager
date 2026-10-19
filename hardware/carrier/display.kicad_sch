@@ -493,8 +493,7 @@
 			(symbol "C_0_1"
 				(polyline
 					(pts
-						(xy -2.032 0.762)
-						(xy 2.032 0.762)
+						(xy -2.032 0.762) (xy 2.032 0.762)
 					)
 					(stroke
 						(width 0.508)
@@ -506,8 +505,7 @@
 				)
 				(polyline
 					(pts
-						(xy -2.032 -0.762)
-						(xy 2.032 -0.762)
+						(xy -2.032 -0.762) (xy 2.032 -0.762)
 					)
 					(stroke
 						(width 0.508)
@@ -640,8 +638,7 @@
 			(symbol "PWR_3V3_EPD_0_1"
 				(polyline
 					(pts
-						(xy -0.762 1.27)
-						(xy 0 2.54)
+						(xy -0.762 1.27) (xy 0 2.54)
 					)
 					(stroke
 						(width 0)
@@ -653,8 +650,7 @@
 				)
 				(polyline
 					(pts
-						(xy 0 2.54)
-						(xy 0.762 1.27)
+						(xy 0 2.54) (xy 0.762 1.27)
 					)
 					(stroke
 						(width 0)
@@ -666,8 +662,7 @@
 				)
 				(polyline
 					(pts
-						(xy 0 0)
-						(xy 0 2.54)
+						(xy 0 0) (xy 0 2.54)
 					)
 					(stroke
 						(width 0)
@@ -782,12 +777,7 @@
 			(symbol "GND_0_1"
 				(polyline
 					(pts
-						(xy 0 0)
-						(xy 0 -1.27)
-						(xy 1.27 -1.27)
-						(xy 0 -2.54)
-						(xy -1.27 -1.27)
-						(xy 0 -1.27)
+						(xy 0 0) (xy 0 -1.27) (xy 1.27 -1.27) (xy 0 -2.54) (xy -1.27 -1.27) (xy 0 -1.27)
 					)
 					(stroke
 						(width 0)
@@ -821,6 +811,17 @@
 			(embedded_fonts no)
 		)
 	)
+	(text "Pinout: 1 3V3_EPD, 2 GND, 3 EPD_SCK, 4 EPD_MOSI, 5 EPD_CS, 6 EPD_DC, 7 EPD_RST, 8 EPD_BUSY, 9 FL_ANODE, 10 FL_CATHODE. The panel board carries the RST/CS pull-ups, the VCI decoupling and the front-light ZIF."
+		(exclude_from_sim no)
+		(at 20 110 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify left top)
+		)
+		(uuid "07e334ff-377a-53d5-a370-6740e7f5a8bd")
+	)
 	(text "The SSD1680 ZIF, boost/charge-pump cluster and the front-light 6-pin ZIF live on the separate panel board (hardware/carrier/panel). The carrier carries only the 10-pin JST SH cable connector J3."
 		(exclude_from_sim no)
 		(at 20 20 0)
@@ -835,19 +836,67 @@
 	)
 	(wire
 		(pts
-			(xy 54.61 69.85)
-			(xy 49.53 69.85)
+			(xy 54.61 77.47) (xy 49.53 77.47)
 		)
 		(stroke
 			(width 0)
 			(type default)
 		)
-		(uuid "e009fa99-ba0a-5466-b1dc-12a89a857cdd")
+		(uuid "0101a70a-13d5-5152-af27-3a9c1d5d4319")
 	)
 	(wire
 		(pts
-			(xy 54.61 72.39)
-			(xy 49.53 72.39)
+			(xy 54.61 74.93) (xy 49.53 74.93)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "256d25d8-b3b4-5812-a6ae-40e054023437")
+	)
+	(wire
+		(pts
+			(xy 54.61 85.09) (xy 49.53 85.09)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "2f6f75a7-9916-5f9f-9f14-6d45e29f0f2b")
+	)
+	(wire
+		(pts
+			(xy 54.61 87.63) (xy 49.53 87.63)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "54a322e0-a526-5aea-a8dc-45e1bc4f9cc4")
+	)
+	(wire
+		(pts
+			(xy 110.49 66.04) (xy 110.49 63.5)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "67aa8f24-1b26-58d9-9075-8b846d0cb25c")
+	)
+	(wire
+		(pts
+			(xy 54.61 82.55) (xy 49.53 82.55)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "a5874566-c65e-5d6d-889f-6fc117ded815")
+	)
+	(wire
+		(pts
+			(xy 54.61 72.39) (xy 49.53 72.39)
 		)
 		(stroke
 			(width 0)
@@ -857,60 +906,53 @@
 	)
 	(wire
 		(pts
-			(xy 54.61 74.93)
-			(xy 49.53 74.93)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "256d25d8-b3b4-5812-a6ae-40e054023437")
-	)
-	(global_label "EPD_SCK"
-		(shape passive)
-		(at 49.53 74.93 180)
-		(fields_autoplaced yes)
-		(effects
-			(font
-				(size 1.27 1.27)
-			)
-			(justify right)
-		)
-		(uuid "c88e7869-4a13-50dc-95d3-a8d48270ba76")
-	)
-	(wire
-		(pts
-			(xy 54.61 77.47)
-			(xy 49.53 77.47)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "0101a70a-13d5-5152-af27-3a9c1d5d4319")
-	)
-	(global_label "EPD_MOSI"
-		(shape passive)
-		(at 49.53 77.47 180)
-		(fields_autoplaced yes)
-		(effects
-			(font
-				(size 1.27 1.27)
-			)
-			(justify right)
-		)
-		(uuid "5a6c3915-2064-5a18-bc35-18c7f490debb")
-	)
-	(wire
-		(pts
-			(xy 54.61 80.01)
-			(xy 49.53 80.01)
+			(xy 54.61 80.01) (xy 49.53 80.01)
 		)
 		(stroke
 			(width 0)
 			(type default)
 		)
 		(uuid "c353e3b5-5c75-535d-88ce-9ed7e951e42f")
+	)
+	(wire
+		(pts
+			(xy 110.49 73.66) (xy 110.49 76.2)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "cd4db0c8-c332-5141-8315-e5aaa0e292a2")
+	)
+	(wire
+		(pts
+			(xy 54.61 90.17) (xy 49.53 90.17)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "d2a2eafd-2553-54be-ae22-ff9157b54386")
+	)
+	(wire
+		(pts
+			(xy 54.61 92.71) (xy 49.53 92.71)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "d939ef02-7e60-57ad-91d6-eaf41eb78182")
+	)
+	(wire
+		(pts
+			(xy 54.61 69.85) (xy 49.53 69.85)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "e009fa99-ba0a-5466-b1dc-12a89a857cdd")
 	)
 	(global_label "EPD_CS"
 		(shape passive)
@@ -923,17 +965,40 @@
 			(justify right)
 		)
 		(uuid "539377e2-0bd3-54a5-8522-c3f9780ed577")
+		(property "Intersheetrefs" "${INTERSHEET_REFS}"
+			(at 49.53 80.01 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
 	)
-	(wire
-		(pts
-			(xy 54.61 82.55)
-			(xy 49.53 82.55)
+	(global_label "EPD_MOSI"
+		(shape passive)
+		(at 49.53 77.47 180)
+		(fields_autoplaced yes)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify right)
 		)
-		(stroke
-			(width 0)
-			(type default)
+		(uuid "5a6c3915-2064-5a18-bc35-18c7f490debb")
+		(property "Intersheetrefs" "${INTERSHEET_REFS}"
+			(at 49.53 77.47 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
 		)
-		(uuid "a5874566-c65e-5d6d-889f-6fc117ded815")
 	)
 	(global_label "EPD_DC"
 		(shape passive)
@@ -946,17 +1011,17 @@
 			(justify right)
 		)
 		(uuid "6375e15a-3fb9-5be3-84da-3bcc99c7b12c")
-	)
-	(wire
-		(pts
-			(xy 54.61 85.09)
-			(xy 49.53 85.09)
+		(property "Intersheetrefs" "${INTERSHEET_REFS}"
+			(at 49.53 82.55 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
 		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "2f6f75a7-9916-5f9f-9f14-6d45e29f0f2b")
 	)
 	(global_label "EPD_RST"
 		(shape passive)
@@ -969,63 +1034,17 @@
 			(justify right)
 		)
 		(uuid "7d16af18-0220-5944-bbf0-86f6ad0089ac")
-	)
-	(wire
-		(pts
-			(xy 54.61 87.63)
-			(xy 49.53 87.63)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "54a322e0-a526-5aea-a8dc-45e1bc4f9cc4")
-	)
-	(global_label "EPD_BUSY"
-		(shape passive)
-		(at 49.53 87.63 180)
-		(fields_autoplaced yes)
-		(effects
-			(font
-				(size 1.27 1.27)
+		(property "Intersheetrefs" "${INTERSHEET_REFS}"
+			(at 49.53 85.09 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
 			)
-			(justify right)
 		)
-		(uuid "b0791847-e427-5be0-9072-1f4da7a74166")
-	)
-	(wire
-		(pts
-			(xy 54.61 90.17)
-			(xy 49.53 90.17)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "d2a2eafd-2553-54be-ae22-ff9157b54386")
-	)
-	(global_label "FL_ANODE"
-		(shape passive)
-		(at 49.53 90.17 180)
-		(fields_autoplaced yes)
-		(effects
-			(font
-				(size 1.27 1.27)
-			)
-			(justify right)
-		)
-		(uuid "f7208780-bf8c-5aca-b2ca-32d6928ead6a")
-	)
-	(wire
-		(pts
-			(xy 54.61 92.71)
-			(xy 49.53 92.71)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "d939ef02-7e60-57ad-91d6-eaf41eb78182")
 	)
 	(global_label "FL_CATHODE"
 		(shape passive)
@@ -1038,44 +1057,174 @@
 			(justify right)
 		)
 		(uuid "a118dfbc-6db7-5998-9f57-5717af1bcbff")
+		(property "Intersheetrefs" "${INTERSHEET_REFS}"
+			(at 49.53 92.71 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
 	)
-	(wire
-		(pts
-			(xy 110.49 66.04)
-			(xy 110.49 63.5)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "67aa8f24-1b26-58d9-9075-8b846d0cb25c")
-	)
-	(wire
-		(pts
-			(xy 110.49 73.66)
-			(xy 110.49 76.2)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "cd4db0c8-c332-5141-8315-e5aaa0e292a2")
-	)
-	(text "Pinout: 1 3V3_EPD, 2 GND, 3 EPD_SCK, 4 EPD_MOSI, 5 EPD_CS, 6 EPD_DC, 7 EPD_RST, 8 EPD_BUSY, 9 FL_ANODE, 10 FL_CATHODE. The panel board carries the RST/CS pull-ups, the VCI decoupling and the front-light ZIF."
-		(exclude_from_sim no)
-		(at 20 110 0)
+	(global_label "EPD_BUSY"
+		(shape passive)
+		(at 49.53 87.63 180)
+		(fields_autoplaced yes)
 		(effects
 			(font
 				(size 1.27 1.27)
 			)
-			(justify left top)
+			(justify right)
 		)
-		(uuid "07e334ff-377a-53d5-a370-6740e7f5a8bd")
+		(uuid "b0791847-e427-5be0-9072-1f4da7a74166")
+		(property "Intersheetrefs" "${INTERSHEET_REFS}"
+			(at 49.53 87.63 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+	)
+	(global_label "EPD_SCK"
+		(shape passive)
+		(at 49.53 74.93 180)
+		(fields_autoplaced yes)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify right)
+		)
+		(uuid "c88e7869-4a13-50dc-95d3-a8d48270ba76")
+		(property "Intersheetrefs" "${INTERSHEET_REFS}"
+			(at 49.53 74.93 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+	)
+	(global_label "FL_ANODE"
+		(shape passive)
+		(at 49.53 90.17 180)
+		(fields_autoplaced yes)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify right)
+		)
+		(uuid "f7208780-bf8c-5aca-b2ca-32d6928ead6a")
+		(property "Intersheetrefs" "${INTERSHEET_REFS}"
+			(at 49.53 90.17 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "pager-carrier:PWR_3V3_EPD")
+		(at 49.53 69.85 90)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom no)
+		(on_board no)
+		(in_pos_files yes)
+		(dnp no)
+		(uuid "1713564a-bccf-57a1-b257-c64b1c7442f0")
+		(property "Reference" "#PWR109"
+			(at 49.53 69.85 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Value" "3V3_EPD"
+			(at 45.72 69.85 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify right)
+			)
+		)
+		(property "Footprint" ""
+			(at 49.53 69.85 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Datasheet" "~"
+			(at 49.53 69.85 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Description" "Power symbol"
+			(at 49.53 69.85 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(pin "1"
+			(uuid "bc6656cf-e0a0-5719-b67a-5bcaa7c7a58b")
+		)
+		(instances
+			(project "pager-carrier"
+				(path "/10ec5e8c-30f8-50c5-8dd4-a077611d8ec6/4f9993a7-c2ec-5512-8944-2a1ee7e389ea"
+					(reference "#PWR109")
+					(unit 1)
+				)
+			)
+		)
 	)
 	(symbol
 		(lib_id "Connector_Generic:Conn_01x10")
 		(at 59.69 80.01 0)
 		(unit 1)
+		(body_style 1)
 		(exclude_from_sim no)
 		(in_bom yes)
 		(on_board yes)
@@ -1084,6 +1233,8 @@
 		(uuid "4413278c-a825-53d1-89bd-98812cc2deef")
 		(property "Reference" "J3"
 			(at 55.88 69.85 0)
+			(show_name no)
+			(do_not_autoplace no)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -1093,6 +1244,8 @@
 		)
 		(property "Value" "PANEL"
 			(at 55.88 72.39 0)
+			(show_name no)
+			(do_not_autoplace no)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -1103,6 +1256,8 @@
 		(property "Footprint" "Connector_JST:JST_SH_SM10B-SRSS-TB_1x10-1MP_P1.00mm_Horizontal"
 			(at 55.88 74.93 0)
 			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -1113,6 +1268,8 @@
 		(property "Datasheet" "~"
 			(at 55.88 77.47 0)
 			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -1123,6 +1280,8 @@
 		(property "Description" "Generic connector, single row, 01x10, script generated (kicad-library-utils/schlib/autogen/connector/)"
 			(at 55.88 80.01 0)
 			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -1133,6 +1292,8 @@
 		(property "MPN" "SM10B-SRSS-TB"
 			(at 59.69 95.25 0)
 			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -1142,6 +1303,8 @@
 		(property "LCSC" "C160409"
 			(at 59.69 97.79 0)
 			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -1151,6 +1314,8 @@
 		(property "DNP" ""
 			(at 59.69 100.33 0)
 			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -1160,6 +1325,8 @@
 		(property "Note" "to panel board J2, 1:1 10-way SH cable"
 			(at 59.69 102.87 0)
 			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -1206,80 +1373,10 @@
 		)
 	)
 	(symbol
-		(lib_id "pager-carrier:PWR_3V3_EPD")
-		(at 49.53 69.85 90)
-		(unit 1)
-		(exclude_from_sim no)
-		(in_bom no)
-		(on_board no)
-		(in_pos_files yes)
-		(dnp no)
-		(uuid "1713564a-bccf-57a1-b257-c64b1c7442f0")
-		(property "Reference" "#PWR109"
-			(at 49.53 69.85 0)
-			(hide yes)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-		(property "Value" "3V3_EPD"
-			(at 45.72 69.85 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify right)
-			)
-		)
-		(property "Footprint" ""
-			(at 49.53 69.85 0)
-			(hide yes)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-		(property "Datasheet" "~"
-			(at 49.53 69.85 0)
-			(hide yes)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-		(property "Description" "Power symbol"
-			(at 49.53 69.85 0)
-			(hide yes)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-		(pin "1"
-			(uuid "bc6656cf-e0a0-5719-b67a-5bcaa7c7a58b")
-		)
-		(instances
-			(project "pager-carrier"
-				(path "/10ec5e8c-30f8-50c5-8dd4-a077611d8ec6/4f9993a7-c2ec-5512-8944-2a1ee7e389ea"
-					(reference "#PWR109")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
 		(lib_id "power:GND")
 		(at 49.53 72.39 270)
 		(unit 1)
+		(body_style 1)
 		(exclude_from_sim no)
 		(in_bom no)
 		(on_board no)
@@ -1289,6 +1386,8 @@
 		(property "Reference" "#PWR110"
 			(at 49.53 72.39 0)
 			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -1298,6 +1397,8 @@
 		)
 		(property "Value" "GND"
 			(at 45.72 72.39 0)
+			(show_name no)
+			(do_not_autoplace no)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -1308,6 +1409,8 @@
 		(property "Footprint" ""
 			(at 49.53 72.39 0)
 			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -1318,6 +1421,8 @@
 		(property "Datasheet" "~"
 			(at 49.53 72.39 0)
 			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -1328,6 +1433,8 @@
 		(property "Description" "Power symbol"
 			(at 49.53 72.39 0)
 			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -1348,9 +1455,92 @@
 		)
 	)
 	(symbol
+		(lib_id "power:GND")
+		(at 110.49 76.2 0)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom no)
+		(on_board no)
+		(in_pos_files yes)
+		(dnp no)
+		(uuid "b628ffa0-2002-5ac1-b205-27f0e01e6575")
+		(property "Reference" "#PWR112"
+			(at 110.49 76.2 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Value" "GND"
+			(at 110.49 80.01 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Footprint" ""
+			(at 110.49 76.2 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Datasheet" "~"
+			(at 110.49 76.2 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Description" "Power symbol"
+			(at 110.49 76.2 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(pin "1"
+			(uuid "6584afdf-2a0a-5e4a-a274-3f9809fed750")
+		)
+		(instances
+			(project "pager-carrier"
+				(path "/10ec5e8c-30f8-50c5-8dd4-a077611d8ec6/4f9993a7-c2ec-5512-8944-2a1ee7e389ea"
+					(reference "#PWR112")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
 		(lib_id "Device:C")
 		(at 110.49 69.85 0)
 		(unit 1)
+		(body_style 1)
 		(exclude_from_sim no)
 		(in_bom yes)
 		(on_board yes)
@@ -1359,6 +1549,8 @@
 		(uuid "ce163ff6-a395-53b8-865c-9462fe00bfab")
 		(property "Reference" "C20"
 			(at 111.76 66.04 0)
+			(show_name no)
+			(do_not_autoplace no)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -1368,6 +1560,8 @@
 		)
 		(property "Value" "10uF"
 			(at 111.76 68.58 0)
+			(show_name no)
+			(do_not_autoplace no)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -1378,6 +1572,8 @@
 		(property "Footprint" "Capacitor_SMD:C_0603_1608Metric"
 			(at 111.76 71.12 0)
 			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -1388,6 +1584,8 @@
 		(property "Datasheet" "~"
 			(at 111.76 73.66 0)
 			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -1398,6 +1596,8 @@
 		(property "Description" "Unpolarized capacitor"
 			(at 111.76 76.2 0)
 			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -1408,6 +1608,8 @@
 		(property "MPN" "CL10A106KP8NNNC"
 			(at 110.49 85.09 0)
 			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -1417,6 +1619,8 @@
 		(property "LCSC" "C19702"
 			(at 110.49 87.63 0)
 			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -1426,6 +1630,8 @@
 		(property "DNP" ""
 			(at 110.49 90.17 0)
 			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -1451,6 +1657,7 @@
 		(lib_id "pager-carrier:PWR_3V3_EPD")
 		(at 110.49 63.5 0)
 		(unit 1)
+		(body_style 1)
 		(exclude_from_sim no)
 		(in_bom no)
 		(on_board no)
@@ -1460,6 +1667,8 @@
 		(property "Reference" "#PWR111"
 			(at 110.49 63.5 0)
 			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -1469,6 +1678,8 @@
 		)
 		(property "Value" "3V3_EPD"
 			(at 110.49 59.69 0)
+			(show_name no)
+			(do_not_autoplace no)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -1479,6 +1690,8 @@
 		(property "Footprint" ""
 			(at 110.49 63.5 0)
 			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -1489,6 +1702,8 @@
 		(property "Datasheet" "~"
 			(at 110.49 63.5 0)
 			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -1499,6 +1714,8 @@
 		(property "Description" "Power symbol"
 			(at 110.49 63.5 0)
 			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -1518,76 +1735,4 @@
 			)
 		)
 	)
-	(symbol
-		(lib_id "power:GND")
-		(at 110.49 76.2 0)
-		(unit 1)
-		(exclude_from_sim no)
-		(in_bom no)
-		(on_board no)
-		(in_pos_files yes)
-		(dnp no)
-		(uuid "b628ffa0-2002-5ac1-b205-27f0e01e6575")
-		(property "Reference" "#PWR112"
-			(at 110.49 76.2 0)
-			(hide yes)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-		(property "Value" "GND"
-			(at 110.49 80.01 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-		(property "Footprint" ""
-			(at 110.49 76.2 0)
-			(hide yes)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-		(property "Datasheet" "~"
-			(at 110.49 76.2 0)
-			(hide yes)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-		(property "Description" "Power symbol"
-			(at 110.49 76.2 0)
-			(hide yes)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-		(pin "1"
-			(uuid "6584afdf-2a0a-5e4a-a274-3f9809fed750")
-		)
-		(instances
-			(project "pager-carrier"
-				(path "/10ec5e8c-30f8-50c5-8dd4-a077611d8ec6/4f9993a7-c2ec-5512-8944-2a1ee7e389ea"
-					(reference "#PWR112")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(embedded_fonts no)
 )
