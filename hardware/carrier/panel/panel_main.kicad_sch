@@ -5292,7 +5292,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "AO3400A"
+		(property "Value" "SI1308EDL"
 			(at 295.148 111.76 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -5303,7 +5303,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "Package_TO_SOT_SMD:SOT-23"
+		(property "Footprint" "Package_TO_SOT_SMD:SOT-323_SC-70"
 			(at 293.37 110.49 0)
 			(hide yes)
 			(show_name no)
@@ -5315,7 +5315,7 @@
 				(justify left)
 			)
 		)
-		(property "Datasheet" "http://www.aosmd.com/pdfs/datasheet/AO3400A.pdf"
+		(property "Datasheet" "https://www.vishay.com/docs/73390/si1308edl.pdf"
 			(at 293.37 113.03 0)
 			(hide yes)
 			(show_name no)
@@ -5339,7 +5339,7 @@
 				(justify left)
 			)
 		)
-		(property "MPN" "AO3400A"
+		(property "MPN" "SI1308EDL-T1-GE3"
 			(at 289.56 125.73 0)
 			(hide yes)
 			(show_name no)
@@ -5350,7 +5350,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C20917"
+		(property "LCSC" "C469327"
 			(at 289.56 128.27 0)
 			(hide yes)
 			(show_name no)
@@ -5516,7 +5516,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "Resistor_SMD:R_0603_1608Metric"
+		(property "Footprint" "Resistor_SMD:R_0402_1005Metric"
 			(at 222.25 217.17 0)
 			(hide yes)
 			(show_name no)
@@ -5552,7 +5552,7 @@
 				(justify left)
 			)
 		)
-		(property "MPN" "0603WAF0000T5E"
+		(property "MPN" "0402WGF0000TCE"
 			(at 220.98 231.14 0)
 			(hide yes)
 			(show_name no)
@@ -5563,7 +5563,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C21189"
+		(property "LCSC" "C17168"
 			(at 220.98 233.68 0)
 			(hide yes)
 			(show_name no)
@@ -5761,7 +5761,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "Resistor_SMD:R_0603_1608Metric"
+		(property "Footprint" "Resistor_SMD:R_0402_1005Metric"
 			(at 280.67 128.27 0)
 			(hide yes)
 			(show_name no)
@@ -5797,7 +5797,7 @@
 				(justify left)
 			)
 		)
-		(property "MPN" "0603WAF1004T5E"
+		(property "MPN" "0402WGF1004TCE"
 			(at 279.4 142.24 0)
 			(hide yes)
 			(show_name no)
@@ -5808,7 +5808,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C22935"
+		(property "LCSC" "C26083"
 			(at 279.4 144.78 0)
 			(hide yes)
 			(show_name no)
@@ -6293,7 +6293,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "Resistor_SMD:R_0603_1608Metric"
+		(property "Footprint" "Resistor_SMD:R_0402_1005Metric"
 			(at 184.15 217.17 0)
 			(hide yes)
 			(show_name no)
@@ -6329,7 +6329,7 @@
 				(justify left)
 			)
 		)
-		(property "MPN" "0603WAF0000T5E"
+		(property "MPN" "0402WGF0000TCE"
 			(at 182.88 231.14 0)
 			(hide yes)
 			(show_name no)
@@ -6340,7 +6340,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C21189"
+		(property "LCSC" "C17168"
 			(at 182.88 233.68 0)
 			(hide yes)
 			(show_name no)
@@ -6657,7 +6657,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "MBR0530"
+		(property "Value" "NSR0530"
 			(at 246.38 116.078 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -6668,7 +6668,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "Diode_SMD:D_SOD-123"
+		(property "Footprint" "Diode_SMD:D_SOD-323"
 			(at 240.03 123.19 0)
 			(hide yes)
 			(show_name no)
@@ -6704,7 +6704,7 @@
 				(justify left)
 			)
 		)
-		(property "MPN" "MBR0530"
+		(property "MPN" "NSR0530HT1G"
 			(at 245.11 134.62 0)
 			(hide yes)
 			(show_name no)
@@ -6715,7 +6715,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C82046"
+		(property "LCSC" "C556393"
 			(at 245.11 137.16 0)
 			(hide yes)
 			(show_name no)
@@ -7147,7 +7147,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "Resistor_SMD:R_0603_1608Metric"
+		(property "Footprint" "Resistor_SMD:R_0402_1005Metric"
 			(at 196.85 217.17 0)
 			(hide yes)
 			(show_name no)
@@ -7183,7 +7183,7 @@
 				(justify left)
 			)
 		)
-		(property "MPN" "0603WAF0000T5E"
+		(property "MPN" "0402WGF0000TCE"
 			(at 195.58 231.14 0)
 			(hide yes)
 			(show_name no)
@@ -7194,7 +7194,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C21189"
+		(property "LCSC" "C17168"
 			(at 195.58 233.68 0)
 			(hide yes)
 			(show_name no)
@@ -7404,7 +7404,7 @@
 				)
 			)
 		)
-		(property "LCSC" ""
+		(property "LCSC" "C83435"
 			(at 292.1 87.63 0)
 			(hide yes)
 			(show_name no)
@@ -7602,7 +7602,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "Resistor_SMD:R_0603_1608Metric"
+		(property "Footprint" "Resistor_SMD:R_0402_1005Metric"
 			(at 143.51 60.96 0)
 			(hide yes)
 			(show_name no)
@@ -7638,7 +7638,7 @@
 				(justify left)
 			)
 		)
-		(property "MPN" "0603WAF1002T5E"
+		(property "MPN" "0402WGF1002TCE"
 			(at 142.24 74.93 0)
 			(hide yes)
 			(show_name no)
@@ -7649,7 +7649,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C25804"
+		(property "LCSC" "C25744"
 			(at 142.24 77.47 0)
 			(hide yes)
 			(show_name no)
@@ -7719,7 +7719,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "Capacitor_SMD:C_0603_1608Metric"
+		(property "Footprint" "Capacitor_SMD:C_0402_1005Metric"
 			(at 114.3 95.25 0)
 			(hide yes)
 			(show_name no)
@@ -7755,7 +7755,7 @@
 				(justify left)
 			)
 		)
-		(property "MPN" "CL10A105KA8NNNC"
+		(property "MPN" "CL05A105KA5NQNC"
 			(at 113.03 109.22 0)
 			(hide yes)
 			(show_name no)
@@ -7766,7 +7766,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C15849"
+		(property "LCSC" "C52923"
 			(at 113.03 111.76 0)
 			(hide yes)
 			(show_name no)
@@ -8093,7 +8093,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "Capacitor_SMD:C_0603_1608Metric"
+		(property "Footprint" "Capacitor_SMD:C_0402_1005Metric"
 			(at 156.21 60.96 0)
 			(hide yes)
 			(show_name no)
@@ -8129,7 +8129,7 @@
 				(justify left)
 			)
 		)
-		(property "MPN" "CL10A106KP8NNNC"
+		(property "MPN" "CL05A106MQ5NUNC"
 			(at 154.94 74.93 0)
 			(hide yes)
 			(show_name no)
@@ -8140,7 +8140,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C19702"
+		(property "LCSC" "C15525"
 			(at 154.94 77.47 0)
 			(hide yes)
 			(show_name no)
@@ -8573,7 +8573,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "MBR0530"
+		(property "Value" "NSR0530"
 			(at 243.586 130.302 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -8584,7 +8584,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "Diode_SMD:D_SOD-123"
+		(property "Footprint" "Diode_SMD:D_SOD-323"
 			(at 250.19 129.54 0)
 			(hide yes)
 			(show_name no)
@@ -8620,7 +8620,7 @@
 				(justify left)
 			)
 		)
-		(property "MPN" "MBR0530"
+		(property "MPN" "NSR0530HT1G"
 			(at 245.11 140.97 0)
 			(hide yes)
 			(show_name no)
@@ -8631,7 +8631,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C82046"
+		(property "LCSC" "C556393"
 			(at 245.11 143.51 0)
 			(hide yes)
 			(show_name no)
@@ -8772,7 +8772,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "4.7uF/25V"
+		(property "Value" "4.7uF"
 			(at 315.976 75.184 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -8783,7 +8783,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "Capacitor_SMD:C_0805_2012Metric"
+		(property "Footprint" "Capacitor_SMD:C_0603_1608Metric"
 			(at 312.42 74.93 0)
 			(hide yes)
 			(show_name no)
@@ -8819,7 +8819,7 @@
 				(justify left)
 			)
 		)
-		(property "MPN" "CL21B475KAQNNNE"
+		(property "MPN" "CL10A475KP8NNNC"
 			(at 311.15 88.9 0)
 			(hide yes)
 			(show_name no)
@@ -8830,7 +8830,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C1779"
+		(property "LCSC" "C1705"
 			(at 311.15 91.44 0)
 			(hide yes)
 			(show_name no)
@@ -8911,7 +8911,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "Capacitor_SMD:C_0603_1608Metric"
+		(property "Footprint" "Capacitor_SMD:C_0402_1005Metric"
 			(at 168.91 60.96 0)
 			(hide yes)
 			(show_name no)
@@ -8947,7 +8947,7 @@
 				(justify left)
 			)
 		)
-		(property "MPN" "CL10A105KA8NNNC"
+		(property "MPN" "CL05A105KA5NQNC"
 			(at 167.64 74.93 0)
 			(hide yes)
 			(show_name no)
@@ -8958,7 +8958,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C15849"
+		(property "LCSC" "C52923"
 			(at 167.64 77.47 0)
 			(hide yes)
 			(show_name no)
@@ -9331,7 +9331,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "Resistor_SMD:R_0603_1608Metric"
+		(property "Footprint" "Resistor_SMD:R_0402_1005Metric"
 			(at 209.55 217.17 0)
 			(hide yes)
 			(show_name no)
@@ -9367,7 +9367,7 @@
 				(justify left)
 			)
 		)
-		(property "MPN" "0603WAF0000T5E"
+		(property "MPN" "0402WGF0000TCE"
 			(at 208.28 231.14 0)
 			(hide yes)
 			(show_name no)
@@ -9378,7 +9378,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C21189"
+		(property "LCSC" "C17168"
 			(at 208.28 233.68 0)
 			(hide yes)
 			(show_name no)
@@ -9459,7 +9459,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "Resistor_SMD:R_0603_1608Metric"
+		(property "Footprint" "Resistor_SMD:R_0402_1005Metric"
 			(at 130.81 60.96 0)
 			(hide yes)
 			(show_name no)
@@ -9495,7 +9495,7 @@
 				(justify left)
 			)
 		)
-		(property "MPN" "0603WAF1002T5E"
+		(property "MPN" "0402WGF1002TCE"
 			(at 129.54 74.93 0)
 			(hide yes)
 			(show_name no)
@@ -9506,7 +9506,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C25804"
+		(property "LCSC" "C25744"
 			(at 129.54 77.47 0)
 			(hide yes)
 			(show_name no)
@@ -10010,7 +10010,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "MBR0530"
+		(property "Value" "NSR0530"
 			(at 248.666 72.39 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -10021,7 +10021,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "Diode_SMD:D_SOD-123"
+		(property "Footprint" "Diode_SMD:D_SOD-323"
 			(at 255.27 80.01 0)
 			(hide yes)
 			(show_name no)
@@ -10057,7 +10057,7 @@
 				(justify left)
 			)
 		)
-		(property "MPN" "MBR0530"
+		(property "MPN" "NSR0530HT1G"
 			(at 250.19 91.44 0)
 			(hide yes)
 			(show_name no)
@@ -10068,7 +10068,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C82046"
+		(property "LCSC" "C556393"
 			(at 250.19 93.98 0)
 			(hide yes)
 			(show_name no)

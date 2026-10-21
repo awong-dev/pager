@@ -69,7 +69,13 @@
           "thermal_relief_spoke_width": 0.5
         }
       },
-      "diff_pair_dimensions": [],
+      "diff_pair_dimensions": [
+        {
+          "gap": 0.0,
+          "via_gap": 0.0,
+          "width": 0.0
+        }
+      ],
       "drc_exclusions": [],
       "meta": {
         "version": 2
@@ -203,7 +209,14 @@
           "td_width_to_size_filter_ratio": 0.9
         }
       ],
-      "track_widths": [],
+      "track_widths": [
+        0.0,
+        0.15,
+        0.2,
+        0.25,
+        0.4,
+        0.6
+      ],
       "tuning_pattern_settings": {
         "diff_pair_defaults": {
           "corner_radius_percentage": 80,
@@ -230,7 +243,12 @@
           "spacing": 0.6
         }
       },
-      "via_dimensions": [],
+      "via_dimensions": [
+        {
+          "diameter": 0.0,
+          "drill": 0.0
+        }
+      ],
       "zones_allow_external_fillets": false
     },
     "ipc2581": {
@@ -514,22 +532,38 @@
       },
       {
         "bus_width": 12,
+        "clearance": 0.15,
+        "diff_pair_gap": 0.25,
+        "diff_pair_width": 0.2,
         "line_style": 0,
+        "microvia_diameter": 0.3,
+        "microvia_drill": 0.1,
         "name": "FRONTLIGHT",
         "pcb_color": "rgba(0, 0, 0, 0.000)",
         "priority": 0,
         "schematic_color": "rgb(0, 194, 0)",
+        "track_width": 0.25,
         "tuning_profile": "",
+        "via_diameter": 0.5,
+        "via_drill": 0.25,
         "wire_width": 6
       },
       {
         "bus_width": 12,
+        "clearance": 0.2,
+        "diff_pair_gap": 0.25,
+        "diff_pair_width": 0.2,
         "line_style": 0,
+        "microvia_diameter": 0.3,
+        "microvia_drill": 0.1,
         "name": "PWR",
         "pcb_color": "rgba(0, 0, 0, 0.000)",
         "priority": 1,
         "schematic_color": "rgb(194, 0, 0)",
+        "track_width": 0.4,
         "tuning_profile": "",
+        "via_diameter": 0.6,
+        "via_drill": 0.3,
         "wire_width": 6
       }
     ],
@@ -788,7 +822,7 @@
         "uuid": "ab8ee99e-0f89-4d3d-ba18-cf2cd7eb7e8f"
       }
     ],
-    "used_designators": "L3,#FLG1-14,TP1-6,TP11-22,C2,C9-10,C15-48,U2,U4,U7-9,U11-16,SW2-4,JP2-3,R6-7,R10,R20-76,J3-14,M2,Q2-8,D5,#PWR2,#PWR4,#PWR18-19,#PWR24,#PWR26-27,#PWR45,#PWR49,#PWR52,#PWR61,#PWR68,#PWR77,#PWR79,#PWR85-96,#PWR103-104,#PWR109-116,#PWR121-122,#PWR126-129,#PWR132-141,#PWR145-148,#PWR150-151",
+    "used_designators": "L1,L3,#FLG1-14,C1-48,U1-9,U11-16,SW1-4,TP1-22,JP1-3,R1-76,J1-14,M1-2,Q1-8,D1,D5,#PWR1-34,#PWR45,#PWR49,#PWR52,#PWR61,#PWR68,#PWR77,#PWR79,#PWR85-96,#PWR103-104,#PWR109-116,#PWR121-122,#PWR126-129,#PWR132-141,#PWR145-148,#PWR150-151",
     "variants": []
   },
   "sheets": [
