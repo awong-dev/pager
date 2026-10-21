@@ -5926,6 +5926,26 @@
 	)
 	(wire
 		(pts
+			(xy 175.26 243.84) (xy 176.53 243.84)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "c43d58ed-ab14-4626-b371-ba392f67f492")
+	)
+	(wire
+		(pts
+			(xy 184.15 243.84) (xy 185.42 243.84)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "8ca50176-0d46-4c34-92f6-64b0578a297e")
+	)
+	(wire
+		(pts
 			(xy 147.32 203.2) (xy 147.32 210.82)
 		)
 		(stroke
@@ -12569,8 +12589,8 @@
 		)
 	)
 	(symbol
-		(lib_id "Jumper:SolderJumper_2_Bridged")
-		(at 180.34 243.84 0)
+		(lib_id "Device:R")
+		(at 180.34 243.84 90)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -12579,7 +12599,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "3d65d4ea-048d-4011-96df-55bcc976b4f2")
-		(property "Reference" "JP1"
+		(property "Reference" "R39"
 			(at 179.07 246.634 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -12590,7 +12610,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "auto-boot"
+		(property "Value" "0R"
 			(at 178.816 248.666 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -12601,7 +12621,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "Jumper:SolderJumper-2_P1.3mm_Bridged_RoundedPad1.0x1.5mm"
+		(property "Footprint" "Resistor_SMD:R_0402_1005Metric"
 			(at 186.69 247.65 0)
 			(hide yes)
 			(show_name no)
@@ -12625,7 +12645,7 @@
 				(justify left)
 			)
 		)
-		(property "Description" "Solder Jumper, 2-pole, closed/bridged"
+		(property "Description" "Resistor"
 			(at 186.69 252.73 0)
 			(hide yes)
 			(show_name no)
@@ -12637,7 +12657,7 @@
 				(justify left)
 			)
 		)
-		(property "MPN" ""
+		(property "MPN" "0402WGF0000TCE"
 			(at 180.34 259.08 0)
 			(hide yes)
 			(show_name no)
@@ -12648,7 +12668,7 @@
 				)
 			)
 		)
-		(property "LCSC" ""
+		(property "LCSC" "C17168"
 			(at 180.34 261.62 0)
 			(hide yes)
 			(show_name no)
@@ -12670,7 +12690,7 @@
 				)
 			)
 		)
-		(property "Note" "open to disable auto boot mode"
+		(property "Note" "auto-boot link: remove to disable auto boot mode"
 			(at 180.34 266.7 0)
 			(hide yes)
 			(show_name no)
@@ -12690,7 +12710,7 @@
 		(instances
 			(project "pager-carrier"
 				(path "/4c77a02c-35a9-4533-b036-187d3e0c67ce"
-					(reference "JP1")
+					(reference "R39")
 					(unit 1)
 				)
 			)
@@ -12967,7 +12987,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "SKQGAFE010"
+		(property "Value" "KMR221GLFS"
 			(at 99.822 110.998 90)
 			(show_name no)
 			(do_not_autoplace no)
@@ -12978,7 +12998,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "Button_Switch_SMD:SW_SPST_SKQG_WithoutStem"
+		(property "Footprint" "Button_Switch_SMD:SW_Push_1P1T_NO_CK_KMR2"
 			(at 107.95 115.57 0)
 			(hide yes)
 			(show_name no)
@@ -13014,7 +13034,7 @@
 				(justify left)
 			)
 		)
-		(property "MPN" "SKQGAFE010"
+		(property "MPN" "KMR221GLFS"
 			(at 119.38 109.22 0)
 			(hide yes)
 			(show_name no)
@@ -13025,7 +13045,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C202424"
+		(property "LCSC" "C72443"
 			(at 121.92 109.22 0)
 			(hide yes)
 			(show_name no)
@@ -13047,7 +13067,7 @@
 				)
 			)
 		)
-		(property "Note" "Alps 5.2 x 5.2 x 1.5 mm, 1 N, top actuated"
+		(property "Note" "C&K KMR2 4.2 x 2.8 x 1.3 mm, 2 N, top actuated"
 			(at 127 109.22 0)
 			(hide yes)
 			(show_name no)

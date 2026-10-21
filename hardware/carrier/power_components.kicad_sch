@@ -10626,7 +10626,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "JS102011SAQN"
+		(property "Value" "MSK12C02"
 			(at 59.69 112.776 90)
 			(show_name no)
 			(do_not_autoplace no)
@@ -10637,7 +10637,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "Button_Switch_SMD:SW_SPDT_CK_JS102011SAQN"
+		(property "Footprint" "Button_Switch_SMD:SW_SPDT_Shouhan_MSK12C02"
 			(at 64.77 127 0)
 			(hide yes)
 			(show_name no)
@@ -10673,7 +10673,7 @@
 				(justify left)
 			)
 		)
-		(property "MPN" "JS102011SAQN"
+		(property "MPN" "MSK12C02"
 			(at 77.47 120.65 0)
 			(hide yes)
 			(show_name no)
@@ -10684,7 +10684,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C221660"
+		(property "LCSC" "C431540"
 			(at 80.01 120.65 0)
 			(hide yes)
 			(show_name no)
