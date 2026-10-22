@@ -3,6 +3,20 @@
 Brief: make the carrier screw-mountable for the 3D-printed display cassette. Everything below is folded into the
 v0.2c layout work (same pipeline, same files); nothing committed.
 
+## Night of 21/22 Oct 2026 (owner asleep): optimisation pass + ten more trials
+- Committed: 3a4011e (USB-C model upright, pours refilled, owner's VBUS_DET to 0.127 mm), bacfce7 (switch model
+  re-saved in mm via OpenCascade so the STEP export includes it; scratchpad ocpvenv + convstep.py).
+- **Route "optimisation" pass rejected**: exporting the routed board with only the hand-routed nets + VBUS_DET
+  fixed and letting Freerouting re-route/optimise the rest gave the same segment count and corner histogram
+  (863 segments, 62 right angles vs 853/61) plus 2 shorts and 2 clearance errors. The jaggedness is inherent to
+  Freerouting's output; smoothing needs a clearance-aware geometry pass (not written) or hand clean-up in KiCad.
+  Useful numbers for that: 84 segments < 0.15 mm, 61 right-angle corners, 497 45-degree corners.
+- **Ten more trials** (overnight.sh, seeds 2-11) on a pre-route base rebuilt from the owner's board (test points
+  placed, VBUS_DET hand route and the board's GND items kept as fixed). Each variant is fully restored, poured and
+  DRC'd; the best (0 errors, fewest open signal links) is installed, STEP re-exported, snapshotted as
+  scratchpad layout2/pcb_run9_overnight_v<k>.kicad_pcb and committed. Log: scratchpad layout2/overnight.log.
+  If no variant beats 18 open links nothing is installed.
+
 ## What changed
 - **SW2 power switch**: MSK12C02 (right-angle knob) -> **C&K JS102011SAQN**, top-actuated SMD SPDT slide switch,
   LCSC **C221660** (extended part, 369 in stock on 21 Oct 2026). Body 9.0 x 3.6 mm, 2.0 mm housing, **3.2 mm overall
