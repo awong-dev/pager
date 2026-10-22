@@ -1,0 +1,77 @@
+=== WalterModem WalterFeels example (v1.5.0) ===
+
+Walter's MAC is: 20:6E:F1:DC:CC:6C
+Successfully initialized the modem
+MAIN: Configuring I2C...
+Waiting for CO2 sensor to boot
+Warning: No CO2 sensor is installed
+MAIN: I2C configured
+I died
+Modem identity:
+ -IMEI: 016169007002467
+ -IMEISV: 0161690070024619
+ -SVN: 19
+SIM card identity:
+ -ICCID:
+ -eUICCID:
+Successfully configured a new socket
+Successfully set socket to insecure mode
+Sensor data, temp: 125.00C, hum: 100.00%, press: 0.00hPa, co2: 0
+System clock invalid, LTE time sync required
+Successfully set operational state to NO RF
+Created PDP context
+Successfully set operational state to FULL
+Network selection mode was set to automatic
+Connecting to the network....Network registration: Searching
+.Network registration: Registered (home)
+
+Connected to the network
+Clock synchronized: 1789803347
+Almanac data is available and should be updated within 15411739s
+Real-time ephemeris data is available and should be updated within 0s
+GNSS Assistance: Real-time ephemeris updated
+Almanac data is available and should be updated within 15411735s
+Real-time ephemeris data is available and should be updated within 8615s
+Successfully set operational state to MINIMUM
+Disconnected from the network
+Network registration: Not searching
+Started GNSS fix (attempt 1/5)
+.......................................................................................................
+GNSS fix received:  Confidence: 20000000.00  Latitude: 5.482857  Longitude: -29.821855  Satcount: 12  Good sats: 0
+
+GNSS fix confidence 20000000.00 too low, retrying...
+Started GNSS fix (attempt 2/5)
+....................................................................................................
+GNSS fix received:  Confidence: 20000000.00  Latitude: 46.052832  Longitude: -133.145800  Satcount: 12  Good sats: 0
+
+GNSS fix confidence 20000000.00 too low, retrying...
+Started GNSS fix (attempt 3/5)
+..........................................................................................................................................................................................
+GNSS fix received:  Confidence: 20000000.00  Latitude: 0.000000  Longitude: 0.000000  Satcount: 0  Good sats: 0
+
+GNSS fix confidence 20000000.00 too low, retrying...
+Started GNSS fix (attempt 4/5)
+..........................................................................................................................................................................................
+GNSS fix received:  Confidence: 20000000.00  Latitude: 0.000000  Longitude: 0.000000  Satcount: 0  Good sats: 0
+
+GNSS fix confidence 20000000.00 too low, retrying...
+Started GNSS fix (attempt 5/5)
+........
+GNSS fix received:  Confidence: 10.41  Latitude: 47.672073  Longitude: -122.381355  Satcount: 10  Good sats: 6
+
+Successfully obtained a valid GNSS fix
+Successfully set operational state to NO RF
+Created PDP context
+Successfully set operational state to FULL
+Network selection mode was set to automatic
+Connecting to the network....Network registration: Searching
+.Network registration: Registered (home)
+
+Connected to the network
+Connected on band 12 using operator Google Fi (310260) and cell ID 226761493.
+Signal strength: RSRP: -85.00, RSRQ: -9.40.
+Transmitting Walter Feels data packet
+Successfully dialed UDP server walterdemo.quickspot.io:1999
+SOCKET: Message received on socket 1 (size: 0)
+Could not receive message for socket 1
+I'm tired, I'm going to deep sleep now for 300 seconds

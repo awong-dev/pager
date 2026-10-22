@@ -52,3 +52,14 @@ bridge-android/app/build/
 bridge-android/local.properties
 bridge-android/app/google-services.json
 bridge-android/.kotlin/
+
+# Root-level build scratch (asset images, bench logs, screenshots)
+build/
+build_assets.bin
+
+# KiCad runtime files
+*.lck
+*-backups/
+*-unsaved-export-*.kicad_prl
+hardware/carrier/gnd_tmp.*
+hardware/carrier/gnd_cand.json
