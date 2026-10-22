@@ -3,6 +3,17 @@
 Brief: make the carrier screw-mountable for the 3D-printed display cassette. Everything below is folded into the
 v0.2c layout work (same pipeline, same files); nothing committed.
 
+## 22 Oct 2026 pm: J7 battery connector -> JST SH, netclasses for the hand layout
+- **J7 BATTERY is now JST SH SM02B-SRSS-TB** (side entry, 2.9 mm tall, 1 A/contact), LCSC **C160402** (extended,
+  79k in stock 22 Oct 2026), same part family as J3/J4/J5. Replaces the 5.5 mm PH S2B-PH-SM4-TB that collided with the
+  display back; that open item is closed. Schematic + board footprint swapped (board J7 at 115.5, 84.75, 3D model from
+  the KiCad library). Pad 1 = VBAT (+), pad 2 = GND, as before; check the battery lead polarity when crimping.
+- Netclasses (commit 3b36a5f): Default 0.15/0.15, PWR 0.4 (VBUS, U5-IN, SYS, SYS_SW, VBAT), PWR_MED 0.25 (frontlight,
+  haptic, 3V3_AWK, EXT_LED, buck SW node); one via 0.5/0.3 everywhere (JLC 2-layer minimum).
+- Owner is redoing the layout by hand, all parts on the top side; the committed routing is a reference only.
+- Noticed, not changed: J2 CARDKB has the SH SM04B footprint but MPN/LCSC say PH S4B-PH-SM4-TB (C265102). One of the
+  two is wrong; SH 4-pin would be SM04B-SRSS-TB, LCSC C160404.
+
 ## Autorouter alternatives (assessed 22 Oct 2026, owner asked about OrthoRoute-Metal)
 OrthoRoute (bbenchoff) is a GPU PathFinder router that lays a Manhattan lattice on many inner layers for backplanes
 and BGA escapes; its README says "not a general-purpose PCB autorouter", and the PCBWorld benchmark (Song et al.)
