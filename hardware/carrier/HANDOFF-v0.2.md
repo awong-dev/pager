@@ -18,6 +18,18 @@ tracks in the hole annuli and at the edge (its "fab tier ladder" escalates past 
 not better than Freerouting under JLC rules; keep Freerouting + hand finishing. Recipe kept in scratchpad krt/ (jlc_fab*.txt,
 annulus_zones.py adds board-level copies of the H1-H3 keep-outs, which KRT needs because it ignores footprint rule areas).
 
+## Final state at 00:40 PDT 22 Oct 2026 (end of the overnight session)
+Board = commit bd66a45: Freerouting top-biased variant 17 (via cost 20, B.Cu trace cost 2.2/4.0) + redundant GND via
+pruning (19 removed, 17 kept) + grid repair of the five test-point links and a few others + pour-island stitching
+(85 stitch vias added; thin them by hand if too many). **DRC 0 errors; 9 unconnected: 4 GND pour islands and 5 signal
+links: Q1A-E1, U1-VBUS, U7-MODE, Q1B-B2, Q1B-E2** (all short, bottom side around U1/Q1 and under U7). Was 18 open +
+TPs unrouted at bedtime. STEP re-exported. Snapshots: scratchpad layout2/pcb_run12_tpfix.kicad_pcb (final),
+pcb_run10_bias_v17, pcb_run11_pruned. Freerouting settings file restored to defaults.
+Pipeline fixes tonight: mkdsn_2.py keeps on-board test points routable (only parked ones are detached);
+fixnet_tp.py = fixnet2 that also repairs TP pads; gndprune.py (verified pruning); biasrun.sh / freerouting.bias.json.
+Not committed: pager-carrier.kicad_pro / .kicad_prl show edits (via size list, designators) that KiCad made in your
+session, not mine; commit or discard as you like. J7 PH header height (5.5 mm) is still the open mechanical question.
+
 ## Morning summary (22 Oct 2026, automated)
 ```
 23:53 variant 2: errors 0, open signal links 22 (295 wires)
