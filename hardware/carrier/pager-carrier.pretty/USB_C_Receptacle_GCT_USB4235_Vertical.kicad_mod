@@ -189,4 +189,9 @@
 		(remove_unused_layers no)
 	)
 	(embedded_fonts no)
+	(model "${KIPRJMOD}/pager-carrier.3dshapes/USB_C_Receptacle_GCT_USB4235_Vertical.step"
+		(offset (xyz 0 0 0))
+		(scale (xyz 1 1 1))
+		(rotate (xyz -90 0 0))
+	)
 )
