@@ -3,6 +3,47 @@
 Brief: make the carrier screw-mountable for the 3D-printed display cassette. Everything below is folded into the
 v0.2c layout work (same pipeline, same files); nothing committed.
 
+## Autorouter alternatives (assessed 22 Oct 2026, owner asked about OrthoRoute-Metal)
+OrthoRoute (bbenchoff) is a GPU PathFinder router that lays a Manhattan lattice on many inner layers for backplanes
+and BGA escapes; its README says "not a general-purpose PCB autorouter", and the PCBWorld benchmark (Song et al.)
+measured a 1-2 % clean-pass rate / 30-51 % routability on ordinary boards. OrthoRoute-Metal (ParkWardRR) is only an
+Apple-Metal port of its shortest-path kernel. On a 2-layer board with no inner lattice layers it cannot do better
+than Freerouting here, so it was not tried. Freerouting stays the tool; its remaining gaps are hand-finished.
+
+KiCadRoutingTools (atomic14, Rust A*, reads .kicad_pcb; scratchpad krt_src + ocpvenv) was tried three times on the
+same base (22 Oct 2026, 00:00-00:10): defaults -> 7 open signal links but 10 micro-vias 0.25/0.15, 0.1 mm clearances,
+tracks in the hole annuli and at the edge (its "fab tier ladder" escalates past JLC standard); JLC floors pinned with a
+--fab-overrides file at 0.2 mm clearance -> 22 open; on the Freerouting routing copy (grown pads, 0.15 mm, via margin
+1.3) -> 16 open + 41 track-to-via-hole (0.33 mm) violations, which it cannot express (one clearance value). Verdict:
+not better than Freerouting under JLC rules; keep Freerouting + hand finishing. Recipe kept in scratchpad krt/ (jlc_fab*.txt,
+annulus_zones.py adds board-level copies of the H1-H3 keep-outs, which KRT needs because it ignores footprint rule areas).
+
+## Morning summary (22 Oct 2026, automated)
+```
+23:53 variant 2: errors 0, open signal links 22 (295 wires)
+23:55 variant 3: errors 1, open signal links 20 (263 wires)
+23:58 variant 4: errors 0, open signal links 24 (266 wires)
+00:00 variant 5: errors 0, open signal links 19 (300 wires)
+best: variant -1 with 18 open (owner cut the plain trials to 4)
+no plain variant beat 18; board unchanged
+threshold to beat: 18 open links
+00:03 variant 12: errors 0, open signal links 24 (283 wires)
+00:07 variant 13: errors 0, open signal links 29 (245 wires)
+00:09 variant 14: errors 2, open signal links 15 (313 wires)
+00:12 variant 15: errors 0, open signal links 24 (290 wires)
+00:14 variant 16: errors 2, open signal links 20 (286 wires)
+00:18 variant 17: errors 0, open signal links 15 (316 wires)
+best: variant 17 with 15 open (current board: 18)
+installed board: errors 0 unconnected 20 {'GND': 6, 'TP': 5, 'VBUS': 1, 'Net-(Q1A-E1)': 2, 'Net-(U1-VBUS)': 2, 'Net-(U7-MODE)': 1, 'Net-(Q1B-B2)': 1, 'Net-(Q1B-E2)': 2}
+committed 84e20c7 Carrier: top-biased re-route (via cost 20, B.Cu trace cost x2.2), Freerouting variant 17 (15 open signal links, was 18)
+baseline unconnected: 20
+removed 19 redundant GND vias: [(79.47, 71.3, ['C15.2']), (92.85, 63.46, ['R2.2']), (98.05, 59.14, ['R6.2']), (89.79, 65.51, ['U1.25']), (89.31, 72.05, ['R27.2']), (89.66, 58.2, ['R29.2']), (106.52, 69.89, ['Q3.2']), (80.14, 63.4, ['R31.2']), (92.08, 61.14, ['SW1.2']), (95.06, 62.4, ['R4.2']), (84.0, 72.8, ['U5.11']), (87.97, 69.0, ['C13.2']), (108.8, 82.92, ['C17.2']), (112.4, 82.85, ['J7.2']), (
+kept 17 (needed for pour continuity): [['C6.2'], ['C10.2'], ['C11.2'], ['J2.1'], ['C9.2'], ['J4.2'], ['U6.9'], ['J1.2'], ['C16.2'], ['C8.2'], ['C1.2'], ['SW1.2'], ['R38.2'], ['R36.2'], ['R25.2'], ['C12.2'], ['R12.2']]
+after prune: errors 0 unconnected 20 {'GND': 6, 'TP': 5, 'VBUS': 1, 'Net-(Q1A-E1)': 2, 'Net-(U1-VBUS)': 2, 'Net-(U7-MODE)': 1, 'Net-(Q1B-B2)': 1, 'Net-(Q1B-E2)': 2}
+```
+Redundant GND vias (pad already on the pour, verified one by one with a connectivity rebuild) were pruned on the
+final board; the ones kept are needed for pour continuity. Snapshots: scratchpad layout2/pcb_run9_*, pcb_run10_*, pcb_run11_pruned.
+
 ## Night of 21/22 Oct 2026 (owner asleep): optimisation pass + ten more trials
 - Committed: 3a4011e (USB-C model upright, pours refilled, owner's VBUS_DET to 0.127 mm), bacfce7 (switch model
   re-saved in mm via OpenCascade so the STEP export includes it; scratchpad ocpvenv + convstep.py).
