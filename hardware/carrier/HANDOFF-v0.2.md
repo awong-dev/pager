@@ -1,3 +1,74 @@
+# Cassette / faceplate changes — summary (21 Oct 2026, late evening; uncommitted, for owner review)
+
+Brief: make the carrier screw-mountable for the 3D-printed display cassette. Everything below is folded into the
+v0.2c layout work (same pipeline, same files); nothing committed.
+
+## What changed
+- **SW2 power switch**: MSK12C02 (right-angle knob) -> **C&K JS102011SAQN**, top-actuated SMD SPDT slide switch,
+  LCSC **C221660** (extended part, 369 in stock on 21 Oct 2026). Body 9.0 x 3.6 mm, 2.0 mm housing, **3.2 mm overall
+  with the 1.5 mm knob** (datasheet 3.5 max). Travel along X (silk text "SW2 travel <-->" below it). Footprint
+  `Button_Switch_SMD:SW_SPDT_CK_JS102011SAQN` (KiCad lib; 3 gull-wing pads 1.25 x 2.5 on 2.5 mm pitch + two 0.9 mm
+  locating pegs). 3D model: owner's `JS102011SAQN--3DModel-Eagle-1.STEP` copied to `pager-carrier.3dshapes/`
+  (inch model, rotate -90 about X, no offset; pegs/feet verified on the pads by render). Schematic symbol value,
+  footprint, MPN, LCSC and datasheet updated in power_components.kicad_sch.
+- **Top-strip zone** (hinge side), left to right after the H1 hole: **J6 USB-C, SW1 (KMR2 button), SW2** — one
+  contiguous zone. Courtyard extents: x 80.0..108.5, y 57.8..66.6 (J6 80.0..91.8 x 58.8..62.8; SW1 92.1..97.8 x 58.9..62.6; SW2 98.4..108.5 x 57.8..66.6) (board frame; the plate's step-down window goes over this).
+  SW2 sits right of the Walter's header column because its 8.8 mm-deep courtyard would otherwise cover Walter pin 1.
+- **Keyboard header J2** stays the topmost header of the right-edge column (hinge side): J2 at (117.1, 61.65),
+  cable opening at the board edge x 120.5, so the cable turns straight into the plate's channel at kx 117-127.
+  Column top->bottom: J2, J1, J7, J3, J4, J5, all facing +X.
+- **Board grew to x 120.5** (was 115) to fit the two right-side holes beside the header column; outline otherwise as
+  v0.2c (y 57.4..108.4, keepout step at y 106.3 over the Walter, SIM eject hole at (86.25, 93.2)).
+- **Cassette screw holes H1-H3**: footprint `pager-carrier:MountingHole_2.2mm_M2_Cassette` = 2.2 mm NPTH + 4.5 mm
+  courtyard both sides + 4.5 mm rule areas on F.Cu and B.Cu (no tracks/vias/pour). Schematic symbols H1-H3
+  (Mechanical:MountingHole, not in BOM) in core_components.kicad_sch. DRC rules "Cassette standoff annulus H1..H3"
+  (physical_hole_clearance 1.15 mm from the hole edge = 4.5 mm annulus, copper layers) added to pager-carrier.kicad_dru.
+  **Hole centres (plate datum, board frame / Fusion frame):**
+  | hole | board (x, y) | Fusion world (x, y) = (ky-101.27, kx-2.03) | where |
+  |---|---|---|---|
+  | H1 | (77.40, 60.90) | (-40.37, 75.37) | tin-corner end of the top strip, left of J6 |
+  | H2 | (111.20, 59.95) | (-41.32, 109.17) | top edge, between SW2 and J2 |
+  | H3 | (111.20, 105.85) | (4.58, 109.17) | bottom edge, left of J5 |
+  H2/H3 could not go into the right-edge corners: the six headers fill the whole right edge (50.2 of 51 mm), so the
+  holes sit 9.3 mm in from the right edge, on the top/bottom edges (allowed by the owner's "board may grow / headers
+  need not be flush" note). H1 is as close to the tin corner as the arc + 0.3 mm edge rule allows.
+- **Height check (step 5)**, from the STEP models (carrier top = z 10.6): outside the top strip everything is <= 1.25 mm
+  (C6/C7 0805) except **J7 JST PH S2B-PH-SM4-TB: 5.5 mm tall -> top at z 16.1, above the display glass back (15.5)**.
+  Not changed (part choice): swap it for a 2-pin SH (SM02B-SRSS-TB, 2.9 mm, 1 A, same as J3-J5, needs the battery
+  lead re-terminated) or move the battery header into the top strip. Walter header pins: 5 mm -> trim (see note).
+  Top strip: USB-C 6.5 mm (z 17.1), SW2 3.2 mm, SW1 1.9 mm, SH headers 2.96 mm.
+- **F.Fab note** at (97, 103.5): trim the 28 Walter header pins flush with the solder fillets after soldering.
+- **3D models added** (owner-supplied, in pager-carrier.3dshapes): MAX17048 (U6, rotate -90 X), JST PH (J7, rotate
+  -90 X, offset y -4.45), JS102011SAQN (SW2). The USB-C real model was restored (the working copy had reverted to
+  the placeholder).
+
+## Verification
+- ERC (kicad-cli sch erc, in hardware/carrier): before 0 violations -> after 0 violations.
+- DRC: before (run-6 raw board) 15 clearance + 5 solder-mask-bridge errors, 20 unconnected; after: 0 errors (warnings only: 199 silk overlaps of 0402 outlines, 21 silk over copper, 4 silk-edge, 6 dangling vias, 1 lib mismatch); 28 unconnected = 11 parked TPs + 3 GND islands + 14 signal links: 3V3 x4, Q1B-E2 x3, Q1A-E1 x2, U1-VBUS x2, VBUS_DET, Q1B-B2, BRG_3V3 (all local, bottom side around U1/Q1 and the 3V3 rail near U7/U4).
+  TP1-TP11 unconnected is the accepted pre-existing state. Annulus check: the three per-hole rules in pager-carrier.kicad_dru report no violation on the final board (pours and tracks are kept out by the footprint rule areas on both layers); the earlier draft rule flagged the hole's own courtyard, hence the copper-only, other-footprint-only form.
+- STEP: `kicad-cli pcb export step` -> hardware/carrier/out/pager-carrier-v02c-cassette.step.
+- Routing: re-routed from scratch (Freerouting, run 8, net-order variant 1 of 2 after the U7 ground via was removed; an earlier run with that via left SYS_SW entirely unrouted), light post-processing only (pours, no stitch/repair);
+  remaining opens listed under DRC are for hand finishing, as agreed.
+
+## Files touched (all uncommitted)
+pager-carrier.kicad_pcb (snapshot: scratchpad layout2/pcb_run8_cassette_final.kicad_pcb), pager-carrier.kicad_dru,
+power_components.kicad_sch (SW2), core_components.kicad_sch (H1-H3 + MountingHole lib symbol),
+pager-carrier.pretty/MountingHole_2.2mm_M2_Cassette.kicad_mod (new), pager-carrier.3dshapes/ (SW_SPDT_CK_JS102011SAQN.step,
+MAX17048_TDFN-8_2x2mm.step, JST_PH_S2B-PH-SM4-TB.step new; USB-C restored), out/pager-carrier-v02c-cassette.step (new).
+Pipeline: scratchpad layout2 (base_v02c.py builds v02base.kicad_pcb from v01 + SW2 swap + H1-H3 + notes + models;
+plan2.py anchors; handroute2.py corner routes follow J6; minipost.sh = light post-processing).
+
+## Not met / to decide
+- Hole positions H2/H3 are on the top/bottom edges 9.3 mm in from the right edge, not in the right-edge corners (the
+  header column fills that edge). If you want true corner holes, the column must shrink (J7 -> SH saves 3.4 mm) or
+  the board must grow further.
+- J7 (JST PH, 5.5 mm) exceeds the 2.9 mm height limit outside the top strip and would touch the display back; part
+  choice left to you.
+- 14 signal links + 3 GND islands remain for hand routing (list above); Freerouting could not close them in the
+  bottom-side bridge area.
+
+---
+
 # Carrier board v0.2c — handoff addendum (21 Oct 2026, afternoon)
 
 Read this section first; the v0.2b notes below still describe the tools, but the outline, decisions and pipeline

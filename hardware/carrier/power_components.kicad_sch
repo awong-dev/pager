@@ -10490,7 +10490,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "MSK12C02"
+		(property "Value" "JS102011SAQN"
 			(at 59.69 112.776 90)
 			(show_name no)
 			(do_not_autoplace no)
@@ -10501,7 +10501,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "Button_Switch_SMD:SW_SPDT_Shouhan_MSK12C02"
+		(property "Footprint" "Button_Switch_SMD:SW_SPDT_CK_JS102011SAQN"
 			(at 64.77 127 0)
 			(hide yes)
 			(show_name no)
@@ -10513,7 +10513,7 @@
 				(justify left)
 			)
 		)
-		(property "Datasheet" "~"
+		(property "Datasheet" "https://www.ckswitches.com/media/1422/js.pdf"
 			(at 67.31 127 0)
 			(hide yes)
 			(show_name no)
@@ -10525,7 +10525,7 @@
 				(justify left)
 			)
 		)
-		(property "Description" "Switch, single pole double throw"
+		(property "Description" "SPDT slide switch, top actuated, SMD gull wing, C&K JS series (3.5 mm overall incl. knob)"
 			(at 69.85 127 0)
 			(hide yes)
 			(show_name no)
@@ -10537,7 +10537,7 @@
 				(justify left)
 			)
 		)
-		(property "MPN" "MSK12C02"
+		(property "MPN" "JS102011SAQN"
 			(at 77.47 120.65 0)
 			(hide yes)
 			(show_name no)
@@ -10548,7 +10548,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C431540"
+		(property "LCSC" "C221660"
 			(at 80.01 120.65 0)
 			(hide yes)
 			(show_name no)

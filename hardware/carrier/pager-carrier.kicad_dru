@@ -131,3 +131,21 @@
 	(constraint clearance (min 0.127mm))
 )
 
+
+(rule "Cassette standoff annulus H1: 4.5 mm copper-free around the 2.2 mm M2 hole"
+	(layer outer)
+	(condition "A.memberOfFootprint('H1') && !B.memberOfFootprint('H1')")
+	(constraint physical_hole_clearance (min 1.15mm))
+)
+
+(rule "Cassette standoff annulus H2: 4.5 mm copper-free around the 2.2 mm M2 hole"
+	(layer outer)
+	(condition "A.memberOfFootprint('H2') && !B.memberOfFootprint('H2')")
+	(constraint physical_hole_clearance (min 1.15mm))
+)
+
+(rule "Cassette standoff annulus H3: 4.5 mm copper-free around the 2.2 mm M2 hole"
+	(layer outer)
+	(condition "A.memberOfFootprint('H3') && !B.memberOfFootprint('H3')")
+	(constraint physical_hole_clearance (min 1.15mm))
+)
