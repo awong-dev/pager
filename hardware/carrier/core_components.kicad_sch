@@ -275,129 +275,6 @@
 			)
 			(embedded_fonts no)
 		)
-		(symbol "Connector:TestPoint"
-			(pin_numbers
-				(hide yes)
-			)
-			(pin_names
-				(offset 0.762)
-				(hide yes)
-			)
-			(exclude_from_sim no)
-			(in_bom yes)
-			(on_board yes)
-			(in_pos_files yes)
-			(duplicate_pin_numbers_are_jumpers no)
-			(property "Reference" "TP"
-				(at 0 6.858 0)
-				(show_name no)
-				(do_not_autoplace no)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-				)
-			)
-			(property "Value" "TestPoint"
-				(at 0 5.08 0)
-				(show_name no)
-				(do_not_autoplace no)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-				)
-			)
-			(property "Footprint" ""
-				(at 5.08 0 0)
-				(show_name no)
-				(do_not_autoplace no)
-				(hide yes)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-				)
-			)
-			(property "Datasheet" ""
-				(at 5.08 0 0)
-				(show_name no)
-				(do_not_autoplace no)
-				(hide yes)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-				)
-			)
-			(property "Description" "test point"
-				(at 0 0 0)
-				(show_name no)
-				(do_not_autoplace no)
-				(hide yes)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-				)
-			)
-			(property "ki_keywords" "test point tp"
-				(at 0 0 0)
-				(show_name no)
-				(do_not_autoplace no)
-				(hide yes)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-				)
-			)
-			(property "ki_fp_filters" "Pin* Test*"
-				(at 0 0 0)
-				(show_name no)
-				(do_not_autoplace no)
-				(hide yes)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-				)
-			)
-			(symbol "TestPoint_0_1"
-				(circle
-					(center 0 3.302)
-					(radius 0.762)
-					(stroke
-						(width 0)
-						(type default)
-					)
-					(fill
-						(type none)
-					)
-				)
-			)
-			(symbol "TestPoint_1_1"
-				(pin passive line
-					(at 0 0 90)
-					(length 2.54)
-					(name "1"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-					(number "1"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-				)
-			)
-			(embedded_fonts no)
-		)
 		(symbol "Connector_Generic:Conn_01x02"
 			(pin_names
 				(offset 1.016)
@@ -5435,18 +5312,6 @@
 		)
 		(uuid "a2d23a02-0fd6-42d5-9e56-4fd976a48849")
 	)
-	(text "Test pads"
-		(exclude_from_sim no)
-		(at 300.228 201.168 0)
-		(effects
-			(font
-				(size 1.5 1.5)
-				(bold yes)
-			)
-			(justify left top)
-		)
-		(uuid "b83e5225-9de4-43f8-b88e-f7e575c27881")
-	)
 	(text "I2C Keyboard (CardKB) header. J4 (Grove order):\n1 AWK_SCL, 2 AWK_SDA, 3 3V3_AWK, 4 GND\nPull-ups to 3V3_SW so whole unit can be depowered."
 		(exclude_from_sim no)
 		(at 254.508 18.542 0)
@@ -5926,26 +5791,6 @@
 	)
 	(wire
 		(pts
-			(xy 175.26 243.84) (xy 176.53 243.84)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "c43d58ed-ab14-4626-b371-ba392f67f492")
-	)
-	(wire
-		(pts
-			(xy 184.15 243.84) (xy 185.42 243.84)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "8ca50176-0d46-4c34-92f6-64b0578a297e")
-	)
-	(wire
-		(pts
 			(xy 147.32 203.2) (xy 147.32 210.82)
 		)
 		(stroke
@@ -6163,16 +6008,6 @@
 			(type default)
 		)
 		(uuid "13953f34-e653-4d2f-8978-e8356acf80a5")
-	)
-	(wire
-		(pts
-			(xy 185.42 243.84) (xy 195.58 243.84)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "13a8d07e-854b-401c-9bcb-c00762a5f587")
 	)
 	(wire
 		(pts
@@ -6626,16 +6461,6 @@
 			(type default)
 		)
 		(uuid "3b9e93ba-ff98-4f10-96c8-1ba07d24ccea")
-	)
-	(wire
-		(pts
-			(xy 308.61 223.52) (xy 308.61 210.82)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "3c90e200-4b3f-4a47-9873-adea7138e4d6")
 	)
 	(wire
 		(pts
@@ -7422,16 +7247,6 @@
 	)
 	(wire
 		(pts
-			(xy 360.68 223.52) (xy 360.68 210.82)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "824b1463-56cc-419f-8b9d-86c147cfe0a3")
-	)
-	(wire
-		(pts
 			(xy 386.08 73.66) (xy 388.62 73.66)
 		)
 		(stroke
@@ -7539,6 +7354,16 @@
 			(type default)
 		)
 		(uuid "8b2db03d-bece-42a5-90aa-64cc202b5ee0")
+	)
+	(wire
+		(pts
+			(xy 184.15 243.84) (xy 195.58 243.84)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "8ca50176-0d46-4c34-92f6-64b0578a297e")
 	)
 	(wire
 		(pts
@@ -7680,16 +7505,6 @@
 			(type default)
 		)
 		(uuid "99fa6981-3e4e-4c53-8ac6-2b9d61ae32fc")
-	)
-	(wire
-		(pts
-			(xy 321.31 223.52) (xy 321.31 210.82)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "9a55a901-ac0c-4448-b93f-60e7b1eefccc")
 	)
 	(wire
 		(pts
@@ -8256,6 +8071,16 @@
 	)
 	(wire
 		(pts
+			(xy 175.26 243.84) (xy 176.53 243.84)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "c43d58ed-ab14-4626-b371-ba392f67f492")
+	)
+	(wire
+		(pts
 			(xy 271.78 63.5) (xy 297.18 63.5)
 		)
 		(stroke
@@ -8599,16 +8424,6 @@
 	)
 	(wire
 		(pts
-			(xy 346.71 223.52) (xy 346.71 210.82)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "e3967fa3-6ea4-45fd-88ed-4f8657f3fdf0")
-	)
-	(wire
-		(pts
 			(xy 104.14 114.3) (xy 104.14 116.84)
 		)
 		(stroke
@@ -8676,16 +8491,6 @@
 			(type default)
 		)
 		(uuid "e7ab3893-6bb5-4392-b5b3-bfb66658c163")
-	)
-	(wire
-		(pts
-			(xy 334.01 223.52) (xy 334.01 210.82)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "e7ba92ca-dd55-44a8-aebe-9d1738311817")
 	)
 	(wire
 		(pts
@@ -9038,16 +8843,6 @@
 		)
 		(uuid "00648512-5403-4259-b4e3-a71caa27ab5a")
 	)
-	(label "TP_IO5"
-		(at 334.01 210.82 270)
-		(effects
-			(font
-				(size 1.27 1.27)
-			)
-			(justify right bottom)
-		)
-		(uuid "0137590c-1c34-4cad-a359-619c457e515a")
-	)
 	(label "BRG_3V3"
 		(at 76.2 176.53 0)
 		(effects
@@ -9157,16 +8952,6 @@
 			(justify left bottom)
 		)
 		(uuid "3d0f4a49-e171-41b1-ad55-6cbc1aa57d58")
-	)
-	(label "TP_IO1"
-		(at 321.31 210.82 270)
-		(effects
-			(font
-				(size 1.27 1.27)
-			)
-			(justify right bottom)
-		)
-		(uuid "3dfc6dd6-664d-41aa-8191-76d5e816850a")
 	)
 	(label "PIEZ_N"
 		(at 38.1 68.58 0)
@@ -9398,16 +9183,6 @@
 		)
 		(uuid "a55c0815-2af2-4324-8b01-c77e683af920")
 	)
-	(label "AWK_EN_N"
-		(at 308.61 210.82 270)
-		(effects
-			(font
-				(size 1.27 1.27)
-			)
-			(justify right bottom)
-		)
-		(uuid "a7ff2ec8-1193-47be-8b77-4ce12506ba4c")
-	)
 	(label "EINK_SCK"
 		(at 196.85 59.69 180)
 		(effects
@@ -9487,26 +9262,6 @@
 			(justify left bottom)
 		)
 		(uuid "f14a4bbb-f17d-4e10-9a30-8150284efbc2")
-	)
-	(label "FL_BTN"
-		(at 346.71 210.82 270)
-		(effects
-			(font
-				(size 1.27 1.27)
-			)
-			(justify right bottom)
-		)
-		(uuid "f240876b-1bcf-485c-bd00-a8f072f77f05")
-	)
-	(label "3V3_AWK"
-		(at 360.68 210.82 270)
-		(effects
-			(font
-				(size 1.27 1.27)
-			)
-			(justify right bottom)
-		)
-		(uuid "f31dff8d-2607-4cde-afa8-871eecd1d520")
 	)
 	(label "EINK_CS"
 		(at 38.1 81.28 0)
@@ -10116,132 +9871,6 @@
 		)
 	)
 	(symbol
-		(lib_id "Connector:TestPoint")
-		(at 346.71 223.52 0)
-		(mirror x)
-		(unit 1)
-		(body_style 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(in_pos_files yes)
-		(dnp no)
-		(uuid "133a13b2-c73f-4414-be00-5309a057bab9")
-		(property "Reference" "TP4"
-			(at 347.98 224.79 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-		(property "Value" "FL_BTN"
-			(at 347.98 222.25 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-		(property "Footprint" "TestPoint:TestPoint_Pad_1.0x1.0mm"
-			(at 347.98 219.71 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-		(property "Datasheet" "~"
-			(at 347.98 217.17 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-		(property "Description" "test point"
-			(at 347.98 214.63 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-		(property "MPN" ""
-			(at 346.71 208.28 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "LCSC" ""
-			(at 346.71 205.74 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "DNP" ""
-			(at 346.71 203.2 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Note" "test pad"
-			(at 346.71 200.66 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(pin "1"
-			(uuid "b2c09fc9-d908-4cfb-aa07-675b7f4c924b")
-		)
-		(instances
-			(project "pager-carrier"
-				(path "/4c77a02c-35a9-4533-b036-187d3e0c67ce"
-					(reference "TP4")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
 		(lib_id "pager-carrier:PWR_VBUS")
 		(at 27.94 171.45 0)
 		(unit 1)
@@ -10698,132 +10327,6 @@
 		)
 	)
 	(symbol
-		(lib_id "Connector:TestPoint")
-		(at 360.68 223.52 0)
-		(mirror x)
-		(unit 1)
-		(body_style 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(in_pos_files yes)
-		(dnp no)
-		(uuid "1e0c15bf-67e9-4c84-a505-049c3f61eaaa")
-		(property "Reference" "TP5"
-			(at 361.95 224.79 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-		(property "Value" "3V3_AWK"
-			(at 361.95 222.25 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-		(property "Footprint" "TestPoint:TestPoint_Pad_1.0x1.0mm"
-			(at 361.95 219.71 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-		(property "Datasheet" "~"
-			(at 361.95 217.17 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-		(property "Description" "test point"
-			(at 361.95 214.63 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-		(property "MPN" ""
-			(at 360.68 208.28 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "LCSC" ""
-			(at 360.68 205.74 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "DNP" ""
-			(at 360.68 203.2 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Note" "test pad"
-			(at 360.68 200.66 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(pin "1"
-			(uuid "8e35ceab-b862-416a-8362-a8ca9072edcb")
-		)
-		(instances
-			(project "pager-carrier"
-				(path "/4c77a02c-35a9-4533-b036-187d3e0c67ce"
-					(reference "TP5")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
 		(lib_id "pager-carrier:LIS2DW12TR")
 		(at 372.11 68.58 0)
 		(unit 1)
@@ -11164,132 +10667,6 @@
 			(project "pager-carrier"
 				(path "/4c77a02c-35a9-4533-b036-187d3e0c67ce"
 					(reference "#PWR08")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
-		(lib_id "Connector:TestPoint")
-		(at 308.61 223.52 0)
-		(mirror x)
-		(unit 1)
-		(body_style 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(in_pos_files yes)
-		(dnp no)
-		(uuid "22cfb9e9-498c-4e45-8659-10828b1d21b0")
-		(property "Reference" "TP1"
-			(at 309.88 224.79 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-		(property "Value" "AWK_EN_N"
-			(at 309.88 222.25 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-		(property "Footprint" "TestPoint:TestPoint_Pad_1.0x1.0mm"
-			(at 309.88 219.71 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-		(property "Datasheet" "~"
-			(at 309.88 217.17 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-		(property "Description" "test point"
-			(at 309.88 214.63 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-		(property "MPN" ""
-			(at 308.61 208.28 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "LCSC" ""
-			(at 308.61 205.74 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "DNP" ""
-			(at 308.61 203.2 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Note" "test pad"
-			(at 308.61 200.66 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(pin "1"
-			(uuid "7305b912-d7fd-4760-928c-a30b5ccf6651")
-		)
-		(instances
-			(project "pager-carrier"
-				(path "/4c77a02c-35a9-4533-b036-187d3e0c67ce"
-					(reference "TP1")
 					(unit 1)
 				)
 			)
@@ -16217,132 +15594,6 @@
 		)
 	)
 	(symbol
-		(lib_id "Connector:TestPoint")
-		(at 334.01 223.52 0)
-		(mirror x)
-		(unit 1)
-		(body_style 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(in_pos_files yes)
-		(dnp no)
-		(uuid "bd40b9f2-f5f0-430a-8d2b-278d0d1574b0")
-		(property "Reference" "TP3"
-			(at 335.28 224.79 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-		(property "Value" "TP_IO5"
-			(at 335.28 222.25 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-		(property "Footprint" "TestPoint:TestPoint_Pad_1.0x1.0mm"
-			(at 335.28 219.71 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-		(property "Datasheet" "~"
-			(at 335.28 217.17 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-		(property "Description" "test point"
-			(at 335.28 214.63 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-		(property "MPN" ""
-			(at 334.01 208.28 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "LCSC" ""
-			(at 334.01 205.74 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "DNP" ""
-			(at 334.01 203.2 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Note" "test pad"
-			(at 334.01 200.66 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(pin "1"
-			(uuid "f431fb17-89f1-471d-acb4-80d55efe8970")
-		)
-		(instances
-			(project "pager-carrier"
-				(path "/4c77a02c-35a9-4533-b036-187d3e0c67ce"
-					(reference "TP3")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
 		(lib_id "power:GND")
 		(at 340.36 182.88 0)
 		(unit 1)
@@ -17047,132 +16298,6 @@
 			(project "pager-carrier"
 				(path "/4c77a02c-35a9-4533-b036-187d3e0c67ce"
 					(reference "Q1")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
-		(lib_id "Connector:TestPoint")
-		(at 321.31 223.52 0)
-		(mirror x)
-		(unit 1)
-		(body_style 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(in_pos_files yes)
-		(dnp no)
-		(uuid "d2a589ac-ce14-4ad1-a005-404ce9567320")
-		(property "Reference" "TP2"
-			(at 322.58 224.79 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-		(property "Value" "TP_IO1"
-			(at 322.58 222.25 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-		(property "Footprint" "TestPoint:TestPoint_Pad_1.0x1.0mm"
-			(at 322.58 219.71 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-		(property "Datasheet" "~"
-			(at 322.58 217.17 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-		(property "Description" "test point"
-			(at 322.58 214.63 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-		(property "MPN" ""
-			(at 321.31 208.28 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "LCSC" ""
-			(at 321.31 205.74 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "DNP" ""
-			(at 321.31 203.2 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Note" "test pad"
-			(at 321.31 200.66 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(pin "1"
-			(uuid "2f2da941-4794-47ef-83b2-db31db112c55")
-		)
-		(instances
-			(project "pager-carrier"
-				(path "/4c77a02c-35a9-4533-b036-187d3e0c67ce"
-					(reference "TP2")
 					(unit 1)
 				)
 			)
@@ -18455,18 +17580,6 @@
 			"f321a30d-6c6e-4a68-b064-0d8742de015d" "f696cb7f-5f01-42d0-ad4a-64e81ea27d54"
 			"f7de8044-d976-4c33-891f-5f0eb7c93217" "fa7996b0-6e9e-4461-a239-8b898a402ea6"
 			"faf19284-c5bc-4be9-af4c-f714d06a7afe" "fbb1e8d8-0b00-4126-a1e8-f428fc08924d"
-		)
-	)
-	(group ""
-		(uuid "0e166b07-667b-4cbf-8a5c-9ccbe63da0cb")
-		(members "0137590c-1c34-4cad-a359-619c457e515a" "133a13b2-c73f-4414-be00-5309a057bab9"
-			"1e0c15bf-67e9-4c84-a505-049c3f61eaaa" "22cfb9e9-498c-4e45-8659-10828b1d21b0"
-			"3c90e200-4b3f-4a47-9873-adea7138e4d6" "3dfc6dd6-664d-41aa-8191-76d5e816850a"
-			"824b1463-56cc-419f-8b9d-86c147cfe0a3" "9a55a901-ac0c-4448-b93f-60e7b1eefccc"
-			"a7ff2ec8-1193-47be-8b77-4ce12506ba4c" "bd40b9f2-f5f0-430a-8d2b-278d0d1574b0"
-			"d2a589ac-ce14-4ad1-a005-404ce9567320" "e3967fa3-6ea4-45fd-88ed-4f8657f3fdf0"
-			"e7ba92ca-dd55-44a8-aebe-9d1738311817" "f240876b-1bcf-485c-bd00-a8f072f77f05"
-			"f31dff8d-2607-4cde-afa8-871eecd1d520"
 		)
 	)
 	(group ""
