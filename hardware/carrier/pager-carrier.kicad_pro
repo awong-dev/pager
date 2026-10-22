@@ -152,8 +152,8 @@
         "min_groove_width": 0.0,
         "min_hole_clearance": 0.25,
         "min_hole_to_hole": 0.25,
-        "min_microvia_diameter": 0.2,
-        "min_microvia_drill": 0.1,
+        "min_microvia_diameter": 0.5,
+        "min_microvia_drill": 0.3,
         "min_resolved_spokes": 1,
         "min_silk_clearance": 0.0,
         "min_text_height": 0.8,
@@ -161,7 +161,7 @@
         "min_through_hole_diameter": 0.2,
         "min_track_width": 0.1,
         "min_via_annular_width": 0.1,
-        "min_via_diameter": 0.45,
+        "min_via_diameter": 0.5,
         "solder_mask_to_copper_clearance": 0.0,
         "use_height_for_length_calcs": true
       },
@@ -214,8 +214,7 @@
         0.15,
         0.2,
         0.25,
-        0.4,
-        0.6
+        0.4
       ],
       "tuning_pattern_settings": {
         "diff_pair_defaults": {
@@ -247,6 +246,10 @@
         {
           "diameter": 0.0,
           "drill": 0.0
+        },
+        {
+          "diameter": 0.5,
+          "drill": 0.3
         }
       ],
       "zones_allow_external_fillets": false
@@ -514,55 +517,57 @@
       {
         "bus_width": 12,
         "clearance": 0.15,
-        "diff_pair_gap": 0.25,
+        "diff_pair_gap": 0.15,
         "diff_pair_via_gap": 0.25,
-        "diff_pair_width": 0.2,
+        "diff_pair_width": 0.15,
         "line_style": 0,
-        "microvia_diameter": 0.3,
-        "microvia_drill": 0.1,
+        "microvia_diameter": 0.5,
+        "microvia_drill": 0.3,
         "name": "Default",
         "pcb_color": "rgba(0, 0, 0, 0.000)",
         "priority": 2147483647,
         "schematic_color": "rgba(0, 0, 0, 0.000)",
-        "track_width": 0.2,
+        "track_width": 0.15,
         "tuning_profile": "",
-        "via_diameter": 0.6,
+        "via_diameter": 0.5,
         "via_drill": 0.3,
         "wire_width": 6
       },
       {
         "bus_width": 12,
         "clearance": 0.15,
-        "diff_pair_gap": 0.25,
-        "diff_pair_width": 0.2,
+        "diff_pair_gap": 0.15,
+        "diff_pair_via_gap": 0.25,
+        "diff_pair_width": 0.4,
         "line_style": 0,
-        "microvia_diameter": 0.3,
-        "microvia_drill": 0.1,
-        "name": "FRONTLIGHT",
-        "pcb_color": "rgba(0, 0, 0, 0.000)",
-        "priority": 0,
-        "schematic_color": "rgb(0, 194, 0)",
-        "track_width": 0.2,
-        "tuning_profile": "",
-        "via_diameter": 0.6,
-        "via_drill": 0.3,
-        "wire_width": 6
-      },
-      {
-        "bus_width": 12,
-        "clearance": 0.15,
-        "diff_pair_gap": 0.25,
-        "diff_pair_width": 0.2,
-        "line_style": 0,
-        "microvia_diameter": 0.3,
-        "microvia_drill": 0.1,
+        "microvia_diameter": 0.5,
+        "microvia_drill": 0.3,
         "name": "PWR",
         "pcb_color": "rgba(0, 0, 0, 0.000)",
-        "priority": 1,
+        "priority": 0,
         "schematic_color": "rgb(194, 0, 0)",
-        "track_width": 0.3,
+        "track_width": 0.4,
         "tuning_profile": "",
-        "via_diameter": 0.6,
+        "via_diameter": 0.5,
+        "via_drill": 0.3,
+        "wire_width": 6
+      },
+      {
+        "bus_width": 12,
+        "clearance": 0.15,
+        "diff_pair_gap": 0.15,
+        "diff_pair_via_gap": 0.25,
+        "diff_pair_width": 0.25,
+        "line_style": 0,
+        "microvia_diameter": 0.5,
+        "microvia_drill": 0.3,
+        "name": "PWR_MED",
+        "pcb_color": "rgba(0, 0, 0, 0.000)",
+        "priority": 1,
+        "schematic_color": "rgb(0, 194, 0)",
+        "track_width": 0.25,
+        "tuning_profile": "",
+        "via_diameter": 0.5,
         "via_drill": 0.3,
         "wire_width": 6
       }
@@ -594,12 +599,40 @@
         "pattern": "SYS_SW"
       },
       {
-        "netclass": "FRONTLIGHT",
+        "netclass": "PWR_MED",
+        "pattern": "/Core/FL_P"
+      },
+      {
+        "netclass": "PWR_MED",
         "pattern": "/Core/FL_N"
       },
       {
-        "netclass": "FRONTLIGHT",
-        "pattern": "/Core/FL_P"
+        "netclass": "PWR_MED",
+        "pattern": "Net-(Q2-S)"
+      },
+      {
+        "netclass": "PWR_MED",
+        "pattern": "Net-(J3-Pin_1)"
+      },
+      {
+        "netclass": "PWR_MED",
+        "pattern": "Net-(J3-Pin_2)"
+      },
+      {
+        "netclass": "PWR_MED",
+        "pattern": "3V3_AWK"
+      },
+      {
+        "netclass": "PWR_MED",
+        "pattern": "/Core/EXT_LED"
+      },
+      {
+        "netclass": "PWR_MED",
+        "pattern": "Net-(J4-Pin_1)"
+      },
+      {
+        "netclass": "PWR_MED",
+        "pattern": "Net-(U7-SW)"
       }
     ]
   },
