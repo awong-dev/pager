@@ -9,6 +9,7 @@ Outputs (hardware/enclosure/out/):
   faceplate.step          plate in the assembly frame (drop into Fusion)
   faceplate_print.stl     plate flipped top-face-down for the print bed
   slider_cap.step / slider_cap_print.stl   cap for the SW2 slide knob
+  fl_cap.step / fl_cap_print.stl           button cap for the SW1 front-light tactile
 
 Assumptions that must be checked against hardware (see README notes at the end):
   * display = bare GDEY029T94(-FL03) glass 79.0 x 36.7, glass top at GLASS_TOP,
@@ -59,7 +60,14 @@ H3 = kw(111.20, 105.85)          # (  4.58, 109.17)
 J6 = kw(85.90, 60.79)            # USB-C centre
 J6_OPEN = (3.9, 10.9)            # (x, y) opening for the 3.2 x 10.3 receptacle
 SW1 = kw(94.95, 60.70)           # tactile; TS-1109S stem through a round hole
-SW1_HOLE = 3.6
+SW1_HOLE = 5.2                   # clears the FL_CAP_D cap, not just the stem
+# FL button cap (TS-1109S-C-H: body 2.75 tall, stem top at CARRIER_TOP + 7.0, stem dia 2.30)
+FL_STEM_TOP = CARRIER_TOP + 7.0
+FL_STEM_D = 2.3
+FL_CAP_D = 4.8                   # rides in SW1_HOLE
+FL_CAP_TOP = 18.6                # CardKB key bottoms at 19.26 with the lid closed
+FL_FLANGE_D = 6.0                # under the plate band: keeps the cap captive
+FL_FLANGE_Z = (14.1, 14.6)       # switch body top 13.66, plate underside 14.9
 SW2 = kw(103.44, 62.30)          # JS102011SAQN, travel along world y
 SW2_SLOT = (4.0, 6.0)            # (x, y)
 
@@ -189,12 +197,30 @@ def build_cap():
     return cap
 
 
+def build_fl_cap():
+    # Button cap for SW1 (TS-1109S-C-H, 7 mm). Press it onto the stem before the plate goes
+    # on; the flange stays under the plate band so the cap cannot fall out. Modelled in the
+    # world frame at the switch; prints flange-down as modelled.
+    x, y = SW1
+    cap = cyl_z(x, y, FL_CAP_D, FL_FLANGE_Z[0], FL_CAP_TOP)
+    cap = cap.union(cyl_z(x, y, FL_FLANGE_D, FL_FLANGE_Z[0], FL_FLANGE_Z[1]))
+    cap = cap.cut(cyl_z(x, y, FL_STEM_D + 0.1, FL_FLANGE_Z[0] - 1, FL_STEM_TOP + 0.1))
+    cap = cap.edges(">Z").chamfer(0.4)
+    return cap
+
+
 if __name__ == "__main__":
     os.makedirs(OUT, exist_ok=True)
     plate = build_plate()
     cap = build_cap()
     cq.exporters.export(plate, os.path.join(OUT, "faceplate.step"))
     cq.exporters.export(cap, os.path.join(OUT, "slider_cap.step"))
+    fl = build_fl_cap()
+    cq.exporters.export(fl, os.path.join(OUT, "fl_cap.step"))
+    bbf = fl.val().BoundingBox()
+    flp = fl.translate((-bbf.xmin, -bbf.ymin, -bbf.zmin))
+    cq.exporters.export(flp, os.path.join(OUT, "fl_cap_print.stl"), tolerance=0.02, angularTolerance=0.1)
+    print("fl cap bbox z %.2f..%.2f  print %.2f x %.2f x %.2f" % (bbf.zmin, bbf.zmax, bbf.xlen, bbf.ylen, bbf.zlen))
     # print orientation: top face on the bed
     bb = plate.val().BoundingBox()
     pp = plate.rotate((0, 0, 0), (1, 0, 0), 180)

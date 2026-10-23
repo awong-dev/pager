@@ -11,6 +11,7 @@ generated files; rebuild with a CadQuery 2.8 python (`pip install cadquery`, pyt
 | out/faceplate.step | plate in the Fusion assembly frame (same frame as hardware/carrier/Assembled*.step) |
 | out/faceplate_print.stl | plate flipped top-face-down, min corner at the origin, ready to slice |
 | out/slider_cap.step, out/slider_cap_print.stl | cap that rides in the SW2 slot and grips the slide knob |
+| out/fl_cap.step, out/fl_cap_print.stl | button cap pressed onto the SW1 tactile stem; prints as exported (flange down) |
 
 ## Printing (Bambu Lab A1, PLA, 0.4 mm nozzle)
 - Orientation as exported: the cosmetic top face is on the bed, everything else grows upward. No supports.
@@ -31,8 +32,10 @@ generated files; rebuild with a CadQuery 2.8 python (`pip install cadquery`, pyt
 - Carrier: PCB top z 10.91, holes H1 (-40.37, 75.37), H2 (-41.32, 109.17), H3 (4.58, 109.17), USB-C J6 centre
   (-40.48, 83.87), SW1 (-40.57, 92.92), SW2 (-38.97, 101.41), all from pager-carrier.kicad_pcb on 22 Oct 2026.
   Assembled.step's carrier is an older export (J6 2.5 mm off, no SW2, no holes); the plate follows the board file.
-- SW1 is drawn for a 4.5 x 4.5 mm, 7 mm tall tactile (XKB TS-1109S-C-H, LCSC C318908) whose stem passes a
-  3.6 mm hole and stands 1.4 mm proud of the plate. The KMR2 currently on the board stays 3.6 mm below the plate.
+- SW1 is drawn for a 4.5 x 4.5 mm, 7 mm tall tactile (XKB TS-1109S-C-H, LCSC C318908; stem dia 2.3, body
+  2.75 tall). The plate has a 5.2 mm hole; the printed cap (4.8 dia, top at z 18.6, 6.0 dia flange under the
+  plate band so it cannot fall out, 2.4 mm blind hole for the stem) is pressed onto the stem BEFORE the plate goes
+  on. Cap top to the closed-lid key bottoms (19.26): 0.66 mm. The KMR2 currently on the board stays below the plate.
 - Walter header pins trimmed flush; untrimmed they reach z 15.6 and hit the pocket rim.
 - Tin interior from Assembled V0.2.step (57.65 x 92.8, R13.45, walls straight). Plate is 0.3 mm smaller per
   side; magnets, not friction, hold it. Lid hinge tabs assumed to intrude at most 1.5 mm at y 88-97 and 128-137.
@@ -51,3 +54,12 @@ generated files; rebuild with a CadQuery 2.8 python (`pip install cadquery`, pyt
 - Slider cap pocket size is a guess at the JS102011SAQN knob; measure and set in build_cap().
 - Verified by boolean intersection against the current carrier export and the V0.2 tin: no overlaps; the only
   sub-0.5 mm gaps are the intended clearances (USB-C 0.37, SW2 knob 0.15 under the plate).
+- 22 Oct 09:35 out/Assembled.step (owner's, not committed) places the carrier 0.44 mm lower (PCB top 10.47) and
+  the e-paper placeholder 1 mm higher (top 16.5) than the 21 Oct assembly this plate was built from, with the
+  plate itself dropped in 2.4 mm high. Checked against it: no new contacts (USB-C gap 0.20, SW2 knob 0.60, legs
+  float 0.44 above the PCB); the display overlap is the placeholder module, not the bare glass. If 10.47 is the
+  real carrier height, set CARRIER_TOP = 10.47 and rebuild.
+- J7 (battery): no PH-family part fits under the plate (side-entry PH 4.85 mm in the KiCad model, 5.5 in the
+  owner's; vertical 6.0; GH 4.2) and the hinge-side control strip is already full (H1, USB-C, SW1, SW2, H2, J2),
+  so moving it there does not help. Plan: SM02B-SRSS-TB (SH, 2.96 mm) at J7 and re-terminate the battery lead
+  with an SH plug, or a PH-male-to-SH pigtail (Adafruit 3814 male PH cable spliced to a 2-pin SH lead).
