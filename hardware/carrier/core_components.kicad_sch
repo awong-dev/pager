@@ -5,105 +5,6 @@
 	(uuid "c8dba78c-65b8-4887-967e-eec2b7c8f64a")
 	(paper "A3")
 	(lib_symbols
-	(symbol "Mechanical:MountingHole"
-		(pin_names
-			(offset 1.016)
-		)
-		(exclude_from_sim no)
-		(in_bom no)
-		(on_board yes)
-		(in_pos_files yes)
-		(duplicate_pin_numbers_are_jumpers no)
-		(property "Reference" "H"
-			(at 0 5.08 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Value" "MountingHole"
-			(at 0 3.175 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Footprint" ""
-			(at 0 0 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(hide yes)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Datasheet" ""
-			(at 0 0 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(hide yes)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Description" "Mounting Hole without connection"
-			(at 0 0 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(hide yes)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "ki_keywords" "mounting hole"
-			(at 0 0 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(hide yes)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "ki_fp_filters" "MountingHole*"
-			(at 0 0 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(hide yes)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(symbol "MountingHole_0_1"
-			(circle
-				(center 0 0)
-				(radius 1.27)
-				(stroke
-					(width 1.27)
-					(type default)
-				)
-				(fill
-					(type none)
-				)
-			)
-		)
-		(embedded_fonts no)
-	)
 		(symbol "74xGxx:74LVC2G126"
 			(exclude_from_sim no)
 			(in_bom yes)
@@ -2168,6 +2069,105 @@
 								(size 1.27 1.27)
 							)
 						)
+					)
+				)
+			)
+			(embedded_fonts no)
+		)
+		(symbol "Mechanical:MountingHole"
+			(pin_names
+				(offset 1.016)
+			)
+			(exclude_from_sim no)
+			(in_bom no)
+			(on_board yes)
+			(in_pos_files yes)
+			(duplicate_pin_numbers_are_jumpers no)
+			(property "Reference" "H"
+				(at 0 5.08 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "Value" "MountingHole"
+				(at 0 3.175 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "Footprint" ""
+				(at 0 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "Datasheet" ""
+				(at 0 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "Description" "Mounting Hole without connection"
+				(at 0 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "ki_keywords" "mounting hole"
+				(at 0 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "ki_fp_filters" "MountingHole*"
+				(at 0 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(symbol "MountingHole_0_1"
+				(circle
+					(center 0 0)
+					(radius 1.27)
+					(stroke
+						(width 1.27)
+						(type default)
+					)
+					(fill
+						(type none)
 					)
 				)
 			)
@@ -5537,6 +5537,12 @@
 		(uuid "377498a6-beda-435b-b392-6c085fcb1822")
 	)
 	(junction
+		(at 210.82 231.14)
+		(diameter 0)
+		(color 0 0 0 0)
+		(uuid "39c79d08-347c-4223-a83c-4d38ac91cfd1")
+	)
+	(junction
 		(at 388.62 190.5)
 		(diameter 0)
 		(color 0 0 0 0)
@@ -5763,12 +5769,6 @@
 		(diameter 0)
 		(color 0 0 0 0)
 		(uuid "daa6577c-b784-401e-a48f-817bbb5affbb")
-	)
-	(junction
-		(at 210.82 231.14)
-		(diameter 0)
-		(color 0 0 0 0)
-		(uuid "daebbcfa-6b5d-4111-8df8-38b188c5d562")
 	)
 	(junction
 		(at 123.19 203.2)
@@ -6087,16 +6087,6 @@
 			(type default)
 		)
 		(uuid "12f0d661-eedd-404b-a5c7-625b20502ad3")
-	)
-	(wire
-		(pts
-			(xy 220.98 231.14) (xy 210.82 231.14)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "138a4c1c-0c62-4817-a732-1993e50561ce")
 	)
 	(wire
 		(pts
@@ -6472,16 +6462,6 @@
 	)
 	(wire
 		(pts
-			(xy 220.98 219.71) (xy 220.98 231.14)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "34a1ff94-55a7-4689-a3b5-de294574e0c0")
-	)
-	(wire
-		(pts
 			(xy 190.5 54.61) (xy 190.5 45.72)
 		)
 		(stroke
@@ -6489,6 +6469,16 @@
 			(type default)
 		)
 		(uuid "356cd149-bad8-4852-afdd-ee6f7491c342")
+	)
+	(wire
+		(pts
+			(xy 220.98 219.71) (xy 220.98 231.14)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "367133ef-2364-42e9-bab5-e946179fbd20")
 	)
 	(wire
 		(pts
@@ -6704,16 +6694,6 @@
 	)
 	(wire
 		(pts
-			(xy 220.98 200.66) (xy 220.98 212.09)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "4c16cae3-5aee-40d7-a448-69eb7ff17692")
-	)
-	(wire
-		(pts
 			(xy 185.42 57.15) (xy 209.55 57.15)
 		)
 		(stroke
@@ -6771,6 +6751,16 @@
 			(type default)
 		)
 		(uuid "4dec01bd-6970-4503-bff0-c3eef5869a72")
+	)
+	(wire
+		(pts
+			(xy 220.98 200.66) (xy 220.98 212.09)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "4e271ec4-6c11-41e3-a3a1-861e088cb125")
 	)
 	(wire
 		(pts
@@ -8239,16 +8229,6 @@
 		)
 		(uuid "d1272086-68c5-4da3-826b-3b647ca8d70d")
 	)
-	(wire
-		(pts
-			(xy 210.82 231.14) (xy 210.82 252.73)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "d1847f00-9faf-4d52-bfb1-8b0c02f18197")
-	)
 	(polyline
 		(pts
 			(xy 162.56 130.81) (xy 251.46 130.81)
@@ -8520,6 +8500,16 @@
 			(type default)
 		)
 		(uuid "e0c10726-f4d0-42e2-8232-a36dc7054f38")
+	)
+	(wire
+		(pts
+			(xy 210.82 231.14) (xy 210.82 252.73)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "e4fb0d44-f36e-43dc-9c98-c776bc4923b8")
 	)
 	(wire
 		(pts
@@ -8870,6 +8860,16 @@
 			(type default)
 		)
 		(uuid "f92c3d15-560a-4e52-8b07-20c2b6cb14d9")
+	)
+	(wire
+		(pts
+			(xy 220.98 231.14) (xy 210.82 231.14)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "fa14f4f5-b16d-4754-83ea-6ec3411baf17")
 	)
 	(wire
 		(pts
@@ -10420,6 +10420,81 @@
 			(project "pager-carrier"
 				(path "/4c77a02c-35a9-4533-b036-187d3e0c67ce"
 					(reference "R13")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "Mechanical:MountingHole")
+		(at 76.2 279.4 0)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom no)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp no)
+		(uuid "1f2b41b1-9261-456f-9111-029d00181089")
+		(property "Reference" "H3"
+			(at 78.74 278.13 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Value" "Cassette M2"
+			(at 78.74 280.67 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Footprint" "pager-carrier:MountingHole_2.2mm_M2_Cassette"
+			(at 76.2 279.4 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Datasheet" ""
+			(at 76.2 279.4 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Description" "Display cassette standoff screw hole, 2.2 mm NPTH, 4.5 mm copper-free annulus"
+			(at 76.2 279.4 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(instances
+			(project "pager-carrier"
+				(path "/4c77a02c-35a9-4533-b036-187d3e0c67ce"
+					(reference "H3")
 					(unit 1)
 				)
 			)
@@ -12570,6 +12645,81 @@
 		)
 	)
 	(symbol
+		(lib_id "Mechanical:MountingHole")
+		(at 25.4 279.4 0)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom no)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp no)
+		(uuid "47cc24d8-db91-46fe-a404-3eda1df182c8")
+		(property "Reference" "H1"
+			(at 27.94 278.13 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Value" "Cassette M2"
+			(at 27.94 280.67 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Footprint" "pager-carrier:MountingHole_2.2mm_M2_Cassette"
+			(at 25.4 279.4 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Datasheet" ""
+			(at 25.4 279.4 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Description" "Display cassette standoff screw hole, 2.2 mm NPTH, 4.5 mm copper-free annulus"
+			(at 25.4 279.4 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(instances
+			(project "pager-carrier"
+				(path "/4c77a02c-35a9-4533-b036-187d3e0c67ce"
+					(reference "H1")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
 		(lib_id "Device:R")
 		(at 386.08 146.05 90)
 		(mirror x)
@@ -13279,6 +13429,81 @@
 			(project "pager-carrier"
 				(path "/4c77a02c-35a9-4533-b036-187d3e0c67ce"
 					(reference "U1")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "Mechanical:MountingHole")
+		(at 50.8 279.4 0)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom no)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp no)
+		(uuid "6133c395-be43-49fd-9c9a-5bcf6f9e05ed")
+		(property "Reference" "H2"
+			(at 53.34 278.13 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Value" "Cassette M2"
+			(at 53.34 280.67 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Footprint" "pager-carrier:MountingHole_2.2mm_M2_Cassette"
+			(at 50.8 279.4 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Datasheet" ""
+			(at 50.8 279.4 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Description" "Display cassette standoff screw hole, 2.2 mm NPTH, 4.5 mm copper-free annulus"
+			(at 50.8 279.4 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(instances
+			(project "pager-carrier"
+				(path "/4c77a02c-35a9-4533-b036-187d3e0c67ce"
+					(reference "H2")
 					(unit 1)
 				)
 			)
@@ -17747,30 +17972,30 @@
 	(group ""
 		(uuid "891313ac-5cb7-498b-aa09-b0b77781b6e4")
 		(members "01b56264-2766-43d4-86a7-1f173c15e07a" "09838de5-89ff-46c1-933f-da43a4a6d4b6"
-			"12f0d661-eedd-404b-a5c7-625b20502ad3" "13a8d07e-854b-401c-9bcb-c00762a5f587"
-			"2e9c501b-a57c-40d3-910d-e1076e129d4d" "349c9bec-7110-452b-9afe-48a659c8a222"
-			"34a1c5ae-65f1-41eb-859b-757050a7f6fc" "385612d6-2635-47dd-b6c4-6c622c182aa0"
-			"3d65d4ea-048d-4011-96df-55bcc976b4f2" "4ecc3c68-327e-40d5-a691-6234d02f762f"
-			"6fa4d7c2-22e4-4747-95d6-362944b62651" "71fd120c-9b28-4d6d-b358-285cc961ab6a"
-			"77bc8593-4208-481a-a934-83b20f2e8147" "7c0769d9-0785-470a-a794-6a869162b86f"
-			"84c18377-fbf6-45a9-9b16-0a9e1c303ec1" "9e2fed0d-e816-4f07-bafc-2a138baf9a87"
-			"a170a0c7-156f-415e-914a-10628d10ec26" "a1c1c1f6-6b9c-4db4-92c2-e9f40c837960"
-			"d0ddf0c6-11e2-4d4e-9417-5e195b74cdf2" "d1272086-68c5-4da3-826b-3b647ca8d70d"
-			"d781a086-2f99-4658-91e1-724b58f69405" "e783f171-7636-4f92-9747-c1943d3ea1c1"
-			"e7a6f2fa-56bf-4f78-b5b1-877427031d13" "f36ea627-bbc4-43d5-b7f3-6274981547d5"
-			"f892c6c8-6000-47e8-a7a9-ace94e613639" "ffede764-b577-4e71-b105-ab67b38f9856"
+			"12f0d661-eedd-404b-a5c7-625b20502ad3" "2e9c501b-a57c-40d3-910d-e1076e129d4d"
+			"349c9bec-7110-452b-9afe-48a659c8a222" "34a1c5ae-65f1-41eb-859b-757050a7f6fc"
+			"385612d6-2635-47dd-b6c4-6c622c182aa0" "3d65d4ea-048d-4011-96df-55bcc976b4f2"
+			"4ecc3c68-327e-40d5-a691-6234d02f762f" "6fa4d7c2-22e4-4747-95d6-362944b62651"
+			"71fd120c-9b28-4d6d-b358-285cc961ab6a" "77bc8593-4208-481a-a934-83b20f2e8147"
+			"7c0769d9-0785-470a-a794-6a869162b86f" "84c18377-fbf6-45a9-9b16-0a9e1c303ec1"
+			"9e2fed0d-e816-4f07-bafc-2a138baf9a87" "a170a0c7-156f-415e-914a-10628d10ec26"
+			"a1c1c1f6-6b9c-4db4-92c2-e9f40c837960" "d0ddf0c6-11e2-4d4e-9417-5e195b74cdf2"
+			"d1272086-68c5-4da3-826b-3b647ca8d70d" "d781a086-2f99-4658-91e1-724b58f69405"
+			"e783f171-7636-4f92-9747-c1943d3ea1c1" "e7a6f2fa-56bf-4f78-b5b1-877427031d13"
+			"f36ea627-bbc4-43d5-b7f3-6274981547d5" "f892c6c8-6000-47e8-a7a9-ace94e613639"
+			"ffede764-b577-4e71-b105-ab67b38f9856"
 		)
 	)
 	(group ""
 		(uuid "b2fd8145-3ad7-456c-8831-d568c81210c5")
 		(members "0cf57b96-e91e-40b1-bdaf-63fa026904aa" "1226ce4b-504f-4c99-8eea-d23fa5a27cc1"
-			"138a4c1c-0c62-4817-a732-1993e50561ce" "1a51326b-5bc6-46a9-b1bf-1726a33d5653"
-			"1fda125e-9b94-401b-80ec-c041c0ba4685" "220fc132-3b0d-4f90-8407-0f192d9ea22d"
-			"2da89560-b285-4424-b7dd-28827943676f" "2fed81a3-7b78-411f-9e50-bc9059c7dd0e"
-			"3312d451-6b05-430d-beec-be7cc6493ce6" "34a1ff94-55a7-4689-a3b5-de294574e0c0"
-			"3625ef45-5de7-48f1-948d-64d62da47ad8" "4239cc49-539f-4ef1-bdf4-05b5fe5832cb"
+			"1a51326b-5bc6-46a9-b1bf-1726a33d5653" "1fda125e-9b94-401b-80ec-c041c0ba4685"
+			"220fc132-3b0d-4f90-8407-0f192d9ea22d" "2da89560-b285-4424-b7dd-28827943676f"
+			"2fed81a3-7b78-411f-9e50-bc9059c7dd0e" "3312d451-6b05-430d-beec-be7cc6493ce6"
+			"3625ef45-5de7-48f1-948d-64d62da47ad8" "367133ef-2364-42e9-bab5-e946179fbd20"
+			"39c79d08-347c-4223-a83c-4d38ac91cfd1" "4239cc49-539f-4ef1-bdf4-05b5fe5832cb"
 			"47986703-411d-406f-8dba-d9b46d58666d" "4a5414d0-b12b-4119-88f2-543fdd0ecd8e"
-			"4c16cae3-5aee-40d7-a448-69eb7ff17692" "4ccd3ae3-1a0a-46b5-a2e5-47b8efd4931a"
+			"4ccd3ae3-1a0a-46b5-a2e5-47b8efd4931a" "4e271ec4-6c11-41e3-a3a1-861e088cb125"
 			"50d0efae-b863-403a-ac3a-b1a8abddfacd" "55ff82c4-ad96-44b4-833d-ccfbc7dcdb94"
 			"5e4ec7c8-197b-4ab8-a6b9-abd1aec645db" "6a26bc56-addc-43fb-953e-81f405e9d37d"
 			"6c0436b8-830d-44b8-b0bd-7aecfcc9bb77" "731e8ac9-624d-4af1-b358-af69d91bc912"
@@ -17779,9 +18004,9 @@
 			"92073ea8-5ccb-474d-ab8d-8ae52b013298" "9b5f89b2-f2cc-4b35-925d-799b44ff3391"
 			"a263ff83-a5e9-4826-9627-c350db74ace2" "aaf361a5-0533-44ba-8577-8e1c20f83721"
 			"b8cfe41c-bae5-48de-b5ea-3bf7ed715486" "bc76ff40-0c07-4953-968f-ad7ef2e1ee07"
-			"c5125905-33a7-4b82-acb3-b21e5520c496" "d1847f00-9faf-4d52-bfb1-8b0c02f18197"
-			"d3e7e960-7699-4c27-8a30-1f8cedc26b00" "daebbcfa-6b5d-4111-8df8-38b188c5d562"
+			"c5125905-33a7-4b82-acb3-b21e5520c496" "d3e7e960-7699-4c27-8a30-1f8cedc26b00"
 			"dbaba625-905a-4d67-8d37-0a96510675d2" "dcc04edc-b052-4f88-9694-004e35544247"
+			"e4fb0d44-f36e-43dc-9c98-c776bc4923b8" "fa14f4f5-b16d-4754-83ea-6ec3411baf17"
 		)
 	)
 	(group ""
@@ -17917,118 +18142,4 @@
 		)
 	)
 	(embedded_fonts no)
-	(symbol
-		(lib_id "Mechanical:MountingHole")
-		(at 25.4 279.4 0)
-		(unit 1)
-		(exclude_from_sim no)
-		(in_bom no)
-		(on_board yes)
-		(dnp no)
-		(uuid "47cc24d8-db91-46fe-a404-3eda1df182c8")
-		(property "Reference" "H1"
-			(at 27.939999999999998 278.13 0)
-			(effects (font (size 1.27 1.27)) (justify left))
-		)
-		(property "Value" "Cassette M2"
-			(at 27.939999999999998 280.66999999999996 0)
-			(effects (font (size 1.27 1.27)) (justify left))
-		)
-		(property "Footprint" "pager-carrier:MountingHole_2.2mm_M2_Cassette"
-			(at 25.4 279.4 0)
-			(effects (font (size 1.27 1.27)) (hide yes))
-		)
-		(property "Datasheet" ""
-			(at 25.4 279.4 0)
-			(effects (font (size 1.27 1.27)) (hide yes))
-		)
-		(property "Description" "Display cassette standoff screw hole, 2.2 mm NPTH, 4.5 mm copper-free annulus"
-			(at 25.4 279.4 0)
-			(effects (font (size 1.27 1.27)) (hide yes))
-		)
-		(instances
-			(project "pager-carrier"
-				(path "/ab8ee99e-0f89-4d3d-ba18-cf2cd7eb7e8f"
-					(reference "H1")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
-		(lib_id "Mechanical:MountingHole")
-		(at 50.8 279.4 0)
-		(unit 1)
-		(exclude_from_sim no)
-		(in_bom no)
-		(on_board yes)
-		(dnp no)
-		(uuid "6133c395-be43-49fd-9c9a-5bcf6f9e05ed")
-		(property "Reference" "H2"
-			(at 53.339999999999996 278.13 0)
-			(effects (font (size 1.27 1.27)) (justify left))
-		)
-		(property "Value" "Cassette M2"
-			(at 53.339999999999996 280.66999999999996 0)
-			(effects (font (size 1.27 1.27)) (justify left))
-		)
-		(property "Footprint" "pager-carrier:MountingHole_2.2mm_M2_Cassette"
-			(at 50.8 279.4 0)
-			(effects (font (size 1.27 1.27)) (hide yes))
-		)
-		(property "Datasheet" ""
-			(at 50.8 279.4 0)
-			(effects (font (size 1.27 1.27)) (hide yes))
-		)
-		(property "Description" "Display cassette standoff screw hole, 2.2 mm NPTH, 4.5 mm copper-free annulus"
-			(at 50.8 279.4 0)
-			(effects (font (size 1.27 1.27)) (hide yes))
-		)
-		(instances
-			(project "pager-carrier"
-				(path "/ab8ee99e-0f89-4d3d-ba18-cf2cd7eb7e8f"
-					(reference "H2")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
-		(lib_id "Mechanical:MountingHole")
-		(at 76.19999999999999 279.4 0)
-		(unit 1)
-		(exclude_from_sim no)
-		(in_bom no)
-		(on_board yes)
-		(dnp no)
-		(uuid "1f2b41b1-9261-456f-9111-029d00181089")
-		(property "Reference" "H3"
-			(at 78.74 278.13 0)
-			(effects (font (size 1.27 1.27)) (justify left))
-		)
-		(property "Value" "Cassette M2"
-			(at 78.74 280.66999999999996 0)
-			(effects (font (size 1.27 1.27)) (justify left))
-		)
-		(property "Footprint" "pager-carrier:MountingHole_2.2mm_M2_Cassette"
-			(at 76.19999999999999 279.4 0)
-			(effects (font (size 1.27 1.27)) (hide yes))
-		)
-		(property "Datasheet" ""
-			(at 76.19999999999999 279.4 0)
-			(effects (font (size 1.27 1.27)) (hide yes))
-		)
-		(property "Description" "Display cassette standoff screw hole, 2.2 mm NPTH, 4.5 mm copper-free annulus"
-			(at 76.19999999999999 279.4 0)
-			(effects (font (size 1.27 1.27)) (hide yes))
-		)
-		(instances
-			(project "pager-carrier"
-				(path "/ab8ee99e-0f89-4d3d-ba18-cf2cd7eb7e8f"
-					(reference "H3")
-					(unit 1)
-				)
-			)
-		)
-	)
 )
