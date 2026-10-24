@@ -7381,6 +7381,16 @@
 	)
 	(wire
 		(pts
+			(xy 351.79 162.56) (xy 353.06 162.56)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "8c233fb2-0ba5-4eea-abec-9d8ffd5e9732")
+	)
+	(wire
+		(pts
 			(xy 184.15 243.84) (xy 195.58 243.84)
 		)
 		(stroke
@@ -7559,16 +7569,6 @@
 			(type default)
 		)
 		(uuid "9bab3470-c12a-4c42-af5d-75400ebced9b")
-	)
-	(wire
-		(pts
-			(xy 351.79 160.02) (xy 353.06 160.02)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "9bb44a5b-619a-4aaf-8cb0-35d2e10df53e")
 	)
 	(wire
 		(pts
@@ -8337,16 +8337,6 @@
 	)
 	(wire
 		(pts
-			(xy 351.79 162.56) (xy 353.06 162.56)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "db67fcb9-54b2-4177-b047-ff10635e9f6d")
-	)
-	(wire
-		(pts
 			(xy 255.27 203.2) (xy 255.27 207.01)
 		)
 		(stroke
@@ -8374,6 +8364,16 @@
 			(type default)
 		)
 		(uuid "dcd907b6-c95d-4d59-83e4-560a98542a13")
+	)
+	(wire
+		(pts
+			(xy 351.79 160.02) (xy 353.06 160.02)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "de0bbf4a-c8a4-40cf-b604-08bc230e503a")
 	)
 	(wire
 		(pts
@@ -15726,7 +15726,8 @@
 	)
 	(symbol
 		(lib_id "Connector_Generic:Conn_01x02")
-		(at 358.14 160.02 0)
+		(at 358.14 162.56 0)
+		(mirror x)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -15736,7 +15737,7 @@
 		(dnp no)
 		(uuid "b74a6532-6c86-42ff-beba-1a61a760eb06")
 		(property "Reference" "J3"
-			(at 357.124 153.67 0)
+			(at 357.378 155.194 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -15747,18 +15748,18 @@
 			)
 		)
 		(property "Value" "HAPTIC"
-			(at 353.06 156.464 0)
+			(at 359.664 157.226 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
 				(font
 					(size 1.27 1.27)
 				)
-				(justify left)
+				(justify right)
 			)
 		)
 		(property "Footprint" "Connector_JST:JST_SH_SM02B-SRSS-TB_1x02-1MP_P1.00mm_Horizontal"
-			(at 354.33 163.83 0)
+			(at 354.33 158.75 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -15770,7 +15771,7 @@
 			)
 		)
 		(property "Datasheet" "~"
-			(at 354.33 166.37 0)
+			(at 354.33 156.21 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -15782,7 +15783,7 @@
 			)
 		)
 		(property "Description" "Generic connector, single row, 01x02, script generated (kicad-library-utils/schlib/autogen/connector/)"
-			(at 354.33 168.91 0)
+			(at 354.33 153.67 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -15794,7 +15795,7 @@
 			)
 		)
 		(property "MPN" "SM02B-SRSS-TB"
-			(at 358.14 175.26 0)
+			(at 358.14 147.32 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -15805,7 +15806,7 @@
 			)
 		)
 		(property "LCSC" "C160402"
-			(at 358.14 177.8 0)
+			(at 358.14 144.78 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -15816,7 +15817,7 @@
 			)
 		)
 		(property "DNP" "DNP"
-			(at 358.14 180.34 0)
+			(at 358.14 142.24 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -18032,13 +18033,13 @@
 			"70c4ae8e-7c9d-4e84-90fb-c01029e6d223" "7a76bc15-05d1-48af-823a-5cecc5633888"
 			"7b9a8882-aa2e-431e-bf01-451e054ae998" "80c49014-8df1-45e0-bfb6-6b63e6c333c9"
 			"84fcbab0-daa1-441c-874c-d63bd37a6251" "893e9b16-a7fc-43d8-853a-b314d8663c14"
-			"98fd6db6-d9ea-458d-8c49-e6b2d6b83486" "9bb44a5b-619a-4aaf-8cb0-35d2e10df53e"
+			"8c233fb2-0ba5-4eea-abec-9d8ffd5e9732" "98fd6db6-d9ea-458d-8c49-e6b2d6b83486"
 			"9f22073a-410c-4aee-a30b-ad5186729213" "a0da2b73-a2a1-4d24-9a9f-cf38ae3a1fd7"
 			"a953f703-3acc-4787-b26e-e90b6145f523" "b0278a24-2b33-4994-bc8c-72e411dc1c9f"
 			"b74a6532-6c86-42ff-beba-1a61a760eb06" "bd675b9c-2ebe-4406-ad10-46508902d892"
 			"bffd956c-f161-48de-985b-f6187bbc6fd6" "c4799d51-3879-49ad-8428-ed96becc74f0"
 			"d2f5092c-1419-4f51-8214-861f91826950" "d3b6f78e-d011-463f-a13e-16578a490a0d"
-			"db67fcb9-54b2-4177-b047-ff10635e9f6d" "e7c002b9-f0a2-422c-8b31-199ba72e29b9"
+			"de0bbf4a-c8a4-40cf-b604-08bc230e503a" "e7c002b9-f0a2-422c-8b31-199ba72e29b9"
 			"e7f922ab-438b-4da8-8d8e-1e1073d0e6ed" "ead65bd9-2815-4738-b9c9-cfb123010ba6"
 			"eb069365-4d9c-44dd-b591-d3c1ad9e9259" "ee4224c8-18f3-4603-b81d-e0db50f4dac2"
 			"f42afa89-cc23-4728-831e-233454cf22ed" "fd31fdc6-94e0-43f8-a829-2b719c9d7746"
