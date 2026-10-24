@@ -3,6 +3,22 @@
 Brief: make the carrier screw-mountable for the 3D-printed display cassette. Everything below is folded into the
 v0.2c layout work (same pipeline, same files); nothing committed.
 
+## 24 Oct 2026 early: outline closed, silk tidied, GND pours added (on the owner's hand-routed board 97e6cea)
+- **Outline** rebuilt as one closed loop: x 74.3..113.15, y 57.4..106.3, SIM notch x 81.407..91.745 / y 89.916..106.3,
+  1 mm corner arcs, tin arc top-left kept. The two 0.03 mm gaps and the stray stubs are gone.
+- **Silk**: 51 0402/LGA parts now use `pager-carrier:*_NoSilk` footprints (library copies of the KiCad parts with the
+  outline removed, so no lib-mismatch warnings); schematic Footprint fields updated to match. J6's silk box now stops
+  short of the shield pads (library + board). Reference text re-placed for U3 U4 U5 U6 J2 J3 J7; hidden where no clear
+  spot exists (U1 U2 U7 J4 J5 SW2). Stale "USB" / "KBD" / "SW2 travel" board texts deleted.
+- **Pours**: GND on F.Cu and B.Cu, clearance 0.2, min width 0.2, thermal reliefs (gap 0.25, spoke 0.3), islands
+  removed. Three stitching vias added where a top-side GND group had no path to the plane: (101.58, 85.84),
+  (76.9, 83.3) and one on the U3 side. B.Cu is one plane piece apart from a 7.7 mm2 pocket under U4 fenced by the
+  AON/AWK I2C jogs.
+- DRC 278 -> 28. Left for the owner: 4 clearance errors (3V3 vs U7-SW at 93.3,80.2; EINK_BUSY vs GND track at
+  97.7,87.8), H1/H2/H3 parked at the origin (6 errors), 4 hole-to-hole warnings between vias at (84.7,81.0),
+  (91.2,75.3)/(91.7,75.9)/(92.5,75.8), (93.1,69.8)/(93.5,70.3); unrouted VBUS (R23) and ACC_INT1 (missing via at
+  84.7,80.1); 8 self-overlap silk warnings inside the library SW2 and Q4 footprints; M1 lib mismatch.
+
 ## 22 Oct 2026 pm: J7 battery connector -> JST SH, netclasses for the hand layout
 - **J7 BATTERY is now JST SH SM02B-SRSS-TB** (side entry, 2.9 mm tall, 1 A/contact), LCSC **C160402** (extended,
   79k in stock 22 Oct 2026), same part family as J3/J4/J5. Replaces the 5.5 mm PH S2B-PH-SM4-TB that collided with the

@@ -6121,7 +6121,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "Capacitor_SMD:C_0402_1005Metric"
+		(property "Footprint" "pager-carrier:C_0402_1005Metric_NoSilk"
 			(at 82.55 173.99 0)
 			(hide yes)
 			(show_name no)
@@ -6533,7 +6533,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "Capacitor_SMD:C_0402_1005Metric"
+		(property "Footprint" "pager-carrier:C_0402_1005Metric_NoSilk"
 			(at 154.94 59.69 0)
 			(hide yes)
 			(show_name no)
@@ -6794,7 +6794,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "Capacitor_SMD:C_0402_1005Metric"
+		(property "Footprint" "pager-carrier:C_0402_1005Metric_NoSilk"
 			(at 78.74 121.92 0)
 			(hide yes)
 			(show_name no)
@@ -7049,7 +7049,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "Resistor_SMD:R_0402_1005Metric"
+		(property "Footprint" "pager-carrier:R_0402_1005Metric_NoSilk"
 			(at 215.9 76.2 0)
 			(hide yes)
 			(show_name no)
@@ -7177,7 +7177,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "Resistor_SMD:R_0402_1005Metric"
+		(property "Footprint" "pager-carrier:R_0402_1005Metric_NoSilk"
 			(at 33.02 179.07 0)
 			(hide yes)
 			(show_name no)
@@ -7305,7 +7305,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "Resistor_SMD:R_0402_1005Metric"
+		(property "Footprint" "pager-carrier:R_0402_1005Metric_NoSilk"
 			(at 72.39 50.8 0)
 			(hide yes)
 			(show_name no)
@@ -7500,7 +7500,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "Capacitor_SMD:C_0402_1005Metric"
+		(property "Footprint" "pager-carrier:C_0402_1005Metric_NoSilk"
 			(at 135.89 162.56 0)
 			(hide yes)
 			(show_name no)
@@ -7617,7 +7617,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "Resistor_SMD:R_0402_1005Metric"
+		(property "Footprint" "pager-carrier:R_0402_1005Metric_NoSilk"
 			(at 25.4 179.07 0)
 			(hide yes)
 			(show_name no)
@@ -7827,7 +7827,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "Resistor_SMD:R_0402_1005Metric"
+		(property "Footprint" "pager-carrier:R_0402_1005Metric_NoSilk"
 			(at 146.05 44.45 0)
 			(hide yes)
 			(show_name no)
@@ -8303,7 +8303,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "Resistor_SMD:R_0402_1005Metric"
+		(property "Footprint" "pager-carrier:R_0402_1005Metric_NoSilk"
 			(at 85.09 121.92 0)
 			(hide yes)
 			(show_name no)
@@ -8846,7 +8846,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "Resistor_SMD:R_0402_1005Metric"
+		(property "Footprint" "pager-carrier:R_0402_1005Metric_NoSilk"
 			(at 41.91 129.54 0)
 			(hide yes)
 			(show_name no)
@@ -8963,7 +8963,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "Resistor_SMD:R_0402_1005Metric"
+		(property "Footprint" "pager-carrier:R_0402_1005Metric_NoSilk"
 			(at 40.64 179.07 0)
 			(hide yes)
 			(show_name no)
@@ -9561,7 +9561,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "Capacitor_SMD:C_0402_1005Metric"
+		(property "Footprint" "pager-carrier:C_0402_1005Metric_NoSilk"
 			(at 199.39 62.23 0)
 			(hide yes)
 			(show_name no)
@@ -9799,7 +9799,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "Inductor_SMD:L_Murata_DFE201610P"
+		(property "Footprint" "pager-carrier:L_Murata_DFE201610P_NoSilk"
 			(at 256.54 45.72 0)
 			(hide yes)
 			(show_name no)
@@ -10005,7 +10005,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "Resistor_SMD:R_0402_1005Metric"
+		(property "Footprint" "pager-carrier:R_0402_1005Metric_NoSilk"
 			(at 64.77 50.8 0)
 			(hide yes)
 			(show_name no)
@@ -10204,7 +10204,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "Resistor_SMD:R_0402_1005Metric"
+		(property "Footprint" "pager-carrier:R_0402_1005Metric_NoSilk"
 			(at 146.05 59.69 0)
 			(hide yes)
 			(show_name no)
@@ -10321,7 +10321,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "Resistor_SMD:R_0402_1005Metric"
+		(property "Footprint" "pager-carrier:R_0402_1005Metric_NoSilk"
 			(at 215.9 50.8 0)
 			(hide yes)
 			(show_name no)
@@ -10520,7 +10520,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "Resistor_SMD:R_0402_1005Metric"
+		(property "Footprint" "pager-carrier:R_0402_1005Metric_NoSilk"
 			(at 19.05 134.62 0)
 			(hide yes)
 			(show_name no)
@@ -10648,7 +10648,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "Resistor_SMD:R_0402_1005Metric"
+		(property "Footprint" "pager-carrier:R_0402_1005Metric_NoSilk"
 			(at 71.12 113.03 0)
 			(hide yes)
 			(show_name no)
@@ -10765,7 +10765,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "Resistor_SMD:R_0402_1005Metric"
+		(property "Footprint" "pager-carrier:R_0402_1005Metric_NoSilk"
 			(at 36.83 129.54 0)
 			(hide yes)
 			(show_name no)
@@ -11042,7 +11042,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "Capacitor_SMD:C_0402_1005Metric"
+		(property "Footprint" "pager-carrier:C_0402_1005Metric_NoSilk"
 			(at 127 168.91 0)
 			(hide yes)
 			(show_name no)
