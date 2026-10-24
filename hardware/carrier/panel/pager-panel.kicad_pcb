@@ -1652,7 +1652,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C1779"
+		(property "LCSC" "C19666"
 			(at 0 0 90)
 			(layer "F.Fab")
 			(hide yes)
@@ -3133,7 +3133,7 @@
 				)
 			)
 		)
-		(property "Value" "MBR0530"
+		(property "Value" "B5819W"
 			(at 0 2.1 0)
 			(layer "F.Fab")
 			(uuid "09fa71c5-2b07-4969-b233-cec7355eac9f")
@@ -3170,7 +3170,7 @@
 				)
 			)
 		)
-		(property "MPN" "MBR0530"
+		(property "MPN" "B5819W"
 			(at 0 0 0)
 			(layer "F.Fab")
 			(hide yes)
@@ -3182,7 +3182,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C82046"
+		(property "LCSC" "C8598"
 			(at 0 0 0)
 			(layer "F.Fab")
 			(hide yes)
@@ -4670,7 +4670,7 @@
 				)
 			)
 		)
-		(property "Value" "MBR0530"
+		(property "Value" "B5819W"
 			(at 0 2.1 0)
 			(layer "F.Fab")
 			(uuid "33370ffb-6d28-48e9-9f00-2f25f99e9e3c")
@@ -4707,7 +4707,7 @@
 				)
 			)
 		)
-		(property "MPN" "MBR0530"
+		(property "MPN" "B5819W"
 			(at 0 0 0)
 			(layer "F.Fab")
 			(hide yes)
@@ -4719,7 +4719,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C82046"
+		(property "LCSC" "C8598"
 			(at 0 0 0)
 			(layer "F.Fab")
 			(hide yes)
@@ -5689,7 +5689,7 @@
 				)
 			)
 		)
-		(property "Value" "MBR0530"
+		(property "Value" "B5819W"
 			(at 0 2.1 0)
 			(layer "F.Fab")
 			(uuid "30ea5bc9-b594-4a14-9bda-d0a456772d20")
@@ -5726,7 +5726,7 @@
 				)
 			)
 		)
-		(property "MPN" "MBR0530"
+		(property "MPN" "B5819W"
 			(at 0 0 0)
 			(layer "F.Fab")
 			(hide yes)
@@ -5738,7 +5738,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C82046"
+		(property "LCSC" "C8598"
 			(at 0 0 0)
 			(layer "F.Fab")
 			(hide yes)
@@ -6059,7 +6059,7 @@
 				)
 			)
 		)
-		(property "LCSC" ""
+		(property "LCSC" "C22939"
 			(at 0 0 90)
 			(layer "F.Fab")
 			(hide yes)

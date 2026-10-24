@@ -9980,7 +9980,7 @@
 				)
 			)
 		)
-		(property "MPN" "SM8B-SRSS-TB"
+		(property "MPN" "SM08B-SRSS-TB"
 			(at 181.61 69.85 0)
 			(hide yes)
 			(show_name no)
@@ -9991,7 +9991,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C160409"
+		(property "LCSC" "C160407"
 			(at 181.61 72.39 0)
 			(hide yes)
 			(show_name no)
@@ -10161,7 +10161,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "22.1k"
+		(property "Value" "22k"
 			(at 36.322 196.85 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -10208,7 +10208,7 @@
 				(justify left)
 			)
 		)
-		(property "MPN" "0402WGF2212TCE"
+		(property "MPN" "0402WGF2202TCE"
 			(at 43.18 210.82 0)
 			(hide yes)
 			(show_name no)
@@ -10219,7 +10219,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C43473"
+		(property "LCSC" "C25768"
 			(at 43.18 213.36 0)
 			(hide yes)
 			(show_name no)
@@ -13179,7 +13179,7 @@
 				(justify left)
 			)
 		)
-		(property "MPN" "S4B-PH-SM4-TB"
+		(property "MPN" "SM04B-SRSS-TB"
 			(at 266.7 48.26 0)
 			(hide yes)
 			(show_name no)
@@ -13190,7 +13190,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C265102"
+		(property "LCSC" "C160404"
 			(at 266.7 45.72 0)
 			(hide yes)
 			(show_name no)
@@ -14407,7 +14407,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "47.5k"
+		(property "Value" "47k"
 			(at 35.56 212.344 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -14454,7 +14454,7 @@
 				(justify left)
 			)
 		)
-		(property "MPN" "0402WGF4752TCE"
+		(property "MPN" "0402WGF4702TCE"
 			(at 43.18 226.06 0)
 			(hide yes)
 			(show_name no)
@@ -14465,7 +14465,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C25896"
+		(property "LCSC" "C25792"
 			(at 43.18 228.6 0)
 			(hide yes)
 			(show_name no)

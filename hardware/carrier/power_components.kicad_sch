@@ -6783,7 +6783,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "22nF"
+		(property "Value" "100nF"
 			(at 70.104 121.412 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -6830,7 +6830,7 @@
 				(justify left)
 			)
 		)
-		(property "MPN" "CL05B223KB5NNNC"
+		(property "MPN" "CL05B104KO5NNNC"
 			(at 77.47 135.89 0)
 			(hide yes)
 			(show_name no)
@@ -6841,7 +6841,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C337699"
+		(property "LCSC" "C1525"
 			(at 77.47 138.43 0)
 			(hide yes)
 			(show_name no)
@@ -8292,7 +8292,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "2.2M"
+		(property "Value" "1M"
 			(at 85.344 121.666 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -8339,7 +8339,7 @@
 				(justify left)
 			)
 		)
-		(property "MPN" "0402WGF2204TCE"
+		(property "MPN" "0402WGF1004TCE"
 			(at 83.82 135.89 0)
 			(hide yes)
 			(show_name no)
@@ -8350,7 +8350,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C11490"
+		(property "LCSC" "C26083"
 			(at 83.82 138.43 0)
 			(hide yes)
 			(show_name no)

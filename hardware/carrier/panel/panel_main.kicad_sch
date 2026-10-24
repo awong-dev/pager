@@ -5924,7 +5924,7 @@
 				)
 			)
 		)
-		(property "LCSC" ""
+		(property "LCSC" "C22939"
 			(at 292.1 149.86 0)
 			(hide yes)
 			(show_name no)
@@ -6123,7 +6123,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "NSR0530"
+		(property "Value" "B5819W"
 			(at 246.38 116.078 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -6134,7 +6134,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "Diode_SMD:D_SOD-323"
+		(property "Footprint" "Diode_SMD:D_SOD-123"
 			(at 240.03 123.19 0)
 			(hide yes)
 			(show_name no)
@@ -6170,7 +6170,7 @@
 				(justify left)
 			)
 		)
-		(property "MPN" "NSR0530HT1G"
+		(property "MPN" "B5819W"
 			(at 245.11 134.62 0)
 			(hide yes)
 			(show_name no)
@@ -6181,7 +6181,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C556393"
+		(property "LCSC" "C8598"
 			(at 245.11 137.16 0)
 			(hide yes)
 			(show_name no)
@@ -7547,7 +7547,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "NSR0530"
+		(property "Value" "B5819W"
 			(at 243.586 130.302 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -7558,7 +7558,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "Diode_SMD:D_SOD-323"
+		(property "Footprint" "Diode_SMD:D_SOD-123"
 			(at 250.19 129.54 0)
 			(hide yes)
 			(show_name no)
@@ -7594,7 +7594,7 @@
 				(justify left)
 			)
 		)
-		(property "MPN" "NSR0530HT1G"
+		(property "MPN" "B5819W"
 			(at 245.11 140.97 0)
 			(hide yes)
 			(show_name no)
@@ -7605,7 +7605,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C556393"
+		(property "LCSC" "C8598"
 			(at 245.11 143.51 0)
 			(hide yes)
 			(show_name no)
@@ -7722,7 +7722,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C1705"
+		(property "LCSC" "C19666"
 			(at 311.15 91.44 0)
 			(hide yes)
 			(show_name no)
@@ -8492,7 +8492,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "NSR0530"
+		(property "Value" "B5819W"
 			(at 248.666 72.39 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -8503,7 +8503,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "Diode_SMD:D_SOD-323"
+		(property "Footprint" "Diode_SMD:D_SOD-123"
 			(at 255.27 80.01 0)
 			(hide yes)
 			(show_name no)
@@ -8539,7 +8539,7 @@
 				(justify left)
 			)
 		)
-		(property "MPN" "NSR0530HT1G"
+		(property "MPN" "B5819W"
 			(at 250.19 91.44 0)
 			(hide yes)
 			(show_name no)
@@ -8550,7 +8550,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C556393"
+		(property "LCSC" "C8598"
 			(at 250.19 93.98 0)
 			(hide yes)
 			(show_name no)
