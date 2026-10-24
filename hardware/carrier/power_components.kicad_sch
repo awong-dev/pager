@@ -5880,6 +5880,26 @@
 		)
 		(uuid "ff48a5d4-5ef9-4b61-b47e-ad8f1c25ed9c")
 	)
+	(label "SYS_GATE"
+		(at 74.93 114.3 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify left bottom)
+		)
+		(uuid "55205825-7d44-4fdc-b7a0-0f5f7a6dce12")
+	)
+	(label "SYS"
+		(at 67.31 127 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify left bottom)
+		)
+		(uuid "7b334493-4ed1-48b0-9ea7-fd1e3b043c6c")
+	)
 	(label "VBAT"
 		(at 99.06 158.75 0)
 		(effects
