@@ -5752,6 +5752,7 @@
 		(property "MPN" "JS102011SAQN"
 			(at 0 0 0)
 			(layer "F.SilkS")
+			(hide yes)
 			(uuid "238fb323-2e7e-48ab-bb9f-60f55269f7e7")
 			(effects
 				(font
@@ -5763,6 +5764,7 @@
 		(property "LCSC" "C221660"
 			(at 0 0 0)
 			(layer "F.SilkS")
+			(hide yes)
 			(uuid "382c19b8-4635-42a6-98c5-967de8964eb1")
 			(effects
 				(font
