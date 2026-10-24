@@ -17,7 +17,7 @@
     },
     "prototype_zone_fills": false,
     "selection_filter": {
-      "dimensions": false,
+      "dimensions": true,
       "footprints": true,
       "graphics": true,
       "keepouts": true,
@@ -52,7 +52,7 @@
       "board_outline_area",
       "ly_points"
     ],
-    "visible_layers": "ffffffff_ffffffff_ffffd577_dff7ffdf",
+    "visible_layers": "ffffffff_ffffffff_ffffd577_fff7ffdf",
     "zone_display_mode": 0
   },
   "git": {
