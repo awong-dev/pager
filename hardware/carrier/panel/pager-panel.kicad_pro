@@ -542,7 +542,7 @@
       "netlist": "",
       "plot": "",
       "specctra_dsn": "",
-      "step": "",
+      "step": "pager-panel.step",
       "vrml": ""
     },
     "page_layout_descr_file": ""

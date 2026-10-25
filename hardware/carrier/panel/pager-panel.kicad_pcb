@@ -2869,7 +2869,7 @@
 		(descr "Hirose FH34SRJ-24S-0.5SH(50), 0.5 mm pitch FPC ZIF, 1.0 mm above board, top and bottom contact, back-flip actuator; land pattern from the Hirose catalog")
 		(tags "FPC ZIF 0.5mm FH34SRJ Hirose low-profile")
 		(property "Reference" "J1"
-			(at -0.218 -1.766 180)
+			(at 0.036 -1.766 180)
 			(layer "F.SilkS")
 			(uuid "f7f8daae-c38b-425c-aefe-477227064447")
 			(effects
@@ -4411,7 +4411,7 @@
 		(property "Reference" "Q5"
 			(at -0.254 1.937 0)
 			(layer "F.SilkS")
-			(uuid "084ad15a-f3f9-4033-acd8-91e37236542d")
+			(uuid "f88d56d6-cb85-47ae-816f-5e4c7c6db1c2")
 			(effects
 				(font
 					(size 1 1)
@@ -4422,7 +4422,7 @@
 		(property "Value" "SI1308EDL"
 			(at 0 1.8 0)
 			(layer "F.Fab")
-			(uuid "377fdb9d-1b55-4b2b-89c7-2fd4b40445b3")
+			(uuid "e5f9f392-c112-4f42-b169-73b1af99ed35")
 			(effects
 				(font
 					(size 1 1)
@@ -4434,7 +4434,7 @@
 			(at 0 0 0)
 			(layer "F.Fab")
 			(hide yes)
-			(uuid "f6d9b7cd-3338-4733-acee-8ab3096395f3")
+			(uuid "bc0c47b0-0c39-4293-85bc-fef68bb98eeb")
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -4445,7 +4445,7 @@
 			(at 0 0 0)
 			(layer "F.Fab")
 			(hide yes)
-			(uuid "441d83de-91af-4d4e-aee4-a2f08cdecb5e")
+			(uuid "e4d51560-5a79-44d7-9f25-f36ba6d024f8")
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -5176,7 +5176,7 @@
 		(descr "Hirose FH34SRJ-6S-0.5SH(50), 0.5 mm pitch FPC ZIF, 1.0 mm above board, top and bottom contact, back-flip actuator; land pattern from the Hirose catalog")
 		(tags "FPC ZIF 0.5mm FH34SRJ Hirose low-profile")
 		(property "Reference" "J3"
-			(at 0.127 -1.8215 180)
+			(at 1.778 -1.8215 180)
 			(layer "F.SilkS")
 			(uuid "526c2ef3-cc49-4784-a279-03c9f0b4565c")
 			(effects
@@ -7184,8 +7184,8 @@
 			)
 		)
 	)
-	(gr_text "Mach\n"
-		(at 84.836 73.914 0)
+	(gr_text "MACH Panel"
+		(at 103.759 73.914 0)
 		(layer "F.SilkS")
 		(uuid "f7b4e5eb-46e5-41d1-ba9d-fbf8120bca1e")
 		(effects
@@ -7196,10 +7196,22 @@
 			(justify left bottom)
 		)
 	)
-	(gr_text "Panel Board\nby awongawong"
-		(at 105.156 67.31 0)
+	(gr_text "@awongawong"
+		(at 114.3 67.056 90)
+		(layer "F.SilkS")
+		(uuid "efbfd184-fa30-423e-8ef6-22d36e3504d5")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.1)
+			)
+			(justify left bottom)
+		)
+	)
+	(gr_text "CHAM Panel"
+		(at 113.284 73.914 0)
 		(layer "B.SilkS")
-		(uuid "1eee75df-1496-41dd-922e-3234499effef")
+		(uuid "40c3d69b-8b8e-499f-b663-83b3ca29c8d1")
 		(effects
 			(font
 				(size 1 1)
@@ -7208,10 +7220,10 @@
 			(justify left bottom mirror)
 		)
 	)
-	(gr_text "CHAM"
-		(at 113.284 73.914 0)
+	(gr_text "@awongawong"
+		(at 114.3 56.388 90)
 		(layer "B.SilkS")
-		(uuid "40c3d69b-8b8e-499f-b663-83b3ca29c8d1")
+		(uuid "1eee75df-1496-41dd-922e-3234499effef")
 		(effects
 			(font
 				(size 1 1)

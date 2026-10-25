@@ -19991,6 +19991,108 @@
 		(layer "Edge.Cuts")
 		(uuid "78ea7668-08a8-49cc-aaf6-f6fabebd7c6e")
 	)
+	(gr_text "CHAM Carrier\n@awongawong"
+		(at 92.329 105.537 0)
+		(layer "F.SilkS")
+		(uuid "62d91824-f724-4f91-af35-99001a768856")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.1)
+			)
+			(justify left bottom)
+		)
+	)
+	(gr_text "+LED-"
+		(at 81.026 89.662 0)
+		(layer "F.SilkS")
+		(uuid "b7f7484e-bfcc-452b-bf76-5e84d9e8b0ac")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+				(bold yes)
+			)
+			(justify left bottom)
+		)
+	)
+	(gr_text "PIEZ"
+		(at 88.646 89.662 0)
+		(layer "F.SilkS")
+		(uuid "09db99d1-e2b2-4401-ba0a-7ceb687517d2")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+				(bold yes)
+			)
+			(justify left bottom)
+		)
+	)
+	(gr_text "HAPTIC"
+		(at 102.997 97.663 0)
+		(layer "F.SilkS")
+		(uuid "2b13d58a-007a-4988-9a5e-cc808cec9656")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+				(bold yes)
+			)
+			(justify left bottom)
+		)
+	)
+	(gr_text "KBD"
+		(at 104.267 105.029 0)
+		(layer "F.SilkS")
+		(uuid "c4dc334d-7c5b-4317-9984-c6f4f0656f9e")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+				(bold yes)
+			)
+			(justify left bottom)
+		)
+	)
+	(gr_text "FR. L"
+		(at 104.521 79.121 0)
+		(layer "F.SilkS")
+		(uuid "80d7001d-04cf-469c-a1c5-6f8207aca0fc")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+				(bold yes)
+			)
+			(justify left bottom)
+		)
+	)
+	(gr_text "BATT"
+		(at 106.68 67.056 0)
+		(layer "F.SilkS")
+		(uuid "fa305659-2ed0-4876-9d61-543223f2ec43")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+				(bold yes)
+			)
+			(justify left bottom)
+		)
+	)
+	(gr_text "MACH Carrier\n@awongawong"
+		(at 103.378 105.537 0)
+		(layer "B.SilkS")
+		(uuid "39b1c21e-8d1d-45b2-9c23-95e754de17b7")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.1)
+			)
+			(justify left bottom mirror)
+		)
+	)
 	(gr_text "FAB NOTE: trim the 28 Walter header pins flush with the solder fillets after soldering (untrimmed pins reach 5 mm above this board, into the display glass)"
 		(at 97 103.5 0)
 		(layer "F.Fab")
