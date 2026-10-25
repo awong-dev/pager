@@ -144,6 +144,19 @@ tail end), and the USB-C at 6.5 is the only thing taller than 3.5 mm.
    resistor swap. The display ZIF J1 and its reference circuit (47 µH, 2.2 Ω,
    MBR0530, 1 µF/25 V, BS1 low) are identical in the Good Display and Orient
    sheets, so the same panel board takes either glass.
+   *24 Oct (measured from the drawings, GDEY029T94-FL03-CAD.pdf 2023-05-04 and
+   AEZ122250A00-2.13ENRWS rev 1.0 p.5):* both front-light tails leave on the
+   **pin-24 side** of the display tail (front view), not the pin-1 side as
+   placed on 19 Oct. FL03: tail centre 15.5 mm from the display tail centre
+   (display tail left edge 10.42 from the LGP edge + 0.80 LGP inset, 12.50 wide;
+   FL tail 3.50 wide, 2.00 from the glass corner), 11.5 mm long with the
+   contacts at 9.5-11.5, so J3 sits in the edge row. Orient 2.13": 10.8 mm,
+   FL tail 20.0 mm long (contacts 17.8-20.0), display tail 14.3 mm; its FL pins
+   run 6->1 away from the display tail. Both ZIFs therefore sit left of J1 on
+   the board (J1 pad 24 is on the left): J3 at J1.x-15.5 in the edge row, J4 at
+   J1.x-10.8 one row inboard, since 5.5 mm wide ZIFs 4.7 mm apart cannot share
+   a row. The 0R links R1/R2/R3/R5 are now two bridged solder jumpers JP1/JP2
+   (1-2 bridged = R1/R2; cut and bridge 2-3 = R3/R5).
 9. **Front-light button** SW2 (owner, 17 Oct): FL_BTN on IO4 (header pin 15,
    RTC GPIO so it can be an ext1 wake), 100 k pull-up to 3V3, 100 nF, switch to
    GND. IO4 was a spare test-pad pin; TP13 still touches it. Firmware needs a
