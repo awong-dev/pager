@@ -8580,7 +8580,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "USB4235"
+		(property "Value" "TYPE-C 16PLT-H6.5"
 			(at 19.304 31.242 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -8591,7 +8591,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "pager-carrier:USB_C_Receptacle_GCT_USB4235_Vertical"
+		(property "Footprint" "pager-carrier:USB_C_Receptacle_ShouHan_TYPE-C-16PLT-H6.5_Vertical"
 			(at 45.72 40.64 0)
 			(hide yes)
 			(show_name no)
@@ -8603,7 +8603,7 @@
 				(justify left)
 			)
 		)
-		(property "Datasheet" "https://www.usb.org/sites/default/files/documents/usb_type-c.zip"
+		(property "Datasheet" "https://www.lcsc.com/datasheet/C3151748.pdf"
 			(at 45.72 43.18 0)
 			(hide yes)
 			(show_name no)
@@ -8627,7 +8627,7 @@
 				(justify left)
 			)
 		)
-		(property "MPN" "USB4235-03-C"
+		(property "MPN" "TYPE-C 16PLT-H6.5"
 			(at 29.21 66.04 0)
 			(hide yes)
 			(show_name no)
@@ -8638,7 +8638,7 @@
 				)
 			)
 		)
-		(property "LCSC" ""
+		(property "LCSC" "C3151748"
 			(at 29.21 68.58 0)
 			(hide yes)
 			(show_name no)
@@ -8660,7 +8660,7 @@
 				)
 			)
 		)
-		(property "Note" "vertical 6.5 mm; fallback Connector_USB:USB_C_Receptacle_GCT_USB4105-xx-A_16P_TopMnt_Horizontal"
+		(property "Note" "SHOU HAN vertical 6.5 mm (swapped from GCT USB4235 25 Oct 2026); fallback Connector_USB:USB_C_Receptacle_GCT_USB4105-xx-A_16P_TopMnt_Horizontal"
 			(at 29.21 73.66 0)
 			(hide yes)
 			(show_name no)
@@ -9668,7 +9668,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "JS102011SAQN"
+		(property "Value" "MSS12C02LS-HB2.0"
 			(at 59.69 112.776 90)
 			(show_name no)
 			(do_not_autoplace no)
@@ -9679,7 +9679,7 @@
 				(justify left)
 			)
 		)
-		(property "Footprint" "Button_Switch_SMD:SW_SPDT_CK_JS102011SAQN"
+		(property "Footprint" "pager-carrier:SW_SPDT_ShouHan_MSS12C02LS_TopActuated"
 			(at 64.77 127 0)
 			(hide yes)
 			(show_name no)
@@ -9691,7 +9691,7 @@
 				(justify left)
 			)
 		)
-		(property "Datasheet" "https://www.ckswitches.com/media/1422/js.pdf"
+		(property "Datasheet" "https://www.lcsc.com/datasheet/C3008584.pdf"
 			(at 67.31 127 0)
 			(hide yes)
 			(show_name no)
@@ -9703,7 +9703,7 @@
 				(justify left)
 			)
 		)
-		(property "Description" "SPDT slide switch, top actuated, SMD gull wing, C&K JS series (3.5 mm overall incl. knob)"
+		(property "Description" "SPDT slide switch, top actuated, SMD, SHOU HAN MSS12C02 LS (3.7 mm overall incl. knob, travel 1.5 mm)"
 			(at 69.85 127 0)
 			(hide yes)
 			(show_name no)
@@ -9715,7 +9715,7 @@
 				(justify left)
 			)
 		)
-		(property "MPN" "JS102011SAQN"
+		(property "MPN" "MSS12C02LS-HB2.0"
 			(at 77.47 120.65 0)
 			(hide yes)
 			(show_name no)
@@ -9726,7 +9726,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C221660"
+		(property "LCSC" "C3008584"
 			(at 80.01 120.65 0)
 			(hide yes)
 			(show_name no)
@@ -9835,7 +9835,7 @@
 				(justify left)
 			)
 		)
-		(property "MPN" "TFM201610ALMA-2R2MTAA"
+		(property "MPN" "FTC201610S2R2MBCA"
 			(at 257.81 31.75 0)
 			(hide yes)
 			(show_name no)
@@ -9846,7 +9846,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C404810"
+		(property "LCSC" "C5832344"
 			(at 257.81 29.21 0)
 			(hide yes)
 			(show_name no)
@@ -9868,7 +9868,7 @@
 				)
 			)
 		)
-		(property "Note" ">=1 A Isat, 1.0 mm tall; DFE201612E-2R2M alt"
+		(property "Note" "cjiang FTC201610S2R2MBCA: 2.5 A Isat, 120 mOhm, 1.0 mm tall (swapped 25 Oct 2026 for stock); DFE201612E-2R2M alt"
 			(at 257.81 24.13 0)
 			(hide yes)
 			(show_name no)
