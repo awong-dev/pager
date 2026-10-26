@@ -1,6 +1,6 @@
 {
   "board": {
-    "active_layer": 2,
+    "active_layer": 0,
     "active_layer_preset": "",
     "auto_track_width": false,
     "hidden_netclasses": [
@@ -49,9 +49,9 @@
       "/Core/PIEZ_N",
       "Net-(J5-Pin_2)",
       "/Core/EXT_LED",
-      "unconnected-(U4-NC-Pad5)",
-      "unconnected-(U4-INT2-Pad11)",
       "/Core/ACC_INT1",
+      "unconnected-(U4-INT2-Pad6)",
+      "unconnected-(U4-NC-Pad11)",
       "Net-(SW2-B)",
       "/Core/3V3_J1",
       "Net-(J6-CC1)",
@@ -115,7 +115,7 @@
       "pads": false,
       "text": false,
       "tracks": true,
-      "vias": false,
+      "vias": true,
       "zones": false
     },
     "visible_items": [
@@ -141,7 +141,7 @@
       "board_outline_area",
       "ly_points"
     ],
-    "visible_layers": "ffffffff_ffffffff_fffffff5_dd55ff5e",
+    "visible_layers": "ffffffff_ffffffff_fffffff5_dd55ffff",
     "zone_display_mode": 0
   },
   "git": {
