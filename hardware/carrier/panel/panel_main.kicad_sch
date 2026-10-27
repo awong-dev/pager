@@ -169,280 +169,6 @@
 			)
 			(embedded_fonts no)
 		)
-		(symbol "Connector_Generic:Conn_01x06"
-			(pin_names
-				(offset 1.016)
-				(hide yes)
-			)
-			(exclude_from_sim no)
-			(in_bom yes)
-			(on_board yes)
-			(in_pos_files yes)
-			(duplicate_pin_numbers_are_jumpers no)
-			(property "Reference" "J"
-				(at 0 7.62 0)
-				(show_name no)
-				(do_not_autoplace no)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-				)
-			)
-			(property "Value" "Conn_01x06"
-				(at 0 -10.16 0)
-				(show_name no)
-				(do_not_autoplace no)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-				)
-			)
-			(property "Footprint" ""
-				(at 0 0 0)
-				(show_name no)
-				(do_not_autoplace no)
-				(hide yes)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-				)
-			)
-			(property "Datasheet" ""
-				(at 0 0 0)
-				(show_name no)
-				(do_not_autoplace no)
-				(hide yes)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-				)
-			)
-			(property "Description" "Generic connector, single row, 01x06, script generated (kicad-library-utils/schlib/autogen/connector/)"
-				(at 0 0 0)
-				(show_name no)
-				(do_not_autoplace no)
-				(hide yes)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-				)
-			)
-			(property "ki_keywords" "connector"
-				(at 0 0 0)
-				(show_name no)
-				(do_not_autoplace no)
-				(hide yes)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-				)
-			)
-			(property "ki_fp_filters" "Connector*:*_1x??_*"
-				(at 0 0 0)
-				(show_name no)
-				(do_not_autoplace no)
-				(hide yes)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-				)
-			)
-			(symbol "Conn_01x06_1_1"
-				(rectangle
-					(start -1.27 6.35)
-					(end 1.27 -8.89)
-					(stroke
-						(width 0.254)
-						(type default)
-					)
-					(fill
-						(type background)
-					)
-				)
-				(rectangle
-					(start -1.27 5.207)
-					(end 0 4.953)
-					(stroke
-						(width 0.1524)
-						(type default)
-					)
-					(fill
-						(type none)
-					)
-				)
-				(rectangle
-					(start -1.27 2.667)
-					(end 0 2.413)
-					(stroke
-						(width 0.1524)
-						(type default)
-					)
-					(fill
-						(type none)
-					)
-				)
-				(rectangle
-					(start -1.27 0.127)
-					(end 0 -0.127)
-					(stroke
-						(width 0.1524)
-						(type default)
-					)
-					(fill
-						(type none)
-					)
-				)
-				(rectangle
-					(start -1.27 -2.413)
-					(end 0 -2.667)
-					(stroke
-						(width 0.1524)
-						(type default)
-					)
-					(fill
-						(type none)
-					)
-				)
-				(rectangle
-					(start -1.27 -4.953)
-					(end 0 -5.207)
-					(stroke
-						(width 0.1524)
-						(type default)
-					)
-					(fill
-						(type none)
-					)
-				)
-				(rectangle
-					(start -1.27 -7.493)
-					(end 0 -7.747)
-					(stroke
-						(width 0.1524)
-						(type default)
-					)
-					(fill
-						(type none)
-					)
-				)
-				(pin passive line
-					(at -5.08 5.08 0)
-					(length 3.81)
-					(name "Pin_1"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-					(number "1"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-				)
-				(pin passive line
-					(at -5.08 2.54 0)
-					(length 3.81)
-					(name "Pin_2"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-					(number "2"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-				)
-				(pin passive line
-					(at -5.08 0 0)
-					(length 3.81)
-					(name "Pin_3"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-					(number "3"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-				)
-				(pin passive line
-					(at -5.08 -2.54 0)
-					(length 3.81)
-					(name "Pin_4"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-					(number "4"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-				)
-				(pin passive line
-					(at -5.08 -5.08 0)
-					(length 3.81)
-					(name "Pin_5"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-					(number "5"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-				)
-				(pin passive line
-					(at -5.08 -7.62 0)
-					(length 3.81)
-					(name "Pin_6"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-					(number "6"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-				)
-			)
-			(embedded_fonts no)
-		)
 		(symbol "Connector_Generic:Conn_01x08"
 			(pin_names
 				(offset 1.016)
@@ -1165,802 +891,6 @@
 			)
 			(embedded_fonts no)
 		)
-		(symbol "Connector_Generic:Conn_01x24"
-			(pin_names
-				(offset 1.016)
-				(hide yes)
-			)
-			(exclude_from_sim no)
-			(in_bom yes)
-			(on_board yes)
-			(in_pos_files yes)
-			(duplicate_pin_numbers_are_jumpers no)
-			(property "Reference" "J"
-				(at 0 30.48 0)
-				(show_name no)
-				(do_not_autoplace no)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-				)
-			)
-			(property "Value" "Conn_01x24"
-				(at 0 -33.02 0)
-				(show_name no)
-				(do_not_autoplace no)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-				)
-			)
-			(property "Footprint" ""
-				(at 0 0 0)
-				(show_name no)
-				(do_not_autoplace no)
-				(hide yes)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-				)
-			)
-			(property "Datasheet" ""
-				(at 0 0 0)
-				(show_name no)
-				(do_not_autoplace no)
-				(hide yes)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-				)
-			)
-			(property "Description" "Generic connector, single row, 01x24, script generated (kicad-library-utils/schlib/autogen/connector/)"
-				(at 0 0 0)
-				(show_name no)
-				(do_not_autoplace no)
-				(hide yes)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-				)
-			)
-			(property "ki_keywords" "connector"
-				(at 0 0 0)
-				(show_name no)
-				(do_not_autoplace no)
-				(hide yes)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-				)
-			)
-			(property "ki_fp_filters" "Connector*:*_1x??_*"
-				(at 0 0 0)
-				(show_name no)
-				(do_not_autoplace no)
-				(hide yes)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-				)
-			)
-			(symbol "Conn_01x24_1_1"
-				(rectangle
-					(start -1.27 29.21)
-					(end 1.27 -31.75)
-					(stroke
-						(width 0.254)
-						(type default)
-					)
-					(fill
-						(type background)
-					)
-				)
-				(rectangle
-					(start -1.27 28.067)
-					(end 0 27.813)
-					(stroke
-						(width 0.1524)
-						(type default)
-					)
-					(fill
-						(type none)
-					)
-				)
-				(rectangle
-					(start -1.27 25.527)
-					(end 0 25.273)
-					(stroke
-						(width 0.1524)
-						(type default)
-					)
-					(fill
-						(type none)
-					)
-				)
-				(rectangle
-					(start -1.27 22.987)
-					(end 0 22.733)
-					(stroke
-						(width 0.1524)
-						(type default)
-					)
-					(fill
-						(type none)
-					)
-				)
-				(rectangle
-					(start -1.27 20.447)
-					(end 0 20.193)
-					(stroke
-						(width 0.1524)
-						(type default)
-					)
-					(fill
-						(type none)
-					)
-				)
-				(rectangle
-					(start -1.27 17.907)
-					(end 0 17.653)
-					(stroke
-						(width 0.1524)
-						(type default)
-					)
-					(fill
-						(type none)
-					)
-				)
-				(rectangle
-					(start -1.27 15.367)
-					(end 0 15.113)
-					(stroke
-						(width 0.1524)
-						(type default)
-					)
-					(fill
-						(type none)
-					)
-				)
-				(rectangle
-					(start -1.27 12.827)
-					(end 0 12.573)
-					(stroke
-						(width 0.1524)
-						(type default)
-					)
-					(fill
-						(type none)
-					)
-				)
-				(rectangle
-					(start -1.27 10.287)
-					(end 0 10.033)
-					(stroke
-						(width 0.1524)
-						(type default)
-					)
-					(fill
-						(type none)
-					)
-				)
-				(rectangle
-					(start -1.27 7.747)
-					(end 0 7.493)
-					(stroke
-						(width 0.1524)
-						(type default)
-					)
-					(fill
-						(type none)
-					)
-				)
-				(rectangle
-					(start -1.27 5.207)
-					(end 0 4.953)
-					(stroke
-						(width 0.1524)
-						(type default)
-					)
-					(fill
-						(type none)
-					)
-				)
-				(rectangle
-					(start -1.27 2.667)
-					(end 0 2.413)
-					(stroke
-						(width 0.1524)
-						(type default)
-					)
-					(fill
-						(type none)
-					)
-				)
-				(rectangle
-					(start -1.27 0.127)
-					(end 0 -0.127)
-					(stroke
-						(width 0.1524)
-						(type default)
-					)
-					(fill
-						(type none)
-					)
-				)
-				(rectangle
-					(start -1.27 -2.413)
-					(end 0 -2.667)
-					(stroke
-						(width 0.1524)
-						(type default)
-					)
-					(fill
-						(type none)
-					)
-				)
-				(rectangle
-					(start -1.27 -4.953)
-					(end 0 -5.207)
-					(stroke
-						(width 0.1524)
-						(type default)
-					)
-					(fill
-						(type none)
-					)
-				)
-				(rectangle
-					(start -1.27 -7.493)
-					(end 0 -7.747)
-					(stroke
-						(width 0.1524)
-						(type default)
-					)
-					(fill
-						(type none)
-					)
-				)
-				(rectangle
-					(start -1.27 -10.033)
-					(end 0 -10.287)
-					(stroke
-						(width 0.1524)
-						(type default)
-					)
-					(fill
-						(type none)
-					)
-				)
-				(rectangle
-					(start -1.27 -12.573)
-					(end 0 -12.827)
-					(stroke
-						(width 0.1524)
-						(type default)
-					)
-					(fill
-						(type none)
-					)
-				)
-				(rectangle
-					(start -1.27 -15.113)
-					(end 0 -15.367)
-					(stroke
-						(width 0.1524)
-						(type default)
-					)
-					(fill
-						(type none)
-					)
-				)
-				(rectangle
-					(start -1.27 -17.653)
-					(end 0 -17.907)
-					(stroke
-						(width 0.1524)
-						(type default)
-					)
-					(fill
-						(type none)
-					)
-				)
-				(rectangle
-					(start -1.27 -20.193)
-					(end 0 -20.447)
-					(stroke
-						(width 0.1524)
-						(type default)
-					)
-					(fill
-						(type none)
-					)
-				)
-				(rectangle
-					(start -1.27 -22.733)
-					(end 0 -22.987)
-					(stroke
-						(width 0.1524)
-						(type default)
-					)
-					(fill
-						(type none)
-					)
-				)
-				(rectangle
-					(start -1.27 -25.273)
-					(end 0 -25.527)
-					(stroke
-						(width 0.1524)
-						(type default)
-					)
-					(fill
-						(type none)
-					)
-				)
-				(rectangle
-					(start -1.27 -27.813)
-					(end 0 -28.067)
-					(stroke
-						(width 0.1524)
-						(type default)
-					)
-					(fill
-						(type none)
-					)
-				)
-				(rectangle
-					(start -1.27 -30.353)
-					(end 0 -30.607)
-					(stroke
-						(width 0.1524)
-						(type default)
-					)
-					(fill
-						(type none)
-					)
-				)
-				(pin passive line
-					(at -5.08 27.94 0)
-					(length 3.81)
-					(name "Pin_1"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-					(number "1"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-				)
-				(pin passive line
-					(at -5.08 25.4 0)
-					(length 3.81)
-					(name "Pin_2"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-					(number "2"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-				)
-				(pin passive line
-					(at -5.08 22.86 0)
-					(length 3.81)
-					(name "Pin_3"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-					(number "3"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-				)
-				(pin passive line
-					(at -5.08 20.32 0)
-					(length 3.81)
-					(name "Pin_4"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-					(number "4"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-				)
-				(pin passive line
-					(at -5.08 17.78 0)
-					(length 3.81)
-					(name "Pin_5"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-					(number "5"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-				)
-				(pin passive line
-					(at -5.08 15.24 0)
-					(length 3.81)
-					(name "Pin_6"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-					(number "6"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-				)
-				(pin passive line
-					(at -5.08 12.7 0)
-					(length 3.81)
-					(name "Pin_7"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-					(number "7"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-				)
-				(pin passive line
-					(at -5.08 10.16 0)
-					(length 3.81)
-					(name "Pin_8"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-					(number "8"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-				)
-				(pin passive line
-					(at -5.08 7.62 0)
-					(length 3.81)
-					(name "Pin_9"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-					(number "9"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-				)
-				(pin passive line
-					(at -5.08 5.08 0)
-					(length 3.81)
-					(name "Pin_10"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-					(number "10"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-				)
-				(pin passive line
-					(at -5.08 2.54 0)
-					(length 3.81)
-					(name "Pin_11"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-					(number "11"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-				)
-				(pin passive line
-					(at -5.08 0 0)
-					(length 3.81)
-					(name "Pin_12"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-					(number "12"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-				)
-				(pin passive line
-					(at -5.08 -2.54 0)
-					(length 3.81)
-					(name "Pin_13"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-					(number "13"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-				)
-				(pin passive line
-					(at -5.08 -5.08 0)
-					(length 3.81)
-					(name "Pin_14"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-					(number "14"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-				)
-				(pin passive line
-					(at -5.08 -7.62 0)
-					(length 3.81)
-					(name "Pin_15"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-					(number "15"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-				)
-				(pin passive line
-					(at -5.08 -10.16 0)
-					(length 3.81)
-					(name "Pin_16"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-					(number "16"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-				)
-				(pin passive line
-					(at -5.08 -12.7 0)
-					(length 3.81)
-					(name "Pin_17"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-					(number "17"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-				)
-				(pin passive line
-					(at -5.08 -15.24 0)
-					(length 3.81)
-					(name "Pin_18"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-					(number "18"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-				)
-				(pin passive line
-					(at -5.08 -17.78 0)
-					(length 3.81)
-					(name "Pin_19"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-					(number "19"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-				)
-				(pin passive line
-					(at -5.08 -20.32 0)
-					(length 3.81)
-					(name "Pin_20"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-					(number "20"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-				)
-				(pin passive line
-					(at -5.08 -22.86 0)
-					(length 3.81)
-					(name "Pin_21"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-					(number "21"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-				)
-				(pin passive line
-					(at -5.08 -25.4 0)
-					(length 3.81)
-					(name "Pin_22"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-					(number "22"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-				)
-				(pin passive line
-					(at -5.08 -27.94 0)
-					(length 3.81)
-					(name "Pin_23"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-					(number "23"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-				)
-				(pin passive line
-					(at -5.08 -30.48 0)
-					(length 3.81)
-					(name "Pin_24"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-					(number "24"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-				)
-			)
-			(embedded_fonts no)
-		)
 		(symbol "Device:C"
 			(pin_numbers
 				(hide yes)
@@ -2593,6 +1523,974 @@
 						(effects
 							(font
 								(size 1.27 1.27)
+							)
+						)
+					)
+				)
+			)
+			(embedded_fonts no)
+		)
+		(symbol "FH34-26:FH34SRJ-24S-0.5SH_50_"
+			(pin_names
+				(offset 1.016)
+			)
+			(exclude_from_sim no)
+			(in_bom yes)
+			(on_board yes)
+			(in_pos_files yes)
+			(duplicate_pin_numbers_are_jumpers no)
+			(property "Reference" "J"
+				(at -5.58 33.02 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(justify left bottom)
+				)
+			)
+			(property "Value" "FH34SRJ-24S-0.5SH_50_"
+				(at -5.08 -38.1 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(justify left bottom)
+				)
+			)
+			(property "Footprint" "FH34SRJ-24S-0.5SH_50_:HRS_FH34SRJ-24S-0.5SH_50_"
+				(at 0 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(justify bottom)
+				)
+			)
+			(property "Datasheet" ""
+				(at 0 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "Description" "24 Position FFC, FPC Connector Contacts, Top and Bottom 0.020 (0.50mm) Surface Mount, Right Angle"
+				(at 0 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(justify bottom)
+				)
+			)
+			(property "MF" "Hirose Electric"
+				(at 0 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(justify bottom)
+				)
+			)
+			(property "Package" "None"
+				(at 0 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(justify bottom)
+				)
+			)
+			(property "Price" "None"
+				(at 0 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(justify bottom)
+				)
+			)
+			(property "Check_prices" "https://www.snapeda.com/parts/FH34SRJ-24S-0.5SH(50)/Hirose/view-part/?ref=eda"
+				(at 0 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(justify bottom)
+				)
+			)
+			(property "SnapEDA_Link" "https://www.snapeda.com/parts/FH34SRJ-24S-0.5SH(50)/Hirose/view-part/?ref=snap"
+				(at 0 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(justify bottom)
+				)
+			)
+			(property "MP" "FH34SRJ-24S-0.5SH(50)"
+				(at 0 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(justify bottom)
+				)
+			)
+			(property "Availability" "In Stock"
+				(at 0 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(justify bottom)
+				)
+			)
+			(property "MANUFACTURER" "HRS"
+				(at 0 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(justify bottom)
+				)
+			)
+			(symbol "FH34SRJ-24S-0.5SH_50__0_0"
+				(rectangle
+					(start -5.08 -35.56)
+					(end 5.08 33.02)
+					(stroke
+						(width 0.254)
+						(type default)
+					)
+					(fill
+						(type background)
+					)
+				)
+				(pin passive line
+					(at -10.16 30.48 0)
+					(length 5.08)
+					(name "1"
+						(effects
+							(font
+								(size 1.016 1.016)
+							)
+						)
+					)
+					(number "1"
+						(effects
+							(font
+								(size 1.016 1.016)
+							)
+						)
+					)
+				)
+				(pin passive line
+					(at -10.16 27.94 0)
+					(length 5.08)
+					(name "2"
+						(effects
+							(font
+								(size 1.016 1.016)
+							)
+						)
+					)
+					(number "2"
+						(effects
+							(font
+								(size 1.016 1.016)
+							)
+						)
+					)
+				)
+				(pin passive line
+					(at -10.16 25.4 0)
+					(length 5.08)
+					(name "3"
+						(effects
+							(font
+								(size 1.016 1.016)
+							)
+						)
+					)
+					(number "3"
+						(effects
+							(font
+								(size 1.016 1.016)
+							)
+						)
+					)
+				)
+				(pin passive line
+					(at -10.16 22.86 0)
+					(length 5.08)
+					(name "4"
+						(effects
+							(font
+								(size 1.016 1.016)
+							)
+						)
+					)
+					(number "4"
+						(effects
+							(font
+								(size 1.016 1.016)
+							)
+						)
+					)
+				)
+				(pin passive line
+					(at -10.16 20.32 0)
+					(length 5.08)
+					(name "5"
+						(effects
+							(font
+								(size 1.016 1.016)
+							)
+						)
+					)
+					(number "5"
+						(effects
+							(font
+								(size 1.016 1.016)
+							)
+						)
+					)
+				)
+				(pin passive line
+					(at -10.16 17.78 0)
+					(length 5.08)
+					(name "6"
+						(effects
+							(font
+								(size 1.016 1.016)
+							)
+						)
+					)
+					(number "6"
+						(effects
+							(font
+								(size 1.016 1.016)
+							)
+						)
+					)
+				)
+				(pin passive line
+					(at -10.16 15.24 0)
+					(length 5.08)
+					(name "7"
+						(effects
+							(font
+								(size 1.016 1.016)
+							)
+						)
+					)
+					(number "7"
+						(effects
+							(font
+								(size 1.016 1.016)
+							)
+						)
+					)
+				)
+				(pin passive line
+					(at -10.16 12.7 0)
+					(length 5.08)
+					(name "8"
+						(effects
+							(font
+								(size 1.016 1.016)
+							)
+						)
+					)
+					(number "8"
+						(effects
+							(font
+								(size 1.016 1.016)
+							)
+						)
+					)
+				)
+				(pin passive line
+					(at -10.16 10.16 0)
+					(length 5.08)
+					(name "9"
+						(effects
+							(font
+								(size 1.016 1.016)
+							)
+						)
+					)
+					(number "9"
+						(effects
+							(font
+								(size 1.016 1.016)
+							)
+						)
+					)
+				)
+				(pin passive line
+					(at -10.16 7.62 0)
+					(length 5.08)
+					(name "10"
+						(effects
+							(font
+								(size 1.016 1.016)
+							)
+						)
+					)
+					(number "10"
+						(effects
+							(font
+								(size 1.016 1.016)
+							)
+						)
+					)
+				)
+				(pin passive line
+					(at -10.16 5.08 0)
+					(length 5.08)
+					(name "11"
+						(effects
+							(font
+								(size 1.016 1.016)
+							)
+						)
+					)
+					(number "11"
+						(effects
+							(font
+								(size 1.016 1.016)
+							)
+						)
+					)
+				)
+				(pin passive line
+					(at -10.16 2.54 0)
+					(length 5.08)
+					(name "12"
+						(effects
+							(font
+								(size 1.016 1.016)
+							)
+						)
+					)
+					(number "12"
+						(effects
+							(font
+								(size 1.016 1.016)
+							)
+						)
+					)
+				)
+				(pin passive line
+					(at -10.16 0 0)
+					(length 5.08)
+					(name "13"
+						(effects
+							(font
+								(size 1.016 1.016)
+							)
+						)
+					)
+					(number "13"
+						(effects
+							(font
+								(size 1.016 1.016)
+							)
+						)
+					)
+				)
+				(pin passive line
+					(at -10.16 -2.54 0)
+					(length 5.08)
+					(name "14"
+						(effects
+							(font
+								(size 1.016 1.016)
+							)
+						)
+					)
+					(number "14"
+						(effects
+							(font
+								(size 1.016 1.016)
+							)
+						)
+					)
+				)
+				(pin passive line
+					(at -10.16 -5.08 0)
+					(length 5.08)
+					(name "15"
+						(effects
+							(font
+								(size 1.016 1.016)
+							)
+						)
+					)
+					(number "15"
+						(effects
+							(font
+								(size 1.016 1.016)
+							)
+						)
+					)
+				)
+				(pin passive line
+					(at -10.16 -7.62 0)
+					(length 5.08)
+					(name "16"
+						(effects
+							(font
+								(size 1.016 1.016)
+							)
+						)
+					)
+					(number "16"
+						(effects
+							(font
+								(size 1.016 1.016)
+							)
+						)
+					)
+				)
+				(pin passive line
+					(at -10.16 -10.16 0)
+					(length 5.08)
+					(name "17"
+						(effects
+							(font
+								(size 1.016 1.016)
+							)
+						)
+					)
+					(number "17"
+						(effects
+							(font
+								(size 1.016 1.016)
+							)
+						)
+					)
+				)
+				(pin passive line
+					(at -10.16 -12.7 0)
+					(length 5.08)
+					(name "18"
+						(effects
+							(font
+								(size 1.016 1.016)
+							)
+						)
+					)
+					(number "18"
+						(effects
+							(font
+								(size 1.016 1.016)
+							)
+						)
+					)
+				)
+				(pin passive line
+					(at -10.16 -15.24 0)
+					(length 5.08)
+					(name "19"
+						(effects
+							(font
+								(size 1.016 1.016)
+							)
+						)
+					)
+					(number "19"
+						(effects
+							(font
+								(size 1.016 1.016)
+							)
+						)
+					)
+				)
+				(pin passive line
+					(at -10.16 -17.78 0)
+					(length 5.08)
+					(name "20"
+						(effects
+							(font
+								(size 1.016 1.016)
+							)
+						)
+					)
+					(number "20"
+						(effects
+							(font
+								(size 1.016 1.016)
+							)
+						)
+					)
+				)
+				(pin passive line
+					(at -10.16 -20.32 0)
+					(length 5.08)
+					(name "21"
+						(effects
+							(font
+								(size 1.016 1.016)
+							)
+						)
+					)
+					(number "21"
+						(effects
+							(font
+								(size 1.016 1.016)
+							)
+						)
+					)
+				)
+				(pin passive line
+					(at -10.16 -22.86 0)
+					(length 5.08)
+					(name "22"
+						(effects
+							(font
+								(size 1.016 1.016)
+							)
+						)
+					)
+					(number "22"
+						(effects
+							(font
+								(size 1.016 1.016)
+							)
+						)
+					)
+				)
+				(pin passive line
+					(at -10.16 -25.4 0)
+					(length 5.08)
+					(name "23"
+						(effects
+							(font
+								(size 1.016 1.016)
+							)
+						)
+					)
+					(number "23"
+						(effects
+							(font
+								(size 1.016 1.016)
+							)
+						)
+					)
+				)
+				(pin passive line
+					(at -10.16 -27.94 0)
+					(length 5.08)
+					(name "24"
+						(effects
+							(font
+								(size 1.016 1.016)
+							)
+						)
+					)
+					(number "24"
+						(effects
+							(font
+								(size 1.016 1.016)
+							)
+						)
+					)
+				)
+				(pin passive line
+					(at 10.16 -33.02 180)
+					(length 5.08)
+					(name "SHIELD"
+						(effects
+							(font
+								(size 1.016 1.016)
+							)
+						)
+					)
+					(number "S1"
+						(effects
+							(font
+								(size 1.016 1.016)
+							)
+						)
+					)
+				)
+				(pin passive line
+					(at 10.16 -33.02 180)
+					(length 5.08)
+					(hide yes)
+					(name "SHIELD"
+						(effects
+							(font
+								(size 1.016 1.016)
+							)
+						)
+					)
+					(number "S2"
+						(effects
+							(font
+								(size 1.016 1.016)
+							)
+						)
+					)
+				)
+			)
+			(embedded_fonts no)
+		)
+		(symbol "FH34SRJ-6S-0.5SH(50):FH34SRJ-6S-0.5SH_50_"
+			(pin_names
+				(offset 1.016)
+			)
+			(exclude_from_sim no)
+			(in_bom yes)
+			(on_board yes)
+			(in_pos_files yes)
+			(duplicate_pin_numbers_are_jumpers no)
+			(property "Reference" "J"
+				(at -5.58 10.16 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(justify left bottom)
+				)
+			)
+			(property "Value" "FH34SRJ-6S-0.5SH_50_"
+				(at -5.08 -15.24 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(justify left bottom)
+				)
+			)
+			(property "Footprint" "FH34SRJ-6S-0.5SH_50_:HRS_FH34SRJ-6S-0.5SH_50_"
+				(at 0 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(justify bottom)
+				)
+			)
+			(property "Datasheet" ""
+				(at 0 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "Description" "6 Position FFC, FPC Connector Contacts, Top and Bottom 0.020 (0.50mm) Surface Mount, Right Angle"
+				(at 0 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(justify bottom)
+				)
+			)
+			(property "MF" "Hirose Electric Co Ltd"
+				(at 0 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(justify bottom)
+				)
+			)
+			(property "Package" "None"
+				(at 0 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(justify bottom)
+				)
+			)
+			(property "Price" "None"
+				(at 0 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(justify bottom)
+				)
+			)
+			(property "Check_prices" "https://www.snapeda.com/parts/FH34SRJ-6S-0.5SH(50)/Hirose+Electric+Co+Ltd/view-part/?ref=eda"
+				(at 0 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(justify bottom)
+				)
+			)
+			(property "SnapEDA_Link" "https://www.snapeda.com/parts/FH34SRJ-6S-0.5SH(50)/Hirose+Electric+Co+Ltd/view-part/?ref=snap"
+				(at 0 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(justify bottom)
+				)
+			)
+			(property "MP" "FH34SRJ-6S-0.5SH(50)"
+				(at 0 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(justify bottom)
+				)
+			)
+			(property "Availability" "In Stock"
+				(at 0 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(justify bottom)
+				)
+			)
+			(property "MANUFACTURER" "HRS"
+				(at 0 0 0)
+				(show_name no)
+				(do_not_autoplace no)
+				(hide yes)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(justify bottom)
+				)
+			)
+			(symbol "FH34SRJ-6S-0.5SH_50__0_0"
+				(rectangle
+					(start -5.08 -12.7)
+					(end 5.08 10.16)
+					(stroke
+						(width 0.254)
+						(type default)
+					)
+					(fill
+						(type background)
+					)
+				)
+				(pin passive line
+					(at -10.16 7.62 0)
+					(length 5.08)
+					(name "1"
+						(effects
+							(font
+								(size 1.016 1.016)
+							)
+						)
+					)
+					(number "1"
+						(effects
+							(font
+								(size 1.016 1.016)
+							)
+						)
+					)
+				)
+				(pin passive line
+					(at -10.16 5.08 0)
+					(length 5.08)
+					(name "2"
+						(effects
+							(font
+								(size 1.016 1.016)
+							)
+						)
+					)
+					(number "2"
+						(effects
+							(font
+								(size 1.016 1.016)
+							)
+						)
+					)
+				)
+				(pin passive line
+					(at -10.16 2.54 0)
+					(length 5.08)
+					(name "3"
+						(effects
+							(font
+								(size 1.016 1.016)
+							)
+						)
+					)
+					(number "3"
+						(effects
+							(font
+								(size 1.016 1.016)
+							)
+						)
+					)
+				)
+				(pin passive line
+					(at -10.16 0 0)
+					(length 5.08)
+					(name "4"
+						(effects
+							(font
+								(size 1.016 1.016)
+							)
+						)
+					)
+					(number "4"
+						(effects
+							(font
+								(size 1.016 1.016)
+							)
+						)
+					)
+				)
+				(pin passive line
+					(at -10.16 -2.54 0)
+					(length 5.08)
+					(name "5"
+						(effects
+							(font
+								(size 1.016 1.016)
+							)
+						)
+					)
+					(number "5"
+						(effects
+							(font
+								(size 1.016 1.016)
+							)
+						)
+					)
+				)
+				(pin passive line
+					(at -10.16 -5.08 0)
+					(length 5.08)
+					(name "6"
+						(effects
+							(font
+								(size 1.016 1.016)
+							)
+						)
+					)
+					(number "6"
+						(effects
+							(font
+								(size 1.016 1.016)
+							)
+						)
+					)
+				)
+				(pin passive line
+					(at 10.16 -10.16 180)
+					(length 5.08)
+					(name "SHIELD"
+						(effects
+							(font
+								(size 1.016 1.016)
+							)
+						)
+					)
+					(number "S1"
+						(effects
+							(font
+								(size 1.016 1.016)
+							)
+						)
+					)
+				)
+				(pin passive line
+					(at 10.16 -10.16 180)
+					(length 5.08)
+					(hide yes)
+					(name "SHIELD"
+						(effects
+							(font
+								(size 1.016 1.016)
+							)
+						)
+					)
+					(number "S2"
+						(effects
+							(font
+								(size 1.016 1.016)
 							)
 						)
 					)
@@ -3549,7 +3447,7 @@
 	)
 	(text "FL polarity: JP1/JP2 bridged 1-2 (as shipped) = FL_P->FL_A, FL_N->FL_K (was R1/R2). Cut both bridges and solder 2-3 on both to swap (was R3/R5). No BOM lines, zero height."
 		(exclude_from_sim no)
-		(at 174.244 231.394 0)
+		(at 183.642 242.062 0)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -3582,7 +3480,7 @@
 	)
 	(text "Boost: 3V3_EPD -> L1 -> SW node; Q5 (gate GDR) switches SW to GND through R4 (RESE sense). D3 SW->VGH into C3. C5 flies SW->PUMP; D2 clamps PUMP to GND (anode PUMP); D1 pumps PUMP into VGL (anode VGL) with C4."
 		(exclude_from_sim no)
-		(at 220 20 0)
+		(at 19.558 19.304 0)
 		(effects
 			(font
 				(size 1.5 1.5)
@@ -3605,7 +3503,7 @@
 	)
 	(text "Panel board for 24-pin 0.5 mm SSD1680/SSD1681 e-paper (Good Display GDEY029T94 2.9\" 296x128, Orient AEZ122250A00 2.13\" 122x250, ...). Reference circuit identical in both sheets: RESE 2.2R, L 47uH, MBR0530 x3, 25 V caps, BS1 low (4-wire SPI)."
 		(exclude_from_sim no)
-		(at 20 20 0)
+		(at 19.558 15.24 0)
 		(effects
 			(font
 				(size 1.5 1.5)
@@ -3656,6 +3554,12 @@
 		(diameter 0)
 		(color 0 0 0 0)
 		(uuid "27a9e0ce-28b1-4862-a5e3-3f91d5e2cf53")
+	)
+	(junction
+		(at 82.55 77.47)
+		(diameter 0)
+		(color 0 0 0 0)
+		(uuid "2c0ad35f-e056-4723-85b2-3c355be58b24")
 	)
 	(junction
 		(at 182.88 43.18)
@@ -3742,22 +3646,16 @@
 		(uuid "645db215-1168-4057-a3f1-c8c910ef0c5c")
 	)
 	(junction
+		(at 62.23 113.03)
+		(diameter 0)
+		(color 0 0 0 0)
+		(uuid "66f05b76-44f3-4fbb-b236-120202e32989")
+	)
+	(junction
 		(at 85.09 138.43)
 		(diameter 0)
 		(color 0 0 0 0)
 		(uuid "75e36c31-acaf-4f36-9a59-20f4ebc96b9d")
-	)
-	(junction
-		(at 82.55 77.47)
-		(diameter 0)
-		(color 0 0 0 0)
-		(uuid "79239678-fb3e-496f-9348-f71aefe3d252")
-	)
-	(junction
-		(at 82.55 72.39)
-		(diameter 0)
-		(color 0 0 0 0)
-		(uuid "8a4029f9-8990-48fc-bbd9-113261345854")
 	)
 	(junction
 		(at 218.44 138.43)
@@ -3825,6 +3723,12 @@
 		(color 0 0 0 0)
 		(uuid "e76733d9-7b61-4ace-b3ea-8e67df5782db")
 	)
+	(junction
+		(at 82.55 72.39)
+		(diameter 0)
+		(color 0 0 0 0)
+		(uuid "f5c8326b-260a-4990-9193-a88f0b188cb9")
+	)
 	(no_connect
 		(at 82.55 95.25)
 		(uuid "120ddfa6-7241-53eb-904e-1818fa82c9c8")
@@ -3834,11 +3738,15 @@
 		(uuid "50fa800a-2cdd-50aa-bc28-eba5de8046e2")
 	)
 	(no_connect
-		(at 101.6 200.66)
+		(at 170.18 196.85)
 		(uuid "7e832f52-1579-5dc8-a0cd-6959ab22e678")
 	)
 	(no_connect
-		(at 101.6 198.12)
+		(at 34.29 121.92)
+		(uuid "a1c6fc66-ca9d-4797-b535-0ea2e1f0914f")
+	)
+	(no_connect
+		(at 170.18 194.31)
 		(uuid "aa816463-36d3-50fe-b952-5eaca62bf2f5")
 	)
 	(no_connect
@@ -3852,6 +3760,16 @@
 	(no_connect
 		(at 82.55 57.15)
 		(uuid "ec392b37-e434-5a36-b6e3-618d742462d8")
+	)
+	(wire
+		(pts
+			(xy 190.5 207.01) (xy 190.5 219.71)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "03547e71-e507-4fff-b95b-0c11b820ed87")
 	)
 	(wire
 		(pts
@@ -3885,13 +3803,23 @@
 	)
 	(wire
 		(pts
-			(xy 69.85 82.55) (xy 82.55 82.55)
+			(xy 58.42 81.28) (xy 74.93 81.28)
 		)
 		(stroke
 			(width 0)
 			(type default)
 		)
 		(uuid "0fb59bf8-1020-437c-b01a-8b8982eee4f0")
+	)
+	(wire
+		(pts
+			(xy 95.25 208.28) (xy 104.14 208.28)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "1109acef-089f-4ddc-8821-a6a6526a1e57")
 	)
 	(wire
 		(pts
@@ -3915,7 +3843,17 @@
 	)
 	(wire
 		(pts
-			(xy 63.5 138.43) (xy 85.09 138.43)
+			(xy 130.81 207.01) (xy 130.81 210.82)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "18e9d519-858c-4590-b325-e5408b0bc4ff")
+	)
+	(wire
+		(pts
+			(xy 62.23 138.43) (xy 85.09 138.43)
 		)
 		(stroke
 			(width 0)
@@ -3945,6 +3883,26 @@
 	)
 	(wire
 		(pts
+			(xy 74.93 81.28) (xy 74.93 82.55)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "1bbbd180-4450-44b6-8527-625226dba00b")
+	)
+	(wire
+		(pts
+			(xy 82.55 72.39) (xy 132.08 72.39)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "1cbd48d2-da9e-4ba4-9cf0-b5b6f44dda58")
+	)
+	(wire
+		(pts
 			(xy 132.08 63.5) (xy 132.08 72.39)
 		)
 		(stroke
@@ -3965,13 +3923,13 @@
 	)
 	(wire
 		(pts
-			(xy 82.55 72.39) (xy 132.08 72.39)
+			(xy 74.93 82.55) (xy 82.55 82.55)
 		)
 		(stroke
 			(width 0)
 			(type default)
 		)
-		(uuid "2493639b-88e3-5611-a7b5-998c55b8adad")
+		(uuid "26a0a599-20c4-4066-81fe-0db35f096a78")
 	)
 	(wire
 		(pts
@@ -3995,7 +3953,7 @@
 	)
 	(wire
 		(pts
-			(xy 45.72 82.55) (xy 68.58 82.55)
+			(xy 45.72 82.55) (xy 60.96 82.55)
 		)
 		(stroke
 			(width 0)
@@ -4005,7 +3963,17 @@
 	)
 	(wire
 		(pts
-			(xy 45.72 80.01) (xy 69.85 80.01)
+			(xy 148.59 210.82) (xy 146.05 210.82)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "2807dd07-5a20-43e0-9295-9d2d33eef383")
+	)
+	(wire
+		(pts
+			(xy 45.72 80.01) (xy 58.42 80.01)
 		)
 		(stroke
 			(width 0)
@@ -4045,7 +4013,7 @@
 	)
 	(wire
 		(pts
-			(xy 101.6 195.58) (xy 95.25 195.58)
+			(xy 170.18 191.77) (xy 163.83 191.77)
 		)
 		(stroke
 			(width 0)
@@ -4055,7 +4023,7 @@
 	)
 	(wire
 		(pts
-			(xy 101.6 193.04) (xy 95.25 193.04)
+			(xy 170.18 189.23) (xy 163.83 189.23)
 		)
 		(stroke
 			(width 0)
@@ -4065,7 +4033,7 @@
 	)
 	(wire
 		(pts
-			(xy 210.82 219.71) (xy 210.82 227.33)
+			(xy 140.97 214.63) (xy 140.97 222.25)
 		)
 		(stroke
 			(width 0)
@@ -4145,7 +4113,7 @@
 	)
 	(wire
 		(pts
-			(xy 215.9 215.9) (xy 218.44 215.9)
+			(xy 148.59 209.55) (xy 149.86 209.55)
 		)
 		(stroke
 			(width 0)
@@ -4195,7 +4163,7 @@
 	)
 	(wire
 		(pts
-			(xy 45.72 85.09) (xy 63.5 85.09)
+			(xy 45.72 85.09) (xy 62.23 85.09)
 		)
 		(stroke
 			(width 0)
@@ -4205,7 +4173,7 @@
 	)
 	(wire
 		(pts
-			(xy 179.07 217.17) (xy 179.07 223.52)
+			(xy 109.22 212.09) (xy 109.22 219.71)
 		)
 		(stroke
 			(width 0)
@@ -4325,6 +4293,16 @@
 	)
 	(wire
 		(pts
+			(xy 62.23 113.03) (xy 62.23 138.43)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "72f57e5c-c109-4f98-ae02-7017221c0e6a")
+	)
+	(wire
+		(pts
 			(xy 279.4 110.49) (xy 279.4 123.19)
 		)
 		(stroke
@@ -4365,16 +4343,6 @@
 	)
 	(wire
 		(pts
-			(xy 82.55 77.47) (xy 139.7 77.47)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "80707790-a4bb-42bf-a438-ecd91a68de90")
-	)
-	(wire
-		(pts
 			(xy 82.55 90.17) (xy 148.59 90.17)
 		)
 		(stroke
@@ -4385,7 +4353,7 @@
 	)
 	(wire
 		(pts
-			(xy 205.74 215.9) (xy 199.39 215.9)
+			(xy 130.81 207.01) (xy 129.54 207.01)
 		)
 		(stroke
 			(width 0)
@@ -4405,7 +4373,7 @@
 	)
 	(wire
 		(pts
-			(xy 101.6 205.74) (xy 95.25 205.74)
+			(xy 170.18 201.93) (xy 163.83 201.93)
 		)
 		(stroke
 			(width 0)
@@ -4415,7 +4383,7 @@
 	)
 	(wire
 		(pts
-			(xy 101.6 203.2) (xy 95.25 203.2)
+			(xy 170.18 199.39) (xy 163.83 199.39)
 		)
 		(stroke
 			(width 0)
@@ -4435,7 +4403,7 @@
 	)
 	(wire
 		(pts
-			(xy 63.5 85.09) (xy 63.5 138.43)
+			(xy 62.23 85.09) (xy 62.23 113.03)
 		)
 		(stroke
 			(width 0)
@@ -4455,7 +4423,7 @@
 	)
 	(wire
 		(pts
-			(xy 45.72 64.77) (xy 55.88 64.77)
+			(xy 59.69 205.74) (xy 69.85 205.74)
 		)
 		(stroke
 			(width 0)
@@ -4505,6 +4473,16 @@
 	)
 	(wire
 		(pts
+			(xy 115.57 207.01) (xy 115.57 208.28)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "991224ee-8769-4381-8fd4-d4f7ca962fda")
+	)
+	(wire
+		(pts
 			(xy 292.1 76.2) (xy 292.1 100.33)
 		)
 		(stroke
@@ -4525,7 +4503,7 @@
 	)
 	(wire
 		(pts
-			(xy 72.39 80.01) (xy 82.55 80.01)
+			(xy 60.96 80.01) (xy 82.55 80.01)
 		)
 		(stroke
 			(width 0)
@@ -4565,13 +4543,43 @@
 	)
 	(wire
 		(pts
-			(xy 45.72 67.31) (xy 55.88 67.31)
+			(xy 148.59 209.55) (xy 148.59 210.82)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "a6ed3d28-9d5b-492a-be34-d3eac0955ae9")
+	)
+	(wire
+		(pts
+			(xy 59.69 203.2) (xy 69.85 203.2)
 		)
 		(stroke
 			(width 0)
 			(type default)
 		)
 		(uuid "a93814cb-e581-5478-9f51-4ad8282ec2c2")
+	)
+	(wire
+		(pts
+			(xy 82.55 77.47) (xy 139.7 77.47)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "abf54b79-f9bd-49b0-bbfa-398343bda1a7")
+	)
+	(wire
+		(pts
+			(xy 95.25 205.74) (xy 95.25 208.28)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "ac67ff88-dfbc-48b8-9b47-939e0d162f92")
 	)
 	(wire
 		(pts
@@ -4592,6 +4600,16 @@
 			(type default)
 		)
 		(uuid "b08ebcea-9780-443f-a1db-064f23376bd4")
+	)
+	(wire
+		(pts
+			(xy 130.81 210.82) (xy 135.89 210.82)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "b1225878-22ba-49c9-8bd5-c84caa8a5ed3")
 	)
 	(wire
 		(pts
@@ -4645,7 +4663,7 @@
 	)
 	(wire
 		(pts
-			(xy 69.85 80.01) (xy 69.85 82.55)
+			(xy 58.42 80.01) (xy 58.42 81.28)
 		)
 		(stroke
 			(width 0)
@@ -4705,23 +4723,13 @@
 	)
 	(wire
 		(pts
-			(xy 184.15 213.36) (xy 186.69 213.36)
+			(xy 115.57 207.01) (xy 116.84 207.01)
 		)
 		(stroke
 			(width 0)
 			(type default)
 		)
 		(uuid "c0b78ad1-2b6c-4cc0-b38a-b292d33823d6")
-	)
-	(wire
-		(pts
-			(xy 68.58 82.55) (xy 68.58 85.09)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "c256a348-53b9-4476-b722-f7cef9685984")
 	)
 	(wire
 		(pts
@@ -4805,16 +4813,6 @@
 	)
 	(wire
 		(pts
-			(xy 68.58 85.09) (xy 72.39 85.09)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "d78ffb5a-2d2b-4773-a9fc-37bda3acc50f")
-	)
-	(wire
-		(pts
 			(xy 207.01 105.41) (xy 207.01 119.38)
 		)
 		(stroke
@@ -4865,7 +4863,7 @@
 	)
 	(wire
 		(pts
-			(xy 72.39 85.09) (xy 72.39 80.01)
+			(xy 60.96 82.55) (xy 60.96 80.01)
 		)
 		(stroke
 			(width 0)
@@ -4935,7 +4933,7 @@
 	)
 	(wire
 		(pts
-			(xy 173.99 213.36) (xy 163.83 213.36)
+			(xy 95.25 205.74) (xy 93.98 205.74)
 		)
 		(stroke
 			(width 0)
@@ -4995,6 +4993,16 @@
 	)
 	(wire
 		(pts
+			(xy 115.57 208.28) (xy 114.3 208.28)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "f8c7f093-08f3-4509-9745-0ce75fe8af90")
+	)
+	(wire
+		(pts
 			(xy 325.12 60.96) (xy 325.12 69.85)
 		)
 		(stroke
@@ -5044,7 +5052,7 @@
 		(uuid "0f72bf83-fdaf-4e7a-ac93-4378b3065509")
 	)
 	(label "FL_P"
-		(at 55.88 67.31 180)
+		(at 69.85 203.2 180)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -5104,7 +5112,7 @@
 		(uuid "52d44678-0c81-49bf-acfb-d65801148ffd")
 	)
 	(label "FL_A"
-		(at 95.25 195.58 0)
+		(at 163.83 191.77 0)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -5124,7 +5132,7 @@
 		(uuid "5cd84670-9714-43f3-aac6-5a035ab12922")
 	)
 	(label "FL_K"
-		(at 95.25 203.2 0)
+		(at 163.83 199.39 0)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -5154,7 +5162,7 @@
 		(uuid "7c8ee81b-c06f-496e-a857-099f094169fb")
 	)
 	(label "FL_K"
-		(at 95.25 205.74 0)
+		(at 163.83 201.93 0)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -5164,7 +5172,7 @@
 		(uuid "819aa459-0e95-4863-b7a7-dff67288bfa7")
 	)
 	(label "FL_A"
-		(at 95.25 193.04 0)
+		(at 163.83 189.23 0)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -5204,7 +5212,7 @@
 		(uuid "8f1429e4-a293-4fa8-ab3b-78dfc6c34a05")
 	)
 	(label "FL_N"
-		(at 55.88 64.77 180)
+		(at 69.85 205.74 180)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -5305,7 +5313,7 @@
 	)
 	(global_label "FL_N"
 		(shape input)
-		(at 199.39 215.9 0)
+		(at 129.54 207.01 0)
 		(fields_autoplaced yes)
 		(effects
 			(font
@@ -5315,7 +5323,7 @@
 		)
 		(uuid "24798813-0f82-4e9f-9ddc-f4e5f5bbbfaf")
 		(property "Intersheetrefs" "${INTERSHEET_REFS}"
-			(at 199.39 215.9 0)
+			(at 129.54 207.01 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -5328,7 +5336,7 @@
 	)
 	(global_label "FL_N"
 		(shape input)
-		(at 186.69 213.36 0)
+		(at 116.84 207.01 0)
 		(fields_autoplaced yes)
 		(effects
 			(font
@@ -5338,7 +5346,7 @@
 		)
 		(uuid "9bd1cb69-bcfa-4b3f-8bc2-3e92379b8f1b")
 		(property "Intersheetrefs" "${INTERSHEET_REFS}"
-			(at 186.69 213.36 0)
+			(at 116.84 207.01 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -5351,7 +5359,7 @@
 	)
 	(global_label "FL_P"
 		(shape input)
-		(at 163.83 213.36 0)
+		(at 93.98 205.74 0)
 		(fields_autoplaced yes)
 		(effects
 			(font
@@ -5361,7 +5369,7 @@
 		)
 		(uuid "9f771788-56a1-4058-955c-76660ed7aa70")
 		(property "Intersheetrefs" "${INTERSHEET_REFS}"
-			(at 163.83 213.36 0)
+			(at 93.98 205.74 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -5374,17 +5382,17 @@
 	)
 	(global_label "FL_K"
 		(shape input)
-		(at 210.82 227.33 90)
+		(at 140.97 222.25 180)
 		(fields_autoplaced yes)
 		(effects
 			(font
 				(size 1.27 1.27)
 			)
-			(justify left)
+			(justify right)
 		)
 		(uuid "b06ec354-5a54-453c-a875-c0fe6d92760d")
 		(property "Intersheetrefs" "${INTERSHEET_REFS}"
-			(at 210.82 227.33 0)
+			(at 133.6305 222.25 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -5392,12 +5400,13 @@
 				(font
 					(size 1.27 1.27)
 				)
+				(justify right)
 			)
 		)
 	)
 	(global_label "FL_P"
 		(shape input)
-		(at 218.44 215.9 0)
+		(at 149.86 209.55 0)
 		(fields_autoplaced yes)
 		(effects
 			(font
@@ -5407,7 +5416,7 @@
 		)
 		(uuid "bf512ada-1789-45a9-82a3-690053a41673")
 		(property "Intersheetrefs" "${INTERSHEET_REFS}"
-			(at 218.44 215.9 0)
+			(at 149.86 209.55 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -5420,17 +5429,17 @@
 	)
 	(global_label "FL_A"
 		(shape input)
-		(at 179.07 223.52 90)
+		(at 109.22 219.71 180)
 		(fields_autoplaced yes)
 		(effects
 			(font
 				(size 1.27 1.27)
 			)
-			(justify left)
+			(justify right)
 		)
 		(uuid "f286f01c-79f3-42ec-a1ef-d43f91ffae80")
 		(property "Intersheetrefs" "${INTERSHEET_REFS}"
-			(at 179.07 223.52 0)
+			(at 102.0619 219.71 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -5438,6 +5447,7 @@
 				(font
 					(size 1.27 1.27)
 				)
+				(justify right)
 			)
 		)
 	)
@@ -5476,7 +5486,7 @@
 		(dnp no)
 		(uuid "088d101d-c490-5849-9532-8ea5444e3bf3")
 		(property "Reference" "J2"
-			(at 41.656 57.404 0)
+			(at 38.608 93.726 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -5487,7 +5497,7 @@
 			)
 		)
 		(property "Value" "CARRIER"
-			(at 46.99 60.452 0)
+			(at 50.038 57.658 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -6104,8 +6114,8 @@
 		)
 	)
 	(symbol
-		(lib_id "Connector_Generic:Conn_01x24")
-		(at 77.47 77.47 0)
+		(lib_id "FH34-26:FH34SRJ-24S-0.5SH_50_")
+		(at 72.39 80.01 0)
 		(mirror y)
 		(unit 1)
 		(body_style 1)
@@ -6116,29 +6126,29 @@
 		(dnp no)
 		(uuid "19ded89d-e080-59e1-89ca-f30555d1d83f")
 		(property "Reference" "J1"
-			(at 74.422 48.768 0)
+			(at 77.97 46.99 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
 				(font
 					(size 1.27 1.27)
 				)
-				(justify left)
+				(justify left bottom)
 			)
 		)
-		(property "Value" "GDEY029T94 FPC"
-			(at 74.676 51.562 0)
+		(property "Value" "FH34SRJ-24S-0.5SH_50_"
+			(at 77.47 118.11 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
 				(font
 					(size 1.27 1.27)
 				)
-				(justify left)
+				(justify left bottom)
 			)
 		)
-		(property "Footprint" "pager-carrier:Hirose_FH34SRJ-24S-0.5SH_1x24-1MP_P0.50mm_Horizontal"
-			(at 81.28 54.61 0)
+		(property "Footprint" "h24:HRS_FH34SRJ-24S-0.5SH_50_"
+			(at 72.39 80.01 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -6146,11 +6156,11 @@
 				(font
 					(size 1.27 1.27)
 				)
-				(justify left)
+				(justify bottom)
 			)
 		)
 		(property "Datasheet" "~"
-			(at 81.28 57.15 0)
+			(at 72.39 80.01 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -6158,11 +6168,10 @@
 				(font
 					(size 1.27 1.27)
 				)
-				(justify left)
 			)
 		)
-		(property "Description" "Generic connector, single row, 01x24, script generated (kicad-library-utils/schlib/autogen/connector/)"
-			(at 81.28 59.69 0)
+		(property "Description" "24 Position FFC, FPC Connector Contacts, Top and Bottom 0.020 (0.50mm) Surface Mount, Right Angle"
+			(at 72.39 80.01 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -6170,11 +6179,11 @@
 				(font
 					(size 1.27 1.27)
 				)
-				(justify left)
+				(justify bottom)
 			)
 		)
 		(property "MPN" "FH34SRJ-24S-0.5SH(50)"
-			(at 77.47 92.71 0)
+			(at 72.39 95.25 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -6185,7 +6194,7 @@
 			)
 		)
 		(property "LCSC" "C324726"
-			(at 77.47 95.25 0)
+			(at 72.39 97.79 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -6196,7 +6205,7 @@
 			)
 		)
 		(property "DNP" ""
-			(at 77.47 97.79 0)
+			(at 72.39 100.33 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -6207,7 +6216,7 @@
 			)
 		)
 		(property "Note" "1.0 mm high, top+bottom contact; FPC folded 180 deg under the glass; confirm pin-1 side on a panel"
-			(at 77.47 100.33 0)
+			(at 72.39 102.87 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -6215,6 +6224,102 @@
 				(font
 					(size 1.27 1.27)
 				)
+			)
+		)
+		(property "MF" "Hirose Electric"
+			(at 72.39 80.01 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify bottom)
+			)
+		)
+		(property "Package" "None"
+			(at 72.39 80.01 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify bottom)
+			)
+		)
+		(property "Price" "None"
+			(at 72.39 80.01 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify bottom)
+			)
+		)
+		(property "Check_prices" "https://www.snapeda.com/parts/FH34SRJ-24S-0.5SH(50)/Hirose/view-part/?ref=eda"
+			(at 72.39 80.01 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify bottom)
+			)
+		)
+		(property "SnapEDA_Link" "https://www.snapeda.com/parts/FH34SRJ-24S-0.5SH(50)/Hirose/view-part/?ref=snap"
+			(at 72.39 80.01 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify bottom)
+			)
+		)
+		(property "MP" "FH34SRJ-24S-0.5SH(50)"
+			(at 72.39 80.01 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify bottom)
+			)
+		)
+		(property "Availability" "In Stock"
+			(at 72.39 80.01 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify bottom)
+			)
+		)
+		(property "MANUFACTURER" "HRS"
+			(at 72.39 80.01 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify bottom)
 			)
 		)
 		(pin "1"
@@ -6288,6 +6393,12 @@
 		)
 		(pin "24"
 			(uuid "0cbcc4cd-c5b5-57bf-9696-ca929af384eb")
+		)
+		(pin "S1"
+			(uuid "f96569c2-e840-4a38-a2ec-af7f3bf79c2b")
+		)
+		(pin "S2"
+			(uuid "e7035f6b-cd62-4165-816c-74d3a7e1da1f")
 		)
 		(instances
 			(project "pager-panel"
@@ -6545,8 +6656,8 @@
 		)
 	)
 	(symbol
-		(lib_id "Connector_Generic:Conn_01x06")
-		(at 106.68 198.12 0)
+		(lib_id "FH34SRJ-6S-0.5SH(50):FH34SRJ-6S-0.5SH_50_")
+		(at 180.34 196.85 0)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -6556,29 +6667,29 @@
 		(dnp no)
 		(uuid "4413278c-a825-53d1-89bd-98812cc2deef")
 		(property "Reference" "J3"
-			(at 105.918 187.452 0)
+			(at 174.76 186.69 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
 				(font
 					(size 1.27 1.27)
 				)
-				(justify left)
+				(justify left bottom)
 			)
 		)
-		(property "Value" "FL-A FPC (FL03)"
-			(at 105.664 189.992 0)
+		(property "Value" "FH34SRJ-6S-0.5SH_50_"
+			(at 175.26 212.09 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
 				(font
 					(size 1.27 1.27)
 				)
-				(justify left)
+				(justify left bottom)
 			)
 		)
-		(property "Footprint" "pager-carrier:Hirose_FH34SRJ-6S-0.5SH_1x06-1MP_P0.50mm_Horizontal"
-			(at 102.87 198.12 0)
+		(property "Footprint" "h6:HRS_FH34SRJ-6S-0.5SH_50_"
+			(at 180.34 196.85 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -6586,11 +6697,11 @@
 				(font
 					(size 1.27 1.27)
 				)
-				(justify left)
+				(justify bottom)
 			)
 		)
 		(property "Datasheet" "~"
-			(at 102.87 200.66 0)
+			(at 180.34 196.85 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -6598,11 +6709,10 @@
 				(font
 					(size 1.27 1.27)
 				)
-				(justify left)
 			)
 		)
-		(property "Description" "Generic connector, single row, 01x06, script generated (kicad-library-utils/schlib/autogen/connector/)"
-			(at 102.87 203.2 0)
+		(property "Description" "6 Position FFC, FPC Connector Contacts, Top and Bottom 0.020 (0.50mm) Surface Mount, Right Angle"
+			(at 180.34 196.85 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -6610,11 +6720,11 @@
 				(font
 					(size 1.27 1.27)
 				)
-				(justify left)
+				(justify bottom)
 			)
 		)
 		(property "MPN" "FH34SRJ-6S-0.5SH(50)"
-			(at 106.68 213.36 0)
+			(at 180.34 212.09 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -6625,7 +6735,7 @@
 			)
 		)
 		(property "LCSC" "C224194"
-			(at 106.68 215.9 0)
+			(at 180.34 214.63 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -6636,7 +6746,7 @@
 			)
 		)
 		(property "DNP" ""
-			(at 106.68 218.44 0)
+			(at 180.34 217.17 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -6647,7 +6757,7 @@
 			)
 		)
 		(property "Note" "1.0 mm high; GDEY029T94-FL03 corner tail (~30 mm); fit this OR J4"
-			(at 106.68 220.98 0)
+			(at 180.34 219.71 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -6655,6 +6765,102 @@
 				(font
 					(size 1.27 1.27)
 				)
+			)
+		)
+		(property "MF" "Hirose Electric Co Ltd"
+			(at 180.34 196.85 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify bottom)
+			)
+		)
+		(property "Package" "None"
+			(at 180.34 196.85 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify bottom)
+			)
+		)
+		(property "Price" "None"
+			(at 180.34 196.85 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify bottom)
+			)
+		)
+		(property "Check_prices" "https://www.snapeda.com/parts/FH34SRJ-6S-0.5SH(50)/Hirose+Electric+Co+Ltd/view-part/?ref=eda"
+			(at 180.34 196.85 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify bottom)
+			)
+		)
+		(property "SnapEDA_Link" "https://www.snapeda.com/parts/FH34SRJ-6S-0.5SH(50)/Hirose+Electric+Co+Ltd/view-part/?ref=snap"
+			(at 180.34 196.85 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify bottom)
+			)
+		)
+		(property "MP" "FH34SRJ-6S-0.5SH(50)"
+			(at 180.34 196.85 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify bottom)
+			)
+		)
+		(property "Availability" "In Stock"
+			(at 180.34 196.85 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify bottom)
+			)
+		)
+		(property "MANUFACTURER" "HRS"
+			(at 180.34 196.85 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify bottom)
 			)
 		)
 		(pin "1"
@@ -6674,6 +6880,12 @@
 		)
 		(pin "6"
 			(uuid "c283a1c7-0e7c-5fd7-8e74-2062111b8cfc")
+		)
+		(pin "S1"
+			(uuid "f7fbe6f3-ae07-47a6-9628-c6be3433c9dd")
+		)
+		(pin "S2"
+			(uuid "9aa2b0d3-f14e-4876-8a5e-7dabac2a275e")
 		)
 		(instances
 			(project "pager-panel"
@@ -6896,7 +7108,7 @@
 	)
 	(symbol
 		(lib_id "Jumper:SolderJumper_3_Bridged12")
-		(at 210.82 215.9 0)
+		(at 140.97 210.82 0)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -6906,7 +7118,7 @@
 		(dnp no)
 		(uuid "5407ca8f-3513-4bbe-937e-ff600ec81613")
 		(property "Reference" "JP2"
-			(at 210.312 210.058 0)
+			(at 140.462 204.978 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -6917,7 +7129,7 @@
 			)
 		)
 		(property "Value" "FL polarity"
-			(at 210.312 212.344 0)
+			(at 140.462 207.264 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -6928,7 +7140,7 @@
 			)
 		)
 		(property "Footprint" "Jumper:SolderJumper-3_P1.3mm_Bridged12_RoundedPad1.0x1.5mm"
-			(at 44.45 82.55 0)
+			(at -25.4 77.47 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -6940,7 +7152,7 @@
 			)
 		)
 		(property "Datasheet" "~"
-			(at 44.45 80.01 0)
+			(at -25.4 74.93 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -6952,7 +7164,7 @@
 			)
 		)
 		(property "Description" "Solder jumper, 3 pads, 1-2 bridged by default"
-			(at 44.45 77.47 0)
+			(at -25.4 72.39 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -6964,7 +7176,7 @@
 			)
 		)
 		(property "MPN" ""
-			(at 40.64 62.23 0)
+			(at -29.21 57.15 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -6975,7 +7187,7 @@
 			)
 		)
 		(property "LCSC" ""
-			(at 40.64 59.69 0)
+			(at -29.21 54.61 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -6986,7 +7198,7 @@
 			)
 		)
 		(property "DNP" ""
-			(at 40.64 57.15 0)
+			(at -29.21 52.07 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -6997,7 +7209,7 @@
 			)
 		)
 		(property "Note" "to carrier J3, 1:1 10-way SH cable"
-			(at 40.64 54.61 0)
+			(at -29.21 49.53 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -7516,6 +7728,88 @@
 		)
 	)
 	(symbol
+		(lib_id "power:GND")
+		(at 190.5 219.71 0)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom no)
+		(on_board no)
+		(in_pos_files yes)
+		(dnp no)
+		(uuid "66a8ae29-7f05-4f0b-ab7c-27d02729895a")
+		(property "Reference" "#PWR026"
+			(at 190.5 219.71 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Value" "GND"
+			(at 190.5 223.52 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Footprint" ""
+			(at 190.5 219.71 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Datasheet" "~"
+			(at 190.5 219.71 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Description" "Power symbol"
+			(at 190.5 219.71 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(pin "1"
+			(uuid "841d839f-2f7e-4772-9530-f1ae56d2d6aa")
+		)
+		(instances
+			(project "pager-panel"
+				(path "/a764166a-207c-5736-a7df-1b396ea4a3e6/4abcc5ec-0e62-56fc-ae53-06c7680dbff6"
+					(reference "#PWR026")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
 		(lib_id "pager-carrier:PWR_3V3_EPD")
 		(at 182.88 31.75 0)
 		(unit 1)
@@ -7833,7 +8127,7 @@
 	)
 	(symbol
 		(lib_id "Jumper:SolderJumper_3_Bridged12")
-		(at 179.07 213.36 0)
+		(at 109.22 208.28 0)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -7843,7 +8137,7 @@
 		(dnp no)
 		(uuid "9aad2318-eb8b-4de1-bbb6-026154b6b506")
 		(property "Reference" "JP1"
-			(at 179.07 206.756 0)
+			(at 109.22 201.676 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -7854,7 +8148,7 @@
 			)
 		)
 		(property "Value" "FL polarity"
-			(at 179.578 209.042 0)
+			(at 109.728 203.962 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -7865,7 +8159,7 @@
 			)
 		)
 		(property "Footprint" "Jumper:SolderJumper-3_P1.3mm_Bridged12_RoundedPad1.0x1.5mm"
-			(at 35.56 80.01 0)
+			(at -34.29 74.93 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -7877,7 +8171,7 @@
 			)
 		)
 		(property "Datasheet" "~"
-			(at 35.56 77.47 0)
+			(at -34.29 72.39 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -7889,7 +8183,7 @@
 			)
 		)
 		(property "Description" "Solder jumper, 3 pads, 1-2 bridged by default"
-			(at 35.56 74.93 0)
+			(at -34.29 69.85 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -7901,7 +8195,7 @@
 			)
 		)
 		(property "MPN" ""
-			(at 31.75 59.69 0)
+			(at -38.1 54.61 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -7912,7 +8206,7 @@
 			)
 		)
 		(property "LCSC" ""
-			(at 31.75 57.15 0)
+			(at -38.1 52.07 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -7923,7 +8217,7 @@
 			)
 		)
 		(property "DNP" ""
-			(at 31.75 54.61 0)
+			(at -38.1 49.53 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -7934,7 +8228,7 @@
 			)
 		)
 		(property "Note" "to carrier J3, 1:1 10-way SH cable"
-			(at 31.75 52.07 0)
+			(at -38.1 46.99 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -8092,7 +8386,8 @@
 	)
 	(symbol
 		(lib_id "Connector_Generic:Conn_01x02")
-		(at 40.64 67.31 180)
+		(at 54.61 203.2 0)
+		(mirror y)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -8102,7 +8397,7 @@
 		(dnp no)
 		(uuid "ac0c7179-97f0-40c7-951a-05e5b96f2ead")
 		(property "Reference" "J5"
-			(at 41.656 60.96 0)
+			(at 54.102 211.582 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -8113,7 +8408,7 @@
 			)
 		)
 		(property "Value" "FRONTLIGHT"
-			(at 46.99 63.5 0)
+			(at 53.848 208.534 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -8124,7 +8419,7 @@
 			)
 		)
 		(property "Footprint" "Connector_JST:JST_SH_SM02B-SRSS-TB_1x02-1MP_P1.00mm_Horizontal"
-			(at 44.45 82.55 0)
+			(at 58.42 187.96 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -8136,7 +8431,7 @@
 			)
 		)
 		(property "Datasheet" "~"
-			(at 44.45 80.01 0)
+			(at 58.42 190.5 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -8148,7 +8443,7 @@
 			)
 		)
 		(property "Description" "Generic connector, single row, 01x02, script generated (kicad-library-utils/schlib/autogen/connector/)"
-			(at 44.45 77.47 0)
+			(at 58.42 193.04 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -8160,7 +8455,7 @@
 			)
 		)
 		(property "MPN" "SM02B-SRSS-TB"
-			(at 40.64 62.23 0)
+			(at 54.61 208.28 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -8171,7 +8466,7 @@
 			)
 		)
 		(property "LCSC" "C160402"
-			(at 40.64 59.69 0)
+			(at 54.61 210.82 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -8182,7 +8477,7 @@
 			)
 		)
 		(property "DNP" ""
-			(at 40.64 57.15 0)
+			(at 54.61 213.36 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -8193,7 +8488,7 @@
 			)
 		)
 		(property "Note" "to carrier J3, 1:1 10-way SH cable"
-			(at 40.64 54.61 0)
+			(at 54.61 215.9 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)

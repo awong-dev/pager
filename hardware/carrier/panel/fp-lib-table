@@ -1,4 +1,6 @@
 (fp_lib_table
-  (version 7)
-  (lib (name "pager-carrier")(type "KiCad")(uri "${KIPRJMOD}/../pager-carrier.pretty")(options "")(descr "pager carrier custom footprints"))
+	(version 7)
+	(lib (name "pager-carrier") (type "KiCad") (uri "${KIPRJMOD}/../pager-carrier.pretty") (options "") (descr "pager carrier custom footprints"))
+	(lib (name "h6") (type "KiCad") (uri "${KIPRJMOD}/FH34SRJ-6S-0.5SH_50_") (options "") (descr ""))
+	(lib (name "h24") (type "KiCad") (uri "${KIPRJMOD}/FH34SRJ-24S-0.5SH_50_") (options "") (descr ""))
 )
