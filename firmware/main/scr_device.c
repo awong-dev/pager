@@ -68,6 +68,7 @@
 #include "book.h" /* T3: book_get_bv() for the "session ... book v<n>" info line */
 #include "net.h"
 #include "devinfo_fmt.h"
+#include "fuel_fmt.h"
 #include "ota.h" /* docs/OTA_DESIGN.md: the "Update:" line and the "Install now" row */
 #include "disp.h" /* owner request: menu-driven display rotation, disp_get_flip()/
                    * disp_set_flip()/disp_full_refresh() — same setter the console's
@@ -443,8 +444,9 @@ static void device_render_normal(void)
              (unsigned) ident_get_port(), (ident_get_flags() & IDENT_FLAG_REQ_SIG) ? "on" : "off");
     selectable[n++] = false;
     {
-        char bv[24];
-        devinfo_fmt_batt(modes_batt_mv_known(), modes_get_batt_mv(), bv, sizeof(bv));
+        char bv[40];
+        devinfo_fmt_batt_ex(modes_batt_mv_known(), modes_get_batt_mv(), modes_get_batt_pct() >= 0, modes_get_batt_pct(),
+                            modes_get_charge_state() != 0 ? fuel_state_name((fuel_state_t) modes_get_charge_state()) : "", bv, sizeof(bv));
         snprintf(lines[n], DEVICE_LINE_LEN, "signal %d dBm  batt %s", modes_get_rssi_dbm(), bv);
         selectable[n++] = false;
     }

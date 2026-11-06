@@ -75,6 +75,10 @@ bool disp_is_dead(void);
  * for init/composer-close per the pre-split ui.c's existing call sites. */
 void disp_full_refresh(void);
 
+/* SSD1680 deep-sleep command (0x10, 0x01). Only a hardware reset (disp_init()) wakes the controller.
+ * Low-battery Shutdown only. Power effect: panel controller to ~uA. */
+void disp_panel_deep_sleep(void);
+
 /* Diffs gfx.c's framebuffer against the shadow plane and sends only the
  * changed row band (a no-op if nothing changed). Power effect: ~0.3-0.8s
  * of panel refresh current (README M7/M14, PENDING_HW), the "cheap"

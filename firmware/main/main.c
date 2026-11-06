@@ -47,6 +47,7 @@
 #include "setup.h"
 #include "sms.h"
 #include "ui.h"
+#include "fuel.h"
 
 static const char *TAG = "school_pager";
 
@@ -998,6 +999,41 @@ static int cmd_board(int argc, char **argv)
     }
     return 0;
 }
+
+#ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
+// fuel [quick|shutdown] -- carrier battery gauge (fuel.h). Debug console only.
+static int cmd_fuel(int argc, char **argv)
+{
+    if (!board_has_fuel_gauge()) {
+        printf("fuel: no gauge on this board (%s)\n", board_name());
+        return 1;
+    }
+    if (argc > 1 && strcmp(argv[1], "quick") == 0) {
+        printf("fuel: quick-start %s\n", fuel_quick_start() ? "sent" : "failed");
+        return 0;
+    }
+    if (argc > 1 && strcmp(argv[1], "shutdown") == 0) {
+        int vbus, s1, s2;
+        fuel_pins(&vbus, &s1, &s2);
+        printf("fuel: running the low-battery Shutdown now (IO15=%d: %s)\n", vbus,
+               vbus ? "USB present, so it will restart after the screen draws" : "unplugged, deep sleep until USB is plugged in");
+        modes_power_off_lowbatt();
+    }
+    fuel_t f;
+    bool ok = fuel_read(&f);
+    int vbus, s1, s2;
+    fuel_pins(&vbus, &s1, &s2);
+    if (ok) {
+        printf("fuel: %d mV  %d%%  crate %+d.%03d %%/h  state %s\n", f.mv, f.pct, f.crate_milli / 1000,
+               (f.crate_milli < 0 ? -f.crate_milli : f.crate_milli) % 1000, fuel_state_name(fuel_state()));
+    } else {
+        printf("fuel: gauge read failed\n");
+    }
+    printf("IO%d VBUS_DET=%d  IO%d CHG_STAT1=%d  IO%d CHG_STAT2=%d\n", PAGER_PIN_VBUS_DET, vbus,
+           PAGER_PIN_CHG_STAT1, s1, PAGER_PIN_CHG_STAT2, s2);
+    return ok ? 0 : 1;
+}
+#endif // PAGER_DEBUG_NO_LIGHT_SLEEP
 
 static void register_carrier_cmd(void)
 {
@@ -2228,6 +2264,14 @@ static void start_normal_console(void)
         .func = &cmd_battstat,
     };
     ESP_ERROR_CHECK(esp_console_cmd_register(&battstat_cmd));
+    const esp_console_cmd_t fuel_cmd = {
+        .command = "fuel",
+        .help = "fuel [quick|shutdown] -- carrier gauge: mV, percent, crate, charger state, raw IO levels; "
+                "`quick` = MAX17048 quick-start; `shutdown` runs the low-battery Shutdown on purpose",
+        .hint = NULL,
+        .func = &cmd_fuel,
+    };
+    ESP_ERROR_CHECK(esp_console_cmd_register(&fuel_cmd));
 
     ESP_ERROR_CHECK(esp_console_start_repl(repl));
     ESP_LOGD(TAG, "debug console REPL started in normal mode (PAGER_DEBUG_NO_LIGHT_SLEEP)");
@@ -2293,6 +2337,7 @@ void app_main(void)
     // Decides breadboard vs carrier (board.h) before anything touches IO12/IO38/IO42.
     // Power effect: one I2C read on the always-on bus, at most one NVS write.
     board_init();
+    fuel_init(); // carrier only: release the IO15 ext1 hold, charger pins as inputs, log MAX17048 VERSION
 
     rail_init(); // 3V3 peripheral rail on -- must precede any display/I2C use; rail.h
 

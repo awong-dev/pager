@@ -114,6 +114,7 @@ extern "C" void net_set_airplane(bool on)
 // through light sleep.
 extern "C" void net_airplane_hold_modem(void)
 {
+    gpio_hold_dis((gpio_num_t) PAGER_PIN_MODEM_RESET); // WalterModem::reset() leaves a hold on IO45; a write under hold is ignored
     gpio_config_t io = {};
     io.pin_bit_mask = 1ULL << PAGER_PIN_MODEM_RESET;
     io.mode = GPIO_MODE_OUTPUT;
@@ -2554,6 +2555,39 @@ extern "C" bool net_gnss_poll_event(net_gnss_event_t *out)
     }
     s_gnss_event_pending = false;
     return true;
+}
+
+// Best-effort modem to MINIMUM functionality (CFUN=0) for the low-battery Shutdown, capped at
+// `cap_ms`. setOpState() has no timeout parameter, so it runs on a short-lived task and the caller
+// waits on a semaphore; on timeout the task is abandoned (the caller resets the modem next anyway).
+// Power effect: radio off, modem to its lowest functional state.
+struct minimum_ctx_t {
+    SemaphoreHandle_t done;
+    volatile bool ok;
+};
+
+static void modem_minimum_task(void *arg)
+{
+    minimum_ctx_t *c = (minimum_ctx_t *) arg;
+    c->ok = WalterModem::setOpState(WALTER_MODEM_OPSTATE_MINIMUM);
+    xSemaphoreGive(c->done);
+    vTaskDelete(NULL);
+}
+
+extern "C" bool net_modem_minimum(uint32_t cap_ms)
+{
+    if (net_airplane()) {
+        return false; // already held in reset
+    }
+    static minimum_ctx_t ctx; // static: the abandoned task may outlive the caller's frame
+    ctx.ok = false;
+    ctx.done = xSemaphoreCreateBinary();
+    if (!ctx.done || xTaskCreate(modem_minimum_task, "modem_min", 4096, &ctx, 5, NULL) != pdPASS) {
+        return false;
+    }
+    bool finished = xSemaphoreTake(ctx.done, pdMS_TO_TICKS(cap_ms)) == pdTRUE;
+    ESP_LOGI(TAG, "modem to MINIMUM: %s", finished ? (ctx.ok ? "ok" : "failed") : "timed out");
+    return finished && ctx.ok;
 }
 
 extern "C" bool net_radio_off(void)

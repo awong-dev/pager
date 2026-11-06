@@ -951,6 +951,10 @@ bool net_gnss_poll_event(net_gnss_event_t *out);
  * radio (modes_coverage_owns_radio()). Power effect: LTE radio off. */
 bool net_radio_off(void);
 
+/* Low-battery Shutdown: best-effort WALTER_MODEM_OPSTATE_MINIMUM, waiting at most cap_ms. False if it
+ * failed, timed out, or the modem is already held in reset (airplane). Power effect: radio off. */
+bool net_modem_minimum(uint32_t cap_ms);
+
 /* Leaves the window: WALTER_MODEM_OPSTATE_FULL. Does not wait for
  * re-attach — poll net_is_attached() afterward, same non-blocking-per-call
  * discipline loc.c's whole state machine uses. Power effect: LTE-M

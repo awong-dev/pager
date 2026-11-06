@@ -24,6 +24,7 @@
 #include "catrust.h" /* v0.2 §4.3: TLS trust-state padlock in draw_status_bar() below */
 #include "rail.h" /* rail gate: rail_restored_us() gates the kbd task below, docs/ROADMAP.md */
 #include "clockfmt.h" /* TASK_clock.md: pure status-bar clock formatter/minute-change detector */
+#include "fuel_fmt.h" /* carrier battery percent / charging mark in the status bar */
 
 #include <string.h>
 #include <stdio.h>
@@ -327,6 +328,19 @@ static bool s_crash_indicator = false;
 
 void ui_set_crash_indicator(bool show) { s_crash_indicator = show; }
 
+// 5x7 lightning bolt for the charging mark (carrier), drawn with gfx_set_pixel(). Power effect: none.
+static void draw_charge_bolt(int x, int y)
+{
+    static const uint8_t rows[7] = {0x03, 0x06, 0x0C, 0x1F, 0x06, 0x0C, 0x08}; // bit 4 = leftmost column
+    for (int r = 0; r < 7; r++) {
+        for (int c = 0; c < 5; c++) {
+            if (rows[r] & (1 << (4 - c))) {
+                gfx_set_pixel(x + c, y + r, true);
+            }
+        }
+    }
+}
+
 static void draw_status_bar(void)
 {
     int unread = 0, unsent = 0;
@@ -361,9 +375,26 @@ static void draw_status_bar(void)
     // padlock moved here from the left on 23 Sep 2026, owner's request: it
     // belongs with the other link indicators.)
     int batt_x = clk_x - UI_STATUS_ICON_GAP - GFX_ICON_W;
-    gfx_icon(batt_x, 0, (gfx_icon_t) (GFX_ICON_BATTERY_0 + segs_from_batt_mv(modes_batt_mv_known() ? modes_get_batt_mv() : 3700) /* unknown: mid icon, as before */));
+    const int batt_pct = modes_get_batt_pct(); // carrier gauge; -1 on the breadboard or a failed read
+    const fuel_state_t charge = (fuel_state_t) modes_get_charge_state();
+    int segs = fuel_icon_segs(batt_pct, charge); // percent-based on the carrier, -1 = fall back to mV
+    if (segs < 0) {
+        segs = segs_from_batt_mv(modes_batt_mv_known() ? modes_get_batt_mv() : 3700 /* unknown: mid icon, as before */);
+    }
+    gfx_icon(batt_x, 0, (gfx_icon_t) (GFX_ICON_BATTERY_0 + segs));
+    int left_x = batt_x; // leftmost x used by the battery group
+    if (batt_pct >= 0) {
+        char pt[16];
+        snprintf(pt, sizeof(pt), "%d%%", batt_pct);
+        left_x -= 2 + gfx_text_width(GFX_FONT_NORMAL, pt);
+        gfx_text(left_x, UI_STATUS_TEXT_Y, GFX_FONT_NORMAL, pt);
+    }
+    if (charge != FUEL_ON_BATTERY) {
+        left_x -= 2 + 5;
+        draw_charge_bolt(left_x, 2);
+    }
 
-    int bars_x = batt_x - GFX_ICON_W - UI_STATUS_ICON_GAP;
+    int bars_x = left_x - GFX_ICON_W - UI_STATUS_ICON_GAP;
     int bars = bars_from_rssi_dbm(modes_get_rssi_dbm());
     // Note: §5.4 also specifies a distinct "not registered -> x" bucket
     // separate from "0 bars"; net_get_rssi() (net.h) exposes only a dBm
