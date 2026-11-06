@@ -1,0 +1,9 @@
+# Carrier v0.2 overlay (docs/CARRIER_V02_FIRMWARE_DESIGN.md §6). Layered after sdkconfig.defaults:
+#   idf.py -B build-carrier -DSDKCONFIG=build-carrier/sdkconfig -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.carrier" build
+# The carrier's console is UART0 (IO43/IO44 -> CP2102N -> the carrier's USB-C); the Walter's own
+# USB-C is unreachable once assembled. USB-Serial/JTAG stays as the secondary (output-only) console.
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+CONFIG_ESP_CONSOLE_UART_NUM=0
+CONFIG_ESP_CONSOLE_UART_BAUDRATE=115200
+CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG=y
+# CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG is not set

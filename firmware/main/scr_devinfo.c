@@ -7,6 +7,7 @@
 #include "modes.h"
 #include "net.h"
 #include "devinfo_fmt.h"
+#include "board.h"
 
 #include <stdio.h>
 
@@ -49,6 +50,7 @@ static int devinfo_build(char rows[][DEVINFO_ROW_LEN])
     v.apn = d.apn;
     v.bearer_known = d.apn[0] != '\0' || net_carrier_label()[0] != '\0';
     v.beam = net_bearer_beam();
+    v.board = board_name();
     return devinfo_rows(&v, rows, DEVINFO_MAX_ROWS);
 }
 

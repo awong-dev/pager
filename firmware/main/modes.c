@@ -19,6 +19,7 @@
 #include "ui.h"
 #include "disp.h" // S12: disp_busy_timeout_count() for the sleeptest report; rail gate: disp_note_power_loss()
 #include "flightrec.h" // docs/SLEEP_PAGE_LOSS_BRIEF.md §6 item A; no-op outside a debug build's sleeptest window
+#include "board.h"
 #include "pins.h" // PAGER_PIN_WAKE0, the sleeptest wake0_ms experiment (§6 item F)
 #include "battstat.h" // docs/BATTERY_STATS_DESIGN.md: time-in-state counters, /status key 68 `bs`
 #include "refreshpol.h"
@@ -1168,7 +1169,9 @@ void modes_accel_halt(const accel_halt_info_t *h)
     net_radio_off();
     rail_off();
     gpio_hold_en((gpio_num_t) PAGER_PIN_3V3_EN); // keep both rails off through deep sleep; rail_init() releases
-    gpio_hold_en((gpio_num_t) PAGER_PIN_DISP_VCC_EN);
+    if (board_disp_vcc_en_pin() >= 0) { // carrier: IO12 is FL_PWM, not a display gate
+        gpio_hold_en((gpio_num_t) PAGER_PIN_DISP_VCC_EN);
+    }
     gpio_deep_sleep_hold_en();
     esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
     esp_deep_sleep_start();

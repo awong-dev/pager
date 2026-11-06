@@ -25,6 +25,7 @@
 
 #include "accel.h"
 #include "battstat.h"
+#include "board.h"
 #include "cafetch.h"
 #include "catrust.h"
 #include "mbedtls/sha256.h"
@@ -964,8 +965,49 @@ static void register_input_cmds(void)
     ESP_ERROR_CHECK(esp_console_cmd_register(&key_cmd));
 }
 
+// `board` -- which PCB variant this is (board.h). `board auto|breadboard|carrier` persists the
+// choice (NVS board/kind); reboot to apply. Power effect: none (one NVS write when setting).
+static int cmd_board(int argc, char **argv)
+{
+    if (argc == 2) {
+        board_kind_t k = BOARD_AUTO;
+        if (strcmp(argv[1], "breadboard") == 0) {
+            k = BOARD_BREADBOARD;
+        } else if (strcmp(argv[1], "carrier") == 0) {
+            k = BOARD_CARRIER_V02;
+        } else if (strcmp(argv[1], "auto") != 0) {
+            printf("board [auto|breadboard|carrier]\n");
+            return 1;
+        }
+        printf("%s\n", board_set_kind(k) ? "saved; reboot to apply" : "save failed");
+        return 0;
+    }
+    uint8_t who = 0;
+    bool who_ok = board_who_am_i(&who);
+    printf("board: %s (%s), stored kind %d\n", board_name(), board_source_name(), (int) board_stored_kind());
+    if (who_ok) {
+        printf("WHO_AM_I: 0x%02x\n", (unsigned) who);
+    } else {
+        printf("WHO_AM_I: read failed\n");
+    }
+    if (board_is_carrier()) {
+        int vbus, s1, s2;
+        board_read_charger_pins(&vbus, &s1, &s2);
+        printf("IO%d VBUS_DET=%d  IO%d CHG_STAT1=%d  IO%d CHG_STAT2=%d\n", PAGER_PIN_VBUS_DET, vbus,
+               PAGER_PIN_CHG_STAT1, s1, PAGER_PIN_CHG_STAT2, s2);
+    }
+    return 0;
+}
+
 static void register_carrier_cmd(void)
 {
+    const esp_console_cmd_t board_cmd = {
+        .command = "board",
+        .help = "board [auto|breadboard|carrier] -- show the PCB variant, or set it (reboot to apply)",
+        .hint = NULL,
+        .func = &cmd_board,
+    };
+    ESP_ERROR_CHECK(esp_console_cmd_register(&board_cmd));
     const esp_console_cmd_t carrier_cmd = {
         .command = "carrier",
         .help = "carrier [<n> | custom <apn>] -- choose the carrier APN (presets are built in)",
@@ -1009,9 +1051,14 @@ static void start_setup_console(void)
     // sdkconfig CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG, already used
     // for boot/log output; using it here too makes the console reachable
     // over the same cable used to flash and monitor.
+#if CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG
     esp_console_dev_usb_serial_jtag_config_t usb_config =
         ESP_CONSOLE_DEV_USB_SERIAL_JTAG_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_console_new_repl_usb_serial_jtag(&usb_config, &repl_config, &repl));
+#else // carrier build (sdkconfig.carrier): UART0 -> CP2102N is the primary console
+    esp_console_dev_uart_config_t uart_config = ESP_CONSOLE_DEV_UART_CONFIG_DEFAULT();
+    ESP_ERROR_CHECK(esp_console_new_repl_uart(&uart_config, &repl_config, &repl));
+#endif
 
     esp_console_register_help_command();
 
@@ -1865,9 +1912,14 @@ static void start_normal_console(void)
     repl_config.prompt = "pager>";
     repl_config.task_stack_size = 16384;
 
+#if CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG
     esp_console_dev_usb_serial_jtag_config_t usb_config =
         ESP_CONSOLE_DEV_USB_SERIAL_JTAG_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_console_new_repl_usb_serial_jtag(&usb_config, &repl_config, &repl));
+#else // carrier build (sdkconfig.carrier): UART0 -> CP2102N is the primary console
+    esp_console_dev_uart_config_t uart_config = ESP_CONSOLE_DEV_UART_CONFIG_DEFAULT();
+    ESP_ERROR_CHECK(esp_console_new_repl_uart(&uart_config, &repl_config, &repl));
+#endif
 
     esp_console_register_help_command();
 
@@ -2228,16 +2280,21 @@ void app_main(void)
         ui_set_crash_indicator(true);
     }
 
-    rail_init(); // 3V3 peripheral rail on -- must precede any display/I2C use; rail.h
-
     // NVS init only; no modem/radio access, no power effect beyond the
-    // flash read/erase-and-retry below (DEVICE_PLAN.md §3.4/§2.7).
+    // flash read/erase-and-retry below (DEVICE_PLAN.md §3.4/§2.7). Moved ahead of
+    // rail_init() (6 Nov 2026) because board_init() reads the board kind from NVS.
     esp_err_t nvs_err = nvs_flash_init();
     if (nvs_err == ESP_ERR_NVS_NO_FREE_PAGES || nvs_err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         ESP_ERROR_CHECK(nvs_flash_erase());
         nvs_err = nvs_flash_init();
     }
     ESP_ERROR_CHECK(nvs_err);
+
+    // Decides breadboard vs carrier (board.h) before anything touches IO12/IO38/IO42.
+    // Power effect: one I2C read on the always-on bus, at most one NVS write.
+    board_init();
+
+    rail_init(); // 3V3 peripheral rail on -- must precede any display/I2C use; rail.h
 
     if (!ident_load()) {
         // No valid identity in NVS: docs/DEVICE_TASKS.md F3.5, Setup mode.

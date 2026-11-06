@@ -7,6 +7,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
+#include "board.h"
 #include "pins.h"
 #include "ui.h" /* ui_kb_bus_release()/ui_kb_bus_restore(): stop back-powering the
                   * CardKB through the I2C pull-ups while the rail is off, owner
@@ -85,8 +86,10 @@ static void rail_delay_at_least_ms(uint32_t ms)
 static const gpio_num_t s_disp_bus_pins[] = {
     (gpio_num_t) PAGER_PIN_DISP_RST, (gpio_num_t) PAGER_PIN_DISP_DC,
     (gpio_num_t) PAGER_PIN_DISP_CS, (gpio_num_t) PAGER_PIN_DISP_MOSI,
-    (gpio_num_t) PAGER_PIN_DISP_SCK, (gpio_num_t) PAGER_PIN_DISP_SRCS,
+    (gpio_num_t) PAGER_PIN_DISP_SCK,
 };
+// Breadboard only: the Friend's SRAM CS. On the carrier this pad is CHG_STAT1 (an input the
+// charger drives) and is never touched here.
 
 static void rail_disp_bus_release(void)
 {
@@ -94,6 +97,11 @@ static void rail_disp_bus_release(void)
         gpio_sleep_set_direction(s_disp_bus_pins[i], GPIO_MODE_DISABLE);
         gpio_sleep_set_pull_mode(s_disp_bus_pins[i], GPIO_FLOATING);
         gpio_sleep_sel_en(s_disp_bus_pins[i]);
+    }
+    if (board_disp_srcs_pin() >= 0) {
+        gpio_sleep_set_direction((gpio_num_t) board_disp_srcs_pin(), GPIO_MODE_DISABLE);
+        gpio_sleep_set_pull_mode((gpio_num_t) board_disp_srcs_pin(), GPIO_FLOATING);
+        gpio_sleep_sel_en((gpio_num_t) board_disp_srcs_pin());
     }
     gpio_sleep_set_direction((gpio_num_t) PAGER_PIN_DISP_BUSY, GPIO_MODE_DISABLE);
     gpio_sleep_set_pull_mode((gpio_num_t) PAGER_PIN_DISP_BUSY, GPIO_FLOATING);
@@ -105,7 +113,9 @@ static void rail_disp_bus_restore(void)
     gpio_sleep_sel_dis((gpio_num_t) PAGER_PIN_DISP_RST);
     gpio_sleep_sel_dis((gpio_num_t) PAGER_PIN_DISP_DC);
     gpio_sleep_sel_dis((gpio_num_t) PAGER_PIN_DISP_CS);
-    gpio_sleep_sel_dis((gpio_num_t) PAGER_PIN_DISP_SRCS);
+    if (board_disp_srcs_pin() >= 0) {
+        gpio_sleep_sel_dis((gpio_num_t) board_disp_srcs_pin());
+    }
     gpio_sleep_sel_dis((gpio_num_t) PAGER_PIN_DISP_BUSY); // back to disp.c's isolation-exempt input
 }
 
@@ -124,10 +134,14 @@ void rail_init(void)
     // Both are driven to their ON level here and toggled together by
     // rail_on()/rail_off() below.
     // A modes_accel_halt() deep sleep holds both pads; a RESET keeps that hold, so release it first.
+    // Carrier v0.2 (board.h): no display gate, IO12 is FL_PWM there and is not touched here.
+    const bool has_ena = board_disp_vcc_en_pin() >= 0;
     gpio_hold_dis((gpio_num_t) PAGER_PIN_3V3_EN);
-    gpio_hold_dis((gpio_num_t) PAGER_PIN_DISP_VCC_EN);
+    if (has_ena) {
+        gpio_hold_dis((gpio_num_t) PAGER_PIN_DISP_VCC_EN);
+    }
     gpio_config_t cfg = {
-        .pin_bit_mask = (1ULL << PAGER_PIN_3V3_EN) | (1ULL << PAGER_PIN_DISP_VCC_EN),
+        .pin_bit_mask = (1ULL << PAGER_PIN_3V3_EN) | (has_ena ? (1ULL << PAGER_PIN_DISP_VCC_EN) : 0ULL),
         .mode = GPIO_MODE_OUTPUT,
         .pull_up_en = GPIO_PULLUP_DISABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
@@ -135,7 +149,9 @@ void rail_init(void)
     };
     gpio_config(&cfg);
     gpio_set_level(PAGER_PIN_3V3_EN, 0); // active-low: CardKB supply on
-    gpio_set_level(PAGER_PIN_DISP_VCC_EN, PAGER_DISP_VCC_EN_ON); // Friend regulator on: panel
+    if (has_ena) {
+        gpio_set_level(PAGER_PIN_DISP_VCC_EN, PAGER_DISP_VCC_EN_ON); // Friend regulator on: panel
+    }
     // Not otherwise excluded from ESP-IDF's sleep GPIO isolation
     // (CONFIG_ESP_SLEEP_GPIO_RESET_WORKAROUND) -- without this the pads
     // float through every light sleep and the board pull-ups (Walter's on
@@ -144,7 +160,9 @@ void rail_init(void)
     // rail_off() below relies on this too: an OFF level must hold through
     // sleep exactly as reliably as an ON one.
     gpio_sleep_sel_dis((gpio_num_t) PAGER_PIN_3V3_EN);
-    gpio_sleep_sel_dis((gpio_num_t) PAGER_PIN_DISP_VCC_EN);
+    if (has_ena) {
+        gpio_sleep_sel_dis((gpio_num_t) PAGER_PIN_DISP_VCC_EN);
+    }
     portENTER_CRITICAL(&s_on_mux);
     s_rail_on = true;
     s_on_since_us = esp_timer_get_time();
@@ -162,7 +180,9 @@ void rail_on(void)
     // own 3V3-OUT, CardKB only). The LIS3DH is on neither; it is on the
     // power board's always-on "3V" rail and is not touched here. The settle
     // below covers both the MIC5225's and the CardKB's own supply start-up.
-    gpio_set_level(PAGER_PIN_DISP_VCC_EN, PAGER_DISP_VCC_EN_ON); // ENA on: panel
+    if (board_disp_vcc_en_pin() >= 0) {
+        gpio_set_level(PAGER_PIN_DISP_VCC_EN, PAGER_DISP_VCC_EN_ON); // ENA on: panel
+    }
     gpio_set_level(PAGER_PIN_3V3_EN, 0); // active-low: CardKB supply on
     int64_t on_edge_us = esp_timer_get_time();
     // Round 9: universal settle before touching ANYTHING downstream (see
@@ -198,7 +218,9 @@ void rail_off(void)
     // ui_kb_bus_release()'s own comment.
     ui_kb_bus_release();
     rail_disp_bus_release();
-    gpio_set_level(PAGER_PIN_DISP_VCC_EN, PAGER_DISP_VCC_EN_OFF); // ENA off: panel unpowered
+    if (board_disp_vcc_en_pin() >= 0) {
+        gpio_set_level(PAGER_PIN_DISP_VCC_EN, PAGER_DISP_VCC_EN_OFF); // ENA off: panel unpowered
+    }
     gpio_set_level(PAGER_PIN_3V3_EN, 1); // active-low: CardKB supply off
     portENTER_CRITICAL(&s_on_mux);
     s_on_acc_us += esp_timer_get_time() - s_on_since_us;

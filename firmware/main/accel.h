@@ -161,6 +161,17 @@ uint32_t accel_shake_rejected_total(void);
  * this board). */
 bool accel_init(void);
 
+/* Board detection (board.c): installs the I2C_NUM_1 bus if needed (idempotent), reads
+ * WHO_AM_I (0x33 LIS3DH, 0x11 carrier clone) under the bus mutex, configures nothing.
+ * Returns false if the read fails. */
+bool accel_probe_id(uint8_t *who);
+
+/* Hold/release the I2C_NUM_1 mutex around bus use by another driver (the fuel gauge).
+ * Note reg_read/reg_write take this same non-recursive mutex: do not call accel
+ * functions between lock and unlock. */
+void accel_bus_lock(void);
+void accel_bus_unlock(void);
+
 /* Reads INT1_SRC (0x31) and INT2_SRC (0x35) once each -- the reads clear the
  * LIS3DH's latched interrupts (CTRL_REG5 LIR_INT1/LIR_INT2). No-op (returns
  * false) if accel_init() did not find the chip. Call once per modes_run()

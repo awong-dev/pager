@@ -38,6 +38,13 @@
 // 6 Oct). The LIS3DH moved to pins 22/21/20: SCL IO18, SDA IO17, INT1 IO16.
 // Pins 17/16/15 (IO6/IO5/IO4) and 18 (IO7) are now unused. IO16 is an RTC
 // GPIO (ESP32-S3: IO0-IO21), so INT1 stays an ext1 light-sleep wake source.
+//
+// 6 Nov 2026: carrier v0.2 (hardware/carrier). That PCB reuses IO12 (was Friend
+// ENA, now FL_PWM), IO38 (was Friend SRAM CS, now CHG_STAT1), IO42 (was the
+// Friend's MISO, now CHG_STAT2) and IO8 (EXT_LED) for other functions.
+// board.c decides at runtime which board this is (accelerometer WHO_AM_I) and
+// every user of the breadboard-only pins below checks board_*_pin() first.
+// docs/CARRIER_V02_FIRMWARE_DESIGN.md has the full table.
 
 #ifndef PINS_H
 #define PINS_H
@@ -112,6 +119,18 @@
 #define PAGER_I2C_ADDR_LIS3DH 0x18
 #define PAGER_PIN_ACCEL_SDA 17  // own I2C_NUM_1 bus, not the CardKB's
 #define PAGER_PIN_ACCEL_SCL 18  // own I2C_NUM_1 bus, not the CardKB's
+
+// Carrier v0.2 only (see the 6 Nov 2026 note at the top; not used on the breadboard).
+#define PAGER_PIN_FL_PWM 12      // front light, high = on (shares IO12 with the breadboard's Friend ENA)
+#define PAGER_PIN_FL_BTN 4       // front-light button, active-low, external pull-up, RTC pad
+#define PAGER_PIN_PIEZ_P 6       // piezo, differential with PIEZ_N
+#define PAGER_PIN_PIEZ_N 7
+#define PAGER_PIN_EXT_LED 8      // external LED, high = on (IO8 was the removed breadboard button)
+#define PAGER_PIN_VBUS_DET 15    // high = USB present (divider from VBUS)
+#define PAGER_PIN_CHG_STAT1 38   // BQ25185 STAT1, open-drain (shares IO38 with the breadboard's Friend SRCS)
+#define PAGER_PIN_CHG_STAT2 42   // BQ25185 STAT2 (shares IO42 with the breadboard's Friend MISO)
+#define PAGER_I2C_ADDR_DRV2605 0x5A  // haptic driver on the CardKB bus (I2C_NUM_0), 3V3_AWK gated
+#define PAGER_I2C_ADDR_MAX17048 0x36 // fuel gauge on the always-on bus (I2C_NUM_1)
 
 // LTE_WAKE0 (schematic name): a modem input, unused by firmware and by the
 // vendored library today. docs/SLEEP_PAGE_LOSS_BRIEF.md §6 item F: the

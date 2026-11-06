@@ -33,6 +33,7 @@ typedef struct {
     const char *apn;     /* "" = network's choice */
     bool bearer_known;
     bool beam;
+    const char *board; /* board_name(), "" = unknown */
 } devinfo_view_t;
 
 /* Builds the screen's rows in order. Unknown values print "--". Returns the row count. */

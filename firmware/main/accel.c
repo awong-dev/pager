@@ -124,7 +124,12 @@ accel_rec_act_t accel_rec_step(accel_rec_t *r, bool read_ok, bool reboot_ok)
 static const char *TAG = "accel";
 
 #define LIS3DH_REG_WHO_AM_I 0x0F
-#define LIS3DH_WHO_AM_I_VALUE 0x33
+#define LIS3DH_WHO_AM_I_VALUE 0x33      // Adafruit LIS3DH (breadboard)
+#define LIS2DW12_CLONE_WHO_AM_I 0x11    // MSKSEMI LIS2DW12TR-MS (carrier v0.2), LIS3DH-style registers
+#define LIS3DH_REG_SDO_PU 0x57          // clone only: bit 7 enables the SDO/SA0 pull-up
+#define LIS3DH_SDO_PU_ON 0x80
+
+static bool who_ok(uint8_t who) { return who == LIS3DH_WHO_AM_I_VALUE || who == LIS2DW12_CLONE_WHO_AM_I; }
 
 #define LIS3DH_REG_CTRL_REG1 0x20
 #define LIS3DH_REG_CTRL_REG2 0x21
@@ -258,8 +263,13 @@ static uint8_t s_ctrl3 = 0;
 // (same rail voltage), it does not fight it, and it costs nothing since the
 // bus is not sleep-gated. Kept consistent with ui.c's i2c_kb_init(), which
 // makes the same choice for the same reason on the CardKB bus.
+static bool s_bus_installed = false;
+
 static void accel_bus_init(void)
 {
+    if (s_bus_installed) {
+        return;
+    }
     i2c_config_t conf = {
         .mode = I2C_MODE_MASTER,
         .sda_io_num = PAGER_PIN_ACCEL_SDA,
@@ -269,7 +279,7 @@ static void accel_bus_init(void)
         .master.clk_speed = 100000,
     };
     i2c_param_config(I2C_NUM_1, &conf);
-    i2c_driver_install(I2C_NUM_1, conf.mode, 0, 0, 0);
+    s_bus_installed = i2c_driver_install(I2C_NUM_1, conf.mode, 0, 0, 0) == ESP_OK;
     // Excluded from ESP-IDF's sleep GPIO isolation, the same call rail.c
     // uses for the display bus/RTS/3V3_EN pads: without this, IDF's default
     // light-sleep isolation (CONFIG_ESP_SLEEP_GPIO_RESET_WORKAROUND) forces
@@ -293,6 +303,7 @@ static bool accel_bus_reset(void)
         return false;
     }
     i2c_driver_delete(I2C_NUM_1);
+    s_bus_installed = false;
     const gpio_num_t sda = (gpio_num_t) PAGER_PIN_ACCEL_SDA, scl = (gpio_num_t) PAGER_PIN_ACCEL_SCL;
     gpio_config_t io = {
         .pin_bit_mask = (1ULL << sda) | (1ULL << scl),
@@ -367,6 +378,9 @@ static bool configure_and_arm(uint8_t who)
 {
     bool ok = true;
     const uint8_t ctrl3 = LIS3DH_CTRL_REG3_I1_IA1 | LIS3DH_CTRL_REG3_I1_IA2;
+    if (who == LIS2DW12_CLONE_WHO_AM_I) {
+        ok &= reg_write(LIS3DH_REG_SDO_PU, LIS3DH_SDO_PU_ON);
+    }
     ok &= reg_write(LIS3DH_REG_CTRL_REG1, LIS3DH_CTRL_REG1_25HZ_LOWPOWER);
     ok &= reg_write(LIS3DH_REG_CTRL_REG4, LIS3DH_CTRL_REG4_4G);
     ok &= reg_write(LIS3DH_REG_CTRL_REG2, LIS3DH_CTRL_REG2_HPF_INT12);
@@ -394,9 +408,9 @@ static bool configure_and_arm(uint8_t who)
 
     s_present = true;
     net_enable_accel_wake(); // IO16 becomes a light-sleep wake source, net.cpp's net_sleep()
-    ESP_LOGI(TAG, "LIS3DH found (WHO_AM_I=0x%02x), 25Hz LP +-4g, INT1 motion THS=256 mg, "
+    ESP_LOGI(TAG, "%s found (WHO_AM_I=0x%02x), 25Hz LP +-4g, INT1 motion THS=256 mg, "
                   "INT2 shake THS=1152 mg, CTRL_REG3=0x60",
-             (unsigned) who);
+             who == LIS2DW12_CLONE_WHO_AM_I ? "LIS2DW12 clone" : "LIS3DH", (unsigned) who);
     return true;
 }
 
@@ -408,15 +422,40 @@ static bool probe_and_configure(void)
     bool read_ok = reg_read(LIS3DH_REG_WHO_AM_I, &who);
     s_who_err = s_last_err;
     s_who = who;
-    if (!read_ok || who != LIS3DH_WHO_AM_I_VALUE) {
+    if (!read_ok || !who_ok(who)) {
         return false;
     }
     return configure_and_arm(who);
 }
 
+static void accel_mtx_ensure(void)
+{
+    if (!s_bus_mtx) {
+        s_bus_mtx = xSemaphoreCreateMutexStatic(&s_bus_mtx_buf);
+    }
+}
+
+// Board detection (board.c): install the bus if needed, read WHO_AM_I, configure nothing.
+// Power effect: one I2C transaction.
+bool accel_probe_id(uint8_t *who)
+{
+    accel_mtx_ensure();
+    accel_bus_init();
+    uint8_t v = 0;
+    if (!reg_read(LIS3DH_REG_WHO_AM_I, &v)) {
+        return false;
+    }
+    *who = v;
+    return true;
+}
+
+// Share I2C_NUM_1 with the fuel gauge. Power effect: none.
+void accel_bus_lock(void) { accel_mtx_ensure(); xSemaphoreTake(s_bus_mtx, portMAX_DELAY); }
+void accel_bus_unlock(void) { xSemaphoreGive(s_bus_mtx); }
+
 bool accel_init(void)
 {
-    s_bus_mtx = xSemaphoreCreateMutexStatic(&s_bus_mtx_buf);
+    accel_mtx_ensure();
     if (s_rtc.magic != ACCEL_RTC_MAGIC || s_rtc.crc != rtc_crc()) {
         rtc_set(0);
     } else if (s_rtc.n > 0) {
@@ -607,7 +646,7 @@ bool accel_debug_status(accel_debug_status_t *out, bool *out_newly_configured)
     }
 
     uint8_t who = 0;
-    bool answers = reg_read(LIS3DH_REG_WHO_AM_I, &who) && who == LIS3DH_WHO_AM_I_VALUE;
+    bool answers = reg_read(LIS3DH_REG_WHO_AM_I, &who) && who_ok(who);
     if (answers && !s_present) {
         // Chip wired since boot (or since the last check): run the same
         // configuration accel_init() would have, so `acceltest` works

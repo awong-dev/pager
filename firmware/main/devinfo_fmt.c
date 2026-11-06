@@ -126,6 +126,7 @@ int devinfo_rows(const devinfo_view_t *v, char rows[][DEVINFO_ROW_LEN], int max_
     ROW("rsrp %s  rsrq %s", rp, rq);
     ROW("carrier %.24s  %s", or_dash(v->carrier), !v->bearer_known ? "--" : (v->beam ? "beam" : "direct"));
     ROW("apn %s", (v->apn != NULL && v->apn[0] != '\0') ? v->apn : "(network's choice)");
+    ROW("board %s", or_dash(v->board));
 #undef ROW
     return n;
 }

@@ -30,6 +30,24 @@ nothing else in the firmware hardcodes a pin.
 | Push button (REMOVED 8 Oct 2026; disabled in firmware since 6 Oct, `PAGER_WAKE_BUTTON_ENABLED 0`; the shake replaces it) | — | No hardware. IO8 (header pin 23) is free. |
 | Adafruit 6092 (bq25185 + TLV62569) power board + 3.7 V 2500 mAh LiPo (Adafruit 328) | Power | Board "4.5V" (SYS) → Walter VIN; board always-on "3V" buck → Friend VIN + LIS3DH VIN |
 
+### Carrier v0.2
+
+`hardware/carrier` replaces the breakouts. The firmware detects it at boot from the accelerometer
+WHO_AM_I (0x33 breadboard, 0x11 carrier; `board` console command, NVS `board`/`kind` overrides).
+Pins that differ (full design: `docs/CARRIER_V02_FIRMWARE_DESIGN.md`):
+
+| Pin | Breadboard | Carrier v0.2 |
+|---|---|---|
+| IO12 | Friend ENA (display regulator) | FL_PWM (front light, high = on) |
+| IO38 | Friend SRAM CS, held high | CHG_STAT1 (BQ25185, open-drain input) |
+| IO42 | Friend MISO | CHG_STAT2 (input) |
+| IO8 | free | EXT_LED (high = on) |
+| IO4 | free | FL_BTN (active-low) |
+| IO6 / IO7 | free | PIEZ_P / PIEZ_N |
+| IO15 | free | VBUS_DET (high = USB present) |
+| I2C | CardKB @0x5F (I2C_NUM_0), LIS3DH @0x18 (I2C_NUM_1) | adds DRV2605L @0x5A (I2C_NUM_0, gated), MAX17048 @0x36 (I2C_NUM_1); accel is a LIS2DW12 clone |
+| Console | USB-Serial/JTAG | UART0 IO43/IO44 via CP2102N (see Build) |
+
 ### Walter header map
 
 Top view, USB-C at the top, datasheet pin numbers. Left column is the display side, right column
@@ -268,6 +286,21 @@ Set up ESP-IDF, then:
 ```bash
 idf.py build
 ```
+
+Two images exist because the ESP-IDF REPL is bound to one console device at compile time
+(`esp_console_new_repl_usb_serial_jtag` needs `CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG`,
+`esp_console_new_repl_uart` needs `CONFIG_ESP_CONSOLE_UART_DEFAULT`). The breadboard build above
+uses the Walter's USB-JTAG port; the carrier v0.2 build uses UART0 (the carrier's CP2102N):
+
+```bash
+idf.py -B build-carrier -DSDKCONFIG=build-carrier/sdkconfig -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.carrier" build
+```
+
+`-DSDKCONFIG=build-carrier/sdkconfig` keeps the carrier's generated config out of the shared
+`firmware/sdkconfig`; without it the carrier build silently reuses the breadboard config and the
+UART0 console is not applied.
+
+The board (breadboard vs carrier) is chosen at runtime, not by the image (`board` console command).
 
 ## Residual risks
 
