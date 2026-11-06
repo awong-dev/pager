@@ -97,18 +97,28 @@ Walter header pin -> net, carrier v0.2 (from the PCB pads, 6 Nov 2026):
 ### 3.3 Front light (`frontlight.c`)
 - LEDC channel on IO12, 2 kHz, 10-bit; brightness NVS `board/fl_duty`
   (default 60 %). Off = duty 0 and pin low.
-- Button IO4: input with internal pull-up too, active-low, debounced in
-  software (30 ms) from a GPIO ISR -> event to the UI task (same queue the
-  CardKB keys use, key code `KEY_LIGHT`).
+- Button IO4: plain input (the external 100k pull-up is enough; the internal
+  one would add ~70 uA while held), active-low, polled with a 30 ms debounce
+  inside `input_poll` on the modes task -> its own event `INPUT_EVT_LIGHT`.
+  No GPIO ISR (gpio_wakeup_enable rewrites the pin's interrupt type to
+  LOW_LEVEL, so an ISR would storm while the button is held). The event only
+  arms the awake/attentive window and toggles the light; it never calls the
+  retired IO8 button FSM (whose BTN_DOWN costs a mode-change /status and
+  whose BTN_SHORT opens passcode entry).
 - Behaviour: press toggles the light; while on, any key press or button
   press restarts the idle timer; the light turns off after
   `FRONTLIGHT_IDLE_S` = 20 s of no input, and always before light sleep or
   rail_off (never light the panel while the pager sleeps).
 - In light sleep the button is a wake source (`gpio_wakeup_enable(IO4,
   GPIO_INTR_LOW_LEVEL)` + `esp_sleep_enable_gpio_wakeup()`; ext1 stays
-  ANY_HIGH for the accel INT1 and cannot take an active-low pin). A button
-  wake opens the attentive window exactly like a shake does and turns the
-  light on.
+  ANY_HIGH for the accel INT1 and cannot take an active-low pin). Armed
+  only if IO4 reads high at arm time (a held button would otherwise re-wake
+  at once, forever, at ~40 mA); `gpio_wakeup_disable(IO4)` after every wake.
+  IDF ranks wake causes TIMER > GPIO > EXT1, so "wake is input" in modes.c is
+  `cause == EXT1 || cause == GPIO || IO4 reads low`; such a wake skips the
+  probe wait and renders first, like a shake. A button wake turns the light
+  on and opens the attentive window. UART0 TX (IO43) is exempted from sleep
+  isolation so the CP2102N never sees a floating input.
 
 ### 3.4 External LED (`extled.c`)
 - LEDC channel on IO8 with hardware fades (`ledc_fade_func_install`): one
@@ -134,17 +144,37 @@ Walter header pin -> net, carrier v0.2 (from the PCB pads, 6 Nov 2026):
   leave /status alone and show it locally).
 - UI: the status line shows `NN%` and a charging glyph (a small plug/bolt
   from gfx) when charging; Device info gets "Battery: 3.87 V 72 % charging".
-- Low-battery shutdown: on **every periodic wake** (and at boot) read the
-  gauge. If percent <= `FUEL_SHUTDOWN_PCT` (5) **and** not plugged in:
-  1. draw a full-screen "Shutdown" (large font, plus "Charge me" small)
-     and wait for the panel BUSY to clear,
-  2. turn off light, LED, haptic rail, panel power (rail_off),
-  3. hold the modem in reset (the airplane path net.cpp already has),
-  4. `esp_deep_sleep_start()` with only VBUS_DET (IO15, ext1 ANY_HIGH) as a
-     wake source, so plugging in USB reboots the pager; nothing else wakes
-     it. Deep sleep is the "off" this hardware has (no power switch to the
-     ESP). A 1 % hysteresis: below 5 shuts down, a boot with <= 7 % and no
-     USB goes straight back to Shutdown.
+- Low-battery shutdown (rule from the architect review, 6 Nov 2026: decide
+  on **voltage**, show percent only; the MAX17048's default model is least
+  accurate near empty and is only an OCV guess right after power-on):
+  the gauge is read on **every periodic (timer) wake**, never on an input
+  wake, inside the timer-only branch right before the probe wait, so it
+  never delays a first render; rate-limited to one read per 10 s.
+  Shut down when VCELL <= `FUEL_SHUTDOWN_MV` (3450) on two consecutive fresh
+  reads **and** not plugged in. At boot, before `net_init()` (the radio must
+  never start), shut down again when VCELL <= `FUEL_BOOT_SHUTDOWN_MV`
+  (3550) and not plugged in; the 100 mV gap covers the cell's recovery after
+  the load drops. A failed read never counts. Sequence
+  (`modes_power_off_lowbatt`, modes.c):
+  1. front light, ext LED, buzzer off (haptic dies with the rail in 4),
+  2. modem to MINIMUM functionality (best effort, 2 s cap), then reset held
+     low via `net_airplane_hold_modem()` (which now releases the pad hold
+     the modem library left on IO45 before writing it, a latent bug in the
+     airplane path too). No MQTT teardown, no /status publish, no CFUN=4:
+     no radio time at empty-cell voltage,
+  3. draw "Shutdown" / "Charge me", full refresh, wait for BUSY, then the
+     SSD1680 deep-sleep command (0x10, 0x01; the panel rail is always on),
+  4. `rail_off()` + hold IO0,
+  5. if VBUS_DET is high now (USB arrived during the draw): `esp_restart()`,
+  6. disable all wake sources, `esp_sleep_pd_config(RTC_PERIPH, OFF)` (GPIO
+     wake had forced it ON for the rest of the boot), ext1 ANY_HIGH on IO15
+     only, `gpio_deep_sleep_hold_en()`, `esp_deep_sleep_start()`.
+  Plugging in USB reboots the pager. `fuel_init` releases the RTC hold that
+  ext1 latches on IO15 (`rtc_gpio_hold_dis` + `rtc_gpio_deinit`) before
+  reading it, otherwise VBUS_DET reads "plugged in" forever after that wake.
+  Over USB on the bench IO15 is already high, so `fuel shutdown` draws the
+  screen and reboots: that proves the ext1 path. The real path needs a
+  bench supply on BAT with USB unplugged.
 - Breadboard: unchanged (no gauge, no shutdown).
 
 ## 5. The tune (`tunes.c`, pure, host-tested)
