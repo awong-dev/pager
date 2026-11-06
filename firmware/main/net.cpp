@@ -1403,11 +1403,20 @@ extern "C" bool net_sleep(uint32_t ms)
     // high (a held button would otherwise re-wake at once on every cycle). gpio_wakeup_enable() rewrites
     // the pin's interrupt type, so it is disabled again right after the wake below.
     const bool fl_wake_armed = board_has_frontlight() && gpio_get_level((gpio_num_t) PAGER_PIN_FL_BTN) == 1;
+    if (board_has_frontlight()) {
+        input_light_set_held(!fl_wake_armed); // IO4 low at arm time: a later low read is the same press
+    }
     if (fl_wake_armed) {
         gpio_wakeup_enable((gpio_num_t) PAGER_PIN_FL_BTN, GPIO_INTR_LOW_LEVEL);
         esp_sleep_enable_gpio_wakeup();
     }
     esp_sleep_enable_timer_wakeup((uint64_t) ms * 1000ULL);
+
+    // Carrier: light, tune and LED are all off before sleeping (power effect: LED/piezo dark; the
+    // LED timer restarts after the wake).
+    frontlight_off();
+    buzzer_stop();
+    extled_pause();
 
     // Disable RTS (drive it high) so the modem is free to sleep, exactly as
     // WalterModem::sleep(_, true) does for its own light-sleep path.
@@ -1457,17 +1466,11 @@ extern "C" bool net_sleep(uint32_t ms)
         flightrec_event('S', (int32_t) ms, flightrec_cts_level());
     }
 
-    // Carrier: light, tune and LED are all off before sleeping (power effect: LED/piezo dark; the
-    // LED timer restarts after the wake).
-    frontlight_off();
-    buzzer_stop();
-    extled_pause();
     esp_light_sleep_start();
     ui_kb_sleep_unpark(); // power effect: none; kbd task resumes polling
     if (fl_wake_armed) {
         gpio_wakeup_disable((gpio_num_t) PAGER_PIN_FL_BTN);
     }
-    extled_resume(); // power effect: restarts the 6 s breath timer (carrier only)
 
     // 5 Oct 2026 (bench, proto3): ext1_wakeup_prepare() above (inside
     // esp_light_sleep_start()) latches an RTC pad HOLD on every ext1 pad and, on the
@@ -1514,6 +1517,7 @@ extern "C" bool net_sleep(uint32_t ms)
                         (int32_t) net_uart_rx_buffered_bytes());
         flightrec_event('F', flightrec_cts_level(), 0);
     }
+    extled_resume(); // power effect: restarts the 6 s breath timer (carrier only)
     return true;
 }
 
@@ -2599,6 +2603,11 @@ extern "C" bool net_modem_minimum(uint32_t cap_ms)
 {
     if (net_airplane()) {
         return false; // already held in reset
+    }
+    if (!s_modem_begun) {
+        // setOpState() before begin() asserts on a NULL queue (WalterModem.cpp:5143)
+        ESP_LOGI(TAG, "modem not started, skipping MINIMUM");
+        return false;
     }
     static minimum_ctx_t ctx; // static: the abandoned task may outlive the caller's frame
     ctx.ok = false;

@@ -109,7 +109,8 @@ static esp_err_t write_config(void)
 {
     double f = (double) s_f_hz;
     double rated = ((double) s_rated_mv / 1000.0) / (0.02071 * sqrt(1.0 - (4.0 * 300e-6 + 300e-6) * f));
-    double clamp = ((double) s_clamp_mv / 1000.0) / (0.02196 * sqrt(1.0 - f * 800e-6));
+    /* Closed loop (CTRL3 0xA0): OD_CLAMP = Vpeak / 21.96e-3 (no sqrt term; the sqrt form is open loop). */
+    double clamp = ((double) s_clamp_mv / 1000.0) / 21.96e-3;
     double drive = (0.5 / f * 1000.0 - 0.5) / 0.1; /* DRIVE_TIME: (half period - 0.5 ms) / 0.1 ms */
     uint8_t drive_code = clamp8(drive);
     if (drive_code > 31) drive_code = 31;
@@ -179,10 +180,13 @@ static bool ensure_ready(void)
         wr(REG_CAL_COMP, s_cal[0]);
         wr(REG_CAL_BEMF, s_cal[1]);
         wr(REG_FEEDBACK, (uint8_t) ((fb & ~3u) | (s_cal[2] & 3u)));
-    } else if (!s_cal_failed) {
-        char rep[96];
-        auto_cal(rep, sizeof(rep));
-        ESP_LOGI(TAG, "%s", rep);
+    } else {
+        /* haptic_play() never auto-calibrates (it blocks ~1.6 s with the bus lock held); only the console does */
+        static bool s_warned;
+        if (!s_warned) {
+            s_warned = true;
+            ESP_LOGI(TAG, "haptic: not calibrated (run `haptic calibrate`)");
+        }
     }
     s_ready_for_us = r;
     ESP_LOGI(TAG, "configured (rail restore edge %lld)", (long long) r);
@@ -192,7 +196,8 @@ static bool ensure_ready(void)
 static void standby_cb(void *arg)
 {
     (void) arg;
-    if (!ui_kb_bus_lock(50)) {
+    if (!ui_kb_bus_lock(5)) {
+        esp_timer_start_once(s_standby_timer, 100000); /* bus busy: retry in 100 ms, never block the timer task */
         return;
     }
     if (rail_is_on() && s_ready_for_us == rail_restored_us()) {

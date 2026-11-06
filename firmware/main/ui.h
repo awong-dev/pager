@@ -327,6 +327,9 @@ void ui_draw_row_separator(int y);
  * for the rail edge itself. */
 void ui_ensure_powered(void);
 
+/* esp_timer time (us) when the kbd boot guard after the last rail restore ends. Power effect: none. */
+int64_t ui_kb_ready_us(void);
+
 /* Count of off->on rail edges ui_ensure_powered() itself drove (a render
  * that needed the rail up on its own — NOT modes.c's separate wake-path
  * EXT0/EXT1 rule) since boot. Free-running, never reset — bench diagnostic

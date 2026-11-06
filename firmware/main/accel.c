@@ -379,7 +379,13 @@ static bool configure_and_arm(uint8_t who)
     bool ok = true;
     const uint8_t ctrl3 = LIS3DH_CTRL_REG3_I1_IA1 | LIS3DH_CTRL_REG3_I1_IA2;
     if (who == LIS2DW12_CLONE_WHO_AM_I) {
-        ok &= reg_write(LIS3DH_REG_SDO_PU, LIS3DH_SDO_PU_ON);
+        uint8_t pu = 0;
+        if (reg_read(LIS3DH_REG_SDO_PU, &pu)) { // read-modify-write: set bit 7, keep the rest
+            ESP_LOGI(TAG, "SDO_PU (0x57) was 0x%02x", pu);
+            ok &= reg_write(LIS3DH_REG_SDO_PU, (uint8_t) (pu | LIS3DH_SDO_PU_ON));
+        } else {
+            ok = false;
+        }
     }
     ok &= reg_write(LIS3DH_REG_CTRL_REG1, LIS3DH_CTRL_REG1_25HZ_LOWPOWER);
     ok &= reg_write(LIS3DH_REG_CTRL_REG4, LIS3DH_CTRL_REG4_4G);

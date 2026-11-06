@@ -1029,7 +1029,8 @@ static int cmd_fuel(int argc, char **argv)
     int vbus, s1, s2;
     fuel_pins(&vbus, &s1, &s2);
     if (ok) {
-        printf("fuel: %d mV  %d%%  crate %+d.%03d %%/h  state %s\n", f.mv, f.pct, f.crate_milli / 1000,
+        printf("fuel: %d mV  %d%%  crate %c%d.%03d %%/h  state %s\n", f.mv, f.pct, f.crate_milli < 0 ? '-' : '+',
+               (f.crate_milli < 0 ? -f.crate_milli : f.crate_milli) / 1000,
                (f.crate_milli < 0 ? -f.crate_milli : f.crate_milli) % 1000, fuel_state_name(fuel_state()));
     } else {
         printf("fuel: gauge read failed\n");
@@ -2492,6 +2493,7 @@ void app_main(void)
             ui_push(&g_scr_greeting);
             ui_render_boot();
         }
+        modes_fuel_boot_check(); // carrier: low unplugged battery goes to Shutdown; the modem is not started yet
 
         bool sim_ok = net_check_sim();
         ESP_LOGI(TAG, "SIM check: %s", sim_ok ? "found" : "missing");

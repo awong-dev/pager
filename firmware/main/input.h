@@ -207,6 +207,13 @@ bool input_button_stuck(void);
  * GPIO/I2C/modem access. */
 void input_note_button_wake(int64_t now_us);
 
+/* Carrier only: true while IO4 is held from before this wake (it was already low when the last sleep
+ * was armed, so the arm was skipped); cleared when the pin reads high again. Power effect: none. */
+bool input_light_held(void);
+
+/* Carrier only: net_sleep() records whether the arm was skipped because IO4 was low. Power effect: none. */
+void input_light_set_held(bool held);
+
 /* Carrier only: a light-sleep GPIO wake on the front-light button. Pushes one INPUT_EVT_LIGHT (which
  * arms the awake window) and marks the press as already counted, so the still-low pin does not fire a
  * second event. No-op on the breadboard or if a press is already counted. Power effect: none. */

@@ -65,9 +65,15 @@ void board_init(void)
         s_kind = (board_kind_t) last;
         s_src = BOARD_SRC_LAST;
     } else {
+#if !CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG
+        s_kind = BOARD_CARRIER_V02; // carrier build (UART0 console)
+        s_src = BOARD_SRC_DEFAULT;
+        ESP_LOGW(TAG, "accelerometer WHO_AM_I unreadable and no history: assuming carrier-v0.2 (carrier build)");
+#else
         s_kind = BOARD_BREADBOARD;
         s_src = BOARD_SRC_DEFAULT;
         ESP_LOGW(TAG, "accelerometer WHO_AM_I unreadable and no history: assuming breadboard");
+#endif
     }
     ESP_LOGI(TAG, "board %s (%s), WHO_AM_I %s0x%02x", board_name(), board_source_name(),
              s_who_ok ? "" : "(read failed) ", (unsigned) s_who);

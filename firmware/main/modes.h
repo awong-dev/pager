@@ -76,6 +76,9 @@ int modes_get_charge_state(void);
  * If USB is already present at the end it restarts instead. Does not return. Power effect: one full
  * panel refresh, then deep sleep (~uA). */
 void modes_power_off_lowbatt(void) __attribute__((noreturn));
+
+/* Boot-time low-battery check for the Setup branch (carrier only; no-op elsewhere). */
+void modes_fuel_boot_check(void);
 /* Last modem temperature in tenths of C (net_get_temp_dc()); false until the first reading. */
 bool modes_get_temp_dc(int *temp_dc);
 const char *modes_get_fw_version(void);

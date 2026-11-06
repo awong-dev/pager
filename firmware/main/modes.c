@@ -1293,6 +1293,13 @@ static void fuel_shutdown_check(bool booting)
     }
 }
 
+// Setup (unprovisioned) boot: the same boot-time low-battery check, before the Setup console starts.
+// Power effect: ~1 ms of I2C; on a low unplugged battery it does not return.
+void modes_fuel_boot_check(void)
+{
+    fuel_shutdown_check(true);
+}
+
 bool modes_publish_status_now(void)
 {
     net_mqtt_status_t st;
@@ -1986,17 +1993,24 @@ static bool s_alert_pending = false;
 
 // Modes loop task. Power effect: powers the rail (CardKB/haptic/panel) if it was off, a ~150 ms piezo
 // chirp and two haptic clicks; nothing on the breadboard.
+static bool s_haptic_pending = false; // modes loop task only: haptic waits for the kbd/rail boot guard
+
 static void service_alert_pending(void)
 {
-    if (!__atomic_exchange_n(&s_alert_pending, false, __ATOMIC_ACQ_REL)) {
-        return;
+    if (__atomic_exchange_n(&s_alert_pending, false, __ATOMIC_ACQ_REL) &&
+        (board_has_piezo() || board_has_haptic())) {
+        ui_ensure_powered();
+        buzzer_play(BUZZ_NEW_MSG); // buzzer plays at once
+        s_haptic_pending = board_has_haptic();
     }
-    if (!board_has_piezo() && !board_has_haptic()) {
-        return;
+    if (s_haptic_pending) {
+        if (!rail_is_on()) {
+            s_haptic_pending = false; // rail went off first: drop it
+        } else if (esp_timer_get_time() >= ui_kb_ready_us()) {
+            s_haptic_pending = false;
+            haptic_play(HAPTIC_NEW_MSG);
+        }
     }
-    ui_ensure_powered();
-    buzzer_play(BUZZ_NEW_MSG);
-    haptic_play(HAPTIC_NEW_MSG);
 }
 
 void modes_alert_incoming(const char *id, const char *from)
@@ -3153,7 +3167,8 @@ void modes_run(void)
                 // a button press that a timer wake reported first.
                 const bool wake_is_light_btn =
                     board_has_frontlight() &&
-                    (wake_cause == ESP_SLEEP_WAKEUP_GPIO || gpio_get_level((gpio_num_t) PAGER_PIN_FL_BTN) == 0);
+                    (wake_cause == ESP_SLEEP_WAKEUP_GPIO ||
+                     (gpio_get_level((gpio_num_t) PAGER_PIN_FL_BTN) == 0 && !input_light_held()));
                 wake_is_ext1 = (wake_cause == ESP_SLEEP_WAKEUP_EXT1) || (wake_cause == ESP_SLEEP_WAKEUP_GPIO) ||
                                wake_is_light_btn;
                 if (wake_is_light_btn) {
@@ -3439,8 +3454,8 @@ void modes_run(void)
         // F6.3/README R5: renders (if a message arrived) on this task, then
         // marks `shown` - see service_render_pending()'s own comment.
         watchdog_kick(WD_RENDER);
-        service_alert_pending();
         service_render_pending();
+        service_alert_pending();
 
         // F6.5: pushes/pops the Locked screen to match lock.c's current
         // state (see lock_screen_sync()'s own comment), and drains any

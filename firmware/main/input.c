@@ -90,6 +90,7 @@ static int64_t s_btn_debounce_start_us = 0;
  * independent of the retired button FSM above. Enabled at runtime by board_has_frontlight(). */
 #define PAGER_LIGHT_DEBOUNCE_MS 30
 static bool s_light_en = false;
+static volatile bool s_light_sleep_held = false; /* IO4 was already low when the last sleep was armed */
 static bool s_light_held = false;      /* event already fired for the press in progress */
 static int64_t s_light_db_us = 0;      /* first low sample of a candidate press; 0 = none */
 
@@ -266,12 +267,23 @@ void input_poll(void)
         } else {
             s_light_db_us = 0;
             s_light_held = false;
+            s_light_sleep_held = false;
         }
     }
 #if PAGER_WAKE_BUTTON_ENABLED
     int64_t now_us = esp_timer_get_time();
     button_fsm_step(gpio_get_level((gpio_num_t) PAGER_PIN_BUTTON), now_us);
 #endif
+}
+
+void input_light_set_held(bool held)
+{
+    s_light_sleep_held = held;
+}
+
+bool input_light_held(void)
+{
+    return s_light_sleep_held;
 }
 
 void input_note_light_wake(int64_t now_us)

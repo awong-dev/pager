@@ -840,6 +840,12 @@ static int s_i2c_fail_count = 0;
 // margin, rounded: 1300ms.
 #define PAGER_KB_BOOT_GUARD_MS 1300
 
+// esp_timer time at which the post-rail-restore boot guard ends (rail_restored_us() + guard).
+int64_t ui_kb_ready_us(void)
+{
+    return rail_restored_us() + (int64_t) PAGER_KB_BOOT_GUARD_MS * 1000;
+}
+
 // Round 9: pauses the kbd task (below) entirely, so main.c's `kbtime` and
 // `i2cscan` bench probes can drive their own rail_off()/rail_on() cycles and
 // their own I2C_NUM_0 transactions without racing the task's concurrent read
