@@ -34,6 +34,9 @@ typedef struct {
     bool bearer_known;
     bool beam;
     const char *board; /* board_name(), "" = unknown */
+    bool have_pct;     /* carrier fuel gauge percent valid */
+    int batt_pct;
+    const char *charge; /* "charging" / "charged", NULL or "" = on battery */
 } devinfo_view_t;
 
 /* Builds the screen's rows in order. Unknown values print "--". Returns the row count. */
@@ -41,6 +44,9 @@ int devinfo_rows(const devinfo_view_t *v, char rows[][DEVINFO_ROW_LEN], int max_
 
 /* "5.20 V", "5.20 V (USB)" at >= DEVINFO_USB_MV, "--" when unknown. */
 void devinfo_fmt_batt(bool known, int mv, char *out, size_t cap);
+/* Carrier: "3.87 V 72% charging" (percent omitted unless have_pct, state omitted when NULL/""). Without
+ * either it is devinfo_fmt_batt()'s text, including the "(USB)" tag. */
+void devinfo_fmt_batt_ex(bool known, int mv, bool have_pct, int pct, const char *charge, char *out, size_t cap);
 /* "23.5 C", "-0.4 C", "--" when unknown. */
 void devinfo_fmt_temp(bool known, int dc, char *out, size_t cap);
 

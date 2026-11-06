@@ -1369,6 +1369,18 @@ void disp_note_power_loss(void)
     disp_unlock();
 }
 
+// SSD1680 deep-sleep mode 1 (cmd 0x10, data 0x01): the controller stops driving the panel and keeps
+// RAM; only a hardware reset wakes it. Used by the low-battery Shutdown. Power effect: panel controller
+// to ~uA (the image stays on the glass).
+void disp_panel_deep_sleep(void)
+{
+    disp_lock();
+    (void) disp_wait_busy_max(PAGER_UI_BUSY_RESET_TIMEOUT_US);
+    disp_send_cmd(0x10);
+    disp_send_data1(0x01);
+    disp_unlock();
+}
+
 void disp_full_refresh(void)
 {
     disp_lock();

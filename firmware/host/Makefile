@@ -75,7 +75,7 @@ endif
 MAIN_SRC := ../main
 BUILD := build
 
-TESTS := test_cbor test_auth test_setup test_input test_msg test_lock test_loc test_cafetch test_catrust test_cfg test_sms test_carrier test_chat_layout test_home_list test_archive test_coverage test_net_connect_guard test_net_probe_guard test_resub_verdict test_publish_quiet test_accel_rate test_bookpull test_clock test_disp_flip test_otapipe test_ota test_astpart test_gfx_assets test_battstat test_refreshpol test_temp test_devinfo test_tunes
+TESTS := test_cbor test_auth test_setup test_input test_msg test_lock test_loc test_cafetch test_catrust test_cfg test_sms test_carrier test_chat_layout test_home_list test_archive test_coverage test_net_connect_guard test_net_probe_guard test_resub_verdict test_publish_quiet test_accel_rate test_bookpull test_clock test_disp_flip test_otapipe test_ota test_astpart test_gfx_assets test_battstat test_refreshpol test_temp test_devinfo test_tunes test_fuel
 TEST_BINS := $(TESTS:%=$(BUILD)/%)
 
 # ASSETS: tools/mkassets.py's default output location (docs/DEVICE_TASKS.md
@@ -551,3 +551,14 @@ $(BUILD)/test_tunes.o: test_tunes.c $(MAIN_SRC)/tunes.h | $(BUILD)
 
 $(BUILD)/test_tunes: $(BUILD)/tunes.o $(BUILD)/test_tunes.o
 	$(CC) $(CFLAGS) -o $@ $(BUILD)/tunes.o $(BUILD)/test_tunes.o
+
+# test_fuel: fuel_fmt.c (pure battery conversions, charger state, voltage-based shutdown rule).
+# fuel_fmt.c is also compiled strict (-std=c11 -Wall -Wextra -Werror) as a gate.
+$(BUILD)/fuel_fmt.o: $(MAIN_SRC)/fuel_fmt.c $(MAIN_SRC)/fuel_fmt.h | $(BUILD)
+	$(CC) -std=c11 -Wall -Wextra -Werror $(INCLUDES) -c -o $@ $(MAIN_SRC)/fuel_fmt.c
+
+$(BUILD)/test_fuel.o: test_fuel.c $(MAIN_SRC)/fuel_fmt.h | $(BUILD)
+	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ test_fuel.c
+
+$(BUILD)/test_fuel: $(BUILD)/fuel_fmt.o $(BUILD)/test_fuel.o
+	$(CC) $(CFLAGS) -o $@ $(BUILD)/fuel_fmt.o $(BUILD)/test_fuel.o

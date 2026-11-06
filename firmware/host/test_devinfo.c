@@ -36,6 +36,15 @@ int main(void)
     batt(true, 4299, "4.30 V");
     batt(true, 3925, "3.93 V");
     batt(false, 0, "--");
+    {
+        char b[40];
+        devinfo_fmt_batt_ex(true, 3870, true, 72, "charging", b, sizeof(b));
+        CHECK(strcmp(b, "3.87 V 72% charging") == 0, "batt_ex: %s", b);
+        devinfo_fmt_batt_ex(true, 3870, true, 72, "", b, sizeof(b));
+        CHECK(strcmp(b, "3.87 V 72%") == 0, "batt_ex nochg: %s", b);
+        devinfo_fmt_batt_ex(true, 5203, false, 0, NULL, b, sizeof(b));
+        CHECK(strcmp(b, "5.20 V (USB)") == 0, "batt_ex legacy: %s", b);
+    }
     batt(true, 0, "--");
     temp(true, 235, "23.5 C");
     temp(true, -4, "-0.4 C");

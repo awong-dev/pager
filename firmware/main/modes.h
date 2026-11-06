@@ -67,6 +67,15 @@ int64_t modes_debug_last_input_age_us(void);
  * unclamped (~5200 mV on USB); clamp only for display. loc.c's battery floor and the UI/OTA
  * consumers check this first. */
 bool modes_batt_mv_known(void);
+/* Carrier fuel gauge (fuel.h): battery percent 0..100, -1 = no reading (always -1 on the breadboard);
+ * charge state is a fuel_state_t (0 battery, 1 charging, 2 charged). Plain cache reads. */
+int modes_get_batt_pct(void);
+int modes_get_charge_state(void);
+/* Carrier low-battery Shutdown (fuel.h): modem to MINIMUM and held in reset, "Shutdown / Charge me"
+ * full refresh, panel deep sleep, rails off, deep sleep waking only on VBUS_DET (IO15, ext1 ANY_HIGH).
+ * If USB is already present at the end it restarts instead. Does not return. Power effect: one full
+ * panel refresh, then deep sleep (~uA). */
+void modes_power_off_lowbatt(void) __attribute__((noreturn));
 /* Last modem temperature in tenths of C (net_get_temp_dc()); false until the first reading. */
 bool modes_get_temp_dc(int *temp_dc);
 const char *modes_get_fw_version(void);
