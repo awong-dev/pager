@@ -160,6 +160,16 @@ static const char *walter_state_name(int result)
 // WalterModem::begin() below and is used again, identically, by net_sleep().
 static constexpr uart_port_t PAGER_MODEM_UART = UART_NUM_1;
 
+// Low-battery Shutdown, USB-present branch: esp_restart() (esp_restart_noos) spins in
+// esp_rom_uart_tx_wait_idle() for every UART until its TX FIFO drains. With the modem held in
+// reset its CTS is dead, so bytes still in the modem UART's TX FIFO can never leave and the
+// RTC watchdog ends the wait with an abnormal reset (seen on the bench, 6 Nov 2026: rst 0x10
+// instead of 0xc). Drop flow control so the FIFO drains into nothing. Power effect: none.
+extern "C" void net_modem_uart_unblock(void)
+{
+    uart_set_hw_flow_ctrl(PAGER_MODEM_UART, UART_HW_FLOWCTRL_DISABLE, 0);
+}
+
 static constexpr int PAGER_PDP_CTX_ID = 1;
 
 // eDRX 20.48s / PTW 2.56s, raw 3GPP WB-S1 nibble strings (PROTOCOL.md §6.3).

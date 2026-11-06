@@ -955,6 +955,10 @@ bool net_radio_off(void);
  * failed, timed out, or the modem is already held in reset (airplane). Power effect: radio off. */
 bool net_modem_minimum(uint32_t cap_ms);
 
+/* Before esp_restart() with the modem held in reset: drop modem-UART flow control so the
+ * restart path's TX-FIFO drain cannot hang on a dead CTS (RTC watchdog reset otherwise). */
+void net_modem_uart_unblock(void);
+
 /* Leaves the window: WALTER_MODEM_OPSTATE_FULL. Does not wait for
  * re-attach — poll net_is_attached() afterward, same non-blocking-per-call
  * discipline loc.c's whole state machine uses. Power effect: LTE-M

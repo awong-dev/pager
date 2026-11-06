@@ -1251,6 +1251,7 @@ void modes_power_off_lowbatt(void)
     // e. USB arrived during the draw: the ext1 level wake would fire at once anyway, restart cleanly
     if (gpio_get_level((gpio_num_t) PAGER_PIN_VBUS_DET) == 1) {
         ESP_LOGI(TAG, "shutdown: USB present at the end, restarting instead of sleeping");
+        net_modem_uart_unblock();
         esp_restart();
     }
     // f. deep sleep, only VBUS_DET wakes it
