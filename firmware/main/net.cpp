@@ -23,6 +23,10 @@
 #include "net_probe_guard.h"
 #include "publish_quiet.h"
 #include "input.h" // input_pending() at the sleep edge
+#include "board.h"
+#include "frontlight.h"
+#include "buzzer.h"
+#include "extled.h"
 #include "ui.h" // ui_kb_sleep_park()/unpark() around esp_light_sleep_start()
 extern "C" {
 #include "devinfo_fmt.h"
@@ -1394,6 +1398,14 @@ extern "C" bool net_sleep(uint32_t ms)
     if (ext1_mask != 0) {
         esp_sleep_enable_ext1_wakeup(ext1_mask, ESP_EXT1_WAKEUP_ANY_HIGH);
     }
+    // Carrier front-light button (IO4, active-low): GPIO low-level wake, armed ONLY while the pin reads
+    // high (a held button would otherwise re-wake at once on every cycle). gpio_wakeup_enable() rewrites
+    // the pin's interrupt type, so it is disabled again right after the wake below.
+    const bool fl_wake_armed = board_has_frontlight() && gpio_get_level((gpio_num_t) PAGER_PIN_FL_BTN) == 1;
+    if (fl_wake_armed) {
+        gpio_wakeup_enable((gpio_num_t) PAGER_PIN_FL_BTN, GPIO_INTR_LOW_LEVEL);
+        esp_sleep_enable_gpio_wakeup();
+    }
     esp_sleep_enable_timer_wakeup((uint64_t) ms * 1000ULL);
 
     // Disable RTS (drive it high) so the modem is free to sleep, exactly as
@@ -1444,8 +1456,17 @@ extern "C" bool net_sleep(uint32_t ms)
         flightrec_event('S', (int32_t) ms, flightrec_cts_level());
     }
 
+    // Carrier: light, tune and LED are all off before sleeping (power effect: LED/piezo dark; the
+    // LED timer restarts after the wake).
+    frontlight_off();
+    buzzer_stop();
+    extled_pause();
     esp_light_sleep_start();
     ui_kb_sleep_unpark(); // power effect: none; kbd task resumes polling
+    if (fl_wake_armed) {
+        gpio_wakeup_disable((gpio_num_t) PAGER_PIN_FL_BTN);
+    }
+    extled_resume(); // power effect: restarts the 6 s breath timer (carrier only)
 
     // 5 Oct 2026 (bench, proto3): ext1_wakeup_prepare() above (inside
     // esp_light_sleep_start()) latches an RTC pad HOLD on every ext1 pad and, on the

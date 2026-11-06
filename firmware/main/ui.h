@@ -480,6 +480,11 @@ void ui_kb_rail_changed(void);
 void ui_kb_sleep_park(void);
 void ui_kb_sleep_unpark(void);
 
+/* Take/release the CardKB I2C_NUM_0 bus mutex for other devices on that bus (haptic.c). lock returns
+ * false if not obtained within timeout_ms. Non-recursive. Power effect: none. */
+bool ui_kb_bus_lock(uint32_t timeout_ms);
+void ui_kb_bus_unlock(void);
+
 /* Round 9: pauses (true) or resumes (false) the kbd task, for the `kbtime`
  * and `i2cscan` bench commands' own exclusive use of I2C_NUM_0 (ui.c's
  * s_kb_poll_paused has the full rationale). Pausing is synchronous: any

@@ -129,6 +129,7 @@
 #define PAGER_PIN_VBUS_DET 15    // high = USB present (divider from VBUS)
 #define PAGER_PIN_CHG_STAT1 38   // BQ25185 STAT1, open-drain (shares IO38 with the breadboard's Friend SRCS)
 #define PAGER_PIN_CHG_STAT2 42   // BQ25185 STAT2 (shares IO42 with the breadboard's Friend MISO)
+#define PAGER_PIN_UART0_TX 43    // carrier console TX (CP2102N RXD); kept driven through light sleep
 #define PAGER_I2C_ADDR_DRV2605 0x5A  // haptic driver on the CardKB bus (I2C_NUM_0), 3V3_AWK gated
 #define PAGER_I2C_ADDR_MAX17048 0x36 // fuel gauge on the always-on bus (I2C_NUM_1)
 

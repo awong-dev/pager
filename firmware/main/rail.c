@@ -1,6 +1,7 @@
 // rail.c — see rail.h for the policy this module implements and why.
 
 #include "rail.h"
+#include "frontlight.h"
 
 #include "driver/gpio.h"
 #include "esp_timer.h"
@@ -216,6 +217,7 @@ void rail_off(void)
     // The LIS3DH is on the power board's always-on "3V" rail, not either
     // gate here, and is untouched by this call. Power effect: see
     // ui_kb_bus_release()'s own comment.
+    frontlight_off(); // never light the panel while it is unpowered; power effect: LED off
     ui_kb_bus_release();
     rail_disp_bus_release();
     if (board_disp_vcc_en_pin() >= 0) {

@@ -26,6 +26,11 @@
 #include "accel.h"
 #include "battstat.h"
 #include "board.h"
+#include "buzzer.h"
+#include "extled.h"
+#include "frontlight.h"
+#include "haptic.h"
+#include "tunes.h"
 #include "cafetch.h"
 #include "catrust.h"
 #include "mbedtls/sha256.h"
@@ -1024,6 +1029,117 @@ static void register_carrier_cmd(void)
     ESP_ERROR_CHECK(esp_console_cmd_register(&bearer_cmd));
 }
 
+
+// ---- Carrier v0.2 peripheral consoles: buzz / haptic / light / led (no-ops with a message on the breadboard).
+// All run on the console task. Power effect: each drives its peripheral while it runs; nothing persists
+// except `light <pct>` (NVS board/fl_duty) and `haptic cfg` (NVS haptic).
+static int cmd_buzz(int argc, char **argv)
+{
+    if (!board_has_piezo()) {
+        printf("no piezo on this board\n");
+        return 0;
+    }
+    if (argc >= 2 && strcmp(argv[1], "off") == 0) {
+        buzzer_stop();
+    } else if (argc >= 2 && strcmp(argv[1], "msg") == 0) {
+        buzzer_play(BUZZ_NEW_MSG);
+    } else if (argc >= 2 && strcmp(argv[1], "mario") == 0) {
+        size_t n = argc >= 3 ? (size_t) atoi(argv[2]) : TUNE_MARIO_DEFAULT_NOTES;
+        printf("mario: %u notes\n", (unsigned) (n > TUNE_MARIO_NOTES ? TUNE_MARIO_NOTES : n));
+        buzzer_play_mario(n);
+    } else if (argc >= 3 && atoi(argv[1]) > 0) {
+        buzzer_note_t one = {.hz = (uint16_t) atoi(argv[1]), .ms = (uint16_t) atoi(argv[2])};
+        buzzer_play(&one, 1);
+    } else {
+        printf("buzz <hz> <ms> | msg | mario [n] | off\n");
+        return 1;
+    }
+    return 0;
+}
+
+static int cmd_haptic(int argc, char **argv)
+{
+    if (!board_has_haptic()) {
+        printf("no haptic driver on this board\n");
+        return 0;
+    }
+    char line[160];
+    if (argc >= 2 && strcmp(argv[1], "status") == 0) {
+        haptic_status(line, sizeof(line));
+        printf("%s\n", line);
+    } else if (argc >= 2 && strcmp(argv[1], "calibrate") == 0) {
+        haptic_calibrate(line, sizeof(line));
+        printf("%s\n", line);
+    } else if (argc >= 5 && strcmp(argv[1], "cfg") == 0) {
+        printf("%s\n", haptic_set_cfg((uint32_t) atoi(argv[2]), (uint32_t) atoi(argv[3]), (uint32_t) atoi(argv[4]))
+                           ? "saved"
+                           : "bad values");
+    } else if (argc >= 2 && strcmp(argv[1], "msg") == 0) {
+        printf("%s\n", haptic_play(HAPTIC_NEW_MSG) ? "ok" : "failed (rail off or no chip)");
+    } else if (argc >= 2 && atoi(argv[1]) > 0) {
+        printf("%s\n", haptic_play(atoi(argv[1])) ? "ok" : "failed (rail off or no chip)");
+    } else {
+        printf("haptic <effect> | msg | calibrate | status | cfg <rated_mv> <clamp_mv> <f_hz>\n");
+        return 1;
+    }
+    return 0;
+}
+
+static int cmd_light(int argc, char **argv)
+{
+    if (!board_has_frontlight()) {
+        printf("no front light on this board\n");
+        return 0;
+    }
+    if (argc >= 2 && strcmp(argv[1], "on") == 0) {
+        frontlight_set(true);
+    } else if (argc >= 2 && strcmp(argv[1], "off") == 0) {
+        frontlight_off();
+    } else if (argc >= 2 && atoi(argv[1]) >= 1 && atoi(argv[1]) <= 100) {
+        frontlight_set_pct((uint8_t) atoi(argv[1]));
+        frontlight_set(true);
+    } else {
+        printf("light on|off|<duty%%>   (now %s, %u%%)\n", frontlight_is_on() ? "on" : "off",
+               (unsigned) frontlight_get_pct());
+        return argc >= 2 ? 1 : 0;
+    }
+    return 0;
+}
+
+static int cmd_led(int argc, char **argv)
+{
+    if (!board_has_ext_led()) {
+        printf("no external LED on this board\n");
+        return 0;
+    }
+    if (argc >= 2 && strcmp(argv[1], "on") == 0) {
+        extled_hold(true);
+    } else if (argc >= 2 && strcmp(argv[1], "off") == 0) {
+        extled_hold(false);
+    } else if (argc >= 2 && strcmp(argv[1], "pulse") == 0) {
+        extled_pulse(true);
+    } else if (argc >= 2 && strcmp(argv[1], "breath") == 0) {
+        extled_pulse(false);
+    } else {
+        printf("led on|off|pulse|breath\n");
+        return 1;
+    }
+    return 0;
+}
+
+static void register_peripheral_cmds(void)
+{
+    static const esp_console_cmd_t cmds[] = {
+        {.command = "buzz", .help = "buzz <hz> <ms> | msg | mario [n] | off -- carrier piezo", .hint = NULL, .func = &cmd_buzz},
+        {.command = "haptic", .help = "haptic <effect> | msg | calibrate | status | cfg <rated_mv> <clamp_mv> <f_hz>", .hint = NULL, .func = &cmd_haptic},
+        {.command = "light", .help = "light on|off|<duty%> -- carrier front light", .hint = NULL, .func = &cmd_light},
+        {.command = "led", .help = "led on|off|pulse|breath -- carrier external LED", .hint = NULL, .func = &cmd_led},
+    };
+    for (size_t i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++) {
+        ESP_ERROR_CHECK(esp_console_cmd_register(&cmds[i]));
+    }
+}
+
 // No modem/radio access of its own; starts the USB-serial REPL task that
 // waits for a person to type `setup <code>` (docs/DEVICE_PLAN.md §3.2 step
 // 5's Setup mode). Power effect: none beyond the idle CPU/UART-RX floor
@@ -1071,6 +1187,7 @@ static void start_setup_console(void)
     ESP_ERROR_CHECK(esp_console_cmd_register(&setup_cmd));
     register_carrier_cmd();
     register_input_cmds();
+    register_peripheral_cmds();
 
 #ifdef PAGER_DEBUG_NO_LIGHT_SLEEP
     // Debug build only: docs/ROADMAP.md's "temporary diagnostics" no longer
@@ -2102,6 +2219,7 @@ static void start_normal_console(void)
 
     register_carrier_cmd();
     register_input_cmds();
+    register_peripheral_cmds();
 
     const esp_console_cmd_t gnsstest_cmd = {
         .command = "gnsstest",

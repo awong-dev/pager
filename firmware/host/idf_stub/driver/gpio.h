@@ -32,6 +32,7 @@ typedef struct {
 
 void gpio_config(const gpio_config_t *cfg);
 int gpio_get_level(gpio_num_t pin);
+void gpio_sleep_sel_dis(gpio_num_t pin); /* input.c keeps the carrier pads live in light sleep */
 
 /* Test-only: overrides the level gpio_get_level() returns (default 0,
  * released/idle, active-high since the 3 Oct 2026 rewiring), so a host test

@@ -82,6 +82,7 @@ typedef enum {
     INPUT_EVT_BTN_DOWN,  /* debounced press registered (not yet resolved short/long) */
     INPUT_EVT_BTN_SHORT, /* released before the long-press threshold */
     INPUT_EVT_BTN_LONG,  /* held past the long-press threshold (fires once, not on release) */
+    INPUT_EVT_LIGHT,     /* carrier front-light button (IO4) pressed; modes.c toggles the light, nothing else */
 } input_evt_type_t;
 
 typedef struct {
@@ -205,6 +206,11 @@ bool input_button_stuck(void);
  * BTN_DOWN for one physical press. Power effect: none — FSM state only, no
  * GPIO/I2C/modem access. */
 void input_note_button_wake(int64_t now_us);
+
+/* Carrier only: a light-sleep GPIO wake on the front-light button. Pushes one INPUT_EVT_LIGHT (which
+ * arms the awake window) and marks the press as already counted, so the still-low pin does not fire a
+ * second event. No-op on the breadboard or if a press is already counted. Power effect: none. */
+void input_note_light_wake(int64_t now_us);
 
 /* Shake-to-wake (accel.c's accel_poll() returned true). If the button FSM is
  * not BTN_IDLE it does nothing. If the UI is already awake it re-arms the

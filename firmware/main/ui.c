@@ -22,6 +22,7 @@
 #include "gfx.h"
 #include "lock.h" /* F6.5: gates ui_on_button_short()/ui_on_button_long() below, docs/DEVICE_PLAN.md §5.8 */
 #include "catrust.h" /* v0.2 §4.3: TLS trust-state padlock in draw_status_bar() below */
+#include "extled.h"
 #include "rail.h" /* rail gate: rail_restored_us() gates the kbd task below, docs/ROADMAP.md */
 #include "clockfmt.h" /* TASK_clock.md: pure status-bar clock formatter/minute-change detector */
 
@@ -331,6 +332,7 @@ static void draw_status_bar(void)
 {
     int unread = 0, unsent = 0;
     count_unread_unsent(&unread, &unsent);
+    extled_set_unread(unread > 0); // carrier external LED: double breath while unread
 
     // Left: spelled-out counts, at the user's request (replacing the old
     // icon + "u<n>"/"new <n>" abbreviations split across both ends of the
@@ -980,6 +982,23 @@ void ui_kb_sleep_park(void)
         s_kb_sleep_parked = true;
     } else {
         ESP_LOGI(TAG, "kbd: sleep park timed out (100 ms); sleeping anyway");
+    }
+}
+
+// Exported kb bus lock (haptic.c shares the I2C_NUM_0 bus with the kbd task). False on timeout.
+// Not recursive; do not call from code already holding it. Power effect: none.
+bool ui_kb_bus_lock(uint32_t timeout_ms)
+{
+    if (!s_kb_bus_mutex) {
+        return true; // before ui_init(): nothing else uses the bus yet
+    }
+    return xSemaphoreTake(s_kb_bus_mutex, pdMS_TO_TICKS(timeout_ms)) == pdTRUE;
+}
+
+void ui_kb_bus_unlock(void)
+{
+    if (s_kb_bus_mutex) {
+        xSemaphoreGive(s_kb_bus_mutex);
     }
 }
 

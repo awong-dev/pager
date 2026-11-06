@@ -25,6 +25,10 @@
 #include "refreshpol.h"
 #include "gfx.h"
 #include <time.h>
+#include "buzzer.h"
+#include "haptic.h"
+#include "frontlight.h"
+#include "extled.h"
 #include "rail.h" // docs/ROADMAP.md rail gate (owner, 24 Sep 10:30 pm PDT): rail_on()/rail_off()
 
 // F6.2 (docs/DEVICE_PLAN.md §5.3): CardKB decode + button FSM (+BTN_STUCK)
@@ -1867,8 +1871,28 @@ void modes_debug_sleeptest_report(void)
 // without duplicating this logic or (worse) sms.c reaching into modes.c's
 // static render_pending_set()/set_mode() directly. See modes.h's own doc
 // comment for the full contract.
+// Carrier new-message alert (buzzer + haptic): set on the modem event task, serviced on the modes
+// loop task next to service_render_pending(). Fires whether or not the device is locked.
+static bool s_alert_pending = false;
+
+// Modes loop task. Power effect: powers the rail (CardKB/haptic/panel) if it was off, a ~150 ms piezo
+// chirp and two haptic clicks; nothing on the breadboard.
+static void service_alert_pending(void)
+{
+    if (!__atomic_exchange_n(&s_alert_pending, false, __ATOMIC_ACQ_REL)) {
+        return;
+    }
+    if (!board_has_piezo() && !board_has_haptic()) {
+        return;
+    }
+    ui_ensure_powered();
+    buzzer_play(BUZZ_NEW_MSG);
+    haptic_play(HAPTIC_NEW_MSG);
+}
+
 void modes_alert_incoming(const char *id, const char *from)
 {
+    __atomic_store_n(&s_alert_pending, true, __ATOMIC_RELEASE);
     // Captured BEFORE set_mode(ACTIVE, ...) below flips it — this is the
     // "was the device asleep" input ui_incoming()'s steal-the-screen policy
     // needs (docs/DEVICE_PLAN.md §5.5). Unlocked read of g_rtc.mode, same as
@@ -2450,6 +2474,8 @@ void modes_boot(void)
     net_airplane_init(); // power effect: one NVS read; net_airplane() is a RAM read from here on
 
     input_init(); // power effect: GPIO config + static queue alloc only
+    buzzer_init(); // carrier only: piezo pins idle low; no-op on the breadboard
+    extled_start(); // carrier only: 6 s breath timer; no-op on the breadboard
 
     refreshpol_load_nvs(); // NVS "disp" floor/ceil/idle/gap overrides; no power effect
     if (!ui_init()) {
@@ -3013,7 +3039,22 @@ void modes_run(void)
                 // Power effect: ~1 s of CardKB current per motion wake; if no
                 // shake follows, the normal sleep branch's rail_off() turns it
                 // off again at the next sleep.
-                wake_is_ext1 = (wake_cause == ESP_SLEEP_WAKEUP_EXT1);
+                // IDF ranks TIMER > GPIO > EXT1, so causes can hide each other; the pin level catches
+                // a button press that a timer wake reported first.
+                const bool wake_is_light_btn =
+                    board_has_frontlight() &&
+                    (wake_cause == ESP_SLEEP_WAKEUP_GPIO || gpio_get_level((gpio_num_t) PAGER_PIN_FL_BTN) == 0);
+                wake_is_ext1 = (wake_cause == ESP_SLEEP_WAKEUP_EXT1) || (wake_cause == ESP_SLEEP_WAKEUP_GPIO) ||
+                               wake_is_light_btn;
+                if (wake_is_light_btn) {
+                    // Like a shake wake (rail on, hot window), and the press itself opens the attentive
+                    // window and turns the light on via one INPUT_EVT_LIGHT (toggle from off).
+                    int64_t lw_us = esp_timer_get_time();
+                    s_last_input_us = lw_us;
+                    ui_ensure_powered();
+                    input_note_shake_wake(lw_us);
+                    input_note_light_wake(lw_us);
+                }
 #if PAGER_WAKE_BUTTON_ENABLED
                 bool wake_is_button =
                     wake_is_ext1 &&
@@ -3244,6 +3285,11 @@ void modes_run(void)
                 ui_on_button_long();
                 s_last_input_us = esp_timer_get_time(); // rail hold task: arm the attentive cadence
                 break;
+            case INPUT_EVT_LIGHT:
+                // Carrier front-light button: toggles the light and counts as input; nothing else.
+                frontlight_toggle();
+                s_last_input_us = esp_timer_get_time();
+                break;
             case INPUT_EVT_KEY:
                 // Refresh policy (refreshpol.h): stamp the key BEFORE dispatch so
                 // a transition it causes sees "a key just arrived". Every key,
@@ -3282,6 +3328,7 @@ void modes_run(void)
         // F6.3/README R5: renders (if a message arrived) on this task, then
         // marks `shown` - see service_render_pending()'s own comment.
         watchdog_kick(WD_RENDER);
+        service_alert_pending();
         service_render_pending();
 
         // F6.5: pushes/pops the Locked screen to match lock.c's current

@@ -68,6 +68,9 @@
 #include "book.h" /* T3: book_get_bv() for the "session ... book v<n>" info line */
 #include "net.h"
 #include "devinfo_fmt.h"
+#include "board.h"
+#include "buzzer.h"
+#include "tunes.h"
 #include "ota.h" /* docs/OTA_DESIGN.md: the "Update:" line and the "Install now" row */
 #include "disp.h" /* owner request: menu-driven display rotation, disp_get_flip()/
                    * disp_set_flip()/disp_full_refresh() — same setter the console's
@@ -87,6 +90,7 @@ typedef enum {
     MROW_AIRPLANE, /* bench: NVS net/airplane, takes effect at next boot */
     MROW_REBOOT,   /* owner, 6 Oct 2026: with the IO8 button retired this is the only way to
                     * restart a pager short of pulling power (airplane mode needs a reboot) */
+    MROW_TUNE,     /* carrier only (board_has_piezo()); omitted on the breadboard */
     MROW_PASSCODE,
     MROW_AUTOLOCK,
     MROW_CARRIER,
@@ -124,6 +128,22 @@ static int device_extra_rows(void)
     return ota_install_ready() ? 1 : 0;
 }
 
+/* Highest selectable index: the tune row exists only with a piezo. */
+static int device_last_sel(void)
+{
+    return MROW_COUNT - 1 + device_extra_rows() - (board_has_piezo() ? 0 : 1);
+}
+
+/* Menu row for a cursor position (skips MROW_TUNE when there is no piezo). */
+static device_row_t device_row_at(int sel)
+{
+    int row = sel - device_extra_rows();
+    if (!board_has_piezo() && row >= (int) MROW_TUNE) {
+        row++;
+    }
+    return (device_row_t) row;
+}
+
 static void device_on_event(ui_evt_t evt)
 {
     if (evt != UI_EVT_ENTER) {
@@ -136,8 +156,8 @@ static void device_on_event(ui_evt_t evt)
     if (s_sel < 0) {
         s_sel = 0;
     }
-    if (s_sel > MROW_COUNT - 1 + device_extra_rows()) {
-        s_sel = MROW_COUNT - 1 + device_extra_rows();
+    if (s_sel > device_last_sel()) {
+        s_sel = device_last_sel();
     }
 }
 
@@ -269,7 +289,7 @@ static void device_on_key(input_key_t key)
         }
         break;
     case INPUT_KEY_DOWN:
-        if (s_sel < MROW_COUNT - 1 + device_extra_rows()) {
+        if (s_sel < device_last_sel()) {
             s_sel++;
         }
         break;
@@ -280,7 +300,7 @@ static void device_on_key(input_key_t key)
             ui_show_toast("installing update");
             break;
         }
-        switch ((device_row_t) (s_sel - device_extra_rows())) {
+        switch (device_row_at(s_sel)) {
         case MROW_INFO:
             ui_push(&g_scr_devinfo);
             break;
@@ -308,6 +328,9 @@ static void device_on_key(input_key_t key)
             break;
         case MROW_REBOOT:
             esp_restart(); // never returns; NVS writes above are already committed
+            break;
+        case MROW_TUNE:
+            buzzer_play_mario(TUNE_MARIO_DEFAULT_NOTES); // power effect: ~7 s of piezo drive
             break;
         case MROW_PASSCODE:
             s_pw_len = 0;
@@ -419,7 +442,7 @@ static void device_render_pw(void)
 // heap; single render task per README R5, so no reentrancy hazard) and
 // drawn with a simple scroll-into-view so the whole thing "scrolls"
 // (docs/DEVICE_PLAN.md §5.5: "Read-mostly, one screen, scrolls").
-#define DEVICE_MAX_LINES 20 /* +1 for the Reboot row (6 Oct 2026), +2 for the Update line and the Install-now row (OTA) */
+#define DEVICE_MAX_LINES 21 /* +1 for the carrier-only Play tune row; */ /* +1 for the Reboot row (6 Oct 2026), +2 for the Update line and the Install-now row (OTA) */
 #define DEVICE_LINE_LEN 72
 // TASK_ui_round2.md Do #2: shared UI_ROW_H pitch (ui.h), not a flat 12px —
 // (UI_FOOTER_Y - (UI_BODY_TOP+2)) / UI_ROW_H == 93/16 == 5.8, floored to 5,
@@ -477,8 +500,8 @@ static void device_render_normal(void)
         snprintf(lines[n], DEVICE_LINE_LEN, "Install update now");
         selectable[n++] = true;
     }
-    if (s_sel > MROW_COUNT - 1 + device_extra_rows()) {
-        s_sel = MROW_COUNT - 1 + device_extra_rows(); // the extra row went away under the cursor
+    if (s_sel > device_last_sel()) {
+        s_sel = device_last_sel(); // the extra row went away under the cursor
     }
     snprintf(lines[n], DEVICE_LINE_LEN, "Device info (battery, SIM, cell)");
     selectable[n++] = true;
@@ -493,6 +516,10 @@ static void device_render_normal(void)
     selectable[n++] = true;
     snprintf(lines[n], DEVICE_LINE_LEN, "Reboot");
     selectable[n++] = true;
+    if (board_has_piezo()) {
+        snprintf(lines[n], DEVICE_LINE_LEN, "Play tune");
+        selectable[n++] = true;
+    }
     snprintf(lines[n], DEVICE_LINE_LEN, "Passcode: %s", lock_is_set() ? "set" : "not set");
     selectable[n++] = true;
     uint8_t auto_min = lock_auto_min();

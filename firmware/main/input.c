@@ -44,6 +44,8 @@ input_key_t input_decode_key(uint8_t byte)
 #ifdef ESP_PLATFORM
 
 #include "pins.h"
+#include "board.h"
+#include "frontlight.h"
 
 #include "driver/gpio.h"
 #include "driver/rtc_io.h"
@@ -84,6 +86,13 @@ static int64_t s_btn_held_t0_us = 0;      /* BTN_HELD entry, for the BTN_STUCK c
 static int64_t s_btn_debounce_start_us = 0;
 #endif
 
+/* Carrier front-light button (IO4, active-low, external pull-up): its own polled 30 ms debounce,
+ * independent of the retired button FSM above. Enabled at runtime by board_has_frontlight(). */
+#define PAGER_LIGHT_DEBOUNCE_MS 30
+static bool s_light_en = false;
+static bool s_light_held = false;      /* event already fired for the press in progress */
+static int64_t s_light_db_us = 0;      /* first low sample of a candidate press; 0 = none */
+
 static int64_t s_awake_until_us = 0;
 /* Guards s_awake_until_us/s_hot_until_us: written on the kbd task's CPU
  * (input_feed_key) and read on the main loop's; Xtensa int64 can tear. */
@@ -112,6 +121,7 @@ static void push_event(input_event_t evt)
     /* Non-blocking: a full queue (modes_run() not draining fast enough)
      * drops the event rather than blocking this FSM step from any caller
      * context (CLAUDE.md: no busy-wait loops). */
+    frontlight_activity(); /* every key/button event restarts the front light's idle timer */
     if (xQueueSend(s_queue, &evt, 0) != pdTRUE) {
         ESP_LOGW(TAG, "input event queue full, dropping event type=%d", (int) evt.type);
         return;
@@ -217,16 +227,62 @@ void input_init(void)
     gpio_config(&cfg);
 #endif /* PAGER_WAKE_BUTTON_ENABLED: disabled = IO8 untouched */
 
+    if (board_has_frontlight()) {
+        /* No internal pull (the external 100k is enough; an internal one adds ~70 uA while held). */
+        gpio_config_t lc = {
+            .pin_bit_mask = 1ULL << PAGER_PIN_FL_BTN,
+            .mode = GPIO_MODE_INPUT,
+            .pull_up_en = GPIO_PULLUP_DISABLE,
+            .pull_down_en = GPIO_PULLDOWN_DISABLE,
+            .intr_type = GPIO_INTR_DISABLE,
+        };
+        gpio_config(&lc);
+        /* Keep the pad live through light sleep (sleep GPIO isolation would float it and kill the wake),
+         * and keep UART0 TX high so the CP2102N never sees a floating input. */
+        gpio_sleep_sel_dis((gpio_num_t) PAGER_PIN_FL_BTN);
+        gpio_sleep_sel_dis((gpio_num_t) PAGER_PIN_UART0_TX);
+        s_light_en = true;
+    }
+
     s_queue = xQueueCreateStatic(INPUT_QUEUE_DEPTH, sizeof(input_event_t), s_queue_storage,
                                   &s_queue_buf);
 }
 
 void input_poll(void)
 {
+    if (s_light_en) {
+        int64_t t = esp_timer_get_time();
+        if (gpio_get_level((gpio_num_t) PAGER_PIN_FL_BTN) == 0) {
+            if (!s_light_held) {
+                if (s_light_db_us == 0) {
+                    s_light_db_us = t;
+                } else if (t - s_light_db_us >= (int64_t) PAGER_LIGHT_DEBOUNCE_MS * 1000) {
+                    s_light_held = true;
+                    s_light_db_us = 0;
+                    arm_awake_window(t);
+                    push_event((input_event_t) { .type = INPUT_EVT_LIGHT });
+                }
+            }
+        } else {
+            s_light_db_us = 0;
+            s_light_held = false;
+        }
+    }
 #if PAGER_WAKE_BUTTON_ENABLED
     int64_t now_us = esp_timer_get_time();
     button_fsm_step(gpio_get_level((gpio_num_t) PAGER_PIN_BUTTON), now_us);
 #endif
+}
+
+void input_note_light_wake(int64_t now_us)
+{
+    if (!s_light_en || s_light_held) {
+        return;
+    }
+    s_light_held = true; /* the wake press is the press: no second event until released */
+    s_light_db_us = 0;
+    arm_awake_window(now_us);
+    push_event((input_event_t) { .type = INPUT_EVT_LIGHT });
 }
 
 void input_note_button_wake(int64_t now_us)
@@ -348,7 +404,8 @@ bool input_awake(void)
 
 bool input_button_busy(void)
 {
-    return PAGER_WAKE_BUTTON_ENABLED && (s_btn_state == BTN_DOWN || s_btn_state == BTN_HELD);
+    return (PAGER_WAKE_BUTTON_ENABLED && (s_btn_state == BTN_DOWN || s_btn_state == BTN_HELD)) ||
+           (s_light_en && s_light_db_us != 0); /* debounce in progress: poll at the fast cadence */
 }
 
 bool input_button_stuck(void)
