@@ -2442,7 +2442,9 @@
 						(type none)
 					)
 				)
-				(pin unspecified line
+			)
+			(symbol "TPS62842DGRR_1_1"
+				(pin power_out line
 					(at -10.16 2.54 0)
 					(length 2.54)
 					(name "VOS"
@@ -2460,7 +2462,7 @@
 						)
 					)
 				)
-				(pin unspecified line
+				(pin input line
 					(at -10.16 0 0)
 					(length 2.54)
 					(name "SW"
@@ -2478,7 +2480,7 @@
 						)
 					)
 				)
-				(pin unspecified line
+				(pin input line
 					(at -10.16 -2.54 0)
 					(length 2.54)
 					(name "MODE"
@@ -2496,7 +2498,7 @@
 						)
 					)
 				)
-				(pin unspecified line
+				(pin input line
 					(at -10.16 -5.08 0)
 					(length 2.54)
 					(name "VSET"
@@ -2514,7 +2516,7 @@
 						)
 					)
 				)
-				(pin unspecified line
+				(pin input line
 					(at 10.16 -5.08 180)
 					(length 2.54)
 					(name "EN"
@@ -2532,7 +2534,7 @@
 						)
 					)
 				)
-				(pin unspecified line
+				(pin power_in line
 					(at 10.16 -2.54 180)
 					(length 2.54)
 					(name "VIN"
@@ -2550,7 +2552,7 @@
 						)
 					)
 				)
-				(pin unspecified line
+				(pin no_connect line
 					(at 10.16 0 180)
 					(length 2.54)
 					(name "NC"
@@ -2568,7 +2570,7 @@
 						)
 					)
 				)
-				(pin unspecified line
+				(pin power_in line
 					(at 10.16 2.54 180)
 					(length 2.54)
 					(name "GND"
@@ -2586,7 +2588,7 @@
 						)
 					)
 				)
-				(pin unspecified line
+				(pin power_in line
 					(at 0 7.62 270)
 					(length 2.54)
 					(name "EP"
@@ -2733,7 +2735,7 @@
 						(type none)
 					)
 				)
-				(pin unspecified line
+				(pin input line
 					(at -11.43 2.54 0)
 					(length 2.54)
 					(name "I/O1"
@@ -2751,7 +2753,7 @@
 						)
 					)
 				)
-				(pin unspecified line
+				(pin power_in line
 					(at -11.43 0 0)
 					(length 2.54)
 					(name "GND"
@@ -2769,7 +2771,7 @@
 						)
 					)
 				)
-				(pin unspecified line
+				(pin input line
 					(at -11.43 -2.54 0)
 					(length 2.54)
 					(name "I/O2"
@@ -2787,7 +2789,7 @@
 						)
 					)
 				)
-				(pin unspecified line
+				(pin output line
 					(at 11.43 -2.54 180)
 					(length 2.54)
 					(name "I/O2"
@@ -2805,7 +2807,7 @@
 						)
 					)
 				)
-				(pin unspecified line
+				(pin power_in line
 					(at 11.43 0 180)
 					(length 2.54)
 					(name "VBUS"
@@ -2823,7 +2825,7 @@
 						)
 					)
 				)
-				(pin unspecified line
+				(pin output line
 					(at 11.43 2.54 180)
 					(length 2.54)
 					(name "I/O1"
@@ -4382,12 +4384,6 @@
 		(uuid "05e6316f-97d2-463f-8f5c-b3c355fb9e51")
 	)
 	(junction
-		(at 265.43 44.45)
-		(diameter 0)
-		(color 0 0 0 0)
-		(uuid "0a7be4d6-d150-4437-a55f-1ed0238cc548")
-	)
-	(junction
 		(at 39.37 187.96)
 		(diameter 0)
 		(color 0 0 0 0)
@@ -5071,16 +5067,6 @@
 	)
 	(wire
 		(pts
-			(xy 265.43 44.45) (xy 273.05 44.45)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "33bc650e-6f85-4ecb-b072-56331e57f94f")
-	)
-	(wire
-		(pts
 			(xy 63.5 63.5) (xy 63.5 78.74)
 		)
 		(stroke
@@ -5631,16 +5617,6 @@
 			(type default)
 		)
 		(uuid "825ea674-4cbc-41d7-bdad-5744cd4db192")
-	)
-	(wire
-		(pts
-			(xy 273.05 43.18) (xy 273.05 44.45)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "85a6faea-1bc3-4938-9553-8dba9d0ca700")
 	)
 	(wire
 		(pts
@@ -6263,16 +6239,6 @@
 		)
 		(uuid "e1b00cb1-adef-4fb4-9063-c3f40166156e")
 	)
-	(wire
-		(pts
-			(xy 265.43 44.45) (xy 265.43 64.77)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "e49b2f74-bc13-447e-aaba-6553b960e993")
-	)
 	(polyline
 		(pts
 			(xy 184.15 12.7) (xy 184.15 92.71)
@@ -6436,7 +6402,7 @@
 	)
 	(wire
 		(pts
-			(xy 265.43 40.64) (xy 265.43 44.45)
+			(xy 265.43 40.64) (xy 265.43 64.77)
 		)
 		(stroke
 			(width 0)
@@ -6454,6 +6420,26 @@
 		)
 		(uuid "ff48a5d4-5ef9-4b61-b47e-ad8f1c25ed9c")
 	)
+	(label "SW"
+		(at 254 62.23 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify left bottom)
+		)
+		(uuid "4861516b-20b4-4864-9993-25a26c81d321")
+	)
+	(label "VSET"
+		(at 247.65 57.15 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify left bottom)
+		)
+		(uuid "495cbbb3-d7d9-4fac-bb35-ac104088df34")
+	)
 	(label "SYS_GATE"
 		(at 74.93 114.3 0)
 		(effects
@@ -6463,6 +6449,16 @@
 			(justify left bottom)
 		)
 		(uuid "55205825-7d44-4fdc-b7a0-0f5f7a6dce12")
+	)
+	(label "VOS"
+		(at 254 64.77 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify left bottom)
+		)
+		(uuid "55ba37cc-4a24-4aad-9c6c-762ac1c84553")
 	)
 	(label "SYS"
 		(at 67.31 127 0)
@@ -6483,6 +6479,16 @@
 			(justify left bottom)
 		)
 		(uuid "8831a2f7-2c1e-45ea-addd-ce9da05541ce")
+	)
+	(label "MODE"
+		(at 245.11 59.69 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify left bottom)
+		)
+		(uuid "bc85a686-a459-44a1-ba34-af0ed3808799")
 	)
 	(label "SYS"
 		(at 81.28 148.59 0)
@@ -6684,7 +6690,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "10uF"
+		(property "Value" "C"
 			(at 84.328 173.736 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -6801,7 +6807,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "10uF"
+		(property "Value" "C"
 			(at 267.97 75.184 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -7038,7 +7044,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "08c338b8-b3f7-4ce7-994b-3ec723909bda")
-		(property "Reference" "#PWR027"
+		(property "Reference" "#PWR27"
 			(at 198.12 35.56 0)
 			(hide yes)
 			(show_name no)
@@ -7085,7 +7091,7 @@
 				(justify left)
 			)
 		)
-		(property "Description" "Power symbol"
+		(property "Description" "Power symbol for the SYS_SW rail"
 			(at 198.12 35.56 0)
 			(hide yes)
 			(show_name no)
@@ -7103,7 +7109,7 @@
 		(instances
 			(project "pager-carrier"
 				(path "/ab8ee99e-0f89-4d3d-ba18-cf2cd7eb7e8f"
-					(reference "#PWR027")
+					(reference "#PWR27")
 					(unit 1)
 				)
 			)
@@ -7120,7 +7126,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "0e5a5496-e7e1-4d95-92cb-2329dc97438a")
-		(property "Reference" "#PWR028"
+		(property "Reference" "#PWR28"
 			(at 198.12 87.63 0)
 			(hide yes)
 			(show_name no)
@@ -7167,7 +7173,7 @@
 				(justify left)
 			)
 		)
-		(property "Description" "Power symbol"
+		(property "Description" "Power symbol creates a global label with name \"GND\" , ground"
 			(at 198.12 87.63 0)
 			(hide yes)
 			(show_name no)
@@ -7185,7 +7191,7 @@
 		(instances
 			(project "pager-carrier"
 				(path "/ab8ee99e-0f89-4d3d-ba18-cf2cd7eb7e8f"
-					(reference "#PWR028")
+					(reference "#PWR28")
 					(unit 1)
 				)
 			)
@@ -7213,7 +7219,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "100nF"
+		(property "Value" "C"
 			(at 156.972 59.182 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -7474,7 +7480,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "100nF"
+		(property "Value" "C"
 			(at 70.104 121.412 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -7729,7 +7735,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "51k"
+		(property "Value" "R"
 			(at 251.46 74.93 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -7857,7 +7863,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "18k"
+		(property "Value" "R"
 			(at 33.274 179.07 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -7985,7 +7991,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "4.7k"
+		(property "Value" "R"
 			(at 72.39 48.26 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -8092,7 +8098,7 @@
 		(dnp no)
 		(fields_autoplaced yes)
 		(uuid "2c667da4-8a57-48c4-918a-bc1b2c6a67cf")
-		(property "Reference" "#FLG06"
+		(property "Reference" "#FLG6"
 			(at 97.79 142.875 0)
 			(hide yes)
 			(show_name no)
@@ -8152,7 +8158,7 @@
 		(instances
 			(project "pager-carrier"
 				(path "/ab8ee99e-0f89-4d3d-ba18-cf2cd7eb7e8f"
-					(reference "#FLG06")
+					(reference "#FLG6")
 					(unit 1)
 				)
 			)
@@ -8180,7 +8186,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "100nF"
+		(property "Value" "C"
 			(at 126.238 162.56 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -8297,7 +8303,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "10k"
+		(property "Value" "R"
 			(at 25.4 179.324 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -8414,7 +8420,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "35a7759d-b10e-4b81-b28a-df483b794ad9")
-		(property "Reference" "#PWR021"
+		(property "Reference" "#PWR21"
 			(at 62.23 190.5 0)
 			(hide yes)
 			(show_name no)
@@ -8461,7 +8467,7 @@
 				(justify left)
 			)
 		)
-		(property "Description" "Power symbol"
+		(property "Description" "Power symbol creates a global label with name \"GND\" , ground"
 			(at 62.23 190.5 0)
 			(hide yes)
 			(show_name no)
@@ -8479,7 +8485,7 @@
 		(instances
 			(project "pager-carrier"
 				(path "/ab8ee99e-0f89-4d3d-ba18-cf2cd7eb7e8f"
-					(reference "#PWR021")
+					(reference "#PWR21")
 					(unit 1)
 				)
 			)
@@ -8507,7 +8513,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "51k"
+		(property "Value" "R"
 			(at 139.7 44.45 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -8613,7 +8619,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "3a427321-56bd-4cbb-b62f-ec5f69996521")
-		(property "Reference" "#PWR020"
+		(property "Reference" "#PWR20"
 			(at 48.26 83.82 0)
 			(hide yes)
 			(show_name no)
@@ -8660,7 +8666,7 @@
 				(justify left)
 			)
 		)
-		(property "Description" "Power symbol"
+		(property "Description" "Power symbol creates a global label with name \"GND\" , ground"
 			(at 48.26 83.82 0)
 			(hide yes)
 			(show_name no)
@@ -8678,7 +8684,7 @@
 		(instances
 			(project "pager-carrier"
 				(path "/ab8ee99e-0f89-4d3d-ba18-cf2cd7eb7e8f"
-					(reference "#PWR020")
+					(reference "#PWR20")
 					(unit 1)
 				)
 			)
@@ -8695,7 +8701,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "3b694b56-b5e8-41af-81ff-922ff687741f")
-		(property "Reference" "#PWR024"
+		(property "Reference" "#PWR24"
 			(at 144.78 35.56 0)
 			(hide yes)
 			(show_name no)
@@ -8742,7 +8748,7 @@
 				(justify left)
 			)
 		)
-		(property "Description" "Power symbol"
+		(property "Description" "Power symbol for the VBUS rail"
 			(at 144.78 35.56 0)
 			(hide yes)
 			(show_name no)
@@ -8760,7 +8766,7 @@
 		(instances
 			(project "pager-carrier"
 				(path "/ab8ee99e-0f89-4d3d-ba18-cf2cd7eb7e8f"
-					(reference "#PWR024")
+					(reference "#PWR24")
 					(unit 1)
 				)
 			)
@@ -8778,7 +8784,7 @@
 		(dnp no)
 		(fields_autoplaced yes)
 		(uuid "3d6025fc-72c1-4611-b209-925df9717369")
-		(property "Reference" "#FLG03"
+		(property "Reference" "#FLG3"
 			(at 50.8 76.835 0)
 			(hide yes)
 			(show_name no)
@@ -8838,7 +8844,7 @@
 		(instances
 			(project "pager-carrier"
 				(path "/ab8ee99e-0f89-4d3d-ba18-cf2cd7eb7e8f"
-					(reference "#FLG03")
+					(reference "#FLG3")
 					(unit 1)
 				)
 			)
@@ -8866,7 +8872,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "1uF"
+		(property "Value" "C"
 			(at 21.082 154.94 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -8983,7 +8989,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "1M"
+		(property "Value" "R"
 			(at 85.344 121.666 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -9100,7 +9106,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "4bec6ffb-994c-4695-af14-a999f58b6134")
-		(property "Reference" "#PWR022"
+		(property "Reference" "#PWR22"
 			(at 66.04 30.48 0)
 			(hide yes)
 			(show_name no)
@@ -9147,7 +9153,7 @@
 				(justify left)
 			)
 		)
-		(property "Description" "Power symbol"
+		(property "Description" "Power symbol for the VBUS rail"
 			(at 66.04 30.48 0)
 			(hide yes)
 			(show_name no)
@@ -9165,7 +9171,7 @@
 		(instances
 			(project "pager-carrier"
 				(path "/ab8ee99e-0f89-4d3d-ba18-cf2cd7eb7e8f"
-					(reference "#PWR022")
+					(reference "#PWR22")
 					(unit 1)
 				)
 			)
@@ -9183,7 +9189,7 @@
 		(dnp no)
 		(fields_autoplaced yes)
 		(uuid "5230b3ea-99f1-46d4-94f6-51e0c528b2a6")
-		(property "Reference" "#FLG05"
+		(property "Reference" "#FLG5"
 			(at 96.52 156.845 0)
 			(hide yes)
 			(show_name no)
@@ -9243,7 +9249,7 @@
 		(instances
 			(project "pager-carrier"
 				(path "/ab8ee99e-0f89-4d3d-ba18-cf2cd7eb7e8f"
-					(reference "#FLG05")
+					(reference "#FLG5")
 					(unit 1)
 				)
 			)
@@ -9271,7 +9277,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "TYPE-C 16PLT-H6.5"
+		(property "Value" "USB_C_Receptacle_USB2.0_16P"
 			(at 19.304 31.242 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -9294,7 +9300,7 @@
 				(justify left)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/datasheet/C3151748.pdf"
+		(property "Datasheet" "https://www.usb.org/sites/default/files/documents/usb_type-c.zip"
 			(at 45.72 43.18 0)
 			(hide yes)
 			(show_name no)
@@ -9433,7 +9439,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "64ba1d5c-3601-413f-8721-f85a9de2cf8d")
-		(property "Reference" "#PWR025"
+		(property "Reference" "#PWR25"
 			(at 144.78 67.31 0)
 			(hide yes)
 			(show_name no)
@@ -9480,7 +9486,7 @@
 				(justify left)
 			)
 		)
-		(property "Description" "Power symbol"
+		(property "Description" "Power symbol creates a global label with name \"GND\" , ground"
 			(at 144.78 67.31 0)
 			(hide yes)
 			(show_name no)
@@ -9498,7 +9504,7 @@
 		(instances
 			(project "pager-carrier"
 				(path "/ab8ee99e-0f89-4d3d-ba18-cf2cd7eb7e8f"
-					(reference "#PWR025")
+					(reference "#PWR25")
 					(unit 1)
 				)
 			)
@@ -9526,7 +9532,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "10k"
+		(property "Value" "R"
 			(at 42.164 129.286 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -9643,7 +9649,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "620R"
+		(property "Value" "R"
 			(at 40.894 178.816 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -9761,7 +9767,7 @@
 		(dnp no)
 		(fields_autoplaced yes)
 		(uuid "82d4bd07-c01c-4f75-a1a6-4964486e8e80")
-		(property "Reference" "#FLG04"
+		(property "Reference" "#FLG4"
 			(at 73.66 33.655 0)
 			(hide yes)
 			(show_name no)
@@ -9821,7 +9827,7 @@
 		(instances
 			(project "pager-carrier"
 				(path "/ab8ee99e-0f89-4d3d-ba18-cf2cd7eb7e8f"
-					(reference "#FLG04")
+					(reference "#FLG4")
 					(unit 1)
 				)
 			)
@@ -9872,7 +9878,7 @@
 				(justify left)
 			)
 		)
-		(property "Datasheet" "https://www.ti.com/lit/ds/symlink/tps62840.pdf"
+		(property "Datasheet" "https://www.lcsc.com/datasheet/C2873354.pdf"
 			(at 220.98 60.96 0)
 			(hide yes)
 			(show_name no)
@@ -9940,6 +9946,28 @@
 				)
 			)
 		)
+		(property "Manufacturer" "TI(德州仪器)"
+			(at 233.68 44.45 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "LCSC Part" "C2873354"
+			(at 233.68 39.37 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
 		(pin "1"
 			(uuid "988e612b-cc92-497a-8c9d-9c6ca6dadd31")
 		)
@@ -9979,6 +10007,7 @@
 	(symbol
 		(lib_id "easyeda:USBLC6-2SC6_C2687116")
 		(at 78.74 63.5 0)
+		(mirror x)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -9988,7 +10017,7 @@
 		(dnp no)
 		(uuid "84d7ceed-c230-45d5-b52e-44d5fa6accad")
 		(property "Reference" "D1"
-			(at 70.104 69.85 0)
+			(at 70.104 70.104 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -9998,8 +10027,8 @@
 				(justify left)
 			)
 		)
-		(property "Value" "USBLC6-2SC6"
-			(at 70.358 72.136 0)
+		(property "Value" "USBLC6-2SC6_C2687116"
+			(at 69.85 72.898 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -10022,7 +10051,7 @@
 			)
 		)
 		(property "Datasheet" "https://www.lcsc.com/datasheet/C2687116.pdf"
-			(at 85.09 66.04 0)
+			(at 85.09 60.96 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -10034,7 +10063,7 @@
 			)
 		)
 		(property "Description" "USB 2-line ESD array, SOT-23-6 (UMW)"
-			(at 85.09 68.58 0)
+			(at 85.09 58.42 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -10046,7 +10075,7 @@
 			)
 		)
 		(property "MPN" "USBLC6-2SC6"
-			(at 78.74 78.74 0)
+			(at 78.74 48.26 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -10057,7 +10086,7 @@
 			)
 		)
 		(property "LCSC" "C2687116"
-			(at 78.74 81.28 0)
+			(at 78.74 45.72 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -10068,7 +10097,29 @@
 			)
 		)
 		(property "DNP" ""
-			(at 78.74 83.82 0)
+			(at 78.74 43.18 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Manufacturer" "UMW(友台半导体)"
+			(at 78.74 48.26 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "LCSC Part" "C2687116"
+			(at 78.74 43.18 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -10127,7 +10178,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "BATTERY"
+		(property "Value" "Conn_01x02"
 			(at 121.92 126.746 90)
 			(show_name no)
 			(do_not_autoplace no)
@@ -10255,7 +10306,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "10uF"
+		(property "Value" "C"
 			(at 200.66 62.484 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -10373,7 +10424,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "MSS12C02LS-HB2.0"
+		(property "Value" "SW_SPDT"
 			(at 59.69 112.776 90)
 			(show_name no)
 			(do_not_autoplace no)
@@ -10408,7 +10459,7 @@
 				(justify left)
 			)
 		)
-		(property "Description" "SPDT slide switch, top actuated, SMD, SHOU HAN MSS12C02 LS (3.7 mm overall incl. knob, travel 1.5 mm)"
+		(property "Description" "Switch, single pole double throw"
 			(at 69.85 127 0)
 			(hide yes)
 			(show_name no)
@@ -10493,7 +10544,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "2.2uH"
+		(property "Value" "L"
 			(at 259.842 54.356 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -10600,84 +10651,6 @@
 		)
 	)
 	(symbol
-		(lib_id "power:PWR_FLAG")
-		(at 273.05 43.18 0)
-		(unit 1)
-		(body_style 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(in_pos_files yes)
-		(dnp no)
-		(fields_autoplaced yes)
-		(uuid "ab037f11-481b-4281-847a-1bd198d7c824")
-		(property "Reference" "#FLG07"
-			(at 273.05 41.275 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Value" "PWR_FLAG"
-			(at 273.05 38.1 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Footprint" ""
-			(at 273.05 43.18 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Datasheet" ""
-			(at 273.05 43.18 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Description" "Special symbol for telling ERC where power comes from"
-			(at 273.05 43.18 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(pin "1"
-			(uuid "c25457c5-09cb-487f-9492-fdd1b53ff9da")
-		)
-		(instances
-			(project "pager-carrier"
-				(path "/ab8ee99e-0f89-4d3d-ba18-cf2cd7eb7e8f"
-					(reference "#FLG07")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
 		(lib_id "Device:R")
 		(at 63.5 49.53 0)
 		(unit 1)
@@ -10699,7 +10672,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "4.7k"
+		(property "Value" "R"
 			(at 64.77 48.26 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -10805,7 +10778,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "b747d2c4-83fb-4e0f-84c1-7e4d3e6f6aa5")
-		(property "Reference" "#PWR019"
+		(property "Reference" "#PWR19"
 			(at 38.1 111.76 0)
 			(hide yes)
 			(show_name no)
@@ -10852,7 +10825,7 @@
 				(justify left)
 			)
 		)
-		(property "Description" "Power symbol"
+		(property "Description" "Power symbol for the 3V3 rail"
 			(at 38.1 111.76 0)
 			(hide yes)
 			(show_name no)
@@ -10870,7 +10843,7 @@
 		(instances
 			(project "pager-carrier"
 				(path "/ab8ee99e-0f89-4d3d-ba18-cf2cd7eb7e8f"
-					(reference "#PWR019")
+					(reference "#PWR19")
 					(unit 1)
 				)
 			)
@@ -10898,7 +10871,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "100k"
+		(property "Value" "R"
 			(at 138.684 59.436 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -11015,7 +10988,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "100k"
+		(property "Value" "R"
 			(at 215.9 48.26 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -11121,7 +11094,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "ca74d2a2-bfb1-4624-84b2-acb5b462b429")
-		(property "Reference" "#PWR034"
+		(property "Reference" "#PWR34"
 			(at 265.43 40.64 0)
 			(hide yes)
 			(show_name no)
@@ -11168,7 +11141,7 @@
 				(justify left)
 			)
 		)
-		(property "Description" "Power symbol"
+		(property "Description" "Power symbol for the 3V3 rail"
 			(at 265.43 40.64 0)
 			(hide yes)
 			(show_name no)
@@ -11186,7 +11159,7 @@
 		(instances
 			(project "pager-carrier"
 				(path "/ab8ee99e-0f89-4d3d-ba18-cf2cd7eb7e8f"
-					(reference "#PWR034")
+					(reference "#PWR34")
 					(unit 1)
 				)
 			)
@@ -11214,7 +11187,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "0R"
+		(property "Value" "R"
 			(at 19.05 132.08 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -11342,7 +11315,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "10k"
+		(property "Value" "R"
 			(at 70.612 112.014 90)
 			(show_name no)
 			(do_not_autoplace no)
@@ -11459,7 +11432,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "10k"
+		(property "Value" "R"
 			(at 30.226 129.54 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -11566,7 +11539,7 @@
 		(dnp no)
 		(fields_autoplaced yes)
 		(uuid "eca50773-2400-4325-8003-9a2eb39c98c8")
-		(property "Reference" "#FLG02"
+		(property "Reference" "#FLG2"
 			(at 24.13 139.065 0)
 			(hide yes)
 			(show_name no)
@@ -11626,7 +11599,7 @@
 		(instances
 			(project "pager-carrier"
 				(path "/ab8ee99e-0f89-4d3d-ba18-cf2cd7eb7e8f"
-					(reference "#FLG02")
+					(reference "#FLG2")
 					(unit 1)
 				)
 			)
@@ -11643,7 +11616,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "fce65554-83bf-42dd-baeb-4b2f403df415")
-		(property "Reference" "#PWR023"
+		(property "Reference" "#PWR23"
 			(at 100.33 113.03 0)
 			(hide yes)
 			(show_name no)
@@ -11690,7 +11663,7 @@
 				(justify left)
 			)
 		)
-		(property "Description" "Power symbol"
+		(property "Description" "Power symbol for the SYS_SW rail"
 			(at 100.33 113.03 0)
 			(hide yes)
 			(show_name no)
@@ -11708,7 +11681,7 @@
 		(instances
 			(project "pager-carrier"
 				(path "/ab8ee99e-0f89-4d3d-ba18-cf2cd7eb7e8f"
-					(reference "#PWR023")
+					(reference "#PWR23")
 					(unit 1)
 				)
 			)
@@ -11736,7 +11709,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "10uF"
+		(property "Value" "C"
 			(at 118.618 168.656 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -11842,7 +11815,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "ffa4cac1-3eb1-468d-a3f2-8e21d3e77792")
-		(property "Reference" "#PWR018"
+		(property "Reference" "#PWR18"
 			(at 17.78 111.76 0)
 			(hide yes)
 			(show_name no)
@@ -11889,7 +11862,7 @@
 				(justify left)
 			)
 		)
-		(property "Description" "Power symbol"
+		(property "Description" "Power symbol for the VBUS rail"
 			(at 17.78 111.76 0)
 			(hide yes)
 			(show_name no)
@@ -11907,7 +11880,7 @@
 		(instances
 			(project "pager-carrier"
 				(path "/ab8ee99e-0f89-4d3d-ba18-cf2cd7eb7e8f"
-					(reference "#PWR018")
+					(reference "#PWR18")
 					(unit 1)
 				)
 			)
