@@ -10,11 +10,16 @@
     ],
     "hidden_nets": [
       "",
-      "GND",
       "unconnected-(U6-~{ALRT}-Pad5)",
+      "unconnected-(U10-DCD-Pad11)",
+      "unconnected-(U10-DSR-Pad14)",
+      "unconnected-(U10-CTS-Pad15)",
+      "unconnected-(U10-RI-Pad16)",
       "unconnected-(U4-INT2-Pad6)",
       "unconnected-(U4-NC-Pad11)",
       "unconnected-(U7-NC-Pad7)",
+      "unconnected-(M1-IO1-Pad14)",
+      "unconnected-(M1-IO5-Pad16)",
       "unconnected-(J6-SBU1-PadA8)",
       "unconnected-(J6-SBU2-PadB8)"
     ],
@@ -32,15 +37,15 @@
     "selection_filter": {
       "dimensions": false,
       "footprints": true,
-      "graphics": false,
-      "keepouts": false,
+      "graphics": true,
+      "keepouts": true,
       "lockedItems": false,
-      "otherItems": false,
-      "pads": false,
-      "text": false,
+      "otherItems": true,
+      "pads": true,
+      "text": true,
       "tracks": true,
       "vias": true,
-      "zones": false
+      "zones": true
     },
     "visible_items": [
       "vias",
@@ -57,6 +62,7 @@
       "drawing_sheet",
       "bitmaps",
       "pads",
+      "zones",
       "drc_warnings",
       "drc_exclusions",
       "locked_item_shadows",
@@ -65,7 +71,7 @@
       "board_outline_area",
       "ly_points"
     ],
-    "visible_layers": "ffffffff_ffffffff_fffffff5_dd55ffdf",
+    "visible_layers": "ffffffff_ffffffff_fffffff5_df55ffdf",
     "zone_display_mode": 0
   },
   "git": {
