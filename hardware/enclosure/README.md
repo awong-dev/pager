@@ -94,50 +94,55 @@ pocket to knob 0.10 at the modelled knob position. Tin clearance 0.3 mm less the
 - Keyboard wires: J2 is now at the far / battery-end corner; the wires cross under the plate over the
   battery to the hinge-edge channel at y 116-124.
 
-# Faceplate v2 (9 Nov 2026): cost-reduced carrier, one locating pin
+# Faceplate v2 (9 Nov 2026, revised 12 Nov): cost-reduced carrier, no locating pin
 
 Source `faceplate_v2.py` -> `out/v2/` (same frame and print orientation as v1; `faceplate.py` and `out/`
-stay as the 24 Oct v1). Built from `pager-carrier.kicad_pcb` at 00604d1: outline unchanged, and USB-C,
-SW1 and SW2 now sit in one row on the hinge edge (board ky 61.09 = world x -40.18).
+stay as the 24 Oct v1). Built for `pager-carrier.kicad_pcb` as of 12 Nov (after c7f804a): USB-C, SW1 and
+SW2 sit in one row on the hinge edge (board ky 61.09 = world x -40.18). The battery-end edge moved in
+from kx 113.15 to 110.55; no plate feature depended on it.
 
 | part | board (kx, ky) | world (x, y) | what the plate does |
 |---|---|---|---|
 | SW1 TS-1187A-S16 (5.15 sq, H 1.5, button dia 2.0, 0.2 travel) | 82.42, 61.09 | -40.18, 80.39 | 4.0 hole; captive cap (dia 3.6 shaft, 1.8 nub on the button, 5.6 flange 0.6 under the band), top 18.4 |
 | J6 TYPE-C 16PLT-H6.5 (shell 8.94 x 3.16, 6.50 tall) | 92.71, 61.09 | -40.18, 90.68 | 3.46 x 9.74 slot; shell top 17.41 stands 0.41 proud of the plate |
 | SW2 MSS12C02LS (knob 1.63 x 0.68, 2.0 above a 1.9 body, +-0.75) | 105.28, 61.09 | -40.18, 103.25 | 2.9 x 5.4 slot; slide cap: 2.6 x 3.6 stem, 0.93 x 1.88 knob pocket, 4 x 7 head |
-| locating pin (new) | 111.55, 61.09 | -40.18, 109.52 | 3.0 foot with a 1.05 blind hole for the pin |
 
-## How the board is held (one pin)
-- **Pin:** a 1.0 x 6 mm steel dowel pin (or 1.0 mm steel/brass rod cut to 6 mm), glued into a blind
-  hole in a 3.0 mm foot on the plate underside. It drops 0.8 mm into a **1.10 mm NPTH** in the carrier
-  and stops 0.2 above the board bottom (no part under it: battery top 8.75, board bottom 9.91).
-  Ream the printed hole with a 1.0 mm drill, glue with CA or epoxy, and set the pin with the plate
-  seated on a bare board or a scrap with a 1.1 mm hole so it glues square.
-- **Rotation:** the USB-C shell in its slot. The slot is snug across the shell (0.15 per side) and loose
-  along it (0.40 per side), so the pin sets x/y and the shell only stops rotation (hole + slot, no
-  binding between the two). Lever 18.9 mm: about +-0.5 deg.
-- **Height:** the pin foot and the v1 corner foot rest on bare mask at both ends of the hinge band; the
-  far-edge rail and the battery foot as in v1. The pin foot replaces v1's FOOT2 idea, and the corner
-  L-rib is gone.
-- **Why one pin:** a second pin over-constrains x/y against the USB-C shell, which is already the stiffest
-  part on the board (four soldered shell legs) and has to be located anyway. The plate stays removable
-  (lift for SIM access); the pin never leaves the plate.
+## How the board is held (no pin)
+- **x/y and rotation:** the USB-C shell in its slot (0.15 per side across, 0.40 along). The board unit
+  is also taped to the tin floor, so the slot only has to keep the plate and board aligned.
+- **Height:** the corner foot (board 77.6, 59.6) and the two far-edge rail segments rest on bare mask;
+  the battery foot and the panel-board posts rest on the battery, as in v1.
+- **The locating pin is gone.** The 9 Nov pin at (111.55, 61.09) is off the shortened board, and the
+  board's 1.10 NPTH H4 at (102.743, 72.009) is under the glass, where no plate feature can reach. H4 is
+  optional; nothing in the enclosure uses it.
+- **Why no pin is needed:** the board end past the Walter (world y 97 to 108.5) overhangs the battery, but
+  nothing presses it down in use: plugging the SH cables pushes along the board, SW2 slides sideways, and
+  SW1 (the only push button) sits over the Walter. The plate presses from above and the battery is
+  1.16 below. If the overhang feels loose, put a 1 mm foam pad on the battery under it.
 
-## Board change the plate needs (not in the PCB yet; owner routes)
-- NPTH dia 1.10 at (111.55, 61.09), no copper within 0.3 of the hole edge.
-- Keep the 3.0 mm circle around it free of parts (traces under the foot are fine; it rests on mask).
-  The strip is free today: SW2 courtyard ends kx 109.73, board edge kx 113.15, J8 starts ky 66.65.
-- Keep J2 (keyboard SH-4) where it is or further from the far rail: the rail's second segment now
-  stops at world y 101.0 (board kx 103.0) for J2's courtyard at kx 103.48.
+## Assembly rules (from the 12 Nov stack check)
+- **Trim the Walter header pins to 1.5 mm or less above the carrier top.** Under the glass (back at
+  z 14.2) the seven SH headers stand 13.87, 0.33 below it, and are the backstop if the glass is pressed
+  or its tape lets go. Pin stubs must stay below the header tops (2.96 above the board); at 1.5 they keep
+  1.8 to the glass, so jagged cut ends never reach it. Both pin rows are under the taped glass border,
+  outside the window. Optional: a strip of Kapton over each pin row.
+- **Nothing may stick out under the carrier over the battery.** The carrier bottom is only 1.16 above the
+  cell (8.75 vs 9.91) from world y 97 onward. Today nothing does: J6's shell legs are 0.95 long in a
+  1.0 board, SW2's two plastic pegs are shorter than the board, and there are no bottom-side parts.
+  The SYS_SW solder point at board (99.64, 60.60) = world (-40.7, 97.6) is over the battery edge: solder
+  its wire from the top and cut the underside flush.
+- **Kapton on the battery top under the carrier overhang.** A cut stub or solder spike pressed into a
+  pouch cell is the one real hazard in the stack.
 
-## Checks (9 Nov)
-Boolean intersection against the current board export (J6 and SW2 footprints have no 3D model, so
-datasheet-sized proxies were used): no overlaps. Shell to slot 0.15, knob pocket 0.125 per side at mid
-travel, FL cap 0.20 to the plate, nub on the button (contact by design), pin foot on the board, slider
-cap clear of the plate at both travel ends.
+## Checks (12 Nov)
+Boolean intersection of the plate, slider cap and FL cap against a fresh STEP export of the current board
+(J6 and SW2 still use datasheet-sized proxies): no overlaps. Shell to slot 0.15, knob pocket 0.125 per side
+at mid travel (the knob proxies at the travel ends touch the pocket, as intended), FL cap 0.20 to the plate,
+slider cap clear of the plate at both travel ends, foot and rails on the board.
 
 ## Assumptions still open
-- CARRIER_TOP 10.91 (unchanged from v1). The FL cap tolerates the board sitting up to 0.6 higher before
-  its flange holds the button down; lower just lowers the cap top.
+- **CARRIER_TOP 10.91 is still the socketed v1 number; measure the soldered unit (tin floor to carrier
+  top).** The SH headers clear the glass by only 0.33: if the board sits more than 0.33 higher, raise
+  GLASS_TOP. The FL cap tolerates the board up to 0.6 higher before its flange holds the button down.
 - SW2 knob centred across the body (vendor drawing shows it so; not measured on a part).
 - Fusion: the script imports from `out/`; point `OUT` at `out/v2` (or copy the v2 STEPs over) to load v2.
