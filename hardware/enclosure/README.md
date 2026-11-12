@@ -93,3 +93,51 @@ pocket to knob 0.10 at the modelled knob position. Tin clearance 0.3 mm less the
 - CardKB clamp rails (ridges that meet the keyboard PCB margins when the lid closes) not included.
 - Keyboard wires: J2 is now at the far / battery-end corner; the wires cross under the plate over the
   battery to the hinge-edge channel at y 116-124.
+
+# Faceplate v2 (9 Nov 2026): cost-reduced carrier, one locating pin
+
+Source `faceplate_v2.py` -> `out/v2/` (same frame and print orientation as v1; `faceplate.py` and `out/`
+stay as the 24 Oct v1). Built from `pager-carrier.kicad_pcb` at 00604d1: outline unchanged, and USB-C,
+SW1 and SW2 now sit in one row on the hinge edge (board ky 61.09 = world x -40.18).
+
+| part | board (kx, ky) | world (x, y) | what the plate does |
+|---|---|---|---|
+| SW1 TS-1187A-S16 (5.15 sq, H 1.5, button dia 2.0, 0.2 travel) | 82.42, 61.09 | -40.18, 80.39 | 4.0 hole; captive cap (dia 3.6 shaft, 1.8 nub on the button, 5.6 flange 0.6 under the band), top 18.4 |
+| J6 TYPE-C 16PLT-H6.5 (shell 8.94 x 3.16, 6.50 tall) | 92.71, 61.09 | -40.18, 90.68 | 3.46 x 9.74 slot; shell top 17.41 stands 0.41 proud of the plate |
+| SW2 MSS12C02LS (knob 1.63 x 0.68, 2.0 above a 1.9 body, +-0.75) | 105.28, 61.09 | -40.18, 103.25 | 2.9 x 5.4 slot; slide cap: 2.6 x 3.6 stem, 0.93 x 1.88 knob pocket, 4 x 7 head |
+| locating pin (new) | 111.55, 61.09 | -40.18, 109.52 | 3.0 foot with a 1.05 blind hole for the pin |
+
+## How the board is held (one pin)
+- **Pin:** a 1.0 x 6 mm steel dowel pin (or 1.0 mm steel/brass rod cut to 6 mm), glued into a blind
+  hole in a 3.0 mm foot on the plate underside. It drops 0.8 mm into a **1.10 mm NPTH** in the carrier
+  and stops 0.2 above the board bottom (no part under it: battery top 8.75, board bottom 9.91).
+  Ream the printed hole with a 1.0 mm drill, glue with CA or epoxy, and set the pin with the plate
+  seated on a bare board or a scrap with a 1.1 mm hole so it glues square.
+- **Rotation:** the USB-C shell in its slot. The slot is snug across the shell (0.15 per side) and loose
+  along it (0.40 per side), so the pin sets x/y and the shell only stops rotation (hole + slot, no
+  binding between the two). Lever 18.9 mm: about +-0.5 deg.
+- **Height:** the pin foot and the v1 corner foot rest on bare mask at both ends of the hinge band; the
+  far-edge rail and the battery foot as in v1. The pin foot replaces v1's FOOT2 idea, and the corner
+  L-rib is gone.
+- **Why one pin:** a second pin over-constrains x/y against the USB-C shell, which is already the stiffest
+  part on the board (four soldered shell legs) and has to be located anyway. The plate stays removable
+  (lift for SIM access); the pin never leaves the plate.
+
+## Board change the plate needs (not in the PCB yet; owner routes)
+- NPTH dia 1.10 at (111.55, 61.09), no copper within 0.3 of the hole edge.
+- Keep the 3.0 mm circle around it free of parts (traces under the foot are fine; it rests on mask).
+  The strip is free today: SW2 courtyard ends kx 109.73, board edge kx 113.15, J8 starts ky 66.65.
+- Keep J2 (keyboard SH-4) where it is or further from the far rail: the rail's second segment now
+  stops at world y 101.0 (board kx 103.0) for J2's courtyard at kx 103.48.
+
+## Checks (9 Nov)
+Boolean intersection against the current board export (J6 and SW2 footprints have no 3D model, so
+datasheet-sized proxies were used): no overlaps. Shell to slot 0.15, knob pocket 0.125 per side at mid
+travel, FL cap 0.20 to the plate, nub on the button (contact by design), pin foot on the board, slider
+cap clear of the plate at both travel ends.
+
+## Assumptions still open
+- CARRIER_TOP 10.91 (unchanged from v1). The FL cap tolerates the board sitting up to 0.6 higher before
+  its flange holds the button down; lower just lowers the cap top.
+- SW2 knob centred across the body (vendor drawing shows it so; not measured on a part).
+- Fusion: the script imports from `out/`; point `OUT` at `out/v2` (or copy the v2 STEPs over) to load v2.
