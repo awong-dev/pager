@@ -929,7 +929,7 @@
 		(descr "TDFN, 8 Pin (https://pdfserv.maximintegrated.com/package_dwgs/21-0168.PDF)")
 		(tags "TDFN NoLead")
 		(property "Reference" "U6"
-			(at -2.667 -0.081 180)
+			(at 0.127 1.697 180)
 			(layer "F.SilkS")
 			(uuid "b2275e07-c302-4b9f-a8e4-4bd2c87a3e78")
 			(effects
