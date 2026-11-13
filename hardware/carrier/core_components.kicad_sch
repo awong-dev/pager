@@ -7031,10 +7031,6 @@
 		(uuid "abde8b47-4066-409e-86cb-4235963e2547")
 	)
 	(no_connect
-		(at 53.34 187.96)
-		(uuid "b293aad5-bd9f-4689-848a-efb829301058")
-	)
-	(no_connect
 		(at 52.07 186.69)
 		(uuid "bc5639d3-815d-4b78-acfc-f8758401e654")
 	)
@@ -8801,6 +8797,16 @@
 	)
 	(wire
 		(pts
+			(xy 369.57 212.09) (xy 369.57 217.17)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "a06f9c55-18e0-4dbc-bd8f-8f944a86f35d")
+	)
+	(wire
+		(pts
 			(xy 271.78 66.04) (xy 297.18 66.04)
 		)
 		(stroke
@@ -10186,6 +10192,16 @@
 		)
 		(uuid "74493a69-94fa-4700-bdce-7f87766674c6")
 	)
+	(label "GND"
+		(at 369.57 217.17 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify left bottom)
+		)
+		(uuid "75028ef4-f7fc-45d2-bd63-1baaa2a40b4c")
+	)
 	(label "ESP_EN"
 		(at 162.56 243.84 180)
 		(effects
@@ -10624,7 +10640,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "055c8384-fe68-46ae-9bd9-dda7a6775dad")
-		(property "Reference" "R11"
+		(property "Reference" "R7"
 			(at 196.088 33.528 90)
 			(show_name no)
 			(do_not_autoplace no)
@@ -10735,7 +10751,7 @@
 		(instances
 			(project "pager-carrier"
 				(path "/4c77a02c-35a9-4533-b036-187d3e0c67ce"
-					(reference "R11")
+					(reference "R7")
 					(unit 1)
 				)
 			)
@@ -10752,7 +10768,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "085a94e5-6408-43f8-a5ef-150b48511641")
-		(property "Reference" "R9"
+		(property "Reference" "R8"
 			(at 192.786 99.06 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -10852,7 +10868,7 @@
 		(instances
 			(project "pager-carrier"
 				(path "/4c77a02c-35a9-4533-b036-187d3e0c67ce"
-					(reference "R9")
+					(reference "R8")
 					(unit 1)
 				)
 			)
@@ -10869,7 +10885,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "0cf57b96-e91e-40b1-bdaf-63fa026904aa")
-		(property "Reference" "C9"
+		(property "Reference" "C8"
 			(at 224.536 214.63 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -10969,7 +10985,7 @@
 		(instances
 			(project "pager-carrier"
 				(path "/4c77a02c-35a9-4533-b036-187d3e0c67ce"
-					(reference "C9")
+					(reference "C8")
 					(unit 1)
 				)
 			)
@@ -10987,7 +11003,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "0e69841c-595a-46dc-b008-dfb35736d595")
-		(property "Reference" "J1"
+		(property "Reference" "J2"
 			(at 178.562 46.482 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -11111,7 +11127,7 @@
 		(instances
 			(project "pager-carrier"
 				(path "/4c77a02c-35a9-4533-b036-187d3e0c67ce"
-					(reference "J1")
+					(reference "J2")
 					(unit 1)
 				)
 			)
@@ -11210,7 +11226,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "17a9867a-38ec-4cb4-827b-45ab0901895c")
-		(property "Reference" "J5"
+		(property "Reference" "J6"
 			(at 392.938 175.768 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -11310,7 +11326,7 @@
 		(instances
 			(project "pager-carrier"
 				(path "/4c77a02c-35a9-4533-b036-187d3e0c67ce"
-					(reference "J5")
+					(reference "J6")
 					(unit 1)
 				)
 			)
@@ -11445,7 +11461,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "1a51326b-5bc6-46a9-b1bf-1726a33d5653")
-		(property "Reference" "R14"
+		(property "Reference" "R11"
 			(at 275.59 177.038 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -11545,7 +11561,7 @@
 		(instances
 			(project "pager-carrier"
 				(path "/4c77a02c-35a9-4533-b036-187d3e0c67ce"
-					(reference "R14")
+					(reference "R11")
 					(unit 1)
 				)
 			)
@@ -11803,7 +11819,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "26832170-a32c-42b0-ade8-7a771737e368")
-		(property "Reference" "R15"
+		(property "Reference" "R12"
 			(at 288.544 45.212 90)
 			(show_name no)
 			(do_not_autoplace no)
@@ -11903,7 +11919,7 @@
 		(instances
 			(project "pager-carrier"
 				(path "/4c77a02c-35a9-4533-b036-187d3e0c67ce"
-					(reference "R15")
+					(reference "R12")
 					(unit 1)
 				)
 			)
@@ -11920,7 +11936,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "28a91ea6-2e16-475b-9a9a-ad20af73117a")
-		(property "Reference" "C6"
+		(property "Reference" "C5"
 			(at 137.414 59.69 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -12031,7 +12047,7 @@
 		(instances
 			(project "pager-carrier"
 				(path "/4c77a02c-35a9-4533-b036-187d3e0c67ce"
-					(reference "C6")
+					(reference "C5")
 					(unit 1)
 				)
 			)
@@ -12132,7 +12148,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "2bc3b45d-7cc1-4367-a7d1-656ce49ebd17")
-		(property "Reference" "R19"
+		(property "Reference" "R16"
 			(at 384.556 175.514 90)
 			(show_name no)
 			(do_not_autoplace no)
@@ -12232,7 +12248,7 @@
 		(instances
 			(project "pager-carrier"
 				(path "/4c77a02c-35a9-4533-b036-187d3e0c67ce"
-					(reference "R19")
+					(reference "R16")
 					(unit 1)
 				)
 			)
@@ -12332,7 +12348,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "2f168719-d36c-41f7-8141-70ef92733886")
-		(property "Reference" "C11"
+		(property "Reference" "C10"
 			(at 310.642 174.498 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -12432,7 +12448,7 @@
 		(instances
 			(project "pager-carrier"
 				(path "/4c77a02c-35a9-4533-b036-187d3e0c67ce"
-					(reference "C11")
+					(reference "C10")
 					(unit 1)
 				)
 			)
@@ -12743,7 +12759,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "35e1c244-58be-4a44-b8b1-2ca1cfbdcbc2")
-		(property "Reference" "C8"
+		(property "Reference" "C7"
 			(at 214.122 41.402 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -12843,7 +12859,7 @@
 		(instances
 			(project "pager-carrier"
 				(path "/4c77a02c-35a9-4533-b036-187d3e0c67ce"
-					(reference "C8")
+					(reference "C7")
 					(unit 1)
 				)
 			)
@@ -12861,7 +12877,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "39a98f72-7c57-4a09-833b-4a246d6efdbe")
-		(property "Reference" "C5"
+		(property "Reference" "C4"
 			(at 117.602 111.252 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -12961,7 +12977,7 @@
 		(instances
 			(project "pager-carrier"
 				(path "/4c77a02c-35a9-4533-b036-187d3e0c67ce"
-					(reference "C5")
+					(reference "C4")
 					(unit 1)
 				)
 			)
@@ -12978,7 +12994,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "3d08a638-dab3-4578-a3c1-9160a8c98475")
-		(property "Reference" "J4"
+		(property "Reference" "J5"
 			(at 392.938 138.938 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -13078,7 +13094,7 @@
 		(instances
 			(project "pager-carrier"
 				(path "/4c77a02c-35a9-4533-b036-187d3e0c67ce"
-					(reference "J4")
+					(reference "J5")
 					(unit 1)
 				)
 			)
@@ -13095,7 +13111,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "3d65d4ea-048d-4011-96df-55bcc976b4f2")
-		(property "Reference" "R39"
+		(property "Reference" "R6"
 			(at 179.07 247.904 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -13206,7 +13222,7 @@
 		(instances
 			(project "pager-carrier"
 				(path "/4c77a02c-35a9-4533-b036-187d3e0c67ce"
-					(reference "R39")
+					(reference "R6")
 					(unit 1)
 				)
 			)
@@ -13223,7 +13239,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "3f2ec3b9-5e20-43b5-ab11-383771a3c500")
-		(property "Reference" "R17"
+		(property "Reference" "R14"
 			(at 345.186 36.576 90)
 			(show_name no)
 			(do_not_autoplace no)
@@ -13323,7 +13339,7 @@
 		(instances
 			(project "pager-carrier"
 				(path "/4c77a02c-35a9-4533-b036-187d3e0c67ce"
-					(reference "R17")
+					(reference "R14")
 					(unit 1)
 				)
 			)
@@ -13651,7 +13667,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "480f69c6-0e5b-4611-a68a-460c0816e12a")
-		(property "Reference" "J8"
+		(property "Reference" "J1"
 			(at 177.8 86.106 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -13751,7 +13767,7 @@
 		(instances
 			(project "pager-carrier"
 				(path "/4c77a02c-35a9-4533-b036-187d3e0c67ce"
-					(reference "J8")
+					(reference "J1")
 					(unit 1)
 				)
 			)
@@ -13769,7 +13785,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "487b3bf1-74d7-419d-8146-92e8f3492ab3")
-		(property "Reference" "R21"
+		(property "Reference" "R18"
 			(at 387.35 149.098 90)
 			(show_name no)
 			(do_not_autoplace no)
@@ -13869,7 +13885,7 @@
 		(instances
 			(project "pager-carrier"
 				(path "/4c77a02c-35a9-4533-b036-187d3e0c67ce"
-					(reference "R21")
+					(reference "R18")
 					(unit 1)
 				)
 			)
@@ -14081,7 +14097,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "4d09d19a-a15d-4b0c-9fd6-fdc02b249cdf")
-		(property "Reference" "J2"
+		(property "Reference" "J3"
 			(at 263.906 58.166 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -14198,7 +14214,7 @@
 		(instances
 			(project "pager-carrier"
 				(path "/4c77a02c-35a9-4533-b036-187d3e0c67ce"
-					(reference "J2")
+					(reference "J3")
 					(unit 1)
 				)
 			)
@@ -14210,7 +14226,7 @@
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
-		(in_bom yes)
+		(in_bom no)
 		(on_board yes)
 		(in_pos_files yes)
 		(dnp no)
@@ -14294,7 +14310,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "4ec6e413-c0f3-4237-9141-12c4d605f29c")
-		(property "Reference" "U10"
+		(property "Reference" "U1"
 			(at 57.15 180.086 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -14472,7 +14488,7 @@
 		(instances
 			(project "pager-carrier"
 				(path "/4c77a02c-35a9-4533-b036-187d3e0c67ce"
-					(reference "U10")
+					(reference "U1")
 					(unit 1)
 				)
 			)
@@ -14555,6 +14571,85 @@
 			(project "pager-carrier"
 				(path "/4c77a02c-35a9-4533-b036-187d3e0c67ce"
 					(reference "#PWR06")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "Connector:TestPoint")
+		(at 369.57 212.09 0)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom no)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp no)
+		(uuid "609e115a-680e-422c-b317-2ff126e05d53")
+		(property "Reference" "TP5"
+			(at 367.792 206.248 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Value" "GND"
+			(at 372.11 210.0579 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Footprint" "TestPoint:TestPoint_THTPad_D2.0mm_Drill1.0mm"
+			(at 374.65 212.09 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Datasheet" ""
+			(at 374.65 212.09 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Description" "test point"
+			(at 369.57 212.09 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(pin "1"
+			(uuid "4ee2eb96-30a7-431d-9a5e-3004ba273041")
+		)
+		(instances
+			(project "pager-carrier"
+				(path "/4c77a02c-35a9-4533-b036-187d3e0c67ce"
+					(reference "TP5")
 					(unit 1)
 				)
 			)
@@ -14818,7 +14913,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "6af206f1-8214-405d-9713-0daf13f375f1")
-		(property "Reference" "C10"
+		(property "Reference" "C9"
 			(at 297.18 166.37 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -14918,7 +15013,7 @@
 		(instances
 			(project "pager-carrier"
 				(path "/4c77a02c-35a9-4533-b036-187d3e0c67ce"
-					(reference "C10")
+					(reference "C9")
 					(unit 1)
 				)
 			)
@@ -14936,7 +15031,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "6df4f263-a3e5-4610-a6bb-17a10f00d47e")
-		(property "Reference" "R20"
+		(property "Reference" "R17"
 			(at 384.556 193.294 90)
 			(show_name no)
 			(do_not_autoplace no)
@@ -15036,7 +15131,7 @@
 		(instances
 			(project "pager-carrier"
 				(path "/4c77a02c-35a9-4533-b036-187d3e0c67ce"
-					(reference "R20")
+					(reference "R17")
 					(unit 1)
 				)
 			)
@@ -15135,7 +15230,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "6fa4d7c2-22e4-4747-95d6-362944b62651")
-		(property "Reference" "R8"
+		(property "Reference" "R5"
 			(at 171.45 217.424 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -15235,7 +15330,7 @@
 		(instances
 			(project "pager-carrier"
 				(path "/4c77a02c-35a9-4533-b036-187d3e0c67ce"
-					(reference "R8")
+					(reference "R5")
 					(unit 1)
 				)
 			)
@@ -15252,7 +15347,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "7c7bab41-cf99-4e7b-ae95-034f5324e6b6")
-		(property "Reference" "R10"
+		(property "Reference" "R9"
 			(at 192.532 110.744 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -15352,7 +15447,7 @@
 		(instances
 			(project "pager-carrier"
 				(path "/4c77a02c-35a9-4533-b036-187d3e0c67ce"
-					(reference "R10")
+					(reference "R9")
 					(unit 1)
 				)
 			)
@@ -15370,7 +15465,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "7e36290c-947d-41f4-9c70-aaef1d2ea1db")
-		(property "Reference" "R22"
+		(property "Reference" "R19"
 			(at 403.606 180.086 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -15470,7 +15565,7 @@
 		(instances
 			(project "pager-carrier"
 				(path "/4c77a02c-35a9-4533-b036-187d3e0c67ce"
-					(reference "R22")
+					(reference "R19")
 					(unit 1)
 				)
 			)
@@ -15487,7 +15582,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "83db32e5-b32e-4157-8d8c-1d5be84f0779")
-		(property "Reference" "R18"
+		(property "Reference" "R15"
 			(at 345.44 48.514 90)
 			(show_name no)
 			(do_not_autoplace no)
@@ -15587,7 +15682,7 @@
 		(instances
 			(project "pager-carrier"
 				(path "/4c77a02c-35a9-4533-b036-187d3e0c67ce"
-					(reference "R18")
+					(reference "R15")
 					(unit 1)
 				)
 			)
@@ -15604,7 +15699,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "85413093-36d4-4c3d-b2b4-16f38f1cbb7d")
-		(property "Reference" "R5"
+		(property "Reference" "R3"
 			(at 122.936 99.314 90)
 			(show_name no)
 			(do_not_autoplace no)
@@ -15704,7 +15799,7 @@
 		(instances
 			(project "pager-carrier"
 				(path "/4c77a02c-35a9-4533-b036-187d3e0c67ce"
-					(reference "R5")
+					(reference "R3")
 					(unit 1)
 				)
 			)
@@ -16152,7 +16247,7 @@
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
-		(in_bom yes)
+		(in_bom no)
 		(on_board yes)
 		(in_pos_files yes)
 		(dnp no)
@@ -16236,7 +16331,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "99250f3c-ace4-4935-b536-07db4bfb048d")
-		(property "Reference" "C3"
+		(property "Reference" "C2"
 			(at 95.758 221.488 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -16336,7 +16431,7 @@
 		(instances
 			(project "pager-carrier"
 				(path "/4c77a02c-35a9-4533-b036-187d3e0c67ce"
-					(reference "C3")
+					(reference "C2")
 					(unit 1)
 				)
 			)
@@ -16353,7 +16448,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "a539c5bc-7f7f-4c1f-9e6f-3d2e25a86de4")
-		(property "Reference" "C4"
+		(property "Reference" "C3"
 			(at 111.379 221.361 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -16453,7 +16548,7 @@
 		(instances
 			(project "pager-carrier"
 				(path "/4c77a02c-35a9-4533-b036-187d3e0c67ce"
-					(reference "C4")
+					(reference "C3")
 					(unit 1)
 				)
 			)
@@ -16554,7 +16649,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "b74a6532-6c86-42ff-beba-1a61a760eb06")
-		(property "Reference" "J3"
+		(property "Reference" "J4"
 			(at 357.378 155.194 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -16654,7 +16749,7 @@
 		(instances
 			(project "pager-carrier"
 				(path "/4c77a02c-35a9-4533-b036-187d3e0c67ce"
-					(reference "J3")
+					(reference "J4")
 					(unit 1)
 				)
 			)
@@ -16671,7 +16766,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "bae72b1c-7634-47df-bff6-c651069f88ed")
-		(property "Reference" "R6"
+		(property "Reference" "R2"
 			(at 52.578 241.046 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -16771,7 +16866,7 @@
 		(instances
 			(project "pager-carrier"
 				(path "/4c77a02c-35a9-4533-b036-187d3e0c67ce"
-					(reference "R6")
+					(reference "R2")
 					(unit 1)
 				)
 			)
@@ -17284,7 +17379,7 @@
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
-		(in_bom yes)
+		(in_bom no)
 		(on_board yes)
 		(in_pos_files yes)
 		(dnp no)
@@ -17445,7 +17540,7 @@
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
-		(in_bom yes)
+		(in_bom no)
 		(on_board yes)
 		(in_pos_files yes)
 		(dnp no)
@@ -17834,7 +17929,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "e1a69617-e49c-47b8-8445-87625b1c8e42")
-		(property "Reference" "R16"
+		(property "Reference" "R13"
 			(at 288.29 56.896 90)
 			(show_name no)
 			(do_not_autoplace no)
@@ -17934,7 +18029,7 @@
 		(instances
 			(project "pager-carrier"
 				(path "/4c77a02c-35a9-4533-b036-187d3e0c67ce"
-					(reference "R16")
+					(reference "R13")
 					(unit 1)
 				)
 			)
@@ -17951,7 +18046,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "e5007a8d-b559-470d-9ce7-964ff3e642bf")
-		(property "Reference" "C7"
+		(property "Reference" "C6"
 			(at 149.86 59.69 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -18062,7 +18157,7 @@
 		(instances
 			(project "pager-carrier"
 				(path "/4c77a02c-35a9-4533-b036-187d3e0c67ce"
-					(reference "C7")
+					(reference "C6")
 					(unit 1)
 				)
 			)
@@ -18157,7 +18252,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "e88fb05f-7299-4777-8fa8-2710d46852b1")
-		(property "Reference" "R12"
+		(property "Reference" "R10"
 			(at 206.756 116.332 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -18257,7 +18352,7 @@
 		(instances
 			(project "pager-carrier"
 				(path "/4c77a02c-35a9-4533-b036-187d3e0c67ce"
-					(reference "R12")
+					(reference "R10")
 					(unit 1)
 				)
 			)
@@ -18274,7 +18369,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "f57cd82d-2e93-4f9b-a94a-d05d1d0e8665")
-		(property "Reference" "R4"
+		(property "Reference" "R1"
 			(at 40.386 241.046 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -18374,7 +18469,7 @@
 		(instances
 			(project "pager-carrier"
 				(path "/4c77a02c-35a9-4533-b036-187d3e0c67ce"
-					(reference "R4")
+					(reference "R1")
 					(unit 1)
 				)
 			)
@@ -18391,7 +18486,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "f892c6c8-6000-47e8-a7a9-ace94e613639")
-		(property "Reference" "R7"
+		(property "Reference" "R4"
 			(at 148.59 214.63 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -18491,7 +18586,7 @@
 		(instances
 			(project "pager-carrier"
 				(path "/4c77a02c-35a9-4533-b036-187d3e0c67ce"
-					(reference "R7")
+					(reference "R4")
 					(unit 1)
 				)
 			)
@@ -18508,7 +18603,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "feff7253-5439-4690-a7b6-e6677834cf39")
-		(property "Reference" "C12"
+		(property "Reference" "C11"
 			(at 326.39 63.5 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -18608,7 +18703,7 @@
 		(instances
 			(project "pager-carrier"
 				(path "/4c77a02c-35a9-4533-b036-187d3e0c67ce"
-					(reference "C12")
+					(reference "C11")
 					(unit 1)
 				)
 			)
